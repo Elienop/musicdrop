@@ -1,0 +1,42 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# beets local config + library (live on a mounted path, not in the repo)
+config.yaml
+library.db
+library.db-*
+
+# Data / runtime
+data/
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Frontend
+node_modules/
+dist/
+build/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Go
+/bin/
+*.exe
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Claude / local-only
+.claude/
