@@ -143,6 +143,57 @@ def test_missing_library_returns_empty_page() -> None:
     assert body["items"] == []
 
 
+# A 1x1 transparent PNG — smallest valid PNG payload.
+_TINY_PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+    "890000000a49444154789c6360000002000154a24f0a0000000049454e44ae42"
+    "6082"
+)
+
+
+def test_album_cover_from_artpath(temp_library: Library, tmp_path: Path) -> None:
+    # Point one album's artpath at a real PNG on disk and assert it serves.
+    art_file = tmp_path / "cover.png"
+    art_file.write_bytes(_TINY_PNG)
+
+    albums = sorted(temp_library.albums(), key=lambda a: int(a.id))
+    album = albums[0]
+    album["artpath"] = os.fsencode(str(art_file))
+    album.store()
+
+    app.dependency_overrides[get_library] = lambda: temp_library
+    try:
+        resp = TestClient(app).get(f"/api/albums/{album.id}/cover")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.headers["cache-control"] == "public, max-age=3600"
+    assert resp.content == _TINY_PNG
+
+
+def test_album_cover_without_art_returns_404(client: TestClient, temp_library: Library) -> None:
+    # Albums in the fixture have no artpath and no real files with embedded art.
+    album = next(iter(temp_library.albums()))
+    resp = client.get(f"/api/albums/{album.id}/cover")
+    assert resp.status_code == 404
+
+
+def test_album_cover_missing_album_returns_404(client: TestClient) -> None:
+    resp = client.get("/api/albums/999999/cover")
+    assert resp.status_code == 404
+
+
+def test_album_cover_unconfigured_library_returns_404() -> None:
+    app.dependency_overrides[get_library] = lambda: None
+    try:
+        resp = TestClient(app).get("/api/albums/1/cover")
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 404
+
+
 def test_lifespan_opens_library_from_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

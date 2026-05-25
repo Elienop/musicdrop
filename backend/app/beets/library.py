@@ -5,12 +5,22 @@ this file works in terms of our own Pydantic models, so beets' untyped surface,
 global config singletons, and version quirks stay isolated here.
 """
 
+import os
 from typing import Any
 
 from beets.library import Album as BeetsAlbum
 from beets.library import Library
+from mediafile import MediaFile
 
 from app.models.album import Album
+
+_EXTENSION_MIME = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 # Public handle type for the opened beets library. Callers outside this module
 # annotate with LibraryHandle so they never need to import beets themselves,
@@ -98,3 +108,45 @@ def list_albums(lib: LibraryHandle, *, limit: int, offset: int) -> tuple[list[Al
     total = len(all_albums)
     page = all_albums[offset : offset + limit]
     return [_to_album(a) for a in page], total
+
+
+def _cover_from_artpath(album: BeetsAlbum) -> tuple[bytes, str] | None:
+    raw_path = album.get("artpath")
+    if not raw_path:
+        return None
+    path = os.fsdecode(raw_path)
+    if not os.path.isfile(path):
+        return None
+    mime = _EXTENSION_MIME.get(os.path.splitext(path)[1].lower())
+    if mime is None:
+        return None
+    with open(path, "rb") as fh:
+        return fh.read(), mime
+
+
+def _cover_from_embedded(album: BeetsAlbum) -> tuple[bytes, str] | None:
+    items = list(album.items())
+    if not items:
+        return None
+    track_path = os.fsdecode(items[0].path)
+    if not os.path.isfile(track_path):
+        return None
+    images = MediaFile(track_path).images
+    if not images:
+        return None
+    image = images[0]
+    mime = _coerce_optional_str(image.mime_type) or "application/octet-stream"
+    return bytes(image.data), mime
+
+
+def get_album_cover(lib: LibraryHandle, album_id: int) -> tuple[bytes, str] | None:
+    """Return ``(image_bytes, mime_type)`` for an album's cover art, or ``None``.
+
+    Resolution order: the album's ``artpath`` file if present, otherwise the
+    embedded art on the album's first track. ``None`` when the album is missing
+    or no art can be found.
+    """
+    album = lib.get_album(album_id)
+    if album is None:
+        return None
+    return _cover_from_artpath(album) or _cover_from_embedded(album)
