@@ -10,6 +10,7 @@ import {
   ErrorState,
   GRID_CLASS,
 } from "@/components/albums/album-grid";
+import { ArtistImage } from "@/components/artists/ArtistImage";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -35,6 +36,10 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
   // artist is a fresh mount — no in-place filter-change/offset-reset effect.
   const { artistName } = useParams<{ artistName: string }>();
   const artist = safeDecode(artistName ?? "");
+  // Display fallback for the (latent) blank-name case; the API filter still
+  // uses the real decoded `artist`. Backend filters blanks, so this is just
+  // belt-and-suspenders symmetry with the roster card.
+  const displayName = artist || "Unknown artist";
 
   // Offset lives in the URL (`?offset=N`) so the grid page is bookmarkable and
   // restored when navigating back from album detail.
@@ -71,23 +76,38 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
   }
 
   return (
-    <section className="flex flex-col gap-6" aria-label={`Albums by ${artist}`}>
-      <div className="flex flex-col gap-2">
+    <section
+      className="flex flex-col gap-6"
+      aria-label={`Albums by ${displayName}`}
+    >
+      <div className="flex flex-col gap-6">
         <BackLink to="/" label="Artists" />
-        <div className="flex flex-col gap-1">
-          {/* The heading is the artist, so the count stays a plain "{n} albums"
-              (no "by {artist}" — that would be redundant). */}
-          <h2 className="text-2xl font-semibold tracking-tight">{artist}</h2>
-          {/* Live region mounted unconditionally so assistive tech can observe
-              it before the count arrives; only the text toggles. */}
-          <p
-            className="text-muted-foreground min-h-5 text-sm"
-            aria-live="polite"
-          >
-            {!isPending && !isError && total > 0
-              ? `${total.toLocaleString()} ${total === 1 ? "album" : "albums"}`
-              : ""}
-          </p>
+        {/* Poster + name row, mirroring the album-detail header. The poster is
+            decorative — the adjacent <h2> already names the artist. */}
+        <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
+          <ArtistImage
+            name={displayName}
+            decorative
+            className="size-40 shrink-0 rounded-xl shadow-sm"
+            monogramClassName="text-6xl"
+          />
+          <div className="flex min-w-0 flex-col gap-1">
+            {/* The heading is the artist, so the count stays a plain
+                "{n} albums" (no "by {artist}" — that would be redundant). */}
+            <h2 className="text-3xl font-semibold tracking-tight break-words">
+              {displayName}
+            </h2>
+            {/* Live region mounted unconditionally so assistive tech can
+                observe it before the count arrives; only the text toggles. */}
+            <p
+              className="text-muted-foreground min-h-5 text-sm"
+              aria-live="polite"
+            >
+              {!isPending && !isError && total > 0
+                ? `${total.toLocaleString()} ${total === 1 ? "album" : "albums"}`
+                : ""}
+            </p>
+          </div>
         </div>
       </div>
 
@@ -105,7 +125,7 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
         // empty page means the offset is past the end (stale/hand-crafted URL)
         // — the artist DOES have albums, so don't claim otherwise.
         total === 0 ? (
-          <ArtistEmptyState artist={artist} />
+          <ArtistEmptyState artist={displayName} />
         ) : (
           <OutOfRangePage onFirstPage={() => goToOffset(0)} />
         )

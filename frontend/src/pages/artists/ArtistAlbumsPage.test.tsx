@@ -84,6 +84,21 @@ describe("ArtistAlbumsPage", () => {
     ).toBeInTheDocument();
   });
 
+  test("renders the artist poster in the header (decorative)", async () => {
+    server.use(http.get(ALBUMS_URL, () => HttpResponse.json(makePage())));
+
+    const { container } = renderAt("Radiohead");
+
+    // Wait for the page to settle, then find the header poster. It's decorative
+    // (the <h2> names the artist), so it has no accessible name — query by src.
+    await screen.findByRole("heading", { level: 2, name: "Radiohead" });
+    const poster = container.querySelector(
+      'img[src="/api/artists/image?name=Radiohead"]',
+    );
+    expect(poster).not.toBeNull();
+    expect(poster).toHaveAttribute("alt", "");
+  });
+
   test("decodes a URL-encoded artist name from the route", async () => {
     let seenArtist: string | null = null;
     server.use(

@@ -1,11 +1,17 @@
-import { AlertCircle, ChevronRight, User, Users } from "lucide-react";
+import { AlertCircle, Users } from "lucide-react";
 import { Link } from "react-router";
 
 import type { Artist } from "@/api/useArtists";
 import { useArtists } from "@/api/useArtists";
 import { GRID_CLASS } from "@/components/albums/album-grid";
+import { ArtistImage } from "@/components/artists/ArtistImage";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function ArtistsPage() {
@@ -51,36 +57,32 @@ export function ArtistsPage() {
 }
 
 function ArtistCard({ artist }: { artist: Artist }) {
+  // Empty names shouldn't reach here (backend excludes them) but guard anyway.
+  const displayName = artist.name || "Unknown artist";
   return (
     // Whole-card link: a real <a> so it's keyboard- and screen-reader-navigable.
     // Drills into this artist's albums page (the next level of the spine).
+    // Poster card matching the album cards: square portrait on top, text below.
     <Link
       to={`/artists/${encodeURIComponent(artist.name)}`}
-      className="focus-visible:ring-ring block rounded-xl focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+      className="focus-visible:ring-ring block h-full rounded-xl focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
     >
-      <Card className="hover:border-primary/50 flex-row items-center gap-3 px-4 py-3 transition-colors">
-        <span
-          className="bg-muted text-muted-foreground flex size-10 shrink-0 items-center justify-center rounded-full"
-          aria-hidden="true"
-        >
-          <User className="size-5" />
-        </span>
-        <div className="flex min-w-0 flex-col">
-          <span
-            className="truncate font-medium"
-            title={artist.name || "Unknown artist"}
-          >
-            {artist.name || "Unknown artist"}
-          </span>
+      <Card className="hover:border-primary/50 h-full gap-3 overflow-hidden py-0 pb-4 transition-colors">
+        <ArtistImage
+          name={displayName}
+          className="aspect-square w-full rounded-t-xl"
+        />
+        <CardHeader className="px-4 pt-3">
+          <CardTitle className="truncate" title={displayName}>
+            {displayName}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="px-4">
           <span className="text-muted-foreground text-sm">
             {artist.album_count}{" "}
             {artist.album_count === 1 ? "album" : "albums"}
           </span>
-        </div>
-        <ChevronRight
-          className="text-muted-foreground ml-auto size-4 shrink-0"
-          aria-hidden="true"
-        />
+        </CardContent>
       </Card>
     </Link>
   );
@@ -91,12 +93,17 @@ function ArtistsGridSkeleton({ count }: { count: number }) {
     <ul className={GRID_CLASS} aria-hidden="true">
       {Array.from({ length: count }, (_, i) => (
         <li key={i}>
-          <Card className="flex-row items-center gap-3 px-4 py-3">
-            <Skeleton className="size-10 shrink-0 rounded-full" />
-            <div className="flex min-w-0 flex-col gap-2">
-              <Skeleton className="h-4 w-28" />
-              <Skeleton className="h-3 w-16" />
-            </div>
+          <Card className="h-full gap-3 overflow-hidden py-0 pb-4">
+            {/* Square portrait placeholder — matches the real card so the
+                image loading in doesn't shift the layout. */}
+            <Skeleton className="aspect-square w-full rounded-none" />
+            <CardHeader className="gap-2 px-4 pt-3">
+              {/* Mirrors CardTitle (name) + the "N albums" line. */}
+              <Skeleton className="h-5 w-3/4" />
+            </CardHeader>
+            <CardContent className="px-4">
+              <Skeleton className="h-4 w-16" />
+            </CardContent>
           </Card>
         </li>
       ))}
