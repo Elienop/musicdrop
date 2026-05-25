@@ -7,7 +7,13 @@ import { App } from "@/App";
 
 import "@/styles.css";
 
-const queryClient = new QueryClient();
+// Cap retries so an outage surfaces the error state promptly instead of
+// hanging through TanStack's long default backoff; a short staleTime avoids
+// refetching on every focus/mount for read-heavy library views. The test
+// client (see test/render.tsx) keeps `retry: false`.
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
+});
 
 // Single route for now — the app shell. Feature routes (Albums, etc.) land in
 // later slices. Data router (`createBrowserRouter`) so future loaders/blockers

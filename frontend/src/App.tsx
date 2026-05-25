@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { CircleCheck, CircleSlash, Loader2 } from "lucide-react";
 
 import { client } from "@/api/client";
 import { AlbumsPage } from "@/pages/albums/AlbumsPage";
@@ -12,39 +13,56 @@ async function fetchHealth() {
   return data;
 }
 
-/** Small status dot in the header: green when the API is reachable, red when
- * not, muted while the first check is in flight. Replaces the 2a card. */
-function HealthDot() {
+/**
+ * Compact backend health indicator in the header. Status is conveyed by THREE
+ * carriers, not color alone (WCAG 1.4.1): a shape-distinct icon (check /
+ * slashed-circle / spinner), a short visible text label, and the dot color.
+ */
+export function HealthStatus() {
   const { data, isPending, isError } = useQuery({
     queryKey: ["health"],
     queryFn: fetchHealth,
   });
 
   const reachable = !isError && !isPending;
-  const label = isPending
+  const label = isPending ? "Checking" : reachable ? "Online" : "Offline";
+  const description = isPending
     ? "Checking backend"
-    : isError
-      ? "Backend unreachable"
-      : `Backend ${data.status} (v${data.version})`;
+    : reachable
+      ? `Backend online (v${data.version})`
+      : "Backend unreachable";
+
+  const Icon = isPending ? Loader2 : reachable ? CircleCheck : CircleSlash;
 
   return (
     <span
-      className="flex items-center gap-2"
-      title={label}
-      aria-label={label}
+      className="flex items-center gap-1.5 text-sm"
+      title={description}
+      aria-label={description}
       role="status"
     >
-      <span
+      <Icon
         aria-hidden="true"
         className={cn(
-          "size-2 rounded-full",
+          "size-4",
           isPending
-            ? "bg-muted-foreground/40"
+            ? "text-muted-foreground animate-spin"
             : reachable
-              ? "bg-emerald-500"
-              : "bg-destructive",
+              ? "text-success"
+              : "text-destructive",
         )}
       />
+      <span
+        className={cn(
+          isPending
+            ? "text-muted-foreground"
+            : reachable
+              ? "text-success"
+              : "text-destructive",
+        )}
+      >
+        {label}
+      </span>
     </span>
   );
 }
@@ -55,7 +73,7 @@ export function App() {
       <header className="border-border bg-background/80 sticky top-0 z-10 border-b backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-6 py-4">
           <h1 className="text-xl font-semibold tracking-tight">MusicDrop</h1>
-          <HealthDot />
+          <HealthStatus />
         </div>
       </header>
       <main className="mx-auto max-w-7xl px-6 py-8">

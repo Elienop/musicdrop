@@ -1,4 +1,10 @@
-import { AlertCircle, ChevronLeft, ChevronRight, Disc3 } from "lucide-react";
+import {
+  AlertCircle,
+  ChevronLeft,
+  ChevronRight,
+  Disc3,
+  Loader2,
+} from "lucide-react";
 import { useState } from "react";
 
 import type { Album } from "@/api/useAlbums";
@@ -13,6 +19,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 
 const GRID_CLASS =
   "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5";
@@ -36,6 +43,15 @@ export function AlbumsPage({ initialLimit = 50 }: AlbumsPageProps) {
   const canPrev = offset > 0;
   const canNext = offset + limit < total;
 
+  // Reset scroll on page change so a new page starts from the top rather than
+  // mid-scroll. Guarded for jsdom, which has no smooth-scroll behavior.
+  function goToOffset(next: number) {
+    setOffset(next);
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }
+
   return (
     <section className="flex flex-col gap-6" aria-label="Albums">
       <div className="flex items-end justify-between gap-4">
@@ -50,14 +66,22 @@ export function AlbumsPage({ initialLimit = 50 }: AlbumsPageProps) {
       </div>
 
       {isPending ? (
-        <AlbumsGridSkeleton count={limit > 12 ? 12 : limit} />
+        <AlbumsGridSkeleton count={Math.min(limit, 18)} />
       ) : isError ? (
         <ErrorState onRetry={() => void refetch()} />
       ) : data.items.length === 0 ? (
         <EmptyState />
       ) : (
         <>
-          <ul className={GRID_CLASS} aria-busy={isFetching}>
+          <ul
+            className={cn(
+              GRID_CLASS,
+              // In-flight cue while paging: dim + dezoom interaction so sighted
+              // users get feedback that a new page is loading.
+              isFetching && "pointer-events-none opacity-60 transition-opacity",
+            )}
+            aria-busy={isFetching}
+          >
             {data.items.map((album) => (
               <li key={album.id}>
                 <AlbumCard album={album} />
@@ -74,22 +98,30 @@ export function AlbumsPage({ initialLimit = 50 }: AlbumsPageProps) {
                 variant="outline"
                 size="sm"
                 disabled={!canPrev || isFetching}
-                onClick={() => setOffset((o) => Math.max(0, o - limit))}
+                onClick={() => goToOffset(Math.max(0, offset - limit))}
               >
-                <ChevronLeft data-icon="inline-start" />
+                <ChevronLeft />
                 Previous
               </Button>
-              <span className="text-muted-foreground text-sm">
-                {offset + 1}&ndash;{Math.min(offset + limit, total)} of {total}
+              <span
+                className="text-muted-foreground flex items-center gap-2 text-sm"
+                aria-live="polite"
+              >
+                {isFetching && (
+                  <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                )}
+                <span>
+                  {offset + 1}&ndash;{Math.min(offset + limit, total)} of {total}
+                </span>
               </span>
               <Button
                 variant="outline"
                 size="sm"
                 disabled={!canNext || isFetching}
-                onClick={() => setOffset((o) => o + limit)}
+                onClick={() => goToOffset(offset + limit)}
               >
                 Next
-                <ChevronRight data-icon="inline-end" />
+                <ChevronRight />
               </Button>
             </nav>
           )}
@@ -119,7 +151,7 @@ function AlbumCard({ album }: { album: Album }) {
         </span>
         {album.genre && (
           <span
-            className="text-muted-foreground truncate text-sm"
+            className="text-muted-foreground min-w-0 truncate text-sm"
             title={album.genre}
           >
             &middot; {album.genre}
@@ -136,12 +168,14 @@ function AlbumsGridSkeleton({ count }: { count: number }) {
       {Array.from({ length: count }, (_, i) => (
         <li key={i}>
           <Card className="h-full gap-3 py-4">
-            <CardHeader className="px-4">
+            <CardHeader className="gap-2 px-4">
+              {/* Mirrors CardTitle (leading-none font height) + CardDescription. */}
               <Skeleton className="h-5 w-3/4" />
               <Skeleton className="h-4 w-1/2" />
             </CardHeader>
             <CardContent className="flex items-center gap-2 px-4">
-              <Skeleton className="h-5 w-12" />
+              {/* Year badge + "N tracks" — matches the real card's footer row. */}
+              <Skeleton className="h-5 w-14 rounded-md" />
               <Skeleton className="h-4 w-16" />
             </CardContent>
           </Card>

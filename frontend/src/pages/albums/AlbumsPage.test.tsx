@@ -137,4 +137,33 @@ describe("AlbumsPage", () => {
     expect(screen.getByRole("button", { name: /previous/i })).toBeEnabled();
     expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
   });
+
+  test("announces the page range in a polite live region", async () => {
+    server.use(
+      http.get(ALBUMS_URL, () =>
+        HttpResponse.json({
+          items: [
+            {
+              id: 1,
+              album_artist: "A",
+              title: "Album A",
+              year: 2000,
+              track_count: 5,
+              genre: null,
+            },
+          ],
+          total: 4,
+          limit: 1,
+          offset: 0,
+        }),
+      ),
+    );
+
+    renderWithProviders(<AlbumsPage initialLimit={1} />);
+
+    const range = await screen.findByText(/1.+4/);
+    const live = range.closest("[aria-live]");
+    expect(live).not.toBeNull();
+    expect(live).toHaveAttribute("aria-live", "polite");
+  });
 });
