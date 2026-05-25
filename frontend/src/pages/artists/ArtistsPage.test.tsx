@@ -57,7 +57,7 @@ describe("ArtistsPage", () => {
 
     renderWithProviders(<ArtistsPage />);
 
-    const poster = await screen.findByAltText("Radiohead");
+    const poster = await screen.findByAltText("Radiohead portrait");
     expect(poster).toHaveAttribute(
       "src",
       "/api/artists/image?name=Radiohead",
@@ -65,7 +65,7 @@ describe("ArtistsPage", () => {
     expect(poster).toHaveAttribute("loading", "lazy");
 
     // Encoded for non-ASCII names.
-    expect(screen.getByAltText("Sigur Rós")).toHaveAttribute(
+    expect(screen.getByAltText("Sigur Rós portrait")).toHaveAttribute(
       "src",
       `/api/artists/image?name=${encodeURIComponent("Sigur Rós")}`,
     );

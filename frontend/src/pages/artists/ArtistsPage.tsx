@@ -69,7 +69,7 @@ function ArtistCard({ artist }: { artist: Artist }) {
     >
       <Card className="hover:border-primary/50 h-full gap-3 overflow-hidden py-0 pb-4 transition-colors">
         <ArtistImage
-          name={artist.name}
+          name={displayName}
           className="aspect-square w-full rounded-t-xl"
         />
         <CardHeader className="px-4 pt-3">
