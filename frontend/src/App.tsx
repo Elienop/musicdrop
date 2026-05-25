@@ -1,9 +1,79 @@
 import { useQuery } from "@tanstack/react-query";
-import { CircleCheck, CircleSlash, Loader2 } from "lucide-react";
-import { Link, Outlet } from "react-router";
+import { CircleCheck, CircleSlash, Loader2, Search } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  Link,
+  Outlet,
+  useLocation,
+  useNavigate,
+  useSearchParams,
+} from "react-router";
 
 import { client } from "@/api/client";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+
+/** Debounce (ms) before a keystroke is reflected into the URL / fired as a
+ * query — long enough to avoid a request per character, short enough to feel
+ * live. */
+const SEARCH_DEBOUNCE_MS = 250;
+
+/**
+ * Global header search box. The query lives in the URL (`/search?q=`) so it's
+ * bookmarkable and back works; this input is a debounced editor for it. Typing
+ * from any page navigates to `/search`. While the user is on `/search`, URL
+ * updates use `replace` so each keystroke doesn't pile onto the history stack.
+ */
+function HeaderSearch() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const onSearchPage = location.pathname === "/search";
+  const urlQuery = onSearchPage ? (searchParams.get("q") ?? "") : "";
+
+  // Local editor state, seeded from the URL. We don't re-sync from the URL on
+  // every render (that would fight the user mid-type); the URL is the output.
+  const [value, setValue] = useState(urlQuery);
+  // Skip the very first debounce tick so merely mounting (e.g. landing on
+  // /search?q=foo) doesn't immediately re-navigate.
+  const mounted = useRef(false);
+
+  useEffect(() => {
+    if (!mounted.current) {
+      mounted.current = true;
+      return;
+    }
+    const id = setTimeout(() => {
+      const next = value.trim();
+      // Only navigate when the term actually differs from what's in the URL,
+      // so syncing the box from the URL doesn't loop.
+      if (next === urlQuery.trim()) {
+        return;
+      }
+      navigate(`/search?q=${encodeURIComponent(next)}`, {
+        replace: onSearchPage,
+      });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(id);
+  }, [value, urlQuery, onSearchPage, navigate]);
+
+  return (
+    <div className="relative max-w-md flex-1">
+      <Search
+        className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2"
+        aria-hidden="true"
+      />
+      <Input
+        type="search"
+        aria-label="Search library"
+        placeholder="Search artists, albums, tracks"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        className="pl-9"
+      />
+    </div>
+  );
+}
 
 async function fetchHealth() {
   const { data, error } = await client.GET("/api/health");
@@ -77,8 +147,8 @@ export function App() {
   return (
     <div className="bg-background text-foreground min-h-svh">
       <header className="border-border bg-background/80 sticky top-0 z-10 border-b backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-6 py-4">
-          <h1 className="text-xl font-semibold tracking-tight">
+        <div className="mx-auto flex max-w-7xl items-center gap-4 px-6 py-4">
+          <h1 className="shrink-0 text-xl font-semibold tracking-tight">
             <Link
               to="/"
               className="focus-visible:ring-ring rounded-sm focus-visible:ring-2 focus-visible:outline-none"
@@ -86,7 +156,10 @@ export function App() {
               MusicDrop
             </Link>
           </h1>
-          <HealthStatus />
+          <HeaderSearch />
+          <div className="shrink-0">
+            <HealthStatus />
+          </div>
         </div>
       </header>
       <main className="mx-auto max-w-7xl px-6 py-8">

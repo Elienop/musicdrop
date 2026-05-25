@@ -1,7 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { describe, expect, test } from "vitest";
 
 import { App, HealthStatus } from "@/App";
@@ -103,4 +104,73 @@ describe("App", () => {
       screen.queryByRole("navigation", { name: /primary/i }),
     ).not.toBeInTheDocument();
   });
+
+  test("has a labelled search box in the header", async () => {
+    server.use(
+      http.get(HEALTH_URL, () =>
+        HttpResponse.json({ status: "ok", version: "0.1.0" }),
+      ),
+      http.get(ARTISTS_URL, () => HttpResponse.json([])),
+    );
+
+    renderShell();
+
+    expect(screen.getByRole("searchbox", { name: /search/i })).toBeInTheDocument();
+  });
+
+  test("typing in the search box debounces, then navigates to /search?q=", async () => {
+    server.use(
+      http.get(HEALTH_URL, () =>
+        HttpResponse.json({ status: "ok", version: "0.1.0" }),
+      ),
+      http.get(ARTISTS_URL, () => HttpResponse.json([])),
+      // SearchPage will mount once we land on /search.
+      http.get(`${window.location.origin}/api/search`, () =>
+        HttpResponse.json({
+          artists: [],
+          albums: [],
+          tracks: [],
+          artist_total: 0,
+          album_total: 0,
+          track_total: 0,
+        }),
+      ),
+    );
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/"]}>
+          <Routes>
+            <Route element={<App />}>
+              <Route index element={<ArtistsPage />} />
+              <Route path="search" element={<div>search route</div>} />
+              <Route path="*" element={<div>other</div>} />
+            </Route>
+          </Routes>
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await userEvent.type(
+      screen.getByRole("searchbox", { name: /search/i }),
+      "radio",
+    );
+
+    // After the debounce, the URL carries the term and we're on /search.
+    await waitFor(() => {
+      const loc = screen.getByTestId("location");
+      expect(loc).toHaveTextContent("/search");
+      expect(loc).toHaveTextContent("q=radio");
+    });
+  });
 });
+
+/** Exposes the live router location so tests can assert URL changes. */
+function LocationProbe() {
+  const loc = useLocation();
+  return <div data-testid="location">{`${loc.pathname}${loc.search}`}</div>;
+}
