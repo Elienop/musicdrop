@@ -105,7 +105,7 @@ describe("App", () => {
     ).not.toBeInTheDocument();
   });
 
-  test("has a labelled search box in the header", async () => {
+  test("has a labelled search box inside a search landmark", async () => {
     server.use(
       http.get(HEALTH_URL, () =>
         HttpResponse.json({ status: "ok", version: "0.1.0" }),
@@ -115,16 +115,18 @@ describe("App", () => {
 
     renderShell();
 
-    expect(screen.getByRole("searchbox", { name: /search/i })).toBeInTheDocument();
+    const box = screen.getByRole("searchbox", { name: /search/i });
+    expect(box).toBeInTheDocument();
+    // Wrapped in a search landmark.
+    expect(screen.getByRole("search")).toContainElement(box);
   });
 
-  test("typing in the search box debounces, then navigates to /search?q=", async () => {
+  test("typing in the search box debounces before navigating to /search?q=", async () => {
     server.use(
       http.get(HEALTH_URL, () =>
         HttpResponse.json({ status: "ok", version: "0.1.0" }),
       ),
       http.get(ARTISTS_URL, () => HttpResponse.json([])),
-      // SearchPage will mount once we land on /search.
       http.get(`${window.location.origin}/api/search`, () =>
         HttpResponse.json({
           artists: [],
@@ -160,12 +162,57 @@ describe("App", () => {
       "radio",
     );
 
-    // After the debounce, the URL carries the term and we're on /search.
+    const loc = screen.getByTestId("location");
+    // Synchronously after the keystrokes, the debounce timer (250ms) has NOT
+    // fired yet, so the URL has NOT moved. Without a debounce the navigation
+    // would already be visible here — this proves the debounce exists.
+    expect(loc).not.toHaveTextContent("/search");
+    expect(loc).not.toHaveTextContent("q=radio");
+
+    // After the debounce elapses, it navigates.
     await waitFor(() => {
-      const loc = screen.getByTestId("location");
       expect(loc).toHaveTextContent("/search");
       expect(loc).toHaveTextContent("q=radio");
     });
+  });
+
+  test("re-syncs the box from the URL on external navigation (deep link)", async () => {
+    server.use(
+      http.get(HEALTH_URL, () =>
+        HttpResponse.json({ status: "ok", version: "0.1.0" }),
+      ),
+      http.get(`${window.location.origin}/api/search`, () =>
+        HttpResponse.json({
+          artists: [],
+          albums: [],
+          tracks: [],
+          artist_total: 0,
+          album_total: 0,
+          track_total: 0,
+        }),
+      ),
+    );
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    // Deep-link straight to /search?q=foo: the box should reflect "foo".
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/search?q=foo"]}>
+          <Routes>
+            <Route element={<App />}>
+              <Route path="search" element={<div>search route</div>} />
+              <Route path="*" element={<div>other</div>} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole("searchbox", { name: /search/i })).toHaveValue(
+      "foo",
+    );
   });
 });
 

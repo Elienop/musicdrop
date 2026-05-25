@@ -102,13 +102,17 @@ describe("SearchPage", () => {
     expect(screen.getByText(/1 of 3/)).toBeInTheDocument();
   });
 
-  test("a track row links to its album page", async () => {
+  test("a track's title links to its album page (and only the title)", async () => {
     server.use(http.get(SEARCH_URL, () => HttpResponse.json(makeResults())));
 
     renderAt("/search?q=radio");
 
-    const row = await screen.findByRole("link", { name: /Karma Police/i });
-    expect(row).toHaveAttribute("href", "/albums/1");
+    // The link's accessible name is exactly the title — not a run-on of
+    // title/artist/album/duration.
+    const link = await screen.findByRole("link", { name: "Karma Police" });
+    expect(link).toHaveAttribute("href", "/albums/1");
+    // The duration is NOT inside the track link.
+    expect(link).not.toHaveTextContent("4:21");
   });
 
   test("a singleton track (no album_id) is not a link", async () => {
@@ -172,6 +176,62 @@ describe("SearchPage", () => {
     expect(
       screen.getByRole("heading", { name: /tracks/i }),
     ).toBeInTheDocument();
+  });
+
+  test("renders a 'Results for {q}' page heading at h1 level", async () => {
+    server.use(http.get(SEARCH_URL, () => HttpResponse.json(makeResults())));
+
+    renderAt("/search?q=radio");
+
+    const h1 = await screen.findByRole("heading", { level: 1 });
+    expect(h1).toHaveTextContent(/results for/i);
+    expect(h1).toHaveTextContent("radio");
+    // Section headings stay at h2.
+    expect(
+      screen.getByRole("heading", { level: 2, name: /artists/i }),
+    ).toBeInTheDocument();
+  });
+
+  test("announces the result count in a single polite live region", async () => {
+    server.use(
+      http.get(SEARCH_URL, () =>
+        HttpResponse.json(
+          makeResults({ artist_total: 1, album_total: 1, track_total: 1 }),
+        ),
+      ),
+    );
+
+    const { container } = renderAt("/search?q=radio");
+
+    await screen.findByText("Karma Police");
+    const live = container.querySelectorAll('[aria-live="polite"]');
+    // Exactly one polite live region (not one per section).
+    expect(live).toHaveLength(1);
+    // 1 artist + 1 album + 1 track shown = 3 results.
+    expect(live[0]).toHaveTextContent(/3 results/i);
+  });
+
+  test("derives empty from the rendered arrays, not the server totals", async () => {
+    // Pathological: totals claim hits but the arrays are empty. Must show the
+    // no-results state, never a blank results area.
+    server.use(
+      http.get(SEARCH_URL, () =>
+        HttpResponse.json(
+          makeResults({
+            artists: [],
+            albums: [],
+            tracks: [],
+            artist_total: 5,
+            album_total: 5,
+            track_total: 5,
+          }),
+        ),
+      ),
+    );
+
+    renderAt("/search?q=ghost");
+
+    expect(await screen.findByText(/no results for/i)).toBeInTheDocument();
   });
 
   test("shows the idle prompt when q is blank", () => {

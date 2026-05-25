@@ -31,12 +31,22 @@ function HeaderSearch() {
   const onSearchPage = location.pathname === "/search";
   const urlQuery = onSearchPage ? (searchParams.get("q") ?? "") : "";
 
-  // Local editor state, seeded from the URL. We don't re-sync from the URL on
-  // every render (that would fight the user mid-type); the URL is the output.
+  // Local editor state, seeded from the URL — the URL is the OUTPUT of typing.
   const [value, setValue] = useState(urlQuery);
+  const inputRef = useRef<HTMLInputElement>(null);
   // Skip the very first debounce tick so merely mounting (e.g. landing on
   // /search?q=foo) doesn't immediately re-navigate.
   const mounted = useRef(false);
+
+  // Re-sync the box FROM the URL on external navigation (Back/forward, a
+  // deep-link), but ONLY when the user isn't editing — re-syncing while the box
+  // is focused would fight the user mid-type. The no-loop guard below keeps the
+  // two directions from ping-ponging.
+  useEffect(() => {
+    if (document.activeElement !== inputRef.current) {
+      setValue(urlQuery);
+    }
+  }, [urlQuery]);
 
   useEffect(() => {
     if (!mounted.current) {
@@ -58,18 +68,24 @@ function HeaderSearch() {
   }, [value, urlQuery, onSearchPage, navigate]);
 
   return (
-    <div className="relative max-w-md flex-1">
+    // `role="search"` landmark (an explicit role rather than the <search>
+    // element, which React/jsdom here don't map to the role).
+    <div role="search" className="relative max-w-md min-w-0 flex-1">
       <Search
         className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2"
         aria-hidden="true"
       />
       <Input
+        ref={inputRef}
         type="search"
         aria-label="Search library"
-        placeholder="Search artists, albums, tracks"
+        // Short, fixed placeholder so it isn't crushed/ellipsised at ~360px
+        // (an attribute can't be swapped per-breakpoint via CSS); the leading
+        // icon + aria-label carry the affordance.
+        placeholder="Search…"
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        className="pl-9"
+        className="min-w-0 pl-9"
       />
     </div>
   );
@@ -122,8 +138,11 @@ export function HealthStatus() {
               : "text-destructive",
         )}
       />
+      {/* Collapse to icon-only below sm to save header width; the wrapper's
+          title + aria-label still convey the full status. */}
       <span
         className={cn(
+          "hidden sm:inline",
           isPending
             ? "text-muted-foreground"
             : reachable
