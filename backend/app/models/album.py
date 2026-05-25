@@ -15,3 +15,16 @@ class AlbumPage(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class Track(BaseModel):
+    id: int
+    title: str
+    track: int
+    disc: int
+    duration_seconds: float | None
+    artist: str
+
+
+class AlbumDetail(Album):
+    tracks: list[Track]

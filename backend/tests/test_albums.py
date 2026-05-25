@@ -198,6 +198,79 @@ def test_album_cover_missing_album_returns_404(client: TestClient) -> None:
     assert resp.status_code == 404
 
 
+def test_album_detail_returns_album_with_sorted_tracklist(
+    client: TestClient, temp_library: Library
+) -> None:
+    # Build a fresh album whose items are added deliberately out of (disc, track)
+    # order, with explicit title/track/disc/length/artist, and assert the detail
+    # endpoint returns the album fields plus a tracklist sorted by (disc, track).
+    directory = Path(os.fsdecode(temp_library.directory))
+
+    def _track_item(*, title: str, track: int, disc: int, length: float, artist: str) -> Item:
+        item = _make_item(
+            directory,
+            album="Discovery",
+            albumartist="Daft Punk",
+            year=2001,
+            genre="House",
+            title=title,
+            track=track,
+        )
+        item.disc = disc
+        item.length = length
+        item.artist = artist
+        return item
+
+    out_of_order = [
+        _track_item(title="Aerodynamic", track=2, disc=1, length=212.5, artist="Daft Punk"),
+        _track_item(title="Nightvision", track=1, disc=2, length=104.0, artist="Daft Punk feat. X"),
+        _track_item(title="One More Time", track=1, disc=1, length=320.0, artist="Daft Punk"),
+        _track_item(title="No Length", track=3, disc=1, length=0.0, artist="Daft Punk"),
+    ]
+    album = temp_library.add_album(out_of_order)
+    album["genre"] = "House"
+    album.store()
+
+    resp = client.get(f"/api/albums/{album.id}")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["id"] == album.id
+    assert body["album_artist"] == "Daft Punk"
+    assert body["title"] == "Discovery"
+    assert body["year"] == 2001
+    assert body["track_count"] == 4
+    assert body["genre"] == "House"
+
+    tracks = body["tracks"]
+    assert [t["title"] for t in tracks] == [
+        "One More Time",
+        "Aerodynamic",
+        "No Length",
+        "Nightvision",
+    ]
+    assert [(t["disc"], t["track"]) for t in tracks] == [(1, 1), (1, 2), (1, 3), (2, 1)]
+    assert tracks[0]["duration_seconds"] == 320.0
+    assert tracks[1]["duration_seconds"] == 212.5
+    # length 0 maps to None.
+    assert tracks[2]["duration_seconds"] is None
+    assert tracks[3]["artist"] == "Daft Punk feat. X"
+
+
+def test_album_detail_missing_album_returns_404(client: TestClient) -> None:
+    resp = client.get("/api/albums/999999")
+    assert resp.status_code == 404
+
+
+def test_album_detail_unconfigured_library_returns_404() -> None:
+    app.dependency_overrides[get_library] = lambda: None
+    try:
+        resp = TestClient(app).get("/api/albums/1")
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 404
+
+
 def test_album_cover_unconfigured_library_returns_404() -> None:
     app.dependency_overrides[get_library] = lambda: None
     try:

@@ -2,8 +2,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
-from app.beets.library import LibraryHandle, get_album_cover, list_albums
-from app.models.album import Album, AlbumPage
+from app.beets.library import LibraryHandle, get_album_cover, get_album_detail, list_albums
+from app.models.album import Album, AlbumDetail, AlbumPage
 
 router = APIRouter(tags=["albums"])
 
@@ -31,6 +31,20 @@ async def list_albums_endpoint(
     items: list[Album]
     items, total = list_albums(lib, limit=limit, offset=offset)
     return AlbumPage(items=items, total=total, limit=limit, offset=offset)
+
+
+@router.get("/albums/{album_id}", response_model=AlbumDetail)
+async def get_album_detail_endpoint(
+    album_id: int,
+    lib: Annotated[LibraryHandle | None, Depends(get_library)] = None,
+) -> AlbumDetail:
+    if lib is None:
+        raise HTTPException(status_code=404, detail="Album not found")
+
+    detail = get_album_detail(lib, album_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Album not found")
+    return detail
 
 
 @router.get("/albums/{album_id}/cover")

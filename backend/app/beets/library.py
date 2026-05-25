@@ -12,7 +12,7 @@ from beets.library import Album as BeetsAlbum
 from beets.library import Library
 from mediafile import MediaFile
 
-from app.models.album import Album
+from app.models.album import Album, AlbumDetail, Track
 
 # Allowlist of cover-art extensions we serve. `.svg` is deliberately excluded:
 # serving user-controlled SVG (even via <img>) is an XSS footgun, not worth it.
@@ -85,16 +85,68 @@ def _album_genre(album: BeetsAlbum, items: list[Any]) -> str | None:
     return None
 
 
+def _coerce_int(value: object) -> int:
+    try:
+        number: int = int(value)  # type: ignore[call-overload]  # beets value is untyped
+    except (TypeError, ValueError):
+        return 0
+    return number
+
+
+def _coerce_duration(value: object) -> float | None:
+    try:
+        seconds = float(value)  # type: ignore[arg-type]  # beets value is untyped
+    except (TypeError, ValueError):
+        return None
+    return seconds or None
+
+
+def _album_fields(album: BeetsAlbum, items: list[Any]) -> dict[str, Any]:
+    """Map a beets album + its items to the shared ``Album`` field set.
+
+    Factored out so ``_to_album`` and ``get_album_detail`` build the album
+    portion from one source of truth instead of duplicating the mapping.
+    """
+    return {
+        "id": int(album.id),
+        "album_artist": _coerce_str(album.albumartist),
+        "title": _coerce_str(album.album),
+        "year": _coerce_year(album.year),
+        "track_count": len(items),
+        "genre": _album_genre(album, items),
+    }
+
+
 def _to_album(album: BeetsAlbum) -> Album:
     items = list(album.items())
-    return Album(
-        id=int(album.id),
-        album_artist=_coerce_str(album.albumartist),
-        title=_coerce_str(album.album),
-        year=_coerce_year(album.year),
-        track_count=len(items),
-        genre=_album_genre(album, items),
+    return Album(**_album_fields(album, items))
+
+
+def _to_track(item: Any) -> Track:
+    return Track(
+        id=int(item.id),
+        title=_coerce_str(item.title),
+        track=_coerce_int(item.track),
+        disc=_coerce_int(item.disc),
+        duration_seconds=_coerce_duration(item.length),
+        artist=_coerce_str(item.artist),
     )
+
+
+def get_album_detail(lib: LibraryHandle, album_id: int) -> AlbumDetail | None:
+    """Return an album with its tracklist, or ``None`` when the album is missing.
+
+    Tracks are sorted by ``(disc, track)`` so the tracklist reads in play order.
+    """
+    album = lib.get_album(album_id)
+    if album is None:
+        return None
+    items = list(album.items())
+    tracks = sorted(
+        (_to_track(item) for item in items),
+        key=lambda t: (t.disc, t.track),
+    )
+    return AlbumDetail(**_album_fields(album, items), tracks=tracks)
 
 
 def list_albums(lib: LibraryHandle, *, limit: int, offset: int) -> tuple[list[Album], int]:
