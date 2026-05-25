@@ -70,4 +70,36 @@ describe("App", () => {
     ).toBeInTheDocument();
     expect(await screen.findByText(/no albums/i)).toBeInTheDocument();
   });
+
+  test("renders nav links to Albums and Artists", async () => {
+    server.use(
+      http.get(HEALTH_URL, () =>
+        HttpResponse.json({ status: "ok", version: "0.1.0" }),
+      ),
+      http.get(ALBUMS_URL, () =>
+        HttpResponse.json({ items: [], total: 0, limit: 50, offset: 0 }),
+      ),
+    );
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/"]}>
+          <Routes>
+            <Route element={<App />}>
+              <Route path="*" element={<AlbumsPage />} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const albums = screen.getByRole("link", { name: "Albums" });
+    expect(albums).toHaveAttribute("href", "/");
+
+    const artists = screen.getByRole("link", { name: "Artists" });
+    expect(artists).toHaveAttribute("href", "/artists");
+  });
 });

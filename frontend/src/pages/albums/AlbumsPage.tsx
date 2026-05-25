@@ -1,12 +1,13 @@
 import {
   AlertCircle,
+  ArrowLeft,
   ChevronLeft,
   ChevronRight,
   Disc3,
   Loader2,
   Music,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
 import type { Album } from "@/api/useAlbums";
@@ -38,10 +39,35 @@ export function AlbumsPage({ initialLimit = 50 }: AlbumsPageProps) {
   // clamp negatives away; a 0 offset is left out of the URL to keep it clean.
   const [searchParams, setSearchParams] = useSearchParams();
   const offset = Math.max(0, Number(searchParams.get("offset") ?? "0") || 0);
+  // The active artist filter (`?artist=`), shared with the Artists roster. A
+  // blank value is treated as "no filter".
+  const artist = searchParams.get("artist")?.trim() || undefined;
+
+  // When the artist filter changes, the offset no longer maps to the new,
+  // shorter result set — drop the stale page so we start from the top rather
+  // than landing on an out-of-range page. Tracks the previous artist across
+  // renders and clears `offset` on transition.
+  const prevArtist = useRef(artist);
+  useEffect(() => {
+    if (prevArtist.current !== artist) {
+      prevArtist.current = artist;
+      if (offset > 0) {
+        setSearchParams(
+          (prev) => {
+            const params = new URLSearchParams(prev);
+            params.delete("offset");
+            return params;
+          },
+          { replace: true },
+        );
+      }
+    }
+  }, [artist, offset, setSearchParams]);
 
   const { data, isPending, isError, isFetching, refetch } = useAlbums({
     limit,
     offset,
+    artist,
   });
 
   const total = data?.total ?? 0;
@@ -73,13 +99,24 @@ export function AlbumsPage({ initialLimit = 50 }: AlbumsPageProps) {
     <section className="flex flex-col gap-6" aria-label="Albums">
       <div className="flex items-end justify-between gap-4">
         <div className="flex flex-col gap-1">
-          <h2 className="text-2xl font-semibold tracking-tight">Albums</h2>
+          <h2 className="text-2xl font-semibold tracking-tight">
+            {artist ? `Albums by ${artist}` : "Albums"}
+          </h2>
           {!isPending && !isError && total > 0 && (
             <p className="text-muted-foreground text-sm" aria-live="polite">
               {total.toLocaleString()} {total === 1 ? "album" : "albums"}
             </p>
           )}
         </div>
+        {artist && (
+          <Link
+            to="/"
+            className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex shrink-0 items-center gap-1.5 rounded-sm text-sm focus-visible:ring-2 focus-visible:outline-none"
+          >
+            <ArrowLeft className="size-4" aria-hidden="true" />
+            All albums
+          </Link>
+        )}
       </div>
 
       {isPending ? (

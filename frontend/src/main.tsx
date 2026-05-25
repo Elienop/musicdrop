@@ -6,6 +6,7 @@ import { createBrowserRouter, RouterProvider } from "react-router";
 import { App } from "@/App";
 import { AlbumDetailPage } from "@/pages/albums/AlbumDetailPage";
 import { AlbumsPage } from "@/pages/albums/AlbumsPage";
+import { ArtistsPage } from "@/pages/artists/ArtistsPage";
 
 import "@/styles.css";
 
@@ -24,6 +25,7 @@ const router = createBrowserRouter([
   {
     element: <App />,
     children: [
+      { path: "/artists", element: <ArtistsPage /> },
       { path: "/albums/:albumId", element: <AlbumDetailPage /> },
       { path: "*", element: <AlbumsPage /> },
     ],

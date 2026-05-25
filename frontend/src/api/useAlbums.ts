@@ -11,14 +11,17 @@ export type Album = components["schemas"]["Album"];
 export interface UseAlbumsParams {
   limit: number;
   offset: number;
+  /** Optional artist filter (`?artist=`). Omitted from the query when unset. */
+  artist?: string;
 }
 
 async function fetchAlbums({
   limit,
   offset,
+  artist,
 }: UseAlbumsParams): Promise<AlbumPage> {
   const { data, error } = await client.GET("/api/albums", {
-    params: { query: { limit, offset } },
+    params: { query: { limit, offset, artist } },
   });
   if (error || !data) {
     throw new Error("Failed to load albums");
@@ -29,10 +32,10 @@ async function fetchAlbums({
 /** Fetch a page of albums. `keepPreviousData`-style placeholder keeps the
  * previous page visible while the next one loads, so pagination doesn't flash
  * the skeleton on every click. */
-export function useAlbums({ limit, offset }: UseAlbumsParams) {
+export function useAlbums({ limit, offset, artist }: UseAlbumsParams) {
   return useQuery({
-    queryKey: ["albums", { limit, offset }],
-    queryFn: () => fetchAlbums({ limit, offset }),
+    queryKey: ["albums", { limit, offset, artist }],
+    queryFn: () => fetchAlbums({ limit, offset, artist }),
     placeholderData: (prev) => prev,
   });
 }

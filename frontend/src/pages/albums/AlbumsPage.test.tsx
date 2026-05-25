@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { MemoryRouter, useLocation } from "react-router";
+import { MemoryRouter, useLocation, useNavigate } from "react-router";
 import { describe, expect, test } from "vitest";
 
 import type { components } from "@/api/schema";
@@ -278,6 +278,122 @@ describe("AlbumsPage", () => {
 
     expect(await screen.findByText("Second Album")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /previous/i })).toBeEnabled();
+  });
+
+  test("threads ?artist= into the API query and shows a filter banner", async () => {
+    let seenArtist: string | null = null;
+    server.use(
+      http.get(ALBUMS_URL, ({ request }) => {
+        seenArtist = new URL(request.url).searchParams.get("artist");
+        return HttpResponse.json(
+          makePage({
+            items: [
+              {
+                id: 1,
+                album_artist: "Radiohead",
+                title: "OK Computer",
+                year: 1997,
+                track_count: 12,
+                genre: "Alternative Rock",
+              },
+            ],
+            total: 1,
+          }),
+        );
+      }),
+    );
+
+    renderAtUrl("/?artist=Radiohead");
+
+    expect(await screen.findByText("OK Computer")).toBeInTheDocument();
+    // The artist filter reached the backend.
+    expect(seenArtist).toBe("Radiohead");
+    // Banner announcing the active filter.
+    expect(screen.getByText(/albums by radiohead/i)).toBeInTheDocument();
+  });
+
+  test("the clear link removes the artist filter from the URL", async () => {
+    server.use(http.get(ALBUMS_URL, () => HttpResponse.json(makePage())));
+
+    renderAtUrl("/?artist=Radiohead");
+
+    await screen.findByText("OK Computer");
+    expect(screen.getByTestId("location-search")).toHaveTextContent(
+      "artist=Radiohead",
+    );
+
+    // "All albums" link clears the filter.
+    const clear = screen.getByRole("link", { name: /all albums/i });
+    await userEvent.click(clear);
+
+    expect(screen.getByTestId("location-search")).not.toHaveTextContent(
+      "artist",
+    );
+    expect(screen.queryByText(/albums by radiohead/i)).not.toBeInTheDocument();
+  });
+
+  test("resets the offset to 0 when the artist filter changes", async () => {
+    server.use(
+      http.get(ALBUMS_URL, ({ request }) => {
+        const url = new URL(request.url);
+        const offset = Number(url.searchParams.get("offset") ?? "0");
+        const artist = url.searchParams.get("artist");
+        return HttpResponse.json({
+          items: [
+            {
+              id: 1,
+              album_artist: artist ?? "A",
+              title: artist ? `Album by ${artist}` : `Offset ${offset}`,
+              year: 2000,
+              track_count: 10,
+              genre: null,
+            },
+          ],
+          total: 5,
+          limit: 1,
+          offset,
+        });
+      }),
+    );
+
+    // A button that navigates to an artist filter, simulating a click from the
+    // Artists page while a stale offset is carried in the URL.
+    function Harness() {
+      const navigate = useNavigate();
+      return (
+        <>
+          <button type="button" onClick={() => navigate("/?artist=Radiohead")}>
+            go to radiohead
+          </button>
+          <AlbumsPage initialLimit={1} />
+          <LocationProbe />
+        </>
+      );
+    }
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/?offset=3"]}>
+          <Harness />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText("Offset 3");
+    expect(screen.getByTestId("location-search")).toHaveTextContent("offset=3");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /go to radiohead/i }),
+    );
+
+    // The artist filter is applied AND the stale offset is dropped.
+    await screen.findByText("Album by Radiohead");
+    const search = screen.getByTestId("location-search");
+    expect(search).toHaveTextContent("artist=Radiohead");
+    expect(search).not.toHaveTextContent("offset");
   });
 
   test("announces the page range in a polite live region", async () => {
