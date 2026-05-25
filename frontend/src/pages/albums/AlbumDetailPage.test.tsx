@@ -53,7 +53,7 @@ function makeDetail(overrides: Partial<AlbumDetail> = {}): AlbumDetail {
 }
 
 /** Render the detail page at `/albums/:albumId` so `useParams` resolves. */
-function renderDetail(albumId = 1) {
+function renderDetail(albumId: number | string = 1) {
   return renderWithProviders(<AlbumDetailPage />, {
     route: `/albums/${albumId}`,
     path: "/albums/:albumId",
@@ -74,9 +74,12 @@ describe("AlbumDetailPage", () => {
     expect(screen.getByText(/3 tracks/i)).toBeInTheDocument();
     expect(screen.getByText("Alternative Rock")).toBeInTheDocument();
 
-    // Header cover image points at the album's /cover endpoint.
-    const cover = screen.getByAltText("OK Computer cover");
-    expect(cover).toHaveAttribute("src", "/api/albums/1/cover");
+    // Header cover image points at the album's /cover endpoint. It's
+    // decorative (alt="") since the <h2> already names the album, so it's
+    // queried by src rather than alt text.
+    const cover = document.querySelector('img[src="/api/albums/1/cover"]');
+    expect(cover).not.toBeNull();
+    expect(cover).toHaveAttribute("alt", "");
   });
 
   test("renders the tracklist in order", async () => {
@@ -220,6 +223,66 @@ describe("AlbumDetailPage", () => {
     expect(
       screen.getByRole("link", { name: /library/i }),
     ).toBeInTheDocument();
+  });
+
+  test("shows not-found for a non-numeric id without hitting the API", async () => {
+    let requests = 0;
+    server.use(
+      http.get(DETAIL_URL, () => {
+        requests += 1;
+        return HttpResponse.json(makeDetail());
+      }),
+    );
+
+    renderDetail("abc");
+
+    // Renders not-found immediately — no doomed fetch (which would 422).
+    expect(await screen.findByText(/album not found/i)).toBeInTheDocument();
+    expect(requests).toBe(0);
+  });
+
+  test("renders an untagged track number (0) as an en-dash", async () => {
+    server.use(
+      http.get(DETAIL_URL, () =>
+        HttpResponse.json(
+          makeDetail({
+            track_count: 1,
+            tracks: [
+              makeTrack({ id: 1, title: "Untracked", track: 0, disc: 1 }),
+            ],
+          }),
+        ),
+      ),
+    );
+
+    renderDetail(1);
+
+    const row = (await screen.findByText("Untracked")).closest("tr");
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getByText("–")).toBeInTheDocument();
+  });
+
+  test("does not render a 'Disc 0' header for untagged discs", async () => {
+    server.use(
+      http.get(DETAIL_URL, () =>
+        HttpResponse.json(
+          makeDetail({
+            track_count: 2,
+            tracks: [
+              // Mixed: one untagged disc (0) and one real disc -> multi-disc,
+              // but the disc-0 group must not get a "Disc 0" header.
+              makeTrack({ id: 1, title: "Untagged", track: 1, disc: 0 }),
+              makeTrack({ id: 2, title: "Tagged", track: 1, disc: 1 }),
+            ],
+          }),
+        ),
+      ),
+    );
+
+    renderDetail(1);
+
+    expect(await screen.findByText("Disc 1")).toBeInTheDocument();
+    expect(screen.queryByText("Disc 0")).not.toBeInTheDocument();
   });
 
   test("shows an error state with a retry on a 500", async () => {

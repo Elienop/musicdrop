@@ -33,13 +33,23 @@ async function fetchAlbum(albumId: number): Promise<AlbumDetail> {
   return data;
 }
 
+export interface UseAlbumOptions {
+  /** When false the query is disabled (no request fires). Used by the page to
+   * skip fetching for a non-numeric / invalid id. Defaults to true. */
+  enabled?: boolean;
+}
+
 /** Fetch a single album with its tracklist. A 404 surfaces as
  * {@link AlbumNotFoundError} (not retried) so the page can branch to the
  * not-found state. */
-export function useAlbum(albumId: number) {
+export function useAlbum(
+  albumId: number,
+  { enabled = true }: UseAlbumOptions = {},
+) {
   return useQuery({
     queryKey: ["album", albumId],
     queryFn: () => fetchAlbum(albumId),
+    enabled,
     // No auto-retry: a not-found is terminal, and a transient/server error
     // surfaces immediately behind the page's explicit Retry button (mirroring
     // the Albums grid). Skipping retries also keeps the error state

@@ -7,7 +7,7 @@ import {
   Music,
 } from "lucide-react";
 import { useState } from "react";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 
 import type { Album } from "@/api/useAlbums";
 import { useAlbums } from "@/api/useAlbums";
@@ -33,7 +33,11 @@ interface AlbumsPageProps {
 
 export function AlbumsPage({ initialLimit = 50 }: AlbumsPageProps) {
   const [limit] = useState(initialLimit);
-  const [offset, setOffset] = useState(0);
+  // Offset lives in the URL (`?offset=N`) so the grid page is bookmarkable and
+  // restored when navigating back from album detail. Reads default to 0 and
+  // clamp negatives away; a 0 offset is left out of the URL to keep it clean.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const offset = Math.max(0, Number(searchParams.get("offset") ?? "0") || 0);
 
   const { data, isPending, isError, isFetching, refetch } = useAlbums({
     limit,
@@ -48,7 +52,18 @@ export function AlbumsPage({ initialLimit = 50 }: AlbumsPageProps) {
   // Reset scroll on page change so a new page starts from the top rather than
   // mid-scroll. Guarded for jsdom, which has no smooth-scroll behavior.
   function goToOffset(next: number) {
-    setOffset(next);
+    setSearchParams(
+      (prev) => {
+        const params = new URLSearchParams(prev);
+        if (next <= 0) {
+          params.delete("offset");
+        } else {
+          params.set("offset", String(next));
+        }
+        return params;
+      },
+      { replace: false },
+    );
     if (typeof window !== "undefined") {
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
@@ -192,12 +207,17 @@ function AlbumCard({ album }: { album: Album }) {
             {album.track_count} {album.track_count === 1 ? "track" : "tracks"}
           </span>
           {album.genre && (
-            <span
-              className="text-muted-foreground min-w-0 truncate text-sm"
-              title={album.genre}
-            >
-              &middot; {album.genre}
-            </span>
+            <>
+              <span className="text-muted-foreground text-sm" aria-hidden="true">
+                &middot;
+              </span>
+              <span
+                className="text-muted-foreground min-w-0 truncate text-sm"
+                title={album.genre}
+              >
+                {album.genre}
+              </span>
+            </>
           )}
         </CardContent>
       </Card>

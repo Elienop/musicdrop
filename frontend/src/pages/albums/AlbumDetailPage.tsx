@@ -32,7 +32,17 @@ function formatDuration(seconds: number | null): string {
 export function AlbumDetailPage() {
   const { albumId } = useParams<{ albumId: string }>();
   const id = Number(albumId);
-  const { data, isPending, isError, error, refetch } = useAlbum(id);
+  // A non-numeric id (e.g. /albums/abc) would make the backend return 422, not
+  // 404 — which falls through to the generic error + retry loop. Treat it as
+  // not-found up front and skip the doomed fetch entirely.
+  const validId = Number.isInteger(id);
+  const { data, isPending, isError, error, refetch } = useAlbum(id, {
+    enabled: validId,
+  });
+
+  if (!validId) {
+    return <NotFoundState />;
+  }
 
   if (isPending) {
     return <DetailSkeleton />;
@@ -61,7 +71,6 @@ function BackLink() {
 }
 
 function AlbumDetailView({ album }: { album: AlbumDetail }) {
-  const multiDisc = new Set(album.tracks.map((t) => t.disc)).size > 1;
   // Group by disc preserving the API's disc-then-track order. Tracks already
   // arrive sorted, so a single pass that opens a new group on disc change is
   // enough — no re-sorting needed.
@@ -74,15 +83,26 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
       current.tracks.push(track);
     }
   }
+  // Multi-disc when the tracks split into more than one disc group. Untagged
+  // tracks arrive as disc 0 and form their own group — they still count toward
+  // "this album has multiple discs" but never get a "Disc 0" header (that's
+  // gated on `group.disc > 0` at render).
+  const multiDisc = discs.length > 1;
 
   return (
-    <article className="flex flex-col gap-8">
+    <article
+      className="flex flex-col gap-8"
+      aria-labelledby="album-detail-title"
+    >
       <BackLink />
 
-      <header className="flex flex-col gap-6 sm:flex-row sm:items-end">
+      <header className="flex flex-col gap-6 sm:flex-row sm:items-center">
         <CoverImage album={album} />
         <div className="flex min-w-0 flex-col gap-2">
-          <h2 className="text-3xl font-semibold tracking-tight">
+          <h2
+            id="album-detail-title"
+            className="text-3xl font-semibold tracking-tight"
+          >
             {album.title}
           </h2>
           <p className="text-muted-foreground text-lg">{album.album_artist}</p>
@@ -109,22 +129,25 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="w-12 text-right">#</TableHead>
+              <TableHead className="w-12 pr-4 text-right">#</TableHead>
               <TableHead>Title</TableHead>
               <TableHead className="w-20 text-right">Length</TableHead>
             </TableRow>
           </TableHeader>
           {discs.map((group) => (
             <Fragment key={group.disc}>
-              {multiDisc && (
+              {multiDisc && group.disc > 0 && (
                 <TableBody>
                   <TableRow className="hover:bg-transparent">
-                    <TableCell
+                    {/* scope="rowgroup" so assistive tech announces this as the
+                        heading for the following disc's rows. */}
+                    <TableHead
+                      scope="rowgroup"
                       colSpan={3}
-                      className="text-muted-foreground pt-6 text-xs font-medium tracking-wide uppercase"
+                      className="text-muted-foreground h-auto pt-6 text-xs font-medium tracking-wide uppercase"
                     >
                       Disc {group.disc}
-                    </TableCell>
+                    </TableHead>
                   </TableRow>
                 </TableBody>
               )}
@@ -155,8 +178,10 @@ function TrackRow({
   const showArtist = track.artist !== albumArtist;
   return (
     <TableRow>
-      <TableCell className="text-muted-foreground text-right tabular-nums">
-        {track.track}
+      <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+        {/* Untagged track number comes through as 0 — show an en-dash instead,
+            matching the duration fallback. */}
+        {track.track || "–"}
       </TableCell>
       <TableCell>
         <div className="flex min-w-0 flex-col">
@@ -179,19 +204,21 @@ function TrackRow({
  * Larger header cover backed by `GET /api/albums/{id}/cover`. Mirrors the grid
  * card's fallback: a 404 or decode failure flips to a music-note placeholder of
  * the same dimensions so the header never shows a broken image.
+ *
+ * Decorative (`alt=""` / `aria-hidden`) — the adjacent `<h2>` already names the
+ * album, so a descriptive alt would have screen readers announce the title
+ * twice.
  */
 function CoverImage({ album }: { album: AlbumDetail }) {
   const [failed, setFailed] = useState(false);
-  const alt = `${album.title} cover`;
 
   if (failed) {
     return (
       <div
         className="bg-muted flex size-40 shrink-0 items-center justify-center rounded-xl"
-        role="img"
-        aria-label={`${alt} unavailable`}
+        aria-hidden="true"
       >
-        <Music className="text-muted-foreground size-12" aria-hidden="true" />
+        <Music className="text-muted-foreground size-12" />
       </div>
     );
   }
@@ -199,7 +226,7 @@ function CoverImage({ album }: { album: AlbumDetail }) {
   return (
     <img
       src={`/api/albums/${album.id}/cover`}
-      alt={alt}
+      alt=""
       loading="lazy"
       onError={() => setFailed(true)}
       className="bg-muted size-40 shrink-0 rounded-xl object-cover shadow-sm"
@@ -210,22 +237,31 @@ function CoverImage({ album }: { album: AlbumDetail }) {
 function DetailSkeleton() {
   return (
     <div className="flex flex-col gap-8" aria-hidden="true">
+      {/* Matches the BackLink button height. */}
       <Skeleton className="h-8 w-32" />
-      <div className="flex flex-col gap-6 sm:flex-row sm:items-end">
+      {/* sm:items-center + gap-2 mirror the loaded header to minimize CLS. */}
+      <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
         <Skeleton className="size-40 shrink-0 rounded-xl" />
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-2">
           <Skeleton className="h-9 w-64" />
           <Skeleton className="h-6 w-40" />
           <Skeleton className="h-5 w-48" />
         </div>
       </div>
       <Separator />
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-2">
+        {/* Table header row (#, Title, Length). */}
+        <div className="flex items-center gap-4 pb-2">
+          <Skeleton className="h-4 w-8 shrink-0" />
+          <Skeleton className="h-4 w-16" />
+          <Skeleton className="ml-auto h-4 w-12 shrink-0" />
+        </div>
+        {/* Track rows — taller to match the two-line-capable real rows. */}
         {Array.from({ length: 8 }, (_, i) => (
-          <div key={i} className="flex items-center gap-4">
-            <Skeleton className="size-5 shrink-0" />
+          <div key={i} className="flex items-center gap-4 py-1">
+            <Skeleton className="h-5 w-8 shrink-0" />
             <Skeleton className="h-5 flex-1" />
-            <Skeleton className="h-5 w-12 shrink-0" />
+            <Skeleton className="ml-auto h-5 w-12 shrink-0" />
           </div>
         ))}
       </div>
