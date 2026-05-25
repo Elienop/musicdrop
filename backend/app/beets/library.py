@@ -8,12 +8,14 @@ global config singletons, and version quirks stay isolated here.
 import os
 from typing import Any
 
+from beets.dbcore.query import ParsingError
 from beets.library import Album as BeetsAlbum
 from beets.library import Library
 from mediafile import MediaFile
 
 from app.models.album import Album, AlbumDetail, Track
 from app.models.artist import Artist
+from app.models.search import SearchResults, SearchTrack
 
 # Allowlist of cover-art extensions we serve. `.svg` is deliberately excluded:
 # serving user-controlled SVG (even via <img>) is an XSS footgun, not worth it.
@@ -168,6 +170,70 @@ def list_artists(lib: LibraryHandle) -> list[Artist]:
     artists = [Artist(name=name, album_count=count) for name, count in counts.items()]
     artists.sort(key=lambda a: a.name.casefold())
     return artists
+
+
+def _to_search_track(item: Any) -> SearchTrack:
+    return SearchTrack(
+        id=int(item.id),
+        title=_coerce_str(item.title),
+        artist=_coerce_str(item.artist),
+        album=_coerce_str(item.album),
+        # Singletons (tracks beets has not grouped into an album) carry a falsy
+        # album_id; surface them as None so the FE knows there is no album page.
+        album_id=int(item.album_id) if item.album_id else None,
+        duration_seconds=_coerce_duration(item.length),
+    )
+
+
+def search(lib: LibraryHandle, *, query: str, limit: int) -> SearchResults:
+    """Search the library across tracks, albums, and artists for a free-text term.
+
+    ``query`` is handed to beets' query parser for tracks and albums (matching
+    substrings across fields); artists are filtered with a case-insensitive
+    substring match on the derived roster, since beets has no artist entity.
+
+    A blank/whitespace query short-circuits to empty results with no beets call.
+    Each beets query is wrapped so a malformed term (parse error) degrades to no
+    results for that entity instead of surfacing as a 500.
+    """
+    if not query.strip():
+        return SearchResults(
+            artists=[], albums=[], tracks=[], artist_total=0, album_total=0, track_total=0
+        )
+
+    # Tracks: beets free-text query. A malformed query raises ParsingError
+    # (an InvalidQueryError/ValueError subclass) from the parser; catch it so a
+    # bad term yields no tracks rather than a 500.
+    try:
+        all_items = list(lib.items(query))
+    except ParsingError:
+        all_items = []
+    track_total = len(all_items)
+    tracks = [_to_search_track(item) for item in all_items[:limit]]
+
+    # Albums: same free-text query, mapped through the shared _to_album.
+    try:
+        all_album_matches = list(lib.albums(query))
+    except ParsingError:
+        all_album_matches = []
+    album_total = len(all_album_matches)
+    albums = [_to_album(album) for album in all_album_matches[:limit]]
+
+    # Artists: no beets query entity, so filter the derived roster by a
+    # case-insensitive substring match on the name.
+    needle = query.casefold()
+    artist_matches = [a for a in list_artists(lib) if needle in a.name.casefold()]
+    artist_total = len(artist_matches)
+    artists = artist_matches[:limit]
+
+    return SearchResults(
+        artists=artists,
+        albums=albums,
+        tracks=tracks,
+        artist_total=artist_total,
+        album_total=album_total,
+        track_total=track_total,
+    )
 
 
 def list_albums(
