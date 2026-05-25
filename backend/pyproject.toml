@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic-settings>=2.5",
     "beets>=2.11.0",
+    "httpx>=0.28.1",
 ]
 
 [project.optional-dependencies]
@@ -15,7 +16,7 @@ dev = [
     "mypy>=1.11",
     "ruff>=0.6",
     "pytest>=8.3",
-    "httpx>=0.27",
+    "respx>=0.23.1",
 ]
 
 [tool.uv]
@@ -46,3 +47,6 @@ disallow_untyped_calls = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "anyio: run an async test under anyio (asyncio backend; see conftest).",
+]
