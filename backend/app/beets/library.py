@@ -110,11 +110,24 @@ def list_albums(lib: LibraryHandle, *, limit: int, offset: int) -> tuple[list[Al
     return [_to_album(a) for a in page], total
 
 
-def _cover_from_artpath(album: BeetsAlbum) -> tuple[bytes, str] | None:
+def _abs_path(lib: LibraryHandle, stored: bytes) -> str:
+    """Resolve a beets-stored file path to absolute.
+
+    beets stores ``item.path`` (and may store ``artpath``) relative to
+    ``lib.directory`` and resolves them against it. Always run a stored path
+    through this before touching the filesystem; absolute paths pass unchanged.
+    """
+    path = os.fsdecode(stored)
+    if os.path.isabs(path):
+        return path
+    return os.path.join(os.fsdecode(lib.directory), path)
+
+
+def _cover_from_artpath(lib: LibraryHandle, album: BeetsAlbum) -> tuple[bytes, str] | None:
     raw_path = album.get("artpath")
     if not raw_path:
         return None
-    path = os.fsdecode(raw_path)
+    path = _abs_path(lib, raw_path)
     if not os.path.isfile(path):
         return None
     mime = _EXTENSION_MIME.get(os.path.splitext(path)[1].lower())
@@ -124,11 +137,11 @@ def _cover_from_artpath(album: BeetsAlbum) -> tuple[bytes, str] | None:
         return fh.read(), mime
 
 
-def _cover_from_embedded(album: BeetsAlbum) -> tuple[bytes, str] | None:
+def _cover_from_embedded(lib: LibraryHandle, album: BeetsAlbum) -> tuple[bytes, str] | None:
     items = list(album.items())
     if not items:
         return None
-    track_path = os.fsdecode(items[0].path)
+    track_path = _abs_path(lib, items[0].path)
     if not os.path.isfile(track_path):
         return None
     images = MediaFile(track_path).images
@@ -149,4 +162,4 @@ def get_album_cover(lib: LibraryHandle, album_id: int) -> tuple[bytes, str] | No
     album = lib.get_album(album_id)
     if album is None:
         return None
-    return _cover_from_artpath(album) or _cover_from_embedded(album)
+    return _cover_from_artpath(lib, album) or _cover_from_embedded(lib, album)

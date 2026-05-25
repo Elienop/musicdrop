@@ -180,6 +180,19 @@ def test_album_cover_without_art_returns_404(client: TestClient, temp_library: L
     assert resp.status_code == 404
 
 
+def test_abs_path_resolves_relative_against_directory(temp_library: Library) -> None:
+    # beets stores file paths relative to lib.directory; _abs_path must join a
+    # relative stored path with directory and leave an absolute path untouched.
+    from app.beets.library import _abs_path
+
+    directory = os.fsdecode(temp_library.directory)
+    relative = _abs_path(temp_library, os.fsencode(os.path.join("Artist", "Album", "t.flac")))
+    assert relative == os.path.join(directory, "Artist", "Album", "t.flac")
+
+    already_abs = os.path.join(directory, "x.flac")
+    assert _abs_path(temp_library, os.fsencode(already_abs)) == already_abs
+
+
 def test_album_cover_missing_album_returns_404(client: TestClient) -> None:
     resp = client.get("/api/albums/999999/cover")
     assert resp.status_code == 404
