@@ -1,4 +1,5 @@
 import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, test } from "vitest";
 
@@ -42,6 +43,15 @@ function makePage(overrides: Partial<AlbumPage> = {}): AlbumPage {
 function renderAt(artistName: string) {
   return renderWithProviders(<ArtistAlbumsPage />, {
     route: `/artists/${artistName}`,
+    path: "/artists/:artistName",
+  });
+}
+
+/** Render at an explicit route (e.g. with a `?offset=` query) under the same
+ * `/artists/:artistName` pattern. */
+function renderAtRoute(route: string) {
+  return renderWithProviders(<ArtistAlbumsPage />, {
+    route,
     path: "/artists/:artistName",
   });
 }
@@ -139,6 +149,66 @@ describe("ArtistAlbumsPage", () => {
     const back = screen.getAllByRole("link", { name: /artists/i });
     expect(back.length).toBeGreaterThan(0);
     expect(back[0]).toHaveAttribute("href", "/");
+  });
+
+  test("distinguishes an out-of-range page from a genuinely empty artist", async () => {
+    // The artist HAS albums (total > 0), but this offset is past the end so the
+    // page is empty. Must NOT claim "No albums for {artist}".
+    server.use(
+      http.get(ALBUMS_URL, () =>
+        HttpResponse.json(makePage({ items: [], total: 5, offset: 999 })),
+      ),
+    );
+
+    renderAtRoute("/artists/Radiohead?offset=999");
+
+    expect(await screen.findByText(/nothing on this page/i)).toBeInTheDocument();
+    // The misleading "no albums for this artist" copy must NOT appear.
+    expect(
+      screen.queryByText(/no albums for radiohead/i),
+    ).not.toBeInTheDocument();
+    // An escape back to the first page exists.
+    expect(
+      screen.getByRole("button", { name: /first page/i }),
+    ).toBeInTheDocument();
+  });
+
+  test("the first-page escape clears the offset", async () => {
+    server.use(
+      http.get(ALBUMS_URL, ({ request }) => {
+        const offset = Number(
+          new URL(request.url).searchParams.get("offset") ?? "0",
+        );
+        // Past-the-end at 999; first page (offset 0) has real albums.
+        if (offset > 0) {
+          return HttpResponse.json(makePage({ items: [], total: 5, offset }));
+        }
+        return HttpResponse.json(makePage({ total: 5 }));
+      }),
+    );
+
+    renderAtRoute("/artists/Radiohead?offset=999");
+
+    await screen.findByText(/nothing on this page/i);
+    await userEvent.click(
+      screen.getByRole("button", { name: /first page/i }),
+    );
+
+    // Clearing the offset re-runs the query at the first page, which has albums.
+    expect(await screen.findByText("OK Computer")).toBeInTheDocument();
+    expect(screen.queryByText(/nothing on this page/i)).not.toBeInTheDocument();
+  });
+
+  test("does not crash on a malformed (un-decodable) artist param", async () => {
+    server.use(
+      http.get(ALBUMS_URL, () =>
+        HttpResponse.json(makePage({ items: [], total: 0 })),
+      ),
+    );
+
+    // A lone "%" is not valid percent-encoding; decodeURIComponent throws on it.
+    // The page must fall back gracefully rather than crash.
+    expect(() => renderAtRoute("/artists/%25")).not.toThrow();
   });
 
   test("shows an error state with a retry on a 500", async () => {

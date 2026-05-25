@@ -94,7 +94,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
         <div className="flex min-w-0 flex-col gap-2">
           <h2
             id="album-detail-title"
-            className="text-3xl font-semibold tracking-tight"
+            className="text-3xl font-semibold tracking-tight break-words"
           >
             {album.title}
           </h2>

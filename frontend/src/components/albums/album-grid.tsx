@@ -1,4 +1,4 @@
-import { AlertCircle, ChevronLeft, Disc3, Music } from "lucide-react";
+import { AlertCircle, ChevronLeft, Music } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router";
 
@@ -25,10 +25,13 @@ export const GRID_CLASS =
  */
 export function BackLink({ to, label }: { to: string; label: string }) {
   return (
-    <Button variant="ghost" size="sm" className="-ml-2 w-fit" asChild>
-      <Link to={to}>
-        <ChevronLeft />
-        {label}
+    // `max-w-full` lets the button shrink within its container; the chevron
+    // stays fixed (`shrink-0`) while a long label truncates rather than forcing
+    // horizontal page scroll on mobile. `title` exposes the full name on hover.
+    <Button variant="ghost" size="sm" className="-ml-2 w-fit max-w-full" asChild>
+      <Link to={to} title={label}>
+        <ChevronLeft className="shrink-0" />
+        <span className="truncate">{label}</span>
       </Link>
     </Button>
   );
@@ -134,22 +137,6 @@ export function AlbumsGridSkeleton({ count }: { count: number }) {
         </li>
       ))}
     </ul>
-  );
-}
-
-/** Generic "library is empty" state (no albums at all anywhere). */
-export function EmptyState() {
-  return (
-    <div className="border-border flex flex-col items-center gap-3 rounded-xl border border-dashed py-16 text-center">
-      <Disc3 className="text-muted-foreground size-10" aria-hidden="true" />
-      <div className="flex flex-col gap-1">
-        <p className="font-medium">No albums yet</p>
-        <p className="text-muted-foreground text-sm">
-          Your beets library is empty. Import some music and it&rsquo;ll show
-          up here.
-        </p>
-      </div>
-    </div>
   );
 }
 

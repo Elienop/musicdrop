@@ -18,12 +18,23 @@ interface ArtistAlbumsPageProps {
   initialLimit?: number;
 }
 
+/** `decodeURIComponent` throws `URIError` on malformed input (e.g. a lone "%").
+ * Fall back to the raw param so a bad URL renders gracefully rather than
+ * crashing the page. */
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
   const [limit] = useState(initialLimit);
   // The artist is fixed by the ROUTE (`/artists/:artistName`), so a different
   // artist is a fresh mount — no in-place filter-change/offset-reset effect.
   const { artistName } = useParams<{ artistName: string }>();
-  const artist = decodeURIComponent(artistName ?? "");
+  const artist = safeDecode(artistName ?? "");
 
   // Offset lives in the URL (`?offset=N`) so the grid page is bookmarkable and
   // restored when navigating back from album detail.
@@ -90,7 +101,14 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
       ) : isError ? (
         <ErrorState onRetry={() => void refetch()} />
       ) : data.items.length === 0 ? (
-        <ArtistEmptyState artist={artist} />
+        // total === 0: the artist genuinely has no albums. total > 0 with an
+        // empty page means the offset is past the end (stale/hand-crafted URL)
+        // — the artist DOES have albums, so don't claim otherwise.
+        total === 0 ? (
+          <ArtistEmptyState artist={artist} />
+        ) : (
+          <OutOfRangePage onFirstPage={() => goToOffset(0)} />
+        )
       ) : (
         <>
           <ul
@@ -146,6 +164,25 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
         </>
       )}
     </section>
+  );
+}
+
+/** Shown when `?offset=` points past the end of an artist that DOES have
+ * albums. Offers a one-click return to the first page. */
+function OutOfRangePage({ onFirstPage }: { onFirstPage: () => void }) {
+  return (
+    <div className="border-border flex flex-col items-center gap-3 rounded-xl border border-dashed py-16 text-center">
+      <Disc3 className="text-muted-foreground size-10" aria-hidden="true" />
+      <div className="flex flex-col gap-1">
+        <p className="font-medium">Nothing on this page</p>
+        <p className="text-muted-foreground text-sm">
+          This page is past the end of the list.
+        </p>
+      </div>
+      <Button variant="outline" size="sm" onClick={onFirstPage}>
+        Back to first page
+      </Button>
+    </div>
   );
 }
 
