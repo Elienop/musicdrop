@@ -257,6 +257,55 @@ def test_album_detail_returns_album_with_sorted_tracklist(
     assert tracks[3]["artist"] == "Daft Punk feat. X"
 
 
+def test_albums_filtered_by_artist(client: TestClient) -> None:
+    # ?artist=ABBA returns only ABBA's albums; total reflects the filtered count.
+    resp = client.get("/api/albums?artist=ABBA")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert len(body["items"]) == 1
+    assert body["items"][0]["album_artist"] == "ABBA"
+    assert body["items"][0]["title"] == "Arrival"
+
+
+def test_albums_filter_is_exact_match(client: TestClient) -> None:
+    # Exact match only: a substring/casefold variant matches nothing.
+    assert client.get("/api/albums?artist=abba").json()["total"] == 0
+    assert client.get("/api/albums?artist=AB").json()["total"] == 0
+
+
+def test_albums_filter_paginates_over_filtered_set(
+    client: TestClient, temp_library: Library
+) -> None:
+    # Give ABBA a second album so the filtered set has >1 entry, then paginate it.
+    directory = Path(os.fsdecode(temp_library.directory))
+    second = temp_library.add_album(
+        [
+            _make_item(
+                directory,
+                album="Voulez-Vous",
+                albumartist="ABBA",
+                year=1979,
+                genre="Pop",
+                title="Voulez-Vous",
+                track=1,
+            )
+        ]
+    )
+    second["genre"] = "Pop"
+    second.store()
+
+    page1 = client.get("/api/albums?artist=ABBA&limit=1&offset=0").json()
+    assert page1["total"] == 2
+    assert len(page1["items"]) == 1
+    assert page1["items"][0]["title"] == "Arrival"
+
+    page2 = client.get("/api/albums?artist=ABBA&limit=1&offset=1").json()
+    assert page2["total"] == 2
+    assert len(page2["items"]) == 1
+    assert page2["items"][0]["title"] == "Voulez-Vous"
+
+
 def test_album_detail_missing_album_returns_404(client: TestClient) -> None:
     resp = client.get("/api/albums/999999")
     assert resp.status_code == 404
