@@ -56,6 +56,24 @@ describe("AlbumsPage", () => {
     expect(screen.getByText(/2 albums/i)).toBeInTheDocument();
   });
 
+  test("wraps each card in a link to its detail page", async () => {
+    server.use(http.get(ALBUMS_URL, () => HttpResponse.json(makePage())));
+
+    renderWithProviders(<AlbumsPage />);
+
+    await screen.findByText("OK Computer");
+
+    // Whole card is a single accessible link, named by the album, pointing at
+    // the detail route.
+    const ok = screen.getByRole("link", { name: /OK Computer/i });
+    expect(ok).toHaveAttribute("href", "/albums/1");
+
+    const ambient = screen.getByRole("link", {
+      name: /Selected Ambient Works 85-92/i,
+    });
+    expect(ambient).toHaveAttribute("href", "/albums/2");
+  });
+
   test("renders a cover image per album with the right /cover src", async () => {
     server.use(http.get(ALBUMS_URL, () => HttpResponse.json(makePage())));
 

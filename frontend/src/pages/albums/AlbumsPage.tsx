@@ -7,6 +7,7 @@ import {
   Music,
 } from "lucide-react";
 import { useState } from "react";
+import { Link } from "react-router";
 
 import type { Album } from "@/api/useAlbums";
 import { useAlbums } from "@/api/useAlbums";
@@ -166,33 +167,41 @@ function CoverImage({ album }: { album: Album }) {
 
 function AlbumCard({ album }: { album: Album }) {
   return (
-    <Card className="h-full gap-3 overflow-hidden py-0 pb-4">
-      <CoverImage album={album} />
-      <CardHeader className="px-4 pt-3">
-        <CardTitle className="truncate" title={album.title}>
-          {album.title}
-        </CardTitle>
-        <CardDescription className="truncate" title={album.album_artist}>
-          {album.album_artist}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-wrap items-center gap-2 px-4">
-        {album.year !== null && (
-          <Badge variant="secondary">{album.year}</Badge>
-        )}
-        <span className="text-muted-foreground text-sm">
-          {album.track_count} {album.track_count === 1 ? "track" : "tracks"}
-        </span>
-        {album.genre && (
-          <span
-            className="text-muted-foreground min-w-0 truncate text-sm"
-            title={album.genre}
-          >
-            &middot; {album.genre}
+    // Whole-card link: a real <a> (not a div+onClick) so it's keyboard- and
+    // screen-reader-navigable for free. The Card stays a plain wrapper. The
+    // link's accessible name is the card's text (title + artist + meta).
+    <Link
+      to={`/albums/${album.id}`}
+      className="focus-visible:ring-ring block h-full rounded-xl focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+    >
+      <Card className="hover:border-primary/50 h-full gap-3 overflow-hidden py-0 pb-4 transition-colors">
+        <CoverImage album={album} />
+        <CardHeader className="px-4 pt-3">
+          <CardTitle className="truncate" title={album.title}>
+            {album.title}
+          </CardTitle>
+          <CardDescription className="truncate" title={album.album_artist}>
+            {album.album_artist}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-center gap-2 px-4">
+          {album.year !== null && (
+            <Badge variant="secondary">{album.year}</Badge>
+          )}
+          <span className="text-muted-foreground text-sm">
+            {album.track_count} {album.track_count === 1 ? "track" : "tracks"}
           </span>
-        )}
-      </CardContent>
-    </Card>
+          {album.genre && (
+            <span
+              className="text-muted-foreground min-w-0 truncate text-sm"
+              title={album.genre}
+            >
+              &middot; {album.genre}
+            </span>
+          )}
+        </CardContent>
+      </Card>
+    </Link>
   );
 }
 

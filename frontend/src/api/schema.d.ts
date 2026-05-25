@@ -38,6 +38,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/albums/{album_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Album Detail Endpoint */
+        get: operations["get_album_detail_endpoint_api_albums__album_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/albums/{album_id}/cover": {
         parameters: {
             query?: never;
@@ -74,6 +91,23 @@ export interface components {
             /** Genre */
             genre: string | null;
         };
+        /** AlbumDetail */
+        AlbumDetail: {
+            /** Id */
+            id: number;
+            /** Album Artist */
+            album_artist: string;
+            /** Title */
+            title: string;
+            /** Year */
+            year: number | null;
+            /** Track Count */
+            track_count: number;
+            /** Genre */
+            genre: string | null;
+            /** Tracks */
+            tracks: components["schemas"]["Track"][];
+        };
         /** AlbumPage */
         AlbumPage: {
             /** Items */
@@ -96,6 +130,21 @@ export interface components {
             status: string;
             /** Version */
             version: string;
+        };
+        /** Track */
+        Track: {
+            /** Id */
+            id: number;
+            /** Title */
+            title: string;
+            /** Track */
+            track: number;
+            /** Disc */
+            disc: number;
+            /** Duration Seconds */
+            duration_seconds: number | null;
+            /** Artist */
+            artist: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -158,6 +207,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AlbumPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_album_detail_endpoint_api_albums__album_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                album_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlbumDetail"];
                 };
             };
             /** @description Validation Error */
