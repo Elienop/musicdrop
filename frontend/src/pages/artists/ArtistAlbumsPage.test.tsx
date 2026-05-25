@@ -84,6 +84,18 @@ describe("ArtistAlbumsPage", () => {
     ).toBeInTheDocument();
   });
 
+  test("renders the artist poster in the header", async () => {
+    server.use(http.get(ALBUMS_URL, () => HttpResponse.json(makePage())));
+
+    renderAt("Radiohead");
+
+    const poster = await screen.findByAltText("Radiohead");
+    expect(poster).toHaveAttribute(
+      "src",
+      "/api/artists/image?name=Radiohead",
+    );
+  });
+
   test("decodes a URL-encoded artist name from the route", async () => {
     let seenArtist: string | null = null;
     server.use(

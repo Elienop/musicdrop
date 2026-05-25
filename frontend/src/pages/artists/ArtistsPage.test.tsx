@@ -52,6 +52,25 @@ describe("ArtistsPage", () => {
     );
   });
 
+  test("each card shows a poster image pointing at the artist-image endpoint", async () => {
+    server.use(http.get(ARTISTS_URL, () => HttpResponse.json(ROSTER)));
+
+    renderWithProviders(<ArtistsPage />);
+
+    const poster = await screen.findByAltText("Radiohead");
+    expect(poster).toHaveAttribute(
+      "src",
+      "/api/artists/image?name=Radiohead",
+    );
+    expect(poster).toHaveAttribute("loading", "lazy");
+
+    // Encoded for non-ASCII names.
+    expect(screen.getByAltText("Sigur Rós")).toHaveAttribute(
+      "src",
+      `/api/artists/image?name=${encodeURIComponent("Sigur Rós")}`,
+    );
+  });
+
   test("shows a loading skeleton before data arrives", () => {
     // Never-resolving handler so the page stays in its pending state.
     server.use(
