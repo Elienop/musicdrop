@@ -8,11 +8,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-SOURCE_ROOT="/mnt/data/projects/MusicDrop-old/Volumetest/fresh"
+# SOURCE_ROOT is overridable; defaults to the old repo's sample music.
+SOURCE_ROOT="${SOURCE_ROOT:-/mnt/data/projects/MusicDrop-old/Volumetest/fresh}"
 MUSIC_DIR="${REPO_ROOT}/data/music"
 BEETS_DIR="${REPO_ROOT}/data/beets"
 CONFIG_PATH="${BEETS_DIR}/config.yaml"
 LIBRARY_PATH="${BEETS_DIR}/library.db"
+
+if [[ ! -d "${SOURCE_ROOT}" ]]; then
+  echo "SOURCE_ROOT does not exist: ${SOURCE_ROOT}" >&2
+  echo "Set SOURCE_ROOT to a directory of <artist>/<album>/ folders and re-run." >&2
+  exit 0
+fi
 
 ALBUMS=(
   "ABBA/Arrival"

@@ -5,19 +5,31 @@ this file works in terms of our own Pydantic models, so beets' untyped surface,
 global config singletons, and version quirks stay isolated here.
 """
 
+from typing import Any
+
 from beets.library import Album as BeetsAlbum
 from beets.library import Library
 
 from app.models.album import Album
 
+# Public handle type for the opened beets library. Callers outside this module
+# annotate with LibraryHandle so they never need to import beets themselves,
+# keeping the adapter the sole beets importer (CLAUDE.md rule 3).
+LibraryHandle = Library
 
-def open_library(library_path: str, directory: str | None = None) -> Library:
+
+def open_library(library_path: str, directory: str | None = None) -> LibraryHandle:
     """Open a beets library database at ``library_path``.
 
     ``directory`` is the music root beets indexed; it is optional for read-only
     access but kept for parity with how beets opens a library.
     """
     return Library(library_path, directory=directory)
+
+
+def close_library(lib: LibraryHandle) -> None:
+    """Close the beets library's underlying SQLite connection."""
+    lib._close()
 
 
 def _coerce_str(value: object) -> str:
@@ -41,12 +53,16 @@ def _coerce_year(value: object) -> int | None:
     return year or None
 
 
-def _album_genre(album: BeetsAlbum) -> str | None:
-    """Read album-level genre, falling back to the first track's genre."""
+def _album_genre(album: BeetsAlbum, items: list[Any]) -> str | None:
+    """Read album-level genre, falling back to the album's tracks.
+
+    Heuristic: the first track with a non-empty genre wins (not a mode/majority
+    vote). Items are passed in so we don't re-fetch them from the database.
+    """
     genre = _coerce_optional_str(album.get("genre"))
     if genre is not None:
         return genre
-    for item in album.items():
+    for item in items:
         item_genre = _coerce_optional_str(item.get("genre"))
         if item_genre is not None:
             return item_genre
@@ -54,17 +70,18 @@ def _album_genre(album: BeetsAlbum) -> str | None:
 
 
 def _to_album(album: BeetsAlbum) -> Album:
+    items = list(album.items())
     return Album(
         id=int(album.id),
         album_artist=_coerce_str(album.albumartist),
         title=_coerce_str(album.album),
         year=_coerce_year(album.year),
-        track_count=len(list(album.items())),
-        genre=_album_genre(album),
+        track_count=len(items),
+        genre=_album_genre(album, items),
     )
 
 
-def list_albums(lib: Library, *, limit: int, offset: int) -> tuple[list[Album], int]:
+def list_albums(lib: LibraryHandle, *, limit: int, offset: int) -> tuple[list[Album], int]:
     """Return a page of albums mapped to our Pydantic model plus the total count.
 
     Albums are sorted stably by album artist then album title (case-insensitive),

@@ -1,34 +1,29 @@
-import os
 from typing import Annotated
 
-from beets.library import Library
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
-from app.beets.library import list_albums, open_library
-from app.config import settings
+from app.beets.library import LibraryHandle, list_albums
 from app.models.album import Album, AlbumPage
 
 router = APIRouter(tags=["albums"])
 
 
-def get_library() -> Library | None:
-    """Resolve the beets library from settings.
+def get_library(request: Request) -> LibraryHandle | None:
+    """Return the process-wide beets library opened at startup (or None).
 
-    Returns ``None`` when no library path is configured or the file is missing,
-    so the endpoint can degrade to an empty page instead of crashing. Overridden
-    in tests to inject a hermetic temp library.
+    The library is resolved once in the app lifespan and stored on
+    ``app.state.beets_library`` — no per-request open. Overridden in tests to
+    inject a hermetic temp library (the override bypasses app.state entirely).
     """
-    path = settings.beets_library_path
-    if not path or not os.path.exists(path):
-        return None
-    return open_library(path, settings.beets_library_directory)
+    lib: LibraryHandle | None = getattr(request.app.state, "beets_library", None)
+    return lib
 
 
 @router.get("/albums", response_model=AlbumPage)
 async def list_albums_endpoint(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
-    lib: Annotated[Library | None, Depends(get_library)] = None,
+    lib: Annotated[LibraryHandle | None, Depends(get_library)] = None,
 ) -> AlbumPage:
     if lib is None:
         return AlbumPage(items=[], total=0, limit=limit, offset=offset)

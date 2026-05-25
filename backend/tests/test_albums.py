@@ -7,6 +7,7 @@ from beets.library import Item, Library
 from fastapi.testclient import TestClient
 
 from app.api.albums import get_library
+from app.config import settings
 from app.main import app
 
 
@@ -140,3 +141,39 @@ def test_missing_library_returns_empty_page() -> None:
     body = resp.json()
     assert body["total"] == 0
     assert body["items"] == []
+
+
+def test_lifespan_opens_library_from_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Build a real library on disk, point settings at it, and confirm the
+    # startup lifespan opens it onto app.state so get_library serves it WITHOUT
+    # any dependency override or per-request open.
+    db_path = tmp_path / "library.db"
+    lib = Library(str(db_path), directory=str(tmp_path))
+    lib.add_album(
+        [
+            _make_item(
+                tmp_path,
+                album="Arrival",
+                albumartist="ABBA",
+                year=1976,
+                genre="Pop",
+                title="SOS",
+                track=1,
+            )
+        ]
+    )
+    lib._close()
+
+    monkeypatch.setattr(settings, "beets_library_path", str(db_path))
+    monkeypatch.setattr(settings, "beets_library_directory", str(tmp_path))
+
+    app.dependency_overrides.clear()
+    with TestClient(app) as client:  # context-manager form runs the lifespan
+        assert app.state.beets_library is not None
+        resp = client.get("/api/albums")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["album_artist"] == "ABBA"
