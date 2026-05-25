@@ -69,7 +69,12 @@ describe("AlbumDetailPage", () => {
     expect(
       await screen.findByRole("heading", { name: "OK Computer" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Radiohead")).toBeInTheDocument();
+    // "Radiohead" appears twice now (back link + header sub-line); the header
+    // sub-line is the <p>, distinct from the back <a>.
+    const artistLine = screen
+      .getAllByText("Radiohead")
+      .find((el) => el.tagName === "P");
+    expect(artistLine).toBeInTheDocument();
     expect(screen.getByText("1997")).toBeInTheDocument();
     expect(screen.getByText(/3 tracks/i)).toBeInTheDocument();
     expect(screen.getByText("Alternative Rock")).toBeInTheDocument();
@@ -176,8 +181,12 @@ describe("AlbumDetailPage", () => {
     // Matching artist is not echoed as a per-track artist within the row.
     const sameRow = screen.getByText("Same").closest("tr") as HTMLElement;
     expect(within(sameRow).queryByText("Various Artists")).not.toBeInTheDocument();
-    // The album artist still appears exactly once — in the header.
-    expect(screen.getAllByText("Various Artists")).toHaveLength(1);
+    // The album artist appears outside the tracklist only (header sub-line +
+    // back link) — never inside a track row.
+    const occurrences = screen.getAllByText("Various Artists");
+    expect(
+      occurrences.every((el) => el.closest("tr") === null),
+    ).toBe(true);
   });
 
   test("labels discs when the album spans multiple discs", async () => {
@@ -219,10 +228,9 @@ describe("AlbumDetailPage", () => {
     renderDetail(999);
 
     expect(await screen.findByText(/album not found/i)).toBeInTheDocument();
-    // Back link to the library is present.
-    expect(
-      screen.getByRole("link", { name: /library/i }),
-    ).toBeInTheDocument();
+    // With no album data the artist is unknown, so back goes to the roster.
+    const back = screen.getByRole("link", { name: /artists/i });
+    expect(back).toHaveAttribute("href", "/");
   });
 
   test("shows not-found for a non-numeric id without hitting the API", async () => {
@@ -322,13 +330,43 @@ describe("AlbumDetailPage", () => {
     ).toBeInTheDocument();
   });
 
-  test("has a back link to the library", async () => {
+  test("has a contextual back link to the album's artist", async () => {
     server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
 
     renderDetail(1);
 
     await screen.findByRole("heading", { name: "OK Computer" });
-    const back = screen.getByRole("link", { name: /library|albums|back/i });
+    // Back walks UP the spine: to this album's artist page.
+    const back = screen.getByRole("link", { name: /radiohead/i });
+    expect(back).toHaveAttribute("href", "/artists/Radiohead");
+  });
+
+  test("encodes the artist name in the back link", async () => {
+    server.use(
+      http.get(DETAIL_URL, () =>
+        HttpResponse.json(makeDetail({ album_artist: "Sigur Rós" })),
+      ),
+    );
+
+    renderDetail(1);
+
+    await screen.findByRole("heading", { name: "OK Computer" });
+    const back = screen.getByRole("link", { name: /sigur rós/i });
+    expect(back).toHaveAttribute(
+      "href",
+      `/artists/${encodeURIComponent("Sigur Rós")}`,
+    );
+  });
+
+  test("error-state back link falls back to the roster", async () => {
+    server.use(
+      http.get(DETAIL_URL, () => new HttpResponse(null, { status: 500 })),
+    );
+
+    renderDetail(1);
+
+    await screen.findByText(/couldn.t load (this )?album/i);
+    const back = screen.getByRole("link", { name: /artists/i });
     expect(back).toHaveAttribute("href", "/");
   });
 });

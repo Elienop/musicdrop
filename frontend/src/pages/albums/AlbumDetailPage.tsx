@@ -1,9 +1,10 @@
-import { AlertCircle, ChevronLeft, Music } from "lucide-react";
+import { AlertCircle, Music } from "lucide-react";
 import { Fragment, useState } from "react";
 import { Link, useParams } from "react-router";
 
 import type { AlbumDetail, Track } from "@/api/useAlbum";
 import { AlbumNotFoundError, useAlbum } from "@/api/useAlbum";
+import { BackLink } from "@/components/albums/album-grid";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -58,18 +59,6 @@ export function AlbumDetailPage() {
   return <AlbumDetailView album={data} />;
 }
 
-/** Back-to-library link, shared across the loaded, error, and not-found views. */
-function BackLink() {
-  return (
-    <Button variant="ghost" size="sm" className="-ml-2 w-fit" asChild>
-      <Link to="/">
-        <ChevronLeft />
-        Back to library
-      </Link>
-    </Button>
-  );
-}
-
 function AlbumDetailView({ album }: { album: AlbumDetail }) {
   // Group by disc preserving the API's disc-then-track order. Tracks already
   // arrive sorted, so a single pass that opens a new group on disc change is
@@ -94,14 +83,18 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
       className="flex flex-col gap-8"
       aria-labelledby="album-detail-title"
     >
-      <BackLink />
+      {/* Back walks UP the spine to the album's artist page. */}
+      <BackLink
+        to={`/artists/${encodeURIComponent(album.album_artist)}`}
+        label={album.album_artist}
+      />
 
       <header className="flex flex-col gap-6 sm:flex-row sm:items-center">
         <CoverImage album={album} />
         <div className="flex min-w-0 flex-col gap-2">
           <h2
             id="album-detail-title"
-            className="text-3xl font-semibold tracking-tight"
+            className="text-3xl font-semibold tracking-tight break-words"
           >
             {album.title}
           </h2>
@@ -281,7 +274,9 @@ function NotFoundState() {
         </p>
       </div>
       <Button variant="outline" size="sm" asChild>
-        <Link to="/">Back to library</Link>
+        {/* No album data here, so the artist is unknown — fall back to the
+            roster rather than guessing a parent. */}
+        <Link to="/">Back to artists</Link>
       </Button>
     </div>
   );
@@ -290,7 +285,8 @@ function NotFoundState() {
 function ErrorState({ onRetry }: { onRetry: () => void }) {
   return (
     <div className="flex flex-col gap-6">
-      <BackLink />
+      {/* Artist unknown on error — fall back to the roster. */}
+      <BackLink to="/" label="Artists" />
       <div className="border-destructive/40 bg-destructive/5 flex flex-col items-center gap-3 rounded-xl border py-16 text-center">
         <AlertCircle className="text-destructive size-10" aria-hidden="true" />
         <div className="flex flex-col gap-1">

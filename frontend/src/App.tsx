@@ -69,7 +69,9 @@ export function HealthStatus() {
 
 /**
  * App shell: persistent header chrome wrapping the routed page via `<Outlet>`.
- * Feature routes (Albums grid, album detail) render into the outlet.
+ * The browse hierarchy is a single artist spine (roster -> artist -> album), so
+ * the header has no section tabs — just the brand (-> roster home) and the
+ * health status. Future nav (Search, Playlists, Settings) lands here later.
  */
 export function App() {
   return (

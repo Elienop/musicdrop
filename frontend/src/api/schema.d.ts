@@ -72,6 +72,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/artists": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Artists Endpoint */
+        get: operations["list_artists_endpoint_api_artists_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -118,6 +135,13 @@ export interface components {
             limit: number;
             /** Offset */
             offset: number;
+        };
+        /** Artist */
+        Artist: {
+            /** Name */
+            name: string;
+            /** Album Count */
+            album_count: number;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -193,6 +217,7 @@ export interface operations {
             query?: {
                 limit?: number;
                 offset?: number;
+                artist?: string | null;
             };
             header?: never;
             path?: never;
@@ -278,6 +303,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_artists_endpoint_api_artists_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Artist"][];
                 };
             };
         };

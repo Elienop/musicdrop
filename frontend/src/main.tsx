@@ -1,11 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { createBrowserRouter, RouterProvider } from "react-router";
+import { createBrowserRouter, Navigate, RouterProvider } from "react-router";
 
 import { App } from "@/App";
+import { NotFoundPage } from "@/pages/NotFoundPage";
 import { AlbumDetailPage } from "@/pages/albums/AlbumDetailPage";
-import { AlbumsPage } from "@/pages/albums/AlbumsPage";
+import { ArtistAlbumsPage } from "@/pages/artists/ArtistAlbumsPage";
+import { ArtistsPage } from "@/pages/artists/ArtistsPage";
 
 import "@/styles.css";
 
@@ -19,13 +21,25 @@ const queryClient = new QueryClient({
 
 // `App` is the persistent shell (header + <Outlet>); feature pages render into
 // it. Data router (`createBrowserRouter`) so future loaders/blockers have the
-// API available. The catch-all index falls back to the Albums grid.
+// API available.
+//
+// Single artist spine (the browse IA): the Artists roster is home, drilling
+// into an artist's albums, then into an album's tracklist. Back always walks
+// UP the hierarchy.
+//   /                  Artists roster (home)
+//    └ /artists/:name  that artist's albums
+//       └ /albums/:id  album tracklist
+// `/artists` (the bare parent) redirects to home so it isn't a dead end.
+// Unknown routes fall to a minimal NotFound, not a page.
 const router = createBrowserRouter([
   {
     element: <App />,
     children: [
+      { index: true, element: <ArtistsPage /> },
+      { path: "/artists", element: <Navigate to="/" replace /> },
+      { path: "/artists/:artistName", element: <ArtistAlbumsPage /> },
       { path: "/albums/:albumId", element: <AlbumDetailPage /> },
-      { path: "*", element: <AlbumsPage /> },
+      { path: "*", element: <NotFoundPage /> },
     ],
   },
 ]);

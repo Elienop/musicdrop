@@ -23,13 +23,14 @@ def get_library(request: Request) -> LibraryHandle | None:
 async def list_albums_endpoint(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
+    artist: Annotated[str | None, Query()] = None,
     lib: Annotated[LibraryHandle | None, Depends(get_library)] = None,
 ) -> AlbumPage:
     if lib is None:
         return AlbumPage(items=[], total=0, limit=limit, offset=offset)
 
     items: list[Album]
-    items, total = list_albums(lib, limit=limit, offset=offset)
+    items, total = list_albums(lib, limit=limit, offset=offset, artist=artist)
     return AlbumPage(items=items, total=total, limit=limit, offset=offset)
 
 

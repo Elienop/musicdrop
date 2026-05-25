@@ -13,6 +13,7 @@ from beets.library import Library
 from mediafile import MediaFile
 
 from app.models.album import Album, AlbumDetail, Track
+from app.models.artist import Artist
 
 # Allowlist of cover-art extensions we serve. `.svg` is deliberately excluded:
 # serving user-controlled SVG (even via <img>) is an XSS footgun, not worth it.
@@ -149,11 +150,35 @@ def get_album_detail(lib: LibraryHandle, album_id: int) -> AlbumDetail | None:
     return AlbumDetail(**_album_fields(album, items), tracks=tracks)
 
 
-def list_albums(lib: LibraryHandle, *, limit: int, offset: int) -> tuple[list[Album], int]:
+def list_artists(lib: LibraryHandle) -> list[Artist]:
+    """Return the artist roster: one entry per distinct ``albumartist``.
+
+    beets has no first-class artist entity, so we derive it by grouping albums
+    on ``albumartist`` and counting distinct albums per artist. Sorted by name
+    (case-insensitive) for a stable, readable roster.
+    """
+    counts: dict[str, int] = {}
+    for album in lib.albums():
+        name = _coerce_str(album.albumartist)
+        # _coerce_str does not strip, so a null/whitespace albumartist would
+        # emit a blank, nameless card; drop those albums from the roster.
+        if not name.strip():
+            continue
+        counts[name] = counts.get(name, 0) + 1
+    artists = [Artist(name=name, album_count=count) for name, count in counts.items()]
+    artists.sort(key=lambda a: a.name.casefold())
+    return artists
+
+
+def list_albums(
+    lib: LibraryHandle, *, limit: int, offset: int, artist: str | None = None
+) -> tuple[list[Album], int]:
     """Return a page of albums mapped to our Pydantic model plus the total count.
 
     Albums are sorted stably by album artist then album title (case-insensitive),
-    so pagination is deterministic regardless of beets' default sort.
+    so pagination is deterministic regardless of beets' default sort. When
+    ``artist`` is set, albums are filtered to that exact ``albumartist`` BEFORE
+    paginating, so ``total`` reflects the filtered count.
     """
     all_albums = sorted(
         lib.albums(),
@@ -163,6 +188,8 @@ def list_albums(lib: LibraryHandle, *, limit: int, offset: int) -> tuple[list[Al
             int(a.id),
         ),
     )
+    if artist is not None:
+        all_albums = [a for a in all_albums if _coerce_str(a.albumartist) == artist]
     total = len(all_albums)
     page = all_albums[offset : offset + limit]
     return [_to_album(a) for a in page], total
