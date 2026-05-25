@@ -34,7 +34,7 @@ describe("ArtistsPage", () => {
     expect(screen.getByText("7 albums")).toBeInTheDocument();
   });
 
-  test("links each artist to the album grid filtered by that artist", async () => {
+  test("links each artist to that artist's albums page", async () => {
     server.use(http.get(ARTISTS_URL, () => HttpResponse.json(ROSTER)));
 
     renderWithProviders(<ArtistsPage />);
@@ -42,13 +42,13 @@ describe("ArtistsPage", () => {
     await screen.findByText("Radiohead");
 
     const radiohead = screen.getByRole("link", { name: /Radiohead/i });
-    expect(radiohead).toHaveAttribute("href", "/?artist=Radiohead");
+    expect(radiohead).toHaveAttribute("href", "/artists/Radiohead");
 
-    // Names with spaces / non-ASCII must be percent-encoded.
+    // Names with spaces / non-ASCII must be percent-encoded into the path.
     const sigur = screen.getByRole("link", { name: /Sigur Rós/i });
     expect(sigur).toHaveAttribute(
       "href",
-      `/?artist=${encodeURIComponent("Sigur Rós")}`,
+      `/artists/${encodeURIComponent("Sigur Rós")}`,
     );
   });
 

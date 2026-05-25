@@ -5,12 +5,12 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { describe, expect, test } from "vitest";
 
 import { App, HealthStatus } from "@/App";
-import { AlbumsPage } from "@/pages/albums/AlbumsPage";
+import { ArtistsPage } from "@/pages/artists/ArtistsPage";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
 
 const HEALTH_URL = `${window.location.origin}/api/health`;
-const ALBUMS_URL = `${window.location.origin}/api/albums`;
+const ARTISTS_URL = `${window.location.origin}/api/artists`;
 
 describe("HealthStatus", () => {
   test("conveys a reachable backend with a non-color text label", async () => {
@@ -37,69 +37,70 @@ describe("HealthStatus", () => {
   });
 });
 
+/** Mount App shell with the roster in its <Outlet>, the way the router nests
+ * them. */
+function renderShell() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={["/"]}>
+        <Routes>
+          <Route element={<App />}>
+            <Route path="*" element={<ArtistsPage />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
 describe("App", () => {
-  test("renders the MusicDrop header and the albums page", async () => {
+  test("renders the MusicDrop header and the roster home", async () => {
     server.use(
       http.get(HEALTH_URL, () =>
         HttpResponse.json({ status: "ok", version: "0.1.0" }),
       ),
-      http.get(ALBUMS_URL, () =>
-        HttpResponse.json({ items: [], total: 0, limit: 50, offset: 0 }),
-      ),
+      http.get(ARTISTS_URL, () => HttpResponse.json([])),
     );
 
-    // App is the layout shell; the Albums grid renders into its <Outlet>, so
-    // mount them together the way the real router nests them.
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-    render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={["/"]}>
-          <Routes>
-            <Route element={<App />}>
-              <Route path="*" element={<AlbumsPage />} />
-            </Route>
-          </Routes>
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
+    renderShell();
 
     expect(
       screen.getByRole("heading", { level: 1, name: "MusicDrop" }),
     ).toBeInTheDocument();
-    expect(await screen.findByText(/no albums/i)).toBeInTheDocument();
+    expect(await screen.findByText(/no artists/i)).toBeInTheDocument();
   });
 
-  test("renders nav links to Albums and Artists", async () => {
+  test("the brand links to the roster home", async () => {
     server.use(
       http.get(HEALTH_URL, () =>
         HttpResponse.json({ status: "ok", version: "0.1.0" }),
       ),
-      http.get(ALBUMS_URL, () =>
-        HttpResponse.json({ items: [], total: 0, limit: 50, offset: 0 }),
+      http.get(ARTISTS_URL, () => HttpResponse.json([])),
+    );
+
+    renderShell();
+
+    const brand = screen.getByRole("link", { name: "MusicDrop" });
+    expect(brand).toHaveAttribute("href", "/");
+  });
+
+  test("has no Albums/Artists nav tabs (single spine)", async () => {
+    server.use(
+      http.get(HEALTH_URL, () =>
+        HttpResponse.json({ status: "ok", version: "0.1.0" }),
       ),
+      http.get(ARTISTS_URL, () => HttpResponse.json([])),
     );
 
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-    render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={["/"]}>
-          <Routes>
-            <Route element={<App />}>
-              <Route path="*" element={<AlbumsPage />} />
-            </Route>
-          </Routes>
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
+    renderShell();
 
-    const albums = screen.getByRole("link", { name: "Albums" });
-    expect(albums).toHaveAttribute("href", "/");
-
-    const artists = screen.getByRole("link", { name: "Artists" });
-    expect(artists).toHaveAttribute("href", "/artists");
+    expect(screen.queryByRole("link", { name: "Albums" })).not.toBeInTheDocument();
+    // No "Artists" *nav tab* — only the brand and (later) page content.
+    expect(
+      screen.queryByRole("navigation", { name: /primary/i }),
+    ).not.toBeInTheDocument();
   });
 });

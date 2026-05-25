@@ -55,9 +55,9 @@ export function ArtistsPage() {
 function ArtistCard({ artist }: { artist: Artist }) {
   return (
     // Whole-card link: a real <a> so it's keyboard- and screen-reader-navigable.
-    // Points at the album grid filtered to this artist (?artist=...).
+    // Drills into this artist's albums page (the next level of the spine).
     <Link
-      to={`/?artist=${encodeURIComponent(artist.name)}`}
+      to={`/artists/${encodeURIComponent(artist.name)}`}
       className="focus-visible:ring-ring block rounded-xl focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
     >
       <Card className="hover:border-primary/50 flex-row items-center gap-3 px-4 py-3 transition-colors">
