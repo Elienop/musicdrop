@@ -18,8 +18,22 @@ class ResolvedImage:
     content_type: str
 
 
+class TransientSourceError(Exception):
+    """A source failure that should be retried sooner than a confirmed no-match.
+
+    Raised for HTTP errors (incl. 429), timeouts/connect errors, malformed or
+    non-JSON bodies, and unusable downloads (oversize / non-image). The service
+    negative-caches these with a SHORT TTL. A confirmed no-verified-match is the
+    distinct case where ``resolve`` returns ``None`` (long TTL).
+    """
+
+
 @runtime_checkable
 class ArtistImageSource(Protocol):
     async def resolve(self, name: str) -> ResolvedImage | None:
-        """Resolve ``name`` to a portrait, or ``None`` if nothing verifies."""
+        """Resolve ``name`` to a portrait.
+
+        Returns ``None`` ONLY for a confirmed no-verified-match. Raises
+        :class:`TransientSourceError` for any transient failure.
+        """
         ...

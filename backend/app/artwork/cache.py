@@ -6,10 +6,16 @@ Layout (under the configured cache dir), keyed by ``sha1(normalized_name)``::
     <key>.override.mime content-type of the override
     <key>.bin           auto-fetched image bytes   — positive slot
     <key>.mime          content-type of the positive image
-    <key>.miss          negative marker; file mtime is the timestamp (TTL'd)
+    <key>.miss          negative marker; body is an absolute expiry timestamp
 
 Pure filesystem; no network. The mime is stored in a sidecar text file so the
 binary slot stays a plain image (cheap to ``sendfile`` later).
+
+Negative caching stores an **absolute expiry** (``now + ttl_seconds``) in the
+``.miss`` body rather than relying on file mtime, so the TTL travels with the
+marker. Callers pass a short TTL for transient failures and a long one for a
+confirmed no-match (see :class:`ArtistImageService`). An unparseable body is
+treated as already-stale so a corrupt marker self-heals on the next lookup.
 """
 
 import hashlib
@@ -42,9 +48,8 @@ NEGATIVE: Final[_Negative] = _Negative()
 
 
 class ArtistImageCache:
-    def __init__(self, cache_dir: Path | str, *, negative_ttl_seconds: int) -> None:
+    def __init__(self, cache_dir: Path | str) -> None:
         self._dir = Path(cache_dir)
-        self._negative_ttl_seconds = negative_ttl_seconds
 
     def _key(self, name: str) -> str:
         normalized = normalize_artist_name(name)
@@ -57,7 +62,7 @@ class ArtistImageCache:
         """Resolve the cache for ``name``.
 
         Returns a :class:`CachedImage` for an override or positive hit,
-        :data:`NEGATIVE` for a fresh negative marker, or ``None`` when the
+        :data:`NEGATIVE` for an unexpired negative marker, or ``None`` when the
         cache has nothing usable (empty or stale negative).
         """
         key = self._key(name)
@@ -74,10 +79,9 @@ class ArtistImageCache:
 
         miss = self._dir / f"{key}.miss"
         if miss.exists():
-            age = time.time() - miss.stat().st_mtime
-            if age < self._negative_ttl_seconds:
+            if time.time() < self._read_expiry(miss):
                 return NEGATIVE
-            # Stale: drop the marker so the caller re-resolves.
+            # Expired (or unparseable): drop the marker so the caller re-resolves.
             miss.unlink(missing_ok=True)
 
         return None
@@ -87,21 +91,33 @@ class ArtistImageCache:
         key = self._key(name)
         # A positive result supersedes any prior negative marker.
         (self._dir / f"{key}.miss").unlink(missing_ok=True)
-        (self._dir / f"{key}.bin").write_bytes(data)
+        # Write the mime sidecar BEFORE the bytes so a concurrent get() never
+        # reads image bytes paired with a missing/stale content-type.
         (self._dir / f"{key}.mime").write_text(content_type, encoding="utf-8")
+        (self._dir / f"{key}.bin").write_bytes(data)
 
-    def store_negative(self, name: str) -> None:
+    def store_negative(self, name: str, *, ttl_seconds: float) -> None:
         self._ensure_dir()
         key = self._key(name)
-        # Touch (or refresh) the miss marker; mtime is the timestamp.
-        (self._dir / f"{key}.miss").write_text(str(time.time()), encoding="utf-8")
+        # Store an absolute expiry; the TTL travels with the marker.
+        expiry = time.time() + ttl_seconds
+        (self._dir / f"{key}.miss").write_text(repr(expiry), encoding="utf-8")
 
     def write_override(self, name: str, data: bytes, content_type: str) -> None:
         """Plant a manual override (always wins). No auto-writer in this chunk."""
         self._ensure_dir()
         key = self._key(name)
-        (self._dir / f"{key}.override").write_bytes(data)
+        # Mime before bytes (see store_positive).
         (self._dir / f"{key}.override.mime").write_text(content_type, encoding="utf-8")
+        (self._dir / f"{key}.override").write_bytes(data)
+
+    @staticmethod
+    def _read_expiry(miss_path: Path) -> float:
+        """Absolute expiry stored in the marker; 0.0 (already-stale) if corrupt."""
+        try:
+            return float(miss_path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return 0.0
 
     @staticmethod
     def _read_image(data_path: Path, mime_path: Path) -> CachedImage | None:

@@ -3,18 +3,21 @@
 ``get_artist_image(name)`` resolution order:
 
 1. **disabled?** -> ``None`` (no I/O at all).
-2. **cache**: override -> serve; positive -> serve; fresh negative -> ``None``.
+2. **cache**: override -> serve; positive -> serve; unexpired negative -> ``None``.
 3. **resolve** via the source, under the rate limiter (paces the first-load
-   burst). Verified -> store positive + serve. No match / transient error
-   (incl. 429) -> store negative + ``None``.
+   burst):
+   * success -> store positive + serve;
+   * confirmed no-match (``None``) -> store negative with the LONG TTL + ``None``;
+   * :class:`TransientSourceError` -> store negative with the SHORT TTL + ``None``.
 
-Each artist therefore costs at most one network resolution; everything after
-is served from disk until the negative TTL lapses.
+Splitting the TTL means a Deezer blip (429/timeout/malformed body/bad download)
+only benches an artist for minutes, while a genuine no-match is honored for days.
+Each artist costs at most one network resolution until its marker expires.
 """
 
 from app.artwork.cache import NEGATIVE, ArtistImageCache, CachedImage
 from app.artwork.rate_limit import TokenBucketLimiter
-from app.artwork.source import ArtistImageSource
+from app.artwork.source import ArtistImageSource, TransientSourceError
 
 
 class ArtistImageService:
@@ -25,11 +28,15 @@ class ArtistImageService:
         cache: ArtistImageCache,
         limiter: TokenBucketLimiter,
         enabled: bool,
+        negative_ttl_seconds: float,
+        transient_ttl_seconds: float,
     ) -> None:
         self._source = source
         self._cache = cache
         self._limiter = limiter
         self._enabled = enabled
+        self._negative_ttl_seconds = negative_ttl_seconds
+        self._transient_ttl_seconds = transient_ttl_seconds
 
     async def get_artist_image(self, name: str) -> tuple[bytes, str] | None:
         if not self._enabled:
@@ -41,12 +48,16 @@ class ArtistImageService:
         if cached is NEGATIVE:
             return None
 
-        # Cache miss (or stale negative): resolve once, under the limiter.
-        async with self._limiter.slot():
-            resolved = await self._source.resolve(name)
+        # Cache miss (or expired negative): resolve once, under the limiter.
+        try:
+            async with self._limiter.slot():
+                resolved = await self._source.resolve(name)
+        except TransientSourceError:
+            self._cache.store_negative(name, ttl_seconds=self._transient_ttl_seconds)
+            return None
 
         if resolved is None:
-            self._cache.store_negative(name)
+            self._cache.store_negative(name, ttl_seconds=self._negative_ttl_seconds)
             return None
 
         self._cache.store_positive(name, resolved.data, resolved.content_type)

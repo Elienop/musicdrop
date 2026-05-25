@@ -5,14 +5,14 @@ import httpx
 import pytest
 import respx
 
-from app.artwork.deezer import DeezerArtistImageSource
-from app.artwork.source import ResolvedImage
+from app.artwork.deezer import MAX_IMAGE_BYTES, DeezerArtistImageSource
+from app.artwork.source import ResolvedImage, TransientSourceError
 
 SEARCH_URL = "https://api.deezer.com/search/artist"
 
 
 def _hit(
-    *, name: str, nb_fan: int, nb_album: int, picture_xl: str, picture_big: str = ""
+    *, name: object, nb_fan: int, nb_album: int, picture_xl: str, picture_big: str = ""
 ) -> dict[str, Any]:
     return {
         "name": name,
@@ -169,14 +169,49 @@ async def test_falls_back_to_picture_big(source: DeezerArtistImageSource) -> Non
 
 @pytest.mark.anyio
 @respx.mock
-async def test_search_429_returns_none(source: DeezerArtistImageSource) -> None:
+async def test_search_429_is_transient(source: DeezerArtistImageSource) -> None:
     respx.get(SEARCH_URL).mock(return_value=httpx.Response(429))
-    assert await source.resolve("ABBA") is None
+    with pytest.raises(TransientSourceError):
+        await source.resolve("ABBA")
 
 
 @pytest.mark.anyio
 @respx.mock
-async def test_image_download_error_returns_none(source: DeezerArtistImageSource) -> None:
+async def test_search_timeout_is_transient(source: DeezerArtistImageSource) -> None:
+    respx.get(SEARCH_URL).mock(side_effect=httpx.ConnectTimeout("slow"))
+    with pytest.raises(TransientSourceError):
+        await source.resolve("ABBA")
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_non_json_body_is_transient(source: DeezerArtistImageSource) -> None:
+    respx.get(SEARCH_URL).mock(return_value=httpx.Response(200, content=b"<html>error</html>"))
+    with pytest.raises(TransientSourceError):
+        await source.resolve("ABBA")
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_payload_not_dict_is_transient(source: DeezerArtistImageSource) -> None:
+    respx.get(SEARCH_URL).mock(return_value=httpx.Response(200, json=[1, 2, 3]))
+    img = respx.get(url__regex=r"https://img/.*")
+    with pytest.raises(TransientSourceError):
+        await source.resolve("ABBA")
+    assert not img.called
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_data_not_a_list_is_transient(source: DeezerArtistImageSource) -> None:
+    respx.get(SEARCH_URL).mock(return_value=httpx.Response(200, json={"data": "nope"}))
+    with pytest.raises(TransientSourceError):
+        await source.resolve("ABBA")
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_image_download_error_is_transient(source: DeezerArtistImageSource) -> None:
     respx.get(SEARCH_URL).mock(
         return_value=httpx.Response(
             200,
@@ -186,12 +221,76 @@ async def test_image_download_error_returns_none(source: DeezerArtistImageSource
         )
     )
     respx.get("https://img/x.jpg").mock(return_value=httpx.Response(500))
-    assert await source.resolve("ABBA") is None
+    with pytest.raises(TransientSourceError):
+        await source.resolve("ABBA")
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_oversize_image_is_transient(source: DeezerArtistImageSource) -> None:
+    respx.get(SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [_hit(name="ABBA", nb_fan=1, nb_album=1, picture_xl="https://img/x.jpg")]
+            },
+        )
+    )
+    big = b"\x00" * (MAX_IMAGE_BYTES + 1)
+    respx.get("https://img/x.jpg").mock(
+        return_value=httpx.Response(200, content=big, headers={"content-type": "image/jpeg"})
+    )
+    with pytest.raises(TransientSourceError):
+        await source.resolve("ABBA")
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_oversize_content_length_is_transient(source: DeezerArtistImageSource) -> None:
+    respx.get(SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [_hit(name="ABBA", nb_fan=1, nb_album=1, picture_xl="https://img/x.jpg")]
+            },
+        )
+    )
+    respx.get("https://img/x.jpg").mock(
+        return_value=httpx.Response(
+            200,
+            content=b"small",
+            headers={
+                "content-type": "image/jpeg",
+                "content-length": str(MAX_IMAGE_BYTES + 1),
+            },
+        )
+    )
+    with pytest.raises(TransientSourceError):
+        await source.resolve("ABBA")
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_non_image_content_type_is_transient(source: DeezerArtistImageSource) -> None:
+    respx.get(SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [_hit(name="ABBA", nb_fan=1, nb_album=1, picture_xl="https://img/x.jpg")]
+            },
+        )
+    )
+    respx.get("https://img/x.jpg").mock(
+        return_value=httpx.Response(200, content=b"<html>", headers={"content-type": "text/html"})
+    )
+    with pytest.raises(TransientSourceError):
+        await source.resolve("ABBA")
 
 
 @pytest.mark.anyio
 @respx.mock
 async def test_no_picture_url_returns_none(source: DeezerArtistImageSource) -> None:
+    # Confirmed: a valid search whose verified hit has no usable picture.
     respx.get(SEARCH_URL).mock(
         return_value=httpx.Response(
             200,
@@ -201,3 +300,20 @@ async def test_no_picture_url_returns_none(source: DeezerArtistImageSource) -> N
         )
     )
     assert await source.resolve("ABBA") is None
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_null_name_hit_does_not_match(source: DeezerArtistImageSource) -> None:
+    # A JSON null name must not coerce to "none" and match a literal "None" query.
+    respx.get(SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [_hit(name=None, nb_fan=999, nb_album=9, picture_xl="https://img/n.jpg")]
+            },
+        )
+    )
+    img = respx.get("https://img/n.jpg")
+    assert await source.resolve("None") is None
+    assert not img.called

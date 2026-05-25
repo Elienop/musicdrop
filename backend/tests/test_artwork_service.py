@@ -32,16 +32,28 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
 
 
 def _make_service(
-    *, cache: ArtistImageCache, client: httpx.AsyncClient, enabled: bool = True
+    *,
+    cache: ArtistImageCache,
+    client: httpx.AsyncClient,
+    enabled: bool = True,
+    negative_ttl_seconds: float = 3600,
+    transient_ttl_seconds: float = 600,
 ) -> ArtistImageService:
     source = DeezerArtistImageSource(client=client, search_limit=5)
     limiter = TokenBucketLimiter(rate_per_sec=1000.0, max_concurrency=2)
-    return ArtistImageService(source=source, cache=cache, limiter=limiter, enabled=enabled)
+    return ArtistImageService(
+        source=source,
+        cache=cache,
+        limiter=limiter,
+        enabled=enabled,
+        negative_ttl_seconds=negative_ttl_seconds,
+        transient_ttl_seconds=transient_ttl_seconds,
+    )
 
 
 @pytest.fixture
 def cache(tmp_path: Path) -> ArtistImageCache:
-    return ArtistImageCache(tmp_path, negative_ttl_seconds=3600)
+    return ArtistImageCache(tmp_path)
 
 
 @pytest.mark.anyio
@@ -143,14 +155,73 @@ async def test_disabled_returns_none_no_http(
 
 @pytest.mark.anyio
 @respx.mock
-async def test_transient_429_negative_cached(
+async def test_transient_429_negative_cached_with_short_ttl(
     cache: ArtistImageCache, client: httpx.AsyncClient
 ) -> None:
     search = respx.get(SEARCH_URL).mock(return_value=httpx.Response(429))
-    service = _make_service(cache=cache, client=client)
+    service = _make_service(cache=cache, client=client, transient_ttl_seconds=600)
 
     assert await service.get_artist_image("ABBA") is None
-    # Negative cached: a second call within TTL does not re-hit Deezer.
+    # Within the short TTL: a second call does not re-hit Deezer.
+    assert await service.get_artist_image("ABBA") is None
+    assert search.call_count == 1
+
+    # The transient marker carries the SHORT ttl (not the 7-day confirmed one):
+    # its stored expiry is ~now+600, well below the confirmed default.
+    import time
+
+    key = cache._key("ABBA")
+    expiry = float((tmp_miss := cache._dir / f"{key}.miss").read_text().strip())
+    assert tmp_miss.exists()
+    assert expiry == pytest.approx(time.time() + 600, abs=30)
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_transient_re_resolves_after_short_ttl_lapses(
+    cache: ArtistImageCache, client: httpx.AsyncClient
+) -> None:
+    # transient_ttl=0 -> marker is immediately stale -> the next call re-tries
+    # Deezer (a confirmed no-match would NOT, with its long TTL).
+    search = respx.get(SEARCH_URL).mock(return_value=httpx.Response(429))
+    service = _make_service(cache=cache, client=client, transient_ttl_seconds=0)
+
+    assert await service.get_artist_image("ABBA") is None
+    assert await service.get_artist_image("ABBA") is None
+    assert search.call_count == 2  # stale transient marker -> retried
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_confirmed_no_match_uses_long_ttl(
+    cache: ArtistImageCache, client: httpx.AsyncClient
+) -> None:
+    # A confirmed no-match with negative_ttl=0 would re-resolve, but with the
+    # long TTL it stays cached. Contrast a transient_ttl=0 service to prove the
+    # confirmed path reads negative_ttl, not transient_ttl.
+    search = respx.get(SEARCH_URL).mock(return_value=httpx.Response(200, json={"data": []}))
+    service = _make_service(
+        cache=cache, client=client, negative_ttl_seconds=3600, transient_ttl_seconds=0
+    )
+
+    assert await service.get_artist_image("Nobody") is None
+    assert await service.get_artist_image("Nobody") is None
+    # Confirmed path used the LONG ttl despite transient_ttl=0 -> still cached.
+    assert search.call_count == 1
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_malformed_body_is_transient_no_download(
+    cache: ArtistImageCache, client: httpx.AsyncClient
+) -> None:
+    search = respx.get(SEARCH_URL).mock(return_value=httpx.Response(200, content=b"<html>"))
+    img = respx.get(url__regex=r"https://img/.*")
+    service = _make_service(cache=cache, client=client, transient_ttl_seconds=600)
+
+    assert await service.get_artist_image("ABBA") is None
+    assert not img.called
+    # Cached as transient (short ttl): second call does not re-hit within TTL.
     assert await service.get_artist_image("ABBA") is None
     assert search.call_count == 1
 
@@ -175,7 +246,14 @@ async def test_resolution_runs_under_the_rate_limiter(
             return None
 
     limiter = TokenBucketLimiter(rate_per_sec=1000.0, max_concurrency=2)
-    service = ArtistImageService(source=_SlowSource(), cache=cache, limiter=limiter, enabled=True)
+    service = ArtistImageService(
+        source=_SlowSource(),
+        cache=cache,
+        limiter=limiter,
+        enabled=True,
+        negative_ttl_seconds=3600,
+        transient_ttl_seconds=600,
+    )
 
     await asyncio.gather(*(service.get_artist_image(f"artist-{i}") for i in range(6)))
     assert peak <= 2
