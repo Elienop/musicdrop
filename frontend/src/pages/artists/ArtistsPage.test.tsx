@@ -68,6 +68,20 @@ describe("ArtistsPage", () => {
     ).toBeInTheDocument();
   });
 
+  test("announces a loading status to screen readers while pending", () => {
+    server.use(
+      http.get(
+        ARTISTS_URL,
+        () => new Promise<HttpResponse<Artist[]>>(() => {}),
+      ),
+    );
+
+    renderWithProviders(<ArtistsPage />);
+
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(/loading artists/i);
+  });
+
   test("shows the empty state when the roster is empty", async () => {
     server.use(http.get(ARTISTS_URL, () => HttpResponse.json([])));
 

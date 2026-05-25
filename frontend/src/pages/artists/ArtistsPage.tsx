@@ -8,7 +8,7 @@ import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const GRID_CLASS =
-  "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4";
+  "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5";
 
 export function ArtistsPage() {
   const { data, isPending, isError, refetch } = useArtists();
@@ -17,16 +17,24 @@ export function ArtistsPage() {
     <section className="flex flex-col gap-6" aria-label="Artists">
       <div className="flex flex-col gap-1">
         <h2 className="text-2xl font-semibold tracking-tight">Artists</h2>
-        {!isPending && !isError && data.length > 0 && (
-          <p className="text-muted-foreground text-sm" aria-live="polite">
-            {data.length.toLocaleString()}{" "}
-            {data.length === 1 ? "artist" : "artists"}
-          </p>
-        )}
+        {/* Live region mounted unconditionally so assistive tech can observe it
+            before the count arrives; only the text toggles. */}
+        <p className="text-muted-foreground min-h-5 text-sm" aria-live="polite">
+          {!isPending && !isError && data.length > 0
+            ? `${data.length.toLocaleString()} ${
+                data.length === 1 ? "artist" : "artists"
+              }`
+            : ""}
+        </p>
       </div>
 
       {isPending ? (
-        <ArtistsGridSkeleton count={12} />
+        <>
+          <p className="sr-only" role="status">
+            Loading artists&hellip;
+          </p>
+          <ArtistsGridSkeleton count={12} />
+        </>
       ) : isError ? (
         <ErrorState onRetry={() => void refetch()} />
       ) : data.length === 0 ? (
@@ -60,8 +68,11 @@ function ArtistCard({ artist }: { artist: Artist }) {
           <User className="size-5" />
         </span>
         <div className="flex min-w-0 flex-col">
-          <span className="truncate font-medium" title={artist.name}>
-            {artist.name}
+          <span
+            className="truncate font-medium"
+            title={artist.name || "Unknown artist"}
+          >
+            {artist.name || "Unknown artist"}
           </span>
           <span className="text-muted-foreground text-sm">
             {artist.album_count}{" "}
@@ -102,7 +113,7 @@ function EmptyState() {
       <div className="flex flex-col gap-1">
         <p className="font-medium">No artists yet</p>
         <p className="text-muted-foreground text-sm">
-          Your beets library is empty. Import some music and artists will show
+          Your beets library is empty. Import some music and it&rsquo;ll show
           up here.
         </p>
       </div>

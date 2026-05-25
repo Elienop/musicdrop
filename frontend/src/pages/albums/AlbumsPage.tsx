@@ -102,29 +102,39 @@ export function AlbumsPage({ initialLimit = 50 }: AlbumsPageProps) {
           <h2 className="text-2xl font-semibold tracking-tight">
             {artist ? `Albums by ${artist}` : "Albums"}
           </h2>
-          {!isPending && !isError && total > 0 && (
-            <p className="text-muted-foreground text-sm" aria-live="polite">
-              {total.toLocaleString()} {total === 1 ? "album" : "albums"}
-            </p>
-          )}
-        </div>
-        {artist && (
-          <Link
-            to="/"
-            className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex shrink-0 items-center gap-1.5 rounded-sm text-sm focus-visible:ring-2 focus-visible:outline-none"
+          {/* Live region is mounted unconditionally so assistive tech can
+              observe it before the count arrives; only the text toggles. It
+              folds the artist into the announcement so the swapped <h2> isn't
+              the sole (silent) carrier of the active filter. */}
+          <p
+            className="text-muted-foreground min-h-5 text-sm"
+            aria-live="polite"
           >
-            <ArrowLeft className="size-4" aria-hidden="true" />
-            All albums
-          </Link>
-        )}
+            {!isPending && !isError && total > 0
+              ? `${total.toLocaleString()} ${total === 1 ? "album" : "albums"}${
+                  artist ? ` by ${artist}` : ""
+                }`
+              : ""}
+          </p>
+        </div>
+        {artist && <AllAlbumsLink className="shrink-0" />}
       </div>
 
       {isPending ? (
-        <AlbumsGridSkeleton count={Math.min(limit, 18)} />
+        <>
+          <p className="sr-only" role="status">
+            Loading albums&hellip;
+          </p>
+          <AlbumsGridSkeleton count={Math.min(limit, 18)} />
+        </>
       ) : isError ? (
         <ErrorState onRetry={() => void refetch()} />
       ) : data.items.length === 0 ? (
-        <EmptyState />
+        artist ? (
+          <FilteredEmptyState artist={artist} />
+        ) : (
+          <EmptyState />
+        )
       ) : (
         <>
           <ul
@@ -288,6 +298,23 @@ function AlbumsGridSkeleton({ count }: { count: number }) {
   );
 }
 
+/** Shared "← All albums" escape link. Used in the filter header and the
+ * zero-match empty state so both clear the `?artist=` filter identically. */
+function AllAlbumsLink({ className }: { className?: string }) {
+  return (
+    <Link
+      to="/"
+      className={cn(
+        "text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm focus-visible:ring-2 focus-visible:outline-none",
+        className,
+      )}
+    >
+      <ArrowLeft className="size-4" aria-hidden="true" />
+      All albums
+    </Link>
+  );
+}
+
 function EmptyState() {
   return (
     <div className="border-border flex flex-col items-center gap-3 rounded-xl border border-dashed py-16 text-center">
@@ -299,6 +326,23 @@ function EmptyState() {
           up here.
         </p>
       </div>
+    </div>
+  );
+}
+
+/** Empty state for a zero-match artist filter (e.g. a stale bookmark). Names
+ * the artist and offers an escape back to the full grid. */
+function FilteredEmptyState({ artist }: { artist: string }) {
+  return (
+    <div className="border-border flex flex-col items-center gap-3 rounded-xl border border-dashed py-16 text-center">
+      <Disc3 className="text-muted-foreground size-10" aria-hidden="true" />
+      <div className="flex flex-col gap-1">
+        <p className="font-medium">No albums by {artist}</p>
+        <p className="text-muted-foreground text-sm">
+          Nothing in your library matches this artist.
+        </p>
+      </div>
+      <AllAlbumsLink />
     </div>
   );
 }

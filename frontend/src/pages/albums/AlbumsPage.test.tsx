@@ -332,6 +332,37 @@ describe("AlbumsPage", () => {
     expect(screen.queryByText(/albums by radiohead/i)).not.toBeInTheDocument();
   });
 
+  test("shows a filter-aware empty state when no albums match the artist", async () => {
+    server.use(
+      http.get(ALBUMS_URL, () =>
+        HttpResponse.json(makePage({ items: [], total: 0 })),
+      ),
+    );
+
+    renderAtUrl("/?artist=Foo");
+
+    // Filter-aware copy naming the artist, plus an escape link. Two such links
+    // exist when filtered (the header clear link + the empty-state link) — both
+    // valid escapes — so assert at least one is present.
+    expect(await screen.findByText(/no albums by foo/i)).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("link", { name: /all albums/i }).length,
+    ).toBeGreaterThan(0);
+    // The generic "library is empty" copy must NOT appear for a zero-match.
+    expect(screen.queryByText(/library is empty/i)).not.toBeInTheDocument();
+  });
+
+  test("the count's polite live region carries the artist context", async () => {
+    server.use(http.get(ALBUMS_URL, () => HttpResponse.json(makePage())));
+
+    renderAtUrl("/?artist=Radiohead");
+
+    const count = await screen.findByText(/2 albums by radiohead/i);
+    const live = count.closest("[aria-live]");
+    expect(live).not.toBeNull();
+    expect(live).toHaveAttribute("aria-live", "polite");
+  });
+
   test("resets the offset to 0 when the artist filter changes", async () => {
     server.use(
       http.get(ALBUMS_URL, ({ request }) => {
