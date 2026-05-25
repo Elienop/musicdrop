@@ -7,7 +7,9 @@ from beets.library import Item, Library
 from fastapi.testclient import TestClient
 
 from app.api.albums import get_library
+from app.beets.library import list_artists
 from app.main import app
+from app.models.artist import Artist
 
 
 def _make_item(directory: Path, *, album: str, albumartist: str, title: str, track: int) -> Item:
@@ -47,6 +49,19 @@ def test_artists_roster_groups_counts_and_sorts(client: TestClient) -> None:
         {"name": "a-ha", "album_count": 1},
         {"name": "ABBA", "album_count": 2},
     ]
+
+
+def test_artists_roster_excludes_empty_album_artist(tmp_path: Path) -> None:
+    # A whitespace-only albumartist must be dropped: _coerce_str does not strip,
+    # so only the skip's own .strip() keeps this blank card out of the roster.
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path))
+    _add_album(lib, tmp_path, album="Arrival", albumartist="ABBA")
+    _add_album(lib, tmp_path, album="Mystery", albumartist="   ")
+
+    artists = list_artists(lib)
+
+    assert artists == [Artist(name="ABBA", album_count=1)]
+    assert all(a.name.strip() for a in artists)
 
 
 def test_artists_unconfigured_library_returns_empty_roster() -> None:

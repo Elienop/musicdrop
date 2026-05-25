@@ -160,6 +160,10 @@ def list_artists(lib: LibraryHandle) -> list[Artist]:
     counts: dict[str, int] = {}
     for album in lib.albums():
         name = _coerce_str(album.albumartist)
+        # _coerce_str does not strip, so a null/whitespace albumartist would
+        # emit a blank, nameless card; drop those albums from the roster.
+        if not name.strip():
+            continue
         counts[name] = counts.get(name, 0) + 1
     artists = [Artist(name=name, album_count=count) for name, count in counts.items()]
     artists.sort(key=lambda a: a.name.casefold())
