@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, test } from "vitest";
@@ -54,6 +54,39 @@ describe("AlbumsPage", () => {
     expect(screen.getByText("1997")).toBeInTheDocument();
     // Total count line.
     expect(screen.getByText(/2 albums/i)).toBeInTheDocument();
+  });
+
+  test("renders a cover image per album with the right /cover src", async () => {
+    server.use(http.get(ALBUMS_URL, () => HttpResponse.json(makePage())));
+
+    renderWithProviders(<AlbumsPage />);
+
+    const ok = await screen.findByAltText("OK Computer cover");
+    expect(ok).toHaveAttribute("src", "/api/albums/1/cover");
+    expect(ok).toHaveAttribute("loading", "lazy");
+
+    const ambient = screen.getByAltText(
+      "Selected Ambient Works 85-92 cover",
+    );
+    expect(ambient).toHaveAttribute("src", "/api/albums/2/cover");
+  });
+
+  test("falls back to a placeholder when the cover image errors", async () => {
+    server.use(http.get(ALBUMS_URL, () => HttpResponse.json(makePage())));
+
+    renderWithProviders(<AlbumsPage />);
+
+    const ok = await screen.findByAltText("OK Computer cover");
+    // Simulate the 404 / broken-image path.
+    fireEvent.error(ok);
+
+    // The <img> is gone; a labelled placeholder takes its place.
+    expect(
+      screen.queryByAltText("OK Computer cover"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByLabelText("OK Computer cover unavailable"),
+    ).toBeInTheDocument();
   });
 
   test("shows the empty state when total is 0", async () => {

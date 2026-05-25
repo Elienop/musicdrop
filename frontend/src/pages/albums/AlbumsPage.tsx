@@ -4,6 +4,7 @@ import {
   ChevronRight,
   Disc3,
   Loader2,
+  Music,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -131,10 +132,43 @@ export function AlbumsPage({ initialLimit = 50 }: AlbumsPageProps) {
   );
 }
 
+/**
+ * Square album cover backed by `GET /api/albums/{id}/cover`. Albums without art
+ * 404, and decode failures fire `onError` — both flip to a muted music-note
+ * placeholder of the same dimensions so the card never shows a broken image.
+ */
+function CoverImage({ album }: { album: Album }) {
+  const [failed, setFailed] = useState(false);
+  const alt = `${album.title} cover`;
+
+  if (failed) {
+    return (
+      <div
+        className="bg-muted flex aspect-square w-full items-center justify-center rounded-t-xl"
+        role="img"
+        aria-label={`${alt} unavailable`}
+      >
+        <Music className="text-muted-foreground size-10" aria-hidden="true" />
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={`/api/albums/${album.id}/cover`}
+      alt={alt}
+      loading="lazy"
+      onError={() => setFailed(true)}
+      className="bg-muted aspect-square w-full rounded-t-xl object-cover"
+    />
+  );
+}
+
 function AlbumCard({ album }: { album: Album }) {
   return (
-    <Card className="h-full gap-3 py-4">
-      <CardHeader className="px-4">
+    <Card className="h-full gap-3 overflow-hidden py-0 pb-4">
+      <CoverImage album={album} />
+      <CardHeader className="px-4 pt-3">
         <CardTitle className="truncate" title={album.title}>
           {album.title}
         </CardTitle>
@@ -167,8 +201,11 @@ function AlbumsGridSkeleton({ count }: { count: number }) {
     <ul className={GRID_CLASS} aria-hidden="true">
       {Array.from({ length: count }, (_, i) => (
         <li key={i}>
-          <Card className="h-full gap-3 py-4">
-            <CardHeader className="gap-2 px-4">
+          <Card className="h-full gap-3 overflow-hidden py-0 pb-4">
+            {/* Square cover placeholder — matches the real card so the cover
+                loading in doesn't shift the layout. */}
+            <Skeleton className="aspect-square w-full rounded-none" />
+            <CardHeader className="gap-2 px-4 pt-3">
               {/* Mirrors CardTitle (leading-none font height) + CardDescription. */}
               <Skeleton className="h-5 w-3/4" />
               <Skeleton className="h-4 w-1/2" />

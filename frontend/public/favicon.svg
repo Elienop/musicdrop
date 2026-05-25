@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="favicon-title">
+  <title id="favicon-title">MusicDrop</title>
+  <style>
+    .bg   { fill: #009688; }
+    .bars { fill: #ffffff; }
+    @media (prefers-color-scheme: dark) {
+      .bg   { fill: #80CBC4; }
+      .bars { fill: #000000; }
+    }
+  </style>
+  <rect class="bg" width="64" height="64" rx="12" ry="12"/>
+  <g class="bars" transform="translate(11.82 8) scale(0.7218) translate(0 -12.27)">
+    <rect y="12.27" width="15.56" height="66.5"/>
+    <rect x="20.18" y="50.49" width="15.56" height="28.27"/>
+    <rect x="40.35" y="30.08" width="15.56" height="48.67"/>
+  </g>
+</svg>
