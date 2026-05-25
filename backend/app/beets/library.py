@@ -14,12 +14,18 @@ from mediafile import MediaFile
 
 from app.models.album import Album
 
+# Allowlist of cover-art extensions we serve. `.svg` is deliberately excluded:
+# serving user-controlled SVG (even via <img>) is an XSS footgun, not worth it.
 _EXTENSION_MIME = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".png": "image/png",
     ".gif": "image/gif",
     ".webp": "image/webp",
+    ".avif": "image/avif",
+    ".bmp": "image/bmp",
+    ".tiff": "image/tiff",
+    ".tif": "image/tiff",
 }
 
 # Public handle type for the opened beets library. Callers outside this module
@@ -113,9 +119,12 @@ def list_albums(lib: LibraryHandle, *, limit: int, offset: int) -> tuple[list[Al
 def _abs_path(lib: LibraryHandle, stored: bytes) -> str:
     """Resolve a beets-stored file path to absolute.
 
-    beets stores ``item.path`` (and may store ``artpath``) relative to
-    ``lib.directory`` and resolves them against it. Always run a stored path
-    through this before touching the filesystem; absolute paths pass unchanged.
+    The beets model API returns paths (``item.path``, ``artpath``) already
+    resolved to absolute, so on the normal flow the input passes through
+    unchanged. The underlying DB rows are stored relative to ``lib.directory``
+    (observed with in-place imports); this guard is defense-in-depth for any
+    code that reads a raw DB row directly, joining against ``lib.directory``
+    only when the path is relative.
     """
     path = os.fsdecode(stored)
     if os.path.isabs(path):
@@ -148,6 +157,9 @@ def _cover_from_embedded(lib: LibraryHandle, album: BeetsAlbum) -> tuple[bytes, 
     if not images:
         return None
     image = images[0]
+    # Intentional fail-safe: if the embedded image declares no mime, octet-stream
+    # makes the browser <img> refuse it, cleanly triggering the FE onError
+    # placeholder (serve-or-degrade) rather than rendering garbage.
     mime = _coerce_optional_str(image.mime_type) or "application/octet-stream"
     return bytes(image.data), mime
 
