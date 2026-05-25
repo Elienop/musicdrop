@@ -1,0 +1,191 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Enable `dark:` utility variant to resolve against the `.dark` class on
+ * <html> (or any ancestor). Ported from MusicDrop-old: the class convention
+ * replaces the prior `[data-theme="dark"]` attribute selector. */
+@custom-variant dark (&:is(.dark *));
+
+/*
+  Tailwind v4 dropped the default border color (now `currentcolor`). shadcn
+  primitives render `<div className="border">` without an explicit colour
+  utility; default to `--color-border` so Card/Dialog/Popover etc. pick up our
+  neutral token. Explicit `border-*` utilities still override.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-border, currentcolor);
+  }
+}
+
+/* ── Light mode (:root) ─────────────────────────────────────────────────
+ * Light is the "no class" state. OKLCH values natively. Ported from
+ * MusicDrop-old/web/src/styles.css — token foundation only. */
+:root {
+  --radius: 0.625rem;
+
+  --background: oklch(100% 0 0deg);
+  --foreground: oklch(14.5% 0 0deg);
+  --card: oklch(100% 0 0deg);
+  --card-foreground: oklch(14.5% 0 0deg);
+  --popover: oklch(100% 0 0deg);
+  --popover-foreground: oklch(14.5% 0 0deg);
+  --primary: oklch(60.45% 0.1074 183.38deg); /* Teal light — default brand accent */
+  --primary-foreground: #fff;
+  --secondary: oklch(97% 0 0deg);
+  --secondary-foreground: oklch(20.5% 0 0deg);
+  --muted: oklch(97% 0 0deg);
+  --muted-foreground: oklch(55.6% 0 0deg);
+  --accent: oklch(97% 0 0deg);
+  --accent-foreground: oklch(20.5% 0 0deg);
+
+  --destructive: var(--error);
+  --destructive-foreground: var(--primary-foreground);
+
+  --success: oklch(64.8% 0.20 142deg);
+  --success-foreground: oklch(98.5% 0 0deg);
+  --border: oklch(92.2% 0 0deg);
+  --input: oklch(92.2% 0 0deg);
+  --ring: oklch(70.8% 0 0deg);
+  --chart-1: oklch(64.6% 0.222 41.116deg);
+  --chart-2: oklch(60% 0.118 184.704deg);
+  --chart-3: oklch(39.8% 0.07 227.392deg);
+  --chart-4: oklch(82.8% 0.189 84.429deg);
+  --chart-5: oklch(76.9% 0.188 70.08deg);
+  --sidebar: oklch(98.5% 0 0deg);
+  --sidebar-foreground: oklch(14.5% 0 0deg);
+  --sidebar-primary: oklch(20.5% 0 0deg);
+  --sidebar-primary-foreground: oklch(98.5% 0 0deg);
+  --sidebar-accent: oklch(97% 0 0deg);
+  --sidebar-accent-foreground: oklch(20.5% 0 0deg);
+  --sidebar-border: oklch(92.2% 0 0deg);
+  --sidebar-ring: oklch(70.8% 0 0deg);
+
+  /* MusicDrop semantic aliases — mapped into `@theme inline` below. */
+  --surface-base: oklch(100% 0 0deg);
+  --surface-raised: oklch(97% 0.001 286deg);
+  --surface-card: oklch(100% 0 0deg);
+  --surface-hover: oklch(93.4% 0.001 286deg);
+
+  --error: oklch(63.7% 0.237 25.331deg);
+  --error-soft: oklch(96.4% 0.02 15deg);
+
+  --warning: oklch(76.9% 0.188 70.08deg);
+}
+
+/* ── Dark mode (.dark) ──────────────────────────────────────────────────
+ * `.dark` class on <html> (or ancestor). Overrides shadcn canonical tokens
+ * AND MusicDrop semantic aliases. */
+.dark {
+  --background: oklch(14.5% 0 0deg);
+  --foreground: oklch(98.5% 0 0deg);
+  --card: oklch(20.5% 0 0deg);
+  --card-foreground: oklch(98.5% 0 0deg);
+  --popover: oklch(20.5% 0 0deg);
+  --popover-foreground: oklch(98.5% 0 0deg);
+  --primary: oklch(79.12% 0.0755 188.24deg); /* Teal dark — default brand accent */
+  --primary-foreground: #000;
+  --secondary: oklch(26.9% 0 0deg);
+  --secondary-foreground: oklch(98.5% 0 0deg);
+  --muted: oklch(26.9% 0 0deg);
+  --muted-foreground: oklch(70.8% 0 0deg);
+  --accent: oklch(26.9% 0 0deg);
+  --accent-foreground: oklch(98.5% 0 0deg);
+
+  --destructive: var(--error);
+  --destructive-foreground: var(--primary-foreground);
+
+  --success: oklch(72.3% 0.219 149.6deg);
+  --success-foreground: oklch(14.7% 0 0deg);
+  --border: oklch(100% 0 0deg / 10%);
+  --input: oklch(100% 0 0deg / 15%);
+  --ring: oklch(55.6% 0 0deg);
+  --chart-1: oklch(48.8% 0.243 264.376deg);
+  --chart-2: oklch(69.6% 0.17 162.48deg);
+  --chart-3: oklch(76.9% 0.188 70.08deg);
+  --chart-4: oklch(62.7% 0.265 303.9deg);
+  --chart-5: oklch(64.5% 0.246 16.439deg);
+  --sidebar: oklch(20.5% 0 0deg);
+  --sidebar-foreground: oklch(98.5% 0 0deg);
+  --sidebar-primary: oklch(48.8% 0.243 264.376deg);
+  --sidebar-primary-foreground: oklch(98.5% 0 0deg);
+  --sidebar-accent: oklch(26.9% 0 0deg);
+  --sidebar-accent-foreground: oklch(98.5% 0 0deg);
+  --sidebar-border: oklch(100% 0 0deg / 10%);
+  --sidebar-ring: oklch(55.6% 0 0deg);
+
+  --surface-base: oklch(19.6% 0 0deg);
+  --surface-raised: oklch(25.4% 0 0deg);
+  --surface-card: oklch(28.6% 0 0deg);
+  --surface-hover: oklch(30.9% 0 0deg);
+
+  --error: oklch(70.4% 0.191 22.216deg);
+  --error-soft: oklch(24.9% 0.03 15deg);
+
+  --warning: oklch(82.8% 0.189 84.429deg);
+}
+
+/* ── Theme inline ───────────────────────────────────────────────────────
+ * Map CSS custom properties to Tailwind v4's `--color-*` contract. The
+ * `inline` keyword re-evaluates var() per rule (critical for `.dark` at
+ * runtime). */
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --color-surface-base: var(--surface-base);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-card: var(--surface-card);
+  --color-surface-hover: var(--surface-hover);
+
+  --color-error: var(--error);
+  --color-error-soft: var(--error-soft);
+  --color-warning: var(--warning);
+}
+
+@layer base {
+  body {
+    @apply bg-background text-foreground;
+  }
+}
