@@ -8,6 +8,7 @@ import { NotFoundPage } from "@/pages/NotFoundPage";
 import { AlbumDetailPage } from "@/pages/albums/AlbumDetailPage";
 import { ArtistAlbumsPage } from "@/pages/artists/ArtistAlbumsPage";
 import { ArtistsPage } from "@/pages/artists/ArtistsPage";
+import { SearchPage } from "@/pages/search/SearchPage";
 
 import "@/styles.css";
 
@@ -39,6 +40,7 @@ const router = createBrowserRouter([
       { path: "/artists", element: <Navigate to="/" replace /> },
       { path: "/artists/:artistName", element: <ArtistAlbumsPage /> },
       { path: "/albums/:albumId", element: <AlbumDetailPage /> },
+      { path: "/search", element: <SearchPage /> },
       { path: "*", element: <NotFoundPage /> },
     ],
   },
