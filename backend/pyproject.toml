@@ -7,6 +7,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic-settings>=2.5",
+    "beets>=2.11.0",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +32,17 @@ select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 python_version = "3.11"
 strict = true
 files = ["app", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["beets.*", "beetsplug.*"]
+ignore_missing_imports = true
+
+# beets is untyped; calling its functions trips disallow_untyped_calls under
+# strict mode. The adapter is the boundary that absorbs that, and the album
+# tests build a real beets library through the same untyped surface.
+[[tool.mypy.overrides]]
+module = ["app.beets.library", "tests.test_albums"]
+disallow_untyped_calls = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
