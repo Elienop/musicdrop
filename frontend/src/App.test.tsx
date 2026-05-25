@@ -1,8 +1,11 @@
-import { screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { describe, expect, test } from "vitest";
 
-import { HealthStatus } from "@/App";
+import { App, HealthStatus } from "@/App";
+import { AlbumsPage } from "@/pages/albums/AlbumsPage";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
 
@@ -45,9 +48,22 @@ describe("App", () => {
       ),
     );
 
-    // Imported lazily to keep the HealthStatus block self-contained.
-    const { App } = await import("@/App");
-    renderWithProviders(<App />);
+    // App is the layout shell; the Albums grid renders into its <Outlet>, so
+    // mount them together the way the real router nests them.
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/"]}>
+          <Routes>
+            <Route element={<App />}>
+              <Route path="*" element={<AlbumsPage />} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
 
     expect(
       screen.getByRole("heading", { level: 1, name: "MusicDrop" }),

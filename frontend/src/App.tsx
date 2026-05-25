@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { CircleCheck, CircleSlash, Loader2 } from "lucide-react";
+import { Link, Outlet } from "react-router";
 
 import { client } from "@/api/client";
-import { AlbumsPage } from "@/pages/albums/AlbumsPage";
 import { cn } from "@/lib/utils";
 
 async function fetchHealth() {
@@ -67,17 +67,28 @@ export function HealthStatus() {
   );
 }
 
+/**
+ * App shell: persistent header chrome wrapping the routed page via `<Outlet>`.
+ * Feature routes (Albums grid, album detail) render into the outlet.
+ */
 export function App() {
   return (
     <div className="bg-background text-foreground min-h-svh">
       <header className="border-border bg-background/80 sticky top-0 z-10 border-b backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-6 py-4">
-          <h1 className="text-xl font-semibold tracking-tight">MusicDrop</h1>
+          <h1 className="text-xl font-semibold tracking-tight">
+            <Link
+              to="/"
+              className="focus-visible:ring-ring rounded-sm focus-visible:ring-2 focus-visible:outline-none"
+            >
+              MusicDrop
+            </Link>
+          </h1>
           <HealthStatus />
         </div>
       </header>
       <main className="mx-auto max-w-7xl px-6 py-8">
-        <AlbumsPage />
+        <Outlet />
       </main>
     </div>
   );

@@ -1,12 +1,37 @@
-import { fireEvent, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
+import { MemoryRouter, useLocation } from "react-router";
 import { describe, expect, test } from "vitest";
 
 import type { components } from "@/api/schema";
 import { AlbumsPage } from "@/pages/albums/AlbumsPage";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
+
+/** Mirrors the current URL search string into the DOM so tests can assert that
+ * grid state (offset) round-trips through the URL. */
+function LocationProbe() {
+  const { search } = useLocation();
+  return <div data-testid="location-search">{search}</div>;
+}
+
+/** Render AlbumsPage under a MemoryRouter started at `route`, with a probe that
+ * exposes the live URL search string. */
+function renderAtUrl(route: string, props: Parameters<typeof AlbumsPage>[0] = {}) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[route]}>
+        <AlbumsPage {...props} />
+        <LocationProbe />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
 
 type AlbumPage = components["schemas"]["AlbumPage"];
 
@@ -54,6 +79,24 @@ describe("AlbumsPage", () => {
     expect(screen.getByText("1997")).toBeInTheDocument();
     // Total count line.
     expect(screen.getByText(/2 albums/i)).toBeInTheDocument();
+  });
+
+  test("wraps each card in a link to its detail page", async () => {
+    server.use(http.get(ALBUMS_URL, () => HttpResponse.json(makePage())));
+
+    renderWithProviders(<AlbumsPage />);
+
+    await screen.findByText("OK Computer");
+
+    // Whole card is a single accessible link, named by the album, pointing at
+    // the detail route.
+    const ok = screen.getByRole("link", { name: /OK Computer/i });
+    expect(ok).toHaveAttribute("href", "/albums/1");
+
+    const ambient = screen.getByRole("link", {
+      name: /Selected Ambient Works 85-92/i,
+    });
+    expect(ambient).toHaveAttribute("href", "/albums/2");
   });
 
   test("renders a cover image per album with the right /cover src", async () => {
@@ -169,6 +212,72 @@ describe("AlbumsPage", () => {
     expect(await screen.findByText("Second Album")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /previous/i })).toBeEnabled();
     expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
+  });
+
+  test("writes the offset to the URL when paging Next", async () => {
+    server.use(
+      http.get(ALBUMS_URL, ({ request }) => {
+        const offset = Number(
+          new URL(request.url).searchParams.get("offset") ?? "0",
+        );
+        return HttpResponse.json({
+          items: [
+            {
+              id: offset === 0 ? 1 : 2,
+              album_artist: "A",
+              title: offset === 0 ? "First Album" : "Second Album",
+              year: 2000,
+              track_count: 10,
+              genre: null,
+            },
+          ],
+          total: 2,
+          limit: 1,
+          offset,
+        });
+      }),
+    );
+
+    renderAtUrl("/", { initialLimit: 1 });
+
+    await screen.findByText("First Album");
+    expect(screen.getByTestId("location-search")).toHaveTextContent("");
+
+    await userEvent.click(screen.getByRole("button", { name: /next/i }));
+
+    await screen.findByText("Second Album");
+    expect(screen.getByTestId("location-search")).toHaveTextContent("offset=1");
+  });
+
+  test("restores the grid page from the URL offset on mount", async () => {
+    server.use(
+      http.get(ALBUMS_URL, ({ request }) => {
+        const offset = Number(
+          new URL(request.url).searchParams.get("offset") ?? "0",
+        );
+        return HttpResponse.json({
+          items: [
+            {
+              id: offset === 0 ? 1 : 2,
+              album_artist: "A",
+              title: offset === 0 ? "First Album" : "Second Album",
+              year: 2000,
+              track_count: 10,
+              genre: null,
+            },
+          ],
+          total: 2,
+          limit: 1,
+          offset,
+        });
+      }),
+    );
+
+    // Deep-linking to ?offset=1 should land directly on the second page.
+    renderAtUrl("/?offset=1", { initialLimit: 1 });
+
+    expect(await screen.findByText("Second Album")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /previous/i })).toBeEnabled();
   });
 
   test("announces the page range in a polite live region", async () => {

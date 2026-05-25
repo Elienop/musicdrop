@@ -4,6 +4,8 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter, RouterProvider } from "react-router";
 
 import { App } from "@/App";
+import { AlbumDetailPage } from "@/pages/albums/AlbumDetailPage";
+import { AlbumsPage } from "@/pages/albums/AlbumsPage";
 
 import "@/styles.css";
 
@@ -15,10 +17,18 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
 });
 
-// Single route for now — the app shell. Feature routes (Albums, etc.) land in
-// later slices. Data router (`createBrowserRouter`) so future loaders/blockers
-// have the API available.
-const router = createBrowserRouter([{ path: "*", element: <App /> }]);
+// `App` is the persistent shell (header + <Outlet>); feature pages render into
+// it. Data router (`createBrowserRouter`) so future loaders/blockers have the
+// API available. The catch-all index falls back to the Albums grid.
+const router = createBrowserRouter([
+  {
+    element: <App />,
+    children: [
+      { path: "/albums/:albumId", element: <AlbumDetailPage /> },
+      { path: "*", element: <AlbumsPage /> },
+    ],
+  },
+]);
 
 const rootEl = document.getElementById("root");
 if (!rootEl) {
