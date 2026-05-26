@@ -1,3 +1,6 @@
+from fastapi.testclient import TestClient
+
+from app.main import app
 from app.models.import_api import (
     ImportAlbumStatus,
     ImportAlbumSummary,
@@ -75,3 +78,14 @@ def test_job_state_round_trips() -> None:
     assert dumped["albums"][1]["status"] == "needs_review"
     assert dumped["summary"] is None
     assert dumped["error"] is None
+
+
+def test_start_import_blank_path_is_422() -> None:
+    # An all-whitespace path fails validation (strip + min_length=1) -> 422.
+    resp = TestClient(app).post("/api/import", json={"path": "   "})
+    assert resp.status_code in (400, 422)
+
+
+def test_get_unknown_job_is_404() -> None:
+    resp = TestClient(app).get("/api/import/does-not-exist")
+    assert resp.status_code == 404

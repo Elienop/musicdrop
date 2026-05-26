@@ -12,8 +12,9 @@ a browsable multi-album queue. There is no apply-ready shape.
 """
 
 from enum import StrEnum
+from typing import Annotated
 
-from pydantic import BaseModel
+from pydantic import BaseModel, StringConstraints
 
 from app.models.import_models import Recommendation
 
@@ -60,7 +61,8 @@ class StartImportRequest(BaseModel):
     v1 reads those from the user's beets config, so it is accepted but unused.
     """
 
-    path: str
+    # Non-blank after stripping (a blank/whitespace path is a 422).
+    path: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     options: dict[str, str] | None = None
 
 

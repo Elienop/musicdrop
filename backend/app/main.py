@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.albums import router as albums_router
 from app.api.artists import router as artists_router
 from app.api.health import router as health_router
+from app.api.import_ import router as import_router
 from app.api.search import router as search_router
 from app.artwork.cache import ArtistImageCache
 from app.artwork.deezer import DeezerArtistImageSource
@@ -69,6 +70,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     lib = _resolve_library()
     app.state.beets_library = lib
 
+    from app.import_jobs.registry import registry as import_registry
+
+    import_registry.attach_library(lib)
+
     # Build the artist-image stack once: a shared httpx client (timeout +
     # descriptive User-Agent) behind the rate-limited, disk-cached service.
     # The cache dir is created lazily on first write, so no startup mkdir.
@@ -104,3 +109,4 @@ app.include_router(health_router, prefix="/api")
 app.include_router(albums_router, prefix="/api")
 app.include_router(artists_router, prefix="/api")
 app.include_router(search_router, prefix="/api")
+app.include_router(import_router, prefix="/api")
