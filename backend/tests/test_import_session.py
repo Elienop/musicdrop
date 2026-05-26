@@ -14,7 +14,13 @@ from beets.importer.tasks import Action, ImportTask
 from beets.library import Item
 
 from app.beets.import_session import ImportBridge, WebImportSession
-from app.models.import_models import ImportAction, ImportChoice
+from app.models.import_models import (
+    AlbumOutcome,
+    AlbumOutcomeStatus,
+    ImportAction,
+    ImportChoice,
+    Recommendation,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -321,3 +327,94 @@ def test_apply_with_out_of_range_index_falls_back_to_top(
     # Out-of-range index defensively falls back to the top candidate.
     assert task.choice_flag is Action.APPLY
     assert task.match is match
+
+
+def test_bridge_outcome_channel_round_trips() -> None:
+    bridge = ImportBridge()
+    assert bridge.drain_outcomes() == []  # empty, non-blocking
+    outcome = AlbumOutcome(
+        album_index=0,
+        folder="/music/album",
+        artist="Radiohead",
+        album="OK Computer",
+        recommendation=Recommendation.strong,
+        confidence=99.0,
+        status=AlbumOutcomeStatus.applied,
+    )
+    bridge.note_outcome(outcome)
+    drained = bridge.drain_outcomes()
+    assert drained == [outcome]
+    # Draining again yields nothing (the queue was consumed).
+    assert bridge.drain_outcomes() == []
+
+
+def test_strong_rec_emits_applied_outcome_without_parking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    match = _build_match(BeetsRec.strong)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.strong)
+
+    task.choose_match(session)
+
+    assert bridge.pending_count() == 0  # never parked (unchanged chunk-1 behavior)
+    outcomes = bridge.drain_outcomes()
+    assert len(outcomes) == 1
+    assert outcomes[0].status is AlbumOutcomeStatus.applied
+    assert outcomes[0].recommendation is Recommendation.strong
+    assert outcomes[0].album == "OK Computer"
+
+
+def test_uncertain_rec_emits_needs_review_outcome_at_park(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    parked = bridge.get_parked(timeout=2.0)
+    assert parked is not None
+    # The needs_review outcome is emitted BEFORE park, so it is already drainable
+    # while the worker blocks on the reply.
+    outcomes = bridge.drain_outcomes()
+    assert len(outcomes) == 1
+    assert outcomes[0].album_index == parked.album_index
+    assert outcomes[0].status is AlbumOutcomeStatus.needs_review
+    assert outcomes[0].recommendation is Recommendation.medium
+
+    bridge.push_choice(parked.album_index, ImportChoice(action=ImportAction.apply))
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+
+
+def test_no_candidates_emits_skipped_outcome(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
+        return ("Artist", "Album", Proposal([], BeetsRec.none))
+
+    monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = ImportTask(
+        toppath=None,
+        paths=[b"/music/album"],
+        items=[Item(artist="Artist", album="Album", title="X", track=1, length=10.0)],
+    )
+    task.lookup_candidates([])
+
+    task.choose_match(session)
+
+    assert bridge.pending_count() == 0
+    outcomes = bridge.drain_outcomes()
+    assert len(outcomes) == 1
+    assert outcomes[0].status is AlbumOutcomeStatus.skipped

@@ -21,8 +21,15 @@ from beets.autotag.match import Recommendation as BeetsRec
 from beets.importer.session import ImportAbortError, ImportSession
 from beets.importer.tasks import Action
 
-from app.beets.import_mapping import map_album_match, map_candidate_options
+from app.beets.import_mapping import (
+    _confidence,
+    _opt_str,
+    map_album_match,
+    map_candidate_options,
+)
 from app.models.import_models import (
+    AlbumOutcome,
+    AlbumOutcomeStatus,
     ImportAction,
     ImportChoice,
     ParkedAlbum,
@@ -52,6 +59,7 @@ class ImportBridge:
 
     def __init__(self) -> None:
         self._out: queue.Queue[ParkedAlbum] = queue.Queue()
+        self._outcomes: queue.Queue[AlbumOutcome] = queue.Queue()
         self._replies: dict[int, queue.Queue[ImportChoice]] = {}
         self._lock = threading.Lock()
         self._pending = 0
@@ -71,7 +79,25 @@ class ImportBridge:
             self._pending -= 1
         return choice
 
+    def note_outcome(self, outcome: AlbumOutcome) -> None:
+        """Record what the worker did with one album (non-blocking).
+
+        Called for EVERY album choose_match processes — auto-applied, skipped, or
+        parked — so the consumer can render the full live feed. Never blocks.
+        """
+        self._outcomes.put_nowait(outcome)
+
     # ----- consumer side -----
+
+    def drain_outcomes(self) -> list[AlbumOutcome]:
+        """Pop every outcome queued since the last drain (non-blocking)."""
+        drained: list[AlbumOutcome] = []
+        while True:
+            try:
+                drained.append(self._outcomes.get_nowait())
+            except queue.Empty:
+                break
+        return drained
 
     def get_parked(self, timeout: float | None = None) -> ParkedAlbum | None:
         """Pop the next parked album, or None on timeout."""
@@ -132,45 +158,85 @@ class WebImportSession(ImportSession):
     def choose_match(self, task: ImportTask) -> Any:
         """Auto-apply a strong match; otherwise park and await the user.
 
-        Returns either an ``AlbumMatch`` (to apply) or an ``Action`` constant.
-        beets' ``set_choice`` turns an AlbumMatch into ``Action.APPLY``.
+        Emits exactly one AlbumOutcome for the album (applied / skipped /
+        needs_review) so the API can show it in the live feed. Returns either an
+        ``AlbumMatch`` (to apply) or an ``Action`` constant.
         """
         # This hook only fires for album tasks, so every candidate is an
         # AlbumMatch; typed as Any since beets' task.candidates is the wider
         # list[AlbumMatch | TrackMatch] union (singletons go through choose_item).
         candidates: list[Any] = list(task.candidates or [])
-        if task.rec == BeetsRec.strong and candidates:
+        # Each album gets a stable index for both its outcome and (if parked) its
+        # reply slot. Serial-only: single-writer counter, no lock (config
+        # ["threaded"] = False keeps choose_match on one thread).
+        index = self._album_index
+        self._album_index += 1
+        rec = task.rec if task.rec is not None else BeetsRec.none
+        recommendation = _REC_MAP.get(rec, Recommendation.none)
+
+        if rec == BeetsRec.strong and candidates:
             # Mirror beets' auto-apply of a strong recommendation.
+            self.bridge.note_outcome(
+                self._outcome(
+                    index, task, recommendation, AlbumOutcomeStatus.applied, match=candidates[0]
+                )
+            )
             return candidates[0]
 
         if not candidates:
             # Nothing to choose from: skip (an empty match can't be applied).
+            self.bridge.note_outcome(
+                self._outcome(index, task, recommendation, AlbumOutcomeStatus.skipped)
+            )
             return Action.SKIP
 
-        # Park: map the top match + the ranked alternatives, push, block.
-        # Serial-only: this session relies on config["threaded"] = False, so
-        # choose_match runs on a single worker thread and _album_index is an
-        # unlocked single-writer counter. Sharing a session or enabling
-        # threading would race two albums onto the same reply slot.
-        index = self._album_index
-        self._album_index += 1
+        # Park: map the top match + ranked alternatives, emit needs_review, push,
+        # block. The outcome is emitted BEFORE park so the API sees the album the
+        # instant it parks (park then blocks on the reply).
         top = candidates[0]
         options = map_candidate_options(candidates)
-        rec = task.rec if task.rec is not None else BeetsRec.none
         candidate = map_album_match(
             top,
             cur_artist=task.cur_artist,
             cur_album=task.cur_album,
             options=options,
-            recommendation=_REC_MAP.get(rec, Recommendation.none),
+            recommendation=recommendation,
         )
         folder = self._task_folder(task)
+        self.bridge.note_outcome(
+            self._outcome(index, task, recommendation, AlbumOutcomeStatus.needs_review, match=top)
+        )
         choice = self.bridge.park(
             ParkedAlbum(album_index=index, folder=folder, candidate=candidate)
         )
         return self._apply_choice(choice, candidates)
 
     # ----- helpers -----
+
+    def _outcome(
+        self,
+        index: int,
+        task: ImportTask,
+        recommendation: Recommendation,
+        status: AlbumOutcomeStatus,
+        *,
+        match: Any | None = None,
+    ) -> AlbumOutcome:
+        """Build a compact feed outcome for one album.
+
+        ``match`` (an AlbumMatch) supplies the confidence when present (applied /
+        needs_review); a skip has no match, so confidence is 0.0.
+        """
+        confidence = _confidence(match.distance) if match is not None else 0.0
+        return AlbumOutcome(
+            album_index=index,
+            folder=self._task_folder(task),
+            artist=_opt_str(task.cur_artist),
+            album=_opt_str(task.cur_album),
+            recommendation=recommendation,
+            confidence=confidence,
+            status=status,
+        )
 
     @staticmethod
     def _apply_choice(choice: ImportChoice, candidates: list[Any]) -> Any:

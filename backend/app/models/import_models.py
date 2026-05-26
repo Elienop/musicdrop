@@ -121,6 +121,37 @@ class ParkedAlbum(BaseModel):
     candidate: Candidate
 
 
+class AlbumOutcomeStatus(StrEnum):
+    """What the worker did with one album, for the live import feed.
+
+    applied      -> a strong match auto-applied (beets applied it inline)
+    needs_review -> an uncertain match was parked and is awaiting a decision
+    skipped      -> nothing to apply (no candidates), so the album was skipped
+    """
+
+    applied = "applied"
+    needs_review = "needs_review"
+    skipped = "skipped"
+
+
+class AlbumOutcome(BaseModel):
+    """A compact per-album record the worker emits for every album it processes.
+
+    Pushed onto the import bridge's non-blocking outcome channel so the API can
+    render the live feed (auto-applied + skipped + the current parked album) and
+    a truthful summary. The full Candidate (for the review screen) travels
+    separately on the parked album; this stays small on purpose.
+    """
+
+    album_index: int
+    folder: str
+    artist: str | None
+    album: str | None
+    recommendation: Recommendation
+    confidence: float
+    status: AlbumOutcomeStatus
+
+
 class ImportAction(StrEnum):
     """The decisions the user can return for a parked album.
 
