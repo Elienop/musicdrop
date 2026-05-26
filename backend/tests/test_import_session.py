@@ -1,4 +1,6 @@
 import logging
+import threading
+from collections.abc import Iterator
 from typing import Any
 
 import beets.importer.tasks as beets_tasks
@@ -13,6 +15,16 @@ from beets.library import Item
 
 from app.beets.import_session import ImportBridge, WebImportSession
 from app.models.import_models import ImportAction, ImportChoice
+
+
+@pytest.fixture(autouse=True)
+def _force_serial_imports() -> Iterator[None]:
+    # Imports always run single-threaded (config["threaded"] = False). Reset it
+    # around every test so none leaks the flag to the next — the worker test
+    # deliberately flips it True to prove run_import_worker overrides it.
+    config["threaded"] = False
+    yield
+    config["threaded"] = False
 
 
 def _build_match(rec_level: BeetsRec) -> AlbumMatch:
@@ -78,7 +90,6 @@ def _make_task(match: AlbumMatch, monkeypatch: pytest.MonkeyPatch, rec: BeetsRec
 
 
 def test_strong_rec_auto_applies_top_match(monkeypatch: pytest.MonkeyPatch) -> None:
-    config["threaded"] = False
     match = _build_match(BeetsRec.strong)
     bridge = ImportBridge()
     session = _make_session(bridge)
@@ -96,9 +107,6 @@ def test_strong_rec_auto_applies_top_match(monkeypatch: pytest.MonkeyPatch) -> N
 def test_uncertain_rec_parks_then_applies_pushed_choice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import threading
-
-    config["threaded"] = False
     match = _build_match(BeetsRec.medium)
     bridge = ImportBridge()
     session = _make_session(bridge)
@@ -127,9 +135,6 @@ def test_uncertain_rec_parks_then_applies_pushed_choice(
 
 
 def test_uncertain_rec_skip_choice_skips(monkeypatch: pytest.MonkeyPatch) -> None:
-    import threading
-
-    config["threaded"] = False
     match = _build_match(BeetsRec.medium)
     bridge = ImportBridge()
     session = _make_session(bridge)
@@ -152,3 +157,88 @@ def test_uncertain_rec_skip_choice_skips(monkeypatch: pytest.MonkeyPatch) -> Non
     assert task.choice_flag is Action.SKIP
     assert task.skip is True
     assert task.match is None
+
+
+def test_abort_choice_raises_import_abort(monkeypatch: pytest.MonkeyPatch) -> None:
+    from beets.importer.session import ImportAbortError
+
+    config["threaded"] = False
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+
+    raised: dict[str, bool] = {"abort": False}
+    done = threading.Event()
+
+    def worker() -> None:
+        try:
+            task.choose_match(session)
+        except ImportAbortError:
+            raised["abort"] = True
+        finally:
+            done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    parked = bridge.get_parked(timeout=2.0)
+    assert parked is not None
+    # The abort action makes the session raise beets' ImportAbortError out of
+    # choose_match; beets' run() loop (chunk 2) catches it to stop the import.
+    bridge.push_choice(parked.album_index, ImportChoice(action=ImportAction.abort))
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert raised["abort"] is True
+
+
+@pytest.mark.anyio
+async def test_bridge_ferries_candidate_out_and_choice_in_across_threads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Demonstrate the async-consumer shape: a worker thread parks an album and
+    an async consumer (via anyio.to_thread) drains it and replies. This is the
+    seam the future async API layer plugs into.
+    """
+    import anyio
+
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+
+    worker = threading.Thread(target=lambda: task.choose_match(session), daemon=True)
+    worker.start()
+
+    parked = await anyio.to_thread.run_sync(lambda: bridge.get_parked(2.0))
+    assert parked is not None
+    assert parked.candidate.data_source == "MusicBrainz"
+    assert parked.candidate.options  # ranked alternatives mapped
+
+    await anyio.to_thread.run_sync(
+        lambda: bridge.push_choice(
+            parked.album_index, ImportChoice(action=ImportAction.apply)
+        )
+    )
+    await anyio.to_thread.run_sync(lambda: worker.join(2.0))
+    assert task.choice_flag is Action.APPLY
+
+
+def test_run_import_worker_forces_single_threaded_and_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_import_worker must set config['threaded']=False and invoke session.run().
+
+    We stub session.run to record the threaded flag at call time, proving the
+    worker enforces serial execution regardless of the ambient config.
+    """
+    from app.beets.import_session import run_import_worker
+
+    config["threaded"] = True  # ambient default; the worker must override it.
+    seen: dict[str, Any] = {}
+
+    class FakeSession:
+        def run(self) -> None:
+            seen["threaded"] = bool(config["threaded"])
+
+    run_import_worker(FakeSession())  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
+    assert seen["threaded"] is False

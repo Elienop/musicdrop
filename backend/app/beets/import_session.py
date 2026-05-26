@@ -16,6 +16,7 @@ import queue
 import threading
 from typing import TYPE_CHECKING, Any
 
+from beets import config
 from beets.autotag.match import Recommendation as BeetsRec
 from beets.importer.session import ImportAbortError, ImportSession
 from beets.importer.tasks import Action
@@ -199,3 +200,15 @@ class WebImportSession(ImportSession):
         if task.paths:
             return os.fsdecode(task.paths[0])
         return ""
+
+
+def run_import_worker(session: WebImportSession) -> None:
+    """Run one import session serially on the calling (worker) thread.
+
+    Forces single-threaded execution before delegating to beets' run loop, so
+    the global beets config/plugin singletons are never touched concurrently.
+    Intended to be the target of a dedicated worker thread started by the API
+    layer (chunk 2); here it is the clean, tested entry point.
+    """
+    config["threaded"] = False
+    session.run()
