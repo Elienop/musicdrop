@@ -135,8 +135,7 @@ class ImportJobRegistry:
         """True if the album was imported — auto-applied, or a parked album the
         user resolved with an apply-like action (apply/asis/astracks)."""
         return row.status is ImportAlbumStatus.applied or (
-            row.status is ImportAlbumStatus.decided
-            and row.decided_action in _APPLY_ACTIONS
+            row.status is ImportAlbumStatus.decided and row.decided_action in _APPLY_ACTIONS
         )
 
     @staticmethod
@@ -146,10 +145,7 @@ class ImportJobRegistry:
             1
             for a in job.albums.values()
             if a.status is ImportAlbumStatus.skipped
-            or (
-                a.status is ImportAlbumStatus.decided
-                and a.decided_action not in _APPLY_ACTIONS
-            )
+            or (a.status is ImportAlbumStatus.decided and a.decided_action not in _APPLY_ACTIONS)
         )
         return f"{imported} imported, {skipped} skipped"
 

@@ -24,9 +24,7 @@ from app.models.import_models import Candidate, ImportChoice
 router = APIRouter(tags=["import"])
 
 
-@router.post(
-    "/import", response_model=StartImportResponse, status_code=status.HTTP_202_ACCEPTED
-)
+@router.post("/import", response_model=StartImportResponse, status_code=status.HTTP_202_ACCEPTED)
 async def start_import(
     body: StartImportRequest,
     reg: Annotated[ImportJobRegistry, Depends(get_registry)],
@@ -68,9 +66,7 @@ async def get_import_album(
         ) from None
 
 
-@router.post(
-    "/import/{job_id}/albums/{index}/choice", status_code=status.HTTP_204_NO_CONTENT
-)
+@router.post("/import/{job_id}/albums/{index}/choice", status_code=status.HTTP_204_NO_CONTENT)
 async def post_import_choice(
     job_id: str,
     index: Annotated[int, Path(ge=0)],
