@@ -42,7 +42,7 @@ ignore_missing_imports = true
 # strict mode. The adapter is the boundary that absorbs that, and the album
 # tests build a real beets library through the same untyped surface.
 [[tool.mypy.overrides]]
-module = ["app.beets.library", "app.beets.import_mapping", "app.beets.import_session", "tests.test_albums", "tests.test_artists", "tests.test_search", "tests.test_import_mapping", "tests.test_import_session"]
+module = ["app.beets.library", "app.beets.import_mapping", "app.beets.import_session", "app.import_jobs.runner", "tests.test_albums", "tests.test_artists", "tests.test_search", "tests.test_import_mapping", "tests.test_import_session"]
 disallow_untyped_calls = false
 
 [tool.pytest.ini_options]
