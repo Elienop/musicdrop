@@ -272,6 +272,16 @@ class ImportJobRegistry:
 registry = ImportJobRegistry()
 
 
+def get_registry() -> ImportJobRegistry:
+    """Return the current process-global import registry.
+
+    A function (not a module-level ``from ... import registry``) so callers read
+    the LIVE binding — tests swap it via ``reset_registry`` and that swap must be
+    visible to the API router. Usable directly as a FastAPI dependency.
+    """
+    return registry
+
+
 def reset_registry(runner: ImportRunner | None = None) -> ImportJobRegistry:
     """Replace the global registry (test helper). Returns the new instance."""
     global registry

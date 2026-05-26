@@ -11,9 +11,9 @@ No beets imports: the registry + models are the whole surface here.
 
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, status
 
-from app.import_jobs.registry import registry
+from app.import_jobs.registry import ImportJobRegistry, get_registry
 from app.models.import_api import (
     ImportJobState,
     StartImportRequest,
@@ -27,9 +27,12 @@ router = APIRouter(tags=["import"])
 @router.post(
     "/import", response_model=StartImportResponse, status_code=status.HTTP_202_ACCEPTED
 )
-async def start_import(body: StartImportRequest) -> StartImportResponse:
+async def start_import(
+    body: StartImportRequest,
+    reg: Annotated[ImportJobRegistry, Depends(get_registry)],
+) -> StartImportResponse:
     try:
-        job_id = registry.start(body.path)
+        job_id = reg.start(body.path)
     except RuntimeError:
         # An import is already running (single-slot policy).
         raise HTTPException(
@@ -39,9 +42,11 @@ async def start_import(body: StartImportRequest) -> StartImportResponse:
 
 
 @router.get("/import/{job_id}", response_model=ImportJobState)
-async def get_import_state(job_id: str) -> ImportJobState:
+async def get_import_state(
+    job_id: str, reg: Annotated[ImportJobRegistry, Depends(get_registry)]
+) -> ImportJobState:
     try:
-        return registry.state(job_id)
+        return reg.state(job_id)
     except KeyError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Import job not found"
@@ -49,9 +54,13 @@ async def get_import_state(job_id: str) -> ImportJobState:
 
 
 @router.get("/import/{job_id}/albums/{index}", response_model=Candidate)
-async def get_import_album(job_id: str, index: Annotated[int, Path(ge=0)]) -> Candidate:
+async def get_import_album(
+    job_id: str,
+    index: Annotated[int, Path(ge=0)],
+    reg: Annotated[ImportJobRegistry, Depends(get_registry)],
+) -> Candidate:
     try:
-        return registry.candidate(job_id, index)
+        return reg.candidate(job_id, index)
     except KeyError:
         # Either the job is unknown or no album is parked at this index.
         raise HTTPException(
@@ -63,10 +72,13 @@ async def get_import_album(job_id: str, index: Annotated[int, Path(ge=0)]) -> Ca
     "/import/{job_id}/albums/{index}/choice", status_code=status.HTTP_204_NO_CONTENT
 )
 async def post_import_choice(
-    job_id: str, index: Annotated[int, Path(ge=0)], choice: ImportChoice
+    job_id: str,
+    index: Annotated[int, Path(ge=0)],
+    choice: ImportChoice,
+    reg: Annotated[ImportJobRegistry, Depends(get_registry)],
 ) -> None:
     try:
-        registry.record_choice(job_id, index, choice)
+        reg.record_choice(job_id, index, choice)
     except KeyError:
         # No job, or no album parked at this index (incl. a second choice after
         # the worker advanced — park popped the slot).
