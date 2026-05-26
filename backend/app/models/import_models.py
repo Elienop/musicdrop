@@ -126,7 +126,8 @@ class ImportAction(StrEnum):
 
     Subset of beets' choices relevant to chunk 1 (enter-id / search-again are a
     later chunk). ``apply`` selects a ranked option by index; ``abort`` stops the
-    whole import (the session turns it into an ImportAbort the worker handles).
+    whole import (the session raises beets' ``ImportAbortError``, which beets'
+    ``run()`` catches to stop cleanly).
     """
 
     apply = "apply"
