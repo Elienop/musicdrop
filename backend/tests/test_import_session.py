@@ -189,6 +189,8 @@ def test_abort_choice_raises_import_abort(monkeypatch: pytest.MonkeyPatch) -> No
     assert done.wait(timeout=2.0)
     t.join(timeout=2.0)
     assert raised["abort"] is True
+    # The aborted album's reply slot was cleaned up (no bridge leak).
+    assert bridge.pending_count() == 0
 
 
 @pytest.mark.anyio
@@ -240,3 +242,82 @@ def test_run_import_worker_forces_single_threaded_and_runs(
 
     run_import_worker(FakeSession())  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
     assert seen["threaded"] is False
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_flag"),
+    [
+        (ImportAction.asis, Action.ASIS),
+        (ImportAction.astracks, Action.TRACKS),
+    ],
+)
+def test_uncertain_rec_translates_asis_and_astracks(
+    monkeypatch: pytest.MonkeyPatch, action: ImportAction, expected_flag: Action
+) -> None:
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    parked = bridge.get_parked(timeout=2.0)
+    assert parked is not None
+    bridge.push_choice(parked.album_index, ImportChoice(action=action))
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert task.choice_flag is expected_flag
+
+
+def test_no_candidates_skips_without_parking(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
+        return ("Artist", "Album", Proposal([], BeetsRec.none))
+
+    monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = ImportTask(
+        toppath=None,
+        paths=[b"/music/album"],
+        items=[Item(artist="Artist", album="Album", title="X", track=1, length=10.0)],
+    )
+    task.lookup_candidates([])
+
+    task.choose_match(session)
+
+    assert task.choice_flag is Action.SKIP
+    assert bridge.pending_count() == 0
+
+
+def test_apply_with_out_of_range_index_falls_back_to_top(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    parked = bridge.get_parked(timeout=2.0)
+    assert parked is not None
+    bridge.push_choice(
+        parked.album_index, ImportChoice(action=ImportAction.apply, candidate_index=99)
+    )
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    # Out-of-range index defensively falls back to the top candidate.
+    assert task.choice_flag is Action.APPLY
+    assert task.match is match
