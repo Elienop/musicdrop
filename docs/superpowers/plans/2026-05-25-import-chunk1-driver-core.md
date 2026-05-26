@@ -43,7 +43,8 @@ These were confirmed by reading the source and by live spikes in the venv. Encod
 | `backend/app/beets/import_mapping.py` | Create | Pure functions mapping beets `AlbumMatch`/`Distance`/`AlbumInfo`/`TrackInfo` + current `ImportTask` state → the models above. Imports beets (allowed; inside `app/beets/`). No I/O, no threads. |
 | `backend/app/beets/import_session.py` | Create | `WebImportSession(ImportSession)` overriding the four hooks; the `ImportBridge` (thread-safe out-queue + per-album reply events); `run_import_worker` helper that runs one session serially on a dedicated thread with `config["threaded"] = False`. The only place that subclasses beets' session. |
 | `backend/app/beets/__init__.py` | (unchanged) | Existing package marker. |
-| `backend/tests/test_import_mapping.py` | Create | Hermetic tests for the mapping (distance→%, album diff, track changes, missing/extra). In-memory `Item`s + canned `AlbumMatch`; no network. |
+| `backend/tests/test_import_models.py` | Create | Hermetic tests for the Pydantic models (Task 1): enum values, `Candidate` round-trip, `ParkedAlbum`, `ImportChoice`. No beets, no network. |
+| `backend/tests/test_import_mapping.py` | Create | Hermetic tests for the mapping (Task 2): distance→%, album diff, track changes, missing/extra. In-memory `Item`s + canned `AlbumMatch`; no network. |
 | `backend/tests/test_import_session.py` | Create | Hermetic tests for the session + bridge: strong auto-applies; uncertain parks then the pushed choice applies; skip; abort; the queue/reply bridge ferries a `Candidate` out and an `ImportChoice` in across threads. Monkeypatch `beets.importer.tasks.tag_album`. |
 | `backend/pyproject.toml` | Modify | Add `tests.test_import_mapping` and `tests.test_import_session` to the `disallow_untyped_calls = false` mypy override list (they build beets objects through the untyped surface). |
 
@@ -66,11 +67,11 @@ These were confirmed by reading the source and by live spikes in the venv. Encod
 
 **Files:**
 - Create: `backend/app/models/import_models.py`
-- Test: `backend/tests/test_import_mapping.py` (start the file here; Task 2 extends it)
+- Test: `backend/tests/test_import_models.py` (model tests; Task 2 has its own `test_import_mapping.py`)
 
 - [ ] **Step 1: Write the failing test**
 
-Create `backend/tests/test_import_mapping.py`:
+Create `backend/tests/test_import_models.py`:
 
 ```python
 from app.models.import_models import (
@@ -186,7 +187,7 @@ def test_import_choice_actions() -> None:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv --directory backend run pytest tests/test_import_mapping.py -v`
+Run: `uv --directory backend run pytest tests/test_import_models.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'app.models.import_models'`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -336,14 +337,14 @@ class ImportChoice(BaseModel):
     """A user's decision for one parked album, pushed back over the bridge."""
 
     action: ImportAction
-    # Which ranked option to apply (index into Candidate.options); only meaningful
-    # for action == apply. Defaults to the top candidate.
+    # Index into Candidate.options; only meaningful when action == apply.
+    # None means "apply the top candidate" — the session resolves None -> 0.
     candidate_index: int | None = None
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `uv --directory backend run pytest tests/test_import_mapping.py -v`
+Run: `uv --directory backend run pytest tests/test_import_models.py -v`
 Expected: PASS (4 tests).
 
 - [ ] **Step 5: Typecheck + lint**
@@ -354,7 +355,7 @@ Expected: no errors. (`import_models.py` has no beets imports, so no override ne
 - [ ] **Step 6: Commit**
 
 ```bash
-git add backend/app/models/import_models.py backend/tests/test_import_mapping.py
+git add backend/app/models/import_models.py backend/tests/test_import_models.py
 git commit -m "feat(import): add Pydantic models for the import driver contract"
 ```
 
@@ -365,7 +366,7 @@ git commit -m "feat(import): add Pydantic models for the import driver contract"
 **Files:**
 - Create: `backend/app/beets/import_mapping.py`
 - Modify: `backend/pyproject.toml` (add `tests.test_import_mapping` to the `disallow_untyped_calls = false` override)
-- Test: `backend/tests/test_import_mapping.py` (extend)
+- Test: `backend/tests/test_import_mapping.py` (create — model tests live in `test_import_models.py`)
 
 - [ ] **Step 1: Add the mypy override for the test module**
 
@@ -377,22 +378,20 @@ module = ["app.beets.library", "app.beets.import_mapping", "tests.test_albums", 
 disallow_untyped_calls = false
 ```
 
-- [ ] **Step 2: Write the failing test (append to `tests/test_import_mapping.py`)**
+- [ ] **Step 2: Write the failing test (create `tests/test_import_mapping.py`)**
 
-Add these imports at the top of the existing test file:
+Create `backend/tests/test_import_mapping.py` with this import header:
 
 ```python
-import os
-from pathlib import Path
-
 from beets.autotag.hooks import AlbumInfo, AlbumMatch, TrackInfo
 from beets.autotag.match import assign_items, distance
 from beets.library import Item
 
 from app.beets.import_mapping import map_album_match
+from app.models.import_models import TrackChangeStatus
 ```
 
-Then append:
+Then add the helpers and tests:
 
 ```python
 def _item(
@@ -505,7 +504,7 @@ def test_map_options_from_candidate_list() -> None:
 - [ ] **Step 3: Run test to verify it fails**
 
 Run: `uv --directory backend run pytest tests/test_import_mapping.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'app.beets.import_mapping'` (the 4 Task-1 tests still pass).
+Expected: FAIL — `ModuleNotFoundError: No module named 'app.beets.import_mapping'` (the Task-1 model tests live in `test_import_models.py` and are unaffected).
 
 - [ ] **Step 4: Write minimal implementation**
 
