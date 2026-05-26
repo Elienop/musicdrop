@@ -89,9 +89,7 @@ class ImportBridge:
         try:
             reply.put_nowait(choice)
         except queue.Full:
-            raise RuntimeError(
-                f"album {album_index} already has a pending choice"
-            ) from None
+            raise RuntimeError(f"album {album_index} already has a pending choice") from None
 
     def pending_count(self) -> int:
         with self._lock:

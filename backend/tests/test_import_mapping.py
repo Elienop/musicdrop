@@ -7,9 +7,7 @@ from app.beets.import_mapping import map_album_match
 from app.models.import_models import TrackChangeStatus
 
 
-def _item(
-    *, album: str, title: str, track: int, length: float, artist: str = "Radiohead"
-) -> Item:
+def _item(*, album: str, title: str, track: int, length: float, artist: str = "Radiohead") -> Item:
     # In-memory item, no DB add and no real audio file needed: the mapping and
     # the choose_match seam never touch the filesystem (we never call run()).
     item = Item(artist=artist, album=album, title=title, track=track, length=length)

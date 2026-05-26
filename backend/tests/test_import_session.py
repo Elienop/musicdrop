@@ -215,9 +215,7 @@ async def test_bridge_ferries_candidate_out_and_choice_in_across_threads(
     assert parked.candidate.options  # ranked alternatives mapped
 
     await anyio.to_thread.run_sync(
-        lambda: bridge.push_choice(
-            parked.album_index, ImportChoice(action=ImportAction.apply)
-        )
+        lambda: bridge.push_choice(parked.album_index, ImportChoice(action=ImportAction.apply))
     )
     await anyio.to_thread.run_sync(lambda: worker.join(2.0))
     assert task.choice_flag is Action.APPLY
