@@ -32,7 +32,7 @@ describe("announceMessage", () => {
         notFound: true,
         data: undefined,
       }),
-    ).toMatch(/no longer available/i);
+    ).toMatch(/gone/i);
     expect(
       announceMessage({
         isPending: false,
@@ -40,7 +40,7 @@ describe("announceMessage", () => {
         notFound: false,
         data: undefined,
       }),
-    ).toMatch(/couldn't/i);
+    ).toMatch(/could not be loaded/i);
     expect(
       announceMessage({
         isPending: false,

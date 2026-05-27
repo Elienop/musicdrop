@@ -121,11 +121,15 @@ function ImportRun({ jobId }: { jobId: string }) {
   const { data, isPending, isError, error, refetch } = useImportJob(jobId);
   const notFound = error instanceof ImportJobNotFoundError;
   // Mounted in every branch (incl. loading) so a screen reader has a stable
-  // announcer; throttled so a fast scan's 1s poll doesn't spam it.
-  const status = useThrottledValue(
-    announceMessage({ isPending, isError, notFound, data }),
-    4000,
-  );
+  // announcer; throttled so a fast scan's 1s poll doesn't spam it. Terminal
+  // states announce immediately (bypass the throttle): the import won't change
+  // again, and the user may navigate away inside the throttle window, which
+  // would otherwise swallow the once-only outcome.
+  const message = announceMessage({ isPending, isError, notFound, data });
+  const throttled = useThrottledValue(message, 4000);
+  const terminal =
+    notFound || isError || data?.phase === "done" || data?.phase === "failed";
+  const status = terminal ? message : throttled;
   const announcer = (
     <p className="sr-only" role="status" aria-live="polite">
       {status}

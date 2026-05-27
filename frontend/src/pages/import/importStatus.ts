@@ -10,8 +10,11 @@ export function announceMessage(args: {
   data: ImportJobState | undefined;
 }): string {
   const { isPending, isError, notFound, data } = args;
-  if (notFound) return "This import is no longer available.";
-  if (isError) return "Couldn't load the import.";
+  // Terminal phrasings are deliberately distinct from the visible panels'
+  // headings ("This import is no longer available" / "Couldn't load the
+  // import") so the sr-only announcer never substring-collides with them.
+  if (notFound) return "That import is gone. It may have expired.";
+  if (isError) return "The import could not be loaded.";
   if (isPending || !data) return "Loading the import.";
   if (data.phase === "failed") return "The import failed.";
   if (data.phase === "done") {
@@ -24,6 +27,8 @@ export function announceMessage(args: {
   const { applied, skipped, needs_review } = data.progress;
   let m = `Imported ${applied}.`;
   if (skipped > 0) m += ` Skipped ${skipped}.`;
-  if (needs_review > 0) m += " One album awaiting review.";
+  if (needs_review > 0) {
+    m += ` ${needs_review} album${needs_review === 1 ? "" : "s"} awaiting review.`;
+  }
   return m;
 }
