@@ -181,7 +181,11 @@ async function submitChoice(
   if (response.status === 404 || response.status === 409) {
     return;
   }
-  if (error) {
+  // Any other non-2xx is a hard failure. Guard on `!response.ok`, not just
+  // `error`: a bodyless 5xx (e.g. a gateway 502) leaves openapi-fetch's `error`
+  // undefined, and on this no-undo action we must surface it, never resolve as
+  // if the choice landed.
+  if (error || !response.ok) {
     throw new Error("Failed to submit choice");
   }
 }

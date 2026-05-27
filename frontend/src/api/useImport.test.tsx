@@ -216,4 +216,20 @@ describe("useSubmitChoice", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
   });
+
+  test("a bodyless 5xx rejects (no silent success on a no-undo action)", async () => {
+    // A gateway-style empty-body 500 leaves openapi-fetch's `error` undefined;
+    // the hook must still reject (guarding on !response.ok), so the review
+    // screen surfaces the failure rather than navigating away as if it landed.
+    server.use(
+      http.post(CHOICE_URL, () => new HttpResponse(null, { status: 500 })),
+    );
+
+    const { result } = renderHook(() => useSubmitChoice("job-1"), {
+      wrapper: wrapper(),
+    });
+    result.current.mutate({ index: 1, choice: { action: "skip" } });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+  });
 });
