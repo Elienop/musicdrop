@@ -130,6 +130,18 @@ describe("ImportPage — live feed", () => {
     expect(screen.getByText("Needs review")).toBeInTheDocument();
   });
 
+  test("pins the needs-review album to the top of the feed", async () => {
+    server.use(http.get(JOB_URL, () => HttpResponse.json(makeJob())));
+    renderAt("/import?job=job-1");
+
+    await screen.findByText("OK Computer");
+    // makeJob: index 0 = applied "OK Computer", index 1 = needs_review "Kid A".
+    // The one awaiting review is pinned first, above the already-applied row.
+    const rows = screen.getAllByRole("listitem");
+    expect(rows[0]).toHaveTextContent("Kid A");
+    expect(rows[1]).toHaveTextContent("OK Computer");
+  });
+
   test("the Review affordance links to the right album index", async () => {
     server.use(http.get(JOB_URL, () => HttpResponse.json(makeJob())));
     renderAt("/import?job=job-1");

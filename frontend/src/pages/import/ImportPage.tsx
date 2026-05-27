@@ -254,9 +254,18 @@ function FeedList({
   albums: ImportAlbumSummary[];
   jobId: string;
 }) {
+  // Pin the album awaiting review to the top — in sequential review it's the one
+  // thing to act on (and always the latest), so its Review button stays in view
+  // without scrolling. Everything else keeps its import order below. On the done
+  // screen nothing is needs_review, so this is a no-op (stays chronological).
+  const ordered = [...albums].sort(
+    (a, b) =>
+      Number(b.status === "needs_review") - Number(a.status === "needs_review") ||
+      a.index - b.index,
+  );
   return (
     <ul className="border-border divide-border divide-y rounded-xl border">
-      {albums.map((album) => (
+      {ordered.map((album) => (
         <li key={album.index}>
           <FeedRow album={album} jobId={jobId} />
         </li>
