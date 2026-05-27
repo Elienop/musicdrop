@@ -1,4 +1,4 @@
-import { AlertCircle, FolderInput, Loader2 } from "lucide-react";
+import { AlertCircle, CircleCheck, FolderInput, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
@@ -147,7 +147,7 @@ function ImportRun({ jobId }: { jobId: string }) {
   if (data.phase === "done") {
     return (
       <ImportShell>
-        <JobDone summary={data.summary} albums={data.albums} jobId={jobId} />
+        <JobDone state={data} jobId={jobId} />
       </ImportShell>
     );
   }
@@ -310,31 +310,26 @@ function folderName(folder: string): string {
   return parts.at(-1) ?? folder;
 }
 
-/** done: a minimal summary + a link to the library (chunk 5 enriches this). */
-function JobDone({
-  summary,
-  albums,
-  jobId,
-}: {
-  summary: string | null;
-  albums: ImportAlbumSummary[];
-  jobId: string;
-}) {
+/** done: a legible outcome — imported/skipped counts (counting auto-applied
+ * albums), where each landed (the feed list), and a way into the library. */
+function JobDone({ state, jobId }: { state: ImportJobState; jobId: string }) {
+  const { applied, skipped } = state.progress;
   return (
     <div className="flex flex-col gap-4">
       <div className="border-border flex flex-col items-center gap-3 rounded-xl border py-12 text-center">
-        <FolderInput className="text-muted-foreground size-10" aria-hidden="true" />
+        <CircleCheck className="text-muted-foreground size-10" aria-hidden="true" />
         <div className="flex flex-col gap-1">
           <p className="font-medium">Import finished</p>
           <p className="text-muted-foreground text-sm">
-            {summary ?? "Done."}
+            {applied} {applied === 1 ? "album" : "albums"} imported
+            {` · ${skipped} skipped`}
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
           <Link to="/">View in library</Link>
         </Button>
       </div>
-      {albums.length > 0 && <FeedList albums={albums} jobId={jobId} />}
+      {state.albums.length > 0 && <FeedList albums={state.albums} jobId={jobId} />}
     </div>
   );
 }

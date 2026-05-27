@@ -187,7 +187,7 @@ describe("ImportPage — live feed", () => {
 });
 
 describe("ImportPage — terminal states", () => {
-  test("done shows the summary + a View-in-library link", async () => {
+  test("done shows the imported/skipped outcome + a View-in-library link", async () => {
     server.use(
       http.get(JOB_URL, () =>
         HttpResponse.json(
@@ -202,7 +202,10 @@ describe("ImportPage — terminal states", () => {
     renderAt("/import?job=job-1");
 
     expect(await screen.findByText("Import finished")).toBeInTheDocument();
-    expect(screen.getByText("2 imported, 0 skipped")).toBeInTheDocument();
+    // The outcome is derived from progress (structured), counting auto-applied
+    // strong albums — not the raw summary string.
+    expect(screen.getByText(/2 albums imported/i)).toBeInTheDocument();
+    expect(screen.getByText(/0 skipped/i)).toBeInTheDocument();
     const link = screen.getByRole("link", { name: /view in library/i });
     expect(link).toHaveAttribute("href", "/");
   });
