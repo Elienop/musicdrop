@@ -23,6 +23,8 @@ def test_candidate_round_trips_through_pydantic() -> None:
         recommendation=Recommendation.strong,
         data_source="MusicBrainz",
         data_url="https://musicbrainz.org/release/a1",
+        cover_after_url="https://coverartarchive.org/release/a1/front-500",
+        has_current_art=False,
         changed_fields=["album", "label"],
         album_before=AlbumChange(
             artist="Radiohead",
@@ -76,6 +78,8 @@ def test_parked_album_wraps_a_candidate() -> None:
         recommendation=Recommendation.medium,
         data_source="MusicBrainz",
         data_url=None,
+        cover_after_url=None,
+        has_current_art=False,
         changed_fields=[],
         album_before=AlbumChange(
             artist="A", album="B", year=None, label=None, country=None, media=None

@@ -3,8 +3,19 @@ from beets.autotag.hooks import AlbumInfo, AlbumMatch, TrackInfo
 from beets.autotag.match import assign_items
 from beets.library import Item
 
-from app.beets.import_mapping import map_album_match
+from app.beets.import_mapping import coverartarchive_front_url, map_album_match
 from app.models.import_models import TrackChangeStatus
+
+
+def test_caa_url_for_musicbrainz_release() -> None:
+    url = coverartarchive_front_url(data_source="MusicBrainz", album_id="abcd-1234")
+    assert url == "https://coverartarchive.org/release/abcd-1234/front-500"
+
+
+def test_caa_url_none_for_non_musicbrainz_or_missing_id() -> None:
+    assert coverartarchive_front_url(data_source="Discogs", album_id="x") is None
+    assert coverartarchive_front_url(data_source="MusicBrainz", album_id=None) is None
+    assert coverartarchive_front_url(data_source=None, album_id="x") is None
 
 
 def _item(*, album: str, title: str, track: int, length: float, artist: str = "Radiohead") -> Item:

@@ -101,6 +101,13 @@ class Candidate(BaseModel):
     recommendation: Recommendation
     data_source: str | None
     data_url: str | None
+    # The matched release's Cover Art Archive front-image URL (MusicBrainz only),
+    # or None. The browser fetches it directly and falls back to a placeholder on
+    # error - so a release with no CAA art degrades gracefully.
+    cover_after_url: str | None
+    # Whether the current files carry embedded cover art. Drives the "+ cover art"
+    # change chip and whether the "before" panel attempts to load an image.
+    has_current_art: bool
     changed_fields: list[str]
     album_before: AlbumChange
     album_after: AlbumChange

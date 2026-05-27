@@ -33,6 +33,23 @@ def _confidence(distance: Any) -> float:
     return round((1.0 - float(distance)) * 100.0, 1)
 
 
+def coverartarchive_front_url(*, data_source: str | None, album_id: str | None) -> str | None:
+    """The Cover Art Archive front-image URL for a MusicBrainz release, or None.
+
+    CAA is keyed by the MusicBrainz release MBID (``AlbumInfo.album_id``). Only
+    MusicBrainz matches have one; other sources (Discogs, etc.) return None and
+    the UI shows a placeholder. ``front-500`` is CAA's 500px thumbnail rendition.
+    """
+    if data_source is None or album_id is None:
+        return None
+    if data_source.strip().lower() != "musicbrainz":
+        return None
+    mbid = str(album_id).strip()
+    if not mbid:
+        return None
+    return f"https://coverartarchive.org/release/{mbid}/front-500"
+
+
 def _opt_str(value: Any) -> str | None:
     if value is None:
         return None
@@ -153,6 +170,7 @@ def map_album_match(
     cur_album: str | None,
     options: list[CandidateOption],
     recommendation: Recommendation = Recommendation.none,
+    has_current_art: bool = False,
 ) -> Candidate:
     """Map a beets AlbumMatch (+ current task state) to a Candidate.
 
@@ -164,6 +182,11 @@ def map_album_match(
         recommendation=recommendation,
         data_source=_opt_str(match.info.data_source),
         data_url=_opt_str(match.info.data_url),
+        cover_after_url=coverartarchive_front_url(
+            data_source=_opt_str(match.info.data_source),
+            album_id=_opt_str(getattr(match.info, "album_id", None)),
+        ),
+        has_current_art=has_current_art,
         changed_fields=list(match.distance.generic_penalty_keys),
         album_before=_album_change_from_current(
             list(match.mapping.keys()) + list(match.extra_items),
