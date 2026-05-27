@@ -13,6 +13,8 @@ import { NotFoundPage } from "@/pages/NotFoundPage";
 import { AlbumDetailPage } from "@/pages/albums/AlbumDetailPage";
 import { ArtistAlbumsPage } from "@/pages/artists/ArtistAlbumsPage";
 import { ArtistsPage } from "@/pages/artists/ArtistsPage";
+import { ImportCandidatePage } from "@/pages/import/ImportCandidatePage";
+import { ImportPage } from "@/pages/import/ImportPage";
 import { server } from "@/test/msw-server";
 
 const HEALTH_URL = `${window.location.origin}/api/health`;
@@ -29,6 +31,8 @@ const routes = [
       { path: "/artists", element: <Navigate to="/" replace /> },
       { path: "/artists/:artistName", element: <ArtistAlbumsPage /> },
       { path: "/albums/:albumId", element: <AlbumDetailPage /> },
+      { path: "/import", element: <ImportPage /> },
+      { path: "/import/albums/:index", element: <ImportCandidatePage /> },
       { path: "*", element: <NotFoundPage /> },
     ],
   },
@@ -78,6 +82,22 @@ describe("routing (artist spine)", () => {
     // Lands on the roster, not a dead-end empty parent.
     expect(
       await screen.findByRole("heading", { level: 2, name: "Artists" }),
+    ).toBeInTheDocument();
+  });
+
+  test("/import renders the import entry page", async () => {
+    renderAt("/import");
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "Import music" }),
+    ).toBeInTheDocument();
+  });
+
+  test("/import/albums/:index renders the candidate-review page", async () => {
+    // No ?job= in the URL, so the review page shows its no-job notice (and
+    // fires no candidate request) — enough to confirm the route resolves here.
+    renderAt("/import/albums/1");
+    expect(
+      await screen.findByText(/nothing to review/i),
     ).toBeInTheDocument();
   });
 

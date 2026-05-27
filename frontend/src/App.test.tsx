@@ -99,9 +99,10 @@ describe("App", () => {
     renderShell();
 
     expect(screen.queryByRole("link", { name: "Albums" })).not.toBeInTheDocument();
-    // No "Artists" *nav tab* — only the brand and (later) page content.
+    // No "Artists" *nav tab* — only the brand, the Import affordance, and
+    // (later) page content. The Primary nav holds Import alone, no section tabs.
     expect(
-      screen.queryByRole("navigation", { name: /primary/i }),
+      screen.queryByRole("link", { name: "Artists" }),
     ).not.toBeInTheDocument();
   });
 
