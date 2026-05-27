@@ -138,6 +138,8 @@ describe("useImportCandidate", () => {
       recommendation: "medium",
       data_source: "MusicBrainz",
       data_url: "https://mb/a1",
+      cover_after_url: "https://coverartarchive.org/release/a1/front-500",
+      has_current_art: false,
       changed_fields: ["album"],
       album_before: {
         artist: "Radiohead",

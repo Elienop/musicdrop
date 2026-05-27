@@ -174,6 +174,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/import/{job_id}/albums/{index}/cover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Import Album Cover */
+        get: operations["get_import_album_cover_api_import__job_id__albums__index__cover_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/import/{job_id}/albums/{index}/choice": {
         parameters: {
             query?: never;
@@ -282,6 +299,10 @@ export interface components {
             data_source: string | null;
             /** Data Url */
             data_url: string | null;
+            /** Cover After Url */
+            cover_after_url: string | null;
+            /** Has Current Art */
+            has_current_art: boolean;
             /** Changed Fields */
             changed_fields: string[];
             album_before: components["schemas"]["AlbumChange"];
@@ -851,6 +872,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Candidate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_import_album_cover_api_import__job_id__albums__index__cover_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
