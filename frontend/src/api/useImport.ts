@@ -13,6 +13,8 @@ export type ImportPhase = components["schemas"]["ImportPhase"];
 export type ImportAlbumStatus = components["schemas"]["ImportAlbumStatus"];
 /** Match recommendation tier (generated; mirrors beets' Recommendation enum). */
 export type Recommendation = components["schemas"]["Recommendation"];
+/** Coarse progress counters from `GET /api/import/{job}` (generated contract). */
+export type ImportProgress = components["schemas"]["ImportProgress"];
 /** Body of `POST /api/import` (generated contract). */
 export type StartImportRequest = components["schemas"]["StartImportRequest"];
 /** Response of a successful `POST /api/import` (generated contract). */

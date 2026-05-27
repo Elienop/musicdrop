@@ -200,6 +200,7 @@ function LiveFeed({ state, jobId }: { state: ImportJobState; jobId: string }) {
                 the count so that invariant is self-evident. */}
             {state.progress.applied}{" "}
             {state.progress.applied === 1 ? "album" : "albums"} imported
+            {state.progress.skipped > 0 && ` · ${state.progress.skipped} skipped`}
             {state.progress.needs_review > 0 &&
               ` · ${state.progress.needs_review} album${state.progress.needs_review === 1 ? "" : "s"} needs review`}
           </span>

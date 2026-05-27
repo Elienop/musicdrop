@@ -435,6 +435,8 @@ export interface components {
             applied: number;
             /** Needs Review */
             needs_review: number;
+            /** Skipped */
+            skipped: number;
         };
         /**
          * MissingTrack

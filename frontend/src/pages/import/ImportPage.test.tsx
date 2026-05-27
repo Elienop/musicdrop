@@ -15,7 +15,7 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
     job_id: "job-1",
     phase: "reviewing",
-    progress: { applied: 1, needs_review: 1 },
+    progress: { applied: 1, needs_review: 1, skipped: 0 },
     albums: [
       {
         index: 0,
@@ -157,7 +157,7 @@ describe("ImportPage — live feed", () => {
         HttpResponse.json(
           makeJob({
             phase: "scanning",
-            progress: { applied: 0, needs_review: 0 },
+            progress: { applied: 0, needs_review: 0, skipped: 0 },
             albums: [],
           }),
         ),
@@ -166,6 +166,23 @@ describe("ImportPage — live feed", () => {
     renderAt("/import?job=job-1");
 
     expect(await screen.findByText(/scanning your folder/i)).toBeInTheDocument();
+  });
+
+  test("the live cue surfaces a skipped count when any album was skipped", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "reviewing",
+            progress: { applied: 1, needs_review: 1, skipped: 1 },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    // The visible cue counts imported + skipped + the one awaiting review.
+    expect(await screen.findByText(/1 skipped/)).toBeInTheDocument();
   });
 });
 
@@ -177,7 +194,7 @@ describe("ImportPage — terminal states", () => {
           makeJob({
             phase: "done",
             summary: "2 imported, 0 skipped",
-            progress: { applied: 2, needs_review: 0 },
+            progress: { applied: 2, needs_review: 0, skipped: 0 },
           }),
         ),
       ),

@@ -68,7 +68,7 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
     job_id: "job-1",
     phase: "reviewing",
-    progress: { applied: 1, needs_review: 1 },
+    progress: { applied: 1, needs_review: 1, skipped: 0 },
     albums: [],
     summary: null,
     error: null,
@@ -99,7 +99,7 @@ describe("useImportJob", () => {
 
   test("polls while active and stops at a terminal phase", async () => {
     const seq: ImportJobState[] = [
-      makeJob({ phase: "scanning", progress: { applied: 0, needs_review: 0 } }),
+      makeJob({ phase: "scanning", progress: { applied: 0, needs_review: 0, skipped: 0 } }),
       makeJob({ phase: "done", summary: "1 imported, 0 skipped" }),
     ];
     let calls = 0;
