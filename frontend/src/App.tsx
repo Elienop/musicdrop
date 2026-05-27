@@ -1,5 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { CircleCheck, CircleSlash, Loader2, Search } from "lucide-react";
+import {
+  CircleCheck,
+  CircleSlash,
+  FolderInput,
+  Loader2,
+  Search,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   Link,
@@ -176,6 +182,19 @@ export function App() {
             </Link>
           </h1>
           <HeaderSearch />
+          <nav className="shrink-0">
+            <Link
+              to="/import"
+              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
+            >
+              <FolderInput className="size-4" aria-hidden="true" />
+              {/* Label hides below sm to preserve header width, like the health
+                  status; the icon + an aria-label carry it. */}
+              <span className="hidden sm:inline" aria-label="Import">
+                Import
+              </span>
+            </Link>
+          </nav>
           <div className="shrink-0">
             <HealthStatus />
           </div>
