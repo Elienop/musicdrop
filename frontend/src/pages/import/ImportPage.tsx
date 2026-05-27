@@ -2,13 +2,10 @@ import { AlertCircle, FolderInput, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
-import type {
-  ImportAlbumSummary,
-  ImportJobState,
-  Recommendation,
-} from "@/api/useImport";
+import type { ImportAlbumSummary, ImportJobState } from "@/api/useImport";
 import {
   ImportConflictError,
+  RECOMMENDATION_LABEL,
   useImportJob,
   useStartImport,
 } from "@/api/useImport";
@@ -17,15 +14,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-
-/** Human labels for the match-recommendation enum, so the feed sub-line reads
- * "Medium match" instead of leaking the raw "medium" token. */
-const RECOMMENDATION_LABEL: Record<Recommendation, string> = {
-  none: "No match",
-  low: "Low match",
-  medium: "Medium match",
-  strong: "Strong match",
-};
 
 export function ImportPage() {
   const [searchParams] = useSearchParams();

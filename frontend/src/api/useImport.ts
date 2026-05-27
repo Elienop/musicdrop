@@ -22,6 +22,21 @@ export type Candidate = components["schemas"]["Candidate"];
 /** A user's decision for one parked album (generated contract). */
 export type ImportChoice = components["schemas"]["ImportChoice"];
 
+/** Humanized labels for beets' recommendation levels (shared by the feed +
+ * the review screen). Keeps the raw enum ("strong"/"none") out of the UI. */
+export const RECOMMENDATION_LABEL: Record<Recommendation, string> = {
+  none: "No match",
+  low: "Low match",
+  medium: "Medium match",
+  strong: "Strong match",
+};
+
+/** URL of the current files' embedded cover for a parked album (served by the
+ * backend; the browser falls back to a placeholder on 404). */
+export function importCoverUrl(jobId: string, index: number): string {
+  return `/api/import/${jobId}/albums/${index}/cover`;
+}
+
 /** Thrown when a start is rejected because an import is already running (409).
  * Lets the entry screen surface a "an import is already running" message with a
  * link to it, instead of the generic failure. */
