@@ -6,6 +6,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   ImportConflictError,
+  ImportJobNotFoundError,
   useImportCandidate,
   useImportJob,
   useStartImport,
@@ -125,6 +126,31 @@ describe("useImportJob", () => {
     // Once done, polling stops: give it time and assert no further fetches.
     await act(() => new Promise((r) => setTimeout(r, 1500)));
     expect(calls).toBe(callsAtDone);
+  });
+
+  test("maps a 404 to ImportJobNotFoundError and stops polling", async () => {
+    let calls = 0;
+    server.use(
+      http.get(JOB_URL, () => {
+        calls += 1;
+        return HttpResponse.json(
+          { detail: "Import job not found" },
+          { status: 404 },
+        );
+      }),
+    );
+
+    const { result } = renderHook(() => useImportJob("job-1"), {
+      wrapper: wrapper(),
+    });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).toBeInstanceOf(ImportJobNotFoundError);
+    // A 404 is terminal — polling must stop (no self-heal). Give the poll
+    // interval time and assert no further fetches.
+    const callsAtError = calls;
+    await act(() => new Promise((r) => setTimeout(r, 1500)));
+    expect(calls).toBe(callsAtError);
   });
 });
 

@@ -5,6 +5,7 @@ import { Link, useSearchParams } from "react-router";
 import type { ImportAlbumSummary, ImportJobState } from "@/api/useImport";
 import {
   ImportConflictError,
+  ImportJobNotFoundError,
   RECOMMENDATION_LABEL,
   useImportJob,
   useStartImport,
@@ -115,7 +116,7 @@ function ImportEntry() {
 
 /** The live run: polls the job and renders the phase-appropriate view. */
 function ImportRun({ jobId }: { jobId: string }) {
-  const { data, isPending, isError, refetch } = useImportJob(jobId);
+  const { data, isPending, isError, error, refetch } = useImportJob(jobId);
 
   if (isPending) {
     return (
@@ -124,6 +125,15 @@ function ImportRun({ jobId }: { jobId: string }) {
           Loading import&hellip;
         </p>
         <FeedSkeleton />
+      </ImportShell>
+    );
+  }
+
+  // A 404 (unknown/expired job) is terminal — a dedicated notice, no retry.
+  if (error instanceof ImportJobNotFoundError) {
+    return (
+      <ImportShell>
+        <JobNotFound />
       </ImportShell>
     );
   }
@@ -349,6 +359,26 @@ function JobFailed({ error }: { error: string | null }) {
           panel CTA uses a distinct label so the two aren't identical. */}
       <Button variant="outline" size="sm" asChild>
         <Link to="/import">Import another folder</Link>
+      </Button>
+    </div>
+  );
+}
+
+/** The polled job id is unknown or expired (404). Distinct from a transient
+ * load error: there's nothing to retry, so offer a fresh start instead. */
+function JobNotFound() {
+  return (
+    <div className="border-border flex flex-col items-center gap-3 rounded-xl border py-16 text-center">
+      <AlertCircle className="text-muted-foreground size-10" aria-hidden="true" />
+      <div className="flex flex-col gap-1">
+        <p className="font-medium">This import is no longer available</p>
+        <p className="text-muted-foreground text-sm">
+          It may have finished in another session, or the server restarted.
+          Start a new import to continue.
+        </p>
+      </div>
+      <Button variant="outline" size="sm" asChild>
+        <Link to="/import">Start a new import</Link>
       </Button>
     </div>
   );

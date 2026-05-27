@@ -49,6 +49,16 @@ export class ImportConflictError extends Error {
   }
 }
 
+/** Thrown when the polled job id is unknown or expired (backend 404). Lets the
+ * run page show a dedicated "no longer available" notice and STOP polling,
+ * rather than hammering the 404 every second. */
+export class ImportJobNotFoundError extends Error {
+  constructor() {
+    super("Import job not found");
+    this.name = "ImportJobNotFoundError";
+  }
+}
+
 async function startImport(
   body: StartImportRequest,
 ): Promise<StartImportResponse> {
@@ -93,12 +103,14 @@ export function isTerminalPhase(phase: ImportPhase): boolean {
 }
 
 async function fetchJob(jobId: string): Promise<ImportJobState> {
-  const { data, error } = await client.GET("/api/import/{job_id}", {
+  const { data, error, response } = await client.GET("/api/import/{job_id}", {
     params: { path: { job_id: jobId } },
   });
-  // An unknown/expired job id (backend 404) intentionally collapses into this
-  // generic error for the chunk-3 shell; chunk 4 may add a dedicated not-found
-  // branch if the page needs to distinguish it.
+  // A 404 means the job is unknown/expired — surface it distinctly so the page
+  // can show a not-found notice and the poll can stop.
+  if (response.status === 404) {
+    throw new ImportJobNotFoundError();
+  }
   if (error || !data) {
     throw new Error("Failed to load import job");
   }
@@ -125,6 +137,11 @@ export function useImportJob(jobId: string | undefined) {
     enabled: Boolean(jobId),
     retry: false,
     refetchInterval: (query) => {
+      // A not-found job is gone for good — stop polling. Other transient errors
+      // keep the loop (they may recover); the page shows a retry meanwhile.
+      if (query.state.error instanceof ImportJobNotFoundError) {
+        return false;
+      }
       const phase = query.state.data?.phase;
       if (phase === undefined || ACTIVE_PHASES.has(phase)) {
         return IMPORT_POLL_MS;

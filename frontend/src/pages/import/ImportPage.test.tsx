@@ -239,4 +239,27 @@ describe("ImportPage — terminal states", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
+
+  test("a 404 (expired job) shows a not-found notice, not the transient retry", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          { detail: "Import job not found" },
+          { status: 404 },
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(
+      await screen.findByText(/no longer available/i),
+    ).toBeInTheDocument();
+    // Distinct from the transient error: offers a fresh start, with no Retry.
+    expect(
+      screen.getByRole("link", { name: /start a new import/i }),
+    ).toHaveAttribute("href", "/import");
+    expect(
+      screen.queryByRole("button", { name: /retry/i }),
+    ).not.toBeInTheDocument();
+  });
 });
