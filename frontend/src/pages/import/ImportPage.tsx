@@ -7,6 +7,7 @@ import {
   ImportConflictError,
   ImportJobNotFoundError,
   RECOMMENDATION_LABEL,
+  isTerminalPhase,
   useImportJob,
   useStartImport,
 } from "@/api/useImport";
@@ -128,7 +129,7 @@ function ImportRun({ jobId }: { jobId: string }) {
   const message = announceMessage({ isPending, isError, notFound, data });
   const throttled = useThrottledValue(message, 4000);
   const terminal =
-    notFound || isError || data?.phase === "done" || data?.phase === "failed";
+    notFound || isError || (data !== undefined && isTerminalPhase(data.phase));
   const status = terminal ? message : throttled;
   const announcer = (
     <p className="sr-only" role="status" aria-live="polite">

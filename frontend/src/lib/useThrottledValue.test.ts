@@ -31,4 +31,22 @@ describe("useThrottledValue", () => {
     });
     expect(result.current).toBe("c"); // trailing edge emits the LATEST
   });
+
+  test("a change after the interval emits immediately (no lag when spaced)", () => {
+    const { result, rerender } = renderHook(
+      ({ v }) => useThrottledValue(v, 5000),
+      { initialProps: { v: "a" } },
+    );
+    // Let the mount's trailing timer fire, settling lastEmit at the window edge.
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    // Idle past another full window, then change: sinceLast >= interval, so the
+    // new value is emitted immediately rather than scheduled.
+    act(() => {
+      vi.advanceTimersByTime(6000);
+    });
+    rerender({ v: "b" });
+    expect(result.current).toBe("b");
+  });
 });

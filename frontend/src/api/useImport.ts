@@ -95,9 +95,8 @@ const ACTIVE_PHASES: ReadonlySet<ImportPhase> = new Set([
   "applying",
 ]);
 
-/** Whether `phase` is terminal (the import finished or failed).
- * Consumed by the import page in chunk 4/5 (drives the "done/failed" UI and
- * stops polling) — not dead code. */
+/** Whether `phase` is terminal (the import finished or failed). Used by the
+ * import run page to flag terminal states. */
 export function isTerminalPhase(phase: ImportPhase): boolean {
   return phase === "done" || phase === "failed";
 }
@@ -121,9 +120,10 @@ async function fetchJob(jobId: string): Promise<ImportJobState> {
  * Poll an import job's state (`GET /api/import/{job_id}`). Disabled until a
  * `jobId` exists (no request, no error). `refetchInterval` is a function so the
  * loop runs only while the phase is active (scanning/reviewing/applying) and
- * returns `false` once terminal (done/failed) — TanStack v5 stops polling on a
- * falsy interval. No auto-retry: a transient error surfaces in the page's error
- * state behind an explicit retry rather than a silent backoff.
+ * returns `false` once terminal (done/failed) or when the job is not found
+ * (404 -> `ImportJobNotFoundError`). `retry: false` disables React Query's
+ * per-request retry; a transient error still keeps the poll loop (it may
+ * self-heal) behind the page's manual retry, whereas a 404 stops it for good.
  */
 export function useImportJob(jobId: string | undefined) {
   return useQuery({

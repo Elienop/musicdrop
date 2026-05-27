@@ -150,6 +150,33 @@ def test_worker_error_marks_job_failed() -> None:
     assert state.error == "boom"
 
 
+@pytest.mark.parametrize(
+    ("action", "imported", "skipped"),
+    [
+        (ImportAction.apply, 1, 0),
+        (ImportAction.asis, 1, 0),
+        (ImportAction.astracks, 1, 0),
+        (ImportAction.skip, 0, 1),
+    ],
+)
+def test_decided_action_buckets_imported_vs_skipped(
+    action: ImportAction, imported: int, skipped: int
+) -> None:
+    # Guards _APPLY_ACTIONS membership: apply/asis/astracks count as imported,
+    # everything else (skip, and abort via the same not-in-apply branch) as
+    # skipped. Without this, dropping asis/astracks from the set is a silent
+    # mis-count.
+    fake = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
+    registry = ImportJobRegistry(runner=fake)
+    job_id = registry.start("/music/incoming")
+    _poll(lambda: registry.state(job_id).albums, lambda rows: len(rows) == 1)
+    registry.record_choice(job_id, 0, ImportChoice(action=action))
+    _poll(lambda: registry.state(job_id).phase, lambda p: p is ImportPhase.done)
+    state = registry.state(job_id)
+    assert state.progress.applied == imported
+    assert state.progress.skipped == skipped
+
+
 def test_summary_counts_applied_and_decided_truthfully() -> None:
     fake = FakeImportRunner(
         applied=[_applied_outcome(0)], parked=[_parked(1, Recommendation.medium)]
