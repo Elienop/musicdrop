@@ -2,7 +2,11 @@ import { AlertCircle, FolderInput, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
-import type { ImportAlbumSummary, ImportJobState } from "@/api/useImport";
+import type {
+  ImportAlbumSummary,
+  ImportJobState,
+  Recommendation,
+} from "@/api/useImport";
 import {
   ImportConflictError,
   useImportJob,
@@ -13,6 +17,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+
+/** Human labels for the match-recommendation enum, so the feed sub-line reads
+ * "Medium match" instead of leaking the raw "medium" token. */
+const RECOMMENDATION_LABEL: Record<Recommendation, string> = {
+  none: "No match",
+  low: "Low match",
+  medium: "Medium match",
+  strong: "Strong match",
+};
 
 export function ImportPage() {
   const [searchParams] = useSearchParams();
@@ -77,14 +90,12 @@ function ImportEntry() {
         </label>
 
         {conflict && (
+          // The 409 carries no job id, so there's nowhere actionable to link to
+          // (the user is already on /import). Plain, honest text instead of a
+          // focusable link that navigates nowhere.
           <p className="text-destructive text-sm" role="alert">
-            An import is already running.{" "}
-            {/* No job id in this error, so the link just returns to the page;
-                a refresh with the active ?job= resumes the feed if present. */}
-            <Link to="/import" className="underline underline-offset-4">
-              View it
-            </Link>
-            .
+            An import is already running. Reopen it from the tab that started it,
+            or wait for it to finish.
           </p>
         )}
         {genericError && (
@@ -247,7 +258,10 @@ function FeedRow({
   jobId: string;
 }) {
   const needsReview = album.status === "needs_review";
-  const title = album.album ?? folderName(album.folder);
+  // Final fallback is non-empty: `album` may be null and `folder` may be ""/"/",
+  // in which case folderName() returns "" — never show an empty title.
+  const title =
+    (album.album ?? folderName(album.folder)) || "Unknown album";
   return (
     <div
       className={cn(
@@ -263,7 +277,8 @@ function FeedRow({
           {/* `confidence` is already a 0–100 percentage from the backend
               mapping (app/beets/import_mapping.py `_confidence` = round((1 -
               dist) * 100, 1)), so rounding is correct — not a 0–1 fraction. */}
-          {Math.round(album.confidence)}% · {album.recommendation}
+          {Math.round(album.confidence)}% ·{" "}
+          {RECOMMENDATION_LABEL[album.recommendation]}
         </span>
       </div>
       <StatusBadge status={album.status} />
@@ -346,8 +361,10 @@ function JobFailed({ error }: { error: string | null }) {
           {error ?? "The import stopped unexpectedly."}
         </p>
       </div>
+      {/* The shell chrome already renders a ghost "Start over" -> /import; this
+          panel CTA uses a distinct label so the two aren't identical. */}
       <Button variant="outline" size="sm" asChild>
-        <Link to="/import">Start over</Link>
+        <Link to="/import">Import another folder</Link>
       </Button>
     </div>
   );

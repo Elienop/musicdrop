@@ -140,6 +140,17 @@ describe("ImportPage — live feed", () => {
     expect(review).toHaveAttribute("href", "/import/albums/1?job=job-1");
   });
 
+  test("humanizes the recommendation enum in the feed sub-line", async () => {
+    server.use(http.get(JOB_URL, () => HttpResponse.json(makeJob())));
+    renderAt("/import?job=job-1");
+
+    // The needs_review row (confidence 76, recommendation "medium") shows the
+    // humanized label, not the raw enum token.
+    expect(await screen.findByText(/76% · Medium match/)).toBeInTheDocument();
+    // The raw "medium" token must not leak into the sub-line.
+    expect(screen.queryByText(/76% · medium/)).not.toBeInTheDocument();
+  });
+
   test("shows a scanning cue while the feed is still empty", async () => {
     server.use(
       http.get(JOB_URL, () =>
@@ -191,13 +202,12 @@ describe("ImportPage — terminal states", () => {
 
     expect(await screen.findByText("Import failed")).toBeInTheDocument();
     expect(screen.getByText("lookup exploded")).toBeInTheDocument();
-    // Two "Start over" links render: the shared ImportShell chrome (ghost) and
-    // the JobFailed panel (outline). Both target /import.
-    const startOver = screen.getAllByRole("link", { name: /start over/i });
-    expect(startOver.length).toBeGreaterThan(0);
-    for (const link of startOver) {
-      expect(link).toHaveAttribute("href", "/import");
-    }
+    // Two distinct CTAs render, both -> /import: the shared ImportShell chrome's
+    // ghost "Start over", and the JobFailed panel's "Import another folder".
+    const startOver = screen.getByRole("link", { name: /start over/i });
+    expect(startOver).toHaveAttribute("href", "/import");
+    const another = screen.getByRole("link", { name: /import another folder/i });
+    expect(another).toHaveAttribute("href", "/import");
   });
 
   test("a transient job-fetch error shows a retry", async () => {

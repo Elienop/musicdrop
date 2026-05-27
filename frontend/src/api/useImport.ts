@@ -11,6 +11,8 @@ export type ImportAlbumSummary = components["schemas"]["ImportAlbumSummary"];
 export type ImportPhase = components["schemas"]["ImportPhase"];
 /** Per-album feed status (generated contract). */
 export type ImportAlbumStatus = components["schemas"]["ImportAlbumStatus"];
+/** Match recommendation tier (generated; mirrors beets' Recommendation enum). */
+export type Recommendation = components["schemas"]["Recommendation"];
 /** Body of `POST /api/import` (generated contract). */
 export type StartImportRequest = components["schemas"]["StartImportRequest"];
 /** Response of a successful `POST /api/import` (generated contract). */

@@ -169,6 +169,7 @@ export function HealthStatus() {
  * health status. Future nav (Search, Playlists, Settings) lands here later.
  */
 export function App() {
+  const location = useLocation();
   return (
     <div className="bg-background text-foreground min-h-svh">
       <header className="border-border bg-background/80 sticky top-0 z-10 border-b backdrop-blur">
@@ -182,17 +183,19 @@ export function App() {
             </Link>
           </h1>
           <HeaderSearch />
-          <nav className="shrink-0">
+          <nav className="shrink-0" aria-label="Primary">
             <Link
               to="/import"
+              aria-label="Import"
+              aria-current={
+                location.pathname.startsWith("/import") ? "page" : undefined
+              }
               className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
             >
               <FolderInput className="size-4" aria-hidden="true" />
               {/* Label hides below sm to preserve header width, like the health
-                  status; the icon + an aria-label carry it. */}
-              <span className="hidden sm:inline" aria-label="Import">
-                Import
-              </span>
+                  status; the Link's aria-label carries the name when icon-only. */}
+              <span className="hidden sm:inline">Import</span>
             </Link>
           </nav>
           <div className="shrink-0">
