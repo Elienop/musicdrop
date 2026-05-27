@@ -92,10 +92,12 @@ describe("routing (artist spine)", () => {
     ).toBeInTheDocument();
   });
 
-  test("/import/albums/:index renders the review seam", async () => {
+  test("/import/albums/:index renders the candidate-review page", async () => {
+    // No ?job= in the URL, so the review page shows its no-job notice (and
+    // fires no candidate request) — enough to confirm the route resolves here.
     renderAt("/import/albums/1");
     expect(
-      await screen.findByText(/review screen coming soon/i),
+      await screen.findByText(/nothing to review/i),
     ).toBeInTheDocument();
   });
 
