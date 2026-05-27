@@ -35,7 +35,7 @@ def _candidate() -> Candidate:
     )
 
 
-def _parked(index: int, *, art_source: str | None = None) -> ParkedAlbum:
+def _parked(index: int) -> ParkedAlbum:
     return ParkedAlbum(
         album_index=index, folder=f"/music/incoming/album{index}", candidate=_candidate()
     )

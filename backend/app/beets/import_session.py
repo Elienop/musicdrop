@@ -62,6 +62,9 @@ class ImportBridge:
         self._out: queue.Queue[ParkedAlbum] = queue.Queue()
         self._outcomes: queue.Queue[AlbumOutcome] = queue.Queue()
         self._replies: dict[int, queue.Queue[ImportChoice]] = {}
+        # NOT popped on unblock (unlike _replies): it serves GET /cover during the
+        # parked review window. Growth is bounded - single-slot registry, one
+        # active job, a fresh ImportBridge per import is GC'd with the old job.
         self._art_source: dict[int, str] = {}
         self._lock = threading.Lock()
         self._pending = 0
