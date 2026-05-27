@@ -1,4 +1,3 @@
-import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,7 +15,8 @@ from app.artwork.cache import ArtistImageCache
 from app.artwork.deezer import DeezerArtistImageSource
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
-from app.beets.library import LibraryHandle, close_library, open_library
+from app.beets.library import LibraryHandle, close_library
+from app.beets.setup import setup_beets
 from app.config import settings
 
 # Repo root is the parent of the backend/ package dir (this file is
@@ -26,15 +26,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _resolve_library() -> LibraryHandle | None:
-    """Open the configured beets library, or None when unset/missing.
+    """Run beets' startup and return the opened library, or None when unset/missing.
 
-    Sync helper: runs only at startup (cold path), so the one blocking
-    filesystem check is fine and stays out of the async lifespan body.
+    Delegates to setup_beets, which mirrors beets' own _setup: load the
+    configured plugins (the matcher's metadata sources are plugins as of beets
+    2.11), open the library with path formats + replacements, then fire
+    library_opened. Sync helper: runs once at startup (cold path).
     """
-    path = settings.beets_library_path
-    if not path or not os.path.exists(path):
-        return None
-    return open_library(path, settings.beets_library_directory)
+    return setup_beets(settings.beets_library_path, settings.beets_library_directory)
 
 
 def _resolve_cache_dir() -> Path:
