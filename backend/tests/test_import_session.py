@@ -13,6 +13,7 @@ from beets.autotag.match import Recommendation as BeetsRec
 from beets.importer.tasks import Action, ImportTask
 from beets.library import Item
 
+from app.beets.import_mapping import embedded_art
 from app.beets.import_session import ImportBridge, WebImportSession
 from app.models.import_models import (
     AlbumOutcome,
@@ -394,6 +395,40 @@ def test_uncertain_rec_emits_needs_review_outcome_at_park(
     assert outcomes[0].recommendation is Recommendation.medium
 
     bridge.push_choice(parked.album_index, ImportChoice(action=ImportAction.apply))
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+
+
+def test_embedded_art_none_for_missing_or_artless(tmp_path: Any) -> None:
+    # A path that does not exist -> None (no crash).
+    assert embedded_art(str(tmp_path / "nope.mp3")) is None
+
+
+def test_park_records_art_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    import os
+
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    # The harness items carry no real .path; set one so choose_match can capture
+    # the parked album's art source (presence isn't required - just the path).
+    art_path = os.fsencode(str(tmp_path / "a.flac"))
+    task.items[0].path = art_path
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    parked = bridge.get_parked(timeout=2.0)
+    assert parked is not None
+    assert session.bridge.art_source(parked.album_index) == os.fsdecode(art_path)
+
+    bridge.push_choice(parked.album_index, ImportChoice(action=ImportAction.skip))
     assert done.wait(timeout=2.0)
     t.join(timeout=2.0)
 

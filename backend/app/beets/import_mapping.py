@@ -8,10 +8,12 @@ AlbumInfo/TrackInfo never leak past here.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from beets.autotag.hooks import AlbumMatch
 from beets.util import get_most_common_tags
+from mediafile import MediaFile
 
 from app.models.import_models import (
     AlbumChange,
@@ -55,6 +57,27 @@ def _opt_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def embedded_art(path: str) -> tuple[bytes, str] | None:
+    """The first embedded cover image ``(bytes, mime)`` for a media file, or None.
+
+    Used to render the "before" (current files) cover during review. Returns None
+    for a missing file, an unreadable file, or one with no embedded image. A
+    declared-but-empty mime falls back to ``application/octet-stream`` so the FE
+    ``<img>`` cleanly degrades to a placeholder rather than rendering garbage.
+    """
+    if not os.path.isfile(path):
+        return None
+    try:
+        images = MediaFile(path).images
+    except Exception:  # any mediafile read error => no art
+        return None
+    if not images:
+        return None
+    image = images[0]
+    mime = _opt_str(image.mime_type) or "application/octet-stream"
+    return bytes(image.data), mime
 
 
 def _opt_int(value: Any) -> int | None:

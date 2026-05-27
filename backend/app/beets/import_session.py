@@ -24,6 +24,7 @@ from beets.importer.tasks import Action
 from app.beets.import_mapping import (
     _confidence,
     _opt_str,
+    embedded_art,
     map_album_match,
     map_candidate_options,
 )
@@ -61,16 +62,19 @@ class ImportBridge:
         self._out: queue.Queue[ParkedAlbum] = queue.Queue()
         self._outcomes: queue.Queue[AlbumOutcome] = queue.Queue()
         self._replies: dict[int, queue.Queue[ImportChoice]] = {}
+        self._art_source: dict[int, str] = {}
         self._lock = threading.Lock()
         self._pending = 0
 
     # ----- worker side -----
 
-    def park(self, parked: ParkedAlbum) -> ImportChoice:
+    def park(self, parked: ParkedAlbum, art_source: str | None = None) -> ImportChoice:
         """Push a parked album and block until a choice arrives for it."""
         reply: queue.Queue[ImportChoice] = queue.Queue(maxsize=1)
         with self._lock:
             self._replies[parked.album_index] = reply
+            if art_source is not None:
+                self._art_source[parked.album_index] = art_source
             self._pending += 1
         self._out.put(parked)
         choice = reply.get()  # blocks the worker thread
@@ -78,6 +82,11 @@ class ImportBridge:
             self._replies.pop(parked.album_index, None)
             self._pending -= 1
         return choice
+
+    def art_source(self, album_index: int) -> str | None:
+        """The current-files art source path for a parked album, or None."""
+        with self._lock:
+            return self._art_source.get(album_index)
 
     def note_outcome(self, outcome: AlbumOutcome) -> None:
         """Record what the worker did with one album (non-blocking).
@@ -193,6 +202,11 @@ class WebImportSession(ImportSession):
         # Park: map the top match + ranked alternatives, emit needs_review, push,
         # block. The outcome is emitted BEFORE park so the API sees the album the
         # instant it parks (park then blocks on the reply).
+        # The current files' first item supplies the "before" cover. Detect art
+        # now (the worker is about to block parked, so the file is still here).
+        items = list(task.items or [])
+        art_source = os.fsdecode(items[0].path) if items and items[0].path else None
+        has_current_art = art_source is not None and embedded_art(art_source) is not None
         top = candidates[0]
         options = map_candidate_options(candidates)
         candidate = map_album_match(
@@ -201,13 +215,15 @@ class WebImportSession(ImportSession):
             cur_album=task.cur_album,
             options=options,
             recommendation=recommendation,
+            has_current_art=has_current_art,
         )
         folder = self._task_folder(task)
         self.bridge.note_outcome(
             self._outcome(index, task, recommendation, AlbumOutcomeStatus.needs_review, match=top)
         )
         choice = self.bridge.park(
-            ParkedAlbum(album_index=index, folder=folder, candidate=candidate)
+            ParkedAlbum(album_index=index, folder=folder, candidate=candidate),
+            art_source=art_source,
         )
         return self._apply_choice(choice, candidates)
 
