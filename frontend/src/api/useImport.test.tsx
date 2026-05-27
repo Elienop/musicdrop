@@ -11,7 +11,7 @@ import {
   useStartImport,
   useSubmitChoice,
 } from "@/api/useImport";
-import type { ImportJobState } from "@/api/useImport";
+import type { Candidate, ImportJobState } from "@/api/useImport";
 import { server } from "@/test/msw-server";
 
 const IMPORT_URL = `${window.location.origin}/api/import`;
@@ -133,37 +133,34 @@ const CHOICE_URL = `${window.location.origin}/api/import/job-1/albums/1/choice`;
 
 describe("useImportCandidate", () => {
   test("fetches the candidate when enabled", async () => {
-    server.use(
-      http.get(CANDIDATE_URL, () =>
-        HttpResponse.json({
-          confidence: 75.5,
-          recommendation: "medium",
-          data_source: "MusicBrainz",
-          data_url: "https://mb/a1",
-          changed_fields: ["album"],
-          album_before: {
-            artist: "Radiohead",
-            album: "OK Computr",
-            year: null,
-            label: null,
-            country: null,
-            media: null,
-          },
-          album_after: {
-            artist: "Radiohead",
-            album: "OK Computer",
-            year: 1997,
-            label: "Parlophone",
-            country: "GB",
-            media: "CD",
-          },
-          tracks: [],
-          missing: [],
-          unmatched: [],
-          options: [],
-        }),
-      ),
-    );
+    const candidate: Candidate = {
+      confidence: 75.5,
+      recommendation: "medium",
+      data_source: "MusicBrainz",
+      data_url: "https://mb/a1",
+      changed_fields: ["album"],
+      album_before: {
+        artist: "Radiohead",
+        album: "OK Computr",
+        year: null,
+        label: null,
+        country: null,
+        media: null,
+      },
+      album_after: {
+        artist: "Radiohead",
+        album: "OK Computer",
+        year: 1997,
+        label: "Parlophone",
+        country: "GB",
+        media: "CD",
+      },
+      tracks: [],
+      missing: [],
+      unmatched: [],
+      options: [],
+    };
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(candidate)));
 
     const { result } = renderHook(() => useImportCandidate("job-1", 1, true), {
       wrapper: wrapper(),

@@ -66,7 +66,9 @@ const ACTIVE_PHASES: ReadonlySet<ImportPhase> = new Set([
   "applying",
 ]);
 
-/** Whether `phase` is terminal (the import finished or failed). */
+/** Whether `phase` is terminal (the import finished or failed).
+ * Consumed by the import page in chunk 4/5 (drives the "done/failed" UI and
+ * stops polling) — not dead code. */
 export function isTerminalPhase(phase: ImportPhase): boolean {
   return phase === "done" || phase === "failed";
 }
@@ -75,6 +77,9 @@ async function fetchJob(jobId: string): Promise<ImportJobState> {
   const { data, error } = await client.GET("/api/import/{job_id}", {
     params: { path: { job_id: jobId } },
   });
+  // An unknown/expired job id (backend 404) intentionally collapses into this
+  // generic error for the chunk-3 shell; chunk 4 may add a dedicated not-found
+  // branch if the page needs to distinguish it.
   if (error || !data) {
     throw new Error("Failed to load import job");
   }
@@ -92,7 +97,12 @@ async function fetchJob(jobId: string): Promise<ImportJobState> {
 export function useImportJob(jobId: string | undefined) {
   return useQuery({
     queryKey: ["import", "job", jobId],
-    queryFn: () => fetchJob(jobId as string),
+    queryFn: () => {
+      // `enabled` already guarantees a jobId; narrow it (no cast) so the
+      // type is proven rather than asserted.
+      if (!jobId) throw new Error("no job id");
+      return fetchJob(jobId);
+    },
     enabled: Boolean(jobId),
     retry: false,
     refetchInterval: (query) => {
