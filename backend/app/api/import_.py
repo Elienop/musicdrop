@@ -11,7 +11,7 @@ No beets imports: the registry + models are the whole surface here.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Response, status
 
 from app.import_jobs.registry import ImportJobRegistry, get_registry
 from app.models.import_api import (
@@ -64,6 +64,28 @@ async def get_import_album(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Import album not found"
         ) from None
+
+
+@router.get("/import/{job_id}/albums/{index}/cover")
+async def get_import_album_cover(
+    job_id: str,
+    index: Annotated[int, Path(ge=0)],
+    reg: Annotated[ImportJobRegistry, Depends(get_registry)],
+) -> Response:
+    try:
+        cover = reg.candidate_cover(job_id, index)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Import album not found"
+        ) from None
+    if cover is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No cover art") from None
+    image_bytes, mime = cover
+    return Response(
+        content=image_bytes,
+        media_type=mime,
+        headers={"Cache-Control": "no-store"},  # parked-album art is transient
+    )
 
 
 @router.post("/import/{job_id}/albums/{index}/choice", status_code=status.HTTP_204_NO_CONTENT)

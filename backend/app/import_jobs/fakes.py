@@ -26,10 +26,14 @@ class FakeImportRunner:
         parked: list[ParkedAlbum] | None = None,
         applied: list[AlbumOutcome] | None = None,
         fail_with: str | None = None,
+        art_sources: dict[int, str] | None = None,
     ) -> None:
         self._parked = parked or []
         self._applied = applied or []
         self._fail_with = fail_with
+        # Per-album current-files art source path, recorded on the real bridge at
+        # park (mirrors the worker's choose_match). Keyed by album_index.
+        self._art_sources = art_sources or {}
 
     def run(
         self,
@@ -61,7 +65,7 @@ class FakeImportRunner:
                             status=AlbumOutcomeStatus.needs_review,
                         )
                     )
-                    bridge.park(album)
+                    bridge.park(album, art_source=self._art_sources.get(album.album_index))
             # Broad by design: mirror the real worker's guard so a canned-data
             # bug surfaces as a failed job rather than a silent dead thread.
             except Exception as exc:

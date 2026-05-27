@@ -15,6 +15,7 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 
+from app.beets.import_mapping import embedded_art
 from app.beets.import_session import ImportBridge
 from app.import_jobs.runner import BeetsImportRunner, ImportRunner
 from app.models.import_api import (
@@ -54,6 +55,8 @@ class _FeedAlbum:
     parked: ParkedAlbum | None = None
     # The action the user chose for a parked album (None until decided).
     decided_action: ImportAction | None = None
+    # The current files' art source path for a parked album (None when none).
+    art_source: str | None = None
 
 
 @dataclass
@@ -175,6 +178,7 @@ class ImportJobRegistry:
             row = job.albums.get(parked.album_index)
             if row is not None:
                 row.parked = parked
+                row.art_source = job.bridge.art_source(parked.album_index)
             # (The needs_review outcome is emitted before park, so the row
             # already exists; if ordering ever changed, we'd create it here.)
 
@@ -198,6 +202,22 @@ class ImportJobRegistry:
             if row is None or row.parked is None:
                 raise KeyError(index)
             return row.parked.candidate
+
+    def candidate_cover(self, job_id: str, index: int) -> tuple[bytes, str] | None:
+        """Embedded cover art for the parked album at ``index``, or None.
+
+        Reads the current files' first item on demand (the worker is parked, so
+        the source is still in place). KeyError when the job/album is unknown or
+        not parked - the API maps that to 404, same as the Candidate route.
+        """
+        self.drain(job_id)
+        job = self._require(job_id)
+        with self._lock:
+            row = job.albums.get(index)
+            if row is None or row.parked is None or row.art_source is None:
+                raise KeyError(index)
+            source = row.art_source
+        return embedded_art(source)  # read outside the lock (file I/O)
 
     def record_choice(self, job_id: str, index: int, choice: ImportChoice) -> None:
         """Deliver a decision for the parked album and mark its row decided.
