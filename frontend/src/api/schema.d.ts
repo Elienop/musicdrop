@@ -123,6 +123,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start Import */
+        post: operations["start_import_api_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/import/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Import State */
+        get: operations["get_import_state_api_import__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/import/{job_id}/albums/{index}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Import Album */
+        get: operations["get_import_album_api_import__job_id__albums__index__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/import/{job_id}/albums/{index}/choice": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Post Import Choice */
+        post: operations["post_import_choice_api_import__job_id__albums__index__choice_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -141,6 +209,27 @@ export interface components {
             track_count: number;
             /** Genre */
             genre: string | null;
+        };
+        /**
+         * AlbumChange
+         * @description Album-level identity fields for one side of the before/after diff.
+         *
+         *     Built for both the current files (``album_before``) and the matched release
+         *     (``album_after``); the UI marks the fields named in ``Candidate.changed_fields``.
+         */
+        AlbumChange: {
+            /** Artist */
+            artist: string | null;
+            /** Album */
+            album: string | null;
+            /** Year */
+            year: number | null;
+            /** Label */
+            label: string | null;
+            /** Country */
+            country: string | null;
+            /** Media */
+            media: string | null;
         };
         /** AlbumDetail */
         AlbumDetail: {
@@ -177,6 +266,52 @@ export interface components {
             /** Album Count */
             album_count: number;
         };
+        /**
+         * Candidate
+         * @description The full mapped payload for the top match of one album.
+         *
+         *     Everything the review screen renders: confidence/recommendation, the album
+         *     before/after diff, the per-track diff, missing/unmatched tracks, and the
+         *     ranked alternative releases.
+         */
+        Candidate: {
+            /** Confidence */
+            confidence: number;
+            recommendation: components["schemas"]["Recommendation"];
+            /** Data Source */
+            data_source: string | null;
+            /** Data Url */
+            data_url: string | null;
+            /** Changed Fields */
+            changed_fields: string[];
+            album_before: components["schemas"]["AlbumChange"];
+            album_after: components["schemas"]["AlbumChange"];
+            /** Tracks */
+            tracks: components["schemas"]["TrackChange"][];
+            /** Missing */
+            missing: components["schemas"]["MissingTrack"][];
+            /** Unmatched */
+            unmatched: components["schemas"]["UnmatchedItem"][];
+            /** Options */
+            options: components["schemas"]["CandidateOption"][];
+        };
+        /**
+         * CandidateOption
+         * @description A ranked alternative release from ``task.candidates``.
+         *
+         *     The switcher in the review screen lists these; ``index`` is the position in
+         *     the beets candidate list and is what a choice references.
+         */
+        CandidateOption: {
+            /** Index */
+            index: number;
+            /** Confidence */
+            confidence: number;
+            /** Data Source */
+            data_source: string | null;
+            /** Disambiguation */
+            disambiguation: string | null;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -189,6 +324,118 @@ export interface components {
             /** Version */
             version: string;
         };
+        /**
+         * ImportAction
+         * @description The decisions the user can return for a parked album.
+         *
+         *     Subset of beets' choices relevant to chunk 1 (enter-id / search-again are a
+         *     later chunk). ``apply`` selects a ranked option by index; ``abort`` stops the
+         *     whole import (the session raises beets' ``ImportAbortError``, which beets'
+         *     ``run()`` catches to stop cleanly).
+         * @enum {string}
+         */
+        ImportAction: "apply" | "skip" | "asis" | "astracks" | "abort";
+        /**
+         * ImportAlbumStatus
+         * @description Per-album state in the live feed.
+         *
+         *     needs_review -> parked, awaiting the user's decision (the current album)
+         *     decided      -> the user decided a parked album (apply/skip/asis/astracks)
+         *     applied      -> a strong match auto-applied in the worker (never parked)
+         *     skipped      -> the worker skipped it (no candidates)
+         * @enum {string}
+         */
+        ImportAlbumStatus: "needs_review" | "decided" | "applied" | "skipped";
+        /**
+         * ImportAlbumSummary
+         * @description One row in the live feed (the GET /api/import/{job} listing).
+         *
+         *     The full per-album diff is fetched separately via
+         *     ``GET /api/import/{job}/albums/{index}`` (only meaningful while an album is
+         *     ``needs_review``); this is the compact feed row.
+         */
+        ImportAlbumSummary: {
+            /** Index */
+            index: number;
+            /** Folder */
+            folder: string;
+            /** Artist */
+            artist: string | null;
+            /** Album */
+            album: string | null;
+            recommendation: components["schemas"]["Recommendation"];
+            /** Confidence */
+            confidence: number;
+            status: components["schemas"]["ImportAlbumStatus"];
+        };
+        /**
+         * ImportChoice
+         * @description A user's decision for one parked album, pushed back over the bridge.
+         */
+        ImportChoice: {
+            action: components["schemas"]["ImportAction"];
+            /** Candidate Index */
+            candidate_index?: number | null;
+        };
+        /**
+         * ImportJobState
+         * @description Response of ``GET /api/import/{job}``: phase + progress + the live feed.
+         */
+        ImportJobState: {
+            /** Job Id */
+            job_id: string;
+            phase: components["schemas"]["ImportPhase"];
+            progress: components["schemas"]["ImportProgress"];
+            /** Albums */
+            albums: components["schemas"]["ImportAlbumSummary"][];
+            /** Summary */
+            summary: string | null;
+            /** Error */
+            error: string | null;
+        };
+        /**
+         * ImportPhase
+         * @description Coarse lifecycle phase of an import job (the registry owns transitions).
+         *
+         *     scanning  -> the worker is reading/grouping/looking up (nothing parked yet)
+         *     reviewing -> an album is parked-and-waiting for a decision
+         *     applying  -> reserved (beets exposes no signal to set it transiently)
+         *     done      -> the import finished (incl. a clean abort)
+         *     failed    -> the worker raised; ``error`` holds the message
+         * @enum {string}
+         */
+        ImportPhase: "scanning" | "reviewing" | "applying" | "done" | "failed";
+        /**
+         * ImportProgress
+         * @description Coarse progress counters derived from the drained outcomes.
+         */
+        ImportProgress: {
+            /** Applied */
+            applied: number;
+            /** Needs Review */
+            needs_review: number;
+        };
+        /**
+         * MissingTrack
+         * @description A track present on the matched release but absent from the folder.
+         *
+         *     Maps from ``AlbumMatch.extra_tracks`` (beets' name for release-only tracks).
+         */
+        MissingTrack: {
+            /** Index */
+            index: number | null;
+            /** Title */
+            title: string | null;
+        };
+        /**
+         * Recommendation
+         * @description Mirror of beets' Recommendation enum (beets/autotag/match.py).
+         *
+         *     Beets uses an IntEnum (none=0..strong=3); we expose the names as strings so
+         *     the JSON contract is self-describing for the frontend.
+         * @enum {string}
+         */
+        Recommendation: "none" | "low" | "medium" | "strong";
         /** SearchResults */
         SearchResults: {
             /** Artists */
@@ -219,6 +466,30 @@ export interface components {
             /** Duration Seconds */
             duration_seconds: number | null;
         };
+        /**
+         * StartImportRequest
+         * @description Body of ``POST /api/import``.
+         *
+         *     ``path`` is a server-side folder (maps 1:1 to ``beet import <path>``).
+         *     ``options`` is reserved for future per-import overrides (copy/move/autotag);
+         *     v1 reads those from the user's beets config, so it is accepted but unused.
+         */
+        StartImportRequest: {
+            /** Path */
+            path: string;
+            /** Options */
+            options?: {
+                [key: string]: string;
+            } | null;
+        };
+        /**
+         * StartImportResponse
+         * @description Response of a successful ``POST /api/import``: the new job's id.
+         */
+        StartImportResponse: {
+            /** Job Id */
+            job_id: string;
+        };
         /** Track */
         Track: {
             /** Id */
@@ -233,6 +504,41 @@ export interface components {
             duration_seconds: number | null;
             /** Artist */
             artist: string;
+        };
+        /**
+         * TrackChange
+         * @description One matched track row, current (``*_before``) vs proposed (``*_after``).
+         */
+        TrackChange: {
+            /** Index */
+            index: number | null;
+            status: components["schemas"]["TrackChangeStatus"];
+            /** Title Before */
+            title_before: string | null;
+            /** Title After */
+            title_after: string | null;
+            /** Track Before */
+            track_before: number | null;
+            /** Track After */
+            track_after: number | null;
+        };
+        /**
+         * TrackChangeStatus
+         * @description How a matched track row differs from the current file.
+         * @enum {string}
+         */
+        TrackChangeStatus: "unchanged" | "changed";
+        /**
+         * UnmatchedItem
+         * @description A local file with no counterpart on the matched release.
+         *
+         *     Maps from ``AlbumMatch.extra_items`` (beets' name for folder-only files).
+         */
+        UnmatchedItem: {
+            /** Title */
+            title: string | null;
+            /** Track */
+            track: number | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -450,6 +756,136 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SearchResults"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_import_api_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartImportResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_import_state_api_import__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportJobState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_import_album_api_import__job_id__albums__index__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Candidate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_import_choice_api_import__job_id__albums__index__choice_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportChoice"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
