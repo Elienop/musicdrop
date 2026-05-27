@@ -1,5 +1,5 @@
 import { Wrench } from "lucide-react";
-import { useParams } from "react-router";
+import { useParams, useSearchParams } from "react-router";
 
 import { BackLink } from "@/components/albums/album-grid";
 
@@ -14,16 +14,22 @@ import { BackLink } from "@/components/albums/album-grid";
  */
 export function ImportCandidatePage() {
   const { index } = useParams<{ index: string }>();
+  // The job id rides in the query string (carried across the seam from the
+  // run page's Review link); chunk 4 feeds it to useImportCandidate/
+  // useSubmitChoice. The back link preserves it so returning resumes the feed.
+  const [searchParams] = useSearchParams();
+  const jobId = searchParams.get("job");
 
   return (
     <section className="flex flex-col gap-6" aria-label="Review album">
-      <BackLink to="/import" label="Import" />
+      <BackLink to={jobId ? `/import?job=${jobId}` : "/import"} label="Import" />
       <div className="border-border flex flex-col items-center gap-3 rounded-xl border border-dashed py-16 text-center">
         <Wrench className="text-muted-foreground size-10" aria-hidden="true" />
         <div className="flex flex-col gap-1">
           <p className="font-medium">Review screen coming soon</p>
           <p className="text-muted-foreground text-sm">
-            The candidate review for album {index} arrives in the next slice.
+            The candidate review for album {index} (job {jobId ?? "unknown"})
+            arrives in the next slice.
           </p>
         </div>
       </div>

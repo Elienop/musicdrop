@@ -148,7 +148,7 @@ function ImportRun({ jobId }: { jobId: string }) {
   if (data.phase === "done") {
     return (
       <ImportShell>
-        <JobDone summary={data.summary} albums={data.albums} />
+        <JobDone summary={data.summary} albums={data.albums} jobId={jobId} />
       </ImportShell>
     );
   }
@@ -156,7 +156,7 @@ function ImportRun({ jobId }: { jobId: string }) {
   // scanning / reviewing / applying: the live feed.
   return (
     <ImportShell>
-      <LiveFeed state={data} />
+      <LiveFeed state={data} jobId={jobId} />
     </ImportShell>
   );
 }
@@ -177,8 +177,9 @@ function ImportShell({ children }: { children: React.ReactNode }) {
 }
 
 /** scanning/reviewing/applying: a working line + the growing feed. */
-function LiveFeed({ state }: { state: ImportJobState }) {
+function LiveFeed({ state, jobId }: { state: ImportJobState; jobId: string }) {
   const working = state.phase === "scanning" || state.phase === "applying";
+  const scanningEmpty = working && state.albums.length === 0;
   return (
     <div className="flex flex-col gap-4">
       <p
@@ -188,35 +189,63 @@ function LiveFeed({ state }: { state: ImportJobState }) {
         {working && (
           <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
         )}
-        <span>
-          {/* No known total (the feed grows as the worker reads) — count what's
-              applied + flag whether one album awaits a decision. */}
-          {state.progress.applied}{" "}
-          {state.progress.applied === 1 ? "album" : "albums"} imported
-          {state.progress.needs_review > 0 && " · 1 album needs review"}
-          {working && state.albums.length === 0 && "Scanning your folder…"}
-        </span>
+        {/* While scanning with nothing in the feed yet, the count line would
+            read "0 albums imported" — say what's actually happening instead. */}
+        {scanningEmpty ? (
+          <span>Scanning your folder&hellip;</span>
+        ) : (
+          <span>
+            {/* No known total (the feed grows as the worker reads) — count
+                what's applied + flag whether one album awaits a decision.
+                `needs_review` is at most 1 (review is sequential), but derive
+                the count so that invariant is self-evident. */}
+            {state.progress.applied}{" "}
+            {state.progress.applied === 1 ? "album" : "albums"} imported
+            {state.progress.needs_review > 0 &&
+              ` · ${state.progress.needs_review} album${state.progress.needs_review === 1 ? "" : "s"} needs review`}
+          </span>
+        )}
       </p>
 
       {state.albums.length === 0 ? (
         <FeedSkeleton />
       ) : (
-        <ul className="border-border divide-border divide-y rounded-xl border">
-          {state.albums.map((album) => (
-            <li key={album.index}>
-              <FeedRow album={album} />
-            </li>
-          ))}
-        </ul>
+        <FeedList albums={state.albums} jobId={jobId} />
       )}
     </div>
+  );
+}
+
+/** The feed listing — shared by the live run and the done summary. Carries the
+ * `jobId` so each row's Review link can hand it across the chunk-4 seam. */
+function FeedList({
+  albums,
+  jobId,
+}: {
+  albums: ImportAlbumSummary[];
+  jobId: string;
+}) {
+  return (
+    <ul className="border-border divide-border divide-y rounded-xl border">
+      {albums.map((album) => (
+        <li key={album.index}>
+          <FeedRow album={album} jobId={jobId} />
+        </li>
+      ))}
+    </ul>
   );
 }
 
 /** One feed row. An `applied`/`skipped`/`decided` album is calm (a status
  * badge); the one `needs_review` row is highlighted and offers Review (→ the
  * seam). */
-function FeedRow({ album }: { album: ImportAlbumSummary }) {
+function FeedRow({
+  album,
+  jobId,
+}: {
+  album: ImportAlbumSummary;
+  jobId: string;
+}) {
   const needsReview = album.status === "needs_review";
   const title = album.album ?? folderName(album.folder);
   return (
@@ -231,13 +260,18 @@ function FeedRow({ album }: { album: ImportAlbumSummary }) {
         <span className="text-muted-foreground truncate text-sm">
           {album.artist ?? "Unknown artist"}
           <span aria-hidden="true"> · </span>
+          {/* `confidence` is already a 0–100 percentage from the backend
+              mapping (app/beets/import_mapping.py `_confidence` = round((1 -
+              dist) * 100, 1)), so rounding is correct — not a 0–1 fraction. */}
           {Math.round(album.confidence)}% · {album.recommendation}
         </span>
       </div>
       <StatusBadge status={album.status} />
       {needsReview && (
         <Button size="sm" asChild>
-          <Link to={`/import/albums/${album.index}`}>Review</Link>
+          {/* Carry the job id across the chunk-4 seam (the candidate-review
+              hooks need it); consistent with the run page's `?job=` convention. */}
+          <Link to={`/import/albums/${album.index}?job=${jobId}`}>Review</Link>
         </Button>
       )}
     </div>
@@ -276,9 +310,11 @@ function folderName(folder: string): string {
 function JobDone({
   summary,
   albums,
+  jobId,
 }: {
   summary: string | null;
   albums: ImportAlbumSummary[];
+  jobId: string;
 }) {
   return (
     <div className="flex flex-col gap-4">
@@ -294,15 +330,7 @@ function JobDone({
           <Link to="/">View in library</Link>
         </Button>
       </div>
-      {albums.length > 0 && (
-        <ul className="border-border divide-border divide-y rounded-xl border">
-          {albums.map((album) => (
-            <li key={album.index}>
-              <FeedRow album={album} />
-            </li>
-          ))}
-        </ul>
-      )}
+      {albums.length > 0 && <FeedList albums={albums} jobId={jobId} />}
     </div>
   );
 }
