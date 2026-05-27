@@ -14,7 +14,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useThrottledValue } from "@/lib/useThrottledValue";
 import { cn } from "@/lib/utils";
+import { announceMessage } from "@/pages/import/importStatus";
 
 export function ImportPage() {
   const [searchParams] = useSearchParams();
@@ -114,25 +116,36 @@ function ImportEntry() {
   );
 }
 
-/** The live run: polls the job and renders the phase-appropriate view. */
+/** The live run: one continuous, throttled spoken status + the phase view. */
 function ImportRun({ jobId }: { jobId: string }) {
   const { data, isPending, isError, error, refetch } = useImportJob(jobId);
+  const notFound = error instanceof ImportJobNotFoundError;
+  // Mounted in every branch (incl. loading) so a screen reader has a stable
+  // announcer; throttled so a fast scan's 1s poll doesn't spam it.
+  const status = useThrottledValue(
+    announceMessage({ isPending, isError, notFound, data }),
+    4000,
+  );
+  const announcer = (
+    <p className="sr-only" role="status" aria-live="polite">
+      {status}
+    </p>
+  );
 
   if (isPending) {
     return (
       <ImportShell>
-        <p className="sr-only" role="status">
-          Loading import&hellip;
-        </p>
+        {announcer}
         <FeedSkeleton />
       </ImportShell>
     );
   }
 
   // A 404 (unknown/expired job) is terminal — a dedicated notice, no retry.
-  if (error instanceof ImportJobNotFoundError) {
+  if (notFound) {
     return (
       <ImportShell>
+        {announcer}
         <JobNotFound />
       </ImportShell>
     );
@@ -141,6 +154,7 @@ function ImportRun({ jobId }: { jobId: string }) {
   if (isError) {
     return (
       <ImportShell>
+        {announcer}
         <JobError onRetry={() => void refetch()} />
       </ImportShell>
     );
@@ -149,6 +163,7 @@ function ImportRun({ jobId }: { jobId: string }) {
   if (data.phase === "failed") {
     return (
       <ImportShell>
+        {announcer}
         <JobFailed error={data.error} />
       </ImportShell>
     );
@@ -157,6 +172,7 @@ function ImportRun({ jobId }: { jobId: string }) {
   if (data.phase === "done") {
     return (
       <ImportShell>
+        {announcer}
         <JobDone state={data} jobId={jobId} />
       </ImportShell>
     );
@@ -165,6 +181,7 @@ function ImportRun({ jobId }: { jobId: string }) {
   // scanning / reviewing / applying: the live feed.
   return (
     <ImportShell>
+      {announcer}
       <LiveFeed state={data} jobId={jobId} />
     </ImportShell>
   );
@@ -191,10 +208,7 @@ function LiveFeed({ state, jobId }: { state: ImportJobState; jobId: string }) {
   const scanningEmpty = working && state.albums.length === 0;
   return (
     <div className="flex flex-col gap-4">
-      <p
-        className="text-muted-foreground flex min-h-5 items-center gap-2 text-sm"
-        aria-live="polite"
-      >
+      <p className="text-muted-foreground flex min-h-5 items-center gap-2 text-sm">
         {working && (
           <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
         )}

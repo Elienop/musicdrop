@@ -184,6 +184,16 @@ describe("ImportPage — live feed", () => {
     // The visible cue counts imported + skipped + the one awaiting review.
     expect(await screen.findByText(/1 skipped/)).toBeInTheDocument();
   });
+
+  test("announces the run through one polite live region", async () => {
+    server.use(http.get(JOB_URL, () => HttpResponse.json(makeJob())));
+    renderAt("/import?job=job-1");
+
+    // Exactly one spoken region; the visible cue is no longer a live region.
+    const status = await screen.findByRole("status");
+    expect(status).toHaveAttribute("aria-live", "polite");
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+  });
 });
 
 describe("ImportPage — terminal states", () => {
