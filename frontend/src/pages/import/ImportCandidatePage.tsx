@@ -1,17 +1,37 @@
-import { AlertCircle, ChevronDown, ExternalLink, Music } from "lucide-react";
+import {
+  AlertCircle,
+  Check,
+  ChevronDown,
+  ExternalLink,
+  Loader2,
+  Minus,
+  Music,
+  Pencil,
+  Plus,
+} from "lucide-react";
 import { useState } from "react";
-import { useParams, useSearchParams } from "react-router";
+import { useNavigate, useParams, useSearchParams } from "react-router";
 
 import type { Candidate } from "@/api/useImport";
 import {
   importCoverUrl,
   RECOMMENDATION_LABEL,
   useImportCandidate,
+  useSubmitChoice,
 } from "@/api/useImport";
 import { BackLink } from "@/components/albums/album-grid";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 
 export function ImportCandidatePage() {
@@ -65,7 +85,12 @@ export function ImportCandidatePage() {
 
   return (
     <Shell backTo={backTo}>
-      <ReviewScreen candidate={data} jobId={jobId as string} index={index} />
+      <ReviewScreen
+        candidate={data}
+        jobId={jobId as string}
+        index={index}
+        backTo={backTo}
+      />
     </Shell>
   );
 }
@@ -84,10 +109,12 @@ function ReviewScreen({
   candidate,
   jobId,
   index,
+  backTo,
 }: {
   candidate: Candidate;
   jobId: string;
   index: number;
+  backTo: string;
 }) {
   // The candidate index the user will Apply — defaults to the top match (0).
   const [selected, setSelected] = useState(0);
@@ -104,8 +131,14 @@ function ReviewScreen({
       )}
       <BeforeAfter candidate={candidate} jobId={jobId} index={index} />
       <WhatChanges candidate={candidate} />
-      {/* Task 6 inserts <TrackDiff/> and the sticky <ReviewActions/> here,
-          using `selected`, `jobId`, `index`, and `backTo`. */}
+      <Separator />
+      <TrackDiff candidate={candidate} />
+      <ReviewActions
+        jobId={jobId}
+        index={index}
+        selected={selected}
+        backTo={backTo}
+      />
     </div>
   );
 }
@@ -318,6 +351,146 @@ function WhatChanges({ candidate }: { candidate: Candidate }) {
           {c}
         </Badge>
       ))}
+    </div>
+  );
+}
+
+/** Every track current→proposed; changed rows tagged, missing/unmatched flagged. */
+function TrackDiff({ candidate }: { candidate: Candidate }) {
+  return (
+    <section aria-label="Track changes" className="flex flex-col gap-3">
+      <h3 className="text-sm font-medium">Tracklist · {candidate.tracks.length}</h3>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="w-12 pr-4 text-right">#</TableHead>
+            <TableHead>Now</TableHead>
+            <TableHead>After import</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {candidate.tracks.map((t, i) => {
+            const changed = t.status === "changed";
+            return (
+              <TableRow key={t.index ?? `row-${i}`} className={cn(changed && "bg-primary/5")}>
+                <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+                  {t.track_after ?? t.track_before ?? "–"}
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  <span className="truncate">{t.title_before ?? "—"}</span>
+                </TableCell>
+                <TableCell>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className={cn("truncate", changed && "font-medium")}>
+                      {t.title_after ?? "—"}
+                    </span>
+                    {changed && (
+                      <Pencil className="text-muted-foreground size-3 shrink-0" aria-label="changed" />
+                    )}
+                  </span>
+                </TableCell>
+              </TableRow>
+            );
+          })}
+          {candidate.missing.map((m, i) => (
+            <TableRow key={`missing-${m.index ?? i}`}>
+              <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+                {m.index ?? "–"}
+              </TableCell>
+              <TableCell className="text-muted-foreground">
+                <span className="inline-flex items-center gap-1">
+                  <Minus className="size-3" aria-hidden="true" /> missing
+                </span>
+              </TableCell>
+              <TableCell className="text-muted-foreground">{m.title ?? "—"}</TableCell>
+            </TableRow>
+          ))}
+          {candidate.unmatched.map((u, i) => (
+            <TableRow key={`unmatched-${i}`}>
+              <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+                –
+              </TableCell>
+              <TableCell>
+                <span className="inline-flex items-center gap-1">
+                  <Plus className="size-3" aria-hidden="true" /> {u.title ?? "—"}
+                </span>
+              </TableCell>
+              <TableCell className="text-muted-foreground">not on release</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </section>
+  );
+}
+
+/** The beets choose_match actions, in a sticky bottom bar. Apply uses the
+ * selected candidate index; on success we return to the feed (the worker
+ * advances to the next album). */
+function ReviewActions({
+  jobId,
+  index,
+  selected,
+  backTo,
+}: {
+  jobId: string;
+  index: number;
+  selected: number;
+  backTo: string;
+}) {
+  const navigate = useNavigate();
+  const submit = useSubmitChoice(jobId);
+
+  function decide(action: "apply" | "skip" | "asis" | "astracks") {
+    submit.mutate(
+      {
+        index,
+        choice: {
+          action,
+          candidate_index: action === "apply" ? selected : null,
+        },
+      },
+      { onSuccess: () => navigate(backTo) },
+    );
+  }
+
+  return (
+    <div className="bg-background/90 sticky bottom-0 -mx-2 flex flex-wrap items-center justify-end gap-2 border-t px-2 py-3 backdrop-blur">
+      <Button
+        variant="ghost"
+        size="sm"
+        disabled={submit.isPending}
+        onClick={() => decide("skip")}
+      >
+        Skip
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={submit.isPending}
+        onClick={() => decide("asis")}
+      >
+        Use as-is
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={submit.isPending}
+        onClick={() => decide("astracks")}
+      >
+        As tracks
+      </Button>
+      <Button disabled={submit.isPending} onClick={() => decide("apply")}>
+        {submit.isPending ? (
+          <>
+            <Loader2 className="animate-spin" aria-hidden="true" /> Applying…
+          </>
+        ) : (
+          <>
+            <Check aria-hidden="true" /> Apply
+          </>
+        )}
+      </Button>
     </div>
   );
 }
