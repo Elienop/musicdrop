@@ -46,6 +46,8 @@ export function ImportCandidatePage() {
   const enabled = Boolean(jobId) && validIndex;
   const { data, isPending, isError, refetch } = useImportCandidate(
     jobId ?? "",
+    // `validIndex ? index : 0` keeps the (disabled) query key out of NaN when the
+    // index is invalid; the query never fires anyway since `enabled` is false.
     validIndex ? index : 0,
     enabled,
   );
@@ -174,7 +176,8 @@ function MatchHeader({ candidate }: { candidate: Candidate }) {
             rel="noreferrer"
             className="text-foreground inline-flex items-center gap-1 underline underline-offset-4"
           >
-            view <ExternalLink className="size-3" aria-hidden="true" />
+            view <span className="sr-only">(opens MusicBrainz in a new tab)</span>
+            <ExternalLink className="size-3" aria-hidden="true" />
           </a>
         )}
       </p>
@@ -201,7 +204,7 @@ function CandidateSwitcher({
           value={selected}
           onChange={(e) => onSelect(Number(e.target.value))}
           aria-label="Candidate release"
-          className="border-input bg-background w-full appearance-none rounded-md border px-3 py-2 pr-9 text-sm"
+          className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full appearance-none rounded-md border px-3 py-2 pr-9 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
         >
           {options.map((opt) => (
             <option key={opt.index} value={opt.index}>
@@ -329,25 +332,45 @@ function Cover({ url }: { url: string | null }) {
 
 /** One-line chip set of what import will change. */
 function WhatChanges({ candidate }: { candidate: Candidate }) {
-  const chips: string[] = [];
+  // Edits import will make (outline chips).
+  const changes: string[] = [];
   if (candidate.cover_after_url && !candidate.has_current_art) {
-    chips.push("+ cover art");
+    changes.push("+ cover art");
   }
+  // `changed_fields` already encodes beets' track-count penalties, so the
+  // missing/unmatched counts below are surfaced as their own caveat chips
+  // rather than folded into this field list.
   for (const f of candidate.changed_fields) {
-    chips.push(f);
+    changes.push(f);
   }
   const changedTracks = candidate.tracks.filter((t) => t.status === "changed").length;
   if (changedTracks > 0) {
-    chips.push(`${changedTracks} of ${candidate.tracks.length} titles`);
+    changes.push(`${changedTracks} of ${candidate.tracks.length} titles`);
   }
-  if (chips.length === 0) {
+
+  // Caveats — files that won't line up cleanly with the release (secondary
+  // chips, so they read as warnings rather than features).
+  const caveats: string[] = [];
+  if (candidate.missing.length > 0) {
+    caveats.push(`${candidate.missing.length} missing`);
+  }
+  if (candidate.unmatched.length > 0) {
+    caveats.push(`${candidate.unmatched.length} not on release`);
+  }
+
+  if (changes.length === 0 && caveats.length === 0) {
     return null;
   }
   return (
     <div className="flex flex-wrap items-center gap-2">
       <span className="text-muted-foreground text-sm">Changes</span>
-      {chips.map((c) => (
+      {changes.map((c) => (
         <Badge key={c} variant="outline">
+          {c}
+        </Badge>
+      ))}
+      {caveats.map((c) => (
+        <Badge key={c} variant="secondary">
           {c}
         </Badge>
       ))}
@@ -372,7 +395,10 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
           {candidate.tracks.map((t, i) => {
             const changed = t.status === "changed";
             return (
-              <TableRow key={t.index ?? `row-${i}`} className={cn(changed && "bg-primary/5")}>
+              <TableRow
+                key={t.index ?? `row-${i}`}
+                className={cn("hover:bg-transparent", changed && "bg-primary/5")}
+              >
                 <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
                   {t.track_after ?? t.track_before ?? "–"}
                 </TableCell>
@@ -393,7 +419,7 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
             );
           })}
           {candidate.missing.map((m, i) => (
-            <TableRow key={`missing-${m.index ?? i}`}>
+            <TableRow key={`missing-${m.index ?? i}`} className="hover:bg-transparent">
               <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
                 {m.index ?? "–"}
               </TableCell>
@@ -406,7 +432,7 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
             </TableRow>
           ))}
           {candidate.unmatched.map((u, i) => (
-            <TableRow key={`unmatched-${i}`}>
+            <TableRow key={`unmatched-${i}`} className="hover:bg-transparent">
               <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
                 –
               </TableCell>
@@ -455,42 +481,68 @@ function ReviewActions({
   }
 
   return (
-    <div className="bg-background/90 sticky bottom-0 -mx-2 flex flex-wrap items-center justify-end gap-2 border-t px-2 py-3 backdrop-blur">
-      <Button
-        variant="ghost"
-        size="sm"
-        disabled={submit.isPending}
-        onClick={() => decide("skip")}
-      >
-        Skip
-      </Button>
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={submit.isPending}
-        onClick={() => decide("asis")}
-      >
-        Use as-is
-      </Button>
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={submit.isPending}
-        onClick={() => decide("astracks")}
-      >
-        As tracks
-      </Button>
-      <Button disabled={submit.isPending} onClick={() => decide("apply")}>
-        {submit.isPending ? (
-          <>
-            <Loader2 className="animate-spin" aria-hidden="true" /> Applying…
-          </>
-        ) : (
-          <>
-            <Check aria-hidden="true" /> Apply
-          </>
-        )}
-      </Button>
+    <div className="bg-background/80 sticky bottom-0 z-10 -mx-2 flex flex-col gap-1.5 border-t px-2 py-3 backdrop-blur">
+      {/* Picking an alternate candidate changes what Apply submits, but the diff
+          above always reflects the top match — say so (there's no undo). */}
+      {selected !== 0 && (
+        <p className="text-muted-foreground text-sm" role="status">
+          Showing the top match — Apply will import the selected release.
+        </p>
+      )}
+      {/* useSubmitChoice swallows 404/409 (already-advanced, navigates anyway);
+          a genuine transport error surfaces here instead of silently re-enabling
+          the button. */}
+      {submit.isError && (
+        <p className="text-destructive text-sm" role="alert">
+          Couldn&rsquo;t submit that choice — try again.
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={submit.isPending}
+          onClick={() => decide("skip")}
+        >
+          Skip
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={submit.isPending}
+          title="Import with the current tags, without a MusicBrainz match"
+          onClick={() => decide("asis")}
+        >
+          Use as-is
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={submit.isPending}
+          title="Import each file as a standalone track, not grouped as an album"
+          onClick={() => decide("astracks")}
+        >
+          As tracks
+        </Button>
+        <Button
+          className="ml-auto"
+          disabled={submit.isPending}
+          onClick={() => decide("apply")}
+        >
+          {submit.isPending ? (
+            <>
+              <Loader2 className="animate-spin" aria-hidden="true" /> Applying…
+            </>
+          ) : (
+            <>
+              <Check aria-hidden="true" /> Apply
+            </>
+          )}
+        </Button>
+      </div>
+      <p className="text-muted-foreground text-xs">
+        Use as-is keeps your current tags · As tracks imports files individually.
+      </p>
     </div>
   );
 }
@@ -522,18 +574,22 @@ function Notice({
 
 function CandidateSkeleton() {
   return (
-    <div className="flex flex-col gap-6" aria-hidden="true">
+    <>
+      {/* role="status" must sit OUTSIDE the aria-hidden skeleton, or screen
+          readers never hear the loading announcement (mirrors ImportPage). */}
       <p className="sr-only" role="status">
         Loading the proposed match…
       </p>
-      <div className="flex flex-col gap-2">
-        <Skeleton className="h-7 w-2/3" />
-        <Skeleton className="h-4 w-1/2" />
+      <div className="flex flex-col gap-6" aria-hidden="true">
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-7 w-2/3" />
+          <Skeleton className="h-4 w-1/2" />
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Skeleton className="h-64 rounded-xl" />
+          <Skeleton className="h-64 rounded-xl" />
+        </div>
       </div>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Skeleton className="h-64 rounded-xl" />
-        <Skeleton className="h-64 rounded-xl" />
-      </div>
-    </div>
+    </>
   );
 }
