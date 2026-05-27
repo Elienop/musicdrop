@@ -4,7 +4,13 @@ import { http, HttpResponse } from "msw";
 import type { ReactNode } from "react";
 import { describe, expect, test } from "vitest";
 
-import { ImportConflictError, useImportJob, useStartImport } from "@/api/useImport";
+import {
+  ImportConflictError,
+  useImportCandidate,
+  useImportJob,
+  useStartImport,
+  useSubmitChoice,
+} from "@/api/useImport";
 import type { ImportJobState } from "@/api/useImport";
 import { server } from "@/test/msw-server";
 
@@ -119,5 +125,96 @@ describe("useImportJob", () => {
     // Once done, polling stops: give it time and assert no further fetches.
     await act(() => new Promise((r) => setTimeout(r, 1500)));
     expect(calls).toBe(callsAtDone);
+  });
+});
+
+const CANDIDATE_URL = `${window.location.origin}/api/import/job-1/albums/1`;
+const CHOICE_URL = `${window.location.origin}/api/import/job-1/albums/1/choice`;
+
+describe("useImportCandidate", () => {
+  test("fetches the candidate when enabled", async () => {
+    server.use(
+      http.get(CANDIDATE_URL, () =>
+        HttpResponse.json({
+          confidence: 75.5,
+          recommendation: "medium",
+          data_source: "MusicBrainz",
+          data_url: "https://mb/a1",
+          changed_fields: ["album"],
+          album_before: {
+            artist: "Radiohead",
+            album: "OK Computr",
+            year: null,
+            label: null,
+            country: null,
+            media: null,
+          },
+          album_after: {
+            artist: "Radiohead",
+            album: "OK Computer",
+            year: 1997,
+            label: "Parlophone",
+            country: "GB",
+            media: "CD",
+          },
+          tracks: [],
+          missing: [],
+          unmatched: [],
+          options: [],
+        }),
+      ),
+    );
+
+    const { result } = renderHook(() => useImportCandidate("job-1", 1, true), {
+      wrapper: wrapper(),
+    });
+
+    await waitFor(() =>
+      expect(result.current.data?.album_after.album).toBe("OK Computer"),
+    );
+  });
+
+  test("is disabled when enabled=false (no request)", () => {
+    const { result } = renderHook(() => useImportCandidate("job-1", 1, false), {
+      wrapper: wrapper(),
+    });
+    expect(result.current.fetchStatus).toBe("idle");
+  });
+});
+
+describe("useSubmitChoice", () => {
+  test("POSTs the choice to the album index", async () => {
+    let seenBody: unknown = null;
+    server.use(
+      http.post(CHOICE_URL, async ({ request }) => {
+        seenBody = await request.json();
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+
+    const { result } = renderHook(() => useSubmitChoice("job-1"), {
+      wrapper: wrapper(),
+    });
+    result.current.mutate({ index: 1, choice: { action: "skip" } });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(seenBody).toEqual({ action: "skip" });
+  });
+
+  test("a 404 resolves (stale slot) rather than rejecting", async () => {
+    // 404/409 mean 'no longer awaiting' — the page refetches the job; the
+    // mutation must not throw so the UI doesn't show a hard error.
+    server.use(
+      http.post(CHOICE_URL, () =>
+        HttpResponse.json({ detail: "Import album not found" }, { status: 404 }),
+      ),
+    );
+
+    const { result } = renderHook(() => useSubmitChoice("job-1"), {
+      wrapper: wrapper(),
+    });
+    result.current.mutate({ index: 1, choice: { action: "skip" } });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
   });
 });

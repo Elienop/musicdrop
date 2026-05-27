@@ -104,3 +104,75 @@ export function useImportJob(jobId: string | undefined) {
     },
   });
 }
+
+async function fetchCandidate(jobId: string, index: number): Promise<Candidate> {
+  const { data, error } = await client.GET(
+    "/api/import/{job_id}/albums/{index}",
+    { params: { path: { job_id: jobId, index } } },
+  );
+  if (error || !data) {
+    throw new Error("Failed to load candidate");
+  }
+  return data;
+}
+
+/**
+ * Fetch the full Candidate for one parked album
+ * (`GET /api/import/{job}/albums/{index}`). `enabled` gates it so it only fires
+ * when the review screen opens (it 404s once the album is no longer parked).
+ */
+export function useImportCandidate(
+  jobId: string,
+  index: number,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: ["import", "candidate", jobId, index],
+    queryFn: () => fetchCandidate(jobId, index),
+    enabled,
+    retry: false,
+  });
+}
+
+/** Arguments to a choice submission: which album, and the decision. */
+export interface SubmitChoiceArgs {
+  index: number;
+  choice: ImportChoice;
+}
+
+async function submitChoice(
+  jobId: string,
+  { index, choice }: SubmitChoiceArgs,
+): Promise<void> {
+  const { error, response } = await client.POST(
+    "/api/import/{job_id}/albums/{index}/choice",
+    { params: { path: { job_id: jobId, index } }, body: choice },
+  );
+  // 404 (slot already advanced) / 409 (a choice already landed) are not hard
+  // failures: they mean 'no longer awaiting this album'. Swallow them — the
+  // caller refetches the job to resync. A real transport error still throws.
+  if (response.status === 404 || response.status === 409) {
+    return;
+  }
+  if (error) {
+    throw new Error("Failed to submit choice");
+  }
+}
+
+/**
+ * Submit a decision for a parked album
+ * (`POST /api/import/{job}/albums/{index}/choice`). On settle, invalidate the
+ * job query so the feed reflects the new state (the worker advances to the next
+ * album). A 404/409 is treated as 'already advanced' and resolves quietly.
+ */
+export function useSubmitChoice(jobId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (args: SubmitChoiceArgs) => submitChoice(jobId, args),
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["import", "job", jobId],
+      });
+    },
+  });
+}
