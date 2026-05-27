@@ -238,12 +238,17 @@ function BeforeAfter({
         heading="Now (your files)"
         change={candidate.album_before}
         coverUrl={candidate.has_current_art ? importCoverUrl(jobId, index) : null}
+        coverCaption={candidate.has_current_art ? "Kept on import" : null}
         changedFields={[]}
       />
       <AlbumPanel
         heading="After import"
         change={candidate.album_after}
         coverUrl={candidate.cover_after_url}
+        // The matched release's Cover Art Archive image is shown for reference
+        // only: with the default config (no fetchart/embedart) the import does
+        // not fetch or change cover art, so the existing cover is kept.
+        coverCaption={candidate.cover_after_url ? "Release art · not applied" : null}
         changedFields={candidate.changed_fields}
       />
     </div>
@@ -254,11 +259,13 @@ function AlbumPanel({
   heading,
   change,
   coverUrl,
+  coverCaption,
   changedFields,
 }: {
   heading: string;
   change: Candidate["album_after"];
   coverUrl: string | null;
+  coverCaption: string | null;
   changedFields: string[];
 }) {
   const changed = new Set(changedFields);
@@ -267,7 +274,12 @@ function AlbumPanel({
       <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
         {heading}
       </p>
-      <Cover url={coverUrl} />
+      <div className="flex flex-col gap-1.5">
+        <Cover url={coverUrl} />
+        {coverCaption && (
+          <p className="text-muted-foreground text-xs">{coverCaption}</p>
+        )}
+      </div>
       <div className="flex flex-col gap-0.5">
         <Field label="Album" value={change.album} changed={changed.has("album")} />
         <Field label="Artist" value={change.artist} changed={changed.has("artist")} />
@@ -332,11 +344,11 @@ function Cover({ url }: { url: string | null }) {
 
 /** One-line chip set of what import will change. */
 function WhatChanges({ candidate }: { candidate: Candidate }) {
-  // Edits import will make (outline chips).
+  // Edits import will make (outline chips). Cover art is intentionally NOT
+  // listed: with the default config (no fetchart/embedart) the import never
+  // fetches or changes art — the after-panel shows the release's art for
+  // reference only. (Revisit when the config/art slice can enable fetchart.)
   const changes: string[] = [];
-  if (candidate.cover_after_url && !candidate.has_current_art) {
-    changes.push("+ cover art");
-  }
   // `changed_fields` already encodes beets' track-count penalties, so the
   // missing/unmatched counts below are surfaced as their own caveat chips
   // rather than folded into this field list.

@@ -99,8 +99,11 @@ describe("ImportCandidatePage", () => {
         (_, el) => el?.tagName === "SPAN" && el.textContent === "76%",
       ),
     ).toBeInTheDocument();
-    // what-changes chips
-    expect(screen.getByText("+ cover art")).toBeInTheDocument();
+    // what-changes chips. Cover art is NOT claimed as a change — with the
+    // default config the import never fetches/changes art (the after-panel
+    // shows the release's art for reference only), so "+ cover art" is absent.
+    expect(screen.queryByText("+ cover art")).not.toBeInTheDocument();
+    expect(screen.getByText(/not applied/i)).toBeInTheDocument();
     expect(screen.getByText("1 of 2 titles")).toBeInTheDocument();
     // before vs after album title both present
     expect(screen.getByText("OK Computr")).toBeInTheDocument();
@@ -119,6 +122,20 @@ describe("ImportCandidatePage", () => {
     // one for the missing track, one for the unmatched file.
     expect(await screen.findByText("1 missing")).toBeInTheDocument();
     expect(screen.getByText("1 not on release")).toBeInTheDocument();
+  });
+
+  test("labels the covers honestly — yours kept, release art is reference", async () => {
+    server.use(
+      http.get(CANDIDATE_URL, () =>
+        HttpResponse.json(makeCandidate({ has_current_art: true })),
+      ),
+    );
+    renderAt();
+
+    // NOW panel says your cover is kept; AFTER panel marks the matched
+    // release's art reference-only ("not applied") so it can't read as a swap.
+    expect(await screen.findByText(/kept on import/i)).toBeInTheDocument();
+    expect(screen.getByText(/not applied/i)).toBeInTheDocument();
   });
 
   test("the action buttons carry title hints + a helper line under the bar", async () => {
