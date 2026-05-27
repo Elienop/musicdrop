@@ -142,14 +142,19 @@ class ImportJobRegistry:
         )
 
     @staticmethod
+    def _is_skipped(row: _FeedAlbum) -> bool:
+        """True if the album landed nothing — an auto-skip (no candidates) or a
+        parked album the user resolved with a non-apply action (skip/abort).
+        The terminal complement of _is_imported; backs both progress.skipped and
+        the done summary so the two can never drift."""
+        return row.status is ImportAlbumStatus.skipped or (
+            row.status is ImportAlbumStatus.decided and row.decided_action not in _APPLY_ACTIONS
+        )
+
+    @staticmethod
     def _summarize(job: ImportJob) -> str:
         imported = sum(1 for a in job.albums.values() if ImportJobRegistry._is_imported(a))
-        skipped = sum(
-            1
-            for a in job.albums.values()
-            if a.status is ImportAlbumStatus.skipped
-            or (a.status is ImportAlbumStatus.decided and a.decided_action not in _APPLY_ACTIONS)
-        )
+        skipped = sum(1 for a in job.albums.values() if ImportJobRegistry._is_skipped(a))
         return f"{imported} imported, {skipped} skipped"
 
     # ----- access -----
@@ -245,10 +250,13 @@ class ImportJobRegistry:
             needs_review = sum(
                 1 for a in job.albums.values() if a.status is ImportAlbumStatus.needs_review
             )
+            skipped = sum(1 for a in job.albums.values() if self._is_skipped(a))
             return ImportJobState(
                 job_id=job.id,
                 phase=job.phase,
-                progress=ImportProgress(applied=applied, needs_review=needs_review),
+                progress=ImportProgress(
+                    applied=applied, needs_review=needs_review, skipped=skipped
+                ),
                 albums=self._summaries(job),
                 summary=job.summary,
                 error=job.error,

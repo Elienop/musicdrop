@@ -58,7 +58,7 @@ def test_job_state_round_trips() -> None:
     state = ImportJobState(
         job_id="j1",
         phase=ImportPhase.reviewing,
-        progress=ImportProgress(applied=1, needs_review=1),
+        progress=ImportProgress(applied=1, needs_review=1, skipped=0),
         albums=[
             ImportAlbumSummary(
                 index=0,
@@ -84,7 +84,7 @@ def test_job_state_round_trips() -> None:
     )
     dumped = state.model_dump(mode="json")
     assert dumped["phase"] == "reviewing"
-    assert dumped["progress"] == {"applied": 1, "needs_review": 1}
+    assert dumped["progress"] == {"applied": 1, "needs_review": 1, "skipped": 0}
     assert dumped["albums"][0]["status"] == "applied"
     assert dumped["albums"][1]["status"] == "needs_review"
     assert dumped["summary"] is None
@@ -194,7 +194,7 @@ def test_feed_shows_applied_then_the_current_needs_review() -> None:
     assert by_index[0]["status"] == "applied"
     assert by_index[1]["status"] == "needs_review"
     assert by_index[1]["album"] == "OK Computer"
-    assert state["progress"] == {"applied": 1, "needs_review": 1}
+    assert state["progress"] == {"applied": 1, "needs_review": 1, "skipped": 0}
 
 
 def test_get_album_returns_full_candidate() -> None:

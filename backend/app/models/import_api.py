@@ -77,6 +77,10 @@ class ImportProgress(BaseModel):
 
     applied: int
     needs_review: int
+    # Albums that landed nothing: an auto-skip (no candidates) or a parked album
+    # the user resolved with a non-apply action. The live mirror of the done
+    # summary's skipped count (registry._is_skipped backs both).
+    skipped: int
 
 
 class ImportAlbumSummary(BaseModel):

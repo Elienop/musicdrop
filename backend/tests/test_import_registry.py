@@ -98,6 +98,7 @@ def test_drain_builds_feed_with_applied_then_the_current_parked() -> None:
     assert registry.state(job_id).phase is ImportPhase.reviewing
     assert registry.state(job_id).progress.applied == 1
     assert registry.state(job_id).progress.needs_review == 1
+    assert registry.state(job_id).progress.skipped == 0
 
 
 def test_record_choice_marks_decided_and_unblocks_worker() -> None:
@@ -189,6 +190,23 @@ def test_summary_counts_skipped_truthfully() -> None:
     assert summary is not None
     assert "0 imported" in summary
     assert "1 skipped" in summary
+
+
+def test_progress_skipped_mirrors_summary_skipped() -> None:
+    # progress.skipped is the LIVE mirror of the done-summary's skipped count:
+    # a parked album the user resolved with skip counts toward both, and never
+    # toward progress.applied.
+    fake = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
+    registry = ImportJobRegistry(runner=fake)
+    job_id = registry.start("/music/incoming")
+    _poll(lambda: registry.state(job_id).albums, lambda rows: len(rows) == 1)
+    registry.record_choice(job_id, 0, ImportChoice(action=ImportAction.skip))
+    _poll(lambda: registry.state(job_id).phase, lambda p: p is ImportPhase.done)
+    state = registry.state(job_id)
+    assert state.progress.skipped == 1
+    assert state.progress.applied == 0
+    assert state.summary is not None
+    assert "1 skipped" in state.summary
 
 
 def test_progress_applied_matches_summary_imported() -> None:
