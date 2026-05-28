@@ -10,6 +10,7 @@ via a ``get_library`` override.
 from fastapi import APIRouter, Request
 from ruamel.yaml.error import YAMLError
 
+from app.beets.config_editor import apply as apply_config_op
 from app.beets.config_editor import parse_yaml, validate_known_keys
 from app.beets.config_editor import save as save_config_op
 from app.beets.config_snapshot import build_config_snapshot
@@ -64,3 +65,16 @@ def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
     """
     handle: LibraryHandle = request.app.state.beets_library
     return save_config_op(handle, req)
+
+
+@router.post("/config/apply", response_model=BeetsConfigSnapshot, tags=["config"])
+async def apply_config(request: Request) -> BeetsConfigSnapshot:
+    """Reload beets in-process after a Save, swapping ``app.state.beets_library``.
+
+    Thin pass-through to :func:`apply_config_op`; all the gating
+    (import-in-progress -> 409), locking (``asyncio.Lock`` on
+    ``app.state.beets_swap_lock``), threadpool offload, and recovery-hint
+    error mapping live in the adapter so the beets boundary stays clean
+    (CLAUDE.md rule 3: no beets touched outside ``app/beets/``).
+    """
+    return await apply_config_op(request)

@@ -12,14 +12,16 @@ is correct here: we never round-trip through the schema, only validate.
 Unknown beets/plugin keys live on disk in the ruamel ``CommentedMap``.
 
 Currently exports: ``parse_yaml``, ``validate_known_keys``, ``walk_get``,
-``walk_set``, ``merge_preserve_secrets``, ``atomic_write``, ``save``, plus
-the re-exports ``REDACTED_TOMBSTONE`` (from ``confuse``) and
-``find_redacted_paths`` (from ``app.beets.config_snapshot``). A later task
-adds ``apply`` (asyncio-locked threadpool rebuild) to the same module.
+``walk_set``, ``merge_preserve_secrets``, ``atomic_write``, ``save``,
+``apply`` (asyncio-locked threadpool rebuild that swaps
+``app.state.beets_library``), plus the re-exports ``REDACTED_TOMBSTONE``
+(from ``confuse``) and ``find_redacted_paths`` (from
+``app.beets.config_snapshot``).
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import shutil
@@ -28,7 +30,8 @@ from pathlib import Path
 from typing import Any, cast
 
 from confuse import REDACTED_TOMBSTONE
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
@@ -39,6 +42,16 @@ from ruamel.yaml.error import YAMLError
 # is used by save() to return the post-write snapshot.
 from app.beets.config_snapshot import build_config_snapshot, find_redacted_paths
 from app.beets.library import LibraryHandle
+
+# ``setup_beets`` / ``reset_beets_globals`` are bound at MODULE LEVEL on
+# purpose: the Apply 500-branch test monkeypatches ``app.beets.config_editor``
+# directly (the name the handler captured at import time), so the lambda fires
+# inside ``_rebuild_beets_handle``. Importing them inside the function body
+# would defeat that patch and the 500 path would silently call the real
+# beets setup.
+from app.beets.setup import reset_beets_globals, setup_beets
+from app.config import settings as _module_settings
+from app.import_jobs.registry import get_registry
 from app.models.config_api import BeetsConfigSnapshot
 from app.models.config_editor import (
     KnownKeysSchema,
@@ -49,6 +62,7 @@ from app.models.config_editor import (
 
 __all__ = [
     "REDACTED_TOMBSTONE",
+    "apply",
     "atomic_write",
     "find_redacted_paths",
     "merge_preserve_secrets",
@@ -440,3 +454,106 @@ def save(handle: LibraryHandle, req: SaveRequest) -> BeetsConfigSnapshot:
     # 6. Return the new snapshot. apply_pending will be True because mtime
     # advanced past handle.file_mtime_at_load — Task 8's Apply endpoint clears it.
     return build_config_snapshot(handle)
+
+
+def _rebuild_beets_handle(old: LibraryHandle, beets_dir: str) -> LibraryHandle:
+    """Tear down beets process-globals and re-run ``setup_beets()``.
+
+    Blocking — runs in FastAPI's threadpool. Pure of the request scope so unit
+    tests can drive it directly without an ASGI lifecycle. Order matters:
+    ``reset_beets_globals(old)`` closes the previous library's SQLite handle
+    AND clears confuse + plugin caches, so the subsequent ``setup_beets`` re-
+    reads ``config.yaml`` from scratch instead of replaying the previous load.
+    """
+    reset_beets_globals(old)
+    return setup_beets(beets_dir)
+
+
+def _swap_lock(app: Any) -> asyncio.Lock:
+    """Return the per-app Apply swap lock, creating it lazily if missing.
+
+    Lazy creation is the gentle posture: production sets the lock in
+    ``main.py``'s lifespan, but the ``TestClient`` ``client`` fixture skips
+    lifespan (the ``with`` block would tear down the hand-wired
+    ``app.state.beets_library``). Reaching this branch in production would
+    mean the lifespan never ran, which is already a much bigger problem than
+    a missing lock. Idempotent: a second call sees the cached lock.
+    """
+    lock = getattr(app.state, "beets_swap_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        app.state.beets_swap_lock = lock
+    return lock
+
+
+def _settings(app: Any) -> Any:
+    """Return the FastAPI ``Settings`` instance.
+
+    Mirrors :func:`_swap_lock`'s lazy-fallback rationale — the production
+    lifespan parks ``settings`` on ``app.state``; tests using the
+    ``TestClient`` fixture without ``with`` need the module-level singleton
+    instead. Falls through to ``app.config.settings`` either way, so monkey-
+    patching that module (the test pattern documented in CLAUDE.md) still
+    works.
+    """
+    return getattr(app.state, "settings", _module_settings)
+
+
+async def apply(request: Request) -> BeetsConfigSnapshot:
+    """Reload beets in-process: swap ``app.state.beets_library`` for a fresh handle.
+
+    Sequence (spec § "Layer 3 - Backend: Apply flow"):
+
+    1. **Import gate** — refuse with 409 if an import is currently active.
+       Reset_beets_globals tears down the SQLite connection the import worker
+       holds; doing that mid-import would corrupt the in-flight ImportSession.
+       ``get_registry()`` (not a module-import) reads the LIVE registry
+       binding — ``conftest.reset_import_registry`` swaps it between tests.
+    2. **Per-app lock** — serialise concurrent Apply requests. Two threads
+       racing through ``reset_beets_globals`` + ``setup_beets`` would leave
+       ``app.state.beets_library`` non-deterministic and could close the
+       library twice (``sqlite3.ProgrammingError``).
+    3. **Threadpool rebuild** — beets setup is blocking I/O (filesystem +
+       SQLite); ``run_in_threadpool`` hands it to FastAPI's worker pool so
+       the event loop stays responsive. Any exception from the rebuild
+       maps to 500 with a ``recovery`` hint — the user's saved config is
+       on disk, so a restart is always the safe recovery path.
+    4. **Atomic swap** — only after the rebuild succeeds, replace
+       ``app.state.beets_library``. On a 500 the old handle stays in place
+       and the process keeps serving with the previously-loaded config.
+    5. **Return snapshot** — ``apply_pending`` will be ``False`` because the
+       new handle's ``file_mtime_at_load`` captured the current on-disk
+       mtime during ``setup_beets``.
+    """
+    app = request.app
+
+    if get_registry().has_active_job():
+        raise HTTPException(
+            status_code=409,
+            detail="Import in progress — Apply available when it finishes",
+        )
+
+    async with _swap_lock(app):
+        old: LibraryHandle = app.state.beets_library
+        settings = _settings(app)
+        try:
+            new = await run_in_threadpool(_rebuild_beets_handle, old, settings.beets_dir)
+        except Exception as exc:
+            # Catch-all is deliberate: the rebuild reaches into beets'
+            # private surface (LazyConfig._materialized, plugin caches),
+            # plus filesystem + SQLite — any failure leaves the process in a
+            # degraded state where the old handle may be partially closed.
+            # Surfacing a structured 500 with the recovery hint is more
+            # useful than re-raising into the ASGI 500 path.
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "detail": f"Apply failed during rebuild: {exc}",
+                    "recovery": (
+                        "Restart MusicDrop. The saved config is on disk; cold start will load it."
+                    ),
+                },
+            ) from exc
+        app.state.beets_library = new
+
+    return build_config_snapshot(new)
