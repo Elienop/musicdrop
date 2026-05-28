@@ -22,7 +22,7 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 from ruamel.yaml import YAML
-from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from app.models.config_editor import (
     KnownKeysSchema,
@@ -41,7 +41,8 @@ def _yaml() -> YAML:
     * default ``typ='rt'`` (do NOT pass it explicitly — maintainer warns
       against it).
     * ``yaml.version = (1, 1)`` so ``yes`` / ``no`` parse as bool (ruamel
-      SF #285 + YAML 1.1 spec).
+      SF #285 — https://sourceforge.net/p/ruamel-yaml/tickets/285/ — and
+      YAML 1.1 spec).
     * ``preserve_quotes = True`` so the user's quoting style survives a
       round-trip.
     * ``indent(mapping=2, sequence=4, offset=2)`` — ruamel-recommended block
@@ -75,17 +76,24 @@ def _line_col_for_path(
 ) -> tuple[int, int] | tuple[None, None]:
     """Resolve a Pydantic error ``loc`` to a 1-based ``(line, column)``.
 
-    Walks ``root`` along ``path[:-1]`` to land on the parent
-    ``CommentedMap``, then calls ``parent.lc.value(path[-1])`` to get the
-    value's ``(line0, col0)`` (0-based, per
-    https://yaml.dev/doc/ruamel.yaml/detail/). We bump the line by 1 because
-    CodeMirror's ``state.doc.line(n)`` is 1-based (CodeMirror reference
-    manual § ``Text.line``).
+    Walks ``root`` along ``path[:-1]`` to land on the parent node, then
+    asks ruamel's line-column tracker for the offending child's position
+    (per https://yaml.dev/doc/ruamel.yaml/detail/). The accessor differs
+    by container type:
 
-    Defensively swallows missing keys, missing ``.lc``, and non-map nodes —
-    these can happen mid-edit when the schema and the parsed doc disagree
-    on shape. Returning ``(None, None)`` lets the response carry the
-    ``loc`` string without a gutter marker.
+    * ``CommentedMap``  -> ``parent.lc.value(key)`` for a ``str`` key.
+    * ``CommentedSeq``  -> ``parent.lc.item(idx)``  for an ``int`` index.
+
+    Both return ``(line0, col0)`` (0-based). We bump the line by 1 because
+    CodeMirror's ``state.doc.line(n)`` is 1-based (CodeMirror reference
+    manual § ``Text.line``). The original implementation always called
+    ``.lc.value(...)`` which raises ``IndexError`` on a sequence parent —
+    so e.g. ``('plugins', 2)`` silently lost its gutter marker.
+
+    Defensively swallows missing keys, missing ``.lc``, and non-map nodes
+    — these can happen mid-edit when the schema and the parsed doc
+    disagree on shape. Returning ``(None, None)`` lets the response carry
+    the ``loc`` string without a gutter marker.
     """
     if not path:
         return (None, None)
@@ -94,7 +102,11 @@ def _line_col_for_path(
         for key in path[:-1]:
             node = node[key]
         if hasattr(node, "lc") and node.lc.data is not None:
-            line_col = node.lc.value(path[-1])
+            last = path[-1]
+            if isinstance(node, CommentedSeq) and isinstance(last, int):
+                line_col = node.lc.item(last)
+            else:
+                line_col = node.lc.value(last)
             if line_col is not None:
                 line0, col0 = line_col
                 return (line0 + 1, col0)
@@ -118,6 +130,10 @@ def validate_known_keys(
       ``data`` is a ``CommentedMap`` (i.e. it came from ``parse_yaml``).
       When ``data`` is a plain ``dict`` (e.g. callers that already
       deserialized elsewhere), both are ``None``.
+
+    Expects a root from ``parse_yaml()``; hand-built ``CommentedMap``s
+    will silently lose line/col because their ``.lc.data`` is ``None``
+    until ruamel populates it during parse.
     """
     try:
         KnownKeysSchema.model_validate(data)
