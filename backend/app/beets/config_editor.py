@@ -11,26 +11,40 @@ The default ``extra='ignore'`` on Pydantic (per Pydantic v2 docs § Models)
 is correct here: we never round-trip through the schema, only validate.
 Unknown beets/plugin keys live on disk in the ruamel ``CommentedMap``.
 
-Currently exports: ``parse_yaml``, ``validate_known_keys``. Later tasks add
-``walk_get``/``walk_set``, ``merge_preserve_secrets``, ``atomic_write``,
-``save``, and ``apply`` to the same module.
+Currently exports: ``parse_yaml``, ``validate_known_keys``, ``walk_get``,
+``walk_set``, ``merge_preserve_secrets``, plus the re-exports
+``REDACTED_TOMBSTONE`` (from ``confuse``) and ``find_redacted_paths`` (from
+``app.beets.config_snapshot``). Later tasks add ``atomic_write``, ``save``,
+and ``apply`` to the same module.
 """
 
 from __future__ import annotations
 
 from typing import Any, cast
 
+from confuse import REDACTED_TOMBSTONE
 from pydantic import ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
+# Re-exported from config_snapshot so the upcoming save() (Task 6) can import
+# both the masking sentinel and the path discoverer from one module.
+from app.beets.config_snapshot import find_redacted_paths
 from app.models.config_editor import (
     KnownKeysSchema,
     ValidationErrorItem,
     loc_to_dot_sep,
 )
 
-__all__ = ["parse_yaml", "validate_known_keys"]
+__all__ = [
+    "REDACTED_TOMBSTONE",
+    "find_redacted_paths",
+    "merge_preserve_secrets",
+    "parse_yaml",
+    "validate_known_keys",
+    "walk_get",
+    "walk_set",
+]
 
 
 def _yaml() -> YAML:
@@ -156,3 +170,65 @@ def validate_known_keys(
                 )
             )
         return out
+
+
+def walk_get(data: Any, path: tuple[str | int, ...]) -> Any:
+    """Walk ``data`` along ``path`` and return the leaf, or ``None`` on miss.
+
+    Used as a thin, total accessor over the heterogeneous shape that ruamel's
+    round-trip mode produces — mappings come back as ``CommentedMap`` (a
+    ``dict`` subclass) and sequences as ``CommentedSeq`` (a ``list`` subclass),
+    so the plain ``isinstance(node, dict | list)`` branches cover both. Any
+    step that misses returns ``None``; the caller pairs the result with an
+    on-disk lookup that intentionally treats a missing path as "user deleted
+    this key" (see ``merge_preserve_secrets``).
+    """
+    node: Any = data
+    for key in path:
+        if isinstance(node, dict) and key in node:
+            node = node[key]
+        elif isinstance(node, list) and isinstance(key, int) and 0 <= key < len(node):
+            node = node[key]
+        else:
+            return None
+    return node
+
+
+def walk_set(data: Any, path: tuple[str | int, ...], value: Any) -> None:
+    """Set ``data[path] = value`` by walking ``path[:-1]`` then assigning.
+
+    Assumes the parent path already exists (callers only invoke this after a
+    successful ``walk_get`` against ``new_map`` confirmed the path resolves).
+    Indexing a ``CommentedMap`` / ``CommentedSeq`` here goes through the same
+    ``__setitem__`` ruamel uses internally, so comments and key order on the
+    parent node are preserved.
+    """
+    node: Any = data
+    for key in path[:-1]:
+        node = node[key]
+    node[path[-1]] = value
+
+
+def merge_preserve_secrets(
+    new_map: CommentedMap,
+    on_disk_map: CommentedMap,
+    *,
+    redacted_paths: list[tuple[str | int, ...]],
+) -> None:
+    """Preserve on-disk secret values when the user's submission left REDACTED untouched.
+
+    For each redacted path: if the new value still equals ``REDACTED_TOMBSTONE``,
+    the user did not type a new value — copy the on-disk value over. If the
+    user typed a new value, leave it. If the user deleted the key entirely
+    (no ``walk_get`` hit in ``new_map``), leave it deleted (intentional delete).
+
+    ``redacted_paths`` is the output of :func:`find_redacted_paths` against
+    ``on_disk_map`` (the only source of truth for "what was masked at display
+    time"). Mutates ``new_map`` in place; ``on_disk_map`` is read-only here.
+    """
+    for path in redacted_paths:
+        new_val = walk_get(new_map, path)
+        if new_val == REDACTED_TOMBSTONE:
+            on_val = walk_get(on_disk_map, path)
+            if on_val is not None:
+                walk_set(new_map, path, on_val)
