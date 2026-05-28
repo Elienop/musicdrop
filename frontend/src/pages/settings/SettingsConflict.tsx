@@ -1,12 +1,47 @@
+import { yaml } from "@codemirror/lang-yaml";
+import { MergeView } from "@codemirror/merge";
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { useEffect, useRef } from "react";
+
 import { Button } from "@/components/ui/button";
 
 /**
- * STUB — Task 12 replaces this with a `@codemirror/merge` MergeView.
+ * Conflict resolution view: shown when Save returns 409 (the on-disk YAML
+ * advanced past the CAS tokens we sent). The page hands us BOTH docs:
  *
- * For the T11 page integration we just need a typecheck-clean component with
- * the right prop surface and the two terminal actions ("Reload" drops local
- * edits, "Overwrite" re-Saves with the server's fresh CAS tokens). The page's
- * conflict-handling wiring is the part T11 is actually validating.
+ *  - `local`  — what the user has in their CM6 editor right now (the draft
+ *               that lost the CAS race).
+ *  - `server` — the freshest disk text the 409 body carried back.
+ *
+ * The user picks an exit:
+ *
+ *  - **Reload (drop my edits)** — abandon `local`, accept `server` as the
+ *    new baseline. Page invalidates + re-fetches the snapshot.
+ *  - **Overwrite anyway** — force-Save `local` with the server's fresh
+ *    `mtime_ns` + `sha256` tokens (carried by the 409 body) so the second
+ *    Save can't lose the same race.
+ *
+ * The diff itself is a `@codemirror/merge` `MergeView`:
+ *   - `a` side = `local`, editable in principle (but we don't surface the
+ *     edits — Reload/Overwrite are the only two paths out). Keeping `a`
+ *     editable preserves the revert affordance: `revertControls: "b-to-a"`
+ *     means each changed chunk has a "<- revert" button that copies the
+ *     server's version of that chunk INTO `a`, so a user who only wants to
+ *     accept a subset of disk-side changes can still do that visually.
+ *   - `b` side = `server`, locked read-only via the standard CM6 triplet
+ *     (`EditorState.readOnly` + `EditorView.editable.of(false)`).
+ *   - `collapseUnchanged: {}` folds identical regions to a "show more"
+ *     affordance so the diff stays focused on the actual divergence.
+ *   - `highlightChanges: true` + `gutter: true` colour the changed lines and
+ *     give a per-chunk gutter marker.
+ *
+ * `MergeView` is a class instance that owns its own DOM under `parent`; we
+ * mount it from a `useEffect` and MUST call `mv.destroy()` in the cleanup
+ * or it leaks DOM nodes + listeners on unmount. The effect re-keys on the
+ * actual doc strings so a fresh 409 (different `local` or `server`) spawns
+ * a clean MergeView rather than trying to splice the new docs into the old
+ * instance.
  */
 export interface SettingsConflictProps {
   local: string;
@@ -21,33 +56,68 @@ export function SettingsConflict({
   onReload,
   onOverwrite,
 }: SettingsConflictProps) {
+  const hostRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const mv = new MergeView({
+      parent: host,
+      a: {
+        doc: local,
+        extensions: [yaml()],
+      },
+      b: {
+        doc: server,
+        extensions: [
+          yaml(),
+          EditorState.readOnly.of(true),
+          EditorView.editable.of(false),
+        ],
+      },
+      // "b-to-a" = revert chunks FROM server (b) BACK INTO local (a) — i.e.
+      // the user is editing the left side and can pull individual disk-side
+      // chunks across. Direction matches the spec's "your edits on the
+      // left, the on-disk version on the right" framing.
+      revertControls: "b-to-a",
+      highlightChanges: true,
+      gutter: true,
+      // Empty config = use the default (collapse runs of identical lines
+      // with an "expand" affordance). Keeps long configs scannable.
+      collapseUnchanged: {},
+    });
+    return () => {
+      mv.destroy();
+    };
+  }, [local, server]);
+
   return (
     <div
+      role="dialog"
+      aria-modal
+      aria-label="File changed on disk"
       className="border-destructive/40 bg-destructive/5 flex flex-col gap-3 rounded-xl border p-4"
-      role="alertdialog"
-      aria-label="Configuration conflict"
     >
       <div className="flex flex-col gap-1">
-        <p className="text-sm font-medium">Conflict — config.yaml changed on disk</p>
+        <p className="text-sm">
+          <strong>File changed on disk</strong> while you were editing. Your
+          edits are on the left; the on-disk version is on the right.
+        </p>
         <p className="text-muted-foreground text-sm">
-          Someone (or another tool) edited the file while you were editing it
-          here. Reload to drop your changes, or Overwrite to save yours anyway.
+          Reload to drop your edits, or Overwrite to save yours anyway.
         </p>
       </div>
-      {/* Stub: T12 swaps these <pre>s for a real diff view. */}
-      <div className="grid grid-cols-2 gap-2">
-        <pre className="border-border bg-muted/50 max-h-40 overflow-auto rounded border p-2 text-xs">
-          {local}
-        </pre>
-        <pre className="border-border bg-muted/50 max-h-40 overflow-auto rounded border p-2 text-xs">
-          {server}
-        </pre>
-      </div>
-      <div className="flex gap-2">
-        <Button variant="outline" size="sm" onClick={onReload}>
-          Reload from disk
+      {/* MergeView owns the DOM under this div — never render children
+          through React, or the next mount will fight CM6 for the node. */}
+      <div
+        ref={hostRef}
+        className="border-border max-h-[480px] overflow-auto rounded-md border"
+      />
+      <div className="flex flex-wrap gap-2">
+        <Button variant="default" size="sm" onClick={onReload}>
+          Reload (drop my edits)
         </Button>
-        <Button variant="destructive" size="sm" onClick={onOverwrite}>
+        <Button variant="outline" size="sm" onClick={onOverwrite}>
           Overwrite anyway
         </Button>
       </div>
