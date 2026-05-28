@@ -98,9 +98,7 @@ def _clear_beets_globals() -> Iterator[None]:
     ``setup_beets()`` force-resolve short-circuits at ``LazyConfig.resolve()``'s
     guard (core.py:728) and the user's ``config.yaml`` is silently ignored.
     """
-    import beets
-    from beets import metadata_plugins, plugins
-    from beets.plugins import BeetsPlugin
+    from app.beets.setup import reset_beets_globals
 
     saved_env = {
         k: os.environ.get(k)
@@ -110,24 +108,13 @@ def _clear_beets_globals() -> Iterator[None]:
         )
     }
     yield
-    # MIRROR of ``app.beets.setup.reset_beets_globals`` — keep in lockstep.
-    # The autouse fixture has no reachable ``LibraryHandle`` to pass to the
-    # helper (every test creates its own), so we inline the same 7 clears
-    # here. If you add/remove a clear in ``reset_beets_globals``, mirror it
-    # below — ``test_reset_beets_globals`` only pins the helper, not this.
-    beets.config.clear()
-    beets.config._materialized = False  # force LazyConfig.resolve() to re-read sources
-    plugins._instances.clear()
-    BeetsPlugin.listeners.clear()
-    BeetsPlugin._raw_listeners.clear()
-    # beets caches ``find_metadata_source_plugins()`` with @cache; a test that
-    # queried it BEFORE plugins were loaded (any import_session test that
-    # transitively walks the matcher) pins an empty list in that cache, and a
-    # later setup_beets()+load_plugins() can't see its own work. Clear it so
-    # each test rediscovers the freshly-loaded plugin instances.
-    metadata_plugins.find_metadata_source_plugins.cache_clear()
-    metadata_plugins.get_metadata_source.cache_clear()
-    metadata_plugins.get_penalty.cache_clear()
+    # Delegate to the production helper (handle=None: the autouse owns no
+    # library). Single source of truth — if a future beets version needs an
+    # 8th clear, only ``reset_beets_globals`` changes and this fixture
+    # inherits the fix. The handle-closing branch is exercised by
+    # ``test_reset_closes_the_library``; the no-handle branch is exercised by
+    # ``test_reset_accepts_none_handle``.
+    reset_beets_globals()
     for k, v in saved_env.items():
         if v is None:
             os.environ.pop(k, None)
