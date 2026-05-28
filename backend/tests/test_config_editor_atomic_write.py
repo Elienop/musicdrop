@@ -3,15 +3,18 @@
 Pins the canonical atomic-write recipe from Dan Luu's *Files are hard*
 (danluu.com/file-consistency/) + the LWN ext4-rename discussion
 (lwn.net/Articles/322823/): tmpfile in the same dir, fsync the tmpfile,
-copystat from dst (mode/atime/mtime/flags/xattrs — NOT uid/gid per Python
-docs), ``os.replace``, then fsync the PARENT DIRECTORY (otherwise the
-rename can be lost on power-cut even on ext4). The ``atomicwrites`` PyPI
-package was deprecated by its own author in favor of this recipe (see
-github.com/untitaker/python-atomicwrites), so we roll it ourselves.
+``copymode`` from dst (mode bits only — atime/mtime intentionally NOT
+preserved so the Save signal advances ``apply_pending``; ``shutil.copystat``
+would carry the old mtime over and freeze the freshness check, so we use
+``shutil.copymode`` instead), ``os.replace``, then fsync the PARENT
+DIRECTORY (otherwise the rename can be lost on power-cut even on ext4).
+The ``atomicwrites`` PyPI package was deprecated by its own author in
+favor of this recipe (see github.com/untitaker/python-atomicwrites), so
+we roll it ourselves.
 
 Mode tests pin two regimes:
 
-* pre-existing dst -> copystat preserves the user's mode (e.g. 0o600).
+* pre-existing dst -> ``copymode`` preserves the user's mode (e.g. 0o600).
 * no pre-existing dst -> first-write defensive fallback to 0o644
   (``setup_beets()`` always ensures the file in production, so this
   branch is belt-and-suspenders).
@@ -41,6 +44,9 @@ def test_atomic_write_writes_content(tmp_path: Path) -> None:
 
 
 def test_atomic_write_preserves_mode(tmp_path: Path) -> None:
+    """``copymode`` carries the user's mode bits (e.g. 0o600) from dst -> tmp
+    so the post-replace file keeps the same permissions. Only mode bits — NOT
+    atime/mtime — see the module docstring for why."""
     cfg = tmp_path / "config.yaml"
     cfg.write_text("a: 1\n")
     cfg.chmod(0o600)

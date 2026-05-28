@@ -367,10 +367,15 @@ def save(handle: LibraryHandle, req: SaveRequest) -> BeetsConfigSnapshot:
        — we want the file's own redacted paths), discover redacted paths against
        that, then ``merge_preserve_secrets`` so any path the user left at
        ``REDACTED`` reverts to the on-disk value before the write.
-    5. **Atomic write** via ``atomic_write`` — fsync + dir-fsync + copystat.
+    5. **Atomic write** via ``atomic_write`` — fsync + dir-fsync + ``copymode``.
+       ``copymode`` (mode bits only) and NOT ``copystat`` — the helper
+       intentionally lets atime/mtime advance so step 6's freshness signal
+       fires.
     6. **Return new snapshot** — ``apply_pending`` will be ``True`` because the
-       mtime advanced past ``handle.file_mtime_at_load``; the Apply endpoint
-       (Task 8) is what clears it.
+       mtime advanced past ``handle.file_mtime_at_load`` (this is the load-bearing
+       reason ``atomic_write`` uses ``copymode`` instead of ``copystat`` — the
+       latter would freeze mtime and the Apply button would never light up);
+       the Apply endpoint (Task 8) is what clears it.
     """
     yaml = _yaml()
 
