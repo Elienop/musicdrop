@@ -7,7 +7,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic-settings>=2.5",
-    "beets>=2.11.0",
+    "beets==2.11.*",
     "httpx>=0.28.1",
     "ruamel.yaml>=0.15.93",
 ]
@@ -62,7 +62,14 @@ module = [
     "tests.test_setup_beets",
     "tests.test_config_snapshot",
     "tests.test_config_api",
+    "tests.test_config_editor_models",
     "tests.test_config_editor_parse_validate",
+    "tests.test_config_editor_secrets",
+    "tests.test_config_editor_atomic_write",
+    "tests.test_config_validate_api",
+    "tests.test_config_save_api",
+    "tests.test_config_apply_api",
+    "tests.test_reset_beets_globals",
 ]
 disallow_untyped_calls = false
 
