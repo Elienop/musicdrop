@@ -123,6 +123,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/imports/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Active Import
+         * @description Tiny probe the ``/settings`` page polls to gate the Apply button.
+         *
+         *     Returns ``{"active": True}`` while any import is in flight (i.e. the
+         *     registry's single slot is in ``_ACTIVE_PHASES``). ``POST /api/config/apply``
+         *     409s in that case; the SettingsPage uses this poll to render an
+         *     "Import in progress" state instead of letting the click race the gate.
+         *
+         *     Plural path (``/imports/active``) to match the convention any future
+         *     multi-import surface would adopt; the single-slot registry is an
+         *     implementation detail.
+         */
+        get: operations["get_active_import_api_imports_active_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/import": {
         parameters: {
             query?: never;
@@ -225,10 +254,99 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/config/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Validate Config
+         * @description Cheap lint pass — never writes. Returns 200 even on errors so the
+         *     CodeMirror async lint source can display them inline.
+         */
+        post: operations["validate_config_api_config_validate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/save": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Save Config
+         * @description Persist the user-submitted YAML to disk after CAS + schema checks.
+         *
+         *     Returns the freshly-built :class:`BeetsConfigSnapshot` (whose
+         *     ``apply_pending`` will be ``True`` until the upcoming Apply endpoint
+         *     reloads beets' globals). Error mapping lives entirely inside
+         *     :func:`save_config_op`: 422 on parse/schema, 409 on CAS mismatch.
+         */
+        post: operations["save_config_api_config_save_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply Config
+         * @description Reload beets in-process after a Save, swapping ``app.state.beets_library``.
+         *
+         *     Thin pass-through to :func:`apply_config_op`; all the gating
+         *     (import-in-progress -> 409), locking (``asyncio.Lock`` on
+         *     ``app.state.beets_swap_lock``), threadpool offload, and recovery-hint
+         *     error mapping live in the adapter so the beets boundary stays clean
+         *     (CLAUDE.md rule 3: no beets touched outside ``app/beets/``).
+         */
+        post: operations["apply_config_api_config_apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * ActiveImportStatus
+         * @description Response of ``GET /api/imports/active``.
+         *
+         *     A typed, single-field probe the SettingsPage's Apply button polls to gate
+         *     itself: while an import is in flight, ``apply`` would 409, so the UI must
+         *     show "Import in progress" instead of letting the click race the gate.
+         *
+         *     A named model rather than a bare ``dict[str, bool]`` so the OpenAPI schema
+         *     emits a ``$ref`` and the generated TS type is a concrete
+         *     ``ActiveImportStatus`` (per CLAUDE.md rule 2: every endpoint returns a
+         *     Pydantic model).
+         */
+        ActiveImportStatus: {
+            /** Active */
+            active: boolean;
+        };
         /** Album */
         Album: {
             /** Id */
@@ -316,8 +434,10 @@ export interface components {
             loaded_at: string;
             /** File Modified At */
             file_modified_at: string | null;
-            /** Restart Required */
-            restart_required: boolean;
+            /** Sha256 */
+            sha256: string;
+            /** Apply Pending */
+            apply_pending: boolean;
         };
         /**
          * Candidate
@@ -495,6 +615,22 @@ export interface components {
          * @enum {string}
          */
         Recommendation: "none" | "low" | "medium" | "strong";
+        /**
+         * SaveRequest
+         * @description Body of ``POST /api/config/save``. ``base_sha256`` is the CAS token —
+         *     echoed back from whatever snapshot the client loaded; mismatch -> 409
+         *     with diff. mtime_ns is intentionally NOT a CAS field: nanosecond ints
+         *     blow past JavaScript's ``Number.MAX_SAFE_INTEGER`` (2^53 − 1) and would
+         *     silently corrupt the round-trip. The SHA-256 already catches any
+         *     bytes-changed edit, including ones that preserved mtime via
+         *     ``os.utime``.
+         */
+        SaveRequest: {
+            /** Yaml Text */
+            yaml_text: string;
+            /** Base Sha256 */
+            base_sha256: string;
+        };
         /** SearchResults */
         SearchResults: {
             /** Artists */
@@ -599,6 +735,29 @@ export interface components {
             /** Track */
             track: number | null;
         };
+        /**
+         * ValidateRequest
+         * @description Body of ``POST /api/config/validate``. The endpoint is CAS-free — it
+         *     only lints, never writes.
+         */
+        ValidateRequest: {
+            /** Yaml Text */
+            yaml_text: string;
+        };
+        /**
+         * ValidateResponse
+         * @description Response of ``POST /api/config/validate``.
+         *
+         *     A named model rather than the looser ``dict[str, list[ValidationErrorItem]]``
+         *     so OpenAPI emits a ``$ref`` to a concrete ``ValidateResponse`` schema. The
+         *     frontend codegen (T10's openapi-typescript pass) then produces a clean
+         *     ``{errors: ValidationErrorItem[]}`` TS type instead of a generic
+         *     ``Record<string, ValidationErrorItem[]>``.
+         */
+        ValidateResponse: {
+            /** Errors */
+            errors: components["schemas"]["ValidationErrorItem"][];
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -611,6 +770,24 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /**
+         * ValidationErrorItem
+         * @description One row of the ``POST /api/config/validate`` and ``POST /api/config/save``
+         *     error responses. ``line`` is 1-based for CodeMirror's ``state.doc.line(n)``
+         *     (CodeMirror reference manual).
+         */
+        ValidationErrorItem: {
+            /** Loc */
+            loc: string;
+            /** Msg */
+            msg: string;
+            /** Type */
+            type: string;
+            /** Line */
+            line?: number | null;
+            /** Column */
+            column?: number | null;
         };
     };
     responses: never;
@@ -827,6 +1004,26 @@ export interface operations {
             };
         };
     };
+    get_active_import_api_imports_active_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActiveImportStatus"];
+                };
+            };
+        };
+    };
     start_import_api_import_post: {
         parameters: {
             query?: never;
@@ -990,6 +1187,92 @@ export interface operations {
         };
     };
     get_config_api_config_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BeetsConfigSnapshot"];
+                };
+            };
+        };
+    };
+    validate_config_api_config_validate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ValidateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_config_api_config_save_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BeetsConfigSnapshot"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_config_api_config_apply_post: {
         parameters: {
             query?: never;
             header?: never;

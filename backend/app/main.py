@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -72,6 +73,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # so there is no "library disabled" branch in production.
     handle = _resolve_library()
     app.state.beets_library = handle
+
+    # Settings + the swap lock back the Apply endpoint (Task 8). The lock
+    # serialises the in-process beets-globals teardown + rebuild so two
+    # concurrent Applies cannot trample each other's ``app.state.beets_library``
+    # swap; ``settings`` is exposed so the handler reads ``beets_dir`` without
+    # re-importing the module (and so tests can monkeypatch it on a single
+    # surface).
+    app.state.settings = settings
+    app.state.beets_swap_lock = asyncio.Lock()
 
     from app.import_jobs.registry import registry as import_registry
 

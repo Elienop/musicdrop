@@ -111,3 +111,19 @@ class ImportJobState(BaseModel):
     summary: str | None
     # The worker's failure message when phase == failed; None otherwise.
     error: str | None
+
+
+class ActiveImportStatus(BaseModel):
+    """Response of ``GET /api/imports/active``.
+
+    A typed, single-field probe the SettingsPage's Apply button polls to gate
+    itself: while an import is in flight, ``apply`` would 409, so the UI must
+    show "Import in progress" instead of letting the click race the gate.
+
+    A named model rather than a bare ``dict[str, bool]`` so the OpenAPI schema
+    emits a ``$ref`` and the generated TS type is a concrete
+    ``ActiveImportStatus`` (per CLAUDE.md rule 2: every endpoint returns a
+    Pydantic model).
+    """
+
+    active: bool

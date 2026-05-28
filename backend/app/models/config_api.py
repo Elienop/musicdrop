@@ -25,5 +25,16 @@ class BeetsConfigSnapshot(BaseModel):
     file_modified_at: datetime | None
     """Current ``st_mtime`` of ``config_path`` (UTC). ``None`` if the file is missing."""
 
-    restart_required: bool
-    """``True`` when the file is missing OR its mtime exceeds ``file_mtime_at_load``."""
+    sha256: str
+    """Hex SHA-256 of the on-disk file bytes at GET time. The sole
+    optimistic-concurrency token used by ``POST /api/config/save``. mtime_ns
+    is not echoed back because nanosecond ints exceed JavaScript's
+    ``Number.MAX_SAFE_INTEGER`` (2^53 - 1), which would silently corrupt the
+    CAS round-trip; the SHA-256 already catches any bytes-changed edit
+    (including ones that preserved mtime via ``os.utime``)."""
+
+    apply_pending: bool
+    """``True`` when the file is missing OR its mtime exceeds ``file_mtime_at_load``.
+
+    (Was ``restart_required`` in Layers 1+2 — semantics unchanged; name updated
+    for the Layer-3 Apply button that replaces the restart instruction.)"""

@@ -98,8 +98,7 @@ def _clear_beets_globals() -> Iterator[None]:
     ``setup_beets()`` force-resolve short-circuits at ``LazyConfig.resolve()``'s
     guard (core.py:728) and the user's ``config.yaml`` is silently ignored.
     """
-    import beets
-    from beets import metadata_plugins, plugins
+    from app.beets.setup import reset_beets_globals
 
     saved_env = {
         k: os.environ.get(k)
@@ -109,16 +108,13 @@ def _clear_beets_globals() -> Iterator[None]:
         )
     }
     yield
-    beets.config.clear()
-    beets.config._materialized = False  # force LazyConfig.resolve() to re-read sources
-    plugins._instances.clear()
-    # beets caches ``find_metadata_source_plugins()`` with @cache; a test that
-    # queried it BEFORE plugins were loaded (any import_session test that
-    # transitively walks the matcher) pins an empty list in that cache, and a
-    # later setup_beets()+load_plugins() can't see its own work. Clear it so
-    # each test rediscovers the freshly-loaded plugin instances.
-    metadata_plugins.find_metadata_source_plugins.cache_clear()
-    metadata_plugins.get_metadata_source.cache_clear()
+    # Delegate to the production helper (handle=None: the autouse owns no
+    # library). Single source of truth — if a future beets version needs an
+    # 8th clear, only ``reset_beets_globals`` changes and this fixture
+    # inherits the fix. The handle-closing branch is exercised by
+    # ``test_reset_closes_the_library``; the no-handle branch is exercised by
+    # ``test_reset_accepts_none_handle``.
+    reset_beets_globals()
     for k, v in saved_env.items():
         if v is None:
             os.environ.pop(k, None)
@@ -158,7 +154,7 @@ def beets_library_config_path(beets_library: LibraryHandle) -> Path:
     """Path to the ``config.yaml`` backing the active :class:`LibraryHandle`.
 
     Test_config_api uses this to ``os.utime`` the file between two GETs and
-    assert the endpoint surfaces the new mtime / sets ``restart_required``.
+    assert the endpoint surfaces the new mtime / sets ``apply_pending``.
     Resolved off the handle (not ``tmp_path``) so the two stay in lockstep
     even if the fixture's layout changes.
     """

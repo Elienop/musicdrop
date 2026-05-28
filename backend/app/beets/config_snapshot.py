@@ -12,10 +12,17 @@ Two passes redact secrets before rendering YAML:
 The flattened mapping is a confuse ``OrderedDict`` (a ``dict`` subclass);
 PyYAML's ``safe_dump`` refuses non-plain ``dict`` subclasses, so ``_to_plain``
 recursively converts every level before rendering.
+
+``find_redacted_paths`` is exported as a module-level helper for the Layer-3
+save flow (``app/beets/config_editor.py``): it walks the parsed-YAML map and
+returns the dotted paths whose values would be redacted at display time, so
+the save merge step can preserve untouched secrets without diffing against the
+displayed snapshot.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -46,6 +53,49 @@ SECRET_KEY_PATTERN = re.compile(
 )
 
 
+def find_redacted_paths(data: Any, path: tuple[str, ...] = ()) -> list[tuple[str, ...]]:
+    """Walk a nested mapping (parsed YAML / ruamel ``CommentedMap``) and return
+    the dotted paths whose string values would be redacted at display.
+
+    Used by Layer-3 save (``config_editor.merge_preserve_secrets``) to know
+    which keys to preserve from disk when the editor still shows ``REDACTED``
+    at them. Mirrors the same key-matching policy as
+    :func:`_mask_secrets_in_place` (which masks display values); they MUST stay
+    in lockstep or the save merge will leak fresh secrets back into the page.
+
+    The list branch descends into BOTH nested dicts AND nested lists, matching
+    ``_mask_secrets_in_place``'s ``isinstance(v, dict | list)`` recursion —
+    asymmetry would let display redact a path that save can't preserve.
+
+    Results are deduped (preserving first-seen order): a list like
+    ``accounts: [{api_token: a}, {api_token: b}]`` yields one path, not N.
+    """
+    out: list[tuple[str, ...]] = []
+    _walk_redacted(data, path, out)
+    # Dedup while preserving first-seen order. ``dict.fromkeys`` is the cheap
+    # deterministic shape; ``sorted(set(...))`` would lose insertion order,
+    # making test failures noisier than they need to be.
+    return list(dict.fromkeys(out))
+
+
+def _walk_redacted(data: Any, path: tuple[str, ...], out: list[tuple[str, ...]]) -> None:
+    """Recursive worker for :func:`find_redacted_paths`. Mutates ``out``."""
+    if isinstance(data, dict):
+        for k, v in data.items():
+            sub = (*path, str(k))
+            if isinstance(v, dict | list):
+                # NOTE: list/dict descent does NOT extend the path with an
+                # index — display redaction is per-key, and the save-flow
+                # caller pairs each result with a positional walk against the
+                # on-disk map. Adding indices would break that contract.
+                _walk_redacted(v, sub, out)
+            elif isinstance(v, str) and SECRET_KEY_PATTERN.search(str(k)):
+                out.append(sub)
+    elif isinstance(data, list):
+        for item in data:
+            _walk_redacted(item, path, out)
+
+
 def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
     """Render the current beets config to YAML (redacted) + freshness fields."""
     flat = beets.config.flatten(redact=True)
@@ -56,23 +106,27 @@ def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
     # window where the file is deleted between the existence check and the
     # stat call, which would leak FileNotFoundError out of the snapshot
     # builder. OSError also covers permission/IO failures (treated as
-    # "missing" for the restart-required signal).
+    # "missing" for the apply-pending signal).
     file_modified_at: datetime | None = None
     current_mtime: float | None = None
+    sha256 = ""
     try:
-        current_mtime = handle.config_path.stat().st_mtime
+        st = handle.config_path.stat()
+        current_mtime = st.st_mtime
         file_modified_at = datetime.fromtimestamp(current_mtime, tz=UTC)
+        sha256 = hashlib.sha256(handle.config_path.read_bytes()).hexdigest()
     except OSError:
         pass
 
-    restart_required = current_mtime is None or current_mtime > handle.file_mtime_at_load
+    apply_pending = current_mtime is None or current_mtime > handle.file_mtime_at_load
 
     return BeetsConfigSnapshot(
         yaml_text=yaml_text,
         config_path=str(handle.config_path),
         loaded_at=handle.loaded_at,
         file_modified_at=file_modified_at,
-        restart_required=restart_required,
+        sha256=sha256,
+        apply_pending=apply_pending,
     )
 
 
