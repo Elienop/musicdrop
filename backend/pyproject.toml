@@ -9,6 +9,7 @@ dependencies = [
     "pydantic-settings>=2.5",
     "beets>=2.11.0",
     "httpx>=0.28.1",
+    "ruamel.yaml>=0.15.93",
 ]
 
 [project.optional-dependencies]
@@ -48,6 +49,7 @@ module = [
     "app.beets.import_session",
     "app.beets.setup",
     "app.beets.config_snapshot",
+    "app.beets.config_editor",
     "app.import_jobs.runner",
     "tests.conftest",
     "tests.test_albums",
@@ -60,6 +62,7 @@ module = [
     "tests.test_setup_beets",
     "tests.test_config_snapshot",
     "tests.test_config_api",
+    "tests.test_config_editor_parse_validate",
 ]
 disallow_untyped_calls = false
 
