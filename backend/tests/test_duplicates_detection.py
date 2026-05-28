@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+from beets.library import Library
+
+from app.beets.duplicates import find_duplicate_albums, normalize
 from app.models.duplicates import (
     DuplicateAlbum,
     DuplicateGroup,
@@ -67,8 +71,53 @@ def test_report_and_resolve_models_round_trip() -> None:
 
 
 def test_resolve_request_rejects_empty_removes() -> None:
-    import pytest
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
         ResolveRequest(mode=DuplicateMode.strict, keep_album_id=1, remove_album_ids=[])
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("In Rainbows", "in rainbows"),
+        ("In Rainbows (Deluxe Edition)", "in rainbows"),
+        ("Discovery [Remastered]", "discovery"),
+        ("Get Lucky feat. Pharrell", "get lucky"),
+        ("  Multiple   Spaces  ", "multiple spaces"),
+        ("Punk!? & Roll", "punk roll"),
+    ],
+)
+def test_normalize(raw: str, expected: str) -> None:
+    assert normalize(raw) == expected
+
+
+def test_detection_strict_groups_by_mb_albumid(duplicates_lib: Library) -> None:
+    # Fixture builds: two albums sharing mb_albumid "mb-1" (10 + 9 tracks),
+    # one album with mb_albumid "mb-2" (unique), one untagged copy pair.
+    report = find_duplicate_albums(duplicates_lib, mode=DuplicateMode.strict)
+    keys = {g.match_reason for g in report.groups}
+    assert keys == {"MusicBrainz album id"}
+    # Only the mb-1 pair is a strict duplicate group.
+    assert report.group_count == 1
+    group = report.groups[0]
+    assert len(group.members) == 2
+    # Keeper = most tracks (10 > 9), and it is members[0].
+    assert group.members[0].is_suggested_keeper is True
+    assert group.members[0].track_count == 10
+    assert group.suggested_keeper_id == group.members[0].id
+
+
+def test_detection_fuzzy_catches_untagged_copies(duplicates_lib: Library) -> None:
+    report = find_duplicate_albums(duplicates_lib, mode=DuplicateMode.fuzzy)
+    reasons = sorted(g.match_reason for g in report.groups)
+    # The mb-1 pair (MB id) AND the untagged pair (artist+title) both surface.
+    assert reasons == ["MusicBrainz album id", "artist + album title"]
+    assert report.group_count == 2
+
+
+def test_detection_clean_library_is_empty(empty_lib: Library) -> None:
+    report = find_duplicate_albums(empty_lib, mode=DuplicateMode.fuzzy)
+    assert report.group_count == 0
+    assert report.album_count == 0
+    assert report.groups == []
