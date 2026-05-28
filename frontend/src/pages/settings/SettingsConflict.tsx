@@ -114,10 +114,16 @@ export function SettingsConflict({
         className="border-border max-h-[480px] overflow-auto rounded-md border"
       />
       <div className="flex flex-wrap gap-2">
+        {/* Reload = primary recommended (safe) path: drop the in-flight draft
+            and accept the on-disk version. Filled `default` variant carries
+            the visual weight so a hurried user lands on the safe action.
+            Overwrite = the dangerous path (force-clobber the on-disk file);
+            `destructive` makes the warning colour signal the risk against
+            the destructive-tinted panel chrome (`bg-destructive/5`). */}
         <Button variant="default" size="sm" onClick={onReload}>
           Reload (drop my edits)
         </Button>
-        <Button variant="outline" size="sm" onClick={onOverwrite}>
+        <Button variant="destructive" size="sm" onClick={onOverwrite}>
           Overwrite anyway
         </Button>
       </div>
