@@ -1,6 +1,9 @@
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
+
+import pytest
 
 from app.beets.library import close_library
 from app.beets.setup import setup_beets
@@ -115,5 +118,29 @@ def test_fixture_resets_confuse_between_tests(tmp_path: Path) -> None:
         assert beets.config["plugins"].as_str_seq() == ["musicbrainz"]
         assert beets.config["import"]["autotag"].get(bool) is False
         assert beets.config["import"]["copy"].get(bool) is False
+    finally:
+        close_library(handle.lib)
+
+
+def test_setup_fails_fast_on_invalid_yaml(tmp_path: Path) -> None:
+    from confuse.exceptions import ConfigReadError
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("directory: ../music\n  this: is: not [valid YAML\n")
+    with pytest.raises(ConfigReadError):  # confuse raises during first-resolve
+        setup_beets(str(tmp_path))
+
+
+def test_setup_logs_deprecation_for_old_env_vars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("MUSICDROP_BEETS_LIBRARY_PATH", "/leftover/path")
+    monkeypatch.setenv("MUSICDROP_BEETS_LIBRARY_DIRECTORY", "/leftover/dir")
+    with caplog.at_level(logging.WARNING, logger="app.beets.setup"):
+        handle = setup_beets(str(tmp_path))
+    try:
+        msgs = [r.message for r in caplog.records]
+        assert any("MUSICDROP_BEETS_LIBRARY_PATH" in m for m in msgs)
+        assert any("MUSICDROP_BEETS_LIBRARY_DIRECTORY" in m for m in msgs)
     finally:
         close_library(handle.lib)
