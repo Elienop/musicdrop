@@ -60,7 +60,21 @@ def test_apply_500_when_setup_beets_fails(
     monkeypatch.setattr(config_editor, "setup_beets", _boom)
     r = client.post("/api/config/apply")
     assert r.status_code == 500
+    # Pin the response shape. Starlette already wraps our payload as
+    # ``{"detail": ...}`` once — so the handler's payload must be a flat dict
+    # with ``message`` + ``recovery`` keys, NOT a nested ``{"detail": ..., "recovery": ...}``
+    # (which would render as the double-nested ``{"detail": {"detail": ...}}``
+    # the FE then has to special-case). The 409 sibling uses a flat ``str``
+    # for ``detail``; this 500 payload is the structured form of the same
+    # convention.
     detail = r.json()["detail"]
-    # detail is the dict we set in the handler; recovery hint must be present
-    # so the operator knows the on-disk save is still good after a restart.
-    assert "recovery" in str(detail).lower() or "restart" in str(detail).lower()
+    assert isinstance(detail, dict)
+    # Inner key is ``message`` (NOT ``detail``) so the response body is not
+    # ``{"detail": {"detail": "..."}}`` — the FE would have to special-case
+    # that double-``detail`` shape, and the 409 sibling uses a flat
+    # ``detail: str``. ``message`` lines up with the structured-error
+    # convention every other 500 follow.
+    assert "message" in detail
+    assert "boom" in detail["message"].lower()
+    assert "recovery" in detail
+    assert "restart" in detail["recovery"].lower()

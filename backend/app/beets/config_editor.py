@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from confuse import REDACTED_TOMBSTONE
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from ruamel.yaml import YAML
@@ -50,6 +50,7 @@ from app.beets.library import LibraryHandle
 # would defeat that patch and the 500 path would silently call the real
 # beets setup.
 from app.beets.setup import reset_beets_globals, setup_beets
+from app.config import Settings
 from app.config import settings as _module_settings
 from app.import_jobs.registry import get_registry
 from app.models.config_api import BeetsConfigSnapshot
@@ -464,12 +465,19 @@ def _rebuild_beets_handle(old: LibraryHandle, beets_dir: str) -> LibraryHandle:
     ``reset_beets_globals(old)`` closes the previous library's SQLite handle
     AND clears confuse + plugin caches, so the subsequent ``setup_beets`` re-
     reads ``config.yaml`` from scratch instead of replaying the previous load.
+
+    Note: if ``setup_beets()`` raises, the old handle is already torn down —
+    the process is in a degraded state and serves errors until restart. The
+    :func:`apply` 500 path surfaces this with a ``recovery`` hint pointing
+    at restart; we deliberately do NOT try to "undo" the teardown on failure
+    because confuse + plugins + SQLite would each need their own rollback,
+    which is exactly the kind of half-recovered state the restart hint avoids.
     """
     reset_beets_globals(old)
     return setup_beets(beets_dir)
 
 
-def _swap_lock(app: Any) -> asyncio.Lock:
+def _swap_lock(app: FastAPI) -> asyncio.Lock:
     """Return the per-app Apply swap lock, creating it lazily if missing.
 
     Lazy creation is the gentle posture: production sets the lock in
@@ -483,20 +491,24 @@ def _swap_lock(app: Any) -> asyncio.Lock:
     if lock is None:
         lock = asyncio.Lock()
         app.state.beets_swap_lock = lock
+    assert isinstance(lock, asyncio.Lock)
     return lock
 
 
-def _settings(app: Any) -> Any:
-    """Return the FastAPI ``Settings`` instance.
+def _settings(app: FastAPI) -> Settings:
+    """Return the live :class:`Settings` instance.
 
-    Mirrors :func:`_swap_lock`'s lazy-fallback rationale — the production
-    lifespan parks ``settings`` on ``app.state``; tests using the
-    ``TestClient`` fixture without ``with`` need the module-level singleton
-    instead. Falls through to ``app.config.settings`` either way, so monkey-
-    patching that module (the test pattern documented in CLAUDE.md) still
-    works.
+    Production's lifespan parks ``settings`` on ``app.state``; the
+    ``TestClient`` ``client`` fixture skips lifespan, so we fall back to the
+    module-level singleton. Monkey-patching ``app.config.settings`` (the test
+    pattern the existing ``beets_library`` fixture uses) still works either
+    way: production sees the patched value through ``app.state.settings``
+    (which the lifespan set at startup), tests see it through the fallback.
     """
-    return getattr(app.state, "settings", _module_settings)
+    s: Settings | None = getattr(app.state, "settings", None)
+    if s is None:
+        s = _module_settings
+    return s
 
 
 async def apply(request: Request) -> BeetsConfigSnapshot:
@@ -527,6 +539,14 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
     """
     app = request.app
 
+    # Outside lock: best-effort gate; TOCTOU acceptable for single-user
+    # self-host (an import can still arrive between this check and the swap,
+    # but the worst case is a 500 inside the rebuild — the registry's own
+    # threading.Lock guarantees the import either finished or hasn't started
+    # touching beets yet, and the 500 path's recovery hint covers the rest).
+    # Pulling the gate inside the asyncio.Lock would block Apply behind
+    # any concurrent Apply request even when no import is active, which is
+    # worse UX for the single-user case this product targets.
     if get_registry().has_active_job():
         raise HTTPException(
             status_code=409,
@@ -545,10 +565,18 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
             # degraded state where the old handle may be partially closed.
             # Surfacing a structured 500 with the recovery hint is more
             # useful than re-raising into the ASGI 500 path.
+            #
+            # ``message`` (NOT ``detail``) for the inner key so the rendered
+            # response body is ``{"detail": {"message": ..., "recovery": ...}}``
+            # — Starlette already wraps our payload in an outer ``detail``,
+            # so an inner ``detail`` would produce the confusing
+            # ``{"detail": {"detail": ...}}`` shape the FE would have to
+            # special-case. The 409 sibling stays a flat ``detail: str``;
+            # this is the structured form of the same convention.
             raise HTTPException(
                 status_code=500,
                 detail={
-                    "detail": f"Apply failed during rebuild: {exc}",
+                    "message": f"Apply failed during rebuild: {exc}",
                     "recovery": (
                         "Restart MusicDrop. The saved config is on disk; cold start will load it."
                     ),
