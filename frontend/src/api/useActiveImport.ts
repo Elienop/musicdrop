@@ -38,11 +38,22 @@ const ACTIVE_INTERVAL_MS = 5_000;
  */
 export function useActiveImport() {
   return useQuery<ActiveImportStatus>({
-    queryKey: ["imports-active"],
+    // The cache key is shared with `useApplyConfig`'s invalidation in
+    // `useBeetsConfig.ts` — both call sites must stay in lockstep, otherwise
+    // a post-Apply probe could lie about the gate. Renaming here means
+    // renaming there too.
+    queryKey: ["active-import"],
     queryFn: async () => {
       const { data, response } = await client.GET("/api/imports/active");
       // Treat a non-2xx as "not active" rather than throwing — see docblock.
-      if (!response.ok || !data) {
+      // We still log a warning so a misbehaving probe stays debuggable: the
+      // silent fallback is correct UX (no red banner under the Apply button)
+      // but invisible to anyone tracing a "gate stuck open" report.
+      if (!response.ok) {
+        console.warn("[useActiveImport] probe failed:", response.status);
+        return { active: false };
+      }
+      if (!data) {
         return { active: false };
       }
       return data;

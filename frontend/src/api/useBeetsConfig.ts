@@ -88,8 +88,10 @@ export function useSaveConfig() {
  * gates this server-side on the import-active probe; if the user clicks Apply
  * during an import the backend returns 409 and the page rehydrates the gate
  * before re-enabling. The 500 branch carries a recovery hint in `body` so the
- * SettingsPage can render it inline. Cache invalidation is identical to Save —
- * the post-reload snapshot has `apply_pending = false` and a new mtime.
+ * SettingsPage can render it inline. Cache invalidation hits both the snapshot
+ * (the post-reload `BeetsConfigSnapshot` has `apply_pending = false` and a new
+ * mtime) AND the `["active-import"]` probe (an import may have started+ended
+ * during the rebuild — cheaper to refetch than to reason about the race).
  */
 export function useApplyConfig() {
   const queryClient = useQueryClient();
@@ -102,7 +104,13 @@ export function useApplyConfig() {
       return data;
     },
     onSuccess: () => {
+      // Snapshot first (the editor reseeds against `apply_pending = false`).
       void queryClient.invalidateQueries({ queryKey: ["beets-config"] });
+      // Then the import-active probe. The probe gated this Apply (the click
+      // would have 409'd otherwise) so the cached `false` *was* correct — but
+      // a long rebuild could leave it stale. The key here must stay in
+      // lockstep with `useActiveImport`'s `queryKey: ["active-import"]`.
+      void queryClient.invalidateQueries({ queryKey: ["active-import"] });
     },
   });
 }

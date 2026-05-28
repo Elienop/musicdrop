@@ -20,6 +20,7 @@ import type { ReactNode } from "react";
 import { describe, expect, test } from "vitest";
 
 import type { components } from "@/api/schema";
+import { useActiveImport } from "@/api/useActiveImport";
 import {
   useApplyConfig,
   useBeetsConfig,
@@ -35,6 +36,7 @@ const SAVE_URL = `${window.location.origin}/api/config/save`;
 const APPLY_URL = `${window.location.origin}/api/config/apply`;
 const VALIDATE_URL = `${window.location.origin}/api/config/validate`;
 const CONFIG_URL = `${window.location.origin}/api/config`;
+const ACTIVE_IMPORT_URL = `${window.location.origin}/api/imports/active`;
 
 /** Returns a fresh wrapper + the queryClient so tests can assert invalidation. */
 function makeWrapper() {
@@ -212,6 +214,35 @@ describe("useApplyConfig", () => {
     result.current.apply.mutate();
     await waitFor(() => expect(result.current.apply.isSuccess).toBe(true));
     await waitFor(() => expect(result.current.q.data?.mtime_ns).toBe(2));
+  });
+
+  test("invalidates ['active-import'] on success (tight coupling for cross-tab apply)", async () => {
+    // Apply's gate is the import-active probe. If Apply ever takes long enough
+    // that an import was started + finished during the rebuild, the cached
+    // probe value could lie about the gate. Cheaper to invalidate alongside
+    // ["beets-config"] than to reason about the race — see T11 design notes.
+    let probeHits = 0;
+    server.use(
+      http.post(APPLY_URL, () => HttpResponse.json(makeSnapshot(), { status: 200 })),
+      http.get(ACTIVE_IMPORT_URL, () => {
+        probeHits += 1;
+        return HttpResponse.json({ active: false }, { status: 200 });
+      }),
+    );
+
+    const { Wrapper } = makeWrapper();
+    const { result } = renderHook(
+      () => ({ apply: useApplyConfig(), probe: useActiveImport() }),
+      { wrapper: Wrapper },
+    );
+
+    await waitFor(() => expect(result.current.probe.isSuccess).toBe(true));
+    expect(probeHits).toBe(1);
+
+    result.current.apply.mutate();
+    await waitFor(() => expect(result.current.apply.isSuccess).toBe(true));
+    // The invalidation should drive a second probe fetch.
+    await waitFor(() => expect(probeHits).toBe(2));
   });
 });
 
