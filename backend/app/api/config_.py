@@ -32,7 +32,7 @@ def get_config(request: Request) -> BeetsConfigSnapshot:
     return build_config_snapshot(handle)
 
 
-@router.post("/config/validate", response_model=ValidateResponse, tags=["config"])
+@router.post("/config/validate", response_model=ValidateResponse)
 def validate_config(req: ValidateRequest) -> ValidateResponse:
     """Cheap lint pass — never writes. Returns 200 even on errors so the
     CodeMirror async lint source can display them inline."""
@@ -54,7 +54,7 @@ def validate_config(req: ValidateRequest) -> ValidateResponse:
     return ValidateResponse(errors=validate_known_keys(data))
 
 
-@router.post("/config/save", response_model=BeetsConfigSnapshot, tags=["config"])
+@router.post("/config/save", response_model=BeetsConfigSnapshot)
 def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
     """Persist the user-submitted YAML to disk after CAS + schema checks.
 
@@ -67,7 +67,7 @@ def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
     return save_config_op(handle, req)
 
 
-@router.post("/config/apply", response_model=BeetsConfigSnapshot, tags=["config"])
+@router.post("/config/apply", response_model=BeetsConfigSnapshot)
 async def apply_config(request: Request) -> BeetsConfigSnapshot:
     """Reload beets in-process after a Save, swapping ``app.state.beets_library``.
 

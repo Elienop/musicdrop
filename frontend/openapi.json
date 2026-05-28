@@ -569,7 +569,6 @@
     "/api/config/validate": {
       "post": {
         "tags": [
-          "config",
           "config"
         ],
         "summary": "Validate Config",
@@ -612,7 +611,6 @@
     "/api/config/save": {
       "post": {
         "tags": [
-          "config",
           "config"
         ],
         "summary": "Save Config",
@@ -655,7 +653,6 @@
     "/api/config/apply": {
       "post": {
         "tags": [
-          "config",
           "config"
         ],
         "summary": "Apply Config",

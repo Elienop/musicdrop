@@ -18,7 +18,9 @@ function snapshotFixture(
     config_path: "/abs/data/beets/config.yaml",
     loaded_at: "2026-05-28T14:23:00Z",
     file_modified_at: "2026-05-28T14:23:00Z",
-    restart_required: false,
+    mtime_ns: 0,
+    sha256: "",
+    apply_pending: false,
     ...overrides,
   };
 }
@@ -41,12 +43,12 @@ describe("SettingsPage", () => {
     expect(pre).toHaveTextContent("- deezer");
   });
 
-  test("shows restart banner when restart_required", async () => {
+  test("shows restart banner when apply_pending", async () => {
     server.use(
       http.get(CONFIG_URL, () =>
         HttpResponse.json(
           snapshotFixture({
-            restart_required: true,
+            apply_pending: true,
             file_modified_at: "2026-05-28T15:00:00Z",
           }),
         ),
@@ -64,7 +66,7 @@ describe("SettingsPage", () => {
   test("hides restart banner when fresh", async () => {
     server.use(
       http.get(CONFIG_URL, () =>
-        HttpResponse.json(snapshotFixture({ restart_required: false })),
+        HttpResponse.json(snapshotFixture({ apply_pending: false })),
       ),
     );
     renderWithProviders(<SettingsPage />, {
