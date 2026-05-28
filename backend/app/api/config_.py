@@ -11,10 +11,16 @@ from fastapi import APIRouter, Request
 from ruamel.yaml.error import YAMLError
 
 from app.beets.config_editor import parse_yaml, validate_known_keys
+from app.beets.config_editor import save as save_config_op
 from app.beets.config_snapshot import build_config_snapshot
 from app.beets.library import LibraryHandle
 from app.models.config_api import BeetsConfigSnapshot
-from app.models.config_editor import ValidateRequest, ValidateResponse, ValidationErrorItem
+from app.models.config_editor import (
+    SaveRequest,
+    ValidateRequest,
+    ValidateResponse,
+    ValidationErrorItem,
+)
 
 router = APIRouter(tags=["config"])
 
@@ -45,3 +51,16 @@ def validate_config(req: ValidateRequest) -> ValidateResponse:
             ]
         )
     return ValidateResponse(errors=validate_known_keys(data))
+
+
+@router.post("/config/save", response_model=BeetsConfigSnapshot, tags=["config"])
+def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
+    """Persist the user-submitted YAML to disk after CAS + schema checks.
+
+    Returns the freshly-built :class:`BeetsConfigSnapshot` (whose
+    ``apply_pending`` will be ``True`` until the upcoming Apply endpoint
+    reloads beets' globals). Error mapping lives entirely inside
+    :func:`save_config_op`: 422 on parse/schema, 409 on CAS mismatch.
+    """
+    handle: LibraryHandle = request.app.state.beets_library
+    return save_config_op(handle, req)

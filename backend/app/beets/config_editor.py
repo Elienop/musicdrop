@@ -12,14 +12,15 @@ is correct here: we never round-trip through the schema, only validate.
 Unknown beets/plugin keys live on disk in the ruamel ``CommentedMap``.
 
 Currently exports: ``parse_yaml``, ``validate_known_keys``, ``walk_get``,
-``walk_set``, ``merge_preserve_secrets``, plus the re-exports
-``REDACTED_TOMBSTONE`` (from ``confuse``) and ``find_redacted_paths`` (from
-``app.beets.config_snapshot``). Later tasks add ``atomic_write``, ``save``,
-and ``apply`` to the same module.
+``walk_set``, ``merge_preserve_secrets``, ``atomic_write``, ``save``, plus
+the re-exports ``REDACTED_TOMBSTONE`` (from ``confuse``) and
+``find_redacted_paths`` (from ``app.beets.config_snapshot``). A later task
+adds ``apply`` (asyncio-locked threadpool rebuild) to the same module.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 from contextlib import suppress
@@ -27,15 +28,21 @@ from pathlib import Path
 from typing import Any, cast
 
 from confuse import REDACTED_TOMBSTONE
+from fastapi import HTTPException
 from pydantic import ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.error import YAMLError
 
-# Re-exported from config_snapshot so the upcoming save() (Task 6) can import
-# both the masking sentinel and the path discoverer from one module.
-from app.beets.config_snapshot import find_redacted_paths
+# Re-exported from config_snapshot so save() can import both the masking
+# sentinel and the path discoverer from one module. ``build_config_snapshot``
+# is used by save() to return the post-write snapshot.
+from app.beets.config_snapshot import build_config_snapshot, find_redacted_paths
+from app.beets.library import LibraryHandle
+from app.models.config_api import BeetsConfigSnapshot
 from app.models.config_editor import (
     KnownKeysSchema,
+    SaveRequest,
     ValidationErrorItem,
     loc_to_dot_sep,
 )
@@ -46,6 +53,7 @@ __all__ = [
     "find_redacted_paths",
     "merge_preserve_secrets",
     "parse_yaml",
+    "save",
     "validate_known_keys",
     "walk_get",
     "walk_set",
@@ -286,11 +294,22 @@ def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
     Sequence (per Dan Luu's *Files are hard* — danluu.com/file-consistency/ —
     and LWN's ext4-rename discussion — lwn.net/Articles/322823/): write a
     tempfile in the SAME directory as ``dst`` -> fsync the tempfile ->
-    copystat from ``dst`` (mode/atime/mtime/flags/xattrs; NOT uid/gid, per
-    Python's ``shutil.copystat`` docs) -> ``os.replace`` -> fsync the PARENT
-    DIRECTORY. Skipping the parent-dir fsync leaves a window where the rename
-    can be lost on power-cut even on ext4 with delayed allocation tuned for
-    it; the dir fsync forces the directory entry change durable.
+    ``copymode`` from ``dst`` (mode bits only — see note below on why we do
+    NOT use ``copystat``) -> ``os.replace`` -> fsync the PARENT DIRECTORY.
+    Skipping the parent-dir fsync leaves a window where the rename can be
+    lost on power-cut even on ext4 with delayed allocation tuned for it;
+    the dir fsync forces the directory entry change durable.
+
+    Why ``copymode`` and not ``copystat``: ``shutil.copystat`` copies mode
+    bits, atime, mtime, AND extended attributes / flags. Preserving mtime
+    is wrong here because the Save endpoint's freshness signal
+    (:attr:`BeetsConfigSnapshot.apply_pending`) is driven by
+    ``current_mtime > handle.file_mtime_at_load``; preserving the old
+    mtime would mask "the user just saved" from "nothing changed" and the
+    Apply button would never light up after a Save. ``copymode`` preserves
+    the user's chosen permissions (e.g. ``0o600`` on credential-bearing
+    files) without freezing the mtime — exactly the policy this slice
+    wants.
 
     First-write fallback: when ``dst`` does not exist (defensive — production
     callers go through ``setup_beets()`` which always ensures the file),
@@ -309,7 +328,7 @@ def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
             os.fsync(f.fileno())
 
         if dst.exists():
-            shutil.copystat(dst, tmp)
+            shutil.copymode(dst, tmp)
         else:
             os.chmod(tmp, 0o644)
 
@@ -327,3 +346,92 @@ def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
         if tmp.exists():
             with suppress(OSError):
                 tmp.unlink()
+
+
+def save(handle: LibraryHandle, req: SaveRequest) -> BeetsConfigSnapshot:
+    """Persist ``req.yaml_text`` to ``handle.config_path``, returning the new snapshot.
+
+    Sequence (spec § "Layer 3 — Backend: Save flow"):
+
+    1. **Parse** with ruamel — bad YAML -> HTTP 422 with ``problem_mark`` line/col.
+    2. **Schema validate** via ``KnownKeysSchema`` — known-key errors -> 422 with
+       per-error ``ValidationErrorItem`` payloads.
+    3. **mtime + SHA-256 CAS** — compare ``req.base_mtime_ns`` to the current
+       ``st_mtime_ns`` AND ``req.base_sha256`` to the SHA-256 of the on-disk
+       bytes. Either mismatch -> 409 with ``current_snapshot`` (full
+       :class:`BeetsConfigSnapshot`), ``current_yaml_text`` (raw on-disk file),
+       and ``current_sha256`` so the frontend's merge view can render the diff.
+       The SHA-256 leg is the tie-breaker that catches the rare "edit + restore
+       mtime" path ``os.utime`` opens — see ``test_save_409_on_sha_change_same_mtime``.
+    4. **Secret-preserve merge** — re-parse the on-disk bytes (NOT ``beets.config``
+       — we want the file's own redacted paths), discover redacted paths against
+       that, then ``merge_preserve_secrets`` so any path the user left at
+       ``REDACTED`` reverts to the on-disk value before the write.
+    5. **Atomic write** via ``atomic_write`` — fsync + dir-fsync + copystat.
+    6. **Return new snapshot** — ``apply_pending`` will be ``True`` because the
+       mtime advanced past ``handle.file_mtime_at_load``; the Apply endpoint
+       (Task 8) is what clears it.
+    """
+    yaml = _yaml()
+
+    # 1. Parse with ruamel.
+    try:
+        new_map = parse_yaml(req.yaml_text)
+    except YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None)
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                {
+                    "loc": "",
+                    "msg": str(exc),
+                    "type": "yaml_parse",
+                    "line": (mark.line + 1) if mark else None,
+                    "column": mark.column if mark else None,
+                }
+            ],
+        ) from exc
+
+    # 2. Schema validate.
+    errors = validate_known_keys(new_map)
+    if errors:
+        raise HTTPException(
+            status_code=422,
+            detail=[item.model_dump() for item in errors],
+        )
+
+    # 3. mtime + SHA-256 CAS. Read the bytes once and reuse them for both the
+    # hash and the (possible) 409 payload + the secret-preserve re-parse below.
+    on_disk_bytes = handle.config_path.read_bytes()
+    on_disk_mtime_ns = handle.config_path.stat().st_mtime_ns
+    on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
+    if on_disk_mtime_ns != req.base_mtime_ns or on_disk_sha != req.base_sha256:
+        snap = build_config_snapshot(handle)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "detail": "File changed on disk",
+                "current_snapshot": snap.model_dump(mode="json"),
+                "current_yaml_text": on_disk_bytes.decode("utf-8"),
+                "current_sha256": on_disk_sha,
+            },
+        )
+
+    # 4. Secret-preserve merge. ``find_redacted_paths`` walks the on-disk
+    # CommentedMap so paths line up with what the user saw via the GET snapshot.
+    # The widening to ``list[tuple[str | int, ...]]`` is a no-op at runtime —
+    # ``find_redacted_paths`` only ever emits string keys (per its docstring,
+    # list/dict descent does not extend the path with an index) — but mypy's
+    # list invariance won't let ``list[tuple[str, ...]]`` flow into
+    # ``merge_preserve_secrets``'s ``list[tuple[str | int, ...]]`` parameter
+    # directly, so we copy through a comprehension.
+    on_disk_map = parse_yaml(on_disk_bytes.decode("utf-8"))
+    redacted: list[tuple[str | int, ...]] = [tuple(p) for p in find_redacted_paths(on_disk_map)]
+    merge_preserve_secrets(new_map, on_disk_map, redacted_paths=redacted)
+
+    # 5. Atomic write.
+    atomic_write(handle.config_path, new_map, yaml)
+
+    # 6. Return the new snapshot. apply_pending will be True because mtime
+    # advanced past handle.file_mtime_at_load — Task 8's Apply endpoint clears it.
+    return build_config_snapshot(handle)
