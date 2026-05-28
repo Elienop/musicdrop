@@ -123,6 +123,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/imports/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Active Import
+         * @description Tiny probe the ``/settings`` page polls to gate the Apply button.
+         *
+         *     Returns ``{"active": True}`` while any import is in flight (i.e. the
+         *     registry's single slot is in ``_ACTIVE_PHASES``). ``POST /api/config/apply``
+         *     409s in that case; the SettingsPage uses this poll to render an
+         *     "Import in progress" state instead of letting the click race the gate.
+         *
+         *     Plural path (``/imports/active``) to match the convention any future
+         *     multi-import surface would adopt; the single-slot registry is an
+         *     implementation detail.
+         */
+        get: operations["get_active_import_api_imports_active_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/import": {
         parameters: {
             query?: never;
@@ -301,6 +330,23 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * ActiveImportStatus
+         * @description Response of ``GET /api/imports/active``.
+         *
+         *     A typed, single-field probe the SettingsPage's Apply button polls to gate
+         *     itself: while an import is in flight, ``apply`` would 409, so the UI must
+         *     show "Import in progress" instead of letting the click race the gate.
+         *
+         *     A named model rather than a bare ``dict[str, bool]`` so the OpenAPI schema
+         *     emits a ``$ref`` and the generated TS type is a concrete
+         *     ``ActiveImportStatus`` (per CLAUDE.md rule 2: every endpoint returns a
+         *     Pydantic model).
+         */
+        ActiveImportStatus: {
+            /** Active */
+            active: boolean;
+        };
         /** Album */
         Album: {
             /** Id */
@@ -953,6 +999,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_active_import_api_imports_active_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActiveImportStatus"];
                 };
             };
         };

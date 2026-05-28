@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Response, status
 
 from app.import_jobs.registry import ImportJobRegistry, get_registry
 from app.models.import_api import (
+    ActiveImportStatus,
     ImportJobState,
     StartImportRequest,
     StartImportResponse,
@@ -22,6 +23,24 @@ from app.models.import_api import (
 from app.models.import_models import Candidate, ImportChoice
 
 router = APIRouter(tags=["import"])
+
+
+@router.get("/imports/active", response_model=ActiveImportStatus)
+async def get_active_import(
+    reg: Annotated[ImportJobRegistry, Depends(get_registry)],
+) -> ActiveImportStatus:
+    """Tiny probe the ``/settings`` page polls to gate the Apply button.
+
+    Returns ``{"active": True}`` while any import is in flight (i.e. the
+    registry's single slot is in ``_ACTIVE_PHASES``). ``POST /api/config/apply``
+    409s in that case; the SettingsPage uses this poll to render an
+    "Import in progress" state instead of letting the click race the gate.
+
+    Plural path (``/imports/active``) to match the convention any future
+    multi-import surface would adopt; the single-slot registry is an
+    implementation detail.
+    """
+    return ActiveImportStatus(active=reg.has_active_job())
 
 
 @router.post("/import", response_model=StartImportResponse, status_code=status.HTTP_202_ACCEPTED)

@@ -305,6 +305,28 @@
         }
       }
     },
+    "/api/imports/active": {
+      "get": {
+        "tags": [
+          "import"
+        ],
+        "summary": "Get Active Import",
+        "description": "Tiny probe the ``/settings`` page polls to gate the Apply button.\n\nReturns ``{\"active\": True}`` while any import is in flight (i.e. the\nregistry's single slot is in ``_ACTIVE_PHASES``). ``POST /api/config/apply``\n409s in that case; the SettingsPage uses this poll to render an\n\"Import in progress\" state instead of letting the click race the gate.\n\nPlural path (``/imports/active``) to match the convention any future\nmulti-import surface would adopt; the single-slot registry is an\nimplementation detail.",
+        "operationId": "get_active_import_api_imports_active_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveImportStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/import": {
       "post": {
         "tags": [
@@ -675,6 +697,20 @@
   },
   "components": {
     "schemas": {
+      "ActiveImportStatus": {
+        "properties": {
+          "active": {
+            "type": "boolean",
+            "title": "Active"
+          }
+        },
+        "type": "object",
+        "required": [
+          "active"
+        ],
+        "title": "ActiveImportStatus",
+        "description": "Response of ``GET /api/imports/active``.\n\nA typed, single-field probe the SettingsPage's Apply button polls to gate\nitself: while an import is in flight, ``apply`` would 409, so the UI must\nshow \"Import in progress\" instead of letting the click race the gate.\n\nA named model rather than a bare ``dict[str, bool]`` so the OpenAPI schema\nemits a ``$ref`` and the generated TS type is a concrete\n``ActiveImportStatus`` (per CLAUDE.md rule 2: every endpoint returns a\nPydantic model)."
+      },
       "Album": {
         "properties": {
           "id": {
