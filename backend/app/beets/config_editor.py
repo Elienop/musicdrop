@@ -20,6 +20,10 @@ and ``apply`` to the same module.
 
 from __future__ import annotations
 
+import os
+import shutil
+from contextlib import suppress
+from pathlib import Path
 from typing import Any, cast
 
 from confuse import REDACTED_TOMBSTONE
@@ -38,6 +42,7 @@ from app.models.config_editor import (
 
 __all__ = [
     "REDACTED_TOMBSTONE",
+    "atomic_write",
     "find_redacted_paths",
     "merge_preserve_secrets",
     "parse_yaml",
@@ -273,3 +278,52 @@ def merge_preserve_secrets(
             on_val = walk_get(on_disk_map, path)
             if on_val is not None:
                 walk_set(new_map, path, on_val)
+
+
+def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
+    """Atomic write with crash-safety on ext4.
+
+    Sequence (per Dan Luu's *Files are hard* — danluu.com/file-consistency/ —
+    and LWN's ext4-rename discussion — lwn.net/Articles/322823/): write a
+    tempfile in the SAME directory as ``dst`` -> fsync the tempfile ->
+    copystat from ``dst`` (mode/atime/mtime/flags/xattrs; NOT uid/gid, per
+    Python's ``shutil.copystat`` docs) -> ``os.replace`` -> fsync the PARENT
+    DIRECTORY. Skipping the parent-dir fsync leaves a window where the rename
+    can be lost on power-cut even on ext4 with delayed allocation tuned for
+    it; the dir fsync forces the directory entry change durable.
+
+    First-write fallback: when ``dst`` does not exist (defensive — production
+    callers go through ``setup_beets()`` which always ensures the file),
+    chmod the tempfile to ``0o644`` so the post-replace file isn't left at
+    the umask-derived mode.
+
+    The ``atomicwrites`` PyPI package is deprecated by its own author in
+    favor of this recipe (github.com/untitaker/python-atomicwrites), so we
+    roll it ourselves rather than pull in an unmaintained dep.
+    """
+    tmp = dst.parent / f".{dst.name}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            yaml.dump(data, f)
+            f.flush()
+            os.fsync(f.fileno())
+
+        if dst.exists():
+            shutil.copystat(dst, tmp)
+        else:
+            os.chmod(tmp, 0o644)
+
+        os.replace(tmp, dst)
+
+        dir_fd = os.open(dst.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        # Best-effort cleanup if something raised mid-flight (a successful
+        # os.replace already consumed the tempfile name, so this is a no-op
+        # on the happy path).
+        if tmp.exists():
+            with suppress(OSError):
+                tmp.unlink()
