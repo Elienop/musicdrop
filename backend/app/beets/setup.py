@@ -9,15 +9,17 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
 import beets
-from beets import plugins
+from beets import metadata_plugins, plugins
 from beets.library import Library
+from beets.plugins import BeetsPlugin
 from beets.ui import get_path_formats, get_replacements
 
-from app.beets.library import LibraryHandle
+from app.beets.library import LibraryHandle, close_library
 
 logger = logging.getLogger(__name__)
 
@@ -82,3 +84,50 @@ def setup_beets(beets_dir: str) -> LibraryHandle:
         loaded_at=datetime.now(UTC),
         file_mtime_at_load=file_mtime_at_load,
     )
+
+
+def reset_beets_globals(handle: LibraryHandle) -> None:
+    """Tear down all beets/confuse/plugin process-global state.
+
+    Mirrors beets' own ``unload_plugins`` (beets/test/helper.py:460-466) and
+    extends it with the confuse + metadata-source cache clears that
+    ``setup_beets`` mutates. Calling this leaves the process in a state where a
+    fresh ``setup_beets()`` re-reads the user's ``config.yaml`` and reloads
+    plugins from scratch — used by the Apply endpoint to re-arm beets after
+    rewriting ``config.yaml``, and mirrored by the conftest autouse fixture so
+    tests and production tear down identically.
+
+    THIS IS A BEETS-2.11-PINNED COMPATIBILITY SHIM. Beets 3.x has open TODOs
+    around a real plugin manager (see beets/plugins.py FIXME, PR #5887); the
+    private surface this touches (``LazyConfig._materialized``,
+    ``plugins._instances``, ``BeetsPlugin._raw_listeners``, and the three
+    ``functools.cache`` wrappers in ``beets.metadata_plugins``) is the only
+    way to fully reset state on 2.11. T9 pins ``beets==2.11.*`` in
+    ``pyproject.toml`` so an upstream rename can't silently no-op this
+    teardown — it would surface as an ``AttributeError`` instead.
+    """
+    # Closing the SQLite handle is best-effort: an already-closed library
+    # raises, and the reset is still meaningful (the in-memory globals below
+    # are what callers actually need cleared).
+    with suppress(Exception):
+        close_library(handle.lib)
+
+    # confuse: truncate sources + re-arm LazyConfig so the next force-resolve
+    # actually re-reads ``config.yaml``. LazyConfig.clear() alone does NOT
+    # reset ``_materialized`` (confuse core.py:749), so without the flag flip
+    # the next setup_beets() short-circuits and the user file is ignored.
+    beets.config.clear()
+    beets.config._materialized = False
+
+    # beets plugin teardown — verbatim mirror of unload_plugins.
+    plugins._instances.clear()
+    BeetsPlugin.listeners.clear()
+    BeetsPlugin._raw_listeners.clear()
+
+    # All three ``@cache`` decorators in beets.metadata_plugins. Any of them
+    # pinned across a reset would freeze the matcher to plugins from the
+    # PREVIOUS load (or an empty list, if queried before plugins loaded),
+    # silently shadowing the freshly-loaded plugin instances.
+    metadata_plugins.find_metadata_source_plugins.cache_clear()
+    metadata_plugins.get_metadata_source.cache_clear()
+    metadata_plugins.get_penalty.cache_clear()

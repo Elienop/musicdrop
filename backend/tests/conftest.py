@@ -100,6 +100,7 @@ def _clear_beets_globals() -> Iterator[None]:
     """
     import beets
     from beets import metadata_plugins, plugins
+    from beets.plugins import BeetsPlugin
 
     saved_env = {
         k: os.environ.get(k)
@@ -109,9 +110,16 @@ def _clear_beets_globals() -> Iterator[None]:
         )
     }
     yield
+    # MIRROR of ``app.beets.setup.reset_beets_globals`` — keep in lockstep.
+    # The autouse fixture has no reachable ``LibraryHandle`` to pass to the
+    # helper (every test creates its own), so we inline the same 7 clears
+    # here. If you add/remove a clear in ``reset_beets_globals``, mirror it
+    # below — ``test_reset_beets_globals`` only pins the helper, not this.
     beets.config.clear()
     beets.config._materialized = False  # force LazyConfig.resolve() to re-read sources
     plugins._instances.clear()
+    BeetsPlugin.listeners.clear()
+    BeetsPlugin._raw_listeners.clear()
     # beets caches ``find_metadata_source_plugins()`` with @cache; a test that
     # queried it BEFORE plugins were loaded (any import_session test that
     # transitively walks the matcher) pins an empty list in that cache, and a
@@ -119,6 +127,7 @@ def _clear_beets_globals() -> Iterator[None]:
     # each test rediscovers the freshly-loaded plugin instances.
     metadata_plugins.find_metadata_source_plugins.cache_clear()
     metadata_plugins.get_metadata_source.cache_clear()
+    metadata_plugins.get_penalty.cache_clear()
     for k, v in saved_env.items():
         if v is None:
             os.environ.pop(k, None)
