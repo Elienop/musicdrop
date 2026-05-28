@@ -50,3 +50,29 @@ def test_merge_leaves_intentional_delete_alone() -> None:
     new = parse_yaml("spotify:\n  client_id: pubid\n")  # user deleted client_secret
     merge_preserve_secrets(new, on_disk, redacted_paths=[("spotify", "client_secret")])
     assert walk_get(new, ("spotify", "client_secret")) is None
+
+
+def test_merge_reverts_when_user_types_literal_REDACTED() -> None:
+    """Documented edge case: literal "REDACTED" can't be distinguished from
+    the display sentinel; merge treats it as unchanged and reverts to the
+    on-disk value.
+
+    Pinned so a future "use ``is`` instead of ``==``" refactor doesn't
+    silently change this behavior — CPython string interning of short
+    literals is an implementation detail, not a language guarantee, so the
+    only reliable distinction is "type something other than 'REDACTED'."
+    """
+    on_disk = parse_yaml("spotify:\n  client_secret: realsecret\n")
+    new = parse_yaml("spotify:\n  client_secret: REDACTED\n")
+    merge_preserve_secrets(new, on_disk, redacted_paths=[("spotify", "client_secret")])
+    assert walk_get(new, ("spotify", "client_secret")) == "realsecret"  # reverted
+
+
+def test_merge_handles_sequence_index_path() -> None:
+    """``walk_get`` / ``walk_set`` resolve a sequence-index step in the path,
+    so plugins whose configs are lists of dicts (``accounts: [...]``) round-
+    trip through the merge correctly."""
+    on_disk = parse_yaml("accounts:\n  - token: realtoken\n    user: alice\n")
+    new = parse_yaml(f"accounts:\n  - token: {REDACTED_TOMBSTONE}\n    user: alice\n")
+    merge_preserve_secrets(new, on_disk, redacted_paths=[("accounts", 0, "token")])
+    assert walk_get(new, ("accounts", 0, "token")) == "realtoken"

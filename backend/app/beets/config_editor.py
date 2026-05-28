@@ -182,7 +182,14 @@ def walk_get(data: Any, path: tuple[str | int, ...]) -> Any:
     step that misses returns ``None``; the caller pairs the result with an
     on-disk lookup that intentionally treats a missing path as "user deleted
     this key" (see ``merge_preserve_secrets``).
+
+    An empty ``path`` is treated as a degenerate caller mistake and returns
+    ``None`` rather than ``data`` itself — the "total accessor" framing means
+    "every well-formed lookup that misses returns ``None``", and a zero-step
+    walk has no well-formed answer.
     """
+    if not path:
+        return None
     node: Any = data
     for key in path:
         if isinstance(node, dict) and key in node:
@@ -202,11 +209,29 @@ def walk_set(data: Any, path: tuple[str | int, ...], value: Any) -> None:
     Indexing a ``CommentedMap`` / ``CommentedSeq`` here goes through the same
     ``__setitem__`` ruamel uses internally, so comments and key order on the
     parent node are preserved.
+
+    The assert at the end guards future callers: if a path resolves to a
+    scalar parent (e.g. ``walk_set({"a": 1}, ("a", "b"), "x")``), Python's
+    raw ``int.__setitem__`` raises ``TypeError`` with no context. The assert
+    fails earlier and names the offending sub-path. Inside the only current
+    call site (``merge_preserve_secrets``), the precondition is honored
+    structurally because every path comes from ``find_redacted_paths``
+    walking the same on-disk shape we're writing back into.
     """
     node: Any = data
     for key in path[:-1]:
         node = node[key]
-    node[path[-1]] = value
+    if not isinstance(node, (dict, list)):
+        raise AssertionError(
+            f"walk_set requires a mapping/sequence parent at {path[:-1]}, got {type(node).__name__}"
+        )
+    # Re-bind through Any so mypy doesn't reject ``list[Any][str | int]`` —
+    # the runtime dispatch is sound (a sequence parent only ever pairs with
+    # an int leaf key in ``find_redacted_paths``'s output, and a mapping
+    # parent accepts any str/int key), but mypy sees the narrowed union and
+    # objects to the str branch.
+    leaf: Any = node
+    leaf[path[-1]] = value
 
 
 def merge_preserve_secrets(
@@ -225,6 +250,22 @@ def merge_preserve_secrets(
     ``redacted_paths`` is the output of :func:`find_redacted_paths` against
     ``on_disk_map`` (the only source of truth for "what was masked at display
     time"). Mutates ``new_map`` in place; ``on_disk_map`` is read-only here.
+
+    Edge case — literal "REDACTED": if a user literally types the exact string
+    ``"REDACTED"`` (the sentinel used by confuse + our safety-net regex), the
+    merge will treat it as "unchanged" and revert to the on-disk value.
+    Switching the comparison to ``is`` would NOT be a reliable fix — CPython
+    string interning of short literals is an implementation detail, not a
+    language guarantee, so two ``"REDACTED"`` strings can pass ``is`` and
+    defeat the check. Workaround for the rare user who wants the literal
+    string ``"REDACTED"`` as their actual credential: type it with a trailing
+    space or any other distinguishing character.
+
+    Edge case — null on-disk value: ``walk_get(on_disk_map, path)`` returns
+    ``None`` for both "key absent" and "key explicitly ``null`` in YAML".
+    Both collapse to "no restoration" here, which is the right outcome for
+    credentials either way — preserving a literal YAML ``null`` over the
+    user's intent-to-leave-blank would be more surprising than skipping it.
     """
     for path in redacted_paths:
         new_val = walk_get(new_map, path)
