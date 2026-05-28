@@ -5,26 +5,6 @@ import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 
 /**
- * Toggling the editor between read-only (default) and editable is the
- * SettingsPage's Edit button. A Compartment lets us swap that sub-extension
- * tree at runtime without rebuilding the entire EditorState (CM6 reference
- * manual: "Compartments allow you to reconfigure parts of the state").
- *
- * The initial config holds the read-only triplet (state-level read-only +
- * view-level non-editable + a `tabindex` so keyboard users can still focus
- * the rendered content). Clicking Edit dispatches
- * `editableCompartment.reconfigure([])` from the page, which drops all three.
- */
-export const editableCompartment = new Compartment();
-
-/**
- * Theme is also compartmentalized so the page can hot-swap light/dark without
- * tearing down the editor. We do not actually wire a toggle in T11 — the slot
- * is here so a future "preferred-color-scheme" effect can `reconfigure` it.
- */
-export const themeCompartment = new Compartment();
-
-/**
  * Minimal shadcn-aligned CM6 theme. Pulls from the same CSS variables the rest
  * of the app uses (declared in `frontend/src/styles.css` :root + .dark), so the
  * editor inherits the project's tokens rather than hard-coding hex values.
@@ -83,9 +63,37 @@ export const shadcnTheme = EditorView.theme(
 );
 
 /**
+ * The read-only triplet — kept named so both the initial factory config AND
+ * the page-level "Cancel" handler (which dispatches the same triplet to
+ * restore read-only after a discard) can share it.
+ *
+ * Both layers are required: `EditorState.readOnly` blocks model mutation,
+ * `EditorView.editable.of(false)` blocks DOM contenteditable. Neither alone
+ * is enough — see CM6 reference manual under "EditorState.readOnly". The
+ * `tabindex=0` keeps the read-only content focusable so keyboard users can
+ * arrow-key through it before clicking Edit.
+ */
+export const READ_ONLY_EXTENSION = [
+  EditorState.readOnly.of(true),
+  EditorView.editable.of(false),
+  EditorView.contentAttributes.of({ tabindex: "0" }),
+];
+
+/**
  * Canonical CM6 extension factory for the SettingsPage editor.
  *
- * Order matters and is load-bearing:
+ * Compartments are created PER CALL (not module-level): module-level
+ * Compartments would be clobbered if two SettingsPages mounted at once, and
+ * React 19 StrictMode dev-mode double-mounts can leave the first dispatch
+ * targeting a torn-down view. Returning the Compartments alongside the
+ * extension array lets the page dispatch reconfigures against the *same*
+ * Compartment instance the EditorView was wired with.
+ *
+ * The page calls this inside `useMemo` keyed by `initialDoc`, so the
+ * Compartment identity is stable across re-renders for a given doc — only
+ * a fresh snapshot (post-Apply refetch) rebuilds them.
+ *
+ * Extension order is load-bearing:
  *   1. `basicSetup` — registers the default keymap.
  *   2. `yaml()` — language. Must be after basicSetup so its highlight overlay
  *      sits on top of basicSetup's default highlight style.
@@ -104,14 +112,16 @@ export function buildExtensions(opts: {
   onDirtyChange: (dirty: boolean) => void;
   theme: ReturnType<typeof EditorView.theme>;
 }) {
-  return [
+  const editableCompartment = new Compartment();
+  const themeCompartment = new Compartment();
+  const extensions = [
     basicSetup,
     yaml(),
     lintGutter(),
     // `delay: 500` — CM6's built-in debounce. The backend validate endpoint is
     // O(parse + Pydantic), so 500ms is plenty to coalesce keystrokes without
     // feeling laggy on save.
-    linter(async (view) => opts.asyncSource(view.state.doc.toString()), {
+    linter((view) => opts.asyncSource(view.state.doc.toString()), {
       delay: 500,
     }),
     Prec.high(
@@ -126,13 +136,7 @@ export function buildExtensions(opts: {
         },
       ]),
     ),
-    editableCompartment.of([
-      EditorState.readOnly.of(true),
-      EditorView.editable.of(false),
-      // `tabindex=0` keeps the read-only editor focusable so keyboard users
-      // can scroll its content with arrow keys before clicking Edit.
-      EditorView.contentAttributes.of({ tabindex: "0" }),
-    ]),
+    editableCompartment.of(READ_ONLY_EXTENSION),
     themeCompartment.of(opts.theme),
     EditorView.updateListener.of((u) => {
       if (u.docChanged) {
@@ -140,4 +144,5 @@ export function buildExtensions(opts: {
       }
     }),
   ];
+  return { extensions, editableCompartment, themeCompartment };
 }

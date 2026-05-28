@@ -1,7 +1,7 @@
 import type { Diagnostic } from "@codemirror/lint";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { AlertCircle, CheckCircle2, Loader2, TriangleAlert } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useActiveImport } from "@/api/useActiveImport";
 import {
@@ -17,8 +17,8 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { SettingsConflict } from "@/pages/settings/SettingsConflict";
 import {
+  READ_ONLY_EXTENSION,
   buildExtensions,
-  editableCompartment,
   shadcnTheme,
 } from "@/pages/settings/codemirror-config";
 
@@ -34,11 +34,48 @@ interface ConflictState {
   mtime: number;
 }
 
-interface ConflictResponseBody {
-  detail?: unknown;
-  current_yaml_text: string;
-  current_sha256: string;
-  current_snapshot: { mtime_ns: number };
+/**
+ * Wire format of the 409 body. FastAPI nests it under `detail` (the standard
+ * HTTPException shape) — the conflict-handling endpoint includes the server's
+ * fresh CAS tokens + the on-disk YAML so the page can either drop the local
+ * draft (Reload) or overwrite-with-new-tokens (Overwrite anyway) without a
+ * round-trip to refetch the snapshot.
+ */
+interface ConflictBody {
+  detail: {
+    current_yaml_text: string;
+    current_sha256: string;
+    current_snapshot: { mtime_ns: number };
+  };
+}
+
+/**
+ * Narrow `unknown` -> `ConflictState | null` for the 409 onError branch.
+ *
+ * Pulled out of the `onSave` handler so the deep-property access path is
+ * checked once, in one place, instead of repeating the `body.detail.current_*`
+ * cast at every call site. Returns `null` (not throws) on a malformed body so
+ * a freak 409 with the wrong shape gracefully falls through to the React
+ * Query default error path instead of crashing the page.
+ */
+function parseConflictBody(err: unknown): ConflictState | null {
+  if (!isConfigOpError(err) || err.status !== 409 || !err.body) return null;
+  const body = err.body as Partial<ConflictBody>;
+  const detail = body.detail;
+  if (
+    !detail ||
+    typeof detail.current_yaml_text !== "string" ||
+    typeof detail.current_sha256 !== "string" ||
+    !detail.current_snapshot ||
+    typeof detail.current_snapshot.mtime_ns !== "number"
+  ) {
+    return null;
+  }
+  return {
+    serverDoc: detail.current_yaml_text,
+    sha: detail.current_sha256,
+    mtime: detail.current_snapshot.mtime_ns,
+  };
 }
 
 export function SettingsPage() {
@@ -58,6 +95,55 @@ export function SettingsPage() {
   const [localText, setLocalText] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState<ConflictState | null>(null);
+
+  // Resync local state whenever the snapshot's content hash advances (post-Save
+  // / post-Apply React Query invalidation refetches and gets a new sha256).
+  // Without this, an Apply refetch would swap CodeMirror's `value` prop but
+  // leave `dirty=true` and a stale `localText` draft — the page would wedge
+  // showing the editor as dirty with no actual diff against the new doc.
+  // Tracking the hash (not just data) is precise: identity-equal refetches
+  // (e.g. background revalidations that returned an unchanged snapshot) won't
+  // clobber an in-progress edit. `mtime_ns` would work too, but sha256 catches
+  // bytes-changed-mtime-preserved edits (matching the backend's CAS rule).
+  const prevSha = useRef<string | undefined>(data?.sha256);
+  useEffect(() => {
+    if (data?.sha256 && data.sha256 !== prevSha.current) {
+      prevSha.current = data.sha256;
+      setLocalText(null);
+      setDirty(false);
+    }
+  }, [data?.sha256]);
+
+  // Latest-callback refs. The CM6 extension list is memoized (so Compartments
+  // stay stable across renders), but the linter source + Mod-s handler need to
+  // see the *current* `data`/`localText` on every fire — not the closures
+  // captured when the memo was built. Refs let the memoized extensions call
+  // through a stable indirection while always reading the latest handler.
+  const asyncSourceRef = useRef<(text: string) => Promise<Diagnostic[]>>(
+    async () => [],
+  );
+  const onSaveRef = useRef<() => void>(() => {});
+
+  // Build the extension list (and the Compartments it owns) once per snapshot.
+  // Compartments must NOT be module-level singletons: under React 19
+  // StrictMode dev-mode double-mounts the first dispatch can target a
+  // torn-down view, and two concurrently-mounted SettingsPages would clobber
+  // each other's read-only state. Keying by `data?.yaml_text` recomputes on
+  // a snapshot swap (post-Apply refetch) which is exactly when the editor
+  // remounts anyway.
+  const { extensions, editableCompartment } = useMemo(
+    () =>
+      buildExtensions({
+        initialDoc: data?.yaml_text ?? "",
+        // Route through refs so the memo doesn't have to re-key on every
+        // render's freshly-created `asyncSource`/`handleSave` closures.
+        asyncSource: (text) => asyncSourceRef.current(text),
+        onSave: () => onSaveRef.current(),
+        onDirtyChange: setDirty,
+        theme: shadcnTheme,
+      }),
+    [data?.yaml_text],
+  );
 
   if (isPending) return <Loader />;
   if (isError) return <ErrorBanner err={error} />;
@@ -94,12 +180,13 @@ export function SettingsPage() {
   }
 
   function handleSave() {
-    const text = localText ?? data!.yaml_text;
+    if (!data) return;
+    const text = localText ?? data.yaml_text;
     save.mutate(
       {
         yaml_text: text,
-        base_mtime_ns: data!.mtime_ns,
-        base_sha256: data!.sha256,
+        base_mtime_ns: data.mtime_ns,
+        base_sha256: data.sha256,
       },
       {
         onSuccess: () => {
@@ -110,23 +197,20 @@ export function SettingsPage() {
           // 409 = CAS mismatch -> open the conflict panel. 422 is handled by
           // the lint source on the editor's next debounce tick (the linter
           // re-runs after the save resolves), so we don't need to do anything
-          // here. Any other status is left for an inline banner (future T12
-          // could surface; for now React Query's error toast convention would
-          // apply if we adopted sonner).
-          if (isConfigOpError(err) && err.status === 409) {
-            const body = err.body as ConflictResponseBody | undefined;
-            if (body) {
-              setConflict({
-                serverDoc: body.current_yaml_text,
-                sha: body.current_sha256,
-                mtime: body.current_snapshot.mtime_ns,
-              });
-            }
-          }
+          // here. Any other status falls through (React Query exposes via
+          // `save.error` if a future banner wants to surface it).
+          const c = parseConflictBody(err);
+          if (c) setConflict(c);
         },
       },
     );
   }
+
+  // Keep the latest-callback refs pointing at this render's closures. The
+  // memoized extension list calls through these (see `useMemo` above), so the
+  // lint debounce / Mod-s keymap always see fresh `data`/`localText`.
+  asyncSourceRef.current = asyncSource;
+  onSaveRef.current = handleSave;
 
   function handleEdit() {
     const view = editorRef.current?.view;
@@ -136,6 +220,27 @@ export function SettingsPage() {
       });
       view.focus();
     }
+  }
+
+  function handleCancel() {
+    if (!data) return;
+    const view = editorRef.current?.view;
+    if (view) {
+      // Restore read-only + reset the doc back to the snapshot. The doc reset
+      // is required because `value={data.yaml_text}` on `<CodeMirror>` only
+      // applies on remount; once the user has typed, CM6 owns the doc and
+      // we have to dispatch the change explicitly.
+      view.dispatch({
+        effects: editableCompartment.reconfigure(READ_ONLY_EXTENSION),
+        changes: {
+          from: 0,
+          to: view.state.doc.length,
+          insert: data.yaml_text,
+        },
+      });
+    }
+    setLocalText(null);
+    setDirty(false);
   }
 
   function handleApply() {
@@ -155,8 +260,8 @@ export function SettingsPage() {
   }
 
   function handleConflictOverwrite() {
-    if (!conflict) return;
-    const text = localText ?? data!.yaml_text;
+    if (!conflict || !data) return;
+    const text = localText ?? data.yaml_text;
     save.mutate(
       {
         yaml_text: text,
@@ -196,13 +301,7 @@ export function SettingsPage() {
         // `theme="none"` opts out of @uiw/react-codemirror's default theme so
         // our shadcnTheme variables are the only thing setting colors.
         theme="none"
-        extensions={buildExtensions({
-          initialDoc: data.yaml_text,
-          asyncSource,
-          onSave: handleSave,
-          onDirtyChange: setDirty,
-          theme: shadcnTheme,
-        })}
+        extensions={extensions}
         onChange={(value) => setLocalText(value)}
       />
 
@@ -227,6 +326,13 @@ export function SettingsPage() {
             "Save"
           )}
         </Button>
+        {/* Discard the in-progress draft and return to read-only. Only visible
+            while dirty so it doesn't sit next to a no-op target when clean. */}
+        {pageState === "dirty" && (
+          <Button variant="ghost" onClick={handleCancel}>
+            Cancel
+          </Button>
+        )}
         <Button
           onClick={handleApply}
           disabled={pageState !== "apply_pending" || importActive}
@@ -425,8 +531,14 @@ function mapErrorsToDiagnostics(
     )
     .map((e) => {
       const line = view.state.doc.line(e.line);
+      // Clamp `from` to the line's range. A backend column past line-end (drift
+      // between the server's view and the live buffer, or a 0-based vs 1-based
+      // off-by-one) would otherwise produce `from > to` and trigger CM6's
+      // range invariant; capping at `line.to` degrades to a whole-line mark
+      // instead of crashing the linter.
+      const from = Math.min(line.from + (e.column ?? 0), line.to);
       return {
-        from: line.from + (e.column ?? 0),
+        from,
         to: line.to,
         severity: "error" as const,
         message: `${e.loc}: ${e.msg}`,
@@ -441,3 +553,4 @@ function isConfigOpError(err: unknown): err is ConfigOpError {
     typeof (err as ConfigOpError).status === "number"
   );
 }
+
