@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
@@ -150,3 +151,43 @@ def beets_library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[L
         yield handle
     finally:
         close_library(handle.lib)
+
+
+@pytest.fixture
+def beets_library_config_path(beets_library: LibraryHandle) -> Path:
+    """Path to the ``config.yaml`` backing the active :class:`LibraryHandle`.
+
+    Test_config_api uses this to ``os.utime`` the file between two GETs and
+    assert the endpoint surfaces the new mtime / sets ``restart_required``.
+    Resolved off the handle (not ``tmp_path``) so the two stay in lockstep
+    even if the fixture's layout changes.
+    """
+    return beets_library.config_path
+
+
+@pytest.fixture
+def client(beets_library: LibraryHandle) -> Iterator[TestClient]:
+    """TestClient with ``app.state.beets_library`` wired to a real handle.
+
+    Used by endpoints that read ``request.app.state.beets_library`` directly
+    (no FastAPI dependency to override) — currently the Config view at
+    ``GET /api/config``. The endpoint's snapshot builder calls
+    ``handle.config_path.stat()``, so the placeholder handle from
+    ``make_test_handle`` would explode; we point at the real ``beets_library``
+    fixture instead.
+
+    Construction order matters: TestClient is built WITHOUT a ``with`` block
+    so the lifespan handler (which would also try to set ``app.state.beets_library``
+    + open an httpx client) does not run.
+    """
+    from app.main import app
+
+    prior = getattr(app.state, "beets_library", None)
+    app.state.beets_library = beets_library
+    try:
+        yield TestClient(app)
+    finally:
+        if prior is None:
+            del app.state.beets_library
+        else:
+            app.state.beets_library = prior

@@ -208,6 +208,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Config */
+        get: operations["get_config_api_config_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -282,6 +299,25 @@ export interface components {
             name: string;
             /** Album Count */
             album_count: number;
+        };
+        /**
+         * BeetsConfigSnapshot
+         * @description Read-only snapshot of beets' effective config + file freshness.
+         */
+        BeetsConfigSnapshot: {
+            /** Yaml Text */
+            yaml_text: string;
+            /** Config Path */
+            config_path: string;
+            /**
+             * Loaded At
+             * Format: date-time
+             */
+            loaded_at: string;
+            /** File Modified At */
+            file_modified_at: string | null;
+            /** Restart Required */
+            restart_required: boolean;
         };
         /**
          * Candidate
@@ -949,6 +985,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_config_api_config_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BeetsConfigSnapshot"];
                 };
             };
         };
