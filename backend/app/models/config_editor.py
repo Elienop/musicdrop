@@ -141,3 +141,16 @@ class ValidateRequest(BaseModel):
     only lints, never writes."""
 
     yaml_text: str
+
+
+class ValidateResponse(BaseModel):
+    """Response of ``POST /api/config/validate``.
+
+    A named model rather than the looser ``dict[str, list[ValidationErrorItem]]``
+    so OpenAPI emits a ``$ref`` to a concrete ``ValidateResponse`` schema. The
+    frontend codegen (T10's openapi-typescript pass) then produces a clean
+    ``{errors: ValidationErrorItem[]}`` TS type instead of a generic
+    ``Record<string, ValidationErrorItem[]>``.
+    """
+
+    errors: list[ValidationErrorItem]

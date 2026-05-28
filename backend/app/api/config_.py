@@ -14,7 +14,7 @@ from app.beets.config_editor import parse_yaml, validate_known_keys
 from app.beets.config_snapshot import build_config_snapshot
 from app.beets.library import LibraryHandle
 from app.models.config_api import BeetsConfigSnapshot
-from app.models.config_editor import ValidateRequest, ValidationErrorItem
+from app.models.config_editor import ValidateRequest, ValidateResponse, ValidationErrorItem
 
 router = APIRouter(tags=["config"])
 
@@ -25,16 +25,16 @@ def get_config(request: Request) -> BeetsConfigSnapshot:
     return build_config_snapshot(handle)
 
 
-@router.post("/config/validate", tags=["config"])
-def validate_config(req: ValidateRequest) -> dict[str, list[ValidationErrorItem]]:
+@router.post("/config/validate", response_model=ValidateResponse, tags=["config"])
+def validate_config(req: ValidateRequest) -> ValidateResponse:
     """Cheap lint pass — never writes. Returns 200 even on errors so the
     CodeMirror async lint source can display them inline."""
     try:
         data = parse_yaml(req.yaml_text)
     except YAMLError as e:
         mark = getattr(e, "problem_mark", None)
-        return {
-            "errors": [
+        return ValidateResponse(
+            errors=[
                 ValidationErrorItem(
                     loc="",
                     msg=str(e),
@@ -43,5 +43,5 @@ def validate_config(req: ValidateRequest) -> dict[str, list[ValidationErrorItem]
                     column=mark.column if mark else None,
                 )
             ]
-        }
-    return {"errors": validate_known_keys(data)}
+        )
+    return ValidateResponse(errors=validate_known_keys(data))
