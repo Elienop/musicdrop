@@ -1,45 +1,13 @@
 import os
-from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 
-import pytest
-
 from app.beets.setup import setup_beets
 
-
-@pytest.fixture(autouse=True)
-def _clear_beets_globals() -> Iterator[None]:
-    """Each test gets a clean beets.config singleton + plugin registry."""
-    import beets
-    from beets import plugins
-
-    # Snapshot env keys we may mutate
-    saved_env = {
-        k: os.environ.get(k)
-        for k in (
-            "BEETSDIR",
-            "MUSICDROP_BEETS_LIBRARY_PATH",
-            "MUSICDROP_BEETS_LIBRARY_DIRECTORY",
-        )
-    }
-    yield
-    # Reset confuse + plugins so the next test re-reads its own user file.
-    # confuse's LazyConfig.clear() (core.py:749) does NOT reset _materialized;
-    # without flipping it back to False, the next setup_beets() force-resolve
-    # short-circuits at LazyConfig.resolve()'s guard (core.py:728) and the
-    # user's config.yaml is silently ignored. read(user=False, defaults=True)
-    # is the wrong reset — it materializes the defaults-only state.
-    # beets 2.11 plugins module exposes only _instances (no _classes);
-    # load_plugins() guards on `if not _instances`, so clearing it is enough.
-    beets.config.clear()
-    beets.config._materialized = False  # force LazyConfig.resolve() to re-read sources
-    plugins._instances.clear()
-    for k, v in saved_env.items():
-        if v is None:
-            os.environ.pop(k, None)
-        else:
-            os.environ[k] = v
+# The ``_clear_beets_globals`` autouse fixture is now defined in
+# tests/conftest.py and applies to every test in the suite, so each test here
+# still starts with a clean ``beets.config`` singleton and a clean plugin
+# registry without us having to repeat the fixture body.
 
 
 def test_setup_copies_starter_when_missing(tmp_path: Path) -> None:
@@ -63,7 +31,7 @@ def test_setup_copies_starter_when_missing(tmp_path: Path) -> None:
     finally:
         # beets' Library exposes _close (single underscore) not close;
         # see close_library() in app/beets/library.py.
-        handle.lib._close()  # type: ignore[no-untyped-call]  # beets internals untyped
+        handle.lib._close()
 
 
 def test_setup_honors_library_and_directory_from_file(tmp_path: Path) -> None:
@@ -84,7 +52,7 @@ def test_setup_honors_library_and_directory_from_file(tmp_path: Path) -> None:
         assert Path(os.fsdecode(handle.lib.path)) == lib_file
         assert Path(os.fsdecode(handle.lib.directory)) == music_dir
     finally:
-        handle.lib._close()  # type: ignore[no-untyped-call]  # beets internals untyped
+        handle.lib._close()
 
 
 def test_setup_loads_user_plugins(tmp_path: Path) -> None:
@@ -102,7 +70,7 @@ def test_setup_loads_user_plugins(tmp_path: Path) -> None:
         assert "musicbrainz" in names
         assert "deezer" in names
     finally:
-        handle.lib._close()  # type: ignore[no-untyped-call]  # beets internals untyped
+        handle.lib._close()
 
 
 def test_setup_leaves_existing_config_alone(tmp_path: Path) -> None:
@@ -117,7 +85,7 @@ def test_setup_leaves_existing_config_alone(tmp_path: Path) -> None:
     try:
         assert cfg.read_text() == custom
     finally:
-        handle.lib._close()  # type: ignore[no-untyped-call]  # beets internals untyped
+        handle.lib._close()
 
 
 def test_fixture_resets_confuse_between_tests(tmp_path: Path) -> None:
@@ -149,4 +117,4 @@ def test_fixture_resets_confuse_between_tests(tmp_path: Path) -> None:
         assert beets.config["import"]["autotag"].get(bool) is False
         assert beets.config["import"]["copy"].get(bool) is False
     finally:
-        handle.lib._close()  # type: ignore[no-untyped-call]  # beets internals untyped
+        handle.lib._close()

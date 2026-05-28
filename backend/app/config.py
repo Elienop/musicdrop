@@ -7,9 +7,10 @@ class Settings(BaseSettings):
     app_name: str = "MusicDrop"
     version: str = "0.1.0"
     # beets integration:
-    beets_config_path: str | None = None
-    beets_library_path: str | None = None
-    beets_library_directory: str | None = None
+    # data/beets is the user-owned BEETSDIR (config.yaml + library.db live here).
+    # All library/directory/plugins are read FROM data/beets/config.yaml at startup
+    # by app/beets/setup.py; there are no separate MUSICDROP_BEETS_LIBRARY_* knobs.
+    beets_dir: str = "data/beets"
 
     # Artist images (app/artwork/) — opt-in, conservative defaults.
     artist_images_enabled: bool = False

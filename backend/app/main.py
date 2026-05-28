@@ -25,15 +25,17 @@ from app.config import settings
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _resolve_library() -> LibraryHandle | None:
-    """Run beets' startup and return the opened library, or None when unset/missing.
+def _resolve_library() -> LibraryHandle:
+    """Run beets' startup and return the opened library handle.
 
-    Delegates to setup_beets, which mirrors beets' own _setup: load the
-    configured plugins (the matcher's metadata sources are plugins as of beets
-    2.11), open the library with path formats + replacements, then fire
-    library_opened. Sync helper: runs once at startup (cold path).
+    Delegates to setup_beets, which mirrors beets' own _setup: ensure BEETSDIR
+    exists, copy the starter config.yaml on first run, force-resolve confuse,
+    load the plugins listed in the user's config, then open the library with
+    path formats + replacements and fire library_opened. Always returns a
+    handle (the dir/file are created if missing). Sync helper: runs once at
+    startup (cold path).
     """
-    return setup_beets(settings.beets_library_path, settings.beets_library_directory)
+    return setup_beets(settings.beets_dir)
 
 
 def _resolve_cache_dir() -> Path:
@@ -64,14 +66,17 @@ def _build_artist_image_service(client: httpx.AsyncClient) -> ArtistImageService
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Open the beets library once at startup (a SQLite connection we keep for
-    # the process lifetime) and close it on shutdown. Stays None when no library
-    # is configured or the file is missing, so the API degrades to empty pages.
-    lib = _resolve_library()
-    app.state.beets_library = lib
+    # the process lifetime) and close it on shutdown. setup_beets always returns
+    # a handle — missing BEETSDIR / config.yaml are created from the starter —
+    # so there is no "library disabled" branch in production.
+    handle = _resolve_library()
+    app.state.beets_library = handle
 
     from app.import_jobs.registry import registry as import_registry
 
-    import_registry.attach_library(lib)
+    # The import runner builds a WebImportSession from a beets Library, so feed
+    # it the raw lib (not the snapshot handle).
+    import_registry.attach_library(handle.lib)
 
     # Build the artist-image stack once: a shared httpx client (timeout +
     # descriptive User-Agent) behind the rate-limited, disk-cached service.
@@ -90,8 +95,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await http_client.aclose()
-        if lib is not None:
-            close_library(lib)
+        close_library(handle.lib)
 
 
 app = FastAPI(title=settings.app_name, version=settings.version, lifespan=lifespan)

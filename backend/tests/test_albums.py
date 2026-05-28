@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.api.albums import get_library
 from app.config import settings
 from app.main import app
+from tests.conftest import make_test_handle
 
 
 def _make_item(
@@ -77,8 +78,9 @@ def temp_library(tmp_path: Path) -> Library:
 
 
 @pytest.fixture
-def client(temp_library: Library) -> Iterator[TestClient]:
-    app.dependency_overrides[get_library] = lambda: temp_library
+def client(temp_library: Library, tmp_path: Path) -> Iterator[TestClient]:
+    handle = make_test_handle(temp_library, tmp_path)
+    app.dependency_overrides[get_library] = lambda: handle
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -129,20 +131,6 @@ def test_limit_is_capped_at_200(client: TestClient) -> None:
     assert resp.status_code == 422
 
 
-def test_missing_library_returns_empty_page() -> None:
-    # When no library can be resolved (unset/missing path), get_library yields
-    # None and the endpoint degrades to an empty page instead of crashing.
-    app.dependency_overrides[get_library] = lambda: None
-    try:
-        resp = TestClient(app).get("/api/albums")
-    finally:
-        app.dependency_overrides.clear()
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["total"] == 0
-    assert body["items"] == []
-
-
 # A 1x1 transparent PNG — smallest valid PNG payload.
 _TINY_PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
@@ -161,7 +149,8 @@ def test_album_cover_from_artpath(temp_library: Library, tmp_path: Path) -> None
     album["artpath"] = os.fsencode(str(art_file))
     album.store()
 
-    app.dependency_overrides[get_library] = lambda: temp_library
+    handle = make_test_handle(temp_library, tmp_path)
+    app.dependency_overrides[get_library] = lambda: handle
     try:
         resp = TestClient(app).get(f"/api/albums/{album.id}/cover")
     finally:
@@ -311,36 +300,22 @@ def test_album_detail_missing_album_returns_404(client: TestClient) -> None:
     assert resp.status_code == 404
 
 
-def test_album_detail_unconfigured_library_returns_404() -> None:
-    app.dependency_overrides[get_library] = lambda: None
-    try:
-        resp = TestClient(app).get("/api/albums/1")
-    finally:
-        app.dependency_overrides.clear()
-    assert resp.status_code == 404
-
-
-def test_album_cover_unconfigured_library_returns_404() -> None:
-    app.dependency_overrides[get_library] = lambda: None
-    try:
-        resp = TestClient(app).get("/api/albums/1/cover")
-    finally:
-        app.dependency_overrides.clear()
-    assert resp.status_code == 404
-
-
 def test_lifespan_opens_library_from_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Build a real library on disk, point settings at it, and confirm the
-    # startup lifespan opens it onto app.state so get_library serves it WITHOUT
-    # any dependency override or per-request open.
+    # End-to-end startup proof: point MUSICDROP_BEETSDIR at a tmp dir holding
+    # a hand-written config.yaml + a pre-seeded library.db, then run the
+    # lifespan and assert get_library serves the opened handle WITHOUT any
+    # dependency override.
+    music_dir = tmp_path / "music"
+    music_dir.mkdir()
     db_path = tmp_path / "library.db"
-    lib = Library(str(db_path), directory=str(tmp_path))
+
+    lib = Library(str(db_path), directory=str(music_dir))
     lib.add_album(
         [
             _make_item(
-                tmp_path,
+                music_dir,
                 album="Arrival",
                 albumartist="ABBA",
                 year=1976,
@@ -352,8 +327,15 @@ def test_lifespan_opens_library_from_settings(
     )
     lib._close()
 
-    monkeypatch.setattr(settings, "beets_library_path", str(db_path))
-    monkeypatch.setattr(settings, "beets_library_directory", str(tmp_path))
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"directory: {music_dir}\n"
+        f"library: {db_path}\n"
+        "plugins:\n  - musicbrainz\n"
+        "import:\n  autotag: yes\n"
+    )
+
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
 
     app.dependency_overrides.clear()
     with TestClient(app) as client:  # context-manager form runs the lifespan

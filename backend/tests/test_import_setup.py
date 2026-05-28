@@ -1,42 +1,11 @@
-import os
-from collections.abc import Iterator
 from pathlib import Path
-
-import pytest
 
 from app.beets.setup import setup_beets
 
-
-@pytest.fixture(autouse=True)
-def _clear_beets_globals() -> Iterator[None]:
-    """Each test gets a clean beets.config singleton + plugin registry.
-
-    Mirrors the fixture in test_setup_beets.py; both files share the same global
-    beets singletons, so this resets confuse + plugins so neighbouring tests in
-    other files don't see this file's load_plugins() side-effects (and so the
-    next call to setup_beets() actually re-reads its user file via the
-    ``_materialized = False`` flip — see test_setup_beets.py for the rationale).
-    """
-    import beets
-    from beets import plugins
-
-    saved_env = {
-        k: os.environ.get(k)
-        for k in (
-            "BEETSDIR",
-            "MUSICDROP_BEETS_LIBRARY_PATH",
-            "MUSICDROP_BEETS_LIBRARY_DIRECTORY",
-        )
-    }
-    yield
-    beets.config.clear()
-    beets.config._materialized = False  # force LazyConfig.resolve() to re-read sources
-    plugins._instances.clear()
-    for k, v in saved_env.items():
-        if v is None:
-            os.environ.pop(k, None)
-        else:
-            os.environ[k] = v
+# The ``_clear_beets_globals`` autouse fixture is now defined in
+# tests/conftest.py and applies to every test in the suite, so the global
+# ``beets.config`` singleton and plugin registry are reset between tests
+# without us having to repeat the fixture body here.
 
 
 def test_default_starter_loads_musicbrainz_and_deezer(tmp_path: Path) -> None:

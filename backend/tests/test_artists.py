@@ -10,6 +10,7 @@ from app.api.albums import get_library
 from app.beets.library import list_artists
 from app.main import app
 from app.models.artist import Artist
+from tests.conftest import make_test_handle
 
 
 def _make_item(directory: Path, *, album: str, albumartist: str, title: str, track: int) -> Item:
@@ -34,8 +35,9 @@ def temp_library(tmp_path: Path) -> Library:
 
 
 @pytest.fixture
-def client(temp_library: Library) -> Iterator[TestClient]:
-    app.dependency_overrides[get_library] = lambda: temp_library
+def client(temp_library: Library, tmp_path: Path) -> Iterator[TestClient]:
+    handle = make_test_handle(temp_library, tmp_path)
+    app.dependency_overrides[get_library] = lambda: handle
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -62,13 +64,3 @@ def test_artists_roster_excludes_empty_album_artist(tmp_path: Path) -> None:
 
     assert artists == [Artist(name="ABBA", album_count=1)]
     assert all(a.name.strip() for a in artists)
-
-
-def test_artists_unconfigured_library_returns_empty_roster() -> None:
-    app.dependency_overrides[get_library] = lambda: None
-    try:
-        resp = TestClient(app).get("/api/artists")
-    finally:
-        app.dependency_overrides.clear()
-    assert resp.status_code == 200
-    assert resp.json() == []
