@@ -11,6 +11,7 @@ import { ArtistsPage } from "@/pages/artists/ArtistsPage";
 import { ImportCandidatePage } from "@/pages/import/ImportCandidatePage";
 import { ImportPage } from "@/pages/import/ImportPage";
 import { SearchPage } from "@/pages/search/SearchPage";
+import { SettingsPage } from "@/pages/settings/SettingsPage";
 
 import "@/styles.css";
 
@@ -45,6 +46,7 @@ const router = createBrowserRouter([
       { path: "/search", element: <SearchPage /> },
       { path: "/import", element: <ImportPage /> },
       { path: "/import/albums/:index", element: <ImportCandidatePage /> },
+      { path: "/settings", element: <SettingsPage /> },
       { path: "*", element: <NotFoundPage /> },
     ],
   },

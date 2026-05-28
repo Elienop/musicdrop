@@ -5,6 +5,7 @@ import {
   FolderInput,
   Loader2,
   Search,
+  Settings,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -183,7 +184,7 @@ export function App() {
             </Link>
           </h1>
           <HeaderSearch />
-          <nav className="shrink-0" aria-label="Primary">
+          <nav className="flex shrink-0 items-center gap-4" aria-label="Primary">
             <Link
               to="/import"
               aria-label="Import"
@@ -196,6 +197,17 @@ export function App() {
               {/* Label hides below sm to preserve header width, like the health
                   status; the Link's aria-label carries the name when icon-only. */}
               <span className="hidden sm:inline">Import</span>
+            </Link>
+            <Link
+              to="/settings"
+              aria-label="Settings"
+              aria-current={
+                location.pathname.startsWith("/settings") ? "page" : undefined
+              }
+              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
+            >
+              <Settings className="size-4" aria-hidden="true" />
+              <span className="hidden sm:inline">Settings</span>
             </Link>
           </nav>
           <div className="shrink-0">
