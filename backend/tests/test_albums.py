@@ -304,7 +304,7 @@ def test_album_detail_missing_album_returns_404(client: TestClient) -> None:
 def test_lifespan_opens_library_from_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # End-to-end startup proof: point MUSICDROP_BEETSDIR at a tmp dir holding
+    # End-to-end startup proof: point settings.beets_dir at a tmp dir holding
     # a hand-written config.yaml + a pre-seeded library.db, then run the
     # lifespan and assert get_library serves the opened handle WITHOUT any
     # dependency override.

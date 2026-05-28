@@ -105,7 +105,7 @@ def _clear_beets_globals() -> Iterator[None]:
         k: os.environ.get(k)
         for k in (
             "BEETSDIR",
-            "MUSICDROP_BEETSDIR",
+            "MUSICDROP_BEETS_DIR",
         )
     }
     yield

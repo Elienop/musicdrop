@@ -28,7 +28,7 @@ Two layers, both behind the existing beets-adapter boundary (`app/beets/`). No n
 
 | Decision | Choice | Why |
 |---|---|---|
-| Path resolution | **`BEETSDIR` env (`MUSICDROP_BEETSDIR`, default `data/beets`)** | Beets-canonical (matches what beets CLI users expect); one knob for deployment. |
+| Path resolution | **`BEETSDIR` env (`MUSICDROP_BEETS_DIR`, default `data/beets`)** | Beets-canonical (matches what beets CLI users expect); one knob for deployment. |
 | Precedence with old env vars | **File wins; old env vars removed** | One source of truth; matches "config belongs to beets." |
 | Fresh-install behavior | **Copy starter template once if missing** | "Just works" UX. Template is versioned in the repo and diff-able; never written to after the first copy. |
 | Default plugins in starter | **`[musicbrainz, deezer]`** | Deezer is no-auth and dramatically improves match rate on modern releases (fixes the ADMT/"Homeless" miss observed during the import walkthrough). |
@@ -136,7 +136,7 @@ class LibraryHandle:
 - beets_config_path: str | None = None              # was unwired; remove
 - beets_library_path: str | None = None             # now in config.yaml's library:
 - beets_library_directory: str | None = None        # now in config.yaml's directory:
-+ beets_dir: str = "data/beets"                     # env: MUSICDROP_BEETSDIR
++ beets_dir: str = "data/beets"                     # env: MUSICDROP_BEETS_DIR
 ```
 
 ### `backend/app/main.py` diff (`_resolve_library`)
@@ -407,7 +407,7 @@ If `MUSICDROP_BEETS_LIBRARY_PATH` / `MUSICDROP_BEETS_LIBRARY_DIRECTORY` env vars
 
 | Q | Decision |
 |---|---|
-| File-canonical vs env-override-the-file vs hybrid? | **File-canonical, `MUSICDROP_BEETSDIR` is the only env knob.** |
+| File-canonical vs env-override-the-file vs hybrid? | **File-canonical, `MUSICDROP_BEETS_DIR` is the only env knob.** |
 | Starter template lifecycle? | **Copy on first-run if missing; never write again.** |
 | Default plugins in starter? | **`[musicbrainz, deezer]` — Deezer is no-auth and fixes modern-release misses.** |
 | Config view shape? | **Full effective YAML, redacted; no curation in this slice.** |

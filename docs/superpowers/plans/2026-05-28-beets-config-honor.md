@@ -5,7 +5,7 @@
 **Goal:** Make `data/beets/config.yaml` the authoritative source of truth for MusicDrop's beets behavior, and add a read-only Config view at `/settings`.
 
 **Architecture:** Two layers behind the existing beets-adapter (`app/beets/`).
-- **Layer 1** rewrites `setup_beets()` to be a faithful mirror of beets' own `_setup`: copy starter template if missing → set `BEETSDIR` → force-resolve confuse → `plugins.load_plugins()` → read `library:` / `directory:` from `config` → open `Library`. Removes `MUSICDROP_BEETS_LIBRARY_PATH`/`MUSICDROP_BEETS_LIBRARY_DIRECTORY` env vars; adds single `MUSICDROP_BEETSDIR` (default `data/beets`).
+- **Layer 1** rewrites `setup_beets()` to be a faithful mirror of beets' own `_setup`: copy starter template if missing → set `BEETSDIR` → force-resolve confuse → `plugins.load_plugins()` → read `library:` / `directory:` from `config` → open `Library`. Removes `MUSICDROP_BEETS_LIBRARY_PATH`/`MUSICDROP_BEETS_LIBRARY_DIRECTORY` env vars; adds single `MUSICDROP_BEETS_DIR` (default `data/beets`).
 - **Layer 2** adds `GET /api/config` returning the effective YAML (redacted via confuse's `flatten(redact=True)` + a safety-net regex mask), and a `/settings` route rendering it with a mtime-based "restart needed" banner.
 
 **Tech Stack:** Python 3.11+ · FastAPI · Pydantic · beets 2.11.0 (embedded, venv) · confuse · PyYAML; React 19 · Vite · Tailwind v4 · shadcn · TanStack Query v5 · openapi-fetch.
@@ -522,7 +522,7 @@ Expected: clean.
 ```bash
 git add backend/app/config.py backend/app/main.py backend/pyproject.toml \
         backend/tests/conftest.py backend/tests/test_albums.py
-git commit -m "refactor(beets-config): drop MUSICDROP_BEETS_LIBRARY_* env vars; add MUSICDROP_BEETSDIR; rewrite test fixture"
+git commit -m "refactor(beets-config): drop MUSICDROP_BEETS_LIBRARY_* env vars; add MUSICDROP_BEETS_DIR; rewrite test fixture"
 ```
 
 ---
@@ -1250,7 +1250,7 @@ gh pr create --title "Feat/beets-config" --body "$(cat <<'EOF'
 ## Summary
 - Layer 1: setup_beets mirrors beets' _setup; honors data/beets/config.yaml fully (library, directory, plugins, import.*)
 - Layer 2: GET /api/config + /settings page rendering effective YAML with restart-required banner
-- Drops MUSICDROP_BEETS_LIBRARY_PATH/DIRECTORY env vars; adds MUSICDROP_BEETSDIR (default data/beets)
+- Drops MUSICDROP_BEETS_LIBRARY_PATH/DIRECTORY env vars; adds MUSICDROP_BEETS_DIR (default data/beets)
 - Starter template copied on first run if missing; Deezer enabled by default (no-auth)
 
 ## Test plan
