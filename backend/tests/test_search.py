@@ -10,6 +10,7 @@ from app.api.albums import get_library
 from app.beets.library import search
 from app.main import app
 from app.models.search import SearchResults
+from tests.conftest import make_test_handle
 
 
 def _make_item(directory: Path, *, album: str, albumartist: str, title: str, track: int) -> Item:
@@ -42,8 +43,9 @@ def temp_library(tmp_path: Path) -> Library:
 
 
 @pytest.fixture
-def client(temp_library: Library) -> Iterator[TestClient]:
-    app.dependency_overrides[get_library] = lambda: temp_library
+def client(temp_library: Library, tmp_path: Path) -> Iterator[TestClient]:
+    handle = make_test_handle(temp_library, tmp_path)
+    app.dependency_overrides[get_library] = lambda: handle
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -113,16 +115,6 @@ def test_search_no_match_returns_empty(client: TestClient) -> None:
     assert body["artist_total"] == 0
     assert body["album_total"] == 0
     assert body["track_total"] == 0
-
-
-def test_search_unconfigured_library_returns_empty() -> None:
-    app.dependency_overrides[get_library] = lambda: None
-    try:
-        resp = TestClient(app).get("/api/search", params={"q": "love"})
-    finally:
-        app.dependency_overrides.clear()
-    assert resp.status_code == 200
-    assert resp.json()["track_total"] == 0
 
 
 def test_search_malformed_query_does_not_500(client: TestClient) -> None:

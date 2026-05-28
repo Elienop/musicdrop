@@ -35,14 +35,32 @@ strict = true
 files = ["app", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["beets.*", "beetsplug.*", "mediafile"]
+module = ["beets.*", "beetsplug.*", "mediafile", "yaml"]
 ignore_missing_imports = true
 
 # beets is untyped; calling its functions trips disallow_untyped_calls under
 # strict mode. The adapter is the boundary that absorbs that, and the album
 # tests build a real beets library through the same untyped surface.
 [[tool.mypy.overrides]]
-module = ["app.beets.library", "app.beets.import_mapping", "app.beets.import_session", "app.beets.setup", "app.import_jobs.runner", "tests.test_albums", "tests.test_artists", "tests.test_search", "tests.test_import_mapping", "tests.test_import_session", "tests.test_import_runner", "tests.test_import_setup"]
+module = [
+    "app.beets.library",
+    "app.beets.import_mapping",
+    "app.beets.import_session",
+    "app.beets.setup",
+    "app.beets.config_snapshot",
+    "app.import_jobs.runner",
+    "tests.conftest",
+    "tests.test_albums",
+    "tests.test_artists",
+    "tests.test_search",
+    "tests.test_import_mapping",
+    "tests.test_import_session",
+    "tests.test_import_runner",
+    "tests.test_import_setup",
+    "tests.test_setup_beets",
+    "tests.test_config_snapshot",
+    "tests.test_config_api",
+]
 disallow_untyped_calls = false
 
 [tool.pytest.ini_options]

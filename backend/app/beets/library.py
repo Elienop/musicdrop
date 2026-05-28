@@ -6,6 +6,9 @@ global config singletons, and version quirks stay isolated here.
 """
 
 import os
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from beets.dbcore.query import ParsingError
@@ -32,13 +35,27 @@ _EXTENSION_MIME = {
     ".tif": "image/tiff",
 }
 
-# Public handle type for the opened beets library. Callers outside this module
-# annotate with LibraryHandle so they never need to import beets themselves,
-# keeping the adapter the sole beets importer (CLAUDE.md rule 3).
-LibraryHandle = Library
+
+@dataclass
+class LibraryHandle:
+    """Public handle for the opened beets library.
+
+    Callers outside this module annotate with ``LibraryHandle`` so they never
+    need to import beets themselves, keeping the adapter the sole beets
+    importer (CLAUDE.md rule 3). The handle bundles the opened ``Library`` with
+    the metadata the read-only Config view needs: the path of the user-owned
+    ``config.yaml``, when ``setup_beets()`` ran, and the file's mtime at load —
+    used to flag "restart required" when the file changes on disk.
+    """
+
+    lib: Library
+    beets_dir: Path
+    config_path: Path
+    loaded_at: datetime
+    file_mtime_at_load: float  # raw stat.st_mtime for direct comparison
 
 
-def open_library(library_path: str, directory: str | None = None) -> LibraryHandle:
+def open_library(library_path: str, directory: str | None = None) -> Library:
     """Open a beets library database at ``library_path``.
 
     ``directory`` is the music root beets indexed. The library is opened WITH the
@@ -54,7 +71,7 @@ def open_library(library_path: str, directory: str | None = None) -> LibraryHand
     )
 
 
-def close_library(lib: LibraryHandle) -> None:
+def close_library(lib: Library) -> None:
     """Close the beets library's underlying SQLite connection."""
     lib._close()
 
@@ -144,7 +161,7 @@ def _to_track(item: Any) -> Track:
     )
 
 
-def get_album_detail(lib: LibraryHandle, album_id: int) -> AlbumDetail | None:
+def get_album_detail(lib: Library, album_id: int) -> AlbumDetail | None:
     """Return an album with its tracklist, or ``None`` when the album is missing.
 
     Tracks are sorted by ``(disc, track)`` so the tracklist reads in play order.
@@ -160,7 +177,7 @@ def get_album_detail(lib: LibraryHandle, album_id: int) -> AlbumDetail | None:
     return AlbumDetail(**_album_fields(album, items), tracks=tracks)
 
 
-def list_artists(lib: LibraryHandle) -> list[Artist]:
+def list_artists(lib: Library) -> list[Artist]:
     """Return the artist roster: one entry per distinct ``albumartist``.
 
     beets has no first-class artist entity, so we derive it by grouping albums
@@ -193,7 +210,7 @@ def _to_search_track(item: Any) -> SearchTrack:
     )
 
 
-def search(lib: LibraryHandle, *, query: str, limit: int) -> SearchResults:
+def search(lib: Library, *, query: str, limit: int) -> SearchResults:
     """Search the library across tracks, albums, and artists for a free-text term.
 
     ``query`` is handed to beets' query parser for tracks and albums (matching
@@ -245,7 +262,7 @@ def search(lib: LibraryHandle, *, query: str, limit: int) -> SearchResults:
 
 
 def list_albums(
-    lib: LibraryHandle, *, limit: int, offset: int, artist: str | None = None
+    lib: Library, *, limit: int, offset: int, artist: str | None = None
 ) -> tuple[list[Album], int]:
     """Return a page of albums mapped to our Pydantic model plus the total count.
 
@@ -269,7 +286,7 @@ def list_albums(
     return [_to_album(a) for a in page], total
 
 
-def _abs_path(lib: LibraryHandle, stored: bytes) -> str:
+def _abs_path(lib: Library, stored: bytes) -> str:
     """Resolve a beets-stored file path to absolute.
 
     The beets model API returns paths (``item.path``, ``artpath``) already
@@ -285,7 +302,7 @@ def _abs_path(lib: LibraryHandle, stored: bytes) -> str:
     return os.path.join(os.fsdecode(lib.directory), path)
 
 
-def _cover_from_artpath(lib: LibraryHandle, album: BeetsAlbum) -> tuple[bytes, str] | None:
+def _cover_from_artpath(lib: Library, album: BeetsAlbum) -> tuple[bytes, str] | None:
     raw_path = album.get("artpath")
     if not raw_path:
         return None
@@ -299,7 +316,7 @@ def _cover_from_artpath(lib: LibraryHandle, album: BeetsAlbum) -> tuple[bytes, s
         return fh.read(), mime
 
 
-def _cover_from_embedded(lib: LibraryHandle, album: BeetsAlbum) -> tuple[bytes, str] | None:
+def _cover_from_embedded(lib: Library, album: BeetsAlbum) -> tuple[bytes, str] | None:
     items = list(album.items())
     if not items:
         return None
@@ -317,7 +334,7 @@ def _cover_from_embedded(lib: LibraryHandle, album: BeetsAlbum) -> tuple[bytes, 
     return bytes(image.data), mime
 
 
-def get_album_cover(lib: LibraryHandle, album_id: int) -> tuple[bytes, str] | None:
+def get_album_cover(lib: Library, album_id: int) -> tuple[bytes, str] | None:
     """Return ``(image_bytes, mime_type)`` for an album's cover art, or ``None``.
 
     Resolution order: the album's ``artpath`` file if present, otherwise the

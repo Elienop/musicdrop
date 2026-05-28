@@ -8,41 +8,37 @@ from app.models.album import Album, AlbumDetail, AlbumPage
 router = APIRouter(tags=["albums"])
 
 
-def get_library(request: Request) -> LibraryHandle | None:
-    """Return the process-wide beets library opened at startup (or None).
+def get_library(request: Request) -> LibraryHandle:
+    """Return the process-wide beets library handle opened at startup.
 
     The library is resolved once in the app lifespan and stored on
-    ``app.state.beets_library`` — no per-request open. Overridden in tests to
-    inject a hermetic temp library (the override bypasses app.state entirely).
+    ``app.state.beets_library`` — no per-request open. ``setup_beets`` always
+    returns a handle (BEETSDIR + ``config.yaml`` are created from the starter
+    if missing), so this dependency is non-optional. Tests override it to
+    inject a hermetic temp handle (the override bypasses ``app.state``).
     """
-    lib: LibraryHandle | None = getattr(request.app.state, "beets_library", None)
-    return lib
+    handle: LibraryHandle = request.app.state.beets_library
+    return handle
 
 
 @router.get("/albums", response_model=AlbumPage)
 async def list_albums_endpoint(
+    handle: Annotated[LibraryHandle, Depends(get_library)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
     artist: Annotated[str | None, Query()] = None,
-    lib: Annotated[LibraryHandle | None, Depends(get_library)] = None,
 ) -> AlbumPage:
-    if lib is None:
-        return AlbumPage(items=[], total=0, limit=limit, offset=offset)
-
     items: list[Album]
-    items, total = list_albums(lib, limit=limit, offset=offset, artist=artist)
+    items, total = list_albums(handle.lib, limit=limit, offset=offset, artist=artist)
     return AlbumPage(items=items, total=total, limit=limit, offset=offset)
 
 
 @router.get("/albums/{album_id}", response_model=AlbumDetail)
 async def get_album_detail_endpoint(
     album_id: int,
-    lib: Annotated[LibraryHandle | None, Depends(get_library)] = None,
+    handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> AlbumDetail:
-    if lib is None:
-        raise HTTPException(status_code=404, detail="Album not found")
-
-    detail = get_album_detail(lib, album_id)
+    detail = get_album_detail(handle.lib, album_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="Album not found")
     return detail
@@ -51,12 +47,9 @@ async def get_album_detail_endpoint(
 @router.get("/albums/{album_id}/cover")
 async def get_album_cover_endpoint(
     album_id: int,
-    lib: Annotated[LibraryHandle | None, Depends(get_library)] = None,
+    handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> Response:
-    if lib is None:
-        raise HTTPException(status_code=404, detail="Cover not found")
-
-    cover = get_album_cover(lib, album_id)
+    cover = get_album_cover(handle.lib, album_id)
     if cover is None:
         raise HTTPException(status_code=404, detail="Cover not found")
 

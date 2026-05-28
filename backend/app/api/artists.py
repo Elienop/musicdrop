@@ -23,11 +23,9 @@ def get_artist_image_service(request: Request) -> ArtistImageService:
 
 @router.get("/artists", response_model=list[Artist])
 async def list_artists_endpoint(
-    lib: Annotated[LibraryHandle | None, Depends(get_library)] = None,
+    handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> list[Artist]:
-    if lib is None:
-        return []
-    return list_artists(lib)
+    return list_artists(handle.lib)
 
 
 @router.get(

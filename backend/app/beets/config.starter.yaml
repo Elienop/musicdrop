@@ -1,0 +1,23 @@
+# data/beets/config.yaml — MusicDrop starter
+# This file is yours. MusicDrop reads it; it never writes back.
+# Edit and restart MusicDrop to apply changes.
+
+# Library location. Paths are relative to this file's directory.
+directory: ../music         # imported files land here
+library: library.db         # SQLite library DB next to this file
+
+# Metadata sources used to match albums during import.
+# musicbrainz + deezer are no-auth. Add spotify/discogs/beatport/tidal here
+# once you fill in their credentials (see beets docs).
+plugins:
+  - musicbrainz
+  - deezer
+
+# Import behavior. These defaults are what the candidate-review UI expects.
+import:
+  autotag: yes        # show candidates for human review
+  copy: yes           # copy files into `directory`
+  move: no            # if yes, move source files instead of copying
+  write: yes          # write tags back to imported files on Apply
+
+# Full reference: https://beets.readthedocs.io/en/stable/reference/config.html
