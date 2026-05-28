@@ -203,7 +203,10 @@ function GroupCard({ group, mode }: { group: DuplicateGroup; mode: DuplicateMode
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Move {removeIds.length} copies to Trash?</AlertDialogTitle>
+            <AlertDialogTitle>
+              Move {removeIds.length} {removeIds.length === 1 ? "copy" : "copies"} to
+              Trash?
+            </AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="text-sm">
                 Keeping <strong>{keeper?.title}</strong>. These move to the Trash
