@@ -22,15 +22,28 @@ from typing import Any
 
 import beets
 import yaml
+from confuse import REDACTED_TOMBSTONE
 
 from app.beets.library import LibraryHandle
 from app.models.config_api import BeetsConfigSnapshot
 
-# Field-name pattern for the redaction safety-net. Anchored to the KEY only —
-# we never inspect values, so a secret-looking VALUE under an innocuous key
-# (e.g. ``directory: /home/me/api_keys``) is left alone.
-SECRET_KEY_PATTERN = re.compile(r"(secret|token|password|apikey|api_key|auth_token)", re.IGNORECASE)
-REDACTED = "REDACTED"
+# Field-name pattern for the redaction safety-net. Substring (not anchored) by
+# design — confuse's per-view ``redact`` flag is the PRIMARY defense for
+# bundled plugins; this safety-net only matters for third-party plugins that
+# forgot to mark their fields ``.redact = True``. Trading a few benign
+# false-positives for guaranteed coverage of every real-world variant is the
+# right call here: a UX wart beats a leaked credential.
+#
+# catches: client_secret, api_key, api_token, apisecret (beatport),
+#          apikey, pwd (kodiupdate), pass, password, auth_token
+# over-redacts (harmless): tokenizer, passwordless, secrets (the key itself
+#                          is masked; nothing leaks)
+# does NOT inspect VALUES: a path like ``directory: /home/me/api_keys`` stays
+#                          intact because the key ``directory`` doesn't match.
+SECRET_KEY_PATTERN = re.compile(
+    r"(secret|token|password|pwd|pass|api_?key|api_?secret|auth_?token)",
+    re.IGNORECASE,
+)
 
 
 def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
@@ -39,16 +52,20 @@ def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
     _mask_secrets_in_place(flat, SECRET_KEY_PATTERN)
     yaml_text = yaml.safe_dump(_to_plain(flat), sort_keys=False, default_flow_style=False)
 
-    file_missing = not handle.config_path.exists()
+    # Single stat() with try/except instead of exists()+stat(): closes a TOCTOU
+    # window where the file is deleted between the existence check and the
+    # stat call, which would leak FileNotFoundError out of the snapshot
+    # builder. OSError also covers permission/IO failures (treated as
+    # "missing" for the restart-required signal).
     file_modified_at: datetime | None = None
     current_mtime: float | None = None
-    if not file_missing:
+    try:
         current_mtime = handle.config_path.stat().st_mtime
         file_modified_at = datetime.fromtimestamp(current_mtime, tz=UTC)
+    except OSError:
+        pass
 
-    restart_required = file_missing or (
-        current_mtime is not None and current_mtime > handle.file_mtime_at_load
-    )
+    restart_required = current_mtime is None or current_mtime > handle.file_mtime_at_load
 
     return BeetsConfigSnapshot(
         yaml_text=yaml_text,
@@ -62,18 +79,26 @@ def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
 def _mask_secrets_in_place(d: Any, pattern: re.Pattern[str]) -> None:
     """Recursively walk a flattened-confuse mapping and mask matching keys.
 
-    Only string leaves are masked; nested ``dict``s are descended. Other leaf
-    types (``int``/``bool``/``list``) under a matching key are left as-is —
-    they're not secrets in any plugin we've seen, and forcing them to a string
-    would change the rendered YAML's shape.
+    Descends into both ``dict`` values AND ``list`` values; without the list
+    branch a plugin config like ``accounts: [{api_token: "..."}, ...]`` would
+    slip through unredacted. Other leaf types (``int``/``bool``) under a
+    matching key are left as-is — they're not secrets in any plugin we've seen,
+    and forcing them to a string would change the rendered YAML's shape.
+
+    Matching leaves are replaced with confuse's own ``REDACTED_TOMBSTONE``
+    sentinel so the two redaction passes agree on a single rendered marker.
     """
+    if isinstance(d, list):
+        for item in d:
+            _mask_secrets_in_place(item, pattern)
+        return
     if not isinstance(d, dict):
         return
     for k, v in list(d.items()):
-        if isinstance(v, dict):
+        if isinstance(v, dict | list):
             _mask_secrets_in_place(v, pattern)
         elif isinstance(v, str) and pattern.search(k):
-            d[k] = REDACTED
+            d[k] = REDACTED_TOMBSTONE
 
 
 def _to_plain(d: Any) -> Any:

@@ -7,7 +7,7 @@ case here starts from a clean confuse singleton.
 
 import os
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import beets
@@ -69,4 +69,33 @@ def test_fresh_snapshot_has_no_restart_required(
     snap = build_config_snapshot(loaded_handle)
     assert snap.restart_required is False
     assert isinstance(snap.loaded_at, datetime)
-    assert snap.loaded_at.tzinfo is not None
+    # Pin UTC specifically — any other tz would still pass `is not None` but
+    # break the BeetsConfigSnapshot contract (`loaded_at` is documented UTC).
+    assert snap.loaded_at.utcoffset() == timedelta(0)
+
+
+def test_safety_net_recurses_into_lists_of_dicts(loaded_handle: LibraryHandle) -> None:
+    """Plugin configs like ``accounts: [{api_token: "..."}, ...]`` must be redacted.
+
+    Without list-recursion the leaf hides under a list and slips through both
+    the confuse per-view pass (the plugin didn't mark it) and the regex
+    safety-net (which only walked dict values).
+    """
+    beets.config["mything"]["accounts"].set([{"token": "leakme"}])
+    snap = build_config_snapshot(loaded_handle)
+    assert "leakme" not in snap.yaml_text
+    assert "REDACTED" in snap.yaml_text
+
+
+def test_safety_net_masks_pwd_and_apisecret_variants(loaded_handle: LibraryHandle) -> None:
+    """Real bundled plugins use ``pwd`` (kodiupdate) and ``apisecret`` (beatport).
+
+    The previous anchored pattern missed both; this test pins the chosen
+    permissive substring pattern so a future "tighten the regex" change can't
+    silently regress coverage on these real keys.
+    """
+    beets.config["beatport"]["apisecret"].set("bp-leak")
+    beets.config["kodiupdate"]["pwd"].set("kodi-leak")
+    snap = build_config_snapshot(loaded_handle)
+    assert "bp-leak" not in snap.yaml_text
+    assert "kodi-leak" not in snap.yaml_text
