@@ -25,14 +25,13 @@ class BeetsConfigSnapshot(BaseModel):
     file_modified_at: datetime | None
     """Current ``st_mtime`` of ``config_path`` (UTC). ``None`` if the file is missing."""
 
-    mtime_ns: int
-    """``st_mtime_ns`` at GET time. Used as the optimistic-concurrency token by
-    ``POST /api/config/save`` together with :attr:`sha256` (CPython bpo-39484:
-    nanosecond integer avoids the float-precision loss of ``st_mtime``)."""
-
     sha256: str
-    """Hex SHA-256 of the on-disk file bytes at GET time. Tie-breaker for the
-    Save-time CAS check — catches edits that preserved mtime via ``os.utime``."""
+    """Hex SHA-256 of the on-disk file bytes at GET time. The sole
+    optimistic-concurrency token used by ``POST /api/config/save``. mtime_ns
+    is not echoed back because nanosecond ints exceed JavaScript's
+    ``Number.MAX_SAFE_INTEGER`` (2^53 - 1), which would silently corrupt the
+    CAS round-trip; the SHA-256 already catches any bytes-changed edit
+    (including ones that preserved mtime via ``os.utime``)."""
 
     apply_pending: bool
     """``True`` when the file is missing OR its mtime exceeds ``file_mtime_at_load``.

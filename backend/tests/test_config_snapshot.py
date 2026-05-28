@@ -55,8 +55,7 @@ def test_apply_pending_when_mtime_advances(loaded_handle: LibraryHandle) -> None
     snap = build_config_snapshot(loaded_handle)
     assert snap.apply_pending is True
     assert snap.file_modified_at is not None
-    # CAS fields are populated whenever the file is readable.
-    assert snap.mtime_ns > 0
+    # The CAS token is populated whenever the file is readable.
     assert len(snap.sha256) == 64  # hex sha256
 
 
@@ -67,8 +66,7 @@ def test_file_modified_at_none_when_file_missing(
     snap = build_config_snapshot(loaded_handle)
     assert snap.file_modified_at is None
     assert snap.apply_pending is True
-    # Missing-file path leaves CAS fields at their zero values.
-    assert snap.mtime_ns == 0
+    # Missing-file path leaves the CAS token at its zero value.
     assert snap.sha256 == ""
 
 
@@ -81,8 +79,7 @@ def test_fresh_snapshot_has_no_apply_pending(
     # Pin UTC specifically — any other tz would still pass `is not None` but
     # break the BeetsConfigSnapshot contract (`loaded_at` is documented UTC).
     assert snap.loaded_at.utcoffset() == timedelta(0)
-    # CAS fields are real (non-default) for the live file.
-    assert snap.mtime_ns > 0
+    # The CAS token is real (non-default) for the live file.
     assert len(snap.sha256) == 64
 
 

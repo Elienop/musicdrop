@@ -19,8 +19,8 @@ import { Button } from "@/components/ui/button";
  *  - **Reload (drop my edits)** — abandon `local`, accept `server` as the
  *    new baseline. Page invalidates + re-fetches the snapshot.
  *  - **Overwrite anyway** — force-Save `local` with the server's fresh
- *    `mtime_ns` + `sha256` tokens (carried by the 409 body) so the second
- *    Save can't lose the same race.
+ *    `sha256` token (carried by the 409 body) so the second Save can't lose
+ *    the same race.
  *
  * The diff itself is a `@codemirror/merge` `MergeView`:
  *   - `a` side = `local`, editable in principle (but we don't surface the

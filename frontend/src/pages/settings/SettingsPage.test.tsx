@@ -82,7 +82,6 @@ function snapshotFixture(
     config_path: "/abs/data/beets/config.yaml",
     loaded_at: "2026-05-28T14:23:00Z",
     file_modified_at: "2026-05-28T14:23:00Z",
-    mtime_ns: 1,
     sha256: "base-sha",
     apply_pending: false,
     ...overrides,
@@ -220,14 +219,14 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
   });
 
-  test("Mod-s posts a Save with the snapshot's CAS tokens", async () => {
+  test("Mod-s posts a Save with the snapshot's CAS token", async () => {
     let seenBody: SaveRequest | null = null;
     defaultMocks();
     server.use(
       http.post(SAVE_URL, async ({ request }) => {
         seenBody = (await request.json()) as SaveRequest;
         return HttpResponse.json(
-          snapshotFixture({ mtime_ns: 2, sha256: "fresh-sha", apply_pending: true }),
+          snapshotFixture({ sha256: "fresh-sha", apply_pending: true }),
         );
       }),
     );
@@ -245,9 +244,8 @@ describe("SettingsPage", () => {
 
     await waitFor(() => expect(seenBody).not.toBeNull());
     expect(seenBody).not.toBeNull();
-    // Body should carry the CAS tokens taken from the initial snapshot,
+    // Body should carry the CAS token taken from the initial snapshot,
     // and yaml_text should include the typed character.
-    expect(seenBody!.base_mtime_ns).toBe(1);
     expect(seenBody!.base_sha256).toBe("base-sha");
     expect(seenBody!.yaml_text).toContain("directory:");
     expect(seenBody!.yaml_text.length).toBeGreaterThan(SAMPLE_YAML.length);
@@ -264,7 +262,6 @@ describe("SettingsPage", () => {
         return HttpResponse.json(
           snapshotFixture({
             apply_pending: getCalls > 1,
-            mtime_ns: getCalls,
             sha256: `sha-${getCalls}`,
           }),
         );
@@ -275,7 +272,7 @@ describe("SettingsPage", () => {
       http.post(VALIDATE_URL, () => HttpResponse.json({ errors: [] })),
       http.post(SAVE_URL, () =>
         HttpResponse.json(
-          snapshotFixture({ apply_pending: true, mtime_ns: 2, sha256: "sha-2" }),
+          snapshotFixture({ apply_pending: true, sha256: "sha-2" }),
         ),
       ),
     );
@@ -310,7 +307,6 @@ describe("SettingsPage", () => {
         return HttpResponse.json(
           snapshotFixture({
             apply_pending: getCalls === 1,
-            mtime_ns: getCalls,
             sha256: `sha-${getCalls}`,
           }),
         );
@@ -320,7 +316,7 @@ describe("SettingsPage", () => {
       ),
       http.post(VALIDATE_URL, () => HttpResponse.json({ errors: [] })),
       http.post(APPLY_URL, () =>
-        HttpResponse.json(snapshotFixture({ apply_pending: false, mtime_ns: 2 })),
+        HttpResponse.json(snapshotFixture({ apply_pending: false })),
       ),
     );
     const user = userEvent.setup();
@@ -356,7 +352,6 @@ describe("SettingsPage", () => {
         return HttpResponse.json(
           snapshotFixture({
             apply_pending: true,
-            mtime_ns: getCalls,
             sha256: `sha-${getCalls}`,
           }),
         );
@@ -431,7 +426,6 @@ describe("SettingsPage", () => {
             detail: {
               current_yaml_text: "directory: /music-fresh\n",
               current_sha256: "fresh-server-sha",
-              current_snapshot: { mtime_ns: 999 },
             },
           },
           { status: 409 },
@@ -469,7 +463,6 @@ describe("SettingsPage", () => {
             detail: {
               current_yaml_text: "directory: /music-fresh\n",
               current_sha256: "fresh-server-sha",
-              current_snapshot: { mtime_ns: 999 },
             },
           },
           { status: 409 },
@@ -500,6 +493,21 @@ describe("SettingsPage", () => {
     // Clean state: Edit is enabled again, the dirty banner is gone.
     expect(screen.getByRole("button", { name: /^edit$/i })).toBeEnabled();
     expect(screen.queryByText(/unsaved changes/i)).not.toBeInTheDocument();
+    // Regression: the editor must visually drop the user's local edit AND
+    // adopt the conflict body's `current_yaml_text` — otherwise the page
+    // says "clean" while CM6's doc still holds the stale draft. The Reload
+    // dispatch replaces the doc; assert the typed character ("q") is gone
+    // and the fresh on-disk text is present.
+    await waitFor(() => {
+      const cm = document.querySelector(".cm-content")?.textContent ?? "";
+      expect(cm).toContain("/music-fresh");
+      expect(cm).not.toContain("qdirectory");
+    });
+    // The editor should also be back in read-only — the user dropped their
+    // edits, so the next interaction must come from a fresh Edit click.
+    expect(
+      document.querySelector(".cm-content")?.getAttribute("contenteditable"),
+    ).toBe("false");
   });
 
   test("Overwrite anyway re-Saves with the conflict body's fresh CAS tokens", async () => {
@@ -510,13 +518,12 @@ describe("SettingsPage", () => {
         const body = (await request.json()) as SaveRequest;
         savedBodies.push(body);
         if (savedBodies.length === 1) {
-          // First Save: 409 with fresh tokens.
+          // First Save: 409 with the fresh CAS token.
           return HttpResponse.json(
             {
               detail: {
                 current_yaml_text: "directory: /music-fresh\n",
                 current_sha256: "fresh-server-sha",
-                current_snapshot: { mtime_ns: 999 },
               },
             },
             { status: 409 },
@@ -524,7 +531,7 @@ describe("SettingsPage", () => {
         }
         // Second Save (Overwrite): 200 with the new snapshot.
         return HttpResponse.json(
-          snapshotFixture({ apply_pending: true, mtime_ns: 1000 }),
+          snapshotFixture({ apply_pending: true, sha256: "sha-after-overwrite" }),
         );
       }),
     );
@@ -545,12 +552,121 @@ describe("SettingsPage", () => {
     );
 
     await waitFor(() => expect(savedBodies).toHaveLength(2));
-    // First Save used the initial snapshot's CAS tokens. The second one
-    // must carry the conflict body's `current_*` tokens, NOT the original.
-    expect(savedBodies[0].base_mtime_ns).toBe(1);
+    // First Save used the initial snapshot's CAS token. The second one
+    // must carry the conflict body's `current_sha256`, NOT the original.
     expect(savedBodies[0].base_sha256).toBe("base-sha");
-    expect(savedBodies[1].base_mtime_ns).toBe(999);
     expect(savedBodies[1].base_sha256).toBe("fresh-server-sha");
+  });
+
+  test("Save stays disabled while the linter reports validation errors", async () => {
+    // Regression: previously the gutter marker was purely cosmetic — the user
+    // could still click Save, the backend returned 422, and the failure was
+    // silently swallowed by the mutation's onError. With this guard, lint
+    // errors block the button until they clear.
+    defaultMocks();
+    server.use(
+      http.post(VALIDATE_URL, () =>
+        HttpResponse.json({
+          errors: [
+            {
+              loc: "import.copy",
+              msg: "must be a boolean",
+              type: "schema_type",
+              line: 1,
+              column: 0,
+            },
+          ],
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    const content = await findEditorContent();
+
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    content.focus();
+    await user.keyboard("x");
+
+    // Wait for the debounced linter pass (CM6 fires at 500ms).
+    await waitFor(
+      () => {
+        expect(document.querySelector(".cm-lint-marker-error")).not.toBeNull();
+      },
+      { timeout: 4000 },
+    );
+
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
+    // The inline helper text replaces the (mouse-only) tooltip for screen
+    // readers, so assert it's present.
+    expect(
+      screen.getByText(/1 validation error/i),
+    ).toBeInTheDocument();
+  });
+
+  test("Mod-s in clean state does not fire Save (read-only guard)", async () => {
+    // Regression: CM6's keymap fires Mod-s whenever the editor has focus,
+    // including in read-only mode. Without the dirty-state guard a stray
+    // Ctrl+S resaved the unchanged snapshot, advanced mtime, and lit up the
+    // apply_pending banner — confusing for a user who didn't think they
+    // edited anything.
+    let saveCalls = 0;
+    defaultMocks();
+    server.use(
+      http.post(SAVE_URL, () => {
+        saveCalls += 1;
+        return HttpResponse.json(snapshotFixture({ apply_pending: true }));
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    const content = await findEditorContent();
+
+    // Focus the read-only editor and fire Ctrl-S WITHOUT clicking Edit.
+    content.focus();
+    await user.keyboard("{Control>}s{/Control}");
+
+    // Give any in-flight mutation a tick to land, then assert it never
+    // reached the network.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(saveCalls).toBe(0);
+  });
+
+  test("Cancel after a 409 dismisses the conflict modal", async () => {
+    // Regression for the bug where the diff stayed open after the user
+    // backed out — handleCancel resets local edits but must also clear
+    // the conflict state so the merge view unmounts.
+    defaultMocks();
+    server.use(
+      http.post(SAVE_URL, () =>
+        HttpResponse.json(
+          {
+            detail: {
+              current_yaml_text: "directory: /music-fresh\n",
+              current_sha256: "fresh-server-sha",
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    const content = await findEditorContent();
+
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    content.focus();
+    await user.keyboard("q");
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    await screen.findByRole("dialog", { name: /file changed on disk/i });
+
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: /file changed on disk/i }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/unsaved changes/i)).not.toBeInTheDocument();
   });
 });
 

@@ -24,16 +24,17 @@ def test_get_config_returns_snapshot(client: TestClient) -> None:
         "config_path",
         "loaded_at",
         "file_modified_at",
-        "mtime_ns",
         "sha256",
         "apply_pending",
     ):
         assert key in body
+    # mtime_ns is intentionally NOT in the snapshot: JSON numbers can't carry
+    # a CPython st_mtime_ns losslessly through JavaScript (exceeds
+    # Number.MAX_SAFE_INTEGER), and the field had no purpose other than CAS.
+    assert "mtime_ns" not in body
     assert isinstance(body["yaml_text"], str)
     assert body["yaml_text"]  # non-empty
     assert body["apply_pending"] is False
-    assert isinstance(body["mtime_ns"], int)
-    assert body["mtime_ns"] > 0
     assert isinstance(body["sha256"], str)
     assert len(body["sha256"]) == 64
 
@@ -53,6 +54,5 @@ def test_get_config_reflects_mtime_change(
     assert second["apply_pending"] is True
     assert second["yaml_text"] == first["yaml_text"]
     assert second["file_modified_at"] != first["file_modified_at"]
-    # mtime_ns refreshes; sha256 is unchanged because content is identical.
-    assert second["mtime_ns"] != first["mtime_ns"]
+    # sha256 stays the same because the content is identical (only mtime moved).
     assert second["sha256"] == first["sha256"]

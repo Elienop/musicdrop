@@ -980,10 +980,6 @@
             ],
             "title": "File Modified At"
           },
-          "mtime_ns": {
-            "type": "integer",
-            "title": "Mtime Ns"
-          },
           "sha256": {
             "type": "string",
             "title": "Sha256"
@@ -999,7 +995,6 @@
           "config_path",
           "loaded_at",
           "file_modified_at",
-          "mtime_ns",
           "sha256",
           "apply_pending"
         ],
@@ -1430,10 +1425,6 @@
             "type": "string",
             "title": "Yaml Text"
           },
-          "base_mtime_ns": {
-            "type": "integer",
-            "title": "Base Mtime Ns"
-          },
           "base_sha256": {
             "type": "string",
             "title": "Base Sha256"
@@ -1442,11 +1433,10 @@
         "type": "object",
         "required": [
           "yaml_text",
-          "base_mtime_ns",
           "base_sha256"
         ],
         "title": "SaveRequest",
-        "description": "Body of ``POST /api/config/save``. The two CAS fields are echoed back\nfrom whatever snapshot the client loaded; mismatch -> 409 with diff."
+        "description": "Body of ``POST /api/config/save``. ``base_sha256`` is the CAS token \u2014\nechoed back from whatever snapshot the client loaded; mismatch -> 409\nwith diff. mtime_ns is intentionally NOT a CAS field: nanosecond ints\nblow past JavaScript's ``Number.MAX_SAFE_INTEGER`` (2^53 \u2212 1) and would\nsilently corrupt the round-trip. The SHA-256 already catches any\nbytes-changed edit, including ones that preserved mtime via\n``os.utime``."
       },
       "SearchResults": {
         "properties": {

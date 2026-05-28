@@ -434,8 +434,6 @@ export interface components {
             loaded_at: string;
             /** File Modified At */
             file_modified_at: string | null;
-            /** Mtime Ns */
-            mtime_ns: number;
             /** Sha256 */
             sha256: string;
             /** Apply Pending */
@@ -619,14 +617,17 @@ export interface components {
         Recommendation: "none" | "low" | "medium" | "strong";
         /**
          * SaveRequest
-         * @description Body of ``POST /api/config/save``. The two CAS fields are echoed back
-         *     from whatever snapshot the client loaded; mismatch -> 409 with diff.
+         * @description Body of ``POST /api/config/save``. ``base_sha256`` is the CAS token —
+         *     echoed back from whatever snapshot the client loaded; mismatch -> 409
+         *     with diff. mtime_ns is intentionally NOT a CAS field: nanosecond ints
+         *     blow past JavaScript's ``Number.MAX_SAFE_INTEGER`` (2^53 − 1) and would
+         *     silently corrupt the round-trip. The SHA-256 already catches any
+         *     bytes-changed edit, including ones that preserved mtime via
+         *     ``os.utime``.
          */
         SaveRequest: {
             /** Yaml Text */
             yaml_text: string;
-            /** Base Mtime Ns */
-            base_mtime_ns: number;
             /** Base Sha256 */
             base_sha256: string;
         };

@@ -109,12 +109,10 @@ def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
     # "missing" for the apply-pending signal).
     file_modified_at: datetime | None = None
     current_mtime: float | None = None
-    current_mtime_ns: int = 0
     sha256 = ""
     try:
         st = handle.config_path.stat()
         current_mtime = st.st_mtime
-        current_mtime_ns = st.st_mtime_ns  # CPython bpo-39484: integer ns, no float drift
         file_modified_at = datetime.fromtimestamp(current_mtime, tz=UTC)
         sha256 = hashlib.sha256(handle.config_path.read_bytes()).hexdigest()
     except OSError:
@@ -127,7 +125,6 @@ def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
         config_path=str(handle.config_path),
         loaded_at=handle.loaded_at,
         file_modified_at=file_modified_at,
-        mtime_ns=current_mtime_ns,
         sha256=sha256,
         apply_pending=apply_pending,
     )

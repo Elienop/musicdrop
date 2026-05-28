@@ -1,4 +1,5 @@
 import type { Diagnostic } from "@codemirror/lint";
+import { useQueryClient } from "@tanstack/react-query";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { AlertCircle, CheckCircle2, Loader2, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -31,32 +32,28 @@ type PageState = "clean" | "dirty" | "saving" | "apply_pending" | "applying";
 interface ConflictState {
   serverDoc: string;
   sha: string;
-  mtime: number;
 }
 
 /**
  * Wire format of the 409 body. FastAPI nests it under `detail` (the standard
  * HTTPException shape) — the conflict-handling endpoint includes the server's
- * fresh CAS tokens + the on-disk YAML so the page can either drop the local
- * draft (Reload) or overwrite-with-new-tokens (Overwrite anyway) without a
+ * fresh CAS token + the on-disk YAML so the page can either drop the local
+ * draft (Reload) or overwrite-with-fresh-token (Overwrite anyway) without a
  * round-trip to refetch the snapshot.
  */
 interface ConflictBody {
   detail: {
     current_yaml_text: string;
     current_sha256: string;
-    current_snapshot: { mtime_ns: number };
   };
 }
 
 /**
  * Narrow `unknown` -> `ConflictState | null` for the 409 onError branch.
  *
- * Pulled out of the `onSave` handler so the deep-property access path is
- * checked once, in one place, instead of repeating the `body.detail.current_*`
- * cast at every call site. Returns `null` (not throws) on a malformed body so
- * a freak 409 with the wrong shape gracefully falls through to the React
- * Query default error path instead of crashing the page.
+ * Returns `null` (not throws) on a malformed body so a freak 409 with the
+ * wrong shape gracefully falls through to the React Query default error path
+ * instead of crashing the page.
  */
 function parseConflictBody(err: unknown): ConflictState | null {
   if (!isConfigOpError(err) || err.status !== 409 || !err.body) return null;
@@ -65,16 +62,13 @@ function parseConflictBody(err: unknown): ConflictState | null {
   if (
     !detail ||
     typeof detail.current_yaml_text !== "string" ||
-    typeof detail.current_sha256 !== "string" ||
-    !detail.current_snapshot ||
-    typeof detail.current_snapshot.mtime_ns !== "number"
+    typeof detail.current_sha256 !== "string"
   ) {
     return null;
   }
   return {
     serverDoc: detail.current_yaml_text,
     sha: detail.current_sha256,
-    mtime: detail.current_snapshot.mtime_ns,
   };
 }
 
@@ -84,6 +78,7 @@ export function SettingsPage() {
   const applyMutation = useApplyConfig();
   const validate = useValidateConfig();
   const active = useActiveImport();
+  const queryClient = useQueryClient();
 
   // The editor's imperative handle. `asyncSource` needs `view.state.doc` to
   // resolve 1-based line numbers into character offsets; the page-level Edit
@@ -95,6 +90,14 @@ export function SettingsPage() {
   const [localText, setLocalText] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState<ConflictState | null>(null);
+  // Mirror of the validate endpoint's error count so the Save button can
+  // disable while the editor has lint errors. The linter paints the gutter
+  // marker but doesn't own button state; without this we'd let the user
+  // click Save, the backend would return 422, and the failure would never
+  // surface (the linter only re-fires after the debounce). Reset to 0 on
+  // every successful validate so a cleared error frees the button up
+  // immediately.
+  const [lintErrors, setLintErrors] = useState(0);
 
   // Resync local state whenever the snapshot's content hash advances (post-Save
   // / post-Apply React Query invalidation refetches and gets a new sha256).
@@ -103,8 +106,9 @@ export function SettingsPage() {
   // showing the editor as dirty with no actual diff against the new doc.
   // Tracking the hash (not just data) is precise: identity-equal refetches
   // (e.g. background revalidations that returned an unchanged snapshot) won't
-  // clobber an in-progress edit. `mtime_ns` would work too, but sha256 catches
-  // bytes-changed-mtime-preserved edits (matching the backend's CAS rule).
+  // clobber an in-progress edit. sha256 is also the only CAS token — the
+  // snapshot intentionally omits mtime_ns because nanosecond ints overflow
+  // JavaScript's Number.MAX_SAFE_INTEGER.
   const prevSha = useRef<string | undefined>(data?.sha256);
   useEffect(() => {
     if (data?.sha256 && data.sha256 !== prevSha.current) {
@@ -168,24 +172,39 @@ export function SettingsPage() {
   async function asyncSource(text: string): Promise<Diagnostic[]> {
     try {
       const errors = await validate.mutateAsync({ yaml_text: text });
-      return mapErrorsToDiagnostics(errors, editorRef.current);
+      const diagnostics = mapErrorsToDiagnostics(errors, editorRef.current);
+      setLintErrors(diagnostics.length);
+      return diagnostics;
     } catch {
       // If the validate endpoint itself fails (network, 5xx) we DON'T want to
       // pollute the gutter with a fake "validate failed" diagnostic — the
       // user's draft might be perfectly fine. Treat as "no lint signal";
       // hard failures still surface through React Query's error path if a
-      // mutation observer ever needs them.
+      // mutation observer ever needs them. Don't gate Save on a transient
+      // backend hiccup either.
+      setLintErrors(0);
       return [];
     }
   }
 
   function handleSave() {
     if (!data) return;
+    // Bail out when the page isn't in `dirty` state. CM6's Mod-s keymap fires
+    // whenever the editor has focus — including read-only mode — so without
+    // this guard a stray Ctrl+S would re-Save the unchanged snapshot, which
+    // succeeds, advances mtime, and lights up the (misleading) apply_pending
+    // banner. We also block re-firing during an in-flight Save and while a
+    // conflict modal is open (the user has Reload/Overwrite to choose from,
+    // not a redo-Save).
+    if (!dirty || save.isPending || conflict) return;
+    // Same guard as the disabled button — never fire Save while there are
+    // unresolved lint errors. The button is disabled, but Mod-s would
+    // otherwise bypass it.
+    if (lintErrors > 0) return;
     const text = localText ?? data.yaml_text;
     save.mutate(
       {
         yaml_text: text,
-        base_mtime_ns: data.mtime_ns,
         base_sha256: data.sha256,
       },
       {
@@ -241,6 +260,13 @@ export function SettingsPage() {
     }
     setLocalText(null);
     setDirty(false);
+    // Cancel also dismisses any conflict modal from a prior failed Save —
+    // the user explicitly chose to drop their edits, so there's nothing
+    // left for the diff view to resolve. The lint count is reset too: the
+    // doc is back to the clean snapshot, which has no errors (it's what
+    // beets is already running on).
+    setConflict(null);
+    setLintErrors(0);
   }
 
   function handleApply() {
@@ -248,15 +274,33 @@ export function SettingsPage() {
   }
 
   function handleConflictReload() {
+    if (!conflict) return;
+    const view = editorRef.current?.view;
+    if (view) {
+      // Drop the user's local edits in the editor itself — replace its doc
+      // with the fresh on-disk text that the 409 body carried back. Without
+      // this dispatch the editor visually keeps the stale local edit even
+      // though React state thinks we're clean (the `value={data.yaml_text}`
+      // prop only applies on remount; CM6 owns the doc after the first user
+      // keystroke). Also flip the editor back to read-only so the page state
+      // is internally consistent with the cleared `dirty` flag.
+      view.dispatch({
+        effects: editableCompartment.reconfigure(READ_ONLY_EXTENSION),
+        changes: {
+          from: 0,
+          to: view.state.doc.length,
+          insert: conflict.serverDoc,
+        },
+      });
+    }
     setLocalText(null);
     setDirty(false);
     setConflict(null);
-    // The snapshot query was already invalidated by the most recent useSave
-    // success path; for the 409 case the page state is still showing stale
-    // CAS tokens. The conflict body's `current_*` fields would be the freshest
-    // source if we wanted to populate the editor instantly — keeping that to
-    // the T12 follow-up; for now an invalidate forces a refetch and the page
-    // reseeds via the new snapshot.
+    setLintErrors(0);
+    // Refresh the snapshot so its CAS sha matches the new on-disk bytes —
+    // the next Save (after a fresh Edit) sends the right base_sha256 from
+    // React Query's cache instead of the stale pre-409 value.
+    void queryClient.invalidateQueries({ queryKey: ["beets-config"] });
   }
 
   function handleConflictOverwrite() {
@@ -265,7 +309,6 @@ export function SettingsPage() {
     save.mutate(
       {
         yaml_text: text,
-        base_mtime_ns: conflict.mtime,
         base_sha256: conflict.sha,
       },
       {
@@ -315,7 +358,12 @@ export function SettingsPage() {
         </Button>
         <Button
           onClick={handleSave}
-          disabled={pageState !== "dirty"}
+          disabled={pageState !== "dirty" || lintErrors > 0}
+          title={
+            lintErrors > 0
+              ? `Fix ${lintErrors} validation error${lintErrors > 1 ? "s" : ""} before saving`
+              : undefined
+          }
         >
           {pageState === "saving" ? (
             <>
@@ -332,6 +380,16 @@ export function SettingsPage() {
           <Button variant="ghost" onClick={handleCancel}>
             Cancel
           </Button>
+        )}
+        {pageState === "dirty" && lintErrors > 0 && (
+          // Inline helper text so the disabled Save's reason isn't only
+          // discoverable via the (mouse-only) tooltip.
+          <p className="text-destructive text-sm">
+            {lintErrors} validation error{lintErrors > 1 ? "s" : ""} —
+            <span className="text-muted-foreground">
+              {" "}fix to save.
+            </span>
+          </p>
         )}
         <Button
           onClick={handleApply}

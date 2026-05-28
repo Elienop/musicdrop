@@ -128,11 +128,15 @@ class ValidationErrorItem(BaseModel):
 
 
 class SaveRequest(BaseModel):
-    """Body of ``POST /api/config/save``. The two CAS fields are echoed back
-    from whatever snapshot the client loaded; mismatch -> 409 with diff."""
+    """Body of ``POST /api/config/save``. ``base_sha256`` is the CAS token —
+    echoed back from whatever snapshot the client loaded; mismatch -> 409
+    with diff. mtime_ns is intentionally NOT a CAS field: nanosecond ints
+    blow past JavaScript's ``Number.MAX_SAFE_INTEGER`` (2^53 - 1) and would
+    silently corrupt the round-trip. The SHA-256 already catches any
+    bytes-changed edit, including ones that preserved mtime via
+    ``os.utime``."""
 
     yaml_text: str
-    base_mtime_ns: int
     base_sha256: str
 
 

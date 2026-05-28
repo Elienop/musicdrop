@@ -57,7 +57,6 @@ function makeSnapshot(
     config_path: "/data/beets/config.yaml",
     loaded_at: "2026-05-28T00:00:00Z",
     file_modified_at: "2026-05-28T00:00:00Z",
-    mtime_ns: 1,
     sha256: "deadbeef",
     apply_pending: false,
     ...overrides,
@@ -66,14 +65,13 @@ function makeSnapshot(
 
 const SAVE_BODY: SaveRequest = {
   yaml_text: "directory: /music\n",
-  base_mtime_ns: 1,
   base_sha256: "deadbeef",
 };
 
 describe("useSaveConfig", () => {
   test("POSTs the SaveRequest and resolves to the fresh snapshot", async () => {
     let seenBody: unknown = null;
-    const fresh = makeSnapshot({ apply_pending: true, mtime_ns: 2 });
+    const fresh = makeSnapshot({ apply_pending: true, sha256: "fresh-sha" });
     server.use(
       http.post(SAVE_URL, async ({ request }) => {
         seenBody = await request.json();
@@ -98,7 +96,7 @@ describe("useSaveConfig", () => {
         let n = 0;
         return () => {
           n += 1;
-          return HttpResponse.json(makeSnapshot({ mtime_ns: n }), { status: 200 });
+          return HttpResponse.json(makeSnapshot({ sha256: `sha-${n}` }), { status: 200 });
         };
       })()),
     );
@@ -110,13 +108,13 @@ describe("useSaveConfig", () => {
     );
 
     await waitFor(() => expect(result.current.q.isSuccess).toBe(true));
-    expect(result.current.q.data?.mtime_ns).toBe(1);
+    expect(result.current.q.data?.sha256).toBe("sha-1");
 
     result.current.save.mutate(SAVE_BODY);
     await waitFor(() => expect(result.current.save.isSuccess).toBe(true));
 
-    // The invalidation should drive a refetch that yields mtime_ns=2.
-    await waitFor(() => expect(result.current.q.data?.mtime_ns).toBe(2));
+    // The invalidation should drive a refetch that yields the second-call sha.
+    await waitFor(() => expect(result.current.q.data?.sha256).toBe("sha-2"));
   });
 
   test("throws a structured error carrying status+body on a 422 (validation)", async () => {
@@ -152,7 +150,7 @@ describe("useSaveConfig", () => {
 
 describe("useApplyConfig", () => {
   test("POSTs (no body) and resolves to the post-reload snapshot", async () => {
-    const fresh = makeSnapshot({ apply_pending: false, mtime_ns: 5 });
+    const fresh = makeSnapshot({ apply_pending: false, sha256: "sha-after-apply" });
     server.use(http.post(APPLY_URL, () => HttpResponse.json(fresh, { status: 200 })));
 
     const { Wrapper } = makeWrapper();
@@ -161,7 +159,7 @@ describe("useApplyConfig", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data?.apply_pending).toBe(false);
-    expect(result.current.data?.mtime_ns).toBe(5);
+    expect(result.current.data?.sha256).toBe("sha-after-apply");
   });
 
   test("throws a structured error on a 409 (import in progress)", async () => {
@@ -199,7 +197,7 @@ describe("useApplyConfig", () => {
         let n = 0;
         return () => {
           n += 1;
-          return HttpResponse.json(makeSnapshot({ mtime_ns: n }), { status: 200 });
+          return HttpResponse.json(makeSnapshot({ sha256: `sha-${n}` }), { status: 200 });
         };
       })()),
     );
@@ -213,7 +211,7 @@ describe("useApplyConfig", () => {
     await waitFor(() => expect(result.current.q.isSuccess).toBe(true));
     result.current.apply.mutate();
     await waitFor(() => expect(result.current.apply.isSuccess).toBe(true));
-    await waitFor(() => expect(result.current.q.data?.mtime_ns).toBe(2));
+    await waitFor(() => expect(result.current.q.data?.sha256).toBe("sha-2"));
   });
 
   test("invalidates ['active-import'] on success (tight coupling for cross-tab apply)", async () => {

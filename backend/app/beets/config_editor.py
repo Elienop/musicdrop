@@ -371,13 +371,14 @@ def save(handle: LibraryHandle, req: SaveRequest) -> BeetsConfigSnapshot:
     1. **Parse** with ruamel — bad YAML -> HTTP 422 with ``problem_mark`` line/col.
     2. **Schema validate** via ``KnownKeysSchema`` — known-key errors -> 422 with
        per-error ``ValidationErrorItem`` payloads.
-    3. **mtime + SHA-256 CAS** — compare ``req.base_mtime_ns`` to the current
-       ``st_mtime_ns`` AND ``req.base_sha256`` to the SHA-256 of the on-disk
-       bytes. Either mismatch -> 409 with ``current_snapshot`` (full
-       :class:`BeetsConfigSnapshot`), ``current_yaml_text`` (raw on-disk file),
-       and ``current_sha256`` so the frontend's merge view can render the diff.
-       The SHA-256 leg is the tie-breaker that catches the rare "edit + restore
-       mtime" path ``os.utime`` opens — see ``test_save_409_on_sha_change_same_mtime``.
+    3. **SHA-256 CAS** — compare ``req.base_sha256`` to the SHA-256 of the
+       on-disk bytes. Mismatch -> 409 with ``current_yaml_text`` (raw on-disk
+       file) and ``current_sha256`` so the frontend's merge view can render
+       the diff. SHA-256 alone is the CAS token (no mtime check): nanosecond
+       mtime ints overflow JavaScript's ``Number.MAX_SAFE_INTEGER`` and
+       silently corrupt across the JSON wire — the SHA already covers every
+       bytes-changed edit, including the rare ``os.utime`` "preserve mtime,
+       change content" case (see ``test_save_409_on_sha_change``).
     4. **Secret-preserve merge** — re-parse the on-disk bytes (NOT ``beets.config``
        — we want the file's own redacted paths), discover redacted paths against
        that, then ``merge_preserve_secrets`` so any path the user left at
@@ -420,18 +421,15 @@ def save(handle: LibraryHandle, req: SaveRequest) -> BeetsConfigSnapshot:
             detail=[item.model_dump() for item in errors],
         )
 
-    # 3. mtime + SHA-256 CAS. Read the bytes once and reuse them for both the
-    # hash and the (possible) 409 payload + the secret-preserve re-parse below.
+    # 3. SHA-256 CAS. Read the bytes once and reuse them for both the hash
+    # and the (possible) 409 payload + the secret-preserve re-parse below.
     on_disk_bytes = handle.config_path.read_bytes()
-    on_disk_mtime_ns = handle.config_path.stat().st_mtime_ns
     on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
-    if on_disk_mtime_ns != req.base_mtime_ns or on_disk_sha != req.base_sha256:
-        snap = build_config_snapshot(handle)
+    if on_disk_sha != req.base_sha256:
         raise HTTPException(
             status_code=409,
             detail={
                 "detail": "File changed on disk",
-                "current_snapshot": snap.model_dump(mode="json"),
                 "current_yaml_text": on_disk_bytes.decode("utf-8"),
                 "current_sha256": on_disk_sha,
             },
