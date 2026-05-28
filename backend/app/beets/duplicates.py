@@ -14,21 +14,26 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 from typing import Any
 
 from beets.library import Library
+from beets.util import bytestring_path
 
 from app.beets.library import (
     _abs_path,
     _album_fields,
     _coerce_int,
     _coerce_optional_str,
+    _coerce_str,
 )
 from app.models.duplicates import (
     DuplicateAlbum,
     DuplicateGroup,
     DuplicateMode,
     DuplicatesReport,
+    MovedAlbum,
+    ResolveResult,
 )
 
 _PAREN_RE = re.compile(r"[\(\[].*?[\)\]]")
@@ -133,3 +138,67 @@ def find_duplicate_albums(lib: Library, *, mode: DuplicateMode) -> DuplicatesRep
         album_count=sum(len(g.members) for g in groups),
         groups=groups,
     )
+
+
+class StaleGroupError(Exception):
+    """The requested group no longer matches the current library state.
+
+    Raised when the keeper is no longer in any duplicate group, or the claimed
+    ``remove_album_ids`` are not exactly that group's other members. Maps to 409.
+    """
+
+
+class AlbumNotFoundError(Exception):
+    """A referenced album id is not in the library. Maps to 404."""
+
+
+def resolve_duplicate_group(
+    lib: Library,
+    *,
+    mode: DuplicateMode,
+    keep_album_id: int,
+    remove_album_ids: list[int],
+    trash_dir: Path,
+) -> ResolveResult:
+    """Move ``remove_album_ids`` to ``trash_dir`` and drop them from the library.
+
+    Re-verifies the group with the same ``mode`` detection the client saw, so a
+    library that changed underneath the user (stale UI) raises
+    :class:`StaleGroupError` instead of mutating the wrong albums. Each loser is
+    relocated with beets' own ``Album.move(basedir=trash)`` (files move under
+    Trash by path template, the vacated source dir is pruned) then
+    ``Album.remove(delete=False)`` (DB rows dropped, files remain in Trash) —
+    exactly ``beet dup --move <trash> --remove`` for albums.
+    """
+    report = find_duplicate_albums(lib, mode=mode)
+    target = next(
+        (g for g in report.groups if any(m.id == keep_album_id for m in g.members)),
+        None,
+    )
+    if target is None:
+        raise StaleGroupError("keep album is no longer part of a duplicate group")
+    current_others = {m.id for m in target.members} - {keep_album_id}
+    if set(remove_album_ids) != current_others:
+        raise StaleGroupError("duplicate group membership changed")
+
+    trash_dir.mkdir(parents=True, exist_ok=True)
+    basedir = bytestring_path(str(trash_dir))
+    moved: list[MovedAlbum] = []
+    with lib.transaction():
+        for album_id in remove_album_ids:
+            album = lib.get_album(album_id)
+            if album is None:
+                raise AlbumNotFoundError(f"album {album_id} not found")
+            album.move(basedir=basedir)  # relocate under Trash + prune source dir
+            items = list(album.items())
+            trash_path = os.path.dirname(_abs_path(lib, items[0].path)) if items else str(trash_dir)
+            moved.append(
+                MovedAlbum(
+                    id=int(album.id),
+                    album_artist=_coerce_str(album.albumartist),
+                    title=_coerce_str(album.album),
+                    trash_path=trash_path,
+                )
+            )
+            album.remove(delete=False)  # drop DB rows; files stay in Trash
+    return ResolveResult(kept_album_id=keep_album_id, moved=moved)
