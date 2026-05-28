@@ -9,6 +9,7 @@ models; everything else lives on disk in the ruamel ``CommentedMap``.
 
 from pathlib import Path
 
+import pytest
 from pydantic import ValidationError
 
 from app.models.config_editor import (
@@ -44,13 +45,9 @@ def test_schema_rejects_invalid_bool(tmp_path: Path) -> None:
         "library": str(tmp_path / "library.db"),
         "import": {"copy": "maybe"},
     }
-    try:
+    with pytest.raises(ValidationError) as excinfo:
         KnownKeysSchema.model_validate(data)
-    except ValidationError as e:
-        errors = e.errors()
-        assert any(err["loc"] == ("import", "copy") for err in errors)
-    else:
-        raise AssertionError("expected ValidationError")
+    assert any(err["loc"] == ("import", "copy") for err in excinfo.value.errors())
 
 
 def test_schema_rejects_unknown_plugin(tmp_path: Path) -> None:
@@ -61,12 +58,11 @@ def test_schema_rejects_unknown_plugin(tmp_path: Path) -> None:
         "library": str(tmp_path / "library.db"),
         "plugins": ["not-a-plugin"],
     }
-    try:
+    with pytest.raises(ValidationError) as excinfo:
         KnownKeysSchema.model_validate(data)
-    except ValidationError:
-        pass
-    else:
-        raise AssertionError("expected ValidationError on plugin allowlist")
+    # Pin the location too: a future regression that accepts "not-a-plugin" by
+    # dropping it silently would otherwise still satisfy a bare ``raises``.
+    assert any(err["loc"][:1] == ("plugins",) for err in excinfo.value.errors())
 
 
 def test_schema_ignores_unknown_keys(tmp_path: Path) -> None:
@@ -77,4 +73,9 @@ def test_schema_ignores_unknown_keys(tmp_path: Path) -> None:
         "library": str(tmp_path / "library.db"),
         "myplugin": {"weird_key": 42},
     }
-    KnownKeysSchema.model_validate(data)  # must not raise
+    schema = KnownKeysSchema.model_validate(data)
+    # Pydantic v2 ``extra='ignore'`` (default) DROPS unknown keys at validation.
+    # The save flow relies on this: the ruamel CommentedMap on disk keeps
+    # ``myplugin``, the schema doesn't, and we never round-trip through the
+    # schema. Pin the drop here so a future ``extra='allow'`` flip is caught.
+    assert "myplugin" not in schema.model_dump()

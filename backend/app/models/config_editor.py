@@ -1,7 +1,7 @@
 """Pydantic models for the Layer-3 config editor.
 
 ``loc_to_dot_sep`` is vendored verbatim from the Pydantic Errors docs
-(https://docs.pydantic.dev/latest/errors/errors/) - it's example code on that
+(https://docs.pydantic.dev/latest/errors/errors/) — it's example code on that
 page, not a public Pydantic export.
 
 Per Pydantic v2 docs (https://docs.pydantic.dev/latest/concepts/models/) the
@@ -41,7 +41,7 @@ def _writable_parent(p: Path) -> Path:
     """``AfterValidator`` for ``WritablePath``.
 
     Per Pydantic v2 docs (Validators), ``AfterValidator`` runs after Pydantic
-    has coerced the value to ``Path`` - so ``p`` is already a ``Path`` here.
+    has coerced the value to ``Path`` — so ``p`` is already a ``Path`` here.
     """
     parent = p.expanduser().resolve().parent
     if not parent.exists() or not os.access(parent, os.W_OK):
@@ -71,7 +71,7 @@ PluginName = Literal[
 
 class ImportSection(BaseModel):
     """Validates the ``import:`` block. ``extra='ignore'`` is explicit only for
-    clarity - it's the Pydantic v2 default and we never re-emit.
+    clarity — it's the Pydantic v2 default and we never re-emit.
 
     The ``copy`` field name is dictated by beets' YAML key (``import.copy``);
     it shadows ``BaseModel.copy()`` but Pydantic v2 only emits a UserWarning
@@ -100,7 +100,7 @@ class MatchSection(BaseModel):
 
 class KnownKeysSchema(BaseModel):
     """Validates only the ~13 keys MusicDrop models. Default ``extra='ignore'``
-    means unknown beets/plugin keys are dropped silently here - they survive
+    means unknown beets/plugin keys are dropped silently here — they survive
     on disk because we save the ruamel ``CommentedMap``, never re-emit from
     this model (per Pydantic v2 docs Models)."""
 
@@ -137,7 +137,7 @@ class SaveRequest(BaseModel):
 
 
 class ValidateRequest(BaseModel):
-    """Body of ``POST /api/config/validate``. The endpoint is CAS-free - it
+    """Body of ``POST /api/config/validate``. The endpoint is CAS-free — it
     only lints, never writes."""
 
     yaml_text: str

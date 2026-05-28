@@ -6,7 +6,7 @@ Two passes redact secrets before rendering YAML:
    flag, which bundled plugins set (e.g. ``spotify.client_secret`` at
    ``beetsplug/spotify.py``). That value comes out as ``"REDACTED"``.
 2. A regex safety-net (``SECRET_KEY_PATTERN``) walks the flattened mapping and
-   masks any string value whose KEY matches the pattern - protection against
+   masks any string value whose KEY matches the pattern — protection against
    third-party plugins that forgot to mark their fields ``.redact = True``.
 
 The flattened mapping is a confuse ``OrderedDict`` (a ``dict`` subclass);
@@ -35,7 +35,7 @@ from app.beets.library import LibraryHandle
 from app.models.config_api import BeetsConfigSnapshot
 
 # Field-name pattern for the redaction safety-net. Substring (not anchored) by
-# design - confuse's per-view ``redact`` flag is the PRIMARY defense for
+# design — confuse's per-view ``redact`` flag is the PRIMARY defense for
 # bundled plugins; this safety-net only matters for third-party plugins that
 # forgot to mark their fields ``.redact = True``. Trading a few benign
 # false-positives for guaranteed coverage of every real-world variant is the
@@ -62,25 +62,38 @@ def find_redacted_paths(data: Any, path: tuple[str, ...] = ()) -> list[tuple[str
     at them. Mirrors the same key-matching policy as
     :func:`_mask_secrets_in_place` (which masks display values); they MUST stay
     in lockstep or the save merge will leak fresh secrets back into the page.
+
+    The list branch descends into BOTH nested dicts AND nested lists, matching
+    ``_mask_secrets_in_place``'s ``isinstance(v, dict | list)`` recursion —
+    asymmetry would let display redact a path that save can't preserve.
+
+    Results are deduped (preserving first-seen order): a list like
+    ``accounts: [{api_token: a}, {api_token: b}]`` yields one path, not N.
     """
     out: list[tuple[str, ...]] = []
+    _walk_redacted(data, path, out)
+    # Dedup while preserving first-seen order. ``dict.fromkeys`` is the cheap
+    # deterministic shape; ``sorted(set(...))`` would lose insertion order,
+    # making test failures noisier than they need to be.
+    return list(dict.fromkeys(out))
+
+
+def _walk_redacted(data: Any, path: tuple[str, ...], out: list[tuple[str, ...]]) -> None:
+    """Recursive worker for :func:`find_redacted_paths`. Mutates ``out``."""
     if isinstance(data, dict):
         for k, v in data.items():
             sub = (*path, str(k))
-            if isinstance(v, dict):
-                out.extend(find_redacted_paths(v, sub))
-            elif isinstance(v, list):
-                for item in v:
-                    if isinstance(item, dict):
-                        # NOTE: list-of-dicts walks WITHOUT extending the path
-                        # by an index, matching display redaction policy: the
-                        # save-flow caller pairs each result with a positional
-                        # walk against the on-disk map, so the secret-preserve
-                        # merge stays consistent with the visible redaction.
-                        out.extend(find_redacted_paths(item, sub))
+            if isinstance(v, dict | list):
+                # NOTE: list/dict descent does NOT extend the path with an
+                # index — display redaction is per-key, and the save-flow
+                # caller pairs each result with a positional walk against the
+                # on-disk map. Adding indices would break that contract.
+                _walk_redacted(v, sub, out)
             elif isinstance(v, str) and SECRET_KEY_PATTERN.search(str(k)):
                 out.append(sub)
-    return out
+    elif isinstance(data, list):
+        for item in data:
+            _walk_redacted(item, path, out)
 
 
 def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
@@ -126,7 +139,7 @@ def _mask_secrets_in_place(d: Any, pattern: re.Pattern[str]) -> None:
     Descends into both ``dict`` values AND ``list`` values; without the list
     branch a plugin config like ``accounts: [{api_token: "..."}, ...]`` would
     slip through unredacted. Other leaf types (``int``/``bool``) under a
-    matching key are left as-is - they're not secrets in any plugin we've seen,
+    matching key are left as-is — they're not secrets in any plugin we've seen,
     and forcing them to a string would change the rendered YAML's shape.
 
     Matching leaves are replaced with confuse's own ``REDACTED_TOMBSTONE``
