@@ -41,3 +41,4 @@ Thumbs.db
 # Claude / local-only
 .claude/
 CLAUDE.md
+.superpowers/
