@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   CircleCheck,
   CircleSlash,
+  CopyCheck,
   FolderInput,
   Loader2,
   Search,
@@ -208,6 +209,17 @@ export function App() {
             >
               <Settings className="size-4" aria-hidden="true" />
               <span className="hidden sm:inline">Settings</span>
+            </Link>
+            <Link
+              to="/duplicates"
+              aria-label="Duplicates"
+              aria-current={
+                location.pathname.startsWith("/duplicates") ? "page" : undefined
+              }
+              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
+            >
+              <CopyCheck className="size-4" aria-hidden="true" />
+              <span className="hidden sm:inline">Duplicates</span>
             </Link>
           </nav>
           <div className="shrink-0">
