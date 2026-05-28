@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, Music, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 
@@ -93,16 +94,50 @@ function ModeToggle({
   );
 }
 
+/** Inline message for a 409 from resolve. Distinguishes the two backend causes
+ * (import-active vs stale-group) from the flat `detail` string so the user gets
+ * an actionable hint instead of one generic line. */
+function resolve409Message(err: DuplicatesOpError): string {
+  const detail = (err.body as { detail?: string } | null)?.detail ?? "";
+  return detail.toLowerCase().includes("import")
+    ? "Can't resolve while an import is running."
+    : "This group changed — refreshing. Re-check the copies and retry.";
+}
+
 function GroupCard({ group, mode }: { group: DuplicateGroup; mode: DuplicateMode }) {
   const [keeperId, setKeeperId] = useState(group.suggested_keeper_id);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const resolve = useResolveDuplicate();
-  const removeIds = group.members.filter((m) => m.id !== keeperId).map((m) => m.id);
+  const queryClient = useQueryClient();
+
+  // Clamp the keeper to current membership. A background refetch can change a
+  // group's members while keeping suggested_keeper_id (so the card keeps its
+  // React key and does NOT remount), which would leave keeperId pointing at an
+  // album no longer present — making removeIds cover the whole group and the
+  // dialog read "Keeping <nothing>". Falling back to the suggested keeper keeps
+  // the confirm dialog + remove_album_ids truthful.
+  const effectiveKeeperId = group.members.some((m) => m.id === keeperId)
+    ? keeperId
+    : group.suggested_keeper_id;
+  const keeper = group.members.find((m) => m.id === effectiveKeeperId);
+  const removeIds = group.members
+    .filter((m) => m.id !== effectiveKeeperId)
+    .map((m) => m.id);
 
   function onConfirm() {
     resolve.mutate(
-      { mode, keep_album_id: keeperId, remove_album_ids: removeIds },
-      { onSettled: () => setConfirmOpen(false) },
+      { mode, keep_album_id: effectiveKeeperId, remove_album_ids: removeIds },
+      {
+        onSettled: () => setConfirmOpen(false),
+        onError: (err) => {
+          // 409 = stale group (membership changed) or an import is running.
+          // Refetch so the report self-heals to the current library state
+          // instead of leaving the now-wrong group on screen.
+          if ((err as DuplicatesOpError).status === 409) {
+            void queryClient.invalidateQueries({ queryKey: ["duplicates"] });
+          }
+        },
+      },
     );
   }
 
@@ -133,7 +168,7 @@ function GroupCard({ group, mode }: { group: DuplicateGroup; mode: DuplicateMode
               // Shared per-GROUP radio name so the copies form one radio group
               // (single-select + arrow-key nav). Stable across re-render.
               name={`keeper-${group.suggested_keeper_id}`}
-              checked={album.id === keeperId}
+              checked={album.id === effectiveKeeperId}
               onChoose={() => setKeeperId(album.id)}
             />
           ))}
@@ -143,7 +178,7 @@ function GroupCard({ group, mode }: { group: DuplicateGroup; mode: DuplicateMode
       {opError && (
         <p className="text-destructive mt-2 text-sm" role="alert">
           {opError.status === 409
-            ? "Can't resolve right now — an import is running or the group changed. Refresh and retry."
+            ? resolve409Message(opError)
             : "Resolve failed. The Trash keeps any moved copies; refresh and retry."}
         </p>
       )}
@@ -171,14 +206,11 @@ function GroupCard({ group, mode }: { group: DuplicateGroup; mode: DuplicateMode
             <AlertDialogTitle>Move {removeIds.length} copies to Trash?</AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="text-sm">
-                Keeping{" "}
-                <strong>
-                  {group.members.find((m) => m.id === keeperId)?.title}
-                </strong>
-                . These move to the Trash folder (reversible — nothing is deleted):
+                Keeping <strong>{keeper?.title}</strong>. These move to the Trash
+                folder (reversible — nothing is deleted):
                 <ul className="mt-2 list-disc pl-5">
                   {group.members
-                    .filter((m) => m.id !== keeperId)
+                    .filter((m) => m.id !== effectiveKeeperId)
                     .map((m) => (
                       <li key={m.id} className="font-mono text-xs">
                         {m.folder}

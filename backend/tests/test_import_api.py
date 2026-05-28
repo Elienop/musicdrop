@@ -97,6 +97,30 @@ def test_start_import_blank_path_is_422() -> None:
     assert resp.status_code in (400, 422)
 
 
+def test_start_import_409_while_library_op_holds_swap_lock() -> None:
+    """A held beets_swap_lock (config Apply / duplicate resolve in flight) refuses
+    a new import — closing the import-start direction of the strictly-serial
+    invariant so two threads never mutate beets at once.
+    """
+    reset_registry(runner=FakeImportRunner(parked=[]))
+
+    class _LockedLock:
+        def locked(self) -> bool:
+            return True
+
+    prior = getattr(app.state, "beets_swap_lock", None)
+    app.state.beets_swap_lock = _LockedLock()
+    try:
+        resp = TestClient(app).post("/api/import", json={"path": "/music/incoming"})
+    finally:
+        if prior is None:
+            del app.state.beets_swap_lock
+        else:
+            app.state.beets_swap_lock = prior
+    assert resp.status_code == 409
+    assert "library operation" in resp.json()["detail"].lower()
+
+
 def test_get_unknown_job_is_404() -> None:
     resp = TestClient(app).get("/api/import/does-not-exist")
     assert resp.status_code == 404

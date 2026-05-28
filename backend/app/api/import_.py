@@ -11,7 +11,7 @@ No beets imports: the registry + models are the whole surface here.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
 
 from app.import_jobs.registry import ImportJobRegistry, get_registry
 from app.models.import_api import (
@@ -46,8 +46,23 @@ async def get_active_import(
 @router.post("/import", response_model=StartImportResponse, status_code=status.HTTP_202_ACCEPTED)
 async def start_import(
     body: StartImportRequest,
+    request: Request,
     reg: Annotated[ImportJobRegistry, Depends(get_registry)],
 ) -> StartImportResponse:
+    # Refuse while another in-process beets mutation holds the shared swap lock
+    # (config Apply or duplicate resolve). beets' safety model is strictly
+    # serial — never two threads in beets at once — and the importer spawns its
+    # own worker thread that would otherwise race a resolve/Apply mutating the
+    # same Library + SQLite. This closes the import-start direction of the
+    # mutual-exclusion invariant (Apply/resolve already refuse while an import
+    # is active); best-effort `asyncio.Lock.locked()`, the same single-user
+    # TOCTOU posture as config_editor.apply's import gate.
+    lock = getattr(request.app.state, "beets_swap_lock", None)
+    if lock is not None and lock.locked():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A library operation is in progress — import available when it finishes",
+        )
     try:
         job_id = reg.start(body.path)
     except RuntimeError:

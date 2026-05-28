@@ -120,7 +120,7 @@ describe("DuplicatesPage", () => {
     await waitFor(() => expect(screen.queryByText(/Matched on/i)).not.toBeInTheDocument());
   });
 
-  test("a 409 surfaces the inline can't-resolve message", async () => {
+  test("an import-active 409 surfaces the 'import running' message", async () => {
     server.use(
       http.get(DUP_URL, () => HttpResponse.json(reportWithOneGroup())),
       http.post(RESOLVE_URL, () => HttpResponse.json({ detail: "Import in progress" }, { status: 409 })),
@@ -131,6 +131,32 @@ describe("DuplicatesPage", () => {
     await user.click(screen.getByRole("button", { name: /move 1 to trash/i }));
     const dialog = await screen.findByRole("alertdialog");
     await user.click(within(dialog).getByRole("button", { name: /move to trash/i }));
-    expect(await screen.findByText(/can't resolve right now/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/can't resolve while an import is running/i),
+    ).toBeInTheDocument();
+  });
+
+  test("a stale-group 409 shows the 'group changed' message and refetches the report", async () => {
+    let getCalls = 0;
+    server.use(
+      http.get(DUP_URL, () => {
+        getCalls += 1;
+        return HttpResponse.json(reportWithOneGroup());
+      }),
+      http.post(RESOLVE_URL, () =>
+        HttpResponse.json({ detail: "duplicate group membership changed" }, { status: 409 }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/Matched on/i);
+    const callsBeforeResolve = getCalls;
+    await user.click(screen.getByRole("button", { name: /move 1 to trash/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /move to trash/i }));
+    expect(await screen.findByText(/this group changed/i)).toBeInTheDocument();
+    // 409 invalidates ["duplicates"] so the report self-heals: at least one
+    // extra GET fires after the failed resolve.
+    await waitFor(() => expect(getCalls).toBeGreaterThan(callsBeforeResolve));
   });
 });
