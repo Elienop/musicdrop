@@ -2,6 +2,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+from app.beets.library import close_library
 from app.beets.setup import setup_beets
 
 # The ``_clear_beets_globals`` autouse fixture is now defined in
@@ -29,9 +30,7 @@ def test_setup_copies_starter_when_missing(tmp_path: Path) -> None:
         assert beets.config["import"]["copy"].get(bool) is True
         assert beets.config["import"]["autotag"].get(bool) is True
     finally:
-        # beets' Library exposes _close (single underscore) not close;
-        # see close_library() in app/beets/library.py.
-        handle.lib._close()
+        close_library(handle.lib)
 
 
 def test_setup_honors_library_and_directory_from_file(tmp_path: Path) -> None:
@@ -52,7 +51,7 @@ def test_setup_honors_library_and_directory_from_file(tmp_path: Path) -> None:
         assert Path(os.fsdecode(handle.lib.path)) == lib_file
         assert Path(os.fsdecode(handle.lib.directory)) == music_dir
     finally:
-        handle.lib._close()
+        close_library(handle.lib)
 
 
 def test_setup_loads_user_plugins(tmp_path: Path) -> None:
@@ -70,7 +69,7 @@ def test_setup_loads_user_plugins(tmp_path: Path) -> None:
         assert "musicbrainz" in names
         assert "deezer" in names
     finally:
-        handle.lib._close()
+        close_library(handle.lib)
 
 
 def test_setup_leaves_existing_config_alone(tmp_path: Path) -> None:
@@ -85,7 +84,7 @@ def test_setup_leaves_existing_config_alone(tmp_path: Path) -> None:
     try:
         assert cfg.read_text() == custom
     finally:
-        handle.lib._close()
+        close_library(handle.lib)
 
 
 def test_fixture_resets_confuse_between_tests(tmp_path: Path) -> None:
@@ -117,4 +116,4 @@ def test_fixture_resets_confuse_between_tests(tmp_path: Path) -> None:
         assert beets.config["import"]["autotag"].get(bool) is False
         assert beets.config["import"]["copy"].get(bool) is False
     finally:
-        handle.lib._close()
+        close_library(handle.lib)

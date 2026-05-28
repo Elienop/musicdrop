@@ -7,6 +7,7 @@ from beets.library import Item, Library
 from fastapi.testclient import TestClient
 
 from app.api.albums import get_library
+from app.beets.library import close_library
 from app.config import settings
 from app.main import app
 from tests.conftest import make_test_handle
@@ -325,7 +326,7 @@ def test_lifespan_opens_library_from_settings(
             )
         ]
     )
-    lib._close()
+    close_library(lib)
 
     cfg = tmp_path / "config.yaml"
     cfg.write_text(

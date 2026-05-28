@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from app.beets.library import LibraryHandle
+from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
 
 if TYPE_CHECKING:
@@ -34,25 +34,30 @@ if TYPE_CHECKING:
 
 
 def make_test_handle(lib: "Library", beets_dir: Path) -> LibraryHandle:
-    """Wrap a raw ``Library`` in a ``LibraryHandle`` for dep-override fixtures.
+    """Snapshot fields are SENTINELS — use a real ``setup_beets()`` handle to assert on them.
 
-    Tests that build their own hermetic ``Library`` directly (rather than going
-    through ``setup_beets``) still need to satisfy the ``LibraryHandle`` shape
-    that the API endpoints now expect. This helper fills the snapshot fields
-    with placeholder values that aren't observable from the endpoints under
-    test (they only ever touch ``handle.lib``).
+    For endpoints that only touch ``handle.lib``: this wraps a raw ``Library``
+    in a ``LibraryHandle`` so dependency-override fixtures (the per-file
+    ``temp_library`` fixtures in test_albums / test_artists / test_search that
+    build their own hermetic ``Library`` without going through ``setup_beets``)
+    still satisfy the ``LibraryHandle`` shape that the API endpoints now
+    expect.
+
+    The snapshot fields use **sentinel values** rather than realistic-looking
+    placeholders so a future Task 5/6 ``BeetsConfigSnapshot`` test can't
+    silently assert against them and pass for the wrong reason:
+
+    * ``config_path`` points at the literal ``Path("__placeholder__")`` — no
+      file backs it, so any ``.stat()`` / ``.read_text()`` against it raises.
+    * ``loaded_at`` is the Unix epoch.
+    * ``file_mtime_at_load`` is ``0.0``.
     """
-    cfg_path = beets_dir / "config.yaml"
-    if not cfg_path.exists():
-        # Touch a file so ``file_mtime_at_load`` has a concrete value, in case a
-        # future test reaches into ``handle`` for snapshot fields.
-        cfg_path.write_text("# test placeholder\n")
     return LibraryHandle(
         lib=lib,
         beets_dir=beets_dir.resolve(),
-        config_path=cfg_path,
-        loaded_at=datetime.now(UTC),
-        file_mtime_at_load=cfg_path.stat().st_mtime,
+        config_path=Path("__placeholder__"),
+        loaded_at=datetime(1970, 1, 1, tzinfo=UTC),
+        file_mtime_at_load=0.0,
     )
 
 
@@ -99,8 +104,7 @@ def _clear_beets_globals() -> Iterator[None]:
         k: os.environ.get(k)
         for k in (
             "BEETSDIR",
-            "MUSICDROP_BEETS_LIBRARY_PATH",
-            "MUSICDROP_BEETS_LIBRARY_DIRECTORY",
+            "MUSICDROP_BEETSDIR",
         )
     }
     yield
@@ -145,4 +149,4 @@ def beets_library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[L
     try:
         yield handle
     finally:
-        handle.lib._close()
+        close_library(handle.lib)

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from app.beets.library import close_library
 from app.beets.setup import setup_beets
 
 # The ``_clear_beets_globals`` autouse fixture is now defined in
@@ -23,6 +24,4 @@ def test_default_starter_loads_musicbrainz_and_deezer(tmp_path: Path) -> None:
         assert "musicbrainz" in names
         assert "deezer" in names
     finally:
-        # tests.test_import_setup is in the disallow_untyped_calls=false mypy
-        # override, so calling beets' untyped _close() needs no type-ignore.
-        handle.lib._close()
+        close_library(handle.lib)
