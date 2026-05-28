@@ -19,20 +19,30 @@ from typing import Any
 
 from beets.library import Library
 from beets.util import bytestring_path
+from fastapi import HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 
+# Reuse config-Apply's lock + settings accessors so resolve shares the SAME
+# app.state.beets_swap_lock (genuine mutual exclusion with Apply) and the same
+# lifespan-less TestClient fallback. Both live in the app/beets/ boundary.
+from app.beets.config_editor import _settings, _swap_lock
 from app.beets.library import (
+    LibraryHandle,
     _abs_path,
     _album_fields,
     _coerce_int,
     _coerce_optional_str,
     _coerce_str,
 )
+from app.config import Settings
+from app.import_jobs.registry import get_registry
 from app.models.duplicates import (
     DuplicateAlbum,
     DuplicateGroup,
     DuplicateMode,
     DuplicatesReport,
     MovedAlbum,
+    ResolveRequest,
     ResolveResult,
 )
 
@@ -202,3 +212,67 @@ def resolve_duplicate_group(
             )
             album.remove(delete=False)  # drop DB rows; files stay in Trash
     return ResolveResult(kept_album_id=keep_album_id, moved=moved)
+
+
+def _resolve_trash_dir(settings: Settings, handle: LibraryHandle) -> Path:
+    """Where resolved-away copies go: configured ``trash_dir`` or ``<beets_dir>/trash``.
+
+    Empty setting = default under the library handle's ``beets_dir`` (already an
+    absolute path, sidestepping the cwd-relative gotcha). A configured override
+    is ``.resolve()``-d to absolute. Kept synchronous + outside
+    ``resolve_duplicates_op`` so the pathlib I/O does not run on the event loop
+    (ruff ASYNC240).
+    """
+    if settings.trash_dir:
+        return Path(settings.trash_dir).resolve()
+    return handle.beets_dir / "trash"
+
+
+async def resolve_duplicates_op(request: Request, req: ResolveRequest) -> ResolveResult:
+    """Resolve a duplicate group, serialized against imports and config Apply.
+
+    Mirrors :func:`app.beets.config_editor.apply`:
+
+    1. **Import gate** (409) — refuse while an import is active. Moving files +
+       dropping DB rows under a live import worker would corrupt it. Best-effort
+       TOCTOU, accepted for the single-user self-host case exactly as Apply does.
+    2. **Shared lock** — ``app.state.beets_swap_lock`` (via ``_swap_lock``) so
+       resolve and Apply (and concurrent resolves) never overlap.
+    3. **Threadpool** — beets file moves + SQLite are blocking; offload them.
+    4. **Error mapping** — StaleGroupError → 409, AlbumNotFoundError → 404, any
+       other failure → structured 500 ``{message, recovery}`` (the nested shape
+       config Apply uses; flat ``detail: str`` for the 409/404 siblings).
+    """
+    app = request.app
+    if get_registry().has_active_job():
+        raise HTTPException(
+            status_code=409,
+            detail="Import in progress — resolve available when it finishes",
+        )
+    async with _swap_lock(app):
+        handle: LibraryHandle = app.state.beets_library
+        trash_dir = _resolve_trash_dir(_settings(app), handle)
+        try:
+            return await run_in_threadpool(
+                resolve_duplicate_group,
+                handle.lib,
+                mode=req.mode,
+                keep_album_id=req.keep_album_id,
+                remove_album_ids=req.remove_album_ids,
+                trash_dir=trash_dir,
+            )
+        except StaleGroupError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except AlbumNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": f"Resolve failed: {exc}",
+                    "recovery": (
+                        "Moved copies are recoverable in the Trash folder. "
+                        "Refresh the report and retry."
+                    ),
+                },
+            ) from exc
