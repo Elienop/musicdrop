@@ -70,7 +70,7 @@ export function SettingsPage() {
         </div>
       )}
 
-      {data?.restart_required && (
+      {data?.apply_pending && (
         <div
           className="flex items-start gap-3 rounded-xl border border-yellow-400/60 bg-yellow-50 p-4 text-sm text-yellow-900 dark:border-yellow-500/40 dark:bg-yellow-950/40 dark:text-yellow-100"
           role="alert"

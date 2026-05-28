@@ -158,7 +158,7 @@ def beets_library_config_path(beets_library: LibraryHandle) -> Path:
     """Path to the ``config.yaml`` backing the active :class:`LibraryHandle`.
 
     Test_config_api uses this to ``os.utime`` the file between two GETs and
-    assert the endpoint surfaces the new mtime / sets ``restart_required``.
+    assert the endpoint surfaces the new mtime / sets ``apply_pending``.
     Resolved off the handle (not ``tmp_path``) so the two stay in lockstep
     even if the fixture's layout changes.
     """

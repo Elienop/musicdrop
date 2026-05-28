@@ -6,16 +6,23 @@ Two passes redact secrets before rendering YAML:
    flag, which bundled plugins set (e.g. ``spotify.client_secret`` at
    ``beetsplug/spotify.py``). That value comes out as ``"REDACTED"``.
 2. A regex safety-net (``SECRET_KEY_PATTERN``) walks the flattened mapping and
-   masks any string value whose KEY matches the pattern — protection against
+   masks any string value whose KEY matches the pattern - protection against
    third-party plugins that forgot to mark their fields ``.redact = True``.
 
 The flattened mapping is a confuse ``OrderedDict`` (a ``dict`` subclass);
 PyYAML's ``safe_dump`` refuses non-plain ``dict`` subclasses, so ``_to_plain``
 recursively converts every level before rendering.
+
+``find_redacted_paths`` is exported as a module-level helper for the Layer-3
+save flow (``app/beets/config_editor.py``): it walks the parsed-YAML map and
+returns the dotted paths whose values would be redacted at display time, so
+the save merge step can preserve untouched secrets without diffing against the
+displayed snapshot.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -28,7 +35,7 @@ from app.beets.library import LibraryHandle
 from app.models.config_api import BeetsConfigSnapshot
 
 # Field-name pattern for the redaction safety-net. Substring (not anchored) by
-# design — confuse's per-view ``redact`` flag is the PRIMARY defense for
+# design - confuse's per-view ``redact`` flag is the PRIMARY defense for
 # bundled plugins; this safety-net only matters for third-party plugins that
 # forgot to mark their fields ``.redact = True``. Trading a few benign
 # false-positives for guaranteed coverage of every real-world variant is the
@@ -46,6 +53,36 @@ SECRET_KEY_PATTERN = re.compile(
 )
 
 
+def find_redacted_paths(data: Any, path: tuple[str, ...] = ()) -> list[tuple[str, ...]]:
+    """Walk a nested mapping (parsed YAML / ruamel ``CommentedMap``) and return
+    the dotted paths whose string values would be redacted at display.
+
+    Used by Layer-3 save (``config_editor.merge_preserve_secrets``) to know
+    which keys to preserve from disk when the editor still shows ``REDACTED``
+    at them. Mirrors the same key-matching policy as
+    :func:`_mask_secrets_in_place` (which masks display values); they MUST stay
+    in lockstep or the save merge will leak fresh secrets back into the page.
+    """
+    out: list[tuple[str, ...]] = []
+    if isinstance(data, dict):
+        for k, v in data.items():
+            sub = (*path, str(k))
+            if isinstance(v, dict):
+                out.extend(find_redacted_paths(v, sub))
+            elif isinstance(v, list):
+                for item in v:
+                    if isinstance(item, dict):
+                        # NOTE: list-of-dicts walks WITHOUT extending the path
+                        # by an index, matching display redaction policy: the
+                        # save-flow caller pairs each result with a positional
+                        # walk against the on-disk map, so the secret-preserve
+                        # merge stays consistent with the visible redaction.
+                        out.extend(find_redacted_paths(item, sub))
+            elif isinstance(v, str) and SECRET_KEY_PATTERN.search(str(k)):
+                out.append(sub)
+    return out
+
+
 def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
     """Render the current beets config to YAML (redacted) + freshness fields."""
     flat = beets.config.flatten(redact=True)
@@ -56,23 +93,30 @@ def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
     # window where the file is deleted between the existence check and the
     # stat call, which would leak FileNotFoundError out of the snapshot
     # builder. OSError also covers permission/IO failures (treated as
-    # "missing" for the restart-required signal).
+    # "missing" for the apply-pending signal).
     file_modified_at: datetime | None = None
     current_mtime: float | None = None
+    current_mtime_ns: int = 0
+    sha256 = ""
     try:
-        current_mtime = handle.config_path.stat().st_mtime
+        st = handle.config_path.stat()
+        current_mtime = st.st_mtime
+        current_mtime_ns = st.st_mtime_ns  # CPython bpo-39484: integer ns, no float drift
         file_modified_at = datetime.fromtimestamp(current_mtime, tz=UTC)
+        sha256 = hashlib.sha256(handle.config_path.read_bytes()).hexdigest()
     except OSError:
         pass
 
-    restart_required = current_mtime is None or current_mtime > handle.file_mtime_at_load
+    apply_pending = current_mtime is None or current_mtime > handle.file_mtime_at_load
 
     return BeetsConfigSnapshot(
         yaml_text=yaml_text,
         config_path=str(handle.config_path),
         loaded_at=handle.loaded_at,
         file_modified_at=file_modified_at,
-        restart_required=restart_required,
+        mtime_ns=current_mtime_ns,
+        sha256=sha256,
+        apply_pending=apply_pending,
     )
 
 
@@ -82,7 +126,7 @@ def _mask_secrets_in_place(d: Any, pattern: re.Pattern[str]) -> None:
     Descends into both ``dict`` values AND ``list`` values; without the list
     branch a plugin config like ``accounts: [{api_token: "..."}, ...]`` would
     slip through unredacted. Other leaf types (``int``/``bool``) under a
-    matching key are left as-is — they're not secrets in any plugin we've seen,
+    matching key are left as-is - they're not secrets in any plugin we've seen,
     and forcing them to a string would change the rendered YAML's shape.
 
     Matching leaves are replaced with confuse's own ``REDACTED_TOMBSTONE``
