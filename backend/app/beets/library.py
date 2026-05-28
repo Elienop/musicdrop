@@ -36,15 +36,18 @@ _EXTENSION_MIME = {
 }
 
 
-# Public handle type for the opened beets library. Callers outside this module
-# annotate with LibraryHandle so they never need to import beets themselves,
-# keeping the adapter the sole beets importer (CLAUDE.md rule 3). The handle
-# bundles the opened ``Library`` with the metadata needed by the read-only
-# Config view (path of the user-owned config.yaml, when setup_beets ran, and
-# the file's mtime at load — used to flag "restart required" when the file
-# changes on disk).
 @dataclass
 class LibraryHandle:
+    """Public handle for the opened beets library.
+
+    Callers outside this module annotate with ``LibraryHandle`` so they never
+    need to import beets themselves, keeping the adapter the sole beets
+    importer (CLAUDE.md rule 3). The handle bundles the opened ``Library`` with
+    the metadata the read-only Config view needs: the path of the user-owned
+    ``config.yaml``, when ``setup_beets()`` ran, and the file's mtime at load —
+    used to flag "restart required" when the file changes on disk.
+    """
+
     lib: Library
     beets_dir: Path
     config_path: Path

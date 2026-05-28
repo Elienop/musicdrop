@@ -25,18 +25,18 @@ logger = logging.getLogger(__name__)
 def setup_beets(beets_dir: str) -> LibraryHandle:
     """Open a beets Library under ``beets_dir``, honoring its config.yaml.
 
-    Sequence (do not reorder — see spec):
-      1. Resolve and ensure BEETSDIR exists.
-      2. Copy starter template if config.yaml is missing.
-      3. Set BEETSDIR env (confuse reads it during config_dir()).
-      4. Warn if old MUSICDROP_BEETS_LIBRARY_* env vars are still set.
-      5. Snapshot file mtime BEFORE first-resolve (for restart-hint logic).
-      6. Force confuse's lazy resolve (loads default + user file).
-      7. Load plugins — reads config["plugins"].as_str_seq().
-      8. Read library/directory from config (mirror beets/ui:879-889).
-      9. Open Library.
-      10. Notify plugins ("library_opened").
-      11. Return handle with snapshot data for the Config view.
+    Do not reorder the body. Three constraints are load-bearing:
+
+    - ``BEETSDIR`` must be set BEFORE confuse's first resolve. confuse reads
+      the env inside ``Configuration.config_dir()``; setting it after the
+      first access locks in the platform default and our user file is lost.
+    - The file mtime snapshot must be captured BEFORE the first resolve.
+      It's the baseline for the Config view's "restart required" check; any
+      write during setup would race a freshness comparison taken later.
+    - ``plugins.load_plugins()`` must run AFTER the first resolve. It reads
+      ``config["plugins"].as_str_seq()`` at call time; running it earlier
+      (as the previous implementation did) freezes the bundled defaults and
+      the user's ``plugins:`` list is ignored.
     """
     beets_dir_path = Path(beets_dir).resolve()
     beets_dir_path.mkdir(parents=True, exist_ok=True)
