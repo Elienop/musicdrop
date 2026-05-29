@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import queue
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from beets import config
@@ -23,18 +24,23 @@ from beets.importer.tasks import Action
 
 from app.beets.import_mapping import (
     _confidence,
+    _opt_int,
     _opt_str,
     embedded_art,
     map_album_match,
     map_candidate_options,
 )
+from app.beets.trash import album_folder, album_format_bitrate
 from app.models.import_models import (
     AlbumOutcome,
     AlbumOutcomeStatus,
+    DuplicateAction,
     DuplicateDecision,
     DuplicatePrompt,
+    ExistingAlbum,
     ImportAction,
     ImportChoice,
+    IncomingAlbum,
     ParkedAlbum,
     Recommendation,
 )
@@ -184,11 +190,17 @@ class WebImportSession(ImportSession):
         paths: Any,
         query: Any,
         bridge: ImportBridge,
+        trash_dir: Path | None = None,
     ) -> None:
         super().__init__(lib, loghandler, paths, query)
         self.bridge = bridge
         # Counter that assigns each parked album a stable index for replies.
         self._album_index = 0
+        # Where Replace moves the old copies (reversible Trash). None = unwired
+        # (the post-run trash pass is then skipped defensively).
+        self._trash_dir = trash_dir
+        # Existing duplicate album ids recorded by Replace, trashed AFTER run().
+        self._replace_album_ids: set[int] = set()
 
     # ----- the four decision hooks -----
 
@@ -201,8 +213,35 @@ class WebImportSession(ImportSession):
         return Action.SKIP
 
     def resolve_duplicate(self, task: ImportTask, found_duplicates: Any) -> None:
-        # Duplicate resolution UI is a later chunk; take beets' config default by
-        # leaving the choice intact (no-op).
+        """Park a duplicate prompt and apply the user's decision.
+
+        beets calls this (when ``import.duplicate_action`` resolves to ``ask`` —
+        forced in run_import_worker) for any APPLY/ASIS/RETAG task that has
+        library duplicates. We reuse the album's feed index (stashed by
+        choose_match) so the duplicate prompt flips that one row, then block the
+        serial worker until a decision arrives over the bridge.
+        """
+        index = getattr(task, "md_album_index", None)
+        if index is None:
+            # Defensive: resolve_duplicate should always follow choose_match.
+            index = self._album_index
+            self._album_index += 1
+        incoming = self._to_incoming_album(task)
+        existing = [self._to_existing_album(album) for album in found_duplicates]
+        self.bridge.note_outcome(self._dup_outcome(index, task))
+        decision = self.bridge.park_duplicate(
+            DuplicatePrompt(album_index=index, incoming=incoming, existing=existing)
+        )
+        if decision.action is DuplicateAction.skip_new:
+            task.set_choice(Action.SKIP)
+        elif decision.action is DuplicateAction.merge:
+            task.should_merge_duplicates = True
+        elif decision.action is DuplicateAction.replace:
+            # Leave the APPLY choice intact (new album imports normally); record
+            # the existing ids to move to Trash AFTER run() (see run_import_worker).
+            # NOT should_remove_duplicates — that is beets' hard-delete path.
+            self._replace_album_ids.update(int(a.id) for a in found_duplicates)
+        # keep_both: leave the choice intact (no-op, now explicit + chosen).
         return None
 
     def choose_match(self, task: ImportTask) -> Any:
@@ -221,6 +260,11 @@ class WebImportSession(ImportSession):
         # ["threaded"] = False keeps choose_match on one thread).
         index = self._album_index
         self._album_index += 1
+        # Stash on the task so resolve_duplicate (a LATER beets stage) reuses
+        # this album's feed index instead of creating a second row. setattr (not
+        # `task.md_album_index = index`) because md_album_index is a dynamic
+        # attribute beets' ImportTask does not declare (mypy attr-defined).
+        setattr(task, "md_album_index", index)  # noqa: B010
         rec = task.rec if task.rec is not None else BeetsRec.none
         recommendation = _REC_MAP.get(rec, Recommendation.none)
 
@@ -246,7 +290,7 @@ class WebImportSession(ImportSession):
         # The current files' first item supplies the "before" cover. Detect art
         # now (the worker is about to block parked, so the file is still here).
         items = list(task.items or [])
-        art_source = os.fsdecode(items[0].path) if items and items[0].path else None
+        art_source = self._first_item_art_source(items)
         has_current_art = art_source is not None and embedded_art(art_source) is not None
         top = candidates[0]
         options = map_candidate_options(candidates)
@@ -293,6 +337,58 @@ class WebImportSession(ImportSession):
             recommendation=recommendation,
             confidence=confidence,
             status=status,
+        )
+
+    def _dup_outcome(self, index: int, task: ImportTask) -> AlbumOutcome:
+        """Feed outcome for a parked duplicate (reuses the album's index)."""
+        rec = task.rec if task.rec is not None else BeetsRec.none
+        recommendation = _REC_MAP.get(rec, Recommendation.none)
+        return self._outcome(
+            index, task, recommendation, AlbumOutcomeStatus.needs_dup_resolution, match=task.match
+        )
+
+    @staticmethod
+    def _first_item_art_source(items: list[Any]) -> str | None:
+        """The current-files art source path (first item), or None."""
+        return os.fsdecode(items[0].path) if items and items[0].path else None
+
+    def _to_incoming_album(self, task: ImportTask) -> IncomingAlbum:
+        """Build the slim 'new' side from the incoming files (APPLY or ASIS)."""
+        items = list(task.items or [])
+        fmt, bitrate_kbps = album_format_bitrate(items)
+        year = _opt_int(items[0].year) if items else None
+        art_source = self._first_item_art_source(items)
+        has_art = art_source is not None and embedded_art(art_source) is not None
+        return IncomingAlbum(
+            album_artist=_opt_str(task.cur_artist),
+            album=_opt_str(task.cur_album),
+            year=year,
+            track_count=len(items),
+            format=fmt,
+            bitrate_kbps=bitrate_kbps,
+            folder=self._task_folder(task),
+            has_current_art=has_art,
+        )
+
+    def _to_existing_album(self, album: Any) -> ExistingAlbum:
+        """Map one in-library beets Album (a found_duplicate) to the slim view.
+
+        Uses the session's own ``self.lib`` for the folder resolution (never a
+        per-album back-reference). ``self.lib`` is read only when the album has
+        items, so an item-less album resolves to "" without touching it.
+        """
+        items = list(album.items())
+        fmt, bitrate_kbps = album_format_bitrate(items)
+        folder = album_folder(self.lib, items) if items else ""
+        return ExistingAlbum(
+            album_id=int(album.id),
+            album_artist=_opt_str(album.albumartist),
+            album=_opt_str(album.album),
+            year=_opt_int(getattr(album, "year", None)),
+            track_count=len(items),
+            format=fmt,
+            bitrate_kbps=bitrate_kbps,
+            folder=folder,
         )
 
     @staticmethod
