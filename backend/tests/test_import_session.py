@@ -453,3 +453,74 @@ def test_no_candidates_emits_skipped_outcome(monkeypatch: pytest.MonkeyPatch) ->
     outcomes = bridge.drain_outcomes()
     assert len(outcomes) == 1
     assert outcomes[0].status is AlbumOutcomeStatus.skipped
+
+
+def test_bridge_duplicate_channel_round_trips() -> None:
+    import threading
+
+    from app.models.import_models import (
+        DuplicateAction,
+        DuplicateDecision,
+        DuplicatePrompt,
+        ExistingAlbum,
+        IncomingAlbum,
+    )
+
+    bridge = ImportBridge()
+    assert bridge.get_parked_duplicate(timeout=0) is None  # empty, non-blocking
+
+    prompt = DuplicatePrompt(
+        album_index=5,
+        incoming=IncomingAlbum(
+            album_artist="Radiohead",
+            album="In Rainbows",
+            year=2007,
+            track_count=10,
+            format="FLAC",
+            bitrate_kbps=900,
+            folder="/incoming",
+            has_current_art=False,
+        ),
+        existing=[
+            ExistingAlbum(
+                album_id=1,
+                album_artist="Radiohead",
+                album="In Rainbows",
+                year=2007,
+                track_count=9,
+                format="MP3",
+                bitrate_kbps=320,
+                folder="/music",
+            )
+        ],
+    )
+
+    got: dict[str, DuplicateDecision] = {}
+    done = threading.Event()
+
+    def worker() -> None:
+        got["decision"] = bridge.park_duplicate(prompt)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    parked = bridge.get_parked_duplicate(timeout=2.0)
+    assert parked is not None
+    assert parked.album_index == 5
+    assert parked.incoming.album == "In Rainbows"
+
+    bridge.push_duplicate_decision(5, DuplicateDecision(action=DuplicateAction.replace))
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert got["decision"].action is DuplicateAction.replace
+
+
+def test_push_duplicate_decision_unknown_index_raises_keyerror() -> None:
+    import pytest
+
+    from app.models.import_models import DuplicateAction, DuplicateDecision
+
+    bridge = ImportBridge()
+    with pytest.raises(KeyError):
+        bridge.push_duplicate_decision(99, DuplicateDecision(action=DuplicateAction.skip_new))

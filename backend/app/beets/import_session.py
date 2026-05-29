@@ -31,6 +31,8 @@ from app.beets.import_mapping import (
 from app.models.import_models import (
     AlbumOutcome,
     AlbumOutcomeStatus,
+    DuplicateDecision,
+    DuplicatePrompt,
     ImportAction,
     ImportChoice,
     ParkedAlbum,
@@ -66,6 +68,11 @@ class ImportBridge:
         # parked review window. Growth is bounded - single-slot registry, one
         # active job, a fresh ImportBridge per import is GC'd with the old job.
         self._art_source: dict[int, str] = {}
+        # Parallel park channel for duplicate prompts — same maxsize-1 reply
+        # rendezvous as the candidate channel, kept separate so the two payload
+        # types (ParkedAlbum vs DuplicatePrompt) stay typed.
+        self._dup_out: queue.Queue[DuplicatePrompt] = queue.Queue()
+        self._dup_replies: dict[int, queue.Queue[DuplicateDecision]] = {}
         self._lock = threading.Lock()
         self._pending = 0
 
@@ -85,6 +92,19 @@ class ImportBridge:
             self._replies.pop(parked.album_index, None)
             self._pending -= 1
         return choice
+
+    def park_duplicate(self, prompt: DuplicatePrompt) -> DuplicateDecision:
+        """Push a duplicate prompt and block until a decision arrives for it."""
+        reply: queue.Queue[DuplicateDecision] = queue.Queue(maxsize=1)
+        with self._lock:
+            self._dup_replies[prompt.album_index] = reply
+            self._pending += 1
+        self._dup_out.put(prompt)
+        decision = reply.get()  # blocks the worker thread
+        with self._lock:
+            self._dup_replies.pop(prompt.album_index, None)
+            self._pending -= 1
+        return decision
 
     def art_source(self, album_index: int) -> str | None:
         """The current-files art source path for a parked album, or None."""
@@ -118,6 +138,13 @@ class ImportBridge:
         except queue.Empty:
             return None
 
+    def get_parked_duplicate(self, timeout: float | None = None) -> DuplicatePrompt | None:
+        """Pop the next parked duplicate prompt, or None on timeout."""
+        try:
+            return self._dup_out.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
     def push_choice(self, album_index: int, choice: ImportChoice) -> None:
         """Deliver a decision to the worker blocked on ``album_index``."""
         with self._lock:
@@ -128,6 +155,17 @@ class ImportBridge:
             reply.put_nowait(choice)
         except queue.Full:
             raise RuntimeError(f"album {album_index} already has a pending choice") from None
+
+    def push_duplicate_decision(self, album_index: int, decision: DuplicateDecision) -> None:
+        """Deliver a duplicate decision to the worker blocked on ``album_index``."""
+        with self._lock:
+            reply = self._dup_replies.get(album_index)
+        if reply is None:
+            raise KeyError(f"no duplicate parked at index {album_index}")
+        try:
+            reply.put_nowait(decision)
+        except queue.Full:
+            raise RuntimeError(f"duplicate {album_index} already has a pending decision") from None
 
     def pending_count(self) -> int:
         with self._lock:
