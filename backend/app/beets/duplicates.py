@@ -12,13 +12,11 @@ from the library — exactly ``beet dup --move <trash> --remove`` for albums.
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 from typing import Any
 
 from beets.library import Library
-from beets.util import bytestring_path
 from fastapi import HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
@@ -28,13 +26,11 @@ from fastapi.concurrency import run_in_threadpool
 from app.beets.config_editor import _settings, _swap_lock
 from app.beets.library import (
     LibraryHandle,
-    _abs_path,
     _album_fields,
-    _coerce_int,
     _coerce_optional_str,
     _coerce_str,
 )
-from app.config import Settings
+from app.beets.trash import album_folder, album_format_bitrate, resolve_trash_dir, trash_album
 from app.import_jobs.registry import get_registry
 from app.models.duplicates import (
     DuplicateAlbum,
@@ -86,30 +82,14 @@ def _grouping_key(album: Any, mode: DuplicateMode) -> str | None:
     return f"fuzzy:{artist}\x00{title}"
 
 
-def _format_bitrate(items: list[Any]) -> tuple[str | None, int | None]:
-    """Quality hint from the album's representative (first) item."""
-    if not items:
-        return None, None
-    first = items[0]
-    fmt = _coerce_optional_str(getattr(first, "format", None))
-    raw = _coerce_int(getattr(first, "bitrate", 0))  # beets stores bitrate in bps
-    return fmt, (raw // 1000 if raw else None)
-
-
-def _folder(lib: Library, items: list[Any]) -> str:
-    if not items:
-        return ""
-    return os.path.dirname(_abs_path(lib, items[0].path))
-
-
 def _to_duplicate_album(lib: Library, album: Any, *, is_keeper: bool) -> DuplicateAlbum:
     items = list(album.items())
-    fmt, bitrate_kbps = _format_bitrate(items)
+    fmt, bitrate_kbps = album_format_bitrate(items)
     return DuplicateAlbum(
         **_album_fields(album, items),
         format=fmt,
         bitrate_kbps=bitrate_kbps,
-        folder=_folder(lib, items),
+        folder=album_folder(lib, items),
         is_suggested_keeper=is_keeper,
     )
 
@@ -192,40 +172,24 @@ def resolve_duplicate_group(
         raise StaleGroupError("duplicate group membership changed")
 
     trash_dir.mkdir(parents=True, exist_ok=True)
-    basedir = bytestring_path(str(trash_dir))
     moved: list[MovedAlbum] = []
     with lib.transaction():
         for album_id in remove_album_ids:
             album = lib.get_album(album_id)
             if album is None:
                 raise AlbumNotFoundError(f"album {album_id} not found")
-            album.move(basedir=basedir)  # relocate under Trash + prune source dir
-            items = list(album.items())
-            trash_path = os.path.dirname(_abs_path(lib, items[0].path)) if items else str(trash_dir)
+            album_artist = _coerce_str(album.albumartist)
+            title = _coerce_str(album.album)
+            trash_path = trash_album(lib, album, trash_dir=trash_dir)
             moved.append(
                 MovedAlbum(
-                    id=int(album.id),
-                    album_artist=_coerce_str(album.albumartist),
-                    title=_coerce_str(album.album),
+                    id=album_id,
+                    album_artist=album_artist,
+                    title=title,
                     trash_path=trash_path,
                 )
             )
-            album.remove(delete=False)  # drop DB rows; files stay in Trash
     return ResolveResult(kept_album_id=keep_album_id, moved=moved)
-
-
-def _resolve_trash_dir(settings: Settings, handle: LibraryHandle) -> Path:
-    """Where resolved-away copies go: configured ``trash_dir`` or ``<beets_dir>/trash``.
-
-    Empty setting = default under the library handle's ``beets_dir`` (already an
-    absolute path, sidestepping the cwd-relative gotcha). A configured override
-    is ``.resolve()``-d to absolute. Kept synchronous + outside
-    ``resolve_duplicates_op`` so the pathlib I/O does not run on the event loop
-    (ruff ASYNC240).
-    """
-    if settings.trash_dir:
-        return Path(settings.trash_dir).resolve()
-    return handle.beets_dir / "trash"
 
 
 async def resolve_duplicates_op(request: Request, req: ResolveRequest) -> ResolveResult:
@@ -251,7 +215,7 @@ async def resolve_duplicates_op(request: Request, req: ResolveRequest) -> Resolv
         )
     async with _swap_lock(app):
         handle: LibraryHandle = app.state.beets_library
-        trash_dir = _resolve_trash_dir(_settings(app), handle)
+        trash_dir = resolve_trash_dir(_settings(app), handle)
         try:
             return await run_in_threadpool(
                 resolve_duplicate_group,

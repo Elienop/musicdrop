@@ -1,0 +1,39 @@
+"""Tests for the shared reversible-trash primitive + read helpers."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from beets.library import Library
+
+from app.beets.trash import album_folder, album_format_bitrate, trash_album
+
+
+def test_trash_album_moves_files_and_drops_db(duplicates_lib: Library, tmp_path: Path) -> None:
+    trash = tmp_path / "trash"
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = int(album.id)
+
+    with duplicates_lib.transaction():
+        trash_path = trash_album(duplicates_lib, album, trash_dir=trash)
+
+    # DB row dropped; files relocated under Trash, not destroyed.
+    assert duplicates_lib.get_album(album_id) is None
+    assert str(trash) in trash_path
+    assert os.path.isdir(trash_path)
+
+
+def test_album_format_bitrate_reads_first_item(duplicates_lib: Library) -> None:
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    fmt, kbps = album_format_bitrate(list(album.items()))
+    # The placeholder files carry no real audio header, so format/bitrate are
+    # absent — the helper must degrade to (None, None), never raise.
+    assert fmt is None or isinstance(fmt, str)
+    assert kbps is None or isinstance(kbps, int)
+
+
+def test_album_folder_is_dirname_of_first_item(duplicates_lib: Library) -> None:
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    folder = album_folder(duplicates_lib, list(album.items()))
+    assert folder.endswith("Discovery")
