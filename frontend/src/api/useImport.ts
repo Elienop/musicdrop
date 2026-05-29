@@ -23,6 +23,12 @@ export type StartImportResponse = components["schemas"]["StartImportResponse"];
 export type Candidate = components["schemas"]["Candidate"];
 /** A user's decision for one parked album (generated contract). */
 export type ImportChoice = components["schemas"]["ImportChoice"];
+/** A parked import album that duplicates one already in the library (generated). */
+export type DuplicatePrompt = components["schemas"]["DuplicatePrompt"];
+/** The user's resolution for a parked duplicate (generated contract). */
+export type DuplicateDecision = components["schemas"]["DuplicateDecision"];
+/** beets' four duplicate actions (generated; mirrors the backend enum). */
+export type DuplicateAction = components["schemas"]["DuplicateAction"];
 
 /** Humanized labels for beets' recommendation levels (shared by the feed +
  * the review screen). Keeps the raw enum ("strong"/"none") out of the UI. */
@@ -219,6 +225,82 @@ export function useSubmitChoice(jobId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (args: SubmitChoiceArgs) => submitChoice(jobId, args),
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["import", "job", jobId],
+      });
+    },
+  });
+}
+
+async function fetchDuplicatePrompt(
+  jobId: string,
+  index: number,
+): Promise<DuplicatePrompt> {
+  const { data, error } = await client.GET(
+    "/api/import/{job_id}/albums/{index}/duplicate",
+    { params: { path: { job_id: jobId, index } } },
+  );
+  if (error || !data) {
+    throw new Error("Failed to load duplicate");
+  }
+  return data;
+}
+
+/**
+ * Fetch the parked DuplicatePrompt for one album
+ * (`GET /api/import/{job}/albums/{index}/duplicate`). `enabled` gates it so it
+ * fires only when the duplicate panel opens (it 404s once resolved).
+ */
+export function useDuplicatePrompt(
+  jobId: string,
+  index: number,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: ["import", "duplicate", jobId, index],
+    queryFn: () => fetchDuplicatePrompt(jobId, index),
+    enabled,
+    retry: false,
+  });
+}
+
+/** Arguments to a duplicate-decision submission: which album, and the decision. */
+export interface ResolveDuplicateArgs {
+  index: number;
+  decision: DuplicateDecision;
+}
+
+async function resolveDuplicate(
+  jobId: string,
+  { index, decision }: ResolveDuplicateArgs,
+): Promise<void> {
+  const { error, response } = await client.POST(
+    "/api/import/{job_id}/albums/{index}/duplicate",
+    { params: { path: { job_id: jobId, index } }, body: decision },
+  );
+  // 404 (already advanced) / 409 (a decision already landed) mean 'no longer
+  // awaiting this album' — swallow them; the caller refetches the job to resync.
+  if (response.status === 404 || response.status === 409) {
+    return;
+  }
+  // Any other non-2xx is a hard failure. Guard on `!response.ok`, not just
+  // `error`: a bodyless 5xx leaves openapi-fetch's `error` undefined, and on
+  // this action we must surface it, never resolve as if the decision landed.
+  if (error || !response.ok) {
+    throw new Error("Failed to resolve duplicate");
+  }
+}
+
+/**
+ * Submit a duplicate decision
+ * (`POST /api/import/{job}/albums/{index}/duplicate`). On settle, invalidate the
+ * job query so the feed advances. 404/409 resolve quietly (already advanced).
+ */
+export function useResolveImportDuplicate(jobId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (args: ResolveDuplicateArgs) => resolveDuplicate(jobId, args),
     onSettled: () => {
       void queryClient.invalidateQueries({
         queryKey: ["import", "job", jobId],
