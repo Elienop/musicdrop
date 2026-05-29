@@ -30,7 +30,7 @@ from app.beets.import_mapping import (
     map_album_match,
     map_candidate_options,
 )
-from app.beets.trash import album_folder, album_format_bitrate
+from app.beets.trash import album_folder, album_format_bitrate, trash_album
 from app.models.import_models import (
     AlbumOutcome,
     AlbumOutcomeStatus,
@@ -422,10 +422,33 @@ class WebImportSession(ImportSession):
 def run_import_worker(session: WebImportSession) -> None:
     """Run one import session serially on the calling (worker) thread.
 
-    Forces single-threaded execution before delegating to beets' run loop, so
-    the global beets config/plugin singletons are never touched concurrently.
-    Intended to be the target of a dedicated worker thread started by the API
-    layer (chunk 2); here it is the clean, tested entry point.
+    Forces single-threaded execution and ``import.duplicate_action: ask`` (so the
+    duplicate hook always fires, regardless of the user's config — the web review
+    IS the "ask"), then runs beets. After run() returns, moves any album the
+    Replace action recorded to the reversible Trash, by stable id — beets imports
+    the new album first, so the old copy is only touched once the new one is safe.
     """
     config["threaded"] = False
+    config["import"]["duplicate_action"] = "ask"
     session.run()
+    _trash_replaced_albums(session)
+
+
+def _trash_replaced_albums(session: WebImportSession) -> None:
+    """Move every Replace-recorded existing album to Trash (post-run, by id).
+
+    Synchronous library primitive on the worker thread — NOT the async
+    resolve_duplicates_op (which gates on has_active_job + the swap lock and would
+    deadlock/409 against this in-flight import). A missing album (already gone) is
+    skipped, not an error.
+    """
+    trash_dir = session._trash_dir
+    if trash_dir is None or not session._replace_album_ids:
+        return
+    lib = session.lib
+    for album_id in session._replace_album_ids:
+        album = lib.get_album(album_id)
+        if album is None:
+            continue  # already gone — nothing to trash
+        with lib.transaction():
+            trash_album(lib, album, trash_dir=trash_dir)

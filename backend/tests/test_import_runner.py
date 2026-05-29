@@ -71,3 +71,32 @@ def test_beets_runner_crash_routes_to_on_error(
     )
     assert finished.wait(timeout=2.0)
     assert errored["message"] == "kaboom"
+
+
+def test_runner_passes_trash_dir_to_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pathlib import Path
+
+    import app.import_jobs.runner as runner_mod
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.runner import BeetsImportRunner
+
+    captured: dict[str, object] = {}
+
+    class _FakeSession:
+        def __init__(self, *args: object) -> None:
+            captured["trash_dir"] = args[5]
+
+    monkeypatch.setattr(runner_mod, "WebImportSession", _FakeSession)
+    monkeypatch.setattr(runner_mod, "run_import_worker", lambda s: None)
+
+    BeetsImportRunner(lib=object(), trash_dir=Path("/tmp/t")).run(
+        "/music", ImportBridge(), on_finish=lambda: None, on_error=lambda m: None
+    )
+    # The daemon thread sets it; poll briefly.
+    import time
+
+    for _ in range(200):
+        if "trash_dir" in captured:
+            break
+        time.sleep(0.01)
+    assert captured["trash_dir"] == Path("/tmp/t")

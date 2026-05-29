@@ -1,7 +1,7 @@
 import logging
 import threading
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, ClassVar
 
 import beets.importer.tasks as beets_tasks
 import pytest
@@ -244,6 +244,12 @@ def test_run_import_worker_forces_single_threaded_and_runs(
     seen: dict[str, Any] = {}
 
     class FakeSession:
+        # The post-run trash pass reads these off the session; trash_dir=None
+        # makes it return early before touching lib/get_album.
+        lib = None
+        _replace_album_ids: ClassVar[set[int]] = set()
+        _trash_dir = None
+
         def run(self) -> None:
             seen["threaded"] = bool(config["threaded"])
 
@@ -524,3 +530,63 @@ def test_push_duplicate_decision_unknown_index_raises_keyerror() -> None:
     bridge = ImportBridge()
     with pytest.raises(KeyError):
         bridge.push_duplicate_decision(99, DuplicateDecision(action=DuplicateAction.skip_new))
+
+
+def test_run_import_worker_forces_duplicate_action_ask() -> None:
+    """The worker must force import.duplicate_action=ask so the hook always fires."""
+    from app.beets.import_session import run_import_worker
+
+    config["import"]["duplicate_action"] = "keep"  # user config says keep-both
+    seen: dict[str, Any] = {}
+
+    class FakeSession:
+        lib = None
+        _replace_album_ids: ClassVar[set[int]] = set()
+        _trash_dir = None
+
+        def run(self) -> None:
+            seen["dup_action"] = config["import"]["duplicate_action"].get()
+
+    run_import_worker(FakeSession())  # type: ignore[arg-type]  # minimal stand-in
+    assert seen["dup_action"] == "ask"
+
+
+def test_run_import_worker_trashes_replace_ids_after_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Recorded Replace ids are moved to Trash AFTER run() returns, by id."""
+    from pathlib import Path
+
+    import app.beets.import_session as session_mod
+    from app.beets.import_session import run_import_worker
+
+    trashed: list[int] = []
+
+    def fake_trash(lib: Any, album: Any, *, trash_dir: Path) -> str:
+        trashed.append(int(album.id))
+        return str(trash_dir)
+
+    monkeypatch.setattr(session_mod, "trash_album", fake_trash)
+
+    class _Album:
+        def __init__(self, album_id: int) -> None:
+            self.id = album_id
+
+    class _Lib:
+        def get_album(self, album_id: int) -> Any:
+            return _Album(album_id)
+
+        def transaction(self) -> Any:
+            import contextlib
+
+            return contextlib.nullcontext()
+
+    class FakeSession:
+        lib = _Lib()
+        _replace_album_ids: ClassVar[set[int]] = {11, 22}
+        _trash_dir = Path("/tmp/trash")
+
+        def run(self) -> None:
+            # The new albums are imported during run(); trashing happens after.
+            assert trashed == []
+
+    run_import_worker(FakeSession())  # type: ignore[arg-type]
+    assert sorted(trashed) == [11, 22]
