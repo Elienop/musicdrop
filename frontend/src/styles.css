@@ -189,16 +189,6 @@
     @apply bg-background text-foreground;
   }
 
-  /* Reserve the vertical-scrollbar gutter so the layout width is identical
-   * whether or not a scrollbar is present — nothing shifts horizontally when
-   * navigating between short (no scrollbar) and tall (scrollbar) pages, and
-   * centered content (header + page) stays put. Plain `stable` (NOT
-   * `both-edges`): it reserves the gutter on the scrollbar side only, keeping
-   * the content box symmetric; `both-edges` double-reserves and pushes content
-   * off-center. */
-  html {
-    scrollbar-gutter: stable;
-  }
 }
 
 /* Slim horizontal scrollbar for inline overflow-x cells (e.g. the duplicate
