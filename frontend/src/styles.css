@@ -188,6 +188,14 @@
   body {
     @apply bg-background text-foreground;
   }
+
+  /* Reserve the vertical-scrollbar gutter on BOTH edges so centered content
+   * (header + page) stays truly centered against the viewport regardless of
+   * whether a scrollbar is present, and nothing shifts horizontally when
+   * navigating between short (no scrollbar) and tall (scrollbar) pages. */
+  html {
+    scrollbar-gutter: stable both-edges;
+  }
 }
 
 /* Slim horizontal scrollbar for inline overflow-x cells (e.g. the duplicate
