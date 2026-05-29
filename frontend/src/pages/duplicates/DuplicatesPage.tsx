@@ -278,8 +278,18 @@ function MemberRow({
         {album.format ?? "—"}
         {album.bitrate_kbps ? ` · ${album.bitrate_kbps}k` : ""}
       </TableCell>
-      <TableCell className="text-muted-foreground max-w-xs truncate font-mono text-xs" title={album.folder}>
-        {album.folder}
+      <TableCell className="max-w-xs">
+        {/* Horizontally scrollable so the full path is reachable without
+            truncation — the distinguishing aunique `[NN]` suffix lives at the
+            END, which an end-ellipsis would hide. whitespace-nowrap keeps it on
+            one line; overflow-x-auto adds a scrollbar only when it overflows.
+            The title= still carries the whole path for a hover tooltip. */}
+        <div
+          className="text-muted-foreground thin-scrollbar overflow-x-auto font-mono text-xs whitespace-nowrap"
+          title={album.folder}
+        >
+          {album.folder}
+        </div>
       </TableCell>
     </TableRow>
   );

@@ -189,3 +189,22 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Slim horizontal scrollbar for inline overflow-x cells (e.g. the duplicate
+ * folder paths) so the scroll affordance doesn't bloat the row height. Firefox
+ * uses `scrollbar-width: thin`; WebKit/Blink get a 6px track styled with our
+ * border token. */
+@utility thin-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+  &::-webkit-scrollbar {
+    height: 6px;
+  }
+  &::-webkit-scrollbar-thumb {
+    background-color: var(--color-border);
+    border-radius: 9999px;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
