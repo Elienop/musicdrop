@@ -148,15 +148,24 @@ describe("ImportCandidatePage", () => {
       "title",
       "Import with the current tags, without a MusicBrainz match",
     );
-    expect(screen.getByRole("button", { name: /as tracks/i })).toHaveAttribute(
-      "title",
-      "Import each file as a standalone track, not grouped as an album",
-    );
     expect(
-      screen.getByText(
-        /Use as-is keeps your current tags · As tracks imports files individually\./,
-      ),
+      screen.getByText(/Use as-is keeps your current tags\./),
     ).toBeInTheDocument();
+  });
+
+  test("does not offer the no-op As-tracks button, but keeps Use as-is", async () => {
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
+    renderAt();
+
+    // Use as-is stays — confirms the bar rendered before asserting the absence.
+    expect(
+      await screen.findByRole("button", { name: /use as-is/i }),
+    ).toBeInTheDocument();
+    // As-tracks is a silent no-op until Slice B builds per-track import, so the
+    // button is hidden (the action is still supported in code/types).
+    expect(
+      screen.queryByRole("button", { name: /as tracks/i }),
+    ).not.toBeInTheDocument();
   });
 
   test("Apply posts apply + the top candidate index, then returns to the feed", async () => {

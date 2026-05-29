@@ -152,6 +152,73 @@ describe("ImportPage — live feed", () => {
     expect(review).toHaveAttribute("href", "/import/albums/1?job=job-1");
   });
 
+  test("a needs_dup_resolution row shows a Duplicate badge + a Resolve link", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            // index 0 becomes a duplicate awaiting resolution. Keep `progress`
+            // internally consistent with the single duplicate row (the default
+            // makeJob progress disagrees: it claims an applied + a needs_review).
+            progress: { applied: 0, needs_review: 0, skipped: 0 },
+            albums: [
+              {
+                index: 0,
+                folder: "/music/incoming/Radiohead - OK Computer",
+                artist: "Radiohead",
+                album: "OK Computer",
+                recommendation: "strong",
+                confidence: 99,
+                status: "needs_dup_resolution",
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    // The badge label for the new status.
+    expect(await screen.findByText("Duplicate")).toBeInTheDocument();
+    // The Resolve affordance routes to the dup page, carrying the job id across
+    // the same `?job=` seam the Review link uses.
+    const resolve = screen.getByRole("link", { name: /resolve/i });
+    expect(resolve).toHaveAttribute(
+      "href",
+      "/import/albums/0/duplicate?job=job-1",
+    );
+  });
+
+  test("the live cue surfaces a parked duplicate to resolve", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            progress: { applied: 0, needs_review: 0, skipped: 0 },
+            albums: [
+              {
+                index: 0,
+                folder: "/music/incoming/Radiohead - OK Computer",
+                artist: "Radiohead",
+                album: "OK Computer",
+                recommendation: "strong",
+                confidence: 99,
+                status: "needs_dup_resolution",
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    // The visible cue line flags the parked duplicate (derived client-side from
+    // the feed rows — `progress` has no duplicate counter).
+    expect(
+      await screen.findByText(/duplicate.* to resolve/i),
+    ).toBeInTheDocument();
+  });
+
   test("humanizes the recommendation enum in the feed sub-line", async () => {
     server.use(http.get(JOB_URL, () => HttpResponse.json(makeJob())));
     renderAt("/import?job=job-1");

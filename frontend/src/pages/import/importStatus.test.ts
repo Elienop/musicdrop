@@ -71,6 +71,31 @@ describe("announceMessage", () => {
     expect(active).toMatch(/awaiting review/i);
   });
 
+  test("announces a parked duplicate (a blocking prompt the user must clear)", () => {
+    const m = announceMessage({
+      isPending: false,
+      isError: false,
+      notFound: false,
+      // `progress` has no duplicate counter — the announcer derives it from the
+      // feed row, so a screen-reader user hears the worker is waiting on them.
+      data: job({
+        progress: { applied: 1, needs_review: 0, skipped: 0 },
+        albums: [
+          {
+            index: 0,
+            folder: "/music/incoming/dup",
+            artist: "X",
+            album: "Y",
+            recommendation: "strong",
+            confidence: 99,
+            status: "needs_dup_resolution",
+          },
+        ],
+      }),
+    });
+    expect(m).toMatch(/duplicate.*awaiting resolution/i);
+  });
+
   test("done states the totals", () => {
     expect(
       announceMessage({
