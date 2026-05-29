@@ -20,7 +20,7 @@ from app.models.import_api import (
     StartImportRequest,
     StartImportResponse,
 )
-from app.models.import_models import Candidate, ImportChoice
+from app.models.import_models import Candidate, DuplicateDecision, DuplicatePrompt, ImportChoice
 
 router = APIRouter(tags=["import"])
 
@@ -141,4 +141,38 @@ async def post_import_choice(
         # A choice was already pushed for this album, racing the same slot.
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="A choice was already submitted"
+        ) from None
+
+
+@router.get("/import/{job_id}/albums/{index}/duplicate", response_model=DuplicatePrompt)
+async def get_import_duplicate(
+    job_id: str,
+    index: Annotated[int, Path(ge=0)],
+    reg: Annotated[ImportJobRegistry, Depends(get_registry)],
+) -> DuplicatePrompt:
+    try:
+        return reg.duplicate_prompt(job_id, index)
+    except KeyError:
+        # Unknown job, or no duplicate parked at this index.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No duplicate to resolve"
+        ) from None
+
+
+@router.post("/import/{job_id}/albums/{index}/duplicate", status_code=status.HTTP_204_NO_CONTENT)
+async def post_import_duplicate_decision(
+    job_id: str,
+    index: Annotated[int, Path(ge=0)],
+    decision: DuplicateDecision,
+    reg: Annotated[ImportJobRegistry, Depends(get_registry)],
+) -> None:
+    try:
+        reg.record_duplicate_decision(job_id, index, decision)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No duplicate to resolve"
+        ) from None
+    except RuntimeError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="A decision was already submitted"
         ) from None

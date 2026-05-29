@@ -104,3 +104,59 @@ def test_unknown_duplicate_index_raises_keyerror() -> None:
     _poll(lambda: registry.state(job_id).albums, lambda rows: len(rows) == 1)
     with pytest.raises(KeyError):
         registry.duplicate_prompt(job_id, 99)
+
+
+def _client(duplicates: list[DuplicatePrompt]):  # type: ignore[no-untyped-def]  # test-local TestClient factory
+    from fastapi.testclient import TestClient
+
+    from app.import_jobs.registry import reset_registry
+    from app.main import app
+
+    reset_registry(runner=FakeImportRunner(duplicates=duplicates))
+    return TestClient(app)
+
+
+def _poll_client(client, job_id, predicate, attempts: int = 200):  # type: ignore[no-untyped-def]  # test-local poll
+    for _ in range(attempts):
+        state = client.get(f"/api/import/{job_id}").json()
+        if predicate(state):
+            return state
+        threading.Event().wait(0.01)
+    raise TimeoutError("condition not met")
+
+
+def test_get_duplicate_returns_prompt_then_decision_204() -> None:
+    client = _client([_prompt(0)])
+    job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
+    _poll_client(
+        client, job_id, lambda s: any(a["status"] == "needs_dup_resolution" for a in s["albums"])
+    )
+
+    got = client.get(f"/api/import/{job_id}/albums/0/duplicate")
+    assert got.status_code == 200
+    assert got.json()["existing"][0]["album_id"] == 1
+
+    resp = client.post(f"/api/import/{job_id}/albums/0/duplicate", json={"action": "replace"})
+    assert resp.status_code == 204
+
+
+def test_get_duplicate_404_when_not_parked() -> None:
+    client = _client([_prompt(0)])
+    job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
+    _poll_client(client, job_id, lambda s: len(s["albums"]) == 1)
+    resp = client.get(f"/api/import/{job_id}/albums/99/duplicate")
+    assert resp.status_code == 404
+
+
+def test_post_duplicate_decision_409_on_second() -> None:
+    client = _client([_prompt(0)])
+    job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
+    _poll_client(
+        client, job_id, lambda s: any(a["status"] == "needs_dup_resolution" for a in s["albums"])
+    )
+    first = client.post(f"/api/import/{job_id}/albums/0/duplicate", json={"action": "skip_new"})
+    assert first.status_code == 204
+    second = client.post(f"/api/import/{job_id}/albums/0/duplicate", json={"action": "skip_new"})
+    # Slot already advanced (404) or a racing second decision (409); both are
+    # "no longer awaiting" — the FE swallows them.
+    assert second.status_code in (404, 409)
