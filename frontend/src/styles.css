@@ -75,6 +75,7 @@
   --error-soft: oklch(96.4% 0.02 15deg);
 
   --warning: oklch(76.9% 0.188 70.08deg);
+  --warning-foreground: oklch(14.5% 0 0deg);
 }
 
 /* ── Dark mode (.dark) ──────────────────────────────────────────────────
@@ -127,6 +128,7 @@
   --error-soft: oklch(24.9% 0.03 15deg);
 
   --warning: oklch(82.8% 0.189 84.429deg);
+  --warning-foreground: oklch(14.5% 0 0deg);
 }
 
 /* ── Theme inline ───────────────────────────────────────────────────────
@@ -182,6 +184,7 @@
   --color-error: var(--error);
   --color-error-soft: var(--error-soft);
   --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
 }
 
 @layer base {

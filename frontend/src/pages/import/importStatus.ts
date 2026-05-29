@@ -25,10 +25,19 @@ export function announceMessage(args: {
     return "Scanning the folder for albums.";
   }
   const { applied, skipped, needs_review } = data.progress;
+  // The backend `progress` has no duplicate counter, so derive the
+  // duplicate-pending count from the feed rows. A parked duplicate BLOCKS the
+  // worker, so a screen-reader user must hear that the import is waiting on them.
+  const needs_dup = data.albums.filter(
+    (a) => a.status === "needs_dup_resolution",
+  ).length;
   let m = `Imported ${applied}.`;
   if (skipped > 0) m += ` Skipped ${skipped}.`;
   if (needs_review > 0) {
     m += ` ${needs_review} album${needs_review === 1 ? "" : "s"} awaiting review.`;
+  }
+  if (needs_dup > 0) {
+    m += ` ${needs_dup} duplicate${needs_dup === 1 ? "" : "s"} awaiting resolution.`;
   }
   return m;
 }

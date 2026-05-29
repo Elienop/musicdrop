@@ -131,13 +131,16 @@ class ParkedAlbum(BaseModel):
 class AlbumOutcomeStatus(StrEnum):
     """What the worker did with one album, for the live import feed.
 
-    applied      -> a strong match auto-applied (beets applied it inline)
-    needs_review -> an uncertain match was parked and is awaiting a decision
-    skipped      -> nothing to apply (no candidates), so the album was skipped
+    applied              -> a strong match auto-applied (beets applied it inline)
+    needs_review         -> an uncertain match was parked and awaits a decision
+    needs_dup_resolution -> the album duplicates one already in the library and
+                            awaits the user's skip/keep/replace/merge decision
+    skipped              -> nothing to apply (no candidates), so it was skipped
     """
 
     applied = "applied"
     needs_review = "needs_review"
+    needs_dup_resolution = "needs_dup_resolution"
     skipped = "skipped"
 
 
@@ -182,3 +185,81 @@ class ImportChoice(BaseModel):
     # Index into Candidate.options; only meaningful when action == apply.
     # None means "apply the top candidate" — the session resolves None -> 0.
     candidate_index: int | None = None
+
+
+class ExistingAlbum(BaseModel):
+    """A slim view of one in-library album that the incoming import duplicates.
+
+    Built from a beets ``Album`` (the ``found_duplicates`` set). ``album_id`` is
+    the library id (so the FE can fetch its cover via ``/api/albums/{id}/cover``
+    and so Replace can target it by stable id).
+    """
+
+    album_id: int
+    album_artist: str | None
+    album: str | None
+    year: int | None
+    track_count: int
+    format: str | None
+    bitrate_kbps: int | None
+    folder: str
+
+
+class IncomingAlbum(BaseModel):
+    """A slim view of the album being imported — symmetric with ExistingAlbum.
+
+    Built from the import task's current files (works for both an APPLY match and
+    an ASIS import, neither of which is needed to render the duplicate decision).
+    ``has_current_art`` drives whether the FE attempts the current-files cover.
+    """
+
+    album_artist: str | None
+    album: str | None
+    year: int | None
+    track_count: int
+    format: str | None
+    bitrate_kbps: int | None
+    folder: str
+    has_current_art: bool
+
+
+class DuplicateAction(StrEnum):
+    """beets' four faithful duplicate-resolution actions (importer/stages.py).
+
+    skip_new  -> don't import the new album (beets 's' -> Action.SKIP)
+    keep_both -> import alongside the existing copy (beets 'k' -> no-op)
+    replace   -> import the new album, move the existing copy to Trash (beets
+                 'r' is a hard delete; we divert to the reversible Trash)
+    merge     -> combine into one album; beets rebuilds + re-runs the match, so
+                 it reappears as a normal candidate review (beets 'm')
+    """
+
+    skip_new = "skip_new"
+    keep_both = "keep_both"
+    # 'replace' shadows str.replace under StrEnum (str subclass); the member is a
+    # plain enum value, so mypy's incompatible-override is a false positive here.
+    replace = "replace"  # type: ignore[assignment]
+    merge = "merge"
+
+
+class DuplicatePrompt(BaseModel):
+    """A parked import album that duplicates one or more already in the library.
+
+    Pushed onto the import bridge's duplicate channel; ``album_index`` keys the
+    reply (the SAME index the album's candidate outcome already carries).
+    """
+
+    album_index: int
+    incoming: IncomingAlbum
+    existing: list[ExistingAlbum]
+
+
+class DuplicateDecision(BaseModel):
+    """The user's resolution for a parked duplicate, pushed back over the bridge.
+
+    No payload beyond the action: skip/keep/merge are global to the prompt and
+    replace removes the whole ``existing`` set (beets resolves duplicates as a
+    set). Per-existing selection is deferred (see the spec's out-of-scope).
+    """
+
+    action: DuplicateAction

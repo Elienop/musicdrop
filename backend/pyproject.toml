@@ -73,6 +73,7 @@ module = [
     "tests.test_reset_beets_globals",
     "tests.test_duplicates_detection",
     "tests.test_duplicates_resolve",
+    "tests.test_trash",
 ]
 disallow_untyped_calls = false
 

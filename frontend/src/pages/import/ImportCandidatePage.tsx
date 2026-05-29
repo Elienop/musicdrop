@@ -34,6 +34,10 @@ import {
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 
+// As-tracks (singleton import) is a silent no-op until Slice B builds real
+// per-track import, so hide it rather than offer a button that does nothing.
+const AS_TRACKS_ENABLED = false;
+
 export function ImportCandidatePage() {
   const { index: indexParam } = useParams<{ index: string }>();
   const [searchParams] = useSearchParams();
@@ -527,15 +531,17 @@ function ReviewActions({
         >
           Use as-is
         </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={submit.isPending}
-          title="Import each file as a standalone track, not grouped as an album"
-          onClick={() => decide("astracks")}
-        >
-          As tracks
-        </Button>
+        {AS_TRACKS_ENABLED && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={submit.isPending}
+            title="Import each file as a standalone track, not grouped as an album"
+            onClick={() => decide("astracks")}
+          >
+            As tracks
+          </Button>
+        )}
         <Button
           className="ml-auto"
           disabled={submit.isPending}
@@ -553,7 +559,7 @@ function ReviewActions({
         </Button>
       </div>
       <p className="text-muted-foreground text-xs">
-        Use as-is keeps your current tags · As tracks imports files individually.
+        Use as-is keeps your current tags.
       </p>
     </div>
   );

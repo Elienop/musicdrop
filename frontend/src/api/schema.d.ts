@@ -237,6 +237,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/import/{job_id}/albums/{index}/duplicate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Import Duplicate */
+        get: operations["get_import_duplicate_api_import__job_id__albums__index__duplicate_get"];
+        put?: never;
+        /** Post Import Duplicate Decision */
+        post: operations["post_import_duplicate_decision_api_import__job_id__albums__index__duplicate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/config": {
         parameters: {
             query?: never;
@@ -524,6 +542,19 @@ export interface components {
             disambiguation: string | null;
         };
         /**
+         * DuplicateAction
+         * @description beets' four faithful duplicate-resolution actions (importer/stages.py).
+         *
+         *     skip_new  -> don't import the new album (beets 's' -> Action.SKIP)
+         *     keep_both -> import alongside the existing copy (beets 'k' -> no-op)
+         *     replace   -> import the new album, move the existing copy to Trash (beets
+         *                  'r' is a hard delete; we divert to the reversible Trash)
+         *     merge     -> combine into one album; beets rebuilds + re-runs the match, so
+         *                  it reappears as a normal candidate review (beets 'm')
+         * @enum {string}
+         */
+        DuplicateAction: "skip_new" | "keep_both" | "replace" | "merge";
+        /**
          * DuplicateAlbum
          * @description A library album that is one copy in a duplicate group.
          *
@@ -553,6 +584,17 @@ export interface components {
             is_suggested_keeper: boolean;
         };
         /**
+         * DuplicateDecision
+         * @description The user's resolution for a parked duplicate, pushed back over the bridge.
+         *
+         *     No payload beyond the action: skip/keep/merge are global to the prompt and
+         *     replace removes the whole ``existing`` set (beets resolves duplicates as a
+         *     set). Per-existing selection is deferred (see the spec's out-of-scope).
+         */
+        DuplicateDecision: {
+            action: components["schemas"]["DuplicateAction"];
+        };
+        /**
          * DuplicateGroup
          * @description A set of 2+ albums detected as duplicates.
          *
@@ -579,6 +621,20 @@ export interface components {
          * @enum {string}
          */
         DuplicateMode: "strict" | "fuzzy";
+        /**
+         * DuplicatePrompt
+         * @description A parked import album that duplicates one or more already in the library.
+         *
+         *     Pushed onto the import bridge's duplicate channel; ``album_index`` keys the
+         *     reply (the SAME index the album's candidate outcome already carries).
+         */
+        DuplicatePrompt: {
+            /** Album Index */
+            album_index: number;
+            incoming: components["schemas"]["IncomingAlbum"];
+            /** Existing */
+            existing: components["schemas"]["ExistingAlbum"][];
+        };
         /** DuplicatesReport */
         DuplicatesReport: {
             mode: components["schemas"]["DuplicateMode"];
@@ -588,6 +644,32 @@ export interface components {
             album_count: number;
             /** Groups */
             groups: components["schemas"]["DuplicateGroup"][];
+        };
+        /**
+         * ExistingAlbum
+         * @description A slim view of one in-library album that the incoming import duplicates.
+         *
+         *     Built from a beets ``Album`` (the ``found_duplicates`` set). ``album_id`` is
+         *     the library id (so the FE can fetch its cover via ``/api/albums/{id}/cover``
+         *     and so Replace can target it by stable id).
+         */
+        ExistingAlbum: {
+            /** Album Id */
+            album_id: number;
+            /** Album Artist */
+            album_artist: string | null;
+            /** Album */
+            album: string | null;
+            /** Year */
+            year: number | null;
+            /** Track Count */
+            track_count: number;
+            /** Format */
+            format: string | null;
+            /** Bitrate Kbps */
+            bitrate_kbps: number | null;
+            /** Folder */
+            folder: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -616,13 +698,14 @@ export interface components {
          * ImportAlbumStatus
          * @description Per-album state in the live feed.
          *
-         *     needs_review -> parked, awaiting the user's decision (the current album)
-         *     decided      -> the user decided a parked album (apply/skip/asis/astracks)
-         *     applied      -> a strong match auto-applied in the worker (never parked)
-         *     skipped      -> the worker skipped it (no candidates)
+         *     needs_review         -> parked, awaiting the user's match decision
+         *     needs_dup_resolution -> parked, awaiting the user's duplicate decision
+         *     decided              -> the user decided a parked album
+         *     applied              -> a strong match auto-applied in the worker
+         *     skipped              -> the worker skipped it (no candidates)
          * @enum {string}
          */
-        ImportAlbumStatus: "needs_review" | "decided" | "applied" | "skipped";
+        ImportAlbumStatus: "needs_review" | "needs_dup_resolution" | "decided" | "applied" | "skipped";
         /**
          * ImportAlbumSummary
          * @description One row in the live feed (the GET /api/import/{job} listing).
@@ -693,6 +776,32 @@ export interface components {
             needs_review: number;
             /** Skipped */
             skipped: number;
+        };
+        /**
+         * IncomingAlbum
+         * @description A slim view of the album being imported — symmetric with ExistingAlbum.
+         *
+         *     Built from the import task's current files (works for both an APPLY match and
+         *     an ASIS import, neither of which is needed to render the duplicate decision).
+         *     ``has_current_art`` drives whether the FE attempts the current-files cover.
+         */
+        IncomingAlbum: {
+            /** Album Artist */
+            album_artist: string | null;
+            /** Album */
+            album: string | null;
+            /** Year */
+            year: number | null;
+            /** Track Count */
+            track_count: number;
+            /** Format */
+            format: string | null;
+            /** Bitrate Kbps */
+            bitrate_kbps: number | null;
+            /** Folder */
+            folder: string;
+            /** Has Current Art */
+            has_current_art: boolean;
         };
         /**
          * MissingTrack
@@ -1297,6 +1406,72 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ImportChoice"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_import_duplicate_api_import__job_id__albums__index__duplicate_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DuplicatePrompt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_import_duplicate_decision_api_import__job_id__albums__index__duplicate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DuplicateDecision"];
             };
         };
         responses: {

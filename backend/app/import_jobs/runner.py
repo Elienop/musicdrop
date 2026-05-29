@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import Protocol
 
 from app.beets.import_session import ImportBridge, WebImportSession, run_import_worker
@@ -48,8 +49,9 @@ class BeetsImportRunner:
     into ``on_error`` and a normal return (incl. abort) into ``on_finish``.
     """
 
-    def __init__(self, lib: object) -> None:
+    def __init__(self, lib: object, trash_dir: Path | None = None) -> None:
         self._lib = lib
+        self._trash_dir = trash_dir
 
     def run(
         self,
@@ -64,6 +66,7 @@ class BeetsImportRunner:
             [os.fsencode(path)],
             None,  # query -> path import, not a library query
             bridge,
+            self._trash_dir,
         )
 
         def target() -> None:

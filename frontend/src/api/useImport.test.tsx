@@ -7,8 +7,10 @@ import { describe, expect, test } from "vitest";
 import {
   ImportConflictError,
   ImportJobNotFoundError,
+  useDuplicatePrompt,
   useImportCandidate,
   useImportJob,
+  useResolveImportDuplicate,
   useStartImport,
   useSubmitChoice,
 } from "@/api/useImport";
@@ -255,6 +257,111 @@ describe("useSubmitChoice", () => {
       wrapper: wrapper(),
     });
     result.current.mutate({ index: 1, choice: { action: "skip" } });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+  });
+});
+
+const DUPLICATE_URL = `${window.location.origin}/api/import/job-1/albums/0/duplicate`;
+
+describe("useDuplicatePrompt / useResolveImportDuplicate", () => {
+  test("fetches the duplicate prompt when enabled", async () => {
+    server.use(
+      http.get(DUPLICATE_URL, () =>
+        HttpResponse.json({
+          album_index: 0,
+          incoming: {
+            album_artist: "Radiohead",
+            album: "In Rainbows",
+            year: 2007,
+            track_count: 10,
+            format: "FLAC",
+            bitrate_kbps: 900,
+            folder: "/incoming",
+            has_current_art: false,
+          },
+          existing: [
+            {
+              album_id: 1,
+              album_artist: "Radiohead",
+              album: "In Rainbows",
+              year: 2007,
+              track_count: 9,
+              format: "MP3",
+              bitrate_kbps: 320,
+              folder: "/music",
+            },
+          ],
+        }),
+      ),
+    );
+
+    const { result } = renderHook(
+      () => useDuplicatePrompt("job-1", 0, true),
+      { wrapper: wrapper() },
+    );
+
+    await waitFor(() => expect(result.current.data).toBeDefined());
+    expect(result.current.data?.existing[0].album_id).toBe(1);
+  });
+
+  test("is disabled when enabled=false (no request)", () => {
+    const { result } = renderHook(
+      () => useDuplicatePrompt("job-1", 0, false),
+      { wrapper: wrapper() },
+    );
+    expect(result.current.fetchStatus).toBe("idle");
+  });
+
+  test("resolves a duplicate and swallows a 409", async () => {
+    // 409 means a decision already landed — it resolves quietly (no throw); the
+    // caller refetches the job to resync.
+    server.use(
+      http.post(DUPLICATE_URL, () =>
+        HttpResponse.json({ detail: "already resolved" }, { status: 409 }),
+      ),
+    );
+
+    const { result } = renderHook(() => useResolveImportDuplicate("job-1"), {
+      wrapper: wrapper(),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({
+        index: 0,
+        decision: { action: "skip_new" },
+      });
+    });
+
+    expect(result.current.isError).toBe(false);
+  });
+
+  test("POSTs the decision to the album index", async () => {
+    let seenBody: unknown = null;
+    server.use(
+      http.post(DUPLICATE_URL, async ({ request }) => {
+        seenBody = await request.json();
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+
+    const { result } = renderHook(() => useResolveImportDuplicate("job-1"), {
+      wrapper: wrapper(),
+    });
+    result.current.mutate({ index: 0, decision: { action: "replace" } });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(seenBody).toEqual({ action: "replace" });
+  });
+
+  test("a bodyless 5xx rejects (no silent success)", async () => {
+    server.use(
+      http.post(DUPLICATE_URL, () => new HttpResponse(null, { status: 500 })),
+    );
+
+    const { result } = renderHook(() => useResolveImportDuplicate("job-1"), {
+      wrapper: wrapper(),
+    });
+    result.current.mutate({ index: 0, decision: { action: "skip_new" } });
 
     await waitFor(() => expect(result.current.isError).toBe(true));
   });

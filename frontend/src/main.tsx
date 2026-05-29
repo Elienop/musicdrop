@@ -10,6 +10,7 @@ import { ArtistAlbumsPage } from "@/pages/artists/ArtistAlbumsPage";
 import { ArtistsPage } from "@/pages/artists/ArtistsPage";
 import { DuplicatesPage } from "@/pages/duplicates/DuplicatesPage";
 import { ImportCandidatePage } from "@/pages/import/ImportCandidatePage";
+import { ImportDuplicatePage } from "@/pages/import/ImportDuplicatePage";
 import { ImportPage } from "@/pages/import/ImportPage";
 import { SearchPage } from "@/pages/search/SearchPage";
 import { SettingsPage } from "@/pages/settings/SettingsPage";
@@ -47,6 +48,7 @@ const router = createBrowserRouter([
       { path: "/search", element: <SearchPage /> },
       { path: "/import", element: <ImportPage /> },
       { path: "/import/albums/:index", element: <ImportCandidatePage /> },
+      { path: "/import/albums/:index/duplicate", element: <ImportDuplicatePage /> },
       { path: "/settings", element: <SettingsPage /> },
       { path: "/duplicates", element: <DuplicatesPage /> },
       { path: "*", element: <NotFoundPage /> },

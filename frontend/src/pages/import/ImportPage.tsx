@@ -211,6 +211,11 @@ function ImportShell({ children }: { children: React.ReactNode }) {
 function LiveFeed({ state, jobId }: { state: ImportJobState; jobId: string }) {
   const working = state.phase === "scanning" || state.phase === "applying";
   const scanningEmpty = working && state.albums.length === 0;
+  // `progress` has no duplicate counter (backend), so derive the
+  // duplicate-pending count from the feed rows for the cue line below.
+  const needsDup = state.albums.filter(
+    (a) => a.status === "needs_dup_resolution",
+  ).length;
   return (
     <div className="flex flex-col gap-4">
       <p className="text-muted-foreground flex min-h-5 items-center gap-2 text-sm">
@@ -232,6 +237,8 @@ function LiveFeed({ state, jobId }: { state: ImportJobState; jobId: string }) {
             {state.progress.skipped > 0 && ` · ${state.progress.skipped} skipped`}
             {state.progress.needs_review > 0 &&
               ` · ${state.progress.needs_review} album${state.progress.needs_review === 1 ? "" : "s"} needs review`}
+            {needsDup > 0 &&
+              ` · ${needsDup} duplicate${needsDup === 1 ? "" : "s"} to resolve`}
           </span>
         )}
       </p>
@@ -254,13 +261,16 @@ function FeedList({
   albums: ImportAlbumSummary[];
   jobId: string;
 }) {
-  // Pin the album awaiting review to the top — in sequential review it's the one
-  // thing to act on (and always the latest), so its Review button stays in view
-  // without scrolling. Everything else keeps its import order below. On the done
-  // screen nothing is needs_review, so this is a no-op (stays chronological).
+  // Pin the album awaiting action to the top — in sequential review it's the one
+  // thing to act on (and always the latest), so its Review/Resolve button stays
+  // in view without scrolling. A parked duplicate awaits action just the same.
+  // Everything else keeps its import order below. On the done screen nothing is
+  // pending, so this is a no-op (stays chronological).
+  const pending = (s: ImportAlbumSummary["status"]) =>
+    s === "needs_review" || s === "needs_dup_resolution";
   const ordered = [...albums].sort(
     (a, b) =>
-      Number(b.status === "needs_review") - Number(a.status === "needs_review") ||
+      Number(pending(b.status)) - Number(pending(a.status)) ||
       a.index - b.index,
   );
   return (
@@ -275,8 +285,9 @@ function FeedList({
 }
 
 /** One feed row. An `applied`/`skipped`/`decided` album is calm (a status
- * badge); the one `needs_review` row is highlighted and offers Review (→ the
- * seam). */
+ * badge); the `needs_review` row is highlighted and offers Review (→ the seam),
+ * and a `needs_dup_resolution` row is highlighted and offers Resolve (→ the dup
+ * page). */
 function FeedRow({
   album,
   jobId,
@@ -285,6 +296,7 @@ function FeedRow({
   jobId: string;
 }) {
   const needsReview = album.status === "needs_review";
+  const needsDup = album.status === "needs_dup_resolution";
   // Final fallback is non-empty: `album` may be null and `folder` may be ""/"/",
   // in which case folderName() returns "" — never show an empty title.
   const title =
@@ -293,7 +305,7 @@ function FeedRow({
     <div
       className={cn(
         "flex min-w-0 items-center gap-3 px-4 py-3",
-        needsReview && "bg-primary/5",
+        (needsReview || needsDup) && "bg-primary/5",
       )}
     >
       <div className="flex min-w-0 flex-1 flex-col">
@@ -316,21 +328,32 @@ function FeedRow({
           <Link to={`/import/albums/${album.index}?job=${jobId}`}>Review</Link>
         </Button>
       )}
+      {needsDup && (
+        <Button size="sm" asChild>
+          {/* A duplicate the auto-importer parked — route to the dup page to
+              resolve it, carrying the job id across the same `?job=` seam. */}
+          <Link to={`/import/albums/${album.index}/duplicate?job=${jobId}`}>
+            Resolve
+          </Link>
+        </Button>
+      )}
     </div>
   );
 }
 
 /** The status chip. Color + the text label both carry the state (not color
- * alone). `needs_review` reads "Needs review". */
+ * alone). `needs_review` reads "Needs review"; `needs_dup_resolution` reads
+ * "Duplicate". */
 function StatusBadge({ status }: { status: ImportAlbumSummary["status"] }) {
   const label: Record<ImportAlbumSummary["status"], string> = {
     applied: "Imported",
     decided: "Decided",
     skipped: "Skipped",
     needs_review: "Needs review",
+    needs_dup_resolution: "Duplicate",
   };
   const variant =
-    status === "needs_review"
+    status === "needs_review" || status === "needs_dup_resolution"
       ? "default"
       : status === "skipped"
         ? "outline"
