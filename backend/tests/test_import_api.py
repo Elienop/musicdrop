@@ -37,6 +37,7 @@ def test_import_phase_values() -> None:
 def test_album_status_values() -> None:
     assert [s.value for s in ImportAlbumStatus] == [
         "needs_review",
+        "needs_dup_resolution",
         "decided",
         "applied",
         "skipped",

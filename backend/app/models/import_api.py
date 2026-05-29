@@ -41,13 +41,15 @@ class ImportPhase(StrEnum):
 class ImportAlbumStatus(StrEnum):
     """Per-album state in the live feed.
 
-    needs_review -> parked, awaiting the user's decision (the current album)
-    decided      -> the user decided a parked album (apply/skip/asis/astracks)
-    applied      -> a strong match auto-applied in the worker (never parked)
-    skipped      -> the worker skipped it (no candidates)
+    needs_review         -> parked, awaiting the user's match decision
+    needs_dup_resolution -> parked, awaiting the user's duplicate decision
+    decided              -> the user decided a parked album
+    applied              -> a strong match auto-applied in the worker
+    skipped              -> the worker skipped it (no candidates)
     """
 
     needs_review = "needs_review"
+    needs_dup_resolution = "needs_dup_resolution"
     decided = "decided"
     applied = "applied"
     skipped = "skipped"

@@ -111,3 +111,48 @@ def test_import_choice_actions() -> None:
     assert choice.candidate_index == 2
     assert ImportChoice(action=ImportAction.skip).candidate_index is None
     assert ImportChoice(action=ImportAction.abort).action is ImportAction.abort
+
+
+def test_duplicate_prompt_round_trips() -> None:
+    from app.models.import_models import (
+        DuplicateAction,
+        DuplicateDecision,
+        DuplicatePrompt,
+        ExistingAlbum,
+        IncomingAlbum,
+    )
+
+    incoming = IncomingAlbum(
+        album_artist="Radiohead",
+        album="In Rainbows",
+        year=2007,
+        track_count=10,
+        format="FLAC",
+        bitrate_kbps=900,
+        folder="/incoming/Radiohead - In Rainbows",
+        has_current_art=True,
+    )
+    existing = ExistingAlbum(
+        album_id=42,
+        album_artist="Radiohead",
+        album="In Rainbows",
+        year=2007,
+        track_count=9,
+        format="MP3",
+        bitrate_kbps=320,
+        folder="/music/Radiohead/In Rainbows",
+    )
+    prompt = DuplicatePrompt(album_index=3, incoming=incoming, existing=[existing])
+    assert prompt.model_dump()["incoming"]["album"] == "In Rainbows"
+    assert prompt.existing[0].album_id == 42
+
+    decision = DuplicateDecision(action=DuplicateAction.replace)
+    assert decision.action is DuplicateAction.replace
+    # All four faithful actions exist.
+    assert {a.value for a in DuplicateAction} == {"skip_new", "keep_both", "replace", "merge"}
+
+
+def test_needs_dup_resolution_status_exists() -> None:
+    from app.models.import_models import AlbumOutcomeStatus
+
+    assert AlbumOutcomeStatus.needs_dup_resolution.value == "needs_dup_resolution"
