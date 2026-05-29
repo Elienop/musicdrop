@@ -37,10 +37,7 @@ export function DuplicatesPage() {
   const { data, isPending, isError, refetch } = useDuplicates(mode);
 
   return (
-    <section
-      className="mx-auto flex w-full max-w-5xl flex-col gap-4"
-      aria-label="Duplicate albums"
-    >
+    <section className="flex flex-col gap-4" aria-label="Duplicate albums">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-col gap-1">
           <h2 className="text-2xl font-semibold tracking-tight">Duplicate albums</h2>

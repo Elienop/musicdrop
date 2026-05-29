@@ -185,7 +185,10 @@ export function App() {
             </Link>
           </h1>
           <HeaderSearch />
-          <nav className="flex shrink-0 items-center gap-4" aria-label="Primary">
+          <nav
+            className="ml-auto flex shrink-0 items-center gap-4"
+            aria-label="Primary"
+          >
             <Link
               to="/import"
               aria-label="Import"
