@@ -326,6 +326,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/duplicates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Duplicates */
+        get: operations["get_duplicates_api_duplicates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/duplicates/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve Duplicates */
+        post: operations["resolve_duplicates_api_duplicates_resolve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -489,6 +523,72 @@ export interface components {
             /** Disambiguation */
             disambiguation: string | null;
         };
+        /**
+         * DuplicateAlbum
+         * @description A library album that is one copy in a duplicate group.
+         *
+         *     Inherits ``id``, ``album_artist``, ``title``, ``year``, ``track_count``,
+         *     ``genre`` from :class:`Album`; adds the fields the comparison table shows.
+         */
+        DuplicateAlbum: {
+            /** Id */
+            id: number;
+            /** Album Artist */
+            album_artist: string;
+            /** Title */
+            title: string;
+            /** Year */
+            year: number | null;
+            /** Track Count */
+            track_count: number;
+            /** Genre */
+            genre: string | null;
+            /** Format */
+            format: string | null;
+            /** Bitrate Kbps */
+            bitrate_kbps: number | null;
+            /** Folder */
+            folder: string;
+            /** Is Suggested Keeper */
+            is_suggested_keeper: boolean;
+        };
+        /**
+         * DuplicateGroup
+         * @description A set of 2+ albums detected as duplicates.
+         *
+         *     ``members`` are ordered keeper-first (beets ``_order`` heuristic: most
+         *     tracks). ``suggested_keeper_id`` echoes ``members[0].id`` for convenience.
+         */
+        DuplicateGroup: {
+            /** Match Reason */
+            match_reason: string;
+            /** Suggested Keeper Id */
+            suggested_keeper_id: number;
+            /** Members */
+            members: components["schemas"]["DuplicateAlbum"][];
+        };
+        /**
+         * DuplicateMode
+         * @description How albums are grouped into duplicate sets.
+         *
+         *     ``strict`` — group by MusicBrainz album id only (beets album-mode default,
+         *     ``beetsplug/duplicates.py`` default keys ``["mb_albumid"]``).
+         *     ``fuzzy``  — MB album id when present, else a normalized ``albumartist`` +
+         *     ``album`` key (catches untagged copies). MusicDrop extension layered on
+         *     beets' same grouping algorithm.
+         * @enum {string}
+         */
+        DuplicateMode: "strict" | "fuzzy";
+        /** DuplicatesReport */
+        DuplicatesReport: {
+            mode: components["schemas"]["DuplicateMode"];
+            /** Group Count */
+            group_count: number;
+            /** Album Count */
+            album_count: number;
+            /** Groups */
+            groups: components["schemas"]["DuplicateGroup"][];
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -606,6 +706,17 @@ export interface components {
             /** Title */
             title: string | null;
         };
+        /** MovedAlbum */
+        MovedAlbum: {
+            /** Id */
+            id: number;
+            /** Album Artist */
+            album_artist: string;
+            /** Title */
+            title: string;
+            /** Trash Path */
+            trash_path: string;
+        };
         /**
          * Recommendation
          * @description Mirror of beets' Recommendation enum (beets/autotag/match.py).
@@ -616,11 +727,32 @@ export interface components {
          */
         Recommendation: "none" | "low" | "medium" | "strong";
         /**
+         * ResolveRequest
+         * @description Body of ``POST /api/duplicates/resolve``.
+         *
+         *     ``mode`` is echoed so the server re-verifies the group with the same
+         *     detection the client saw (no acting on stale UI state).
+         */
+        ResolveRequest: {
+            mode: components["schemas"]["DuplicateMode"];
+            /** Keep Album Id */
+            keep_album_id: number;
+            /** Remove Album Ids */
+            remove_album_ids: number[];
+        };
+        /** ResolveResult */
+        ResolveResult: {
+            /** Kept Album Id */
+            kept_album_id: number;
+            /** Moved */
+            moved: components["schemas"]["MovedAlbum"][];
+        };
+        /**
          * SaveRequest
          * @description Body of ``POST /api/config/save``. ``base_sha256`` is the CAS token —
          *     echoed back from whatever snapshot the client loaded; mismatch -> 409
          *     with diff. mtime_ns is intentionally NOT a CAS field: nanosecond ints
-         *     blow past JavaScript's ``Number.MAX_SAFE_INTEGER`` (2^53 − 1) and would
+         *     blow past JavaScript's ``Number.MAX_SAFE_INTEGER`` (2^53 - 1) and would
          *     silently corrupt the round-trip. The SHA-256 already catches any
          *     bytes-changed edit, including ones that preserved mtime via
          *     ``os.utime``.
@@ -1288,6 +1420,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BeetsConfigSnapshot"];
+                };
+            };
+        };
+    };
+    get_duplicates_api_duplicates_get: {
+        parameters: {
+            query?: {
+                mode?: components["schemas"]["DuplicateMode"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DuplicatesReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolve_duplicates_api_duplicates_resolve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolveResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

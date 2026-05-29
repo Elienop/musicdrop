@@ -693,6 +693,89 @@
           }
         }
       }
+    },
+    "/api/duplicates": {
+      "get": {
+        "tags": [
+          "duplicates"
+        ],
+        "summary": "Get Duplicates",
+        "operationId": "get_duplicates_api_duplicates_get",
+        "parameters": [
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/DuplicateMode",
+              "default": "strict"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuplicatesReport"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/duplicates/resolve": {
+      "post": {
+        "tags": [
+          "duplicates"
+        ],
+        "summary": "Resolve Duplicates",
+        "operationId": "resolve_duplicates_api_duplicates_resolve_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolveResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1151,6 +1234,159 @@
         "title": "CandidateOption",
         "description": "A ranked alternative release from ``task.candidates``.\n\nThe switcher in the review screen lists these; ``index`` is the position in\nthe beets candidate list and is what a choice references."
       },
+      "DuplicateAlbum": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "album_artist": {
+            "type": "string",
+            "title": "Album Artist"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          },
+          "track_count": {
+            "type": "integer",
+            "title": "Track Count"
+          },
+          "genre": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Genre"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format"
+          },
+          "bitrate_kbps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bitrate Kbps"
+          },
+          "folder": {
+            "type": "string",
+            "title": "Folder"
+          },
+          "is_suggested_keeper": {
+            "type": "boolean",
+            "title": "Is Suggested Keeper"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "album_artist",
+          "title",
+          "year",
+          "track_count",
+          "genre",
+          "format",
+          "bitrate_kbps",
+          "folder",
+          "is_suggested_keeper"
+        ],
+        "title": "DuplicateAlbum",
+        "description": "A library album that is one copy in a duplicate group.\n\nInherits ``id``, ``album_artist``, ``title``, ``year``, ``track_count``,\n``genre`` from :class:`Album`; adds the fields the comparison table shows."
+      },
+      "DuplicateGroup": {
+        "properties": {
+          "match_reason": {
+            "type": "string",
+            "title": "Match Reason"
+          },
+          "suggested_keeper_id": {
+            "type": "integer",
+            "title": "Suggested Keeper Id"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/DuplicateAlbum"
+            },
+            "type": "array",
+            "title": "Members"
+          }
+        },
+        "type": "object",
+        "required": [
+          "match_reason",
+          "suggested_keeper_id",
+          "members"
+        ],
+        "title": "DuplicateGroup",
+        "description": "A set of 2+ albums detected as duplicates.\n\n``members`` are ordered keeper-first (beets ``_order`` heuristic: most\ntracks). ``suggested_keeper_id`` echoes ``members[0].id`` for convenience."
+      },
+      "DuplicateMode": {
+        "type": "string",
+        "enum": [
+          "strict",
+          "fuzzy"
+        ],
+        "title": "DuplicateMode",
+        "description": "How albums are grouped into duplicate sets.\n\n``strict`` \u2014 group by MusicBrainz album id only (beets album-mode default,\n``beetsplug/duplicates.py`` default keys ``[\"mb_albumid\"]``).\n``fuzzy``  \u2014 MB album id when present, else a normalized ``albumartist`` +\n``album`` key (catches untagged copies). MusicDrop extension layered on\nbeets' same grouping algorithm."
+      },
+      "DuplicatesReport": {
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/DuplicateMode"
+          },
+          "group_count": {
+            "type": "integer",
+            "title": "Group Count"
+          },
+          "album_count": {
+            "type": "integer",
+            "title": "Album Count"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/DuplicateGroup"
+            },
+            "type": "array",
+            "title": "Groups"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "group_count",
+          "album_count",
+          "groups"
+        ],
+        "title": "DuplicatesReport"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1408,6 +1644,34 @@
         "title": "MissingTrack",
         "description": "A track present on the matched release but absent from the folder.\n\nMaps from ``AlbumMatch.extra_tracks`` (beets' name for release-only tracks)."
       },
+      "MovedAlbum": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "album_artist": {
+            "type": "string",
+            "title": "Album Artist"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "trash_path": {
+            "type": "string",
+            "title": "Trash Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "album_artist",
+          "title",
+          "trash_path"
+        ],
+        "title": "MovedAlbum"
+      },
       "Recommendation": {
         "type": "string",
         "enum": [
@@ -1418,6 +1682,54 @@
         ],
         "title": "Recommendation",
         "description": "Mirror of beets' Recommendation enum (beets/autotag/match.py).\n\nBeets uses an IntEnum (none=0..strong=3); we expose the names as strings so\nthe JSON contract is self-describing for the frontend."
+      },
+      "ResolveRequest": {
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/DuplicateMode"
+          },
+          "keep_album_id": {
+            "type": "integer",
+            "title": "Keep Album Id"
+          },
+          "remove_album_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Remove Album Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "keep_album_id",
+          "remove_album_ids"
+        ],
+        "title": "ResolveRequest",
+        "description": "Body of ``POST /api/duplicates/resolve``.\n\n``mode`` is echoed so the server re-verifies the group with the same\ndetection the client saw (no acting on stale UI state)."
+      },
+      "ResolveResult": {
+        "properties": {
+          "kept_album_id": {
+            "type": "integer",
+            "title": "Kept Album Id"
+          },
+          "moved": {
+            "items": {
+              "$ref": "#/components/schemas/MovedAlbum"
+            },
+            "type": "array",
+            "title": "Moved"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kept_album_id",
+          "moved"
+        ],
+        "title": "ResolveResult"
       },
       "SaveRequest": {
         "properties": {
@@ -1436,7 +1748,7 @@
           "base_sha256"
         ],
         "title": "SaveRequest",
-        "description": "Body of ``POST /api/config/save``. ``base_sha256`` is the CAS token \u2014\nechoed back from whatever snapshot the client loaded; mismatch -> 409\nwith diff. mtime_ns is intentionally NOT a CAS field: nanosecond ints\nblow past JavaScript's ``Number.MAX_SAFE_INTEGER`` (2^53 \u2212 1) and would\nsilently corrupt the round-trip. The SHA-256 already catches any\nbytes-changed edit, including ones that preserved mtime via\n``os.utime``."
+        "description": "Body of ``POST /api/config/save``. ``base_sha256`` is the CAS token \u2014\nechoed back from whatever snapshot the client loaded; mismatch -> 409\nwith diff. mtime_ns is intentionally NOT a CAS field: nanosecond ints\nblow past JavaScript's ``Number.MAX_SAFE_INTEGER`` (2^53 - 1) and would\nsilently corrupt the round-trip. The SHA-256 already catches any\nbytes-changed edit, including ones that preserved mtime via\n``os.utime``."
       },
       "SearchResults": {
         "properties": {

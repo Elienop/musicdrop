@@ -12,6 +12,12 @@ class Settings(BaseSettings):
     # by app/beets/setup.py; there are no separate MUSICDROP_BEETS_LIBRARY_* knobs.
     beets_dir: str = "data/beets"
 
+    # Duplicate resolution moves the non-kept copies here (a reversible Trash).
+    # Empty string = default to <beets_dir>/trash, computed at resolve time from
+    # the live library handle (already an absolute path), which sidesteps the
+    # cwd-relative gotcha. Set an absolute path to override. (env MUSICDROP_TRASH_DIR)
+    trash_dir: str = ""
+
     # Artist images (app/artwork/) — opt-in, conservative defaults.
     artist_images_enabled: bool = False
     artist_image_source: str = "deezer"

@@ -162,6 +162,76 @@ def beets_library_config_path(beets_library: LibraryHandle) -> Path:
 
 
 @pytest.fixture
+def empty_lib(tmp_path: Path) -> "Library":
+    """A hermetic, empty beets Library on a temp path."""
+    from beets.library import Library
+
+    return Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+
+
+@pytest.fixture
+def duplicates_lib(tmp_path: Path) -> "Library":
+    """A hermetic library seeded with known duplicate + unique albums.
+
+    Real files on disk + explicit path_formats so resolve's Album.move works.
+      - mb-1 x2 : "Radiohead / In Rainbows", 10 + 9 tracks (a STRICT dup; keeper=10)
+      - mb-2 x1 : "Daft Punk / Discovery", 14 tracks (unique - not a dup)
+      - untagged x2 : "Boards of Canada / Music Has the Right", no mb_albumid
+                      (a FUZZY-only dup - caught by normalized artist+title)
+    """
+    import os
+
+    from beets.library import Item, Library
+
+    music = tmp_path / "music"
+    lib = Library(
+        str(tmp_path / "library.db"),
+        directory=str(music),
+        # Explicit default template so Album.move(basedir=...) can resolve a
+        # destination, the same way setup_beets passes get_path_formats().
+        path_formats=[("default", "$albumartist/$album/$track $title")],
+    )
+
+    def add_album(*, mb: str, artist: str, album: str, n: int, folder: str) -> None:
+        items = []
+        base = music / folder
+        base.mkdir(parents=True, exist_ok=True)
+        for i in range(1, n + 1):
+            f = base / f"{i:02d} Track {i}.mp3"
+            f.write_bytes(b"\x00")  # placeholder bytes; tests never read audio
+            it = Item(album=album, albumartist=artist, artist=artist, title=f"Track {i}", track=i)
+            it.path = os.fsencode(str(f))
+            items.append(it)
+        al = lib.add_album(items)  # adds the items too — do NOT lib.add() first
+        if mb:
+            al["mb_albumid"] = mb  # detection reads album-level mb_albumid
+        al.store()
+
+    add_album(
+        mb="mb-1", artist="Radiohead", album="In Rainbows", n=10, folder="Radiohead/In Rainbows"
+    )
+    add_album(
+        mb="mb-1",
+        artist="Radiohead",
+        album="In Rainbows",
+        n=9,
+        folder="Radiohead/In Rainbows (1)",
+    )
+    add_album(mb="mb-2", artist="Daft Punk", album="Discovery", n=14, folder="Daft Punk/Discovery")
+    add_album(
+        mb="", artist="Boards of Canada", album="Music Has the Right", n=10, folder="BoC/MHTRTC"
+    )
+    add_album(
+        mb="",
+        artist="Boards of Canada",
+        album="Music Has the Right",
+        n=10,
+        folder="BoC/MHTRTC (1)",
+    )
+    return lib
+
+
+@pytest.fixture
 def client(beets_library: LibraryHandle) -> Iterator[TestClient]:
     """TestClient with ``app.state.beets_library`` wired to a real handle.
 

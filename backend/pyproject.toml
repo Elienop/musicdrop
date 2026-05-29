@@ -50,6 +50,7 @@ module = [
     "app.beets.setup",
     "app.beets.config_snapshot",
     "app.beets.config_editor",
+    "app.beets.duplicates",
     "app.import_jobs.runner",
     "tests.conftest",
     "tests.test_albums",
@@ -70,6 +71,8 @@ module = [
     "tests.test_config_save_api",
     "tests.test_config_apply_api",
     "tests.test_reset_beets_globals",
+    "tests.test_duplicates_detection",
+    "tests.test_duplicates_resolve",
 ]
 disallow_untyped_calls = false
 
