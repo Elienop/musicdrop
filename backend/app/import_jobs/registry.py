@@ -14,6 +14,7 @@ from __future__ import annotations
 import threading
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from app.beets.import_mapping import embedded_art
 from app.beets.import_session import ImportBridge
@@ -29,6 +30,9 @@ from app.models.import_models import (
     AlbumOutcome,
     AlbumOutcomeStatus,
     Candidate,
+    DuplicateAction,
+    DuplicateDecision,
+    DuplicatePrompt,
     ImportAction,
     ImportChoice,
     ParkedAlbum,
@@ -38,11 +42,18 @@ from app.models.import_models import (
 _ACTIVE_PHASES = {ImportPhase.scanning, ImportPhase.reviewing, ImportPhase.applying}
 # Decisions that count as "imported" in the truthful summary.
 _APPLY_ACTIONS = {ImportAction.apply, ImportAction.asis, ImportAction.astracks}
+# Duplicate decisions that count as "imported" (skip_new is the only skip).
+_DUP_IMPORTED_ACTIONS = {
+    DuplicateAction.keep_both,
+    DuplicateAction.replace,
+    DuplicateAction.merge,
+}
 # How a worker outcome maps to an initial feed-row status (by VALUE, never ordinal).
 _OUTCOME_STATUS = {
     AlbumOutcomeStatus.applied: ImportAlbumStatus.applied,
     AlbumOutcomeStatus.skipped: ImportAlbumStatus.skipped,
     AlbumOutcomeStatus.needs_review: ImportAlbumStatus.needs_review,
+    AlbumOutcomeStatus.needs_dup_resolution: ImportAlbumStatus.needs_dup_resolution,
 }
 
 
@@ -57,6 +68,10 @@ class _FeedAlbum:
     decided_action: ImportAction | None = None
     # The current files' art source path for a parked album (None when none).
     art_source: str | None = None
+    # The parked duplicate prompt (None unless this row needs dup resolution).
+    duplicate: DuplicatePrompt | None = None
+    # The duplicate action the user chose (None until decided).
+    duplicate_action: DuplicateAction | None = None
 
 
 @dataclass
@@ -79,19 +94,21 @@ class ImportJobRegistry:
         # real runner needs the Library, set via attach_library() at lifespan.
         self._runner = runner
         self._lib: object | None = None
+        self._trash_dir: Path | None = None
         self._job: ImportJob | None = None
         self._lock = threading.Lock()
 
     # ----- wiring -----
 
-    def attach_library(self, lib: object | None) -> None:
-        """Provide the beets Library the production runner builds sessions from."""
+    def attach_library(self, lib: object | None, trash_dir: Path | None = None) -> None:
+        """Provide the beets Library + Trash dir the production runner builds from."""
         self._lib = lib
+        self._trash_dir = trash_dir
 
     def _resolve_runner(self) -> ImportRunner:
         if self._runner is not None:
             return self._runner
-        return BeetsImportRunner(self._lib)
+        return BeetsImportRunner(self._lib, self._trash_dir)
 
     # ----- lifecycle -----
 
@@ -135,18 +152,20 @@ class ImportJobRegistry:
 
     @staticmethod
     def _is_imported(row: _FeedAlbum) -> bool:
-        """True if the album was imported — auto-applied, or a parked album the
-        user resolved with an apply-like action (apply/asis/astracks)."""
+        """Imported: auto-applied, a parked album resolved apply-like, or a
+        duplicate resolved keep_both/replace/merge."""
+        if row.duplicate_action is not None:
+            return row.duplicate_action in _DUP_IMPORTED_ACTIONS
         return row.status is ImportAlbumStatus.applied or (
             row.status is ImportAlbumStatus.decided and row.decided_action in _APPLY_ACTIONS
         )
 
     @staticmethod
     def _is_skipped(row: _FeedAlbum) -> bool:
-        """True if the album landed nothing — an auto-skip (no candidates) or a
-        parked album the user resolved with a non-apply action (skip/abort).
-        The terminal complement of _is_imported; backs both progress.skipped and
-        the done summary so the two can never drift."""
+        """The terminal complement of _is_imported for albums that landed nothing
+        (auto-skip, a non-apply choice, or a skip_new duplicate)."""
+        if row.duplicate_action is not None:
+            return row.duplicate_action not in _DUP_IMPORTED_ACTIONS
         return row.status is ImportAlbumStatus.skipped or (
             row.status is ImportAlbumStatus.decided and row.decided_action not in _APPLY_ACTIONS
         )
@@ -186,6 +205,16 @@ class ImportJobRegistry:
                 row.art_source = job.bridge.art_source(parked.album_index)
             # (The needs_review outcome is emitted before park, so the row
             # already exists; if ordering ever changed, we'd create it here.)
+        while True:
+            prompt = job.bridge.get_parked_duplicate(timeout=0)
+            if prompt is None:
+                break
+            row = job.albums.get(prompt.album_index)
+            if row is not None:
+                row.duplicate = prompt
+                # Flip the (applied/decided) row to the duplicate-pending state so
+                # the feed + UI route to the duplicate decision panel.
+                row.status = ImportAlbumStatus.needs_dup_resolution
 
     def drain(self, job_id: str) -> list[ImportAlbumSummary]:
         """Drain the bridge and return the current feed rows (non-blocking)."""
@@ -193,7 +222,8 @@ class ImportJobRegistry:
         with self._lock:
             self._drain_locked(job)
             if job.phase == ImportPhase.scanning and any(
-                a.status is ImportAlbumStatus.needs_review for a in job.albums.values()
+                a.status in (ImportAlbumStatus.needs_review, ImportAlbumStatus.needs_dup_resolution)
+                for a in job.albums.values()
             ):
                 job.phase = ImportPhase.reviewing
             return self._summaries(job)
@@ -240,6 +270,34 @@ class ImportJobRegistry:
             if row is not None:
                 row.status = ImportAlbumStatus.decided
                 row.decided_action = choice.action
+
+    def duplicate_prompt(self, job_id: str, index: int) -> DuplicatePrompt:
+        """Return the parked DuplicatePrompt at ``index`` (KeyError if none)."""
+        self.drain(job_id)
+        job = self._require(job_id)
+        with self._lock:
+            row = job.albums.get(index)
+            if row is None or row.duplicate is None:
+                raise KeyError(index)
+            return row.duplicate
+
+    def record_duplicate_decision(
+        self, job_id: str, index: int, decision: DuplicateDecision
+    ) -> None:
+        """Deliver a duplicate decision to the worker and mark the row decided.
+
+        Mirrors record_choice: holds the lock across push + mark so the worker
+        cannot summarize while the row is still needs_dup_resolution. Propagates
+        the bridge's KeyError (unknown index) / RuntimeError (duplicate decision).
+        """
+        self.drain(job_id)
+        job = self._require(job_id)
+        with self._lock:
+            job.bridge.push_duplicate_decision(index, decision)
+            row = job.albums.get(index)
+            if row is not None:
+                row.status = ImportAlbumStatus.decided
+                row.duplicate_action = decision.action
 
     def state(self, job_id: str) -> ImportJobState:
         """Drain, then return the full job state for the GET endpoint."""

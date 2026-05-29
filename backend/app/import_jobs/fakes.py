@@ -15,7 +15,13 @@ import threading
 from collections.abc import Callable
 
 from app.beets.import_session import ImportBridge
-from app.models.import_models import AlbumOutcome, AlbumOutcomeStatus, ParkedAlbum
+from app.models.import_models import (
+    AlbumOutcome,
+    AlbumOutcomeStatus,
+    DuplicatePrompt,
+    ParkedAlbum,
+    Recommendation,
+)
 
 
 class FakeImportRunner:
@@ -27,6 +33,7 @@ class FakeImportRunner:
         applied: list[AlbumOutcome] | None = None,
         fail_with: str | None = None,
         art_sources: dict[int, str] | None = None,
+        duplicates: list[DuplicatePrompt] | None = None,
     ) -> None:
         self._parked = parked or []
         self._applied = applied or []
@@ -34,6 +41,7 @@ class FakeImportRunner:
         # Per-album current-files art source path, recorded on the real bridge at
         # park (mirrors the worker's choose_match). Keyed by album_index.
         self._art_sources = art_sources or {}
+        self._duplicates = duplicates or []
 
     def run(
         self,
@@ -66,6 +74,22 @@ class FakeImportRunner:
                         )
                     )
                     bridge.park(album, art_source=self._art_sources.get(album.album_index))
+                # Then each canned duplicate prompt, ONE AT A TIME: emit the
+                # needs_dup_resolution outcome (reusing the prompt's index), then
+                # park_duplicate which BLOCKS until the consumer pushes a decision.
+                for prompt in self._duplicates:
+                    bridge.note_outcome(
+                        AlbumOutcome(
+                            album_index=prompt.album_index,
+                            folder=prompt.incoming.folder,
+                            artist=prompt.incoming.album_artist,
+                            album=prompt.incoming.album,
+                            recommendation=Recommendation.strong,
+                            confidence=0.0,
+                            status=AlbumOutcomeStatus.needs_dup_resolution,
+                        )
+                    )
+                    bridge.park_duplicate(prompt)
             # Broad by design: mirror the real worker's guard so a canned-data
             # bug surfaces as a failed job rather than a silent dead thread.
             except Exception as exc:
