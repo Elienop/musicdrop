@@ -149,11 +149,15 @@ function GroupCard({ group, mode }: { group: DuplicateGroup; mode: DuplicateMode
         Matched on <strong className="text-foreground">{group.match_reason}</strong> ·{" "}
         {group.members.length} copies
       </div>
-      <Table>
+      {/* table-fixed so a very long album title can't widen the Album column
+          past the container (the cause of a whole-table horizontal scrollbar);
+          columns are sized by these header widths instead of by content, so the
+          title truncates within its column. Album/Folder split the remainder. */}
+      <Table className="table-fixed">
         <TableHeader>
           <TableRow>
             <TableHead className="w-10">Keep</TableHead>
-            <TableHead>Album</TableHead>
+            <TableHead className="w-[44%]">Album</TableHead>
             <TableHead className="w-16">Year</TableHead>
             <TableHead className="w-16">Tracks</TableHead>
             <TableHead className="w-28">Quality</TableHead>
@@ -258,11 +262,15 @@ function MemberRow({
       <TableCell>
         <div className="flex items-center gap-2">
           <Thumb album={album} />
-          <div className="min-w-0">
-            <div className="truncate font-medium" title={album.title}>
-              {album.title}
+          <div className="min-w-0 flex-1">
+            {/* Title truncates; the badge sits OUTSIDE the truncating span
+                (shrink-0) so a long title can't clip "most complete". */}
+            <div className="flex items-center gap-2">
+              <span className="min-w-0 truncate font-medium" title={album.title}>
+                {album.title}
+              </span>
               {album.is_suggested_keeper && (
-                <Badge variant="secondary" className="ml-2 align-middle">
+                <Badge variant="secondary" className="shrink-0">
                   <ShieldCheck className="mr-1 size-3" aria-hidden="true" />
                   most complete
                 </Badge>
@@ -278,12 +286,14 @@ function MemberRow({
         {album.format ?? "—"}
         {album.bitrate_kbps ? ` · ${album.bitrate_kbps}k` : ""}
       </TableCell>
-      <TableCell className="max-w-xs">
+      <TableCell>
         {/* Horizontally scrollable so the full path is reachable without
             truncation — the distinguishing aunique `[NN]` suffix lives at the
             END, which an end-ellipsis would hide. whitespace-nowrap keeps it on
             one line; overflow-x-auto adds a scrollbar only when it overflows.
-            The title= still carries the whole path for a hover tooltip. */}
+            The title= still carries the whole path for a hover tooltip. No
+            max-width: under table-fixed the column is already bounded, so the
+            inner scroller fills it (a cap would strand a scrollbar mid-cell). */}
         <div
           className="text-muted-foreground thin-scrollbar overflow-x-auto font-mono text-xs whitespace-nowrap"
           title={album.folder}
