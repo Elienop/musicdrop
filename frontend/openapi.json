@@ -567,6 +567,111 @@
         }
       }
     },
+    "/api/import/{job_id}/albums/{index}/duplicate": {
+      "get": {
+        "tags": [
+          "import"
+        ],
+        "summary": "Get Import Duplicate",
+        "operationId": "get_import_duplicate_api_import__job_id__albums__index__duplicate_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "index",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "title": "Index"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuplicatePrompt"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "import"
+        ],
+        "summary": "Post Import Duplicate Decision",
+        "operationId": "post_import_duplicate_decision_api_import__job_id__albums__index__duplicate_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "index",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "title": "Index"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DuplicateDecision"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/config": {
       "get": {
         "tags": [
@@ -1234,6 +1339,17 @@
         "title": "CandidateOption",
         "description": "A ranked alternative release from ``task.candidates``.\n\nThe switcher in the review screen lists these; ``index`` is the position in\nthe beets candidate list and is what a choice references."
       },
+      "DuplicateAction": {
+        "type": "string",
+        "enum": [
+          "skip_new",
+          "keep_both",
+          "replace",
+          "merge"
+        ],
+        "title": "DuplicateAction",
+        "description": "beets' four faithful duplicate-resolution actions (importer/stages.py).\n\nskip_new  -> don't import the new album (beets 's' -> Action.SKIP)\nkeep_both -> import alongside the existing copy (beets 'k' -> no-op)\nreplace   -> import the new album, move the existing copy to Trash (beets\n             'r' is a hard delete; we divert to the reversible Trash)\nmerge     -> combine into one album; beets rebuilds + re-runs the match, so\n             it reappears as a normal candidate review (beets 'm')"
+      },
       "DuplicateAlbum": {
         "properties": {
           "id": {
@@ -1321,6 +1437,19 @@
         "title": "DuplicateAlbum",
         "description": "A library album that is one copy in a duplicate group.\n\nInherits ``id``, ``album_artist``, ``title``, ``year``, ``track_count``,\n``genre`` from :class:`Album`; adds the fields the comparison table shows."
       },
+      "DuplicateDecision": {
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/DuplicateAction"
+          }
+        },
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "DuplicateDecision",
+        "description": "The user's resolution for a parked duplicate, pushed back over the bridge.\n\nNo payload beyond the action: skip/keep/merge are global to the prompt and\nreplace removes the whole ``existing`` set (beets resolves duplicates as a\nset). Per-existing selection is deferred (see the spec's out-of-scope)."
+      },
       "DuplicateGroup": {
         "properties": {
           "match_reason": {
@@ -1357,6 +1486,32 @@
         "title": "DuplicateMode",
         "description": "How albums are grouped into duplicate sets.\n\n``strict`` \u2014 group by MusicBrainz album id only (beets album-mode default,\n``beetsplug/duplicates.py`` default keys ``[\"mb_albumid\"]``).\n``fuzzy``  \u2014 MB album id when present, else a normalized ``albumartist`` +\n``album`` key (catches untagged copies). MusicDrop extension layered on\nbeets' same grouping algorithm."
       },
+      "DuplicatePrompt": {
+        "properties": {
+          "album_index": {
+            "type": "integer",
+            "title": "Album Index"
+          },
+          "incoming": {
+            "$ref": "#/components/schemas/IncomingAlbum"
+          },
+          "existing": {
+            "items": {
+              "$ref": "#/components/schemas/ExistingAlbum"
+            },
+            "type": "array",
+            "title": "Existing"
+          }
+        },
+        "type": "object",
+        "required": [
+          "album_index",
+          "incoming",
+          "existing"
+        ],
+        "title": "DuplicatePrompt",
+        "description": "A parked import album that duplicates one or more already in the library.\n\nPushed onto the import bridge's duplicate channel; ``album_index`` keys the\nreply (the SAME index the album's candidate outcome already carries)."
+      },
       "DuplicatesReport": {
         "properties": {
           "mode": {
@@ -1386,6 +1541,90 @@
           "groups"
         ],
         "title": "DuplicatesReport"
+      },
+      "ExistingAlbum": {
+        "properties": {
+          "album_id": {
+            "type": "integer",
+            "title": "Album Id"
+          },
+          "album_artist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Artist"
+          },
+          "album": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          },
+          "track_count": {
+            "type": "integer",
+            "title": "Track Count"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format"
+          },
+          "bitrate_kbps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bitrate Kbps"
+          },
+          "folder": {
+            "type": "string",
+            "title": "Folder"
+          }
+        },
+        "type": "object",
+        "required": [
+          "album_id",
+          "album_artist",
+          "album",
+          "year",
+          "track_count",
+          "format",
+          "bitrate_kbps",
+          "folder"
+        ],
+        "title": "ExistingAlbum",
+        "description": "A slim view of one in-library album that the incoming import duplicates.\n\nBuilt from a beets ``Album`` (the ``found_duplicates`` set). ``album_id`` is\nthe library id (so the FE can fetch its cover via ``/api/albums/{id}/cover``\nand so Replace can target it by stable id)."
       },
       "HTTPValidationError": {
         "properties": {
@@ -1434,12 +1673,13 @@
         "type": "string",
         "enum": [
           "needs_review",
+          "needs_dup_resolution",
           "decided",
           "applied",
           "skipped"
         ],
         "title": "ImportAlbumStatus",
-        "description": "Per-album state in the live feed.\n\nneeds_review -> parked, awaiting the user's decision (the current album)\ndecided      -> the user decided a parked album (apply/skip/asis/astracks)\napplied      -> a strong match auto-applied in the worker (never parked)\nskipped      -> the worker skipped it (no candidates)"
+        "description": "Per-album state in the live feed.\n\nneeds_review         -> parked, awaiting the user's match decision\nneeds_dup_resolution -> parked, awaiting the user's duplicate decision\ndecided              -> the user decided a parked album\napplied              -> a strong match auto-applied in the worker\nskipped              -> the worker skipped it (no candidates)"
       },
       "ImportAlbumSummary": {
         "properties": {
@@ -1610,6 +1850,90 @@
         ],
         "title": "ImportProgress",
         "description": "Coarse progress counters derived from the drained outcomes."
+      },
+      "IncomingAlbum": {
+        "properties": {
+          "album_artist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Artist"
+          },
+          "album": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          },
+          "track_count": {
+            "type": "integer",
+            "title": "Track Count"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format"
+          },
+          "bitrate_kbps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bitrate Kbps"
+          },
+          "folder": {
+            "type": "string",
+            "title": "Folder"
+          },
+          "has_current_art": {
+            "type": "boolean",
+            "title": "Has Current Art"
+          }
+        },
+        "type": "object",
+        "required": [
+          "album_artist",
+          "album",
+          "year",
+          "track_count",
+          "format",
+          "bitrate_kbps",
+          "folder",
+          "has_current_art"
+        ],
+        "title": "IncomingAlbum",
+        "description": "A slim view of the album being imported \u2014 symmetric with ExistingAlbum.\n\nBuilt from the import task's current files (works for both an APPLY match and\nan ASIS import, neither of which is needed to render the duplicate decision).\n``has_current_art`` drives whether the FE attempts the current-files cover."
       },
       "MissingTrack": {
         "properties": {
