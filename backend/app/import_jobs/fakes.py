@@ -89,7 +89,9 @@ class FakeImportRunner:
                             status=AlbumOutcomeStatus.needs_dup_resolution,
                         )
                     )
-                    bridge.park_duplicate(prompt)
+                    bridge.park_duplicate(
+                        prompt, art_source=self._art_sources.get(prompt.album_index)
+                    )
             # Broad by design: mirror the real worker's guard so a canned-data
             # bug surfaces as a failed job rather than a silent dead thread.
             except Exception as exc:

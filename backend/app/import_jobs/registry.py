@@ -212,6 +212,9 @@ class ImportJobRegistry:
             row = job.albums.get(prompt.album_index)
             if row is not None:
                 row.duplicate = prompt
+                # Record the current-files art source (mirrors the parked-candidate
+                # loop) so GET /cover can serve the duplicate panel's "new" side.
+                row.art_source = job.bridge.art_source(prompt.album_index)
                 # Flip the (applied/decided) row to the duplicate-pending state so
                 # the feed + UI route to the duplicate decision panel.
                 row.status = ImportAlbumStatus.needs_dup_resolution
@@ -242,14 +245,20 @@ class ImportJobRegistry:
         """Embedded cover art for the parked album at ``index``, or None.
 
         Reads the current files' first item on demand (the worker is parked, so
-        the source is still in place). KeyError when the job/album is unknown or
-        not parked - the API maps that to 404, same as the Candidate route.
+        the source is still in place). Serves a parked candidate OR a parked
+        duplicate (both record the current-files art source on the bridge).
+        KeyError when the job/album is unknown, has no art source, or is not
+        parked at all - the API maps that to 404, same as the Candidate route.
         """
         self.drain(job_id)
         job = self._require(job_id)
         with self._lock:
             row = job.albums.get(index)
-            if row is None or row.parked is None or row.art_source is None:
+            if (
+                row is None
+                or row.art_source is None
+                or (row.parked is None and row.duplicate is None)
+            ):
                 raise KeyError(index)
             source = row.art_source
         return embedded_art(source)  # read outside the lock (file I/O)

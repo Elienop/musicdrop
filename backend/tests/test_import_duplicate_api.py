@@ -106,13 +106,16 @@ def test_unknown_duplicate_index_raises_keyerror() -> None:
         registry.duplicate_prompt(job_id, 99)
 
 
-def _client(duplicates: list[DuplicatePrompt]):  # type: ignore[no-untyped-def]  # test-local TestClient factory
+def _client(  # type: ignore[no-untyped-def]  # test-local TestClient factory
+    duplicates: list[DuplicatePrompt],
+    art_sources: dict[int, str] | None = None,
+):
     from fastapi.testclient import TestClient
 
     from app.import_jobs.registry import reset_registry
     from app.main import app
 
-    reset_registry(runner=FakeImportRunner(duplicates=duplicates))
+    reset_registry(runner=FakeImportRunner(duplicates=duplicates, art_sources=art_sources))
     return TestClient(app)
 
 
@@ -146,6 +149,26 @@ def test_get_duplicate_404_when_not_parked() -> None:
     _poll_client(client, job_id, lambda s: len(s["albums"]) == 1)
     resp = client.get(f"/api/import/{job_id}/albums/99/duplicate")
     assert resp.status_code == 404
+
+
+def test_cover_streams_embedded_art_for_duplicate_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The "Importing (new)" panel of the duplicate-decision page fetches the
+    # current-files cover via GET /albums/{i}/cover. That must serve for a
+    # DUPLICATE row (art_source recorded by park_duplicate), not just a parked
+    # candidate. Mirrors test_import_cover.test_cover_streams_embedded_art.
+    monkeypatch.setattr(
+        "app.import_jobs.registry.embedded_art",
+        lambda p: (b"PNGDATA", "image/png"),
+    )
+    client = _client([_prompt(0)], art_sources={0: "/fake/album0/track.flac"})
+    job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
+    _poll_client(
+        client, job_id, lambda s: any(a["status"] == "needs_dup_resolution" for a in s["albums"])
+    )
+    r = client.get(f"/api/import/{job_id}/albums/0/cover")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("image/")
+    assert r.content == b"PNGDATA"
 
 
 def test_post_duplicate_decision_409_on_second() -> None:

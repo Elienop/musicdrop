@@ -8,6 +8,7 @@ worker thread that blocks on the bridge until a decision is pushed.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -117,6 +118,30 @@ def test_resolve_duplicate_parks_and_emits_needs_dup_resolution(
     bridge.push_duplicate_decision(7, DuplicateDecision(action=DuplicateAction.keep_both))
     t.join(timeout=2.0)
     assert task.choice_flag is Action.APPLY  # keep_both leaves the choice intact
+
+
+def test_resolve_duplicate_records_art_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # Mirrors test_park_records_art_source: resolve_duplicate must record the
+    # incoming files' art source on the bridge so the /cover endpoint can serve
+    # the "Importing (new)" panel for a duplicate row (the file need not exist —
+    # art_source records the PATH; has_current_art is a separate concern).
+    match = _match()
+    bridge = ImportBridge()
+    session = _session(bridge)
+    task = _task(match, monkeypatch)
+    task.md_album_index = 3  # type: ignore[attr-defined]  # dynamic attr (see above)
+    art_path = os.fsencode(str(tmp_path / "a.flac"))
+    task.items[0].path = art_path
+
+    t = _run_hook(session, task, [_FakeAlbum(1)])
+    prompt = bridge.get_parked_duplicate(timeout=2.0)
+    assert prompt is not None
+    assert session.bridge.art_source(prompt.album_index) == os.fsdecode(art_path)
+
+    bridge.push_duplicate_decision(3, DuplicateDecision(action=DuplicateAction.keep_both))
+    t.join(timeout=2.0)
 
 
 def test_skip_new_sets_skip(monkeypatch: pytest.MonkeyPatch) -> None:

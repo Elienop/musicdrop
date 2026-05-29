@@ -99,11 +99,15 @@ class ImportBridge:
             self._pending -= 1
         return choice
 
-    def park_duplicate(self, prompt: DuplicatePrompt) -> DuplicateDecision:
+    def park_duplicate(
+        self, prompt: DuplicatePrompt, art_source: str | None = None
+    ) -> DuplicateDecision:
         """Push a duplicate prompt and block until a decision arrives for it."""
         reply: queue.Queue[DuplicateDecision] = queue.Queue(maxsize=1)
         with self._lock:
             self._dup_replies[prompt.album_index] = reply
+            if art_source is not None:
+                self._art_source[prompt.album_index] = art_source
             self._pending += 1
         self._dup_out.put(prompt)
         decision = reply.get()  # blocks the worker thread
@@ -226,11 +230,17 @@ class WebImportSession(ImportSession):
             # Defensive: resolve_duplicate should always follow choose_match.
             index = self._album_index
             self._album_index += 1
+        # The current files' first item supplies the "before" cover; record it on
+        # the bridge so GET /cover can serve the duplicate panel's "new" side
+        # (mirrors choose_match's park). Computed once and reused for the
+        # IncomingAlbum's has_current_art (see _to_incoming_album).
+        art_source = self._first_item_art_source(list(task.items or []))
         incoming = self._to_incoming_album(task)
         existing = [self._to_existing_album(album) for album in found_duplicates]
         self.bridge.note_outcome(self._dup_outcome(index, task))
         decision = self.bridge.park_duplicate(
-            DuplicatePrompt(album_index=index, incoming=incoming, existing=existing)
+            DuplicatePrompt(album_index=index, incoming=incoming, existing=existing),
+            art_source=art_source,
         )
         if decision.action is DuplicateAction.skip_new:
             task.set_choice(Action.SKIP)
