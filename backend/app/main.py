@@ -84,11 +84,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.settings = settings
     app.state.beets_swap_lock = asyncio.Lock()
 
+    from app.beets.trash import resolve_trash_dir
     from app.import_jobs.registry import registry as import_registry
 
     # The import runner builds a WebImportSession from a beets Library, so feed
-    # it the raw lib (not the snapshot handle).
-    import_registry.attach_library(handle.lib)
+    # it the raw lib (not the snapshot handle). The Trash dir is where the
+    # duplicate-on-import Replace action moves the old copies (same reversible
+    # Trash the /duplicates page uses).
+    import_registry.attach_library(handle.lib, resolve_trash_dir(settings, handle))
 
     # Build the artist-image stack once: a shared httpx client (timeout +
     # descriptive User-Agent) behind the rate-limited, disk-cached service.
