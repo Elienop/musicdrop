@@ -29,18 +29,17 @@ router = APIRouter(tags=["import"])
 async def get_active_import(
     reg: Annotated[ImportJobRegistry, Depends(get_registry)],
 ) -> ActiveImportStatus:
-    """Tiny probe the ``/settings`` page polls to gate the Apply button.
+    """Probe used two ways: the ``/settings`` Apply gate polls ``active``, and
+    the import Start screen reads ``job_id`` to offer "Resume" back into a
+    running import the user navigated away from.
 
-    Returns ``{"active": True}`` while any import is in flight (i.e. the
-    registry's single slot is in ``_ACTIVE_PHASES``). ``POST /api/config/apply``
-    409s in that case; the SettingsPage uses this poll to render an
-    "Import in progress" state instead of letting the click race the gate.
-
-    Plural path (``/imports/active``) to match the convention any future
-    multi-import surface would adopt; the single-slot registry is an
-    implementation detail.
+    ``active`` is ``True`` exactly while the registry's single slot is in
+    ``_ACTIVE_PHASES`` (``POST /api/config/apply`` 409s in that case); ``job_id``
+    carries the resume target (``None`` when idle). Both come from one
+    ``active_job_id()`` call so they can never disagree.
     """
-    return ActiveImportStatus(active=reg.has_active_job())
+    job_id = reg.active_job_id()
+    return ActiveImportStatus(active=job_id is not None, job_id=job_id)
 
 
 @router.post("/import", response_model=StartImportResponse, status_code=status.HTTP_202_ACCEPTED)
