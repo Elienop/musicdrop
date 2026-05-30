@@ -132,16 +132,14 @@ export interface paths {
         };
         /**
          * Get Active Import
-         * @description Tiny probe the ``/settings`` page polls to gate the Apply button.
+         * @description Probe used two ways: the ``/settings`` Apply gate polls ``active``, and
+         *     the import Start screen reads ``job_id`` to offer "Resume" back into a
+         *     running import the user navigated away from.
          *
-         *     Returns ``{"active": True}`` while any import is in flight (i.e. the
-         *     registry's single slot is in ``_ACTIVE_PHASES``). ``POST /api/config/apply``
-         *     409s in that case; the SettingsPage uses this poll to render an
-         *     "Import in progress" state instead of letting the click race the gate.
-         *
-         *     Plural path (``/imports/active``) to match the convention any future
-         *     multi-import surface would adopt; the single-slot registry is an
-         *     implementation detail.
+         *     ``active`` is ``True`` exactly while the registry's single slot is in
+         *     ``_ACTIVE_PHASES`` (``POST /api/config/apply`` 409s in that case); ``job_id``
+         *     carries the resume target (``None`` when idle). Both come from one
+         *     ``active_job_id()`` call so they can never disagree.
          */
         get: operations["get_active_import_api_imports_active_get"];
         put?: never;
@@ -386,18 +384,24 @@ export interface components {
          * ActiveImportStatus
          * @description Response of ``GET /api/imports/active``.
          *
-         *     A typed, single-field probe the SettingsPage's Apply button polls to gate
-         *     itself: while an import is in flight, ``apply`` would 409, so the UI must
-         *     show "Import in progress" instead of letting the click race the gate.
+         *     A typed probe used two ways: the SettingsPage's Apply button polls
+         *     ``active`` to gate itself (an in-flight import would 409 an Apply), and the
+         *     import Start screen reads ``job_id`` to offer a "Resume" link back into a
+         *     running import the user navigated away from.
          *
-         *     A named model rather than a bare ``dict[str, bool]`` so the OpenAPI schema
-         *     emits a ``$ref`` and the generated TS type is a concrete
-         *     ``ActiveImportStatus`` (per CLAUDE.md rule 2: every endpoint returns a
-         *     Pydantic model).
+         *     ``job_id`` is the active job's id, or ``None`` when nothing is running;
+         *     ``active`` and ``job_id`` are always consistent (``active`` is ``True``
+         *     exactly when ``job_id`` is non-null).
+         *
+         *     A named model rather than a bare ``dict`` so the OpenAPI schema emits a
+         *     ``$ref`` and the generated TS type is a concrete ``ActiveImportStatus``
+         *     (per CLAUDE.md rule 2: every endpoint returns a Pydantic model).
          */
         ActiveImportStatus: {
             /** Active */
             active: boolean;
+            /** Job Id */
+            job_id?: string | null;
         };
         /** Album */
         Album: {
