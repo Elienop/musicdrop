@@ -23,12 +23,14 @@ const ACTIVE_INTERVAL_MS = 5_000;
 /**
  * Poll the import-active probe (`GET /api/imports/active`).
  *
- * The SettingsPage's Apply button is the only caller: a Save leaves
- * `apply_pending = true`, then Apply does the in-process beets reload — but
- * that reload 409s if an import is in flight, so the page must gate the click
- * proactively. The cadence is adaptive: 5s while an import runs (so Apply
- * re-enables promptly after the import finishes), 30s otherwise (so an idle
- * Settings tab is essentially free).
+ * Two consumers share this probe. The SettingsPage's Apply button gates
+ * itself: a Save leaves `apply_pending = true`, then Apply does the in-process
+ * beets reload — which 409s if an import is in flight, so the page must gate
+ * the click proactively. The import Start screen is the second consumer: it
+ * reads `job_id` to offer a "Resume" link back into a running import the user
+ * navigated away from. The cadence is adaptive: 5s while an import runs (so
+ * Apply re-enables promptly after the import finishes), 30s otherwise (so an
+ * idle Settings tab is essentially free).
  *
  * The probe deliberately *never throws*: a transient backend hiccup on a
  * probe used only to disable a button is not worth a red banner under that

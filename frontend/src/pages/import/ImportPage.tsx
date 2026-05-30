@@ -91,12 +91,22 @@ function ImportEntry() {
       {importActive && activeJobId && (
         // A running import the user navigated away from — one click back in.
         // Resuming just navigates to `?job=<id>`; the run page routes to the
-        // right phase view and pins any album awaiting a decision.
+        // right phase view and pins any album awaiting a decision. Same neutral
+        // banner recipe as SettingsPage's status rail (rounded-xl / p-3 /
+        // bg-muted/50 + a spinner), with the action on the right. The text's id
+        // describes the disabled Start below (aria-describedby) so a keyboard/SR
+        // user gets the "why" + the recovery action without duplicate copy.
         <div
-          className="border-border bg-muted/40 flex items-center justify-between gap-3 rounded-lg border px-4 py-3"
+          className="border-border bg-muted/50 flex items-center gap-3 rounded-xl border p-3 text-sm"
           role="status"
         >
-          <p className="text-sm font-medium">An import is already in progress.</p>
+          <Loader2
+            className="text-muted-foreground size-5 shrink-0 animate-spin"
+            aria-hidden="true"
+          />
+          <p id="resume-import-hint" className="flex-1 font-medium">
+            An import is already running.
+          </p>
           <Button size="sm" asChild>
             <Link to={`/import?job=${activeJobId}`}>Resume</Link>
           </Button>
@@ -134,6 +144,7 @@ function ImportEntry() {
           <Button
             type="submit"
             disabled={trimmed.length === 0 || start.isPending || importActive}
+            aria-describedby={importActive ? "resume-import-hint" : undefined}
             title={
               importActive
                 ? "An import is already running — resume it or wait for it to finish"
