@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,11 @@ from beets.autotag.match import Recommendation as BeetsRec
 from beets.importer.tasks import Action, ImportTask
 from beets.library import Item
 
-from app.beets.import_session import ImportBridge, WebImportSession
+from app.beets.import_session import (
+    ImportBridge,
+    WebImportSession,
+    _trash_replaced_albums,
+)
 from app.models.import_models import (
     AlbumOutcomeStatus,
     DuplicateAction,
@@ -189,3 +194,28 @@ def test_replace_records_ids_without_hard_delete(monkeypatch: pytest.MonkeyPatch
     assert task.choice_flag is Action.APPLY
     assert task.should_remove_duplicates is False
     assert session._replace_album_ids == {11, 22}
+
+
+def test_trash_replaced_albums_runs_from_a_worker_thread(
+    duplicates_lib: Any, tmp_path: Path
+) -> None:
+    """Post-run Replace trashing runs on the import worker thread.
+
+    Same root cause as the /duplicates resolve path: beets 2.11 expands DB-relative
+    item paths via a ``ContextVar`` set when the ``Library`` is opened (main thread),
+    which worker threads do not inherit, so ``Album.move`` got a relative source and
+    raised ``FileNotFoundError``. ``_trash_replaced_albums`` binds the music dir so
+    it works from any thread. Running it in a worker reproduces the import worker.
+    """
+    trash = tmp_path / "trash"
+    target = next(iter(duplicates_lib.albums()))
+    target_id = int(target.id)
+    session = _session(ImportBridge(), trash_dir=trash)
+    session.lib = duplicates_lib
+    session._replace_album_ids = {target_id}
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(_trash_replaced_albums, session).result()
+
+    assert duplicates_lib.get_album(target_id) is None  # dropped from the library
+    assert trash.is_dir() and any(trash.iterdir())  # files relocated under Trash

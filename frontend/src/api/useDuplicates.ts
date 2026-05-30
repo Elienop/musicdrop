@@ -15,6 +15,10 @@ export type DuplicateMode = components["schemas"]["DuplicateMode"];
 export type ResolveRequest = components["schemas"]["ResolveRequest"];
 /** Result of a resolve (generated). */
 export type ResolveResult = components["schemas"]["ResolveResult"];
+/** Body of POST /api/duplicates/resolve-all (generated). */
+export type ResolveAllRequest = components["schemas"]["ResolveAllRequest"];
+/** Result of a batch resolve (generated). */
+export type ResolveAllResult = components["schemas"]["ResolveAllResult"];
 
 /** Structured error so the page can branch on HTTP status (409 import/stale,
  * 404 gone, 500). `name = "DuplicatesOpError"` keeps `instanceof Error` true. */
@@ -60,6 +64,27 @@ export function useResolveDuplicate() {
       });
       if (!response.ok || !data) {
         throw duplicatesOpError("Resolve failed", response.status, error);
+      }
+      return data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["duplicates"] });
+    },
+  });
+}
+
+/** Resolve EVERY marked group in one request (move losers to Trash). Invalidates
+ * all ["duplicates", *] reports on success so resolved groups disappear. Throws
+ * a {@link DuplicatesOpError} on non-2xx so the page can branch on `.status`. */
+export function useResolveAllDuplicates() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (req: ResolveAllRequest): Promise<ResolveAllResult> => {
+      const { data, error, response } = await client.POST("/api/duplicates/resolve-all", {
+        body: req,
+      });
+      if (!response.ok || !data) {
+        throw duplicatesOpError("Resolve all failed", response.status, error);
       }
       return data;
     },

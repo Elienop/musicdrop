@@ -6,11 +6,17 @@ The GET is synchronous + read-only; the POST is the mutating, serialized op.
 
 from fastapi import APIRouter, Request
 
-from app.beets.duplicates import find_duplicate_albums, resolve_duplicates_op
+from app.beets.duplicates import (
+    find_duplicate_albums,
+    resolve_all_op,
+    resolve_duplicates_op,
+)
 from app.beets.library import LibraryHandle
 from app.models.duplicates import (
     DuplicateMode,
     DuplicatesReport,
+    ResolveAllRequest,
+    ResolveAllResult,
     ResolveRequest,
     ResolveResult,
 )
@@ -29,3 +35,8 @@ def get_duplicates(
 @router.post("/duplicates/resolve", response_model=ResolveResult)
 async def resolve_duplicates(req: ResolveRequest, request: Request) -> ResolveResult:
     return await resolve_duplicates_op(request, req)
+
+
+@router.post("/duplicates/resolve-all", response_model=ResolveAllResult)
+async def resolve_all_duplicates(req: ResolveAllRequest, request: Request) -> ResolveAllResult:
+    return await resolve_all_op(request, req)

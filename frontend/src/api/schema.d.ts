@@ -376,6 +376,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/duplicates/resolve-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve All Duplicates */
+        post: operations["resolve_all_duplicates_api_duplicates_resolve_all_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -675,6 +692,19 @@ export interface components {
             /** Folder */
             folder: string;
         };
+        /**
+         * GroupDecision
+         * @description One group's keep/remove decision in a batch resolve.
+         *
+         *     Mirrors :class:`ResolveRequest` minus the shared ``mode`` — the server
+         *     re-verifies each group with the request's ``mode`` (no acting on stale UI).
+         */
+        GroupDecision: {
+            /** Keep Album Id */
+            keep_album_id: number;
+            /** Remove Album Ids */
+            remove_album_ids: number[];
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -840,6 +870,32 @@ export interface components {
          */
         Recommendation: "none" | "low" | "medium" | "strong";
         /**
+         * ResolveAllRequest
+         * @description Body of ``POST /api/duplicates/resolve-all`` — resolve many groups at once.
+         */
+        ResolveAllRequest: {
+            mode: components["schemas"]["DuplicateMode"];
+            /** Groups */
+            groups: components["schemas"]["GroupDecision"][];
+        };
+        /**
+         * ResolveAllResult
+         * @description Result of ``POST /api/duplicates/resolve-all``.
+         *
+         *     ``group_count``/``moved_count`` are convenience totals for the summary line
+         *     (groups resolved, copies moved to Trash).
+         */
+        ResolveAllResult: {
+            /** Resolved */
+            resolved: components["schemas"]["ResolveResult"][];
+            /** Skipped Stale */
+            skipped_stale: components["schemas"]["SkippedGroup"][];
+            /** Group Count */
+            group_count: number;
+            /** Moved Count */
+            moved_count: number;
+        };
+        /**
          * ResolveRequest
          * @description Body of ``POST /api/duplicates/resolve``.
          *
@@ -905,6 +961,17 @@ export interface components {
             album_id: number | null;
             /** Duration Seconds */
             duration_seconds: number | null;
+        };
+        /**
+         * SkippedGroup
+         * @description A group skipped in a batch because it drifted since the report
+         *     (``StaleGroupError``). ``keep_album_id`` identifies which one for the UI.
+         */
+        SkippedGroup: {
+            /** Keep Album Id */
+            keep_album_id: number;
+            /** Reason */
+            reason: string;
         };
         /**
          * StartImportRequest
@@ -1654,6 +1721,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ResolveResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolve_all_duplicates_api_duplicates_resolve_all_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveAllRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolveAllResult"];
                 };
             };
             /** @description Validation Error */
