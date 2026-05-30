@@ -881,6 +881,47 @@
           }
         }
       }
+    },
+    "/api/duplicates/resolve-all": {
+      "post": {
+        "tags": [
+          "duplicates"
+        ],
+        "summary": "Resolve All Duplicates",
+        "operationId": "resolve_all_duplicates_api_duplicates_resolve_all_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveAllRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolveAllResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1637,6 +1678,29 @@
         "title": "ExistingAlbum",
         "description": "A slim view of one in-library album that the incoming import duplicates.\n\nBuilt from a beets ``Album`` (the ``found_duplicates`` set). ``album_id`` is\nthe library id (so the FE can fetch its cover via ``/api/albums/{id}/cover``\nand so Replace can target it by stable id)."
       },
+      "GroupDecision": {
+        "properties": {
+          "keep_album_id": {
+            "type": "integer",
+            "title": "Keep Album Id"
+          },
+          "remove_album_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Remove Album Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "keep_album_id",
+          "remove_album_ids"
+        ],
+        "title": "GroupDecision",
+        "description": "One group's keep/remove decision in a batch resolve.\n\nMirrors :class:`ResolveRequest` minus the shared ``mode`` \u2014 the server\nre-verifies each group with the request's ``mode`` (no acting on stale UI)."
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -2018,6 +2082,63 @@
         "title": "Recommendation",
         "description": "Mirror of beets' Recommendation enum (beets/autotag/match.py).\n\nBeets uses an IntEnum (none=0..strong=3); we expose the names as strings so\nthe JSON contract is self-describing for the frontend."
       },
+      "ResolveAllRequest": {
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/DuplicateMode"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/GroupDecision"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Groups"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "groups"
+        ],
+        "title": "ResolveAllRequest",
+        "description": "Body of ``POST /api/duplicates/resolve-all`` \u2014 resolve many groups at once."
+      },
+      "ResolveAllResult": {
+        "properties": {
+          "resolved": {
+            "items": {
+              "$ref": "#/components/schemas/ResolveResult"
+            },
+            "type": "array",
+            "title": "Resolved"
+          },
+          "skipped_stale": {
+            "items": {
+              "$ref": "#/components/schemas/SkippedGroup"
+            },
+            "type": "array",
+            "title": "Skipped Stale"
+          },
+          "group_count": {
+            "type": "integer",
+            "title": "Group Count"
+          },
+          "moved_count": {
+            "type": "integer",
+            "title": "Moved Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "resolved",
+          "skipped_stale",
+          "group_count",
+          "moved_count"
+        ],
+        "title": "ResolveAllResult",
+        "description": "Result of ``POST /api/duplicates/resolve-all``.\n\n``group_count``/``moved_count`` are convenience totals for the summary line\n(groups resolved, copies moved to Trash)."
+      },
       "ResolveRequest": {
         "properties": {
           "mode": {
@@ -2183,6 +2304,25 @@
           "duration_seconds"
         ],
         "title": "SearchTrack"
+      },
+      "SkippedGroup": {
+        "properties": {
+          "keep_album_id": {
+            "type": "integer",
+            "title": "Keep Album Id"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "keep_album_id",
+          "reason"
+        ],
+        "title": "SkippedGroup",
+        "description": "A group skipped in a batch because it drifted since the report\n(``StaleGroupError``). ``keep_album_id`` identifies which one for the UI."
       },
       "StartImportRequest": {
         "properties": {
