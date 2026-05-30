@@ -64,4 +64,15 @@ describe("useActiveImport", () => {
     await waitFor(() => expect(result.current.data).toEqual({ active: false }));
     expect(result.current.isError).toBe(false);
   });
+
+  test("passes through the active job's id (resume target)", async () => {
+    server.use(
+      http.get(URL_, () =>
+        HttpResponse.json({ active: true, job_id: "job-42" }, { status: 200 }),
+      ),
+    );
+    const { result } = renderHook(() => useActiveImport(), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual({ active: true, job_id: "job-42" });
+  });
 });

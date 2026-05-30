@@ -116,6 +116,19 @@ class ImportJobRegistry:
         with self._lock:
             return self._job is not None and self._job.phase in _ACTIVE_PHASES
 
+    def active_job_id(self) -> str | None:
+        """The active job's id (resume target), or None when no job owns the slot.
+
+        Mirrors ``has_active_job`` (same ``_ACTIVE_PHASES`` gate, same lock) but
+        returns the id so the import Start screen can deep-link a "Resume" back
+        into a running import. ``active_job_id() is not None`` is equivalent to
+        ``has_active_job()``.
+        """
+        with self._lock:
+            if self._job is not None and self._job.phase in _ACTIVE_PHASES:
+                return self._job.id
+            return None
+
     def start(self, path: str) -> str:
         """Start an import; raise RuntimeError if one is already active."""
         with self._lock:

@@ -75,6 +75,15 @@ def test_start_returns_job_and_marks_active() -> None:
     assert registry.has_active_job() is True
 
 
+def test_active_job_id_tracks_started_job() -> None:
+    registry = ImportJobRegistry(
+        runner=FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
+    )
+    assert registry.active_job_id() is None
+    job_id = registry.start("/music/incoming")
+    assert registry.active_job_id() == job_id
+
+
 def test_second_start_while_active_raises() -> None:
     registry = ImportJobRegistry(
         runner=FakeImportRunner(parked=[_parked(0, Recommendation.medium)])

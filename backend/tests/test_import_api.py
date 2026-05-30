@@ -201,23 +201,23 @@ def test_start_returns_202_and_job_id() -> None:
 
 
 def test_active_probe_false_when_no_job() -> None:
-    # Fresh registry with no started job: the probe must report inactive so the
-    # SettingsPage's Apply button stays enabled.
+    # Fresh registry with no started job: inactive, and no resume target.
     reset_registry(runner=FakeImportRunner(parked=[]))
     client = TestClient(app)
     resp = client.get("/api/imports/active")
     assert resp.status_code == 200
-    assert resp.json() == {"active": False}
+    assert resp.json() == {"active": False, "job_id": None}
 
 
 def test_active_probe_true_while_import_runs() -> None:
     # An import parked at index 0 (reviewing phase) is active per the registry's
-    # _ACTIVE_PHASES set — the Apply button must be gated until it ends.
+    # _ACTIVE_PHASES set — the Apply button must be gated until it ends, and the
+    # probe must carry the job_id so the import Start screen can offer Resume.
     client = _client_with_fake(parked=[_api_parked(0, Recommendation.medium)])
-    client.post("/api/import", json={"path": "/music/incoming"})
+    job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
     resp = client.get("/api/imports/active")
     assert resp.status_code == 200
-    assert resp.json() == {"active": True}
+    assert resp.json() == {"active": True, "job_id": job_id}
 
 
 def test_second_concurrent_import_is_409() -> None:

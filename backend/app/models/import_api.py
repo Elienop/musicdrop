@@ -118,14 +118,20 @@ class ImportJobState(BaseModel):
 class ActiveImportStatus(BaseModel):
     """Response of ``GET /api/imports/active``.
 
-    A typed, single-field probe the SettingsPage's Apply button polls to gate
-    itself: while an import is in flight, ``apply`` would 409, so the UI must
-    show "Import in progress" instead of letting the click race the gate.
+    A typed probe used two ways: the SettingsPage's Apply button polls
+    ``active`` to gate itself (an in-flight import would 409 an Apply), and the
+    import Start screen reads ``job_id`` to offer a "Resume" link back into a
+    running import the user navigated away from.
 
-    A named model rather than a bare ``dict[str, bool]`` so the OpenAPI schema
-    emits a ``$ref`` and the generated TS type is a concrete
-    ``ActiveImportStatus`` (per CLAUDE.md rule 2: every endpoint returns a
-    Pydantic model).
+    ``job_id`` is the active job's id, or ``None`` when nothing is running;
+    ``active`` and ``job_id`` are always consistent (``active`` is ``True``
+    exactly when ``job_id`` is non-null).
+
+    A named model rather than a bare ``dict`` so the OpenAPI schema emits a
+    ``$ref`` and the generated TS type is a concrete ``ActiveImportStatus``
+    (per CLAUDE.md rule 2: every endpoint returns a Pydantic model).
     """
 
     active: bool
+    # The active job's id (the Start screen's Resume target), or None when idle.
+    job_id: str | None = None

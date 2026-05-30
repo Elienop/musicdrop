@@ -1,7 +1,7 @@
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
 
 import type { ImportJobState } from "@/api/useImport";
 import { ImportPage } from "@/pages/import/ImportPage";
@@ -10,6 +10,7 @@ import { server } from "@/test/msw-server";
 
 const IMPORT_URL = `${window.location.origin}/api/import`;
 const JOB_URL = `${window.location.origin}/api/import/job-1`;
+const ACTIVE_URL = `${window.location.origin}/api/imports/active`;
 
 function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
@@ -48,6 +49,17 @@ function renderAt(route: string) {
 }
 
 describe("ImportPage — entry", () => {
+  beforeEach(() => {
+    // ImportEntry polls the active-import probe (for the Resume banner).
+    // Default to "idle" so the pre-existing entry tests see no banner and an
+    // enabled Start; banner tests override with their own server.use(...).
+    server.use(
+      http.get(ACTIVE_URL, () =>
+        HttpResponse.json({ active: false, job_id: null }),
+      ),
+    );
+  });
+
   test("shows the path input + Start when there is no active job", () => {
     renderAt("/import");
     expect(
@@ -94,11 +106,14 @@ describe("ImportPage — entry", () => {
     expect(seenBody).toEqual({ path: "/music/incoming" });
   });
 
-  test("a 409 surfaces 'already running' without flipping away", async () => {
+  test("a 409 with no resumable import surfaces an accurate, non-dead-end message", async () => {
+    // The swap-lock case: no import owns the slot (probe idle -> Start enabled),
+    // but a config Apply / duplicate resolve holds the beets lock, so POST
+    // /api/import 409s. The message must not claim a resumable import.
     server.use(
       http.post(IMPORT_URL, () =>
         HttpResponse.json(
-          { detail: "An import is already running" },
+          { detail: "A library operation is in progress" },
           { status: 409 },
         ),
       ),
@@ -110,10 +125,58 @@ describe("ImportPage — entry", () => {
     await user.click(screen.getByRole("button", { name: /start import/i }));
 
     expect(
-      await screen.findByText(/an import is already running/i),
+      await screen.findByText(/library operation is in progress/i),
     ).toBeInTheDocument();
     // Still on the entry screen (no ?job=, so the input is still shown).
     expect(screen.getByLabelText("Folder path")).toBeInTheDocument();
+  });
+
+  test("shows a Resume banner to the running job and disables Start while active", async () => {
+    server.use(
+      http.get(ACTIVE_URL, () =>
+        HttpResponse.json({ active: true, job_id: "job-9" }),
+      ),
+    );
+    renderAt("/import");
+
+    const resume = await screen.findByRole("link", { name: /resume/i });
+    expect(resume).toHaveAttribute("href", "/import?job=job-9");
+    // Start is gated while an import is already running.
+    expect(
+      screen.getByRole("button", { name: /start import/i }),
+    ).toBeDisabled();
+  });
+
+  test("a 409 refreshes the probe so the Resume banner appears (race recovery)", async () => {
+    // The race: the user lands while the probe still reads idle (Start enabled),
+    // types a path and clicks Start, but an import started elsewhere between
+    // probes -> POST 409. onError invalidates ["active-import"]; the refetch now
+    // reports the running job, so the Resume banner materializes instead of a
+    // dead-end. The probe returns "active" only AFTER the POST has fired.
+    let started = false;
+    server.use(
+      http.post(IMPORT_URL, () => {
+        started = true;
+        return HttpResponse.json(
+          { detail: "An import is already running" },
+          { status: 409 },
+        );
+      }),
+      http.get(ACTIVE_URL, () =>
+        started
+          ? HttpResponse.json({ active: true, job_id: "job-7" })
+          : HttpResponse.json({ active: false, job_id: null }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    await user.type(screen.getByLabelText("Folder path"), "/music/incoming");
+    await user.click(screen.getByRole("button", { name: /start import/i }));
+
+    // The 409-triggered probe invalidation surfaces the running job as a Resume.
+    const resume = await screen.findByRole("link", { name: /resume/i });
+    expect(resume).toHaveAttribute("href", "/import?job=job-7");
   });
 });
 

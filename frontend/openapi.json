@@ -311,7 +311,7 @@
           "import"
         ],
         "summary": "Get Active Import",
-        "description": "Tiny probe the ``/settings`` page polls to gate the Apply button.\n\nReturns ``{\"active\": True}`` while any import is in flight (i.e. the\nregistry's single slot is in ``_ACTIVE_PHASES``). ``POST /api/config/apply``\n409s in that case; the SettingsPage uses this poll to render an\n\"Import in progress\" state instead of letting the click race the gate.\n\nPlural path (``/imports/active``) to match the convention any future\nmulti-import surface would adopt; the single-slot registry is an\nimplementation detail.",
+        "description": "Probe used two ways: the ``/settings`` Apply gate polls ``active``, and\nthe import Start screen reads ``job_id`` to offer \"Resume\" back into a\nrunning import the user navigated away from.\n\n``active`` is ``True`` exactly while the registry's single slot is in\n``_ACTIVE_PHASES`` (``POST /api/config/apply`` 409s in that case); ``job_id``\ncarries the resume target (``None`` when idle). Both come from one\n``active_job_id()`` call so they can never disagree.",
         "operationId": "get_active_import_api_imports_active_get",
         "responses": {
           "200": {
@@ -890,6 +890,17 @@
           "active": {
             "type": "boolean",
             "title": "Active"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
           }
         },
         "type": "object",
@@ -897,7 +908,7 @@
           "active"
         ],
         "title": "ActiveImportStatus",
-        "description": "Response of ``GET /api/imports/active``.\n\nA typed, single-field probe the SettingsPage's Apply button polls to gate\nitself: while an import is in flight, ``apply`` would 409, so the UI must\nshow \"Import in progress\" instead of letting the click race the gate.\n\nA named model rather than a bare ``dict[str, bool]`` so the OpenAPI schema\nemits a ``$ref`` and the generated TS type is a concrete\n``ActiveImportStatus`` (per CLAUDE.md rule 2: every endpoint returns a\nPydantic model)."
+        "description": "Response of ``GET /api/imports/active``.\n\nA typed probe used two ways: the SettingsPage's Apply button polls\n``active`` to gate itself (an in-flight import would 409 an Apply), and the\nimport Start screen reads ``job_id`` to offer a \"Resume\" link back into a\nrunning import the user navigated away from.\n\n``job_id`` is the active job's id, or ``None`` when nothing is running;\n``active`` and ``job_id`` are always consistent (``active`` is ``True``\nexactly when ``job_id`` is non-null).\n\nA named model rather than a bare ``dict`` so the OpenAPI schema emits a\n``$ref`` and the generated TS type is a concrete ``ActiveImportStatus``\n(per CLAUDE.md rule 2: every endpoint returns a Pydantic model)."
       },
       "Album": {
         "properties": {
