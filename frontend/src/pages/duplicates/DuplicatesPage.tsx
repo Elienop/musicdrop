@@ -7,7 +7,9 @@ import {
   type DuplicateGroup,
   type DuplicateMode,
   type DuplicatesOpError,
+  type ResolveAllResult,
   useDuplicates,
+  useResolveAllDuplicates,
   useResolveDuplicate,
 } from "@/api/useDuplicates";
 import {
@@ -32,9 +34,61 @@ import {
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 
+/** A group's chosen keeper, clamped to current membership. A background refetch
+ * can change a group's members while keeping its `suggested_keeper_id` (so the
+ * card doesn't remount), which would leave a selection pointing at a vanished
+ * album; falling back to the suggested keeper keeps remove-ids + the dialog
+ * truthful. Shared by each card and the bulk action. */
+function effectiveKeeperId(
+  group: DuplicateGroup,
+  selections: Record<number, number>,
+): number {
+  const chosen = selections[group.suggested_keeper_id];
+  return group.members.some((m) => m.id === chosen)
+    ? chosen
+    : group.suggested_keeper_id;
+}
+
 export function DuplicatesPage() {
   const [mode, setMode] = useState<DuplicateMode>("strict");
   const { data, isPending, isError, refetch } = useDuplicates(mode);
+  // Keeper choices live here (not per-card) so the bulk "Resolve all" can read
+  // every group's selection. Keyed by the stable `suggested_keeper_id`.
+  const [selections, setSelections] = useState<Record<number, number>>({});
+  const [confirmAllOpen, setConfirmAllOpen] = useState(false);
+  const [summary, setSummary] = useState<ResolveAllResult | null>(null);
+  const resolveAll = useResolveAllDuplicates();
+  const queryClient = useQueryClient();
+
+  const groups = data?.groups ?? [];
+  // Copies the bulk action moves: one keeper per group, the rest to Trash —
+  // independent of WHICH keeper, so derive from the report counts.
+  const moveCount = data ? data.album_count - data.group_count : 0;
+  const showBulk = (data?.group_count ?? 0) >= 2;
+
+  const decisions = groups.map((g) => {
+    const keep = effectiveKeeperId(g, selections);
+    return { group: g, keep, removeIds: g.members.filter((m) => m.id !== keep).map((m) => m.id) };
+  });
+
+  function onConfirmAll() {
+    setSummary(null);
+    resolveAll.mutate(
+      { mode, groups: decisions.map((d) => ({ keep_album_id: d.keep, remove_album_ids: d.removeIds })) },
+      {
+        onSettled: () => setConfirmAllOpen(false),
+        onSuccess: (res) => setSummary(res),
+        onError: (err) => {
+          if ((err as DuplicatesOpError).status === 409) {
+            void queryClient.invalidateQueries({ queryKey: ["duplicates"] });
+          }
+        },
+      },
+    );
+  }
+
+  const allError = resolveAll.error as DuplicatesOpError | null;
+  const skipped = summary?.skipped_stale.length ?? 0;
 
   return (
     <section className="flex flex-col gap-4" aria-label="Duplicate albums">
@@ -47,16 +101,90 @@ export function DuplicatesPage() {
               : "Scanning your library…"}
           </p>
         </div>
-        <ModeToggle mode={mode} onChange={setMode} />
+        <div className="flex items-center gap-3">
+          {showBulk && (
+            <Button
+              variant="destructive"
+              disabled={resolveAll.isPending}
+              onClick={() => setConfirmAllOpen(true)}
+            >
+              {resolveAll.isPending ? (
+                <>
+                  <Loader2 className="animate-spin" aria-hidden="true" />
+                  Resolving&hellip;
+                </>
+              ) : (
+                `Resolve all · ${moveCount} ${moveCount === 1 ? "copy" : "copies"}`
+              )}
+            </Button>
+          )}
+          <ModeToggle mode={mode} onChange={setMode} />
+        </div>
       </header>
+
+      {summary && (
+        <p className="text-muted-foreground text-sm" role="status">
+          Moved {summary.moved_count} {summary.moved_count === 1 ? "copy" : "copies"} across{" "}
+          {summary.group_count} {summary.group_count === 1 ? "group" : "groups"} to Trash.
+          {skipped > 0 &&
+            ` ${skipped} group${skipped === 1 ? "" : "s"} changed and ${skipped === 1 ? "was" : "were"} skipped — refreshed; re-check ${skipped === 1 ? "it" : "them"}.`}
+        </p>
+      )}
+      {allError && (
+        <p className="text-destructive text-sm" role="alert">
+          {allError.status === 409
+            ? resolve409Message(allError)
+            : "Resolve all failed. The Trash keeps any moved copies; refresh and retry."}
+        </p>
+      )}
 
       {isPending && <LoadingState />}
       {isError && <ErrorState onRetry={() => void refetch()} />}
-      {data && data.groups.length === 0 && <EmptyState />}
+      {data && groups.length === 0 && <EmptyState />}
       {data &&
-        data.groups.map((group) => (
-          <GroupCard key={group.suggested_keeper_id} group={group} mode={mode} />
+        groups.map((group) => (
+          <GroupCard
+            key={group.suggested_keeper_id}
+            group={group}
+            mode={mode}
+            keeperId={effectiveKeeperId(group, selections)}
+            onChoose={(albumId) =>
+              setSelections((s) => ({ ...s, [group.suggested_keeper_id]: albumId }))
+            }
+          />
         ))}
+
+      <AlertDialog open={confirmAllOpen} onOpenChange={setConfirmAllOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Move {moveCount} {moveCount === 1 ? "copy" : "copies"} across{" "}
+              {data?.group_count ?? 0} groups to Trash?
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="text-sm">
+                Keeping one copy per group (the marked keeper). These move to the
+                Trash folder (reversible — nothing is deleted):
+                <ul className="mt-2 max-h-64 space-y-1 overflow-y-auto">
+                  {decisions.map((d) => {
+                    const keeper = d.group.members.find((m) => m.id === d.keep);
+                    return (
+                      <li key={d.group.suggested_keeper_id} className="text-xs">
+                        Keep <strong>{keeper?.title}</strong>
+                        <span className="text-muted-foreground"> · move {d.removeIds.length}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={onConfirmAll}>Move all to Trash</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }
@@ -104,35 +232,32 @@ function resolve409Message(err: DuplicatesOpError): string {
     : "This group changed — refreshing. Re-check the copies and retry.";
 }
 
-function GroupCard({ group, mode }: { group: DuplicateGroup; mode: DuplicateMode }) {
-  const [keeperId, setKeeperId] = useState(group.suggested_keeper_id);
+function GroupCard({
+  group,
+  mode,
+  keeperId,
+  onChoose,
+}: {
+  group: DuplicateGroup;
+  mode: DuplicateMode;
+  keeperId: number;
+  onChoose: (albumId: number) => void;
+}) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const resolve = useResolveDuplicate();
   const queryClient = useQueryClient();
 
-  // Clamp the keeper to current membership. A background refetch can change a
-  // group's members while keeping suggested_keeper_id (so the card keeps its
-  // React key and does NOT remount), which would leave keeperId pointing at an
-  // album no longer present — making removeIds cover the whole group and the
-  // dialog read "Keeping <nothing>". Falling back to the suggested keeper keeps
-  // the confirm dialog + remove_album_ids truthful.
-  const effectiveKeeperId = group.members.some((m) => m.id === keeperId)
-    ? keeperId
-    : group.suggested_keeper_id;
-  const keeper = group.members.find((m) => m.id === effectiveKeeperId);
-  const removeIds = group.members
-    .filter((m) => m.id !== effectiveKeeperId)
-    .map((m) => m.id);
+  // `keeperId` is the page's clamped selection (always a current member);
+  // derive this group's losers from it.
+  const keeper = group.members.find((m) => m.id === keeperId);
+  const removeIds = group.members.filter((m) => m.id !== keeperId).map((m) => m.id);
 
   function onConfirm() {
     resolve.mutate(
-      { mode, keep_album_id: effectiveKeeperId, remove_album_ids: removeIds },
+      { mode, keep_album_id: keeperId, remove_album_ids: removeIds },
       {
         onSettled: () => setConfirmOpen(false),
         onError: (err) => {
-          // 409 = stale group (membership changed) or an import is running.
-          // Refetch so the report self-heals to the current library state
-          // instead of leaving the now-wrong group on screen.
           if ((err as DuplicatesOpError).status === 409) {
             void queryClient.invalidateQueries({ queryKey: ["duplicates"] });
           }
@@ -172,8 +297,8 @@ function GroupCard({ group, mode }: { group: DuplicateGroup; mode: DuplicateMode
               // Shared per-GROUP radio name so the copies form one radio group
               // (single-select + arrow-key nav). Stable across re-render.
               name={`keeper-${group.suggested_keeper_id}`}
-              checked={album.id === effectiveKeeperId}
-              onChoose={() => setKeeperId(album.id)}
+              checked={album.id === keeperId}
+              onChoose={() => onChoose(album.id)}
             />
           ))}
         </TableBody>
@@ -217,7 +342,7 @@ function GroupCard({ group, mode }: { group: DuplicateGroup; mode: DuplicateMode
                 folder (reversible — nothing is deleted):
                 <ul className="mt-2 list-disc pl-5">
                   {group.members
-                    .filter((m) => m.id !== effectiveKeeperId)
+                    .filter((m) => m.id !== keeperId)
                     .map((m) => (
                       <li key={m.id} className="font-mono text-xs">
                         {m.folder}

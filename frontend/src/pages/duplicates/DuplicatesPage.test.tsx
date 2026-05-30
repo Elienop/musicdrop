@@ -55,6 +55,27 @@ function reportWithOneGroup(): DuplicatesReport {
   };
 }
 
+const RESOLVE_ALL_URL = `${window.location.origin}/api/duplicates/resolve-all`;
+
+function reportWithTwoGroups(): DuplicatesReport {
+  return {
+    mode: "strict",
+    group_count: 2,
+    album_count: 4,
+    groups: [
+      reportWithOneGroup().groups[0], // Radiohead / In Rainbows (ids 1,2)
+      {
+        match_reason: "MusicBrainz album id",
+        suggested_keeper_id: 3,
+        members: [
+          album({ id: 3, album_artist: "Daft Punk", title: "Discovery", track_count: 14, is_suggested_keeper: true, folder: "/music/Daft Punk/Discovery" }),
+          album({ id: 4, album_artist: "Daft Punk", title: "Discovery", track_count: 12, is_suggested_keeper: false, format: "MP3", bitrate_kbps: 320, folder: "/music/Daft Punk/Discovery (1)" }),
+        ],
+      },
+    ],
+  };
+}
+
 function renderPage() {
   return renderWithProviders(<DuplicatesPage />, { route: "/duplicates", path: "/duplicates" });
 }
@@ -158,5 +179,90 @@ describe("DuplicatesPage", () => {
     // 409 invalidates ["duplicates"] so the report self-heals: at least one
     // extra GET fires after the failed resolve.
     await waitFor(() => expect(getCalls).toBeGreaterThan(callsBeforeResolve));
+  });
+
+  test("the Resolve-all button shows the total copy count (only with 2+ groups)", async () => {
+    server.use(http.get(DUP_URL, () => HttpResponse.json(reportWithTwoGroups())));
+    renderPage();
+    expect(
+      await screen.findByRole("button", { name: /resolve all · 2 copies/i }),
+    ).toBeInTheDocument();
+  });
+
+  test("no Resolve-all button with a single group", async () => {
+    server.use(http.get(DUP_URL, () => HttpResponse.json(reportWithOneGroup())));
+    renderPage();
+    await screen.findByText(/Matched on/i);
+    expect(screen.queryByRole("button", { name: /resolve all/i })).not.toBeInTheDocument();
+  });
+
+  test("Resolve all posts every group's decision (honoring an override) and clears them", async () => {
+    let body: unknown = null;
+    let getCalls = 0;
+    server.use(
+      http.get(DUP_URL, () => {
+        getCalls += 1;
+        return HttpResponse.json(
+          getCalls === 1
+            ? reportWithTwoGroups()
+            : { mode: "strict", group_count: 0, album_count: 0, groups: [] },
+        );
+      }),
+      http.post(RESOLVE_ALL_URL, async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({
+          resolved: [
+            { kept_album_id: 1, moved: [{ id: 2, album_artist: "Radiohead", title: "In Rainbows", trash_path: "/t" }] },
+            { kept_album_id: 4, moved: [{ id: 3, album_artist: "Daft Punk", title: "Discovery", trash_path: "/t" }] },
+          ],
+          skipped_stale: [],
+          group_count: 2,
+          moved_count: 2,
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    // Two groups → two "Matched on" rows, so wait on findAllByText.
+    await screen.findAllByText(/Matched on/i);
+
+    // Override group 2's keeper: pick the 12-track Daft Punk copy (id 4).
+    await user.click(screen.getByRole("radio", { name: /Keep Discovery \(12 tracks\)/i }));
+    await user.click(screen.getByRole("button", { name: /resolve all · 2 copies/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /move all to trash/i }));
+
+    await waitFor(() =>
+      expect(body).toEqual({
+        mode: "strict",
+        groups: [
+          { keep_album_id: 1, remove_album_ids: [2] },
+          { keep_album_id: 4, remove_album_ids: [3] },
+        ],
+      }),
+    );
+    await waitFor(() => expect(screen.queryByText(/Matched on/i)).not.toBeInTheDocument());
+  });
+
+  test("the summary flags groups the server skipped", async () => {
+    server.use(
+      http.get(DUP_URL, () => HttpResponse.json(reportWithTwoGroups())),
+      http.post(RESOLVE_ALL_URL, () =>
+        HttpResponse.json({
+          resolved: [{ kept_album_id: 1, moved: [{ id: 2, album_artist: "Radiohead", title: "In Rainbows", trash_path: "/t" }] }],
+          skipped_stale: [{ keep_album_id: 3, reason: "duplicate group membership changed" }],
+          group_count: 1,
+          moved_count: 1,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    // Two groups → two "Matched on" rows, so wait on findAllByText.
+    await screen.findAllByText(/Matched on/i);
+    await user.click(screen.getByRole("button", { name: /resolve all/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /move all to trash/i }));
+    expect(await screen.findByText(/1 group changed and was skipped/i)).toBeInTheDocument();
   });
 });
