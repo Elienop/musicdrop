@@ -37,9 +37,13 @@ from app.models.duplicates import (
     DuplicateGroup,
     DuplicateMode,
     DuplicatesReport,
+    GroupDecision,
     MovedAlbum,
+    ResolveAllRequest,
+    ResolveAllResult,
     ResolveRequest,
     ResolveResult,
+    SkippedGroup,
 )
 
 _PAREN_RE = re.compile(r"[\(\[].*?[\)\]]")
@@ -236,6 +240,90 @@ async def resolve_duplicates_op(request: Request, req: ResolveRequest) -> Resolv
                     "message": f"Resolve failed: {exc}",
                     "recovery": (
                         "Moved copies are recoverable in the Trash folder. "
+                        "Refresh the report and retry."
+                    ),
+                },
+            ) from exc
+
+
+def resolve_all_groups(
+    lib: Library,
+    *,
+    mode: DuplicateMode,
+    groups: list[GroupDecision],
+    trash_dir: Path,
+) -> ResolveAllResult:
+    """Resolve many duplicate groups in one pass.
+
+    Loops :func:`resolve_duplicate_group` per group (each re-detects with ``mode``
+    and moves its losers to Trash). A group that drifted since the report
+    (:class:`StaleGroupError`) is SKIPPED and recorded — the rest still resolve
+    (bulk ops self-heal rather than failing wholesale). ``AlbumNotFoundError``
+    and any other fault propagate; copies already moved stay safe in Trash.
+    """
+    resolved: list[ResolveResult] = []
+    skipped: list[SkippedGroup] = []
+    # Per-group re-detection (resolve_duplicate_group re-scans the library each
+    # call) is intentional, not an oversight: the library mutates as earlier
+    # groups resolve, so a single cached report would be stale by the time later
+    # groups run. The O(groups x albums) cost is fine at single-user scale.
+    for decision in groups:
+        try:
+            result = resolve_duplicate_group(
+                lib,
+                mode=mode,
+                keep_album_id=decision.keep_album_id,
+                remove_album_ids=decision.remove_album_ids,
+                trash_dir=trash_dir,
+            )
+        except StaleGroupError as exc:
+            skipped.append(SkippedGroup(keep_album_id=decision.keep_album_id, reason=str(exc)))
+            continue
+        resolved.append(result)
+    return ResolveAllResult(
+        resolved=resolved,
+        skipped_stale=skipped,
+        group_count=len(resolved),
+        moved_count=sum(len(r.moved) for r in resolved),
+    )
+
+
+async def resolve_all_op(request: Request, req: ResolveAllRequest) -> ResolveAllResult:
+    """Batch resolve, serialized against imports + config Apply.
+
+    Mirrors :func:`resolve_duplicates_op`: import gate (409), the shared
+    ``beets_swap_lock`` acquired ONCE for the whole batch, threadpool, error
+    mapping. ``StaleGroupError`` is handled per-group inside
+    :func:`resolve_all_groups` (skipped), so only ``AlbumNotFoundError`` (404)
+    and unexpected faults (500) surface here. An all-stale batch is a normal
+    200 with an empty ``resolved`` + populated ``skipped_stale``.
+    """
+    app = request.app
+    if get_registry().has_active_job():
+        raise HTTPException(
+            status_code=409,
+            detail="Import in progress — resolve available when it finishes",
+        )
+    async with _swap_lock(app):
+        handle: LibraryHandle = app.state.beets_library
+        trash_dir = resolve_trash_dir(_settings(app), handle)
+        try:
+            return await run_in_threadpool(
+                resolve_all_groups,
+                handle.lib,
+                mode=req.mode,
+                groups=req.groups,
+                trash_dir=trash_dir,
+            )
+        except AlbumNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": f"Resolve failed: {exc}",
+                    "recovery": (
+                        "Any moved copies are recoverable in the Trash folder. "
                         "Refresh the report and retry."
                     ),
                 },

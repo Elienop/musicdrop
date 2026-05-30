@@ -83,3 +83,42 @@ class MovedAlbum(BaseModel):
 class ResolveResult(BaseModel):
     kept_album_id: int
     moved: list[MovedAlbum]
+
+
+class GroupDecision(BaseModel):
+    """One group's keep/remove decision in a batch resolve.
+
+    Mirrors :class:`ResolveRequest` minus the shared ``mode`` — the server
+    re-verifies each group with the request's ``mode`` (no acting on stale UI).
+    """
+
+    keep_album_id: int
+    remove_album_ids: list[int] = Field(min_length=1)
+
+
+class ResolveAllRequest(BaseModel):
+    """Body of ``POST /api/duplicates/resolve-all`` — resolve many groups at once."""
+
+    mode: DuplicateMode
+    groups: list[GroupDecision] = Field(min_length=1)
+
+
+class SkippedGroup(BaseModel):
+    """A group skipped in a batch because it drifted since the report
+    (``StaleGroupError``). ``keep_album_id`` identifies which one for the UI."""
+
+    keep_album_id: int
+    reason: str
+
+
+class ResolveAllResult(BaseModel):
+    """Result of ``POST /api/duplicates/resolve-all``.
+
+    ``group_count``/``moved_count`` are convenience totals for the summary line
+    (groups resolved, copies moved to Trash).
+    """
+
+    resolved: list[ResolveResult]
+    skipped_stale: list[SkippedGroup]
+    group_count: int
+    moved_count: int
