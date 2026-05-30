@@ -451,14 +451,22 @@ def _trash_replaced_albums(session: WebImportSession) -> None:
     resolve_duplicates_op (which gates on has_active_job + the swap lock and would
     deadlock/409 against this in-flight import). A missing album (already gone) is
     skipped, not an error.
+
+    Binds ``lib.music_dir_context()`` for the loads + moves: beets 2.11 expands
+    DB-relative item paths via a ``ContextVar`` set when the ``Library`` is opened
+    (the main thread). This runs on the import worker thread, which does not
+    inherit that ``ContextVar``, so without the bind ``Album.move`` gets a relative
+    source path and raises ``FileNotFoundError`` (same root cause as the /duplicates
+    resolve path).
     """
     trash_dir = session._trash_dir
     if trash_dir is None or not session._replace_album_ids:
         return
     lib = session.lib
-    for album_id in session._replace_album_ids:
-        album = lib.get_album(album_id)
-        if album is None:
-            continue  # already gone — nothing to trash
-        with lib.transaction():
-            trash_album(lib, album, trash_dir=trash_dir)
+    with lib.music_dir_context():
+        for album_id in session._replace_album_ids:
+            album = lib.get_album(album_id)
+            if album is None:
+                continue  # already gone — nothing to trash
+            with lib.transaction():
+                trash_album(lib, album, trash_dir=trash_dir)

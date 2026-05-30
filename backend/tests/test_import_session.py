@@ -579,6 +579,13 @@ def test_run_import_worker_trashes_replace_ids_after_run(monkeypatch: pytest.Mon
 
             return contextlib.nullcontext()
 
+        def music_dir_context(self) -> Any:
+            # Real Library binds beets' music-dir ContextVar here; a no-op is fine
+            # since this fake never expands paths off the main thread.
+            import contextlib
+
+            return contextlib.nullcontext()
+
     class FakeSession:
         lib = _Lib()
         _replace_album_ids: ClassVar[set[int]] = {11, 22}

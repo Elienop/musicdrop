@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -125,3 +126,36 @@ def test_resolve_all_skips_stale_and_resolves_the_rest(
     assert len(result.skipped_stale) == 1
     assert result.skipped_stale[0].keep_album_id == stale.suggested_keeper_id
     assert find_duplicate_albums(duplicates_lib, mode=DuplicateMode.fuzzy).group_count == 1
+
+
+def test_resolve_runs_from_a_worker_thread(duplicates_lib: Library, tmp_path: Path) -> None:
+    """Resolve must work off the main thread.
+
+    In production the endpoint runs ``resolve_duplicate_group`` in a FastAPI
+    threadpool thread. beets 2.11 stores item paths relative to the library dir
+    and expands them on load via a ``ContextVar`` (``beets.context``) that is set
+    when the ``Library`` is opened — on the *main* thread. That ``ContextVar`` is
+    NOT inherited by worker threads, so ``Album.move`` got a relative source path
+    and raised ``FileNotFoundError`` (the live /duplicates resolve-all 500).
+    ``resolve_duplicate_group`` must bind the library's music dir itself so it is
+    correct from any thread. Running it in a worker here reproduces that path.
+    """
+    trash = tmp_path / "trash"
+    group = _strict_group(duplicates_lib)
+    keep = group.suggested_keeper_id
+    losers = [m.id for m in group.members if m.id != keep]
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        result = pool.submit(
+            resolve_duplicate_group,
+            duplicates_lib,
+            mode=DuplicateMode.strict,
+            keep_album_id=keep,
+            remove_album_ids=losers,
+            trash_dir=trash,
+        ).result()
+
+    assert len(result.moved) == len(losers)
+    for moved in result.moved:
+        assert os.path.isdir(moved.trash_path)
+    assert find_duplicate_albums(duplicates_lib, mode=DuplicateMode.strict).group_count == 0

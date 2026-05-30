@@ -163,37 +163,46 @@ def resolve_duplicate_group(
     Trash by path template, the vacated source dir is pruned) then
     ``Album.remove(delete=False)`` (DB rows dropped, files remain in Trash) —
     exactly ``beet dup --move <trash> --remove`` for albums.
-    """
-    report = find_duplicate_albums(lib, mode=mode)
-    target = next(
-        (g for g in report.groups if any(m.id == keep_album_id for m in g.members)),
-        None,
-    )
-    if target is None:
-        raise StaleGroupError("keep album is no longer part of a duplicate group")
-    current_others = {m.id for m in target.members} - {keep_album_id}
-    if set(remove_album_ids) != current_others:
-        raise StaleGroupError("duplicate group membership changed")
 
-    trash_dir.mkdir(parents=True, exist_ok=True)
-    moved: list[MovedAlbum] = []
-    with lib.transaction():
-        for album_id in remove_album_ids:
-            album = lib.get_album(album_id)
-            if album is None:
-                raise AlbumNotFoundError(f"album {album_id} not found")
-            album_artist = _coerce_str(album.albumartist)
-            title = _coerce_str(album.album)
-            trash_path = trash_album(lib, album, trash_dir=trash_dir)
-            moved.append(
-                MovedAlbum(
-                    id=album_id,
-                    album_artist=album_artist,
-                    title=title,
-                    trash_path=trash_path,
+    Binds ``lib.music_dir_context()`` for the whole operation: beets 2.11 stores
+    item paths relative to the library dir and re-expands them to absolute on load
+    via a ``ContextVar`` (``beets.context``) set when the ``Library`` is opened.
+    The API runs this in a FastAPI threadpool thread that does NOT inherit that
+    ``ContextVar``, so without the bind ``Album.move`` gets a relative source path
+    and raises ``FileNotFoundError``. Reentrant/cheap, so the per-group bind in
+    :func:`resolve_all_groups`'s loop is also safe.
+    """
+    with lib.music_dir_context():
+        report = find_duplicate_albums(lib, mode=mode)
+        target = next(
+            (g for g in report.groups if any(m.id == keep_album_id for m in g.members)),
+            None,
+        )
+        if target is None:
+            raise StaleGroupError("keep album is no longer part of a duplicate group")
+        current_others = {m.id for m in target.members} - {keep_album_id}
+        if set(remove_album_ids) != current_others:
+            raise StaleGroupError("duplicate group membership changed")
+
+        trash_dir.mkdir(parents=True, exist_ok=True)
+        moved: list[MovedAlbum] = []
+        with lib.transaction():
+            for album_id in remove_album_ids:
+                album = lib.get_album(album_id)
+                if album is None:
+                    raise AlbumNotFoundError(f"album {album_id} not found")
+                album_artist = _coerce_str(album.albumartist)
+                title = _coerce_str(album.album)
+                trash_path = trash_album(lib, album, trash_dir=trash_dir)
+                moved.append(
+                    MovedAlbum(
+                        id=album_id,
+                        album_artist=album_artist,
+                        title=title,
+                        trash_path=trash_path,
+                    )
                 )
-            )
-    return ResolveResult(kept_album_id=keep_album_id, moved=moved)
+        return ResolveResult(kept_album_id=keep_album_id, moved=moved)
 
 
 async def resolve_duplicates_op(request: Request, req: ResolveRequest) -> ResolveResult:
