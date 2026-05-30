@@ -118,18 +118,38 @@ export function DuplicatesPage() {
               )}
             </Button>
           )}
-          <ModeToggle mode={mode} onChange={setMode} />
+          <ModeToggle
+            mode={mode}
+            onChange={(m) => {
+              // Switching modes regroups the library — drop keeper overrides (a
+              // same keeper-id can recur with different membership across modes)
+              // and the stale summary so the bulk action can't carry a wrong
+              // choice over.
+              setMode(m);
+              setSelections({});
+              setSummary(null);
+            }}
+          />
         </div>
       </header>
 
-      {summary && (
-        <p className="text-muted-foreground text-sm" role="status">
-          Moved {summary.moved_count} {summary.moved_count === 1 ? "copy" : "copies"} across{" "}
-          {summary.group_count} {summary.group_count === 1 ? "group" : "groups"} to Trash.
-          {skipped > 0 &&
-            ` ${skipped} group${skipped === 1 ? "" : "s"} changed and ${skipped === 1 ? "was" : "were"} skipped — refreshed; re-check ${skipped === 1 ? "it" : "them"}.`}
-        </p>
-      )}
+      {summary &&
+        (summary.moved_count > 0 ? (
+          <p className="text-muted-foreground text-sm" role="status">
+            Moved {summary.moved_count} {summary.moved_count === 1 ? "copy" : "copies"} across{" "}
+            {summary.group_count} {summary.group_count === 1 ? "group" : "groups"} to Trash.
+            {skipped > 0 &&
+              ` ${skipped} group${skipped === 1 ? "" : "s"} changed and ${skipped === 1 ? "was" : "were"} skipped — refreshed; re-check ${skipped === 1 ? "it" : "them"}.`}
+          </p>
+        ) : (
+          // All groups drifted since the scan (a normal 200 with nothing moved):
+          // lead with the actionable part, not a "moved 0" that reads as a no-op.
+          <p className="text-sm" role="status">
+            Nothing moved — {skipped === 1 ? "the group" : `all ${skipped} groups`} changed
+            since the scan and {skipped === 1 ? "was" : "were"} skipped. The report refreshed;
+            re-check {skipped === 1 ? "it" : "them"}.
+          </p>
+        ))}
       {allError && (
         <p className="text-destructive text-sm" role="alert">
           {allError.status === 409
@@ -159,7 +179,8 @@ export function DuplicatesPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>
               Move {moveCount} {moveCount === 1 ? "copy" : "copies"} across{" "}
-              {data?.group_count ?? 0} groups to Trash?
+              {data?.group_count ?? 0} {(data?.group_count ?? 0) === 1 ? "group" : "groups"} to
+              Trash?
             </AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="text-sm">
@@ -171,7 +192,10 @@ export function DuplicatesPage() {
                     return (
                       <li key={d.group.suggested_keeper_id} className="text-xs">
                         Keep <strong>{keeper?.title}</strong>
-                        <span className="text-muted-foreground"> · move {d.removeIds.length}</span>
+                        <span className="text-muted-foreground">
+                          {" "}
+                          — {keeper?.album_artist} · move {d.removeIds.length}
+                        </span>
                       </li>
                     );
                   })}

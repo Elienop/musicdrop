@@ -265,4 +265,31 @@ describe("DuplicatesPage", () => {
     await user.click(within(dialog).getByRole("button", { name: /move all to trash/i }));
     expect(await screen.findByText(/1 group changed and was skipped/i)).toBeInTheDocument();
   });
+
+  test("an all-skipped batch leads with the skip notice, not 'moved 0'", async () => {
+    // Every group drifted since the scan: a normal 200 with nothing moved. The
+    // summary must surface the actionable skip, not read as a no-op success.
+    server.use(
+      http.get(DUP_URL, () => HttpResponse.json(reportWithTwoGroups())),
+      http.post(RESOLVE_ALL_URL, () =>
+        HttpResponse.json({
+          resolved: [],
+          skipped_stale: [
+            { keep_album_id: 1, reason: "duplicate group membership changed" },
+            { keep_album_id: 3, reason: "duplicate group membership changed" },
+          ],
+          group_count: 0,
+          moved_count: 0,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findAllByText(/Matched on/i);
+    await user.click(screen.getByRole("button", { name: /resolve all/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /move all to trash/i }));
+    expect(await screen.findByText(/nothing moved/i)).toBeInTheDocument();
+    expect(screen.queryByText(/moved 0/i)).not.toBeInTheDocument();
+  });
 });
