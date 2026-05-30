@@ -1,7 +1,9 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, CircleCheck, FolderInput, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
+import { useActiveImport } from "@/api/useActiveImport";
 import type { ImportAlbumSummary, ImportJobState } from "@/api/useImport";
 import {
   ImportConflictError,
@@ -30,13 +32,23 @@ export function ImportPage() {
   return <ImportRun jobId={jobId} />;
 }
 
-/** Entry: a server-path input + Start. Surfaces the 409 (already running) and
- * the blank-path guard locally; on success the URL gains `?job=<id>` and the
- * page flips to the live run. */
+/** Entry: a server-path input + Start. Polls the active-import probe so a
+ * running import the user navigated away from surfaces a Resume banner (and
+ * Start is gated while one runs); the blank-path guard and the residual 409
+ * (swap-lock / race) are surfaced locally. On success the URL gains
+ * `?job=<id>` and the page flips to the live run. */
 function ImportEntry() {
   const [, setSearchParams] = useSearchParams();
   const [path, setPath] = useState("");
   const start = useStartImport();
+  const queryClient = useQueryClient();
+  const active = useActiveImport();
+
+  // The active job's id (resume target) and whether an import owns the slot.
+  // `active` and `job_id` are consistent server-side; guard both here so the
+  // banner never renders a link to a null id.
+  const activeJobId = active.data?.job_id ?? null;
+  const importActive = (active.data?.active ?? false) && activeJobId !== null;
 
   const trimmed = path.trim();
   const conflict = start.error instanceof ImportConflictError;
@@ -54,6 +66,14 @@ function ImportEntry() {
         onSuccess: (data) => {
           setSearchParams({ job: data.job_id });
         },
+        onError: (err) => {
+          // A 409 can mean an import started in another tab/session between
+          // probes — refresh the active-import query so the Resume banner
+          // appears with the running job's id instead of a dead-end.
+          if (err instanceof ImportConflictError) {
+            void queryClient.invalidateQueries({ queryKey: ["active-import"] });
+          }
+        },
       },
     );
   }
@@ -67,6 +87,21 @@ function ImportEntry() {
           against MusicBrainz, and imports what it finds.
         </p>
       </div>
+
+      {importActive && activeJobId && (
+        // A running import the user navigated away from — one click back in.
+        // Resuming just navigates to `?job=<id>`; the run page routes to the
+        // right phase view and pins any album awaiting a decision.
+        <div
+          className="border-border bg-muted/40 flex items-center justify-between gap-3 rounded-lg border px-4 py-3"
+          role="status"
+        >
+          <p className="text-sm font-medium">An import is already in progress.</p>
+          <Button size="sm" asChild>
+            <Link to={`/import?job=${activeJobId}`}>Resume</Link>
+          </Button>
+        </div>
+      )}
 
       <form className="flex flex-col gap-3" onSubmit={onSubmit}>
         <label className="flex flex-col gap-2">
@@ -82,12 +117,10 @@ function ImportEntry() {
         </label>
 
         {conflict && (
-          // The 409 carries no job id, so there's nowhere actionable to link to
-          // (the user is already on /import). Plain, honest text instead of a
-          // focusable link that navigates nowhere.
           <p className="text-destructive text-sm" role="alert">
-            An import is already running. Reopen it from the tab that started it,
-            or wait for it to finish.
+            {activeJobId
+              ? "An import is already running — use Resume above."
+              : "Couldn't start — a library operation is in progress. Try again in a moment."}
           </p>
         )}
         {genericError && (
@@ -98,7 +131,15 @@ function ImportEntry() {
         )}
 
         <div>
-          <Button type="submit" disabled={trimmed.length === 0 || start.isPending}>
+          <Button
+            type="submit"
+            disabled={trimmed.length === 0 || start.isPending || importActive}
+            title={
+              importActive
+                ? "An import is already running — resume it or wait for it to finish"
+                : undefined
+            }
+          >
             {start.isPending ? (
               <>
                 <Loader2 className="animate-spin" aria-hidden="true" />
