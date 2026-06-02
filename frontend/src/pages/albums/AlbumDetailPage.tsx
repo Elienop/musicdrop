@@ -1,4 +1,4 @@
-import { AlertCircle, Music } from "lucide-react";
+import { AlertCircle, Music, Pencil } from "lucide-react";
 import { Fragment, useState } from "react";
 import { Link, useParams } from "react-router";
 
@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AlbumEditPanel } from "@/pages/albums/AlbumEditPanel";
 import {
   Table,
   TableBody,
@@ -78,6 +79,8 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
   // gated on `group.disc > 0` at render).
   const multiDisc = discs.length > 1;
 
+  const [editing, setEditing] = useState(false);
+
   return (
     <article
       className="flex flex-col gap-8"
@@ -92,12 +95,22 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
       <header className="flex flex-col gap-6 sm:flex-row sm:items-center">
         <CoverImage album={album} />
         <div className="flex min-w-0 flex-col gap-2">
-          <h2
-            id="album-detail-title"
-            className="text-3xl font-semibold tracking-tight break-words"
-          >
-            {album.title}
-          </h2>
+          <div className="flex flex-wrap items-center gap-3">
+            <h2
+              id="album-detail-title"
+              className="text-3xl font-semibold tracking-tight break-words"
+            >
+              {album.title}
+            </h2>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setEditing((v) => !v)}
+              aria-label="Edit album"
+            >
+              <Pencil className="size-4" /> Edit
+            </Button>
+          </div>
           <p className="text-muted-foreground text-lg">{album.album_artist}</p>
           <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-sm">
             {album.year !== null && (
@@ -115,6 +128,10 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
           </div>
         </div>
       </header>
+
+      {editing && (
+        <AlbumEditPanel album={album} onClose={() => setEditing(false)} />
+      )}
 
       <Separator />
 
