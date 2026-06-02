@@ -140,6 +140,112 @@
         }
       }
     },
+    "/api/albums/{album_id}/edit/preview": {
+      "post": {
+        "tags": [
+          "albums"
+        ],
+        "summary": "Preview Album Edit Endpoint",
+        "description": "Preview a pending album/track edit (field diff + move plan). Read-only.",
+        "operationId": "preview_album_edit_endpoint_api_albums__album_id__edit_preview_post",
+        "parameters": [
+          {
+            "name": "album_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Album Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlbumEditRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumEditPreview"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/albums/{album_id}/edit": {
+      "post": {
+        "tags": [
+          "albums"
+        ],
+        "summary": "Edit Album Endpoint",
+        "description": "Apply an album/track tag edit (write + config-gated move). 409 if importing.",
+        "operationId": "edit_album_endpoint_api_albums__album_id__edit_post",
+        "parameters": [
+          {
+            "name": "album_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Album Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlbumEditRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumEditResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/albums/{album_id}/cover": {
       "get": {
         "tags": [
@@ -1144,6 +1250,210 @@
         ],
         "title": "AlbumDetail"
       },
+      "AlbumDiffSide": {
+        "properties": {
+          "album_artist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Artist"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          },
+          "genre": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Genre"
+          }
+        },
+        "type": "object",
+        "title": "AlbumDiffSide",
+        "description": "One side (before/after) of the album-header diff."
+      },
+      "AlbumEditPreview": {
+        "properties": {
+          "changed_fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Changed Fields"
+          },
+          "album_before": {
+            "$ref": "#/components/schemas/AlbumDiffSide"
+          },
+          "album_after": {
+            "$ref": "#/components/schemas/AlbumDiffSide"
+          },
+          "tracks": {
+            "items": {
+              "$ref": "#/components/schemas/EditTrackChange"
+            },
+            "type": "array",
+            "title": "Tracks"
+          },
+          "move_enabled": {
+            "type": "boolean",
+            "title": "Move Enabled"
+          },
+          "move_plan": {
+            "items": {
+              "$ref": "#/components/schemas/TrackPathChange"
+            },
+            "type": "array",
+            "title": "Move Plan"
+          }
+        },
+        "type": "object",
+        "required": [
+          "changed_fields",
+          "album_before",
+          "album_after",
+          "tracks",
+          "move_enabled",
+          "move_plan"
+        ],
+        "title": "AlbumEditPreview",
+        "description": "The preview of a pending edit: field diff + move plan. Persists nothing."
+      },
+      "AlbumEditRequest": {
+        "properties": {
+          "album": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlbumFieldEdits"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tracks": {
+            "items": {
+              "$ref": "#/components/schemas/TrackFieldEdits"
+            },
+            "type": "array",
+            "title": "Tracks",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "AlbumEditRequest",
+        "description": "One edit request: optional album-header changes + per-track changes."
+      },
+      "AlbumEditResult": {
+        "properties": {
+          "album": {
+            "$ref": "#/components/schemas/AlbumDetail"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ItemWriteResult"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "write_failures": {
+            "type": "integer",
+            "title": "Write Failures"
+          },
+          "move_failures": {
+            "type": "integer",
+            "title": "Move Failures"
+          }
+        },
+        "type": "object",
+        "required": [
+          "album",
+          "items",
+          "write_failures",
+          "move_failures"
+        ],
+        "title": "AlbumEditResult",
+        "description": "The result of an apply: the refreshed album + per-track outcomes."
+      },
+      "AlbumFieldEdits": {
+        "properties": {
+          "album_artist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Artist"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          },
+          "genre": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Genre"
+          }
+        },
+        "type": "object",
+        "title": "AlbumFieldEdits",
+        "description": "Album-header fields to change; only set (non-None) keys are applied.\n\nThese propagate to every track (beets ``inherit``). Clearing a field (set\nto null) is out of scope, so None means \"leave unchanged\"."
+      },
       "AlbumPage": {
         "properties": {
           "items": {
@@ -1594,6 +1904,86 @@
         ],
         "title": "DuplicatesReport"
       },
+      "EditTrackChange": {
+        "properties": {
+          "item_id": {
+            "type": "integer",
+            "title": "Item Id"
+          },
+          "title_before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Before"
+          },
+          "title_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title After"
+          },
+          "track_before": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Before"
+          },
+          "track_after": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track After"
+          },
+          "artist_before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Before"
+          },
+          "artist_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist After"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id"
+        ],
+        "title": "EditTrackChange",
+        "description": "One track row's before/after, for the preview diff (changed rows only)."
+      },
       "ExistingAlbum": {
         "properties": {
           "album_id": {
@@ -2009,6 +2399,63 @@
         ],
         "title": "IncomingAlbum",
         "description": "A slim view of the album being imported \u2014 symmetric with ExistingAlbum.\n\nBuilt from the import task's current files (works for both an APPLY match and\nan ASIS import, neither of which is needed to render the duplicate decision).\n``has_current_art`` drives whether the FE attempts the current-files cover."
+      },
+      "ItemWriteResult": {
+        "properties": {
+          "item_id": {
+            "type": "integer",
+            "title": "Item Id"
+          },
+          "track": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "written": {
+            "type": "boolean",
+            "title": "Written"
+          },
+          "moved": {
+            "type": "boolean",
+            "title": "Moved"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "written",
+          "moved"
+        ],
+        "title": "ItemWriteResult",
+        "description": "The per-track outcome of an apply (replaces beets' silent all-or-nothing)."
       },
       "MissingTrack": {
         "properties": {
@@ -2493,6 +2940,88 @@
         ],
         "title": "TrackChangeStatus",
         "description": "How a matched track row differs from the current file."
+      },
+      "TrackFieldEdits": {
+        "properties": {
+          "item_id": {
+            "type": "integer",
+            "title": "Item Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "track": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track"
+          },
+          "artist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id"
+        ],
+        "title": "TrackFieldEdits",
+        "description": "Per-track fields to change, keyed by the track's beets item id."
+      },
+      "TrackPathChange": {
+        "properties": {
+          "item_id": {
+            "type": "integer",
+            "title": "Item Id"
+          },
+          "track": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track"
+          },
+          "old_path": {
+            "type": "string",
+            "title": "Old Path"
+          },
+          "new_path": {
+            "type": "string",
+            "title": "New Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "old_path",
+          "new_path"
+        ],
+        "title": "TrackPathChange",
+        "description": "A track whose file would relocate when move is enabled."
       },
       "UnmatchedItem": {
         "properties": {

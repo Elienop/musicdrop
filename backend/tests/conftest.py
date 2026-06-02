@@ -232,6 +232,56 @@ def duplicates_lib(tmp_path: Path) -> "Library":
 
 
 @pytest.fixture
+def edit_lib(tmp_path: "Path") -> "Library":
+    """A hermetic library with one album of REAL FLAC files (tag-writable).
+
+    Unlike ``duplicates_lib`` (which writes ``b"\\x00"`` stubs because it only
+    moves files), the edit feature calls ``item.try_write()`` which tags the
+    audio via mutagen — so the seed files must be valid audio. Each track is a
+    copy of ``tests/fixtures/silent.flac``. Explicit ``path_formats`` so
+    ``item.destination()`` / ``item.move()`` can resolve a destination.
+
+        Radiohead / In Rainbows : 3 tracks (mb-edit), album id is the first added
+    """
+    import os
+    import shutil
+
+    from beets.library import Item, Library
+
+    sample = Path(__file__).parent / "fixtures" / "silent.flac"
+    music = tmp_path / "music"
+    lib = Library(
+        str(tmp_path / "library.db"),
+        directory=str(music),
+        path_formats=[("default", "$albumartist/$album/$track $title")],
+    )
+
+    base = music / "Radiohead" / "In Rainbows"
+    base.mkdir(parents=True, exist_ok=True)
+    items = []
+    titles = ["15 Step", "Bodysnatchers", "Nude"]
+    for i, title in enumerate(titles, start=1):
+        f = base / f"{i:02d} {title}.flac"
+        shutil.copyfile(sample, f)
+        it = Item(
+            album="In Rainbows",
+            albumartist="Radiohead",
+            artist="Radiohead",
+            title=title,
+            track=i,
+            disc=1,
+        )
+        it.path = os.fsencode(str(f))
+        items.append(it)
+    album = lib.add_album(items)
+    album["mb_albumid"] = "mb-edit"
+    album["genre"] = "Alternative Rock"
+    album["year"] = 2007
+    album.store()
+    return lib
+
+
+@pytest.fixture
 def client(beets_library: LibraryHandle) -> Iterator[TestClient]:
     """TestClient with ``app.state.beets_library`` wired to a real handle.
 
