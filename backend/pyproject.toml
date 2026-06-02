@@ -51,6 +51,7 @@ module = [
     "app.beets.config_snapshot",
     "app.beets.config_editor",
     "app.beets.duplicates",
+    "app.beets.edit",
     "app.import_jobs.runner",
     "tests.conftest",
     "tests.test_albums",
