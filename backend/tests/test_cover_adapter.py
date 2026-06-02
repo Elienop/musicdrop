@@ -22,9 +22,7 @@ def test_install_cover_sets_artpath(edit_lib: Library) -> None:
     from app.beets.library import get_album_cover
 
     aid = _album_id(edit_lib)
-    result = install_cover(
-        edit_lib, album_id=aid, image_bytes=PNG.read_bytes(), content_type="image/png"
-    )
+    result = install_cover(edit_lib, album_id=aid, image_bytes=PNG.read_bytes())
     assert result.ok is True
     # artpath written to a cover file in the album dir, and GET /cover serves it.
     album = edit_lib.get_album(aid)
@@ -40,21 +38,14 @@ def test_install_cover_rejects_non_image(edit_lib: Library) -> None:
     from app.beets.cover import UnsupportedImageError, install_cover
 
     with pytest.raises(UnsupportedImageError):
-        install_cover(
-            edit_lib,
-            album_id=_album_id(edit_lib),
-            image_bytes=b"not an image",
-            content_type="text/plain",
-        )
+        install_cover(edit_lib, album_id=_album_id(edit_lib), image_bytes=b"not an image")
 
 
 def test_install_cover_unknown_album(edit_lib: Library) -> None:
     from app.beets.cover import AlbumNotFoundError, install_cover
 
     with pytest.raises(AlbumNotFoundError):
-        install_cover(
-            edit_lib, album_id=999999, image_bytes=PNG.read_bytes(), content_type="image/png"
-        )
+        install_cover(edit_lib, album_id=999999, image_bytes=PNG.read_bytes())
 
 
 def test_install_cover_embed_gated_off_by_default(edit_lib: Library) -> None:
@@ -62,9 +53,7 @@ def test_install_cover_embed_gated_off_by_default(edit_lib: Library) -> None:
     from app.beets.cover import install_cover
 
     aid = _album_id(edit_lib)
-    result = install_cover(
-        edit_lib, album_id=aid, image_bytes=PNG.read_bytes(), content_type="image/png"
-    )
+    result = install_cover(edit_lib, album_id=aid, image_bytes=PNG.read_bytes())
     assert result.embedded is False
     album = edit_lib.get_album(aid)
     assert album is not None
@@ -81,7 +70,7 @@ def test_install_cover_embeds_when_embedart_enabled(
     # Force the embed gate on (config gate = embedart in plugins AND should_write).
     monkeypatch.setattr(cover_mod, "_embed_enabled", lambda: True)
     aid = _album_id(edit_lib)
-    install_cover(edit_lib, album_id=aid, image_bytes=PNG.read_bytes(), content_type="image/png")
+    install_cover(edit_lib, album_id=aid, image_bytes=PNG.read_bytes())
     album = edit_lib.get_album(aid)
     assert album is not None
     for item in album.items():
@@ -99,7 +88,6 @@ def test_install_cover_runs_from_a_worker_thread(edit_lib: Library) -> None:
             edit_lib,
             album_id=aid,
             image_bytes=PNG.read_bytes(),
-            content_type="image/png",
         ).result()
     assert result.ok is True
     album = edit_lib.get_album(aid)
@@ -141,3 +129,27 @@ def test_fetch_unknown_album(edit_lib: Library) -> None:
 
     with pytest.raises(AlbumNotFoundError):
         fetch_cover_candidate(edit_lib, album_id=999999)
+
+
+def test_fetch_none_when_candidate_oversize(
+    edit_lib: Library, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An oversize remote download is treated as 'no usable art' (DoS cap), not read."""
+    from app.beets import cover as cover_mod
+
+    # A temp file just over the cap; outside the library dir (a remote download).
+    big = tmp_path / "huge.jpg"
+    big.write_bytes(b"\xff\xd8\xff" + b"\x00" * (cover_mod.MAX_COVER_BYTES + 1))
+
+    class _Candidate:
+        path = os.fsencode(str(big))
+        source_name = "external source"
+
+    class _StubPlugin:
+        def art_for_album(self, album: object, paths: object, local_only: bool = False) -> object:
+            return _Candidate()
+
+    monkeypatch.setattr(cover_mod, "_make_fetchart_plugin", lambda: _StubPlugin())
+    assert cover_mod.fetch_cover_candidate(edit_lib, album_id=_album_id(edit_lib)) is None
+    # The oversize temp was cleaned up (treated as a remote download).
+    assert not big.exists()

@@ -24,10 +24,16 @@ import confuse
 from beets.library import Library
 from beets.ui import should_write
 from beetsplug._utils import art
+from fastapi import Request
 
 from app.models.cover import CoverInstallResult
 
 _log = logging.getLogger("musicdrop.cover")
+
+# Hard cap on cover bytes we will materialize, mirroring the API upload cap. A
+# remote fetchart candidate can point at an arbitrarily large download; refuse to
+# read it into memory past this size (DoS guard).
+MAX_COVER_BYTES = 10 * 1024 * 1024
 
 # Sniffed mime -> the extension we give the temp file (drives ``cover.<ext>``).
 _MIME_EXT = {
@@ -71,9 +77,7 @@ def _embed_enabled() -> bool:
     return "embedart" in plugins and bool(should_write(None))
 
 
-def install_cover(
-    lib: Library, *, album_id: int, image_bytes: bytes, content_type: str | None
-) -> CoverInstallResult:
+def install_cover(lib: Library, *, album_id: int, image_bytes: bytes) -> CoverInstallResult:
     """Install ``image_bytes`` as the album cover (artpath) + optional embed."""
     mime = _sniff_mime(image_bytes)
     if mime is None:
@@ -142,22 +146,31 @@ def fetch_cover_candidate(lib: Library, *, album_id: int) -> FetchedCover | None
         if candidate is None:
             return None
         path = os.fsdecode(candidate.path)
-        data = Path(path).read_bytes()
         source = str(getattr(candidate, "source_name", None) or "external source")
-        # Clean up remote temp downloads; never delete the album's own folder art.
+        # Remote temp downloads get cleaned up; the album's own folder art does not.
         libdir = os.path.abspath(os.fsdecode(lib.directory))
-        if not os.path.abspath(path).startswith(libdir + os.sep):
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+        is_remote = not os.path.abspath(path).startswith(libdir + os.sep)
+
+        def _cleanup() -> None:
+            if is_remote:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+        # Cap before reading so a huge remote image is never materialized (DoS).
+        if os.path.getsize(path) > MAX_COVER_BYTES:
+            _cleanup()
+            return None
+        data = Path(path).read_bytes()
+        _cleanup()
     mime = _sniff_mime(data)
     if mime is None:
         return None  # candidate wasn't a recognizable image -> treat as not found
     return FetchedCover(image_bytes=data, content_type=mime, source=source)
 
 
-async def fetch_cover_op(request_obj: Any, album_id: int) -> tuple[bytes, str, str]:
+async def fetch_cover_op(request_obj: Request, album_id: int) -> tuple[bytes, str, str]:
     """Fetch a candidate (no library write -> no lock/gate). Returns (bytes, mime, source)."""
     from fastapi import HTTPException
     from fastapi.concurrency import run_in_threadpool
@@ -173,7 +186,7 @@ async def fetch_cover_op(request_obj: Any, album_id: int) -> tuple[bytes, str, s
 
 
 async def install_cover_op(
-    request_obj: Any, album_id: int, image_bytes: bytes, content_type: str | None
+    request_obj: Request, album_id: int, image_bytes: bytes
 ) -> CoverInstallResult:
     """Install: import-gate (409) + shared swap-lock + threadpool, like edit/duplicates."""
     from fastapi import HTTPException
@@ -195,7 +208,6 @@ async def install_cover_op(
                 handle.lib,
                 album_id=album_id,
                 image_bytes=image_bytes,
-                content_type=content_type,
             )
         except AlbumNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

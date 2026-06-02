@@ -86,6 +86,22 @@ def test_fetch_via_filesystem_returns_image(cover_client: TestClient, edit_lib: 
     assert r.content == PNG.read_bytes()
 
 
+def test_upload_rejects_oversize_via_content_length(
+    cover_client: TestClient, edit_lib: Library
+) -> None:
+    """A body whose Content-Length exceeds the cap is rejected 422 before it is read."""
+    from app.api.albums import _MAX_COVER_BYTES
+
+    aid = _aid(edit_lib)
+    oversize = b"\xff\xd8\xff" + b"\x00" * _MAX_COVER_BYTES
+    r = cover_client.post(
+        f"/api/albums/{aid}/cover",
+        files={"file": ("big.jpg", oversize, "image/jpeg")},
+    )
+    assert r.status_code == 422
+    assert "too large" in r.json()["detail"].lower()
+
+
 def test_fetch_404_when_no_art(
     cover_client: TestClient, edit_lib: Library, monkeypatch: pytest.MonkeyPatch
 ) -> None:

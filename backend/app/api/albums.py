@@ -112,7 +112,13 @@ async def install_album_cover_endpoint(
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> CoverInstallResult:
     """Install an uploaded (or approved-fetched) cover. 409 while importing."""
+    # Reject an oversized body before materializing it, when the client declares
+    # its size. The post-read length check below remains the authoritative guard
+    # (Content-Length is client-supplied and may be absent or wrong).
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > _MAX_COVER_BYTES:
+        raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
     image_bytes = await file.read()
     if len(image_bytes) > _MAX_COVER_BYTES:
         raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
-    return await install_cover_op(request, album_id, image_bytes, file.content_type)
+    return await install_cover_op(request, album_id, image_bytes)
