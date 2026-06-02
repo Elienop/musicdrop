@@ -74,6 +74,7 @@ module = [
     "tests.test_duplicates_detection",
     "tests.test_duplicates_resolve",
     "tests.test_trash",
+    "tests.test_edit_adapter",
 ]
 disallow_untyped_calls = false
 
