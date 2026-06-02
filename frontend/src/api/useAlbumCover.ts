@@ -8,6 +8,25 @@ function apiUrl(path: string): string {
   return `${origin}${path}`;
 }
 
+/** Read FastAPI's `{ "detail": ... }` error body, falling back to a generic
+ * message when the response has no usable detail. */
+async function errorDetail(res: Response): Promise<string> {
+  try {
+    const body: unknown = await res.json();
+    if (
+      body !== null &&
+      typeof body === "object" &&
+      "detail" in body &&
+      typeof (body as { detail: unknown }).detail === "string"
+    ) {
+      return (body as { detail: string }).detail;
+    }
+  } catch {
+    // Non-JSON body — fall through to the generic message.
+  }
+  return "Cover install failed";
+}
+
 export type FetchedCover =
   | { found: false }
   | { found: true; blob: Blob; objectUrl: string; source: string | null };
@@ -37,7 +56,7 @@ export function useInstallAlbumCover(albumId: number) {
       form.append("file", image, "cover");
       const res = await fetch(apiUrl(`/api/albums/${albumId}/cover`), { method: "POST", body: form });
       if (res.status === 409) throw new Error("An import is running — try again when it finishes.");
-      if (!res.ok) throw new Error("Cover install failed");
+      if (!res.ok) throw new Error(await errorDetail(res));
       return (await res.json()) as CoverInstallResult;
     },
     onSettled: () => {
