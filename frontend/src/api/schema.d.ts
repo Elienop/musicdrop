@@ -55,6 +55,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/albums/{album_id}/edit/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Album Edit Endpoint
+         * @description Preview a pending album/track edit (field diff + move plan). Read-only.
+         */
+        post: operations["preview_album_edit_endpoint_api_albums__album_id__edit_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/albums/{album_id}/edit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Edit Album Endpoint
+         * @description Apply an album/track tag edit (write + config-gated move). 409 if importing.
+         */
+        post: operations["edit_album_endpoint_api_albums__album_id__edit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/albums/{album_id}/cover": {
         parameters: {
             query?: never;
@@ -473,6 +513,78 @@ export interface components {
             /** Tracks */
             tracks: components["schemas"]["Track"][];
         };
+        /**
+         * AlbumDiffSide
+         * @description One side (before/after) of the album-header diff.
+         */
+        AlbumDiffSide: {
+            /** Album Artist */
+            album_artist?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Year */
+            year?: number | null;
+            /** Genre */
+            genre?: string | null;
+        };
+        /**
+         * AlbumEditPreview
+         * @description The preview of a pending edit: field diff + move plan. Persists nothing.
+         */
+        AlbumEditPreview: {
+            /** Changed Fields */
+            changed_fields: string[];
+            album_before: components["schemas"]["AlbumDiffSide"];
+            album_after: components["schemas"]["AlbumDiffSide"];
+            /** Tracks */
+            tracks: components["schemas"]["EditTrackChange"][];
+            /** Move Enabled */
+            move_enabled: boolean;
+            /** Move Plan */
+            move_plan: components["schemas"]["TrackPathChange"][];
+        };
+        /**
+         * AlbumEditRequest
+         * @description One edit request: optional album-header changes + per-track changes.
+         */
+        AlbumEditRequest: {
+            album?: components["schemas"]["AlbumFieldEdits"] | null;
+            /**
+             * Tracks
+             * @default []
+             */
+            tracks: components["schemas"]["TrackFieldEdits"][];
+        };
+        /**
+         * AlbumEditResult
+         * @description The result of an apply: the refreshed album + per-track outcomes.
+         */
+        AlbumEditResult: {
+            album: components["schemas"]["AlbumDetail"];
+            /** Items */
+            items: components["schemas"]["ItemWriteResult"][];
+            /** Write Failures */
+            write_failures: number;
+            /** Move Failures */
+            move_failures: number;
+        };
+        /**
+         * AlbumFieldEdits
+         * @description Album-header fields to change; only set (non-None) keys are applied.
+         *
+         *     These propagate to every track (beets ``inherit``). Clearing a field (set
+         *     to null) is out of scope, so None means "leave unchanged".
+         */
+        AlbumFieldEdits: {
+            /** Album Artist */
+            album_artist?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Year */
+            year?: number | null;
+            /** Genre */
+            genre?: string | null;
+        };
         /** AlbumPage */
         AlbumPage: {
             /** Items */
@@ -667,6 +779,26 @@ export interface components {
             groups: components["schemas"]["DuplicateGroup"][];
         };
         /**
+         * EditTrackChange
+         * @description One track row's before/after, for the preview diff (changed rows only).
+         */
+        EditTrackChange: {
+            /** Item Id */
+            item_id: number;
+            /** Title Before */
+            title_before?: string | null;
+            /** Title After */
+            title_after?: string | null;
+            /** Track Before */
+            track_before?: number | null;
+            /** Track After */
+            track_after?: number | null;
+            /** Artist Before */
+            artist_before?: string | null;
+            /** Artist After */
+            artist_after?: string | null;
+        };
+        /**
          * ExistingAlbum
          * @description A slim view of one in-library album that the incoming import duplicates.
          *
@@ -836,6 +968,24 @@ export interface components {
             folder: string;
             /** Has Current Art */
             has_current_art: boolean;
+        };
+        /**
+         * ItemWriteResult
+         * @description The per-track outcome of an apply (replaces beets' silent all-or-nothing).
+         */
+        ItemWriteResult: {
+            /** Item Id */
+            item_id: number;
+            /** Track */
+            track?: number | null;
+            /** Title */
+            title?: string | null;
+            /** Written */
+            written: boolean;
+            /** Moved */
+            moved: boolean;
+            /** Error */
+            error?: string | null;
         };
         /**
          * MissingTrack
@@ -1036,6 +1186,34 @@ export interface components {
          */
         TrackChangeStatus: "unchanged" | "changed";
         /**
+         * TrackFieldEdits
+         * @description Per-track fields to change, keyed by the track's beets item id.
+         */
+        TrackFieldEdits: {
+            /** Item Id */
+            item_id: number;
+            /** Title */
+            title?: string | null;
+            /** Track */
+            track?: number | null;
+            /** Artist */
+            artist?: string | null;
+        };
+        /**
+         * TrackPathChange
+         * @description A track whose file would relocate when move is enabled.
+         */
+        TrackPathChange: {
+            /** Item Id */
+            item_id: number;
+            /** Track */
+            track?: number | null;
+            /** Old Path */
+            old_path: string;
+            /** New Path */
+            new_path: string;
+        };
+        /**
          * UnmatchedItem
          * @description A local file with no counterpart on the matched release.
          *
@@ -1181,6 +1359,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AlbumDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_album_edit_endpoint_api_albums__album_id__edit_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                album_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlbumEditRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlbumEditPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_album_endpoint_api_albums__album_id__edit_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                album_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlbumEditRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlbumEditResult"];
                 };
             };
             /** @description Validation Error */
