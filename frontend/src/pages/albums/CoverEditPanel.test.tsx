@@ -40,7 +40,7 @@ describe("CoverEditPanel", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, embedded: false }), { status: 200 }));
 
     const { onInstalled } = renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: /fetch from sources/i }));
+    fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
     await waitFor(() => expect(screen.getByText(/Cover Art Archive/i)).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /use this cover/i }));
     // Surfaces an inline success note instead of auto-closing.
@@ -52,7 +52,7 @@ describe("CoverEditPanel", () => {
   it("shows 'no cover found' on 404", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 404 }));
     renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: /fetch from sources/i }));
+    fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
     await waitFor(() => expect(screen.getByText(/no cover found/i)).toBeInTheDocument());
   });
 
@@ -74,7 +74,7 @@ describe("CoverEditPanel", () => {
       );
 
     const { onInstalled, onClose } = renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: /fetch from sources/i }));
+    fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
     await waitFor(() => expect(screen.getByText(/Cover Art Archive/i)).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /use this cover/i }));
 
@@ -98,7 +98,7 @@ describe("CoverEditPanel", () => {
       );
 
     renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: /fetch from sources/i }));
+    fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
     await waitFor(() => expect(screen.getByText(/Cover Art Archive/i)).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /use this cover/i }));
     await waitFor(() =>
@@ -128,6 +128,14 @@ describe("CoverEditPanel", () => {
     expect(screen.queryByAltText(/cover preview/i)).not.toBeInTheDocument();
   });
 
+  it("opens the native file picker when 'Upload an image…' is clicked", () => {
+    renderPanel();
+    const input = screen.getByLabelText(/upload cover image/i);
+    const clickSpy = vi.spyOn(input, "click");
+    fireEvent.click(screen.getByRole("button", { name: /upload an image/i }));
+    expect(clickSpy).toHaveBeenCalled();
+  });
+
   it("previews an accepted file pick", async () => {
     renderPanel();
     const input = screen.getByLabelText(/upload cover image/i);
@@ -142,7 +150,7 @@ describe("CoverEditPanel", () => {
       new Response(png, { status: 200, headers: { "X-Art-Source": "Cover Art Archive" } }),
     );
     renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: /fetch from sources/i }));
+    fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
     await screen.findByAltText(/cover preview/i);
     expect(createSpy).toHaveBeenCalled();
   });
@@ -161,7 +169,7 @@ describe("CoverEditPanel", () => {
   it("clears a prior fetch error when picking a file", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(null, { status: 500 }));
     renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: /fetch from sources/i }));
+    fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
     await waitFor(() => expect(screen.getByText(/couldn’t fetch a cover/i)).toBeInTheDocument());
 
     const input = screen.getByLabelText(/upload cover image/i);

@@ -1,8 +1,7 @@
-import { AlertCircle, CheckCircle2, Info } from "lucide-react";
-import { useEffect, useState } from "react";
+import { AlertCircle, CheckCircle2, Info, Search, Upload } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { useFetchAlbumCover, useInstallAlbumCover, type FetchedCover } from "@/api/useAlbumCover";
 import type { components } from "@/api/schema";
 
@@ -29,6 +28,7 @@ export function CoverEditPanel({
   const [installed, setInstalled] = useState<CoverInstallResult | null>(null);
   const fetchCover = useFetchAlbumCover(albumId);
   const installCover = useInstallAlbumCover(albumId);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Revoke the live preview URL whenever it is replaced or the panel unmounts
   // (e.g. the parent's "Cover" toggle), so a pending blob never leaks.
@@ -105,23 +105,37 @@ export function CoverEditPanel({
   return (
     <section aria-label="Edit cover" className="flex flex-col gap-3 rounded-lg border p-4">
       {!pending && (
-        <div className="flex flex-wrap items-center gap-3">
-          <Button variant="secondary" onClick={onFetch} disabled={fetchCover.isPending}>
-            {fetchCover.isPending ? "Searching…" : "Fetch from sources"}
-          </Button>
-          <Input
+        <div className="flex flex-col gap-3">
+          <p className="text-muted-foreground text-sm">
+            Set a cover for this album — search online art sources, or upload your own image.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" onClick={onFetch} disabled={fetchCover.isPending}>
+              <Search className="size-4" aria-hidden="true" />
+              {fetchCover.isPending ? "Searching…" : "Fetch from online sources"}
+            </Button>
+            <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
+              <Upload className="size-4" aria-hidden="true" />
+              Upload an image…
+            </Button>
+            <Button variant="ghost" onClick={onCancel}>
+              Cancel
+            </Button>
+          </div>
+          {/* Hidden input the "Upload an image…" button opens — the shadcn-idiomatic
+              way to style a file picker (a styled native input renders as dead text). */}
+          <input
+            ref={fileInputRef}
             type="file"
             accept="image/png,image/jpeg,image/gif,image/webp"
             aria-label="Upload cover image"
-            className="w-auto"
+            className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0];
               if (f) onPickFile(f);
+              e.target.value = ""; // allow re-picking the same file
             }}
           />
-          <Button variant="ghost" onClick={onCancel}>
-            Cancel
-          </Button>
         </div>
       )}
 
