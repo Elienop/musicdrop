@@ -18,6 +18,33 @@ function makeFile(name: string, type: string, bytes = 4): File {
   return new File([new Uint8Array(bytes)], name, { type });
 }
 
+// Hand-rolled Response-likes: a real `new Response(jsdomBlob)` calls `.stream()`
+// on the body when consumed, which the jsdom Blob lacks on Node 22 (undici) ->
+// "object.stream is not a function". These expose exactly what the hooks read.
+function imageResponse(blob: Blob, source: string): Response {
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: (h: string) => (h.toLowerCase() === "x-art-source" ? source : null) },
+    blob: async () => blob,
+  } as unknown as Response;
+}
+function jsonResponse(body: unknown, status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: () => null },
+    json: async () => body,
+  } as unknown as Response;
+}
+function emptyResponse(status: number): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: () => null },
+  } as unknown as Response;
+}
+
 describe("CoverEditPanel", () => {
   let revokeSpy: ReturnType<typeof vi.fn>;
   let createSpy: ReturnType<typeof vi.fn>;
@@ -35,9 +62,9 @@ describe("CoverEditPanel", () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
-        new Response(png, { status: 200, headers: { "X-Art-Source": "Cover Art Archive" } }),
+        imageResponse(png, "Cover Art Archive"),
       )
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, embedded: false }), { status: 200 }));
+      .mockResolvedValueOnce(jsonResponse({ ok: true, embedded: false }, 200));
 
     const { onInstalled } = renderPanel();
     fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
@@ -50,7 +77,7 @@ describe("CoverEditPanel", () => {
   });
 
   it("shows 'no cover found' on 404", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 404 }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(emptyResponse(404));
     renderPanel();
     fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
     await waitFor(() => expect(screen.getByText(/no cover found/i)).toBeInTheDocument());
@@ -60,17 +87,10 @@ describe("CoverEditPanel", () => {
     const png = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
-        new Response(png, { status: 200, headers: { "X-Art-Source": "Cover Art Archive" } }),
+        imageResponse(png, "Cover Art Archive"),
       )
       .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            ok: true,
-            embedded: false,
-            embed_detail: "embedart on but image is webp",
-          }),
-          { status: 200 },
-        ),
+        jsonResponse({ ok: true, embedded: false, embed_detail: "embedart on but image is webp" }, 200),
       );
 
     const { onInstalled, onClose } = renderPanel();
@@ -91,11 +111,9 @@ describe("CoverEditPanel", () => {
     const png = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
-        new Response(png, { status: 200, headers: { "X-Art-Source": "Cover Art Archive" } }),
+        imageResponse(png, "Cover Art Archive"),
       )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ detail: "Image is too large (max 10 MB)." }), { status: 422 }),
-      );
+      .mockResolvedValueOnce(jsonResponse({ detail: "Image is too large (max 10 MB)." }, 422));
 
     renderPanel();
     fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
@@ -146,9 +164,7 @@ describe("CoverEditPanel", () => {
 
   it("creates an object URL for a fetched preview", async () => {
     const png = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(png, { status: 200, headers: { "X-Art-Source": "Cover Art Archive" } }),
-    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(imageResponse(png, "Cover Art Archive"));
     renderPanel();
     fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
     await screen.findByAltText(/cover preview/i);
@@ -167,7 +183,7 @@ describe("CoverEditPanel", () => {
   });
 
   it("clears a prior fetch error when picking a file", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(null, { status: 500 }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(emptyResponse(500));
     renderPanel();
     fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
     await waitFor(() => expect(screen.getByText(/couldn’t fetch a cover/i)).toBeInTheDocument());
