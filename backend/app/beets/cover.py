@@ -15,6 +15,9 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import beets
 import confuse
@@ -104,3 +107,51 @@ def install_cover(
             except OSError:
                 pass
     return CoverInstallResult(ok=True, embedded=embedded, embed_detail=detail, message=None)
+
+
+@dataclass
+class FetchedCover:
+    """A cover candidate read into memory (bytes never cross the API as JSON)."""
+
+    image_bytes: bytes
+    content_type: str
+    source: str
+
+
+def _make_fetchart_plugin() -> Any:
+    """A throwaway FetchArtPlugin that will NOT register import hooks.
+
+    ``FetchArtPlugin.__init__`` wires import_stages + a listener iff
+    ``config['fetchart']['auto']`` is truthy (default True). Forcing it False
+    first keeps the user's import auto-fetch behavior unchanged.
+    """
+    from beetsplug.fetchart import FetchArtPlugin
+
+    beets.config["fetchart"].set({"auto": False})
+    return FetchArtPlugin()
+
+
+def fetch_cover_candidate(lib: Library, *, album_id: int) -> FetchedCover | None:
+    """Fetch beets' best cover candidate for an album. Writes nothing to the library."""
+    with lib.music_dir_context():
+        album = lib.get_album(album_id)
+        if album is None:
+            raise AlbumNotFoundError(f"album {album_id} not found")
+        plugin = _make_fetchart_plugin()
+        candidate = plugin.art_for_album(album, [album.path], local_only=False)
+        if candidate is None:
+            return None
+        path = os.fsdecode(candidate.path)
+        data = Path(path).read_bytes()
+        source = str(getattr(candidate, "source_name", None) or "external source")
+        # Clean up remote temp downloads; never delete the album's own folder art.
+        libdir = os.path.abspath(os.fsdecode(lib.directory))
+        if not os.path.abspath(path).startswith(libdir + os.sep):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    mime = _sniff_mime(data)
+    if mime is None:
+        return None  # candidate wasn't a recognizable image -> treat as not found
+    return FetchedCover(image_bytes=data, content_type=mime, source=source)
