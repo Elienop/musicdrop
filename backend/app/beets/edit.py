@@ -21,6 +21,7 @@ import os
 from typing import Any
 
 from beets.library import Library
+from fastapi import Request
 
 from app.models.edit import (
     AlbumDiffSide,
@@ -79,6 +80,18 @@ def _track_edits(request: AlbumEditRequest) -> dict[int, dict[str, Any]]:
     return out
 
 
+def _validate_track_ids(request: AlbumEditRequest, by_id: dict[int, Any]) -> None:
+    """Raise ForeignTrackError if any requested item_id is not in the album.
+
+    Covers every ``request.tracks[*].item_id`` — including no-op edits whose
+    fields are all None — so a request referencing a nonexistent track is
+    rejected (422) rather than silently ignored by ``_track_edits``.
+    """
+    for edit in request.tracks:
+        if edit.item_id not in by_id:
+            raise ForeignTrackError(f"track {edit.item_id} is not in album")
+
+
 def _abs(item: Any) -> str:
     return os.fsdecode(item.path)
 
@@ -104,15 +117,6 @@ def _apply_in_memory(
         item = by_id[item_id]
         for field, value in fields.items():
             item.set_parse(field, str(value))
-
-
-def _diff_side(item_fields: dict[str, Any]) -> AlbumDiffSide:
-    return AlbumDiffSide(
-        album_artist=item_fields.get("albumartist"),
-        title=item_fields.get("album"),
-        year=item_fields.get("year"),
-        genre=item_fields.get("genre"),
-    )
 
 
 def _album_side(album: Any) -> AlbumDiffSide:
@@ -172,9 +176,7 @@ def preview_album_edit(
 
         album_edits = _album_edits(request)
         track_edits = _track_edits(request)
-        for item_id in track_edits:
-            if item_id not in by_id:
-                raise ForeignTrackError(f"track {item_id} is not in album {album_id}")
+        _validate_track_ids(request, by_id)
 
         before_album = _album_side(album)
         before_titles = {int(it.id): str(it.title) for it in items}
@@ -290,9 +292,7 @@ def apply_album_edit(
 
         album_edits = _album_edits(request)
         track_edits = _track_edits(request)
-        for item_id in track_edits:
-            if item_id not in by_id:
-                raise ForeignTrackError(f"track {item_id} is not in album {album_id}")
+        _validate_track_ids(request, by_id)
 
         results: list[ItemWriteResult] = []
         write_failures = 0
@@ -303,18 +303,21 @@ def apply_album_edit(
             for item in items:
                 written = False
                 moved = False
-                error: str | None = None
+                # Collect every failure for this item: write and move are
+                # independent, so a track can fail both. A single error slot
+                # would let the move error clobber the write error.
+                errors: list[str] = []
                 if write:
                     written = bool(item.try_write())
                     if not written:
                         write_failures += 1
-                        error = "tag write failed"
+                        errors.append("tag write failed")
                 if move:
                     try:
                         moved = _maybe_move(lib, item)
                     except Exception as exc:  # report, do not abort the batch
                         move_failures += 1
-                        error = f"move failed: {exc}"
+                        errors.append(f"move failed: {exc}")
                 item.store()
                 results.append(
                     ItemWriteResult(
@@ -323,7 +326,7 @@ def apply_album_edit(
                         title=str(item.title),
                         written=written,
                         moved=moved,
-                        error=error,
+                        error="; ".join(errors) if errors else None,
                     )
                 )
 
@@ -338,7 +341,7 @@ def apply_album_edit(
 
 
 async def preview_album_edit_op(
-    request_obj: Any, album_id: int, payload: AlbumEditRequest
+    request_obj: Request, album_id: int, payload: AlbumEditRequest
 ) -> AlbumEditPreview:
     """Read-only preview: no lock, no import gate. Resolves move from config."""
     from beets.ui import should_move
@@ -362,7 +365,7 @@ async def preview_album_edit_op(
 
 
 async def apply_album_edit_op(
-    request_obj: Any, album_id: int, payload: AlbumEditRequest
+    request_obj: Request, album_id: int, payload: AlbumEditRequest
 ) -> AlbumEditResult:
     """Apply: import-gate (409) + shared swap-lock + threadpool, like duplicates."""
     from beets.ui import should_move, should_write

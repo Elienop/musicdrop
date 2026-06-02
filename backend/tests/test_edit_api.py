@@ -68,6 +68,19 @@ def test_edit_bad_year_type_422(edit_client: TestClient, edit_lib: Library) -> N
     assert r.status_code == 422
 
 
+def test_edit_foreign_track_no_fields_422(edit_client: TestClient, edit_lib: Library) -> None:
+    """A foreign item_id with no field edits must still 422, not 200."""
+    aid = _album_id(edit_lib)
+    r = edit_client.post(f"/api/albums/{aid}/edit", json={"tracks": [{"item_id": 424242}]})
+    assert r.status_code == 422
+
+
+def test_edit_year_out_of_range_422(edit_client: TestClient, edit_lib: Library) -> None:
+    aid = _album_id(edit_lib)
+    r = edit_client.post(f"/api/albums/{aid}/edit", json={"album": {"year": 10000}})
+    assert r.status_code == 422
+
+
 def test_edit_409_while_import_active(
     edit_client: TestClient, edit_lib: Library, monkeypatch: pytest.MonkeyPatch
 ) -> None:

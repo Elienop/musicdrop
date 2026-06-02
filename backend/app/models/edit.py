@@ -9,9 +9,13 @@ models (``Album``/``Track``); ``app/beets/edit.py`` maps them to beets' names.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models.album import AlbumDetail
+
+# Cap on free-text tag values: long enough for any real title/artist, short
+# enough that a pathological request can't write a multi-megabyte tag.
+_MAX_TEXT = 1000
 
 
 class AlbumFieldEdits(BaseModel):
@@ -21,19 +25,19 @@ class AlbumFieldEdits(BaseModel):
     to null) is out of scope, so None means "leave unchanged".
     """
 
-    album_artist: str | None = None
-    title: str | None = None
-    year: int | None = None
-    genre: str | None = None
+    album_artist: str | None = Field(default=None, max_length=_MAX_TEXT)
+    title: str | None = Field(default=None, max_length=_MAX_TEXT)
+    year: int | None = Field(default=None, ge=0, le=9999)
+    genre: str | None = Field(default=None, max_length=_MAX_TEXT)
 
 
 class TrackFieldEdits(BaseModel):
     """Per-track fields to change, keyed by the track's beets item id."""
 
     item_id: int
-    title: str | None = None
-    track: int | None = None
-    artist: str | None = None
+    title: str | None = Field(default=None, max_length=_MAX_TEXT)
+    track: int | None = Field(default=None, ge=0, le=100000)
+    artist: str | None = Field(default=None, max_length=_MAX_TEXT)
 
 
 class AlbumEditRequest(BaseModel):

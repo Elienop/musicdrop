@@ -169,6 +169,38 @@ def test_apply_foreign_track_id_raises(edit_lib: Library) -> None:
         )
 
 
+def test_apply_foreign_track_id_with_no_fields_raises(edit_lib: Library) -> None:
+    """A foreign item_id must 422 even when it carries no field edits."""
+    import pytest
+
+    from app.beets.edit import ForeignTrackError, apply_album_edit
+
+    aid = _album_id(edit_lib)
+    with pytest.raises(ForeignTrackError):
+        apply_album_edit(
+            edit_lib,
+            album_id=aid,
+            request=AlbumEditRequest(tracks=[TrackFieldEdits(item_id=424242)]),
+            write=True,
+            move=False,
+        )
+
+
+def test_preview_foreign_track_id_with_no_fields_raises(edit_lib: Library) -> None:
+    import pytest
+
+    from app.beets.edit import ForeignTrackError, preview_album_edit
+
+    aid = _album_id(edit_lib)
+    with pytest.raises(ForeignTrackError):
+        preview_album_edit(
+            edit_lib,
+            album_id=aid,
+            request=AlbumEditRequest(tracks=[TrackFieldEdits(item_id=424242)]),
+            move_enabled=False,
+        )
+
+
 def test_apply_reports_per_item_write_failure(edit_lib: Library, tmp_path: Path) -> None:
     from app.beets.edit import apply_album_edit
 
@@ -186,6 +218,33 @@ def test_apply_reports_per_item_write_failure(edit_lib: Library, tmp_path: Path)
     assert sum(1 for r in result.items if r.written) == 2
 
 
+def test_apply_reports_both_write_and_move_failure_for_one_item(
+    edit_lib: Library,
+) -> None:
+    """When a track fails BOTH write and move, both errors are reported."""
+    from app.beets.edit import apply_album_edit
+
+    aid = _album_id(edit_lib)
+    items = sorted(_items(edit_lib, aid), key=lambda i: i.track)
+    # Remove the first track's file: try_write fails (no file to tag) and
+    # item.move fails (no source to relocate) for the same item.
+    os.remove(os.fsdecode(items[0].path))
+    # album_artist is in the path template -> a move is attempted for every item.
+    req = AlbumEditRequest(album=AlbumFieldEdits(album_artist="Radiohead (Live)"))
+    result = apply_album_edit(edit_lib, album_id=aid, request=req, write=True, move=True)
+
+    assert result.write_failures == 1
+    assert result.move_failures == 1
+    failed = [r for r in result.items if not r.written]
+    assert len(failed) == 1
+    assert failed[0].error is not None
+    # Both the write and the move failure are surfaced, not just the last one.
+    # Match the fixed markers, not the file path (which can itself contain
+    # "write" via the pytest tmp dir name).
+    assert "tag write failed" in failed[0].error
+    assert "move failed" in failed[0].error
+
+
 def test_apply_runs_from_a_worker_thread(edit_lib: Library) -> None:
     """apply must bind music_dir_context so paths expand off the main thread."""
     from app.beets.edit import apply_album_edit
@@ -201,3 +260,23 @@ def test_apply_runs_from_a_worker_thread(edit_lib: Library) -> None:
     for item in _items(edit_lib, aid):
         assert "Radiohead (Live)" in os.fsdecode(item.path)
         assert os.path.isfile(os.fsdecode(item.path))
+
+
+def test_apply_path_traversal_album_artist_stays_in_library(edit_lib: Library) -> None:
+    """A malicious album_artist cannot escape the library directory.
+
+    beets sanitizes path components, so even ``../../escape`` must resolve to a
+    destination that is still under ``lib.directory``; no file may land outside.
+    """
+    from app.beets.edit import apply_album_edit
+
+    aid = _album_id(edit_lib)
+    libdir = os.path.abspath(os.fsdecode(edit_lib.directory))
+    req = AlbumEditRequest(album=AlbumFieldEdits(album_artist="../../escape"))
+    result = apply_album_edit(edit_lib, album_id=aid, request=req, write=True, move=True)
+
+    assert result.move_failures == 0
+    for item in _items(edit_lib, aid):
+        path = os.path.abspath(os.fsdecode(item.path))
+        assert os.path.commonpath([path, libdir]) == libdir
+        assert os.path.isfile(path)
