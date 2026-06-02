@@ -284,6 +284,98 @@
             }
           }
         }
+      },
+      "post": {
+        "tags": [
+          "albums"
+        ],
+        "summary": "Install Album Cover Endpoint",
+        "description": "Install an uploaded (or approved-fetched) cover. 409 while importing.",
+        "operationId": "install_album_cover_endpoint_api_albums__album_id__cover_post",
+        "parameters": [
+          {
+            "name": "album_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Album Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_install_album_cover_endpoint_api_albums__album_id__cover_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverInstallResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/albums/{album_id}/cover/fetch": {
+      "post": {
+        "tags": [
+          "albums"
+        ],
+        "summary": "Fetch Album Cover Endpoint",
+        "description": "Fetch beets' best cover candidate. Returns the image (preview) or 404. No write.",
+        "operationId": "fetch_album_cover_endpoint_api_albums__album_id__cover_fetch_post",
+        "parameters": [
+          {
+            "name": "album_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Album Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/artists": {
@@ -1408,7 +1500,8 @@
           "album_artist": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 1000
               },
               {
                 "type": "null"
@@ -1419,7 +1512,8 @@
           "title": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 1000
               },
               {
                 "type": "null"
@@ -1430,7 +1524,9 @@
           "year": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "integer",
+                "maximum": 9999.0,
+                "minimum": 0.0
               },
               {
                 "type": "null"
@@ -1441,7 +1537,8 @@
           "genre": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 1000
               },
               {
                 "type": "null"
@@ -1550,6 +1647,20 @@
         ],
         "title": "BeetsConfigSnapshot",
         "description": "Read-only snapshot of beets' effective config + file freshness."
+      },
+      "Body_install_album_cover_endpoint_api_albums__album_id__cover_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_install_album_cover_endpoint_api_albums__album_id__cover_post"
       },
       "Candidate": {
         "properties": {
@@ -1700,6 +1811,47 @@
         ],
         "title": "CandidateOption",
         "description": "A ranked alternative release from ``task.candidates``.\n\nThe switcher in the review screen lists these; ``index`` is the position in\nthe beets candidate list and is what a choice references."
+      },
+      "CoverInstallResult": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "embedded": {
+            "type": "boolean",
+            "title": "Embedded"
+          },
+          "embed_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embed Detail"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ok",
+          "embedded"
+        ],
+        "title": "CoverInstallResult",
+        "description": "Outcome of installing an album cover (set artpath + optional embed).\n\n``embedded`` is True only when the user's config enables ``embedart`` and\nthe image is jpeg/png; ``embed_detail`` explains why it was skipped."
       },
       "DuplicateAction": {
         "type": "string",
@@ -2950,7 +3102,8 @@
           "title": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 1000
               },
               {
                 "type": "null"
@@ -2961,7 +3114,9 @@
           "track": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "integer",
+                "maximum": 100000.0,
+                "minimum": 0.0
               },
               {
                 "type": "null"
@@ -2972,7 +3127,8 @@
           "artist": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 1000
               },
               {
                 "type": "null"

@@ -105,7 +105,31 @@ export interface paths {
         /** Get Album Cover Endpoint */
         get: operations["get_album_cover_endpoint_api_albums__album_id__cover_get"];
         put?: never;
-        post?: never;
+        /**
+         * Install Album Cover Endpoint
+         * @description Install an uploaded (or approved-fetched) cover. 409 while importing.
+         */
+        post: operations["install_album_cover_endpoint_api_albums__album_id__cover_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/albums/{album_id}/cover/fetch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fetch Album Cover Endpoint
+         * @description Fetch beets' best cover candidate. Returns the image (preview) or 404. No write.
+         */
+        post: operations["fetch_album_cover_endpoint_api_albums__album_id__cover_fetch_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -624,6 +648,11 @@ export interface components {
             /** Apply Pending */
             apply_pending: boolean;
         };
+        /** Body_install_album_cover_endpoint_api_albums__album_id__cover_post */
+        Body_install_album_cover_endpoint_api_albums__album_id__cover_post: {
+            /** File */
+            file: string;
+        };
         /**
          * Candidate
          * @description The full mapped payload for the top match of one album.
@@ -673,6 +702,23 @@ export interface components {
             data_source: string | null;
             /** Disambiguation */
             disambiguation: string | null;
+        };
+        /**
+         * CoverInstallResult
+         * @description Outcome of installing an album cover (set artpath + optional embed).
+         *
+         *     ``embedded`` is True only when the user's config enables ``embedart`` and
+         *     the image is jpeg/png; ``embed_detail`` explains why it was skipped.
+         */
+        CoverInstallResult: {
+            /** Ok */
+            ok: boolean;
+            /** Embedded */
+            embedded: boolean;
+            /** Embed Detail */
+            embed_detail?: string | null;
+            /** Message */
+            message?: string | null;
         };
         /**
          * DuplicateAction
@@ -1443,6 +1489,72 @@ export interface operations {
         };
     };
     get_album_cover_endpoint_api_albums__album_id__cover_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                album_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    install_album_cover_endpoint_api_albums__album_id__cover_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                album_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_install_album_cover_endpoint_api_albums__album_id__cover_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoverInstallResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fetch_album_cover_endpoint_api_albums__album_id__cover_fetch_post: {
         parameters: {
             query?: never;
             header?: never;
