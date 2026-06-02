@@ -205,6 +205,81 @@ describe("AlbumEditPanel", () => {
     expect(screen.getByText(/Bodysnatchers/i)).toBeInTheDocument();
   });
 
+  it("clears the apply-outcome banner when a field is edited after apply", async () => {
+    const post = vi.spyOn(client, "POST");
+    post.mockResolvedValueOnce(
+      ok({
+        changed_fields: ["title"],
+        album_before: { title: "In Rainbows" },
+        album_after: { title: "In Rainbows (R)" },
+        tracks: [],
+        move_enabled: false,
+        move_plan: [],
+      }),
+    );
+    post.mockResolvedValueOnce(
+      ok({
+        album,
+        items: [
+          { item_id: 1, track: 1, title: "15 Step", written: true, moved: false, error: null },
+        ],
+        write_failures: 0,
+        move_failures: 0,
+      }),
+    );
+
+    renderPanel();
+    fireEvent.change(screen.getByLabelText(/album title/i), {
+      target: { value: "In Rainbows (R)" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+    await screen.findByRole("region", { name: /pending changes/i });
+    fireEvent.click(screen.getByRole("button", { name: /apply/i }));
+
+    // The success line appears after apply.
+    await waitFor(() => expect(screen.getByText(/^Updated/)).toBeInTheDocument());
+
+    // Starting a new edit clears the now-stale outcome banner.
+    fireEvent.change(screen.getByLabelText("Genre"), { target: { value: "Rock" } });
+    expect(screen.queryByText(/^Updated/)).not.toBeInTheDocument();
+  });
+
+  it("omits the tag count when nothing was written and there are no failures", async () => {
+    const post = vi.spyOn(client, "POST");
+    post.mockResolvedValueOnce(
+      ok({
+        changed_fields: ["title"],
+        album_before: { title: "In Rainbows" },
+        album_after: { title: "In Rainbows (R)" },
+        tracks: [],
+        move_enabled: false,
+        move_plan: [],
+      }),
+    );
+    post.mockResolvedValueOnce(
+      ok({
+        album,
+        items: [
+          { item_id: 1, track: 1, title: "15 Step", written: false, moved: false, error: null },
+        ],
+        write_failures: 0,
+        move_failures: 0,
+      }),
+    );
+
+    renderPanel();
+    fireEvent.change(screen.getByLabelText(/album title/i), {
+      target: { value: "In Rainbows (R)" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+    await screen.findByRole("region", { name: /pending changes/i });
+    fireEvent.click(screen.getByRole("button", { name: /apply/i }));
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent(/^Updated$/);
+    expect(status).not.toHaveTextContent(/wrote 0 tags/i);
+  });
+
   it("disables all inputs and buttons while apply is pending", async () => {
     const post = vi.spyOn(client, "POST");
     post.mockResolvedValueOnce(

@@ -87,6 +87,9 @@ export function AlbumEditPanel({ album, onClose }: { album: AlbumDetail; onClose
   const editDraft = (next: (d: Draft) => Draft) => {
     setDraft(next);
     setPreview(null);
+    // A new edit invalidates the last apply: drop its success/failure banner so
+    // a stale "Updated · wrote N tags" outcome can't linger over fresh edits.
+    applyMutation.reset();
   };
 
   const onPreview = () => {
@@ -255,7 +258,7 @@ function TrackDiffTable({ tracks }: { tracks: EditTrackChange[] }) {
                   <span className="truncate font-medium">
                     {[t.title_after, t.artist_after].filter(Boolean).join(" · ") || "—"}
                   </span>
-                  <Pencil className="text-muted-foreground size-3 shrink-0" aria-label="changed" />
+                  <Pencil className="text-muted-foreground size-3 shrink-0" aria-hidden="true" />
                 </span>
               </TableCell>
             </TableRow>
@@ -272,9 +275,9 @@ function MoveNotice({ count }: { count: number }) {
   return (
     <div
       role="alert"
-      className="border-warning/50 bg-warning/10 text-warning flex items-start gap-2 rounded-md border p-3 text-sm"
+      className="border-warning/50 bg-warning/10 text-foreground flex items-start gap-2 rounded-md border p-3 text-sm"
     >
-      <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <AlertTriangle className="text-warning mt-0.5 size-4 shrink-0" aria-hidden="true" />
       <span>
         {count} file{count === 1 ? "" : "s"} will be moved on disk to match the new tags —
         this relocates the files in your library.
@@ -296,8 +299,15 @@ function ApplyOutcome({
   return (
     <div className="flex flex-col gap-2 text-sm">
       <p role="status">
-        Updated · wrote {wrote} tag{wrote === 1 ? "" : "s"}
-        {moved > 0 && ` · moved ${moved} file${moved === 1 ? "" : "s"}`}
+        Updated
+        {(wrote > 0 || moved > 0) && (
+          <>
+            {" · "}
+            {wrote > 0 && `wrote ${wrote} tag${wrote === 1 ? "" : "s"}`}
+            {wrote > 0 && moved > 0 && " · "}
+            {moved > 0 && `moved ${moved} file${moved === 1 ? "" : "s"}`}
+          </>
+        )}
       </p>
       {(result.write_failures > 0 || result.move_failures > 0) && (
         <div
