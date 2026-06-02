@@ -26,7 +26,9 @@ from app.models.edit import (
     AlbumDiffSide,
     AlbumEditPreview,
     AlbumEditRequest,
+    AlbumEditResult,
     EditTrackChange,
+    ItemWriteResult,
     TrackPathChange,
 )
 
@@ -240,4 +242,96 @@ def preview_album_edit(
             tracks=track_rows,
             move_enabled=move_enabled,
             move_plan=move_plan,
+        )
+
+
+def _maybe_move(lib: Library, item: Any) -> bool:
+    """Relocate the file iff inside the library dir and its destination differs.
+
+    Returns True when a move happened. Mirrors beets ``Item.try_sync``'s guard
+    (only move files under the library directory). ``store=False`` because the
+    caller stores once per item after write+move.
+    """
+    current = os.fsdecode(item.path)
+    libdir = os.fsdecode(lib.directory)
+    if os.path.commonpath([os.path.abspath(current), os.path.abspath(libdir)]) != os.path.abspath(
+        libdir
+    ):
+        return False
+    destination = os.fsdecode(item.destination(basedir=lib.directory))
+    if destination == current:
+        return False
+    item.move(basedir=lib.directory, store=False)
+    return True
+
+
+def apply_album_edit(
+    lib: Library,
+    *,
+    album_id: int,
+    request: AlbumEditRequest,
+    write: bool,
+    move: bool,
+) -> AlbumEditResult:
+    """Apply album + per-track edits: write tags, optionally move, store.
+
+    Album fields fan to every track (beets ``inherit``); per-track fields
+    override. Each track's write and move are isolated and reported, so one
+    failure neither silently rolls back the album nor hides which file failed.
+    """
+    from app.beets.library import get_album_detail
+
+    with lib.music_dir_context():
+        album = lib.get_album(album_id)
+        if album is None:
+            raise AlbumNotFoundError(f"album {album_id} not found")
+        items = sorted(album.items(), key=lambda it: (int(it.disc or 0), int(it.track or 0)))
+        by_id = {int(it.id): it for it in items}
+
+        album_edits = _album_edits(request)
+        track_edits = _track_edits(request)
+        for item_id in track_edits:
+            if item_id not in by_id:
+                raise ForeignTrackError(f"track {item_id} is not in album {album_id}")
+
+        results: list[ItemWriteResult] = []
+        write_failures = 0
+        move_failures = 0
+        with lib.transaction():
+            _apply_in_memory(album, items, album_edits, track_edits)
+            album.store(inherit=False)  # we fanned album fields to items manually
+            for item in items:
+                written = False
+                moved = False
+                error: str | None = None
+                if write:
+                    written = bool(item.try_write())
+                    if not written:
+                        write_failures += 1
+                        error = "tag write failed"
+                if move:
+                    try:
+                        moved = _maybe_move(lib, item)
+                    except Exception as exc:  # report, do not abort the batch
+                        move_failures += 1
+                        error = f"move failed: {exc}"
+                item.store()
+                results.append(
+                    ItemWriteResult(
+                        item_id=int(item.id),
+                        track=int(item.track or 0),
+                        title=str(item.title),
+                        written=written,
+                        moved=moved,
+                        error=error,
+                    )
+                )
+
+        detail = get_album_detail(lib, album_id)
+        assert detail is not None  # the album still exists; we just edited it
+        return AlbumEditResult(
+            album=detail,
+            items=results,
+            write_failures=write_failures,
+            move_failures=move_failures,
         )
