@@ -335,3 +335,71 @@ def apply_album_edit(
             write_failures=write_failures,
             move_failures=move_failures,
         )
+
+
+async def preview_album_edit_op(
+    request_obj: Any, album_id: int, payload: AlbumEditRequest
+) -> AlbumEditPreview:
+    """Read-only preview: no lock, no import gate. Resolves move from config."""
+    from beets.ui import should_move
+    from fastapi import HTTPException
+    from fastapi.concurrency import run_in_threadpool
+
+    handle = request_obj.app.state.beets_library
+    move_enabled = bool(should_move(None))
+    try:
+        return await run_in_threadpool(
+            preview_album_edit,
+            handle.lib,
+            album_id=album_id,
+            request=payload,
+            move_enabled=move_enabled,
+        )
+    except AlbumNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ForeignTrackError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+async def apply_album_edit_op(
+    request_obj: Any, album_id: int, payload: AlbumEditRequest
+) -> AlbumEditResult:
+    """Apply: import-gate (409) + shared swap-lock + threadpool, like duplicates."""
+    from beets.ui import should_move, should_write
+    from fastapi import HTTPException
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.beets.config_editor import _swap_lock
+    from app.import_jobs.registry import get_registry
+
+    app = request_obj.app
+    if get_registry().has_active_job():
+        raise HTTPException(
+            status_code=409,
+            detail="Import in progress — edit available when it finishes",
+        )
+    async with _swap_lock(app):
+        handle = app.state.beets_library
+        write = bool(should_write(None))
+        move = bool(should_move(None))
+        try:
+            return await run_in_threadpool(
+                apply_album_edit,
+                handle.lib,
+                album_id=album_id,
+                request=payload,
+                write=write,
+                move=move,
+            )
+        except AlbumNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ForeignTrackError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:  # surface a structured 500 like config Apply
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": f"Edit failed: {exc}",
+                    "recovery": "Your library is unchanged for failed tracks; reload and retry.",
+                },
+            ) from exc

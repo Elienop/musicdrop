@@ -2,8 +2,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
+from app.beets.edit import apply_album_edit_op, preview_album_edit_op
 from app.beets.library import LibraryHandle, get_album_cover, get_album_detail, list_albums
 from app.models.album import Album, AlbumDetail, AlbumPage
+from app.models.edit import AlbumEditPreview, AlbumEditRequest, AlbumEditResult
 
 router = APIRouter(tags=["albums"])
 
@@ -42,6 +44,28 @@ async def get_album_detail_endpoint(
     if detail is None:
         raise HTTPException(status_code=404, detail="Album not found")
     return detail
+
+
+@router.post("/albums/{album_id}/edit/preview", response_model=AlbumEditPreview)
+async def preview_album_edit_endpoint(
+    album_id: int,
+    payload: AlbumEditRequest,
+    request: Request,
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> AlbumEditPreview:
+    """Preview a pending album/track edit (field diff + move plan). Read-only."""
+    return await preview_album_edit_op(request, album_id, payload)
+
+
+@router.post("/albums/{album_id}/edit", response_model=AlbumEditResult)
+async def edit_album_endpoint(
+    album_id: int,
+    payload: AlbumEditRequest,
+    request: Request,
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> AlbumEditResult:
+    """Apply an album/track tag edit (write + config-gated move). 409 if importing."""
+    return await apply_album_edit_op(request, album_id, payload)
 
 
 @router.get("/albums/{album_id}/cover")
