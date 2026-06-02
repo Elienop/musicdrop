@@ -23,11 +23,27 @@ describe("usePreviewAlbumEdit", () => {
         move_enabled: false,
         move_plan: [],
       },
+      error: undefined,
+      response: { ok: true, status: 200 },
     } as never);
 
     const { result } = renderHook(() => usePreviewAlbumEdit(7), { wrapper });
     result.current.mutate({ album: { title: "B" }, tracks: [] });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data?.changed_fields).toContain("title");
+  });
+
+  it("treats a body-less 5xx (error undefined) as an error", async () => {
+    // openapi-fetch leaves `error` and `data` undefined for a body-less 5xx;
+    // the hook must fall back to `!response.ok`.
+    vi.spyOn(client, "POST").mockResolvedValue({
+      data: undefined,
+      error: undefined,
+      response: { ok: false, status: 500 },
+    } as never);
+
+    const { result } = renderHook(() => usePreviewAlbumEdit(7), { wrapper });
+    result.current.mutate({ album: { title: "B" }, tracks: [] });
+    await waitFor(() => expect(result.current.isError).toBe(true));
   });
 });
