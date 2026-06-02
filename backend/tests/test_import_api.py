@@ -193,6 +193,25 @@ def _poll(client: TestClient, job_id: str, predicate, attempts: int = 200):  # t
     return client.get(f"/api/import/{job_id}").json()
 
 
+def _poll_candidate(client: TestClient, job_id: str, index: int, attempts: int = 200):  # type: ignore[no-untyped-def]  # test-local poll
+    """Wait for the parked candidate at ``index`` to be retrievable (HTTP 200).
+
+    The ``needs_review`` outcome is drained onto the feed slightly before the
+    candidate itself is parked (``registry._drain_locked`` drains outcomes, then
+    parked albums), so polling the feed for the album's presence does NOT
+    guarantee the candidate endpoint is ready — there is a sub-millisecond window
+    where the feed shows the album but ``row.parked`` is still ``None`` (-> 404).
+    Poll the actual endpoint to remove that race.
+    """
+    url = f"/api/import/{job_id}/albums/{index}"
+    for _ in range(attempts):
+        resp = client.get(url)
+        if resp.status_code == 200:
+            return resp
+        time.sleep(0.01)
+    return client.get(url)
+
+
 def test_start_returns_202_and_job_id() -> None:
     client = _client_with_fake(parked=[_api_parked(0, Recommendation.medium)])
     resp = client.post("/api/import", json={"path": "/music/incoming"})
@@ -246,7 +265,7 @@ def test_get_album_returns_full_candidate() -> None:
     client = _client_with_fake(parked=[_api_parked(0, Recommendation.medium)])
     job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
     _poll(client, job_id, lambda s: len(s["albums"]) == 1)
-    resp = client.get(f"/api/import/{job_id}/albums/0")
+    resp = _poll_candidate(client, job_id, 0)  # wait for the parked candidate, not feed presence
     assert resp.status_code == 200
     body = resp.json()
     assert body["album_after"]["album"] == "OK Computer"

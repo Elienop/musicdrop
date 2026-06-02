@@ -10,6 +10,7 @@ dependencies = [
     "beets==2.11.*",
     "httpx>=0.28.1",
     "ruamel.yaml>=0.15.93",
+    "python-multipart>=0.0.30",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +53,7 @@ module = [
     "app.beets.config_editor",
     "app.beets.duplicates",
     "app.beets.edit",
+    "app.beets.cover",
     "app.import_jobs.runner",
     "tests.conftest",
     "tests.test_albums",
@@ -76,6 +78,8 @@ module = [
     "tests.test_duplicates_resolve",
     "tests.test_trash",
     "tests.test_edit_adapter",
+    "tests.test_cover_adapter",
+    "tests.test_cover_api",
 ]
 disallow_untyped_calls = false
 

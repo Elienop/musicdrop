@@ -1,4 +1,4 @@
-import { AlertCircle, Music, Pencil } from "lucide-react";
+import { AlertCircle, Image as ImageIcon, Music, Pencil } from "lucide-react";
 import { Fragment, useState } from "react";
 import { Link, useParams } from "react-router";
 
@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlbumEditPanel } from "@/pages/albums/AlbumEditPanel";
+import { CoverEditPanel } from "@/pages/albums/CoverEditPanel";
 import {
   Table,
   TableBody,
@@ -80,6 +81,8 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
   const multiDisc = discs.length > 1;
 
   const [editing, setEditing] = useState(false);
+  const [editingCover, setEditingCover] = useState(false);
+  const [coverVersion, setCoverVersion] = useState(0);
 
   return (
     <article
@@ -93,7 +96,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
       />
 
       <header className="flex flex-col gap-6 sm:flex-row sm:items-center">
-        <CoverImage album={album} />
+        <CoverImage album={album} version={coverVersion} />
         <div className="flex min-w-0 flex-col gap-2">
           <div className="flex flex-wrap items-center gap-3">
             <h2
@@ -109,6 +112,14 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
               aria-label="Edit album"
             >
               <Pencil className="size-4" /> Edit
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setEditingCover((v) => !v)}
+              aria-label="Edit cover"
+            >
+              <ImageIcon className="size-4" /> Cover
             </Button>
           </div>
           <p className="text-muted-foreground text-lg">{album.album_artist}</p>
@@ -131,6 +142,14 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
 
       {editing && (
         <AlbumEditPanel album={album} onClose={() => setEditing(false)} />
+      )}
+
+      {editingCover && (
+        <CoverEditPanel
+          albumId={album.id}
+          onInstalled={() => setCoverVersion((v) => v + 1)}
+          onClose={() => setEditingCover(false)}
+        />
       )}
 
       <Separator />
@@ -219,7 +238,13 @@ function TrackRow({
  * album, so a descriptive alt would have screen readers announce the title
  * twice.
  */
-function CoverImage({ album }: { album: AlbumDetail }) {
+function CoverImage({
+  album,
+  version,
+}: {
+  album: AlbumDetail;
+  version: number;
+}) {
   const [failed, setFailed] = useState(false);
 
   if (failed) {
@@ -235,7 +260,7 @@ function CoverImage({ album }: { album: AlbumDetail }) {
 
   return (
     <img
-      src={`/api/albums/${album.id}/cover`}
+      src={`/api/albums/${album.id}/cover${version ? `?v=${version}` : ""}`}
       alt=""
       loading="lazy"
       onError={() => setFailed(true)}

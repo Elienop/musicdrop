@@ -1,13 +1,17 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
 
+from app.beets.cover import fetch_cover_op, install_cover_op
 from app.beets.edit import apply_album_edit_op, preview_album_edit_op
 from app.beets.library import LibraryHandle, get_album_cover, get_album_detail, list_albums
 from app.models.album import Album, AlbumDetail, AlbumPage
+from app.models.cover import CoverInstallResult
 from app.models.edit import AlbumEditPreview, AlbumEditRequest, AlbumEditResult
 
 router = APIRouter(tags=["albums"])
+
+_MAX_COVER_BYTES = 10 * 1024 * 1024
 
 
 def get_library(request: Request) -> LibraryHandle:
@@ -83,3 +87,38 @@ async def get_album_cover_endpoint(
         media_type=mime,
         headers={"Cache-Control": "public, max-age=3600"},
     )
+
+
+@router.post("/albums/{album_id}/cover/fetch")
+async def fetch_album_cover_endpoint(
+    album_id: int,
+    request: Request,
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> Response:
+    """Fetch beets' best cover candidate. Returns the image (preview) or 404. No write."""
+    image_bytes, mime, source = await fetch_cover_op(request, album_id)
+    return Response(
+        content=image_bytes,
+        media_type=mime,
+        headers={"Cache-Control": "no-store", "X-Art-Source": source},
+    )
+
+
+@router.post("/albums/{album_id}/cover", response_model=CoverInstallResult)
+async def install_album_cover_endpoint(
+    album_id: int,
+    request: Request,
+    file: UploadFile,
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> CoverInstallResult:
+    """Install an uploaded (or approved-fetched) cover. 409 while importing."""
+    # Reject an oversized body before materializing it, when the client declares
+    # its size. The post-read length check below remains the authoritative guard
+    # (Content-Length is client-supplied and may be absent or wrong).
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > _MAX_COVER_BYTES:
+        raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
+    image_bytes = await file.read()
+    if len(image_bytes) > _MAX_COVER_BYTES:
+        raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
+    return await install_cover_op(request, album_id, image_bytes)
