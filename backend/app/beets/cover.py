@@ -155,3 +155,54 @@ def fetch_cover_candidate(lib: Library, *, album_id: int) -> FetchedCover | None
     if mime is None:
         return None  # candidate wasn't a recognizable image -> treat as not found
     return FetchedCover(image_bytes=data, content_type=mime, source=source)
+
+
+async def fetch_cover_op(request_obj: Any, album_id: int) -> tuple[bytes, str, str]:
+    """Fetch a candidate (no library write -> no lock/gate). Returns (bytes, mime, source)."""
+    from fastapi import HTTPException
+    from fastapi.concurrency import run_in_threadpool
+
+    handle = request_obj.app.state.beets_library
+    try:
+        fetched = await run_in_threadpool(fetch_cover_candidate, handle.lib, album_id=album_id)
+    except AlbumNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if fetched is None:
+        raise HTTPException(status_code=404, detail="No cover found")
+    return fetched.image_bytes, fetched.content_type, fetched.source
+
+
+async def install_cover_op(
+    request_obj: Any, album_id: int, image_bytes: bytes, content_type: str | None
+) -> CoverInstallResult:
+    """Install: import-gate (409) + shared swap-lock + threadpool, like edit/duplicates."""
+    from fastapi import HTTPException
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.beets.config_editor import _swap_lock
+    from app.import_jobs.registry import get_registry
+
+    app = request_obj.app
+    if get_registry().has_active_job():
+        raise HTTPException(
+            status_code=409, detail="Import in progress — cover changes available when it finishes"
+        )
+    async with _swap_lock(app):
+        handle = app.state.beets_library
+        try:
+            return await run_in_threadpool(
+                install_cover,
+                handle.lib,
+                album_id=album_id,
+                image_bytes=image_bytes,
+                content_type=content_type,
+            )
+        except AlbumNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (EmptyAlbumError, UnsupportedImageError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:  # structured 500 like config Apply / edit
+            raise HTTPException(
+                status_code=500,
+                detail={"message": f"Cover install failed: {exc}", "recovery": "Reload and retry."},
+            ) from exc
