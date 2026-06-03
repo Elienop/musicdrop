@@ -240,3 +240,38 @@ def test_registry_album_scope_in_state() -> None:
     reg.start(writes_enabled=True, album_id=42, scope_label="Adele — 25")
     s = reg.state()
     assert s.album_id == 42 and s.scope_label == "Adele — 25"
+
+
+def test_sweep_album_scope_only_touches_that_album(edit_lib: Library) -> None:
+    from beets.library import Item
+
+    from app.lyrics_jobs.registry import LyricsBackfillRegistry
+    from app.lyrics_jobs.runner import sweep
+
+    # edit_lib has one album (Radiohead, 3 tracks). Add a second 1-track album.
+    extra = Item(
+        album="Other", albumartist="Someone", artist="Someone", title="Solo", track=1, disc=1
+    )
+    edit_lib.add_album([extra])
+    target_id = int(next(iter(edit_lib.albums())).id)  # Radiohead album (first added)
+
+    reg = LyricsBackfillRegistry()
+    reg.start(writes_enabled=False, album_id=target_id, scope_label="Radiohead — In Rainbows")
+
+    def fake_fetch_one(
+        plugin: object, item: object, *, force: bool, write: bool
+    ) -> ItemLyricsOutcome:
+        return _outcome("found")
+
+    sweep(
+        reg,
+        edit_lib,
+        delay=0.0,
+        write=False,
+        album_id=target_id,
+        fetch_one=fake_fetch_one,
+        make_plugin=lambda: object(),
+    )
+    s = reg.state()
+    assert s.phase == "done"
+    assert s.total == 3 and s.processed == 3  # only the Radiohead album, not the 4th item

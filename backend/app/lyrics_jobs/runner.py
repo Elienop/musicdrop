@@ -29,14 +29,19 @@ def sweep(
     *,
     delay: float,
     write: bool,
+    album_id: int | None = None,
     fetch_one: Callable[..., ItemLyricsOutcome] = fetch_item_lyrics,
     make_plugin: Callable[[], Any] = _make_lyrics_plugin,
 ) -> None:
-    """Run the backfill to completion, updating ``reg``. Never raises."""
+    """Run the (library- or album-scoped) sweep to completion. Never raises."""
     try:
         with lib.music_dir_context():
             plugin = make_plugin()
-            items = list(lib.items())
+            if album_id is not None:
+                album = lib.get_album(album_id)
+                items = list(album.items()) if album is not None else []
+            else:
+                items = list(lib.items())
             reg.set_total(len(items))
             for item in items:
                 if reg.should_stop():
@@ -52,10 +57,12 @@ def sweep(
         reg.fail(str(exc) or exc.__class__.__name__)
 
 
-def start_backfill(reg: LyricsBackfillRegistry, lib: Any, *, delay: float, write: bool) -> None:
-    """Spawn the sweep on a daemon thread (non-blocking)."""
+def start_backfill(
+    reg: LyricsBackfillRegistry, lib: Any, *, delay: float, write: bool, album_id: int | None = None
+) -> None:
+    """Spawn the (library- or album-scoped) sweep on a daemon thread (non-blocking)."""
     threading.Thread(
-        target=lambda: sweep(reg, lib, delay=delay, write=write),
+        target=lambda: sweep(reg, lib, delay=delay, write=write, album_id=album_id),
         name="musicdrop-lyrics-backfill",
         daemon=True,
     ).start()
