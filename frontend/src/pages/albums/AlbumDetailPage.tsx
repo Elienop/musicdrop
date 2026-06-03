@@ -224,15 +224,31 @@ function TrackRow({
 }
 
 function MissingTrackRow({ track }: { track: MissingReleaseTrack }) {
+  // Convey "missing" through a subtle row tint + italic title + a labelled
+  // badge — NOT row-level opacity, which would composite the title and the
+  // already-muted #/duration cells below the WCAG AA 4.5:1 floor. Every cell
+  // keeps its colour at full alpha (muted-foreground already clears 4.5:1 in
+  // both themes), so the text stays legible while the row still reads as a gap.
   return (
-    <TableRow className="opacity-55">
+    <TableRow className="bg-muted/40 hover:bg-muted/60">
       <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
         {track.index || "–"}
       </TableCell>
       <TableCell>
         <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate font-medium">{track.title}</span>
-          <Badge variant="outline" className="shrink-0 text-xs font-normal">
+          {/* Screen readers read the row linearly ("Nude missing 4:44"), so the
+              visual greying carries no meaning on its own. Lead with a hidden
+              qualifier and an aria-labelled badge so the state announces as a
+              distinct phrase, not a stray word beside the title. */}
+          <span className="sr-only">Not in your library: </span>
+          <span className="text-muted-foreground truncate font-medium italic">
+            {track.title}
+          </span>
+          <Badge
+            variant="outline"
+            aria-label="Missing from library"
+            className="shrink-0 text-xs font-normal"
+          >
             missing
           </Badge>
         </div>
