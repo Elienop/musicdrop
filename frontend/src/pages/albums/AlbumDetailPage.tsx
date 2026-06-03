@@ -4,6 +4,8 @@ import { Link, useParams } from "react-router";
 
 import type { AlbumDetail, Track } from "@/api/useAlbum";
 import { AlbumNotFoundError, useAlbum } from "@/api/useAlbum";
+import { useAlbumMissing, type MissingReleaseTrack } from "@/api/useAlbumMissing";
+import { buildDiscGroups, type DiscGroup } from "@/pages/albums/missingTracks";
 import { BackLink } from "@/components/albums/album-grid";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -62,22 +64,11 @@ export function AlbumDetailPage() {
 }
 
 function AlbumDetailView({ album }: { album: AlbumDetail }) {
-  // Group by disc preserving the API's disc-then-track order. Tracks already
-  // arrive sorted, so a single pass that opens a new group on disc change is
-  // enough — no re-sorting needed.
-  const discs: { disc: number; tracks: Track[] }[] = [];
-  for (const track of album.tracks) {
-    const current = discs.at(-1);
-    if (!current || current.disc !== track.disc) {
-      discs.push({ disc: track.disc, tracks: [track] });
-    } else {
-      current.tracks.push(track);
-    }
-  }
-  // Multi-disc when the tracks split into more than one disc group. Untagged
-  // tracks arrive as disc 0 and form their own group — they still count toward
-  // "this album has multiple discs" but never get a "Disc 0" header (that's
-  // gated on `group.disc > 0` at render).
+  const missingQuery = useAlbumMissing(album.id, album.mb_albumid);
+  const report = missingQuery.data;
+  const missingTracks: MissingReleaseTrack[] =
+    report?.status === "ok" ? report.missing : [];
+  const discs: DiscGroup[] = buildDiscGroups(album.tracks, missingTracks);
   const multiDisc = discs.length > 1;
 
   const [editing, setEditing] = useState(false);
@@ -154,7 +145,8 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
 
       <Separator />
 
-      <section aria-label="Tracklist">
+      <section aria-label="Tracklist" className="flex flex-col gap-3">
+        <TracklistStatus query={missingQuery} report={report} />
         <Table>
           <TableHeader>
             <TableRow>
@@ -168,8 +160,6 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
               {multiDisc && group.disc > 0 && (
                 <TableBody>
                   <TableRow className="hover:bg-transparent">
-                    {/* scope="rowgroup" so assistive tech announces this as the
-                        heading for the following disc's rows. */}
                     <TableHead
                       scope="rowgroup"
                       colSpan={3}
@@ -181,13 +171,17 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
                 </TableBody>
               )}
               <TableBody>
-                {group.tracks.map((track) => (
-                  <TrackRow
-                    key={track.id}
-                    track={track}
-                    albumArtist={album.album_artist}
-                  />
-                ))}
+                {group.rows.map((row) =>
+                  row.kind === "present" ? (
+                    <TrackRow
+                      key={`p-${row.track.id}`}
+                      track={row.track}
+                      albumArtist={album.album_artist}
+                    />
+                  ) : (
+                    <MissingTrackRow key={`m-${row.track.index}-${row.track.mb_trackid ?? ""}`} track={row.track} />
+                  ),
+                )}
               </TableBody>
             </Fragment>
           ))}
@@ -227,6 +221,73 @@ function TrackRow({
       </TableCell>
     </TableRow>
   );
+}
+
+function MissingTrackRow({ track }: { track: MissingReleaseTrack }) {
+  return (
+    <TableRow className="opacity-55">
+      <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+        {track.index || "–"}
+      </TableCell>
+      <TableCell>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate font-medium">{track.title}</span>
+          <Badge variant="outline" className="shrink-0 text-xs font-normal">
+            missing
+          </Badge>
+        </div>
+      </TableCell>
+      <TableCell className="text-muted-foreground text-right tabular-nums">
+        {formatDuration(track.duration_seconds)}
+      </TableCell>
+    </TableRow>
+  );
+}
+
+function TracklistStatus({
+  query,
+  report,
+}: {
+  query: ReturnType<typeof useAlbumMissing>;
+  report: ReturnType<typeof useAlbumMissing>["data"];
+}) {
+  if (query.fetchStatus === "fetching" && !report) {
+    return (
+      <p className="text-muted-foreground text-sm" role="status">
+        Checking MusicBrainz for missing tracks…
+      </p>
+    );
+  }
+  if (!report) {
+    return null; // disabled (non-MB album) or transport error -> no overlay
+  }
+  if (report.status === "ok") {
+    if (report.missing.length === 0) return null;
+    return (
+      <p className="text-muted-foreground text-sm">
+        {report.missing.length} of {report.total} tracks missing
+        {report.source ? ` · from ${report.source}` : ""}
+      </p>
+    );
+  }
+  if (report.status === "release_unavailable") {
+    return (
+      <p className="text-muted-foreground text-sm">
+        Couldn’t find this release on MusicBrainz.
+      </p>
+    );
+  }
+  if (report.status === "fetch_failed") {
+    return (
+      <p className="text-muted-foreground flex items-center gap-2 text-sm">
+        Couldn’t reach MusicBrainz.
+        <Button variant="link" size="sm" className="h-auto p-0" onClick={() => void query.refetch()}>
+          Retry
+        </Button>
+      </p>
+    );
+  }
+  return null; // no_musicbrainz_id -> silent (query is usually disabled anyway)
 }
 
 /**
