@@ -139,3 +139,14 @@ def release_missing_report(lib: Library, album_id: int) -> AlbumMissingReport:
     if result.info is None:
         return _empty(result.status)
     return _build_report(result.info, present_ids, data_source)
+
+
+async def missing_report_op(lib: Library, album_id: int) -> AlbumMissingReport:
+    """Threadpool the (network-touching) read; map a missing album to 404."""
+    from fastapi import HTTPException
+    from fastapi.concurrency import run_in_threadpool
+
+    try:
+        return await run_in_threadpool(release_missing_report, lib, album_id)
+    except AlbumNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -82,6 +82,7 @@ module = [
     "tests.test_cover_api",
     "app.beets.completeness",
     "tests.test_completeness_adapter",
+    "tests.test_completeness_api",
 ]
 disallow_untyped_calls = false
 
