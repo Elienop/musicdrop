@@ -89,6 +89,7 @@ module = [
     "tests.test_lyrics_adapter",
     "tests.test_lyrics_api",
     "app.lyrics_jobs.registry",
+    "app.lyrics_jobs.runner",
     "tests.test_lyrics_backfill",
 ]
 disallow_untyped_calls = false

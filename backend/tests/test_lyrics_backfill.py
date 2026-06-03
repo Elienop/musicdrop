@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
+from beets.library import Library
 
 from app.models.lyrics import ItemLyricsOutcome, ItemLyricsStatus
 
@@ -85,3 +88,83 @@ def test_registry_singleton_accessors() -> None:
     assert lyrics_backfill_active() is True
     reset_lyrics_backfill()
     assert lyrics_backfill_active() is False
+
+
+def test_sweep_processes_all_items_and_finishes_done(edit_lib: Library) -> None:
+    from app.lyrics_jobs.registry import LyricsBackfillRegistry
+    from app.lyrics_jobs.runner import sweep
+
+    reg = LyricsBackfillRegistry()
+    reg.start(writes_enabled=False)
+
+    seen: list[int] = []
+
+    def fake_fetch_one(plugin: Any, item: Any, *, force: bool, write: bool) -> ItemLyricsOutcome:
+        seen.append(int(item.id))
+        return _outcome("found")
+
+    sweep(
+        reg,
+        edit_lib,
+        delay=0.0,
+        write=False,
+        fetch_one=fake_fetch_one,
+        make_plugin=lambda: object(),
+    )
+
+    s = reg.state()
+    assert s.phase == "done"
+    assert s.total == 3 and s.processed == 3 and s.found == 3
+    assert len(seen) == 3
+
+
+def test_sweep_honours_stop(edit_lib: Library) -> None:
+    from app.lyrics_jobs.registry import LyricsBackfillRegistry
+    from app.lyrics_jobs.runner import sweep
+
+    reg = LyricsBackfillRegistry()
+    reg.start(writes_enabled=False)
+
+    def fake_fetch_one(plugin: Any, item: Any, *, force: bool, write: bool) -> ItemLyricsOutcome:
+        reg.request_stop()  # stop after the first item
+        return _outcome("found")
+
+    sweep(
+        reg,
+        edit_lib,
+        delay=0.0,
+        write=False,
+        fetch_one=fake_fetch_one,
+        make_plugin=lambda: object(),
+    )
+    s = reg.state()
+    assert s.phase == "stopped"
+    assert s.processed == 1
+
+
+def test_sweep_failure_sets_failed_phase(edit_lib: Library) -> None:
+    from app.lyrics_jobs.registry import LyricsBackfillRegistry
+    from app.lyrics_jobs.runner import sweep
+
+    reg = LyricsBackfillRegistry()
+    reg.start(writes_enabled=False)
+
+    def boom() -> Any:
+        raise RuntimeError("kaboom")
+
+    sweep(reg, edit_lib, delay=0.0, write=False, make_plugin=boom)
+    s = reg.state()
+    assert s.phase == "failed"
+    assert "kaboom" in (s.error or "")
+
+
+def test_lyrics_coverage(edit_lib: Library) -> None:
+    from app.beets.lyrics import lyrics_coverage
+
+    item = sorted(next(iter(edit_lib.albums())).items(), key=lambda it: it.track)[0]
+    item.lyrics = "x"
+    item.store()
+    cov = lyrics_coverage(edit_lib)
+    assert cov.total == 3
+    assert cov.with_lyrics == 1
+    assert cov.percent == pytest.approx(33.3, abs=0.1)

@@ -23,7 +23,12 @@ from beets.library import Library
 from beets.util.lyrics import Lyrics
 from beetsplug._utils.requests import HTTPNotFoundError
 
-from app.models.lyrics import AlbumLyricsResult, ItemLyricsOutcome, ItemLyricsStatus
+from app.models.lyrics import (
+    AlbumLyricsResult,
+    ItemLyricsOutcome,
+    ItemLyricsStatus,
+    LyricsCoverage,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -153,3 +158,16 @@ async def fetch_album_lyrics_op(request_obj: Any, album_id: int) -> AlbumLyricsR
                 status_code=500,
                 detail={"message": f"Lyrics fetch failed: {exc}", "recovery": "Reload and retry."},
             ) from exc
+
+
+def lyrics_coverage(lib: Library) -> LyricsCoverage:
+    """Count items with vs. without stored lyrics. One DB scan; no network."""
+    with lib.music_dir_context():
+        total = 0
+        with_lyrics = 0
+        for item in lib.items():
+            total += 1
+            if item.lyrics:
+                with_lyrics += 1
+    percent = round(100.0 * with_lyrics / total, 1) if total else 0.0
+    return LyricsCoverage(total=total, with_lyrics=with_lyrics, percent=percent)
