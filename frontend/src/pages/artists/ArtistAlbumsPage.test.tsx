@@ -22,6 +22,7 @@ function makePage(overrides: Partial<AlbumPage> = {}): AlbumPage {
         year: 1997,
         track_count: 12,
         genre: "Alternative Rock",
+        mb_albumid: null,
       },
       {
         id: 2,
@@ -30,6 +31,7 @@ function makePage(overrides: Partial<AlbumPage> = {}): AlbumPage {
         year: 2000,
         track_count: 10,
         genre: "Electronic",
+        mb_albumid: null,
       },
     ],
     total: 2,

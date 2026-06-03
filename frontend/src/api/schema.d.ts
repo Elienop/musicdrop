@@ -55,6 +55,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/albums/{album_id}/missing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Album Missing Endpoint
+         * @description Full release tracklist vs. the library (missing rows + counts). Read-only.
+         */
+        get: operations["get_album_missing_endpoint_api_albums__album_id__missing_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/albums/{album_id}/edit/preview": {
         parameters: {
             query?: never;
@@ -498,6 +518,8 @@ export interface components {
             track_count: number;
             /** Genre */
             genre: string | null;
+            /** Mb Albumid */
+            mb_albumid: string | null;
         };
         /**
          * AlbumChange
@@ -534,6 +556,8 @@ export interface components {
             track_count: number;
             /** Genre */
             genre: string | null;
+            /** Mb Albumid */
+            mb_albumid: string | null;
             /** Tracks */
             tracks: components["schemas"]["Track"][];
         };
@@ -608,6 +632,22 @@ export interface components {
             year?: number | null;
             /** Genre */
             genre?: string | null;
+        };
+        /** AlbumMissingReport */
+        AlbumMissingReport: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "no_musicbrainz_id" | "release_unavailable" | "fetch_failed";
+            /** Total */
+            total: number;
+            /** Present Count */
+            present_count: number;
+            /** Missing */
+            missing: components["schemas"]["MissingReleaseTrack"][];
+            /** Source */
+            source: string | null;
         };
         /** AlbumPage */
         AlbumPage: {
@@ -753,6 +793,8 @@ export interface components {
             track_count: number;
             /** Genre */
             genre: string | null;
+            /** Mb Albumid */
+            mb_albumid: string | null;
             /** Format */
             format: string | null;
             /** Bitrate Kbps */
@@ -1033,6 +1075,19 @@ export interface components {
             /** Error */
             error?: string | null;
         };
+        /** MissingReleaseTrack */
+        MissingReleaseTrack: {
+            /** Index */
+            index: number;
+            /** Disc */
+            disc: number;
+            /** Title */
+            title: string;
+            /** Duration Seconds */
+            duration_seconds: number | null;
+            /** Mb Trackid */
+            mb_trackid: string | null;
+        };
         /**
          * MissingTrack
          * @description A track present on the matched release but absent from the folder.
@@ -1207,6 +1262,8 @@ export interface components {
             duration_seconds: number | null;
             /** Artist */
             artist: string;
+            /** Mb Trackid */
+            mb_trackid: string | null;
         };
         /**
          * TrackChange
@@ -1405,6 +1462,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AlbumDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_album_missing_endpoint_api_albums__album_id__missing_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                album_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlbumMissingReport"];
                 };
             };
             /** @description Validation Error */

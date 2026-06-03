@@ -22,6 +22,7 @@ function makeResults(overrides: Partial<SearchResults> = {}): SearchResults {
         year: 1997,
         track_count: 12,
         genre: "Alternative Rock",
+        mb_albumid: null,
       },
     ],
     tracks: [
