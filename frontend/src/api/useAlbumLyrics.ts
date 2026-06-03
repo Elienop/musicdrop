@@ -3,34 +3,33 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { client } from "@/api/client";
 import type { components } from "@/api/schema";
 
-/** Result of `POST /api/albums/{album_id}/lyrics/fetch` (generated contract). */
-export type AlbumLyricsResult = components["schemas"]["AlbumLyricsResult"];
-
-async function fetchAlbumLyrics(albumId: number): Promise<AlbumLyricsResult> {
-  const { data, response } = await client.POST(
-    "/api/albums/{album_id}/lyrics/fetch",
-    { params: { path: { album_id: albumId } } },
-  );
-  // Guard on !response.ok (not just `error`) — a bodyless 5xx leaves
-  // openapi-fetch's `error` undefined yet the call must surface a failure.
-  if (!response.ok || !data) {
-    throw new Error("Failed to fetch lyrics");
-  }
-  return data;
-}
+/** Status of the (album- or library-scoped) lyrics job (generated contract). */
+export type LyricsBackfillStatus = components["schemas"]["LyricsBackfillStatus"];
 
 /**
- * Fetch missing lyrics for an album into the files. On success the album query
- * (`["album", albumId]`) is invalidated so the per-track has_lyrics indicators
- * refresh. A 409 (import/backfill running) surfaces as a thrown error the
- * caller renders inline.
+ * Start an album-scoped lyrics fetch JOB. Returns its initial status; progress
+ * is read by polling `useLyricsBackfillStatus` (the shared single slot). On
+ * success we invalidate `["lyrics","backfill"]` so the poll wakes immediately.
+ * A 409 (a library op / another fetch running) surfaces as a thrown error.
  */
-export function useAlbumLyricsFetch(albumId: number) {
+export function useStartAlbumLyricsFetch(albumId: number) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => fetchAlbumLyrics(albumId),
+    mutationFn: async (): Promise<LyricsBackfillStatus> => {
+      const { data, response } = await client.POST("/api/albums/{album_id}/lyrics/fetch", {
+        params: { path: { album_id: albumId } },
+      });
+      if (!response.ok || !data) {
+        throw new Error(
+          response.status === 409
+            ? "A library operation is in progress"
+            : "Failed to start lyrics fetch",
+        );
+      }
+      return data;
+    },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["album", albumId] });
+      void queryClient.invalidateQueries({ queryKey: ["lyrics", "backfill"] });
     },
   });
 }
