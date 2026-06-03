@@ -31,3 +31,27 @@ class AlbumLyricsResult(BaseModel):
     skipped: int
     items: list[ItemLyricsOutcome]
     writes_enabled: bool  # the resolved should_write() at request time
+
+
+class LyricsCoverage(BaseModel):
+    total: int
+    with_lyrics: int
+    percent: float  # 0.0-100.0, rounded to 1 dp
+
+
+#: idle = never run / reset; running = sweeping; done/stopped/failed = terminal.
+LyricsBackfillPhase = Literal["idle", "running", "done", "stopped", "failed"]
+
+
+class LyricsBackfillStatus(BaseModel):
+    phase: LyricsBackfillPhase
+    job_id: str | None
+    total: int
+    processed: int
+    found: int
+    not_found: int
+    failed: int
+    skipped: int
+    current: str | None  # "artist — album — title" of the in-flight track
+    writes_enabled: bool
+    error: str | None
