@@ -26,6 +26,7 @@ class Track(BaseModel):
     duration_seconds: float | None
     artist: str
     mb_trackid: str | None
+    has_lyrics: bool
 
 
 class AlbumDetail(Album):

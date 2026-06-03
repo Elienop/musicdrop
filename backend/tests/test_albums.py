@@ -357,3 +357,22 @@ def test_album_detail_exposes_musicbrainz_ids(edit_lib: "Library") -> None:
     assert detail.mb_albumid == "mb-edit"
     # edit_lib items carry no mb_trackid -> coerced to None, not "".
     assert all(t.mb_trackid is None for t in detail.tracks)
+
+
+def test_album_detail_track_has_lyrics_flag(temp_library: "Library") -> None:
+    """A track with stored lyrics reports has_lyrics=True; one without reports False."""
+    from app.beets.library import get_album_detail
+
+    # Pick the multi-track album (ABBA / Arrival) so both the True and False cases
+    # are exercised; iteration order otherwise yields the single-track album.
+    album = next(a for a in temp_library.albums() if len(a.items()) >= 2)
+    album_id = int(album.id)
+    items = sorted(album.items(), key=lambda it: it.track)
+    items[0].lyrics = "Hello, it's me"
+    items[0].store()
+
+    detail = get_album_detail(temp_library, album_id)
+    assert detail is not None
+    by_track = {t.track: t.has_lyrics for t in detail.tracks}
+    assert by_track[1] is True
+    assert by_track[2] is False
