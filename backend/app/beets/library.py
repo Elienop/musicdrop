@@ -142,6 +142,7 @@ def _album_fields(album: BeetsAlbum, items: list[Any]) -> dict[str, Any]:
         "year": _coerce_year(album.year),
         "track_count": len(items),
         "genre": _album_genre(album, items),
+        "mb_albumid": _coerce_optional_str(album.mb_albumid),
     }
 
 
@@ -158,6 +159,7 @@ def _to_track(item: Any) -> Track:
         disc=_coerce_int(item.disc),
         duration_seconds=_coerce_duration(item.length),
         artist=_coerce_str(item.artist),
+        mb_trackid=_coerce_optional_str(item.mb_trackid),
     )
 
 
