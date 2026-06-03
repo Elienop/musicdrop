@@ -156,6 +156,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/albums/{album_id}/lyrics/fetch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fetch Album Lyrics Endpoint
+         * @description Fetch missing lyrics for an album's tracks into the files (Plex reads them).
+         *
+         *     Skip-existing; per-track outcomes + counts. 404 unknown album, 409 while importing.
+         */
+        post: operations["fetch_album_lyrics_endpoint_api_albums__album_id__lyrics_fetch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/artists": {
         parameters: {
             query?: never;
@@ -633,6 +655,23 @@ export interface components {
             /** Genre */
             genre?: string | null;
         };
+        /** AlbumLyricsResult */
+        AlbumLyricsResult: {
+            /** Album Id */
+            album_id: number;
+            /** Fetched */
+            fetched: number;
+            /** Not Found */
+            not_found: number;
+            /** Failed */
+            failed: number;
+            /** Skipped */
+            skipped: number;
+            /** Items */
+            items: components["schemas"]["ItemLyricsOutcome"][];
+            /** Writes Enabled */
+            writes_enabled: boolean;
+        };
         /** AlbumMissingReport */
         AlbumMissingReport: {
             /**
@@ -1057,6 +1096,20 @@ export interface components {
             /** Has Current Art */
             has_current_art: boolean;
         };
+        /** ItemLyricsOutcome */
+        ItemLyricsOutcome: {
+            /** Item Id */
+            item_id: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "found" | "not_found" | "fetch_failed" | "skipped_existing" | "skipped_no_metadata";
+            /** Source */
+            source: string | null;
+            /** Written */
+            written: boolean;
+        };
         /**
          * ItemWriteResult
          * @description The per-track outcome of an apply (replaces beets' silent all-or-nothing).
@@ -1264,6 +1317,8 @@ export interface components {
             artist: string;
             /** Mb Trackid */
             mb_trackid: string | null;
+            /** Has Lyrics */
+            has_lyrics: boolean;
         };
         /**
          * TrackChange
@@ -1660,6 +1715,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fetch_album_lyrics_endpoint_api_albums__album_id__lyrics_fetch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                album_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlbumLyricsResult"];
                 };
             };
             /** @description Validation Error */

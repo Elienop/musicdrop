@@ -87,6 +87,7 @@ module = [
     "tests.test_completeness_api",
     "app.beets.lyrics",
     "tests.test_lyrics_adapter",
+    "tests.test_lyrics_api",
 ]
 disallow_untyped_calls = false
 
