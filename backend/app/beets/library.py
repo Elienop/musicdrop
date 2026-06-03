@@ -160,6 +160,7 @@ def _to_track(item: Any) -> Track:
         duration_seconds=_coerce_duration(item.length),
         artist=_coerce_str(item.artist),
         mb_trackid=_coerce_optional_str(item.mb_trackid),
+        has_lyrics=bool(item.lyrics),
     )
 
 

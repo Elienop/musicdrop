@@ -16,6 +16,7 @@ import {
 } from "@/api/useBeetsConfig";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { LyricsBackfillPanel } from "@/pages/settings/LyricsBackfillPanel";
 import { SettingsConflict } from "@/pages/settings/SettingsConflict";
 import {
   READ_ONLY_EXTENSION,
@@ -322,111 +323,113 @@ export function SettingsPage() {
   }
 
   return (
-    <section
-      className="flex max-w-4xl flex-col gap-4"
-      aria-label="Beets configuration"
-    >
-      <header className="flex flex-col gap-1">
-        <h2 className="text-2xl font-semibold tracking-tight">
-          Beets configuration
-        </h2>
-        <p className="text-muted-foreground text-sm">
-          Loaded from <code className="font-mono">{data.config_path}</code>
-        </p>
-      </header>
-
-      <StatusBanner state={pageState} importActive={importActive} data={data} />
-
-      <CodeMirror
-        ref={editorRef}
-        value={data.yaml_text}
-        height="500px"
-        // `theme="none"` opts out of @uiw/react-codemirror's default theme so
-        // our shadcnTheme variables are the only thing setting colors.
-        theme="none"
-        extensions={extensions}
-        onChange={(value) => setLocalText(value)}
-      />
-
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant="outline"
-          onClick={handleEdit}
-          disabled={pageState !== "clean"}
-        >
-          Edit
-        </Button>
-        <Button
-          onClick={handleSave}
-          disabled={pageState !== "dirty" || lintErrors > 0}
-          title={
-            lintErrors > 0
-              ? `Fix ${lintErrors} validation error${lintErrors > 1 ? "s" : ""} before saving`
-              : undefined
-          }
-        >
-          {pageState === "saving" ? (
-            <>
-              <Loader2 className="animate-spin" aria-hidden="true" />
-              Saving&hellip;
-            </>
-          ) : (
-            "Save"
-          )}
-        </Button>
-        {/* Discard the in-progress draft and return to read-only. Only visible
-            while dirty so it doesn't sit next to a no-op target when clean. */}
-        {pageState === "dirty" && (
-          <Button variant="ghost" onClick={handleCancel}>
-            Cancel
-          </Button>
-        )}
-        {pageState === "dirty" && lintErrors > 0 && (
-          // Inline helper text so the disabled Save's reason isn't only
-          // discoverable via the (mouse-only) tooltip.
-          <p className="text-destructive text-sm">
-            {lintErrors} validation error{lintErrors > 1 ? "s" : ""} —
-            <span className="text-muted-foreground">
-              {" "}fix to save.
-            </span>
-          </p>
-        )}
-        <Button
-          onClick={handleApply}
-          disabled={pageState !== "apply_pending" || importActive}
-          title={
-            importActive
-              ? "1 import running — Apply available when it finishes"
-              : undefined
-          }
-        >
-          {pageState === "applying" ? (
-            <>
-              <Loader2 className="animate-spin" aria-hidden="true" />
-              Applying&hellip;
-            </>
-          ) : (
-            "Apply changes"
-          )}
-        </Button>
-        {pageState === "apply_pending" && importActive && (
-          // Helper text under the disabled Apply, spelled out so a screen
-          // reader user gets the same hint the sighted tooltip carries.
+    <div className="flex max-w-4xl flex-col gap-8">
+      <section className="flex flex-col gap-4" aria-label="Beets configuration">
+        <header className="flex flex-col gap-1">
+          <h2 className="text-2xl font-semibold tracking-tight">
+            Beets configuration
+          </h2>
           <p className="text-muted-foreground text-sm">
-            1 import running &mdash; Apply available when it finishes.
+            Loaded from <code className="font-mono">{data.config_path}</code>
           </p>
-        )}
-      </div>
+        </header>
 
-      {conflict && (
-        <SettingsConflict
-          local={localText ?? data.yaml_text}
-          server={conflict.serverDoc}
-          onReload={handleConflictReload}
-          onOverwrite={handleConflictOverwrite}
+        <StatusBanner
+          state={pageState}
+          importActive={importActive}
+          data={data}
         />
-      )}
-    </section>
+
+        <CodeMirror
+          ref={editorRef}
+          value={data.yaml_text}
+          height="500px"
+          // `theme="none"` opts out of @uiw/react-codemirror's default theme so
+          // our shadcnTheme variables are the only thing setting colors.
+          theme="none"
+          extensions={extensions}
+          onChange={(value) => setLocalText(value)}
+        />
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={handleEdit}
+            disabled={pageState !== "clean"}
+          >
+            Edit
+          </Button>
+          <Button
+            onClick={handleSave}
+            disabled={pageState !== "dirty" || lintErrors > 0}
+            title={
+              lintErrors > 0
+                ? `Fix ${lintErrors} validation error${lintErrors > 1 ? "s" : ""} before saving`
+                : undefined
+            }
+          >
+            {pageState === "saving" ? (
+              <>
+                <Loader2 className="animate-spin" aria-hidden="true" />
+                Saving&hellip;
+              </>
+            ) : (
+              "Save"
+            )}
+          </Button>
+          {/* Discard the in-progress draft and return to read-only. Only visible
+              while dirty so it doesn't sit next to a no-op target when clean. */}
+          {pageState === "dirty" && (
+            <Button variant="ghost" onClick={handleCancel}>
+              Cancel
+            </Button>
+          )}
+          {pageState === "dirty" && lintErrors > 0 && (
+            // Inline helper text so the disabled Save's reason isn't only
+            // discoverable via the (mouse-only) tooltip.
+            <p className="text-destructive text-sm">
+              {lintErrors} validation error{lintErrors > 1 ? "s" : ""} —
+              <span className="text-muted-foreground"> fix to save.</span>
+            </p>
+          )}
+          <Button
+            onClick={handleApply}
+            disabled={pageState !== "apply_pending" || importActive}
+            title={
+              importActive
+                ? "1 import running — Apply available when it finishes"
+                : undefined
+            }
+          >
+            {pageState === "applying" ? (
+              <>
+                <Loader2 className="animate-spin" aria-hidden="true" />
+                Applying&hellip;
+              </>
+            ) : (
+              "Apply changes"
+            )}
+          </Button>
+          {pageState === "apply_pending" && importActive && (
+            // Helper text under the disabled Apply, spelled out so a screen
+            // reader user gets the same hint the sighted tooltip carries.
+            <p className="text-muted-foreground text-sm">
+              1 import running &mdash; Apply available when it finishes.
+            </p>
+          )}
+        </div>
+
+        {conflict && (
+          <SettingsConflict
+            local={localText ?? data.yaml_text}
+            server={conflict.serverDoc}
+            onReload={handleConflictReload}
+            onOverwrite={handleConflictOverwrite}
+          />
+        )}
+      </section>
+      <LyricsBackfillPanel />
+    </div>
   );
 }
 

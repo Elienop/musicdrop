@@ -13,6 +13,7 @@ from app.api.config_ import router as config_router
 from app.api.duplicates import router as duplicates_router
 from app.api.health import router as health_router
 from app.api.import_ import router as import_router
+from app.api.lyrics import router as lyrics_router
 from app.api.search import router as search_router
 from app.artwork.cache import ArtistImageCache
 from app.artwork.deezer import DeezerArtistImageSource
@@ -130,3 +131,4 @@ app.include_router(search_router, prefix="/api")
 app.include_router(import_router, prefix="/api")
 app.include_router(config_router, prefix="/api")
 app.include_router(duplicates_router, prefix="/api")
+app.include_router(lyrics_router, prefix="/api")

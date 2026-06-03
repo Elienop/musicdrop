@@ -5,7 +5,7 @@ import { buildDiscGroups } from "@/pages/albums/missingTracks";
 
 function present(track: number, disc = 1, id = track): Track {
   return { id, title: `Track ${track}`, track, disc,
-           duration_seconds: 100, artist: "A", mb_trackid: `t${track}` };
+           duration_seconds: 100, artist: "A", mb_trackid: `t${track}`, has_lyrics: false };
 }
 function missing(index: number, disc = 1): MissingReleaseTrack {
   return { index, disc, title: `Track ${index}`, duration_seconds: 100, mb_trackid: `t${index}` };

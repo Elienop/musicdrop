@@ -1,9 +1,12 @@
-import { AlertCircle, Image as ImageIcon, Music, Pencil } from "lucide-react";
-import { Fragment, useState } from "react";
+import { AlertCircle, Image as ImageIcon, Loader2, Music, Pencil, ScrollText } from "lucide-react";
+import { Fragment, useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
+import { useQueryClient } from "@tanstack/react-query";
 
 import type { AlbumDetail, Track } from "@/api/useAlbum";
 import { AlbumNotFoundError, useAlbum } from "@/api/useAlbum";
+import { useStartAlbumLyricsFetch } from "@/api/useAlbumLyrics";
+import { useLyricsBackfillStatus, useStopLyricsBackfill } from "@/api/useLyricsBackfill";
 import { useAlbumMissing, type MissingReleaseTrack } from "@/api/useAlbumMissing";
 import { buildDiscGroups, type DiscGroup } from "@/pages/albums/missingTracks";
 import { BackLink } from "@/components/albums/album-grid";
@@ -70,6 +73,9 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
     report?.status === "ok" ? report.missing : [];
   const discs: DiscGroup[] = buildDiscGroups(album.tracks, missingTracks);
   const multiDisc = discs.length > 1;
+
+  const withLyrics = album.tracks.filter((t) => t.has_lyrics).length;
+  const missingLyrics = album.tracks.length - withLyrics;
 
   const [editing, setEditing] = useState(false);
   const [editingCover, setEditingCover] = useState(false);
@@ -146,13 +152,22 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
       <Separator />
 
       <section aria-label="Tracklist" className="flex flex-col gap-3">
-        <TracklistStatus query={missingQuery} report={report} />
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <TracklistStatus query={missingQuery} report={report} />
+          <LyricsStatus
+            albumId={album.id}
+            total={album.tracks.length}
+            withLyrics={withLyrics}
+            missing={missingLyrics}
+          />
+        </div>
         <Table>
           <TableHeader>
             <TableRow>
               <TableHead className="w-12 pr-4 text-right">#</TableHead>
               <TableHead>Title</TableHead>
               <TableHead className="w-20 text-right">Length</TableHead>
+              <TableHead className="w-16 text-center">Lyrics</TableHead>
             </TableRow>
           </TableHeader>
           {discs.map((group) => (
@@ -162,7 +177,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
                   <TableRow className="hover:bg-transparent">
                     <TableHead
                       scope="rowgroup"
-                      colSpan={3}
+                      colSpan={4}
                       className="text-muted-foreground h-auto pt-6 text-xs font-medium tracking-wide uppercase"
                     >
                       Disc {group.disc}
@@ -219,6 +234,15 @@ function TrackRow({
       <TableCell className="text-muted-foreground text-right tabular-nums">
         {formatDuration(track.duration_seconds)}
       </TableCell>
+      <TableCell className="text-center">
+        {track.has_lyrics ? (
+          <ScrollText className="text-foreground inline size-4" aria-label="Has lyrics" />
+        ) : (
+          <span className="text-muted-foreground" aria-label="No lyrics">
+            –
+          </span>
+        )}
+      </TableCell>
     </TableRow>
   );
 }
@@ -255,6 +279,9 @@ function MissingTrackRow({ track }: { track: MissingReleaseTrack }) {
       </TableCell>
       <TableCell className="text-muted-foreground text-right tabular-nums">
         {formatDuration(track.duration_seconds)}
+      </TableCell>
+      <TableCell aria-hidden="true" className="text-muted-foreground text-center">
+        –
       </TableCell>
     </TableRow>
   );
@@ -397,6 +424,89 @@ function NotFoundState() {
             roster rather than guessing a parent. */}
         <Link to="/">Back to artists</Link>
       </Button>
+    </div>
+  );
+}
+
+function LyricsStatus({
+  albumId,
+  total,
+  withLyrics,
+  missing,
+}: {
+  albumId: number;
+  total: number;
+  withLyrics: number;
+  missing: number;
+}) {
+  const queryClient = useQueryClient();
+  const status = useLyricsBackfillStatus();
+  const start = useStartAlbumLyricsFetch(albumId);
+  const stop = useStopLyricsBackfill();
+  const job = status.data;
+  const isThisAlbum = job?.album_id === albumId;
+  const runningThis = job?.phase === "running" && isThisAlbum;
+  const otherRunning = job?.phase === "running" && !isThisAlbum;
+  const terminalThis =
+    isThisAlbum && (job?.phase === "done" || job?.phase === "stopped");
+  const phase = job?.phase;
+
+  // When THIS album's job ends, the per-track has_lyrics flags are stale — refresh.
+  useEffect(() => {
+    if (isThisAlbum && (phase === "done" || phase === "stopped" || phase === "failed")) {
+      void queryClient.invalidateQueries({ queryKey: ["album", albumId] });
+    }
+  }, [isThisAlbum, phase, albumId, queryClient]);
+
+  if (runningThis && job) {
+    return (
+      <div className="flex flex-wrap items-center gap-3" role="status">
+        <Loader2 className="text-muted-foreground size-4 shrink-0 animate-spin" aria-hidden="true" />
+        <span className="text-muted-foreground text-sm">
+          Fetching lyrics… {job.processed} / {job.total} · found {job.found}
+        </span>
+        <Button variant="outline" size="sm" onClick={() => stop.mutate()} disabled={stop.isPending}>
+          Stop
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <span className="text-muted-foreground text-sm">
+        {withLyrics} of {total} tracks have lyrics
+      </span>
+      {missing > 0 && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => start.mutate()}
+          disabled={start.isPending || otherRunning}
+        >
+          {start.isPending ? (
+            <>
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" /> Starting…
+            </>
+          ) : (
+            `Fetch missing lyrics (${missing})`
+          )}
+        </Button>
+      )}
+      {otherRunning && (
+        <span className="text-muted-foreground text-sm">another lyrics job is running</span>
+      )}
+      {terminalThis && job && (
+        <span className="text-muted-foreground text-sm" role="status">
+          {job.found} added · {job.not_found} none · {job.failed} failed
+          {job.writes_enabled ? "" : " · not written to files (enable writes in config)"}
+        </span>
+      )}
+      {start.isError && (
+        <span className="text-destructive text-sm" role="alert">
+          {(start.error as Error).message}
+        </span>
+      )}
     </div>
   );
 }

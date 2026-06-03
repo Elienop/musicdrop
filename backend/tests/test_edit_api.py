@@ -90,4 +90,4 @@ def test_edit_409_while_import_active(
     aid = _album_id(edit_lib)
     r = edit_client.post(f"/api/albums/{aid}/edit", json={"album": {"title": "x"}})
     assert r.status_code == 409
-    assert "import" in r.json()["detail"].lower()
+    assert "in progress" in r.json()["detail"].lower()

@@ -156,6 +156,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/albums/{album_id}/lyrics/fetch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fetch Album Lyrics Endpoint
+         * @description Start an album-scoped lyrics fetch job (writes tags → Plex). Poll
+         *     GET /api/lyrics/backfill for marching progress. 404 unknown album, 409 if busy.
+         */
+        post: operations["fetch_album_lyrics_endpoint_api_albums__album_id__lyrics_fetch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/artists": {
         parameters: {
             query?: never;
@@ -471,6 +492,71 @@ export interface paths {
         put?: never;
         /** Resolve All Duplicates */
         post: operations["resolve_all_duplicates_api_duplicates_resolve_all_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lyrics/coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Lyrics Coverage
+         * @description Fraction of library tracks that already carry lyrics. Read-only.
+         */
+        get: operations["get_lyrics_coverage_api_lyrics_coverage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lyrics/backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Lyrics Backfill Status
+         * @description Poll the backfill (phase + counters). Returns phase=idle when none ran.
+         */
+        get: operations["get_lyrics_backfill_status_api_lyrics_backfill_get"];
+        put?: never;
+        /**
+         * Start Lyrics Backfill
+         * @description Start a library-wide backfill. 409 if an import, another backfill, or a
+         *     config-apply/edit/cover op is in flight.
+         */
+        post: operations["start_lyrics_backfill_api_lyrics_backfill_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lyrics/backfill/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop Lyrics Backfill
+         * @description Request a cooperative stop; the worker ends after the current track.
+         */
+        post: operations["stop_lyrics_backfill_api_lyrics_backfill_stop_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1075,6 +1161,47 @@ export interface components {
             /** Error */
             error?: string | null;
         };
+        /** LyricsBackfillStatus */
+        LyricsBackfillStatus: {
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "idle" | "running" | "done" | "stopped" | "failed";
+            /** Job Id */
+            job_id: string | null;
+            /** Total */
+            total: number;
+            /** Processed */
+            processed: number;
+            /** Found */
+            found: number;
+            /** Not Found */
+            not_found: number;
+            /** Failed */
+            failed: number;
+            /** Skipped */
+            skipped: number;
+            /** Current */
+            current: string | null;
+            /** Writes Enabled */
+            writes_enabled: boolean;
+            /** Error */
+            error: string | null;
+            /** Album Id */
+            album_id: number | null;
+            /** Scope Label */
+            scope_label: string;
+        };
+        /** LyricsCoverage */
+        LyricsCoverage: {
+            /** Total */
+            total: number;
+            /** With Lyrics */
+            with_lyrics: number;
+            /** Percent */
+            percent: number;
+        };
         /** MissingReleaseTrack */
         MissingReleaseTrack: {
             /** Index */
@@ -1264,6 +1391,8 @@ export interface components {
             artist: string;
             /** Mb Trackid */
             mb_trackid: string | null;
+            /** Has Lyrics */
+            has_lyrics: boolean;
         };
         /**
          * TrackChange
@@ -1660,6 +1789,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fetch_album_lyrics_endpoint_api_albums__album_id__lyrics_fetch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                album_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LyricsBackfillStatus"];
                 };
             };
             /** @description Validation Error */
@@ -2211,6 +2371,86 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_lyrics_coverage_api_lyrics_coverage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LyricsCoverage"];
+                };
+            };
+        };
+    };
+    get_lyrics_backfill_status_api_lyrics_backfill_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LyricsBackfillStatus"];
+                };
+            };
+        };
+    };
+    start_lyrics_backfill_api_lyrics_backfill_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LyricsBackfillStatus"];
+                };
+            };
+        };
+    };
+    stop_lyrics_backfill_api_lyrics_backfill_stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LyricsBackfillStatus"];
                 };
             };
         };

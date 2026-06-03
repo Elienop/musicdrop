@@ -22,6 +22,7 @@ function makeTrack(overrides: Partial<Track> = {}): Track {
     duration_seconds: 284,
     artist: "Radiohead",
     mb_trackid: null,
+    has_lyrics: false,
     ...overrides,
   };
 }
@@ -78,7 +79,10 @@ describe("AlbumDetailPage", () => {
       .find((el) => el.tagName === "P");
     expect(artistLine).toBeInTheDocument();
     expect(screen.getByText("1997")).toBeInTheDocument();
-    expect(screen.getByText(/3 tracks/i)).toBeInTheDocument();
+    // The header sub-line renders the bare count "3 tracks"; the lyrics-coverage
+    // summary ("0 of 3 tracks have lyrics") also matches /3 tracks/, so scope to
+    // the exact header text to keep this assertion about the header.
+    expect(screen.getByText("3 tracks")).toBeInTheDocument();
     expect(screen.getByText("Alternative Rock")).toBeInTheDocument();
 
     // Header cover image points at the album's /cover endpoint. It's
@@ -146,7 +150,9 @@ describe("AlbumDetailPage", () => {
 
     const row = (await screen.findByText("Untimed")).closest("tr");
     expect(row).not.toBeNull();
-    expect(within(row as HTMLElement).getByText("–")).toBeInTheDocument();
+    // The row carries two en-dashes now: the null duration AND the
+    // no-lyrics indicator cell. Assert the duration fallback is among them.
+    expect(within(row as HTMLElement).getAllByText("–").length).toBeGreaterThan(0);
   });
 
   test("shows the track artist only when it differs from the album artist", async () => {
@@ -269,7 +275,8 @@ describe("AlbumDetailPage", () => {
 
     const row = (await screen.findByText("Untracked")).closest("tr");
     expect(row).not.toBeNull();
-    expect(within(row as HTMLElement).getByText("–")).toBeInTheDocument();
+    // Two en-dashes now: the untagged track number (0) AND the no-lyrics cell.
+    expect(within(row as HTMLElement).getAllByText("–").length).toBeGreaterThan(0);
   });
 
   test("does not render a 'Disc 0' header for untagged discs", async () => {

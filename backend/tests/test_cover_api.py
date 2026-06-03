@@ -68,7 +68,7 @@ def test_upload_409_while_import_active(
         f"/api/albums/{aid}/cover", files={"file": ("cover.png", PNG.read_bytes(), "image/png")}
     )
     assert r.status_code == 409
-    assert "import" in r.json()["detail"].lower()
+    assert "in progress" in r.json()["detail"].lower()
 
 
 def test_fetch_via_filesystem_returns_image(cover_client: TestClient, edit_lib: Library) -> None:

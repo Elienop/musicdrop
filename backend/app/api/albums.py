@@ -6,10 +6,12 @@ from app.beets.completeness import missing_report_op
 from app.beets.cover import fetch_cover_op, install_cover_op
 from app.beets.edit import apply_album_edit_op, preview_album_edit_op
 from app.beets.library import LibraryHandle, get_album_cover, get_album_detail, list_albums
+from app.beets.lyrics import start_album_lyrics_op
 from app.models.album import Album, AlbumDetail, AlbumPage
 from app.models.completeness import AlbumMissingReport
 from app.models.cover import CoverInstallResult
 from app.models.edit import AlbumEditPreview, AlbumEditRequest, AlbumEditResult
+from app.models.lyrics import LyricsBackfillStatus
 
 router = APIRouter(tags=["albums"])
 
@@ -133,3 +135,14 @@ async def install_album_cover_endpoint(
     if len(image_bytes) > _MAX_COVER_BYTES:
         raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
     return await install_cover_op(request, album_id, image_bytes)
+
+
+@router.post("/albums/{album_id}/lyrics/fetch", response_model=LyricsBackfillStatus)
+async def fetch_album_lyrics_endpoint(
+    album_id: int,
+    request: Request,
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> LyricsBackfillStatus:
+    """Start an album-scoped lyrics fetch job (writes tags → Plex). Poll
+    GET /api/lyrics/backfill for marching progress. 404 unknown album, 409 if busy."""
+    return await start_album_lyrics_op(request, album_id)

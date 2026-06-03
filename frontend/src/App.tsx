@@ -18,6 +18,7 @@ import {
 } from "react-router";
 
 import { client } from "@/api/client";
+import { LyricsBackfillBanner } from "@/components/LyricsBackfillBanner";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
@@ -231,6 +232,7 @@ export function App() {
         </div>
       </header>
       <main className="mx-auto max-w-7xl px-6 py-8">
+        <LyricsBackfillBanner />
         <Outlet />
       </main>
     </div>

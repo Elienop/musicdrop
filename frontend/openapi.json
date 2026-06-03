@@ -421,6 +421,49 @@
         }
       }
     },
+    "/api/albums/{album_id}/lyrics/fetch": {
+      "post": {
+        "tags": [
+          "albums"
+        ],
+        "summary": "Fetch Album Lyrics Endpoint",
+        "description": "Start an album-scoped lyrics fetch job (writes tags \u2192 Plex). Poll\nGET /api/lyrics/backfill for marching progress. 404 unknown album, 409 if busy.",
+        "operationId": "fetch_album_lyrics_endpoint_api_albums__album_id__lyrics_fetch_post",
+        "parameters": [
+          {
+            "name": "album_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Album Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LyricsBackfillStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/artists": {
       "get": {
         "tags": [
@@ -1157,6 +1200,92 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/lyrics/coverage": {
+      "get": {
+        "tags": [
+          "lyrics"
+        ],
+        "summary": "Get Lyrics Coverage",
+        "description": "Fraction of library tracks that already carry lyrics. Read-only.",
+        "operationId": "get_lyrics_coverage_api_lyrics_coverage_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LyricsCoverage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/lyrics/backfill": {
+      "get": {
+        "tags": [
+          "lyrics"
+        ],
+        "summary": "Get Lyrics Backfill Status",
+        "description": "Poll the backfill (phase + counters). Returns phase=idle when none ran.",
+        "operationId": "get_lyrics_backfill_status_api_lyrics_backfill_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LyricsBackfillStatus"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "lyrics"
+        ],
+        "summary": "Start Lyrics Backfill",
+        "description": "Start a library-wide backfill. 409 if an import, another backfill, or a\nconfig-apply/edit/cover op is in flight.",
+        "operationId": "start_lyrics_backfill_api_lyrics_backfill_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LyricsBackfillStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/lyrics/backfill/stop": {
+      "post": {
+        "tags": [
+          "lyrics"
+        ],
+        "summary": "Stop Lyrics Backfill",
+        "description": "Request a cooperative stop; the worker ends after the current track.",
+        "operationId": "stop_lyrics_backfill_api_lyrics_backfill_stop_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LyricsBackfillStatus"
                 }
               }
             }
@@ -2737,6 +2866,137 @@
         "title": "ItemWriteResult",
         "description": "The per-track outcome of an apply (replaces beets' silent all-or-nothing)."
       },
+      "LyricsBackfillStatus": {
+        "properties": {
+          "phase": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "running",
+              "done",
+              "stopped",
+              "failed"
+            ],
+            "title": "Phase"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "processed": {
+            "type": "integer",
+            "title": "Processed"
+          },
+          "found": {
+            "type": "integer",
+            "title": "Found"
+          },
+          "not_found": {
+            "type": "integer",
+            "title": "Not Found"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          },
+          "skipped": {
+            "type": "integer",
+            "title": "Skipped"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current"
+          },
+          "writes_enabled": {
+            "type": "boolean",
+            "title": "Writes Enabled"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "album_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Id"
+          },
+          "scope_label": {
+            "type": "string",
+            "title": "Scope Label"
+          }
+        },
+        "type": "object",
+        "required": [
+          "phase",
+          "job_id",
+          "total",
+          "processed",
+          "found",
+          "not_found",
+          "failed",
+          "skipped",
+          "current",
+          "writes_enabled",
+          "error",
+          "album_id",
+          "scope_label"
+        ],
+        "title": "LyricsBackfillStatus"
+      },
+      "LyricsCoverage": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "with_lyrics": {
+            "type": "integer",
+            "title": "With Lyrics"
+          },
+          "percent": {
+            "type": "number",
+            "title": "Percent"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "with_lyrics",
+          "percent"
+        ],
+        "title": "LyricsCoverage"
+      },
       "MissingReleaseTrack": {
         "properties": {
           "index": {
@@ -3184,6 +3444,10 @@
               }
             ],
             "title": "Mb Trackid"
+          },
+          "has_lyrics": {
+            "type": "boolean",
+            "title": "Has Lyrics"
           }
         },
         "type": "object",
@@ -3194,7 +3458,8 @@
           "disc",
           "duration_seconds",
           "artist",
-          "mb_trackid"
+          "mb_trackid",
+          "has_lyrics"
         ],
         "title": "Track"
       },
