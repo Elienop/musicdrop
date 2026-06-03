@@ -21,6 +21,7 @@ function makeTrack(overrides: Partial<Track> = {}): Track {
     disc: 1,
     duration_seconds: 284,
     artist: "Radiohead",
+    mb_trackid: null,
     ...overrides,
   };
 }
@@ -33,6 +34,7 @@ function makeDetail(overrides: Partial<AlbumDetail> = {}): AlbumDetail {
     year: 1997,
     track_count: 3,
     genre: "Alternative Rock",
+    mb_albumid: null,
     tracks: [
       makeTrack({ id: 1, title: "Airbag", track: 1, duration_seconds: 284 }),
       makeTrack({

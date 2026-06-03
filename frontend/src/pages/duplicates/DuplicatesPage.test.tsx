@@ -22,6 +22,7 @@ function album(overrides: Partial<DuplicateAlbum> = {}): DuplicateAlbum {
     year: 2007,
     track_count: 10,
     genre: null,
+    mb_albumid: null,
     format: "FLAC",
     bitrate_kbps: 900,
     folder: "/music/Radiohead/In Rainbows",

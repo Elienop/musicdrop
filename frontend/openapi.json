@@ -140,6 +140,49 @@
         }
       }
     },
+    "/api/albums/{album_id}/missing": {
+      "get": {
+        "tags": [
+          "albums"
+        ],
+        "summary": "Get Album Missing Endpoint",
+        "description": "Full release tracklist vs. the library (missing rows + counts). Read-only.",
+        "operationId": "get_album_missing_endpoint_api_albums__album_id__missing_get",
+        "parameters": [
+          {
+            "name": "album_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Album Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumMissingReport"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/albums/{album_id}/edit/preview": {
       "post": {
         "tags": [
@@ -1188,6 +1231,17 @@
               }
             ],
             "title": "Genre"
+          },
+          "mb_albumid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mb Albumid"
           }
         },
         "type": "object",
@@ -1197,7 +1251,8 @@
           "title",
           "year",
           "track_count",
-          "genre"
+          "genre",
+          "mb_albumid"
         ],
         "title": "Album"
       },
@@ -1322,6 +1377,17 @@
             ],
             "title": "Genre"
           },
+          "mb_albumid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mb Albumid"
+          },
           "tracks": {
             "items": {
               "$ref": "#/components/schemas/Track"
@@ -1338,6 +1404,7 @@
           "year",
           "track_count",
           "genre",
+          "mb_albumid",
           "tracks"
         ],
         "title": "AlbumDetail"
@@ -1550,6 +1617,55 @@
         "type": "object",
         "title": "AlbumFieldEdits",
         "description": "Album-header fields to change; only set (non-None) keys are applied.\n\nThese propagate to every track (beets ``inherit``). Clearing a field (set\nto null) is out of scope, so None means \"leave unchanged\"."
+      },
+      "AlbumMissingReport": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "no_musicbrainz_id",
+              "release_unavailable",
+              "fetch_failed"
+            ],
+            "title": "Status"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "present_count": {
+            "type": "integer",
+            "title": "Present Count"
+          },
+          "missing": {
+            "items": {
+              "$ref": "#/components/schemas/MissingReleaseTrack"
+            },
+            "type": "array",
+            "title": "Missing"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "total",
+          "present_count",
+          "missing",
+          "source"
+        ],
+        "title": "AlbumMissingReport"
       },
       "AlbumPage": {
         "properties": {
@@ -1904,6 +2020,17 @@
             ],
             "title": "Genre"
           },
+          "mb_albumid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mb Albumid"
+          },
           "format": {
             "anyOf": [
               {
@@ -1943,6 +2070,7 @@
           "year",
           "track_count",
           "genre",
+          "mb_albumid",
           "format",
           "bitrate_kbps",
           "folder",
@@ -2609,6 +2737,53 @@
         "title": "ItemWriteResult",
         "description": "The per-track outcome of an apply (replaces beets' silent all-or-nothing)."
       },
+      "MissingReleaseTrack": {
+        "properties": {
+          "index": {
+            "type": "integer",
+            "title": "Index"
+          },
+          "disc": {
+            "type": "integer",
+            "title": "Disc"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Seconds"
+          },
+          "mb_trackid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mb Trackid"
+          }
+        },
+        "type": "object",
+        "required": [
+          "index",
+          "disc",
+          "title",
+          "duration_seconds",
+          "mb_trackid"
+        ],
+        "title": "MissingReleaseTrack"
+      },
       "MissingTrack": {
         "properties": {
           "index": {
@@ -2998,6 +3173,17 @@
           "artist": {
             "type": "string",
             "title": "Artist"
+          },
+          "mb_trackid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mb Trackid"
           }
         },
         "type": "object",
@@ -3007,7 +3193,8 @@
           "track",
           "disc",
           "duration_seconds",
-          "artist"
+          "artist",
+          "mb_trackid"
         ],
         "title": "Track"
       },

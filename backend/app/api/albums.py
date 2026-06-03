@@ -2,10 +2,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
 
+from app.beets.completeness import missing_report_op
 from app.beets.cover import fetch_cover_op, install_cover_op
 from app.beets.edit import apply_album_edit_op, preview_album_edit_op
 from app.beets.library import LibraryHandle, get_album_cover, get_album_detail, list_albums
 from app.models.album import Album, AlbumDetail, AlbumPage
+from app.models.completeness import AlbumMissingReport
 from app.models.cover import CoverInstallResult
 from app.models.edit import AlbumEditPreview, AlbumEditRequest, AlbumEditResult
 
@@ -48,6 +50,15 @@ async def get_album_detail_endpoint(
     if detail is None:
         raise HTTPException(status_code=404, detail="Album not found")
     return detail
+
+
+@router.get("/albums/{album_id}/missing", response_model=AlbumMissingReport)
+async def get_album_missing_endpoint(
+    album_id: int,
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> AlbumMissingReport:
+    """Full release tracklist vs. the library (missing rows + counts). Read-only."""
+    return await missing_report_op(handle.lib, album_id)
 
 
 @router.post("/albums/{album_id}/edit/preview", response_model=AlbumEditPreview)

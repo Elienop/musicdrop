@@ -346,3 +346,14 @@ def test_lifespan_opens_library_from_settings(
     body = resp.json()
     assert body["total"] == 1
     assert body["items"][0]["album_artist"] == "ABBA"
+
+
+def test_album_detail_exposes_musicbrainz_ids(edit_lib: "Library") -> None:
+    from app.beets.library import get_album_detail
+
+    aid = int(next(iter(edit_lib.albums())).id)
+    detail = get_album_detail(edit_lib, aid)
+    assert detail is not None
+    assert detail.mb_albumid == "mb-edit"
+    # edit_lib items carry no mb_trackid -> coerced to None, not "".
+    assert all(t.mb_trackid is None for t in detail.tracks)

@@ -8,6 +8,7 @@ class Album(BaseModel):
     year: int | None
     track_count: int
     genre: str | None
+    mb_albumid: str | None
 
 
 class AlbumPage(BaseModel):
@@ -24,6 +25,7 @@ class Track(BaseModel):
     disc: int
     duration_seconds: float | None
     artist: str
+    mb_trackid: str | None
 
 
 class AlbumDetail(Album):
