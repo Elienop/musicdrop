@@ -8,8 +8,8 @@ const album: AlbumDetail = {
   id: 7, album_artist: "Radiohead", title: "In Rainbows", year: 2007,
   track_count: 2, genre: "Rock", mb_albumid: "rel-1",
   tracks: [
-    { id: 1, title: "15 Step", track: 1, disc: 1, duration_seconds: 100, artist: "Radiohead", mb_trackid: "t1" },
-    { id: 2, title: "Bodysnatchers", track: 2, disc: 1, duration_seconds: 100, artist: "Radiohead", mb_trackid: "t2" },
+    { id: 1, title: "15 Step", track: 1, disc: 1, duration_seconds: 100, artist: "Radiohead", mb_trackid: "t1", has_lyrics: false },
+    { id: 2, title: "Bodysnatchers", track: 2, disc: 1, duration_seconds: 100, artist: "Radiohead", mb_trackid: "t2", has_lyrics: false },
   ],
 };
 
@@ -21,6 +21,13 @@ vi.mock("@/api/useAlbum", async (orig) => {
 vi.mock("@/api/useAlbumMissing", async (orig) => {
   const actual = await orig<typeof import("@/api/useAlbumMissing")>();
   return { ...actual, useAlbumMissing: () => useAlbumMissingMock() };
+});
+vi.mock("@/api/useAlbumLyrics", async (orig) => {
+  const actual = await orig<typeof import("@/api/useAlbumLyrics")>();
+  return {
+    ...actual,
+    useAlbumLyricsFetch: () => ({ mutate: vi.fn(), isPending: false, data: undefined }),
+  };
 });
 
 async function renderPage() {

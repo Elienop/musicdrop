@@ -1,9 +1,10 @@
-import { AlertCircle, Image as ImageIcon, Music, Pencil } from "lucide-react";
+import { AlertCircle, Image as ImageIcon, Loader2, Music, Pencil } from "lucide-react";
 import { Fragment, useState } from "react";
 import { Link, useParams } from "react-router";
 
 import type { AlbumDetail, Track } from "@/api/useAlbum";
 import { AlbumNotFoundError, useAlbum } from "@/api/useAlbum";
+import { useAlbumLyricsFetch } from "@/api/useAlbumLyrics";
 import { useAlbumMissing, type MissingReleaseTrack } from "@/api/useAlbumMissing";
 import { buildDiscGroups, type DiscGroup } from "@/pages/albums/missingTracks";
 import { BackLink } from "@/components/albums/album-grid";
@@ -70,6 +71,10 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
     report?.status === "ok" ? report.missing : [];
   const discs: DiscGroup[] = buildDiscGroups(album.tracks, missingTracks);
   const multiDisc = discs.length > 1;
+
+  const lyricsFetch = useAlbumLyricsFetch(album.id);
+  const withLyrics = album.tracks.filter((t) => t.has_lyrics).length;
+  const missingLyrics = album.tracks.length - withLyrics;
 
   const [editing, setEditing] = useState(false);
   const [editingCover, setEditingCover] = useState(false);
@@ -146,13 +151,22 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
       <Separator />
 
       <section aria-label="Tracklist" className="flex flex-col gap-3">
-        <TracklistStatus query={missingQuery} report={report} />
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <TracklistStatus query={missingQuery} report={report} />
+          <LyricsStatus
+            total={album.tracks.length}
+            withLyrics={withLyrics}
+            missing={missingLyrics}
+            fetch={lyricsFetch}
+          />
+        </div>
         <Table>
           <TableHeader>
             <TableRow>
               <TableHead className="w-12 pr-4 text-right">#</TableHead>
               <TableHead>Title</TableHead>
               <TableHead className="w-20 text-right">Length</TableHead>
+              <TableHead className="w-16 text-center">Lyrics</TableHead>
             </TableRow>
           </TableHeader>
           {discs.map((group) => (
@@ -162,7 +176,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
                   <TableRow className="hover:bg-transparent">
                     <TableHead
                       scope="rowgroup"
-                      colSpan={3}
+                      colSpan={4}
                       className="text-muted-foreground h-auto pt-6 text-xs font-medium tracking-wide uppercase"
                     >
                       Disc {group.disc}
@@ -219,6 +233,15 @@ function TrackRow({
       <TableCell className="text-muted-foreground text-right tabular-nums">
         {formatDuration(track.duration_seconds)}
       </TableCell>
+      <TableCell className="text-center">
+        {track.has_lyrics ? (
+          <Music className="text-foreground inline size-4" aria-label="Has lyrics" />
+        ) : (
+          <span className="text-muted-foreground" aria-label="No lyrics">
+            –
+          </span>
+        )}
+      </TableCell>
     </TableRow>
   );
 }
@@ -255,6 +278,9 @@ function MissingTrackRow({ track }: { track: MissingReleaseTrack }) {
       </TableCell>
       <TableCell className="text-muted-foreground text-right tabular-nums">
         {formatDuration(track.duration_seconds)}
+      </TableCell>
+      <TableCell aria-hidden="true" className="text-muted-foreground text-center">
+        –
       </TableCell>
     </TableRow>
   );
@@ -397,6 +423,49 @@ function NotFoundState() {
             roster rather than guessing a parent. */}
         <Link to="/">Back to artists</Link>
       </Button>
+    </div>
+  );
+}
+
+function LyricsStatus({
+  total,
+  withLyrics,
+  missing,
+  fetch,
+}: {
+  total: number;
+  withLyrics: number;
+  missing: number;
+  fetch: ReturnType<typeof useAlbumLyricsFetch>;
+}) {
+  const result = fetch.data;
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <span className="text-muted-foreground text-sm">
+        {withLyrics} of {total} tracks have lyrics
+      </span>
+      {missing > 0 && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => fetch.mutate()}
+          disabled={fetch.isPending}
+        >
+          {fetch.isPending ? (
+            <>
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" /> Fetching…
+            </>
+          ) : (
+            `Fetch missing lyrics (${missing})`
+          )}
+        </Button>
+      )}
+      {result && (
+        <span className="text-muted-foreground text-sm" role="status">
+          {result.fetched} added · {result.not_found} none · {result.failed} failed
+          {result.writes_enabled ? "" : " · not written to files (enable writes in config)"}
+        </span>
+      )}
     </div>
   );
 }
