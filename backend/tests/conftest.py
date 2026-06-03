@@ -83,6 +83,21 @@ def reset_import_registry() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def reset_lyrics_backfill_registry() -> Iterator[None]:
+    """Reset the global single-slot lyrics backfill registry around every test.
+
+    Mirrors ``reset_import_registry``: the backfill registry is module-global
+    mutable state (one active job). Without this, a test that leaves a backfill
+    ``running`` would leak a 409 into the next test's per-album fetch / start.
+    """
+    from app.lyrics_jobs.registry import reset_lyrics_backfill
+
+    reset_lyrics_backfill()
+    yield
+    reset_lyrics_backfill()
+
+
+@pytest.fixture(autouse=True)
 def _clear_beets_globals() -> Iterator[None]:
     """Reset beets' global confuse + plugin singletons between every test.
 

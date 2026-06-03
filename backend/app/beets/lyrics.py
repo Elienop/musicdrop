@@ -55,16 +55,21 @@ def _make_lyrics_plugin() -> Any:
     return LyricsPlugin()
 
 
-def _store_lyrics(item: Any, lyrics: Lyrics, *, write: bool) -> None:
-    """Persist beets-style: item.lyrics + flex fields, DB store, gated file write."""
+def _store_lyrics(item: Any, lyrics: Lyrics, *, write: bool) -> bool:
+    """Persist beets-style: item.lyrics + flex fields, DB store, gated file write.
+
+    Returns whether the file tag was actually written: ``item.try_write()``'s
+    bool result when writes are on, else ``False``. ``item.store()`` (the DB
+    write) always runs regardless.
+    """
     item.lyrics = lyrics.text
     for key in ("backend", "url", "language"):
         value = getattr(lyrics, key, None)
         if value:
             item[f"lyrics_{key}"] = value
     item.store()
-    if write:
-        item.try_write()
+    written = bool(item.try_write()) if write else False
+    return written
 
 
 def fetch_item_lyrics(plugin: Any, item: Any, *, force: bool, write: bool) -> ItemLyricsOutcome:
@@ -101,9 +106,9 @@ def fetch_item_lyrics(plugin: Any, item: Any, *, force: bool, write: bool) -> It
                     failed = True
                     continue
                 if result is not None:
-                    _store_lyrics(item, result, write=write)
+                    written = _store_lyrics(item, result, write=write)
                     return ItemLyricsOutcome(
-                        item_id=item_id, status="found", source=result.backend, written=write
+                        item_id=item_id, status="found", source=result.backend, written=written
                     )
     status: ItemLyricsStatus = "fetch_failed" if failed else "not_found"
     return ItemLyricsOutcome(item_id=item_id, status=status, source=None, written=False)

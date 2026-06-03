@@ -89,6 +89,48 @@ def test_fetch_item_write_gated_off(edit_lib: Library) -> None:
     assert not (MediaFile(os.fsdecode(item.path)).lyrics or "")  # NOT written to file
 
 
+class _WriteFailItem:
+    """Wraps a beets Item but makes try_write() report failure (returns False).
+
+    A plain ``monkeypatch.setattr(item, "try_write", ...)`` can't be used: a
+    beets Item is a flex-attribute model, so assigning to ``try_write`` writes a
+    flex field that ``store()`` then tries (and fails) to persist. This proxy
+    delegates everything to the wrapped item except ``try_write``.
+    """
+
+    def __init__(self, item: Any) -> None:
+        object.__setattr__(self, "_item", item)
+
+    def try_write(self, *args: Any, **kwargs: Any) -> bool:
+        return False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._item, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._item, name, value)
+
+    def __getitem__(self, key: str) -> Any:
+        return self._item[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._item[key] = value
+
+
+def test_fetch_item_write_failure_reports_not_written_but_stores(edit_lib: Library) -> None:
+    """If the file write fails, written=False (but DB store still ran)."""
+    from app.beets.lyrics import fetch_item_lyrics
+
+    item = _WriteFailItem(_first_item(edit_lib))
+    plugin = _FakePlugin([_FakeBackend(result=Lyrics("file write fails", "lrclib", "u"))])
+
+    out = fetch_item_lyrics(plugin, item, force=False, write=True)
+
+    assert out.status == "found"
+    assert out.written is False  # try_write returned False
+    assert item.lyrics == "file write fails"  # store() still ran
+
+
 def test_fetch_item_not_found(edit_lib: Library) -> None:
     from app.beets.lyrics import fetch_item_lyrics
 

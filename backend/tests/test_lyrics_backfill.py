@@ -204,3 +204,21 @@ def test_backfill_active_helper_reflects_state() -> None:
     reg.start(writes_enabled=True)
     assert lyrics_backfill_active() is True
     reset_lyrics_backfill()
+
+
+# The following pair proves the autouse ``reset_lyrics_backfill_registry``
+# fixture in conftest cleans the GLOBAL backfill registry between tests: the
+# first leaves a backfill running with NO manual cleanup; the second (which
+# runs after it) must still see an idle slot. Without the autouse reset the
+# leaked "running" job would make the second assertion fail.
+def test_leaks_a_running_backfill_for_the_next_test() -> None:
+    from app.lyrics_jobs.registry import get_lyrics_backfill, lyrics_backfill_active
+
+    get_lyrics_backfill().start(writes_enabled=True)
+    assert lyrics_backfill_active() is True  # deliberately left running
+
+
+def test_global_backfill_registry_is_idle_at_test_entry() -> None:
+    from app.lyrics_jobs.registry import lyrics_backfill_active
+
+    assert lyrics_backfill_active() is False
