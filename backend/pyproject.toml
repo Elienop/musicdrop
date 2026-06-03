@@ -86,6 +86,7 @@ module = [
     "tests.test_completeness_adapter",
     "tests.test_completeness_api",
     "app.beets.lyrics",
+    "app.api.lyrics",
     "tests.test_lyrics_adapter",
     "tests.test_lyrics_api",
     "app.lyrics_jobs.registry",

@@ -499,6 +499,71 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/lyrics/coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Lyrics Coverage
+         * @description Fraction of library tracks that already carry lyrics. Read-only.
+         */
+        get: operations["get_lyrics_coverage_api_lyrics_coverage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lyrics/backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Lyrics Backfill Status
+         * @description Poll the backfill (phase + counters). Returns phase=idle when none ran.
+         */
+        get: operations["get_lyrics_backfill_status_api_lyrics_backfill_get"];
+        put?: never;
+        /**
+         * Start Lyrics Backfill
+         * @description Start a library-wide backfill. 409 if an import, another backfill, or a
+         *     config-apply/edit/cover op is in flight.
+         */
+        post: operations["start_lyrics_backfill_api_lyrics_backfill_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/lyrics/backfill/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop Lyrics Backfill
+         * @description Request a cooperative stop; the worker ends after the current track.
+         */
+        post: operations["stop_lyrics_backfill_api_lyrics_backfill_stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1127,6 +1192,43 @@ export interface components {
             moved: boolean;
             /** Error */
             error?: string | null;
+        };
+        /** LyricsBackfillStatus */
+        LyricsBackfillStatus: {
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "idle" | "running" | "done" | "stopped" | "failed";
+            /** Job Id */
+            job_id: string | null;
+            /** Total */
+            total: number;
+            /** Processed */
+            processed: number;
+            /** Found */
+            found: number;
+            /** Not Found */
+            not_found: number;
+            /** Failed */
+            failed: number;
+            /** Skipped */
+            skipped: number;
+            /** Current */
+            current: string | null;
+            /** Writes Enabled */
+            writes_enabled: boolean;
+            /** Error */
+            error: string | null;
+        };
+        /** LyricsCoverage */
+        LyricsCoverage: {
+            /** Total */
+            total: number;
+            /** With Lyrics */
+            with_lyrics: number;
+            /** Percent */
+            percent: number;
         };
         /** MissingReleaseTrack */
         MissingReleaseTrack: {
@@ -2297,6 +2399,86 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_lyrics_coverage_api_lyrics_coverage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LyricsCoverage"];
+                };
+            };
+        };
+    };
+    get_lyrics_backfill_status_api_lyrics_backfill_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LyricsBackfillStatus"];
+                };
+            };
+        };
+    };
+    start_lyrics_backfill_api_lyrics_backfill_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LyricsBackfillStatus"];
+                };
+            };
+        };
+    };
+    stop_lyrics_backfill_api_lyrics_backfill_stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LyricsBackfillStatus"];
                 };
             };
         };
