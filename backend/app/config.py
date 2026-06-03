@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     # by app/beets/setup.py; there are no separate MUSICDROP_BEETS_LIBRARY_* knobs.
     beets_dir: str = "data/beets"
 
+    # Library-wide lyrics backfill: a courtesy pause between LRCLib requests
+    # (beets adds none; LRCLib is a free community API).
+    # (env MUSICDROP_LYRICS_BACKFILL_DELAY_SECONDS)
+    lyrics_backfill_delay_seconds: float = 0.2
+
     # Duplicate resolution moves the non-kept copies here (a reversible Trash).
     # Empty string = default to <beets_dir>/trash, computed at resolve time from
     # the live library handle (already an absolute path), which sidesteps the

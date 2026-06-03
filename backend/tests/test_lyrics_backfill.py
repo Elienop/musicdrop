@@ -168,3 +168,39 @@ def test_lyrics_coverage(edit_lib: Library) -> None:
     assert cov.total == 3
     assert cov.with_lyrics == 1
     assert cov.percent == pytest.approx(33.3, abs=0.1)
+
+
+def test_per_album_fetch_409_during_backfill(
+    edit_lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A running backfill blocks the per-album fetch op (409)."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from app.beets.lyrics import fetch_album_lyrics_op
+    from app.lyrics_jobs.registry import reset_lyrics_backfill
+
+    reset_lyrics_backfill().start(writes_enabled=True)
+
+    class _App:
+        class state:
+            beets_library = None
+
+    class _Req:
+        app = _App()
+
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(fetch_album_lyrics_op(_Req(), 1))
+    assert ei.value.status_code == 409
+    reset_lyrics_backfill()
+
+
+def test_backfill_active_helper_reflects_state() -> None:
+    from app.lyrics_jobs.registry import lyrics_backfill_active, reset_lyrics_backfill
+
+    reg = reset_lyrics_backfill()
+    assert lyrics_backfill_active() is False
+    reg.start(writes_enabled=True)
+    assert lyrics_backfill_active() is True
+    reset_lyrics_backfill()

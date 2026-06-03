@@ -68,4 +68,4 @@ def test_fetch_album_lyrics_409_while_import_active(
     monkeypatch.setattr(get_registry(), "has_active_job", lambda: True)
     r = lyrics_client.post(f"/api/albums/{_aid(edit_lib)}/lyrics/fetch")
     assert r.status_code == 409
-    assert "import" in r.json()["detail"].lower()
+    assert "in progress" in r.json()["detail"].lower()

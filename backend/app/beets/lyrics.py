@@ -137,12 +137,13 @@ async def fetch_album_lyrics_op(request_obj: Any, album_id: int) -> AlbumLyricsR
 
     from app.beets.config_editor import _swap_lock
     from app.import_jobs.registry import get_registry
+    from app.lyrics_jobs.registry import lyrics_backfill_active
 
     app = request_obj.app
-    if get_registry().has_active_job():
+    if get_registry().has_active_job() or lyrics_backfill_active():
         raise HTTPException(
             status_code=409,
-            detail="Import in progress — lyrics fetch available when it finishes",
+            detail="A library operation is in progress — lyrics fetch available when it finishes",
         )
     async with _swap_lock(app):
         handle = app.state.beets_library
