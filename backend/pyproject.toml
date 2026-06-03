@@ -8,6 +8,8 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic-settings>=2.5",
     "beets==2.11.*",
+    "beautifulsoup4>=4.12",
+    "langdetect>=1.0.9",
     "httpx>=0.28.1",
     "ruamel.yaml>=0.15.93",
     "python-multipart>=0.0.30",
@@ -83,6 +85,8 @@ module = [
     "app.beets.completeness",
     "tests.test_completeness_adapter",
     "tests.test_completeness_api",
+    "app.beets.lyrics",
+    "tests.test_lyrics_adapter",
 ]
 disallow_untyped_calls = false
 
