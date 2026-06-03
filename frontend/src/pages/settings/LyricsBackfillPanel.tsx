@@ -1,4 +1,6 @@
 import { Loader2 } from "lucide-react";
+import { useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import {
   useLyricsBackfillStatus,
@@ -10,11 +12,22 @@ import { Button } from "@/components/ui/button";
 
 /** Settings → Library maintenance: lyrics coverage + the library-wide backfill. */
 export function LyricsBackfillPanel() {
+  const queryClient = useQueryClient();
   const coverage = useLyricsCoverage();
   const status = useLyricsBackfillStatus();
   const start = useStartLyricsBackfill();
   const stop = useStopLyricsBackfill();
-  const running = status.data?.phase === "running";
+  const phase = status.data?.phase;
+  const running = phase === "running";
+
+  // Once a job reaches a terminal phase the coverage % a backfill wrote is
+  // stale — refresh it. Keyed on the phase so it fires once per transition
+  // (whether the job finished on its own, was stopped, or failed).
+  useEffect(() => {
+    if (phase === "done" || phase === "stopped" || phase === "failed") {
+      void queryClient.invalidateQueries({ queryKey: ["lyrics", "coverage"] });
+    }
+  }, [phase, queryClient]);
 
   return (
     <section
@@ -22,7 +35,7 @@ export function LyricsBackfillPanel() {
       className="border-border flex flex-col gap-3 rounded-xl border p-4"
     >
       <header className="flex flex-col gap-1">
-        <h3 className="text-lg font-semibold tracking-tight">Lyrics</h3>
+        <h2 className="text-2xl font-semibold tracking-tight">Lyrics</h2>
         {coverage.data && (
           <p className="text-muted-foreground text-sm">
             Coverage {coverage.data.percent}% ({coverage.data.with_lyrics} of{" "}
@@ -64,10 +77,19 @@ export function LyricsBackfillPanel() {
               {(start.error as Error).message}
             </span>
           )}
-          {status.data && status.data.phase === "done" && (
+          {/* A finished or interrupted run shows its tally so the user knows
+              what happened without watching the live feed. */}
+          {status.data && (status.data.phase === "done" || status.data.phase === "stopped") && (
             <span className="text-muted-foreground text-sm" role="status">
-              Done — found {status.data.found} · none {status.data.not_found} · failed{" "}
-              {status.data.failed}
+              {status.data.phase === "done" ? "Done" : "Stopped"} — found {status.data.found} · none{" "}
+              {status.data.not_found} · failed {status.data.failed}
+            </span>
+          )}
+          {/* A failed job surfaces its error inline so a 409/library-locked
+              run isn't a silent no-op. */}
+          {status.data && status.data.phase === "failed" && (
+            <span className="text-destructive text-sm" role="alert">
+              Backfill failed{status.data.error ? `: ${status.data.error}` : "."}
             </span>
           )}
         </div>

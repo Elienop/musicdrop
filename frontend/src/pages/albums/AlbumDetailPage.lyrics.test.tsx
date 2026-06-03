@@ -13,6 +13,13 @@ const album: AlbumDetail = {
 };
 
 const mutateMock = vi.fn();
+let lyricsFetchState: {
+  mutate: typeof mutateMock;
+  isPending: boolean;
+  isError: boolean;
+  error: Error | null;
+  data: undefined;
+} = { mutate: mutateMock, isPending: false, isError: false, error: null, data: undefined };
 vi.mock("@/api/useAlbum", async (orig) => {
   const actual = await orig<typeof import("@/api/useAlbum")>();
   return { ...actual, useAlbum: () => ({ data: album, isPending: false, isError: false }) };
@@ -25,7 +32,7 @@ vi.mock("@/api/useAlbumLyrics", async (orig) => {
   const actual = await orig<typeof import("@/api/useAlbumLyrics")>();
   return {
     ...actual,
-    useAlbumLyricsFetch: () => ({ mutate: mutateMock, isPending: false, data: undefined }),
+    useAlbumLyricsFetch: () => lyricsFetchState,
   };
 });
 
@@ -41,7 +48,10 @@ async function renderPage() {
 }
 
 describe("AlbumDetailPage lyrics", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    lyricsFetchState = { mutate: mutateMock, isPending: false, isError: false, error: null, data: undefined };
+  });
 
   it("shows a lyrics indicator per track and a coverage summary", async () => {
     await renderPage();
@@ -56,5 +66,15 @@ describe("AlbumDetailPage lyrics", () => {
     await renderPage();
     await user.click(screen.getByRole("button", { name: /fetch missing lyrics/i }));
     expect(mutateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces a per-album fetch error", async () => {
+    lyricsFetchState = {
+      mutate: mutateMock, isPending: false, isError: true,
+      error: new Error("A library operation is in progress"), data: undefined,
+    };
+    await renderPage();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/library operation is in progress/i);
   });
 });

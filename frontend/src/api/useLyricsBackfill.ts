@@ -35,7 +35,9 @@ export function useLyricsBackfillStatus() {
       }
       return data;
     },
-    refetchInterval: (query) => (query.state.data?.phase === "running" ? 1000 : 15_000),
+    // Only poll while a job is actually running. The start mutation invalidates
+    // ["lyrics","backfill"], so a backfill kicked off elsewhere still wakes the poll.
+    refetchInterval: (query) => (query.state.data?.phase === "running" ? 1000 : false),
   });
 }
 
@@ -65,6 +67,8 @@ export function useStopLyricsBackfill() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["lyrics", "backfill"] });
+      // A stop is a terminal transition — the % a backfill already wrote is stale.
+      void queryClient.invalidateQueries({ queryKey: ["lyrics", "coverage"] });
     },
   });
 }

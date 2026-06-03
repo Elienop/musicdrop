@@ -1,4 +1,4 @@
-import { AlertCircle, Image as ImageIcon, Loader2, Music, Pencil } from "lucide-react";
+import { AlertCircle, Image as ImageIcon, Loader2, Music, Pencil, ScrollText } from "lucide-react";
 import { Fragment, useState } from "react";
 import { Link, useParams } from "react-router";
 
@@ -235,7 +235,7 @@ function TrackRow({
       </TableCell>
       <TableCell className="text-center">
         {track.has_lyrics ? (
-          <Music className="text-foreground inline size-4" aria-label="Has lyrics" />
+          <ScrollText className="text-foreground inline size-4" aria-label="Has lyrics" />
         ) : (
           <span className="text-muted-foreground" aria-label="No lyrics">
             –
@@ -464,6 +464,13 @@ function LyricsStatus({
         <span className="text-muted-foreground text-sm" role="status">
           {result.fetched} added · {result.not_found} none · {result.failed} failed
           {result.writes_enabled ? "" : " · not written to files (enable writes in config)"}
+        </span>
+      )}
+      {/* A 409 (library busy) or 500 leaves the button non-pending — surface
+          the error so the click isn't a silent no-op. */}
+      {fetch.isError && (
+        <span className="text-destructive text-sm" role="alert">
+          {(fetch.error as Error).message}
         </span>
       )}
     </div>
