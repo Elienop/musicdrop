@@ -37,6 +37,16 @@ class AlbumNotFoundError(Exception):
     """A referenced album id is not in the library. Maps to 404."""
 
 
+def writes_enabled() -> bool:
+    """Whether beets' config has file-tag writes on (``should_write``).
+
+    Thin wrapper so the API layer never imports beets directly (CLAUDE.md rule 3).
+    """
+    from beets.ui import should_write
+
+    return bool(should_write(None))
+
+
 def _make_lyrics_plugin() -> Any:
     """Throwaway LyricsPlugin with the import stage disabled (auto=False)."""
     beets.config["lyrics"].set({"auto": False})  # overlay before construct
@@ -131,7 +141,6 @@ def fetch_album_lyrics(
 
 async def fetch_album_lyrics_op(request_obj: Any, album_id: int) -> AlbumLyricsResult:
     """Per-album fetch: 409 import-gate + shared swap-lock + threadpool (like cover/edit)."""
-    from beets.ui import should_write
     from fastapi import HTTPException
     from fastapi.concurrency import run_in_threadpool
 
@@ -147,7 +156,7 @@ async def fetch_album_lyrics_op(request_obj: Any, album_id: int) -> AlbumLyricsR
         )
     async with _swap_lock(app):
         handle = app.state.beets_library
-        write = bool(should_write(None))
+        write = writes_enabled()
         try:
             return await run_in_threadpool(
                 fetch_album_lyrics, handle.lib, album_id, force=False, write=write

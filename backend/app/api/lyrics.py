@@ -7,11 +7,10 @@ exclusive with imports and library writes.
 
 from typing import Annotated
 
-from beets.ui import should_write
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 
-from app.beets.lyrics import lyrics_coverage
+from app.beets.lyrics import lyrics_coverage, writes_enabled
 from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import (
     LyricsBackfillRegistry,
@@ -49,7 +48,7 @@ async def start_lyrics_backfill(
             status_code=status.HTTP_409_CONFLICT,
             detail="A library operation is in progress — backfill available when it finishes",
         )
-    write = bool(should_write(None))
+    write = writes_enabled()
     try:
         reg.start(writes_enabled=write)
     except RuntimeError:
