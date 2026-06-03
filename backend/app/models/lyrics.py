@@ -55,3 +55,5 @@ class LyricsBackfillStatus(BaseModel):
     current: str | None  # "artist — album — title" of the in-flight track
     writes_enabled: bool
     error: str | None
+    album_id: int | None  # None = library-wide; else the scoped album
+    scope_label: str  # "library" or "artist — album" (banner/label text)

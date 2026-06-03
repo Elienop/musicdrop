@@ -29,6 +29,8 @@ class _BackfillJob:
     current: str | None = None
     writes_enabled: bool = True
     error: str | None = None
+    album_id: int | None = None
+    scope_label: str = "library"
     stop_requested: bool = False
 
 
@@ -43,11 +45,18 @@ class LyricsBackfillRegistry:
         with self._lock:
             return self._job is not None and self._job.phase == "running"
 
-    def start(self, *, writes_enabled: bool) -> str:
+    def start(
+        self, *, writes_enabled: bool, album_id: int | None = None, scope_label: str = "library"
+    ) -> str:
         with self._lock:
             if self._job is not None and self._job.phase == "running":
                 raise RuntimeError("a lyrics backfill is already running")
-            job = _BackfillJob(id=uuid.uuid4().hex, writes_enabled=writes_enabled)
+            job = _BackfillJob(
+                id=uuid.uuid4().hex,
+                writes_enabled=writes_enabled,
+                album_id=album_id,
+                scope_label=scope_label,
+            )
             self._job = job
             return job.id
 
@@ -114,6 +123,8 @@ class LyricsBackfillRegistry:
                     current=None,
                     writes_enabled=False,
                     error=None,
+                    album_id=None,
+                    scope_label="library",
                 )
             return LyricsBackfillStatus(
                 phase=job.phase,
@@ -127,6 +138,8 @@ class LyricsBackfillRegistry:
                 current=job.current,
                 writes_enabled=job.writes_enabled,
                 error=job.error,
+                album_id=job.album_id,
+                scope_label=job.scope_label,
             )
 
 

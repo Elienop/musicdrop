@@ -26,6 +26,8 @@ def test_backfill_status_model() -> None:
         current="Adele — 25 — Hello",
         writes_enabled=True,
         error=None,
+        album_id=None,
+        scope_label="library",
     )
     assert status.phase == "running"
     assert status.model_dump()["job_id"] == "abc"
@@ -222,3 +224,19 @@ def test_global_backfill_registry_is_idle_at_test_entry() -> None:
     from app.lyrics_jobs.registry import lyrics_backfill_active
 
     assert lyrics_backfill_active() is False
+
+
+def test_registry_album_scope_in_state() -> None:
+    from app.lyrics_jobs.registry import LyricsBackfillRegistry
+
+    reg = LyricsBackfillRegistry()
+    # library scope defaults
+    reg.start(writes_enabled=True)
+    s = reg.state()
+    assert s.album_id is None and s.scope_label == "library"
+    reg.finish("done")
+
+    # album scope
+    reg.start(writes_enabled=True, album_id=42, scope_label="Adele — 25")
+    s = reg.state()
+    assert s.album_id == 42 and s.scope_label == "Adele — 25"
