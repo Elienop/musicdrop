@@ -6,32 +6,11 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-import pytest
 import requests
 from beets.library import Library
 from beets.util.lyrics import Lyrics
 from beetsplug._utils.requests import HTTPNotFoundError
 from mediafile import MediaFile
-
-
-def test_album_lyrics_result_model_roundtrips() -> None:
-    from app.models.lyrics import AlbumLyricsResult, ItemLyricsOutcome
-
-    result = AlbumLyricsResult(
-        album_id=7,
-        fetched=1,
-        not_found=1,
-        failed=0,
-        skipped=2,
-        items=[
-            ItemLyricsOutcome(item_id=1, status="found", source="lrclib", written=True),
-            ItemLyricsOutcome(item_id=2, status="not_found", source=None, written=False),
-        ],
-        writes_enabled=True,
-    )
-    assert result.fetched == 1
-    assert result.items[0].status == "found"
-    assert result.model_dump()["items"][1]["status"] == "not_found"
 
 
 def _first_item(lib: Library) -> Any:
@@ -181,33 +160,3 @@ def test_fetch_item_runs_from_worker_thread(edit_lib: Library) -> None:
     with edit_lib.music_dir_context(), ThreadPoolExecutor(max_workers=1) as pool:
         out = pool.submit(fetch_item_lyrics, plugin, item, force=False, write=True).result()
     assert out.status == "found"
-
-
-def test_fetch_album_lyrics_aggregates_and_skips_existing(
-    edit_lib: Library, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from app.beets import lyrics as lyrics_mod
-    from app.beets.lyrics import fetch_album_lyrics
-
-    album = next(iter(edit_lib.albums()))
-    items = sorted(album.items(), key=lambda it: it.track)
-    items[0].lyrics = "pre-existing"  # one already has lyrics
-    items[0].store()
-
-    plugin = _FakePlugin([_FakeBackend(result=Lyrics("found text", "lrclib", "u"))])
-    monkeypatch.setattr(lyrics_mod, "_make_lyrics_plugin", lambda: plugin)
-
-    result = fetch_album_lyrics(edit_lib, int(album.id), force=False, write=True)
-
-    assert result.album_id == int(album.id)
-    assert result.skipped == 1  # the pre-existing one
-    assert result.fetched == 2  # the other two got "found text"
-    assert result.writes_enabled is True
-    assert {o.status for o in result.items} == {"skipped_existing", "found"}
-
-
-def test_fetch_album_lyrics_unknown_album(edit_lib: Library) -> None:
-    from app.beets.lyrics import AlbumNotFoundError, fetch_album_lyrics
-
-    with pytest.raises(AlbumNotFoundError):
-        fetch_album_lyrics(edit_lib, 999999, force=False, write=True)

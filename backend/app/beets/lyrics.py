@@ -14,7 +14,6 @@ store plain lyrics into ``item.lyrics`` + flex fields and write the file tag
 from __future__ import annotations
 
 import logging
-from collections import Counter
 from typing import Any
 
 import beets
@@ -24,9 +23,9 @@ from beets.util.lyrics import Lyrics
 from beetsplug._utils.requests import HTTPNotFoundError
 
 from app.models.lyrics import (
-    AlbumLyricsResult,
     ItemLyricsOutcome,
     ItemLyricsStatus,
+    LyricsBackfillStatus,
     LyricsCoverage,
 )
 
@@ -114,65 +113,62 @@ def fetch_item_lyrics(plugin: Any, item: Any, *, force: bool, write: bool) -> It
     return ItemLyricsOutcome(item_id=item_id, status=status, source=None, written=False)
 
 
-def _aggregate(
-    album_id: int, outcomes: list[ItemLyricsOutcome], *, writes_enabled: bool
-) -> AlbumLyricsResult:
-    counts: Counter[str] = Counter(o.status for o in outcomes)
-    return AlbumLyricsResult(
-        album_id=album_id,
-        fetched=counts["found"],
-        not_found=counts["not_found"],
-        failed=counts["fetch_failed"],
-        skipped=counts["skipped_existing"] + counts["skipped_no_metadata"],
-        items=outcomes,
-        writes_enabled=writes_enabled,
-    )
-
-
-def fetch_album_lyrics(
-    lib: Library, album_id: int, *, force: bool, write: bool
-) -> AlbumLyricsResult:
-    """Fetch lyrics for an album's items (skip-existing unless force). 404 -> AlbumNotFoundError."""
+def _album_scope_label(lib: Library, album_id: int) -> str:
+    """'artist — album' for the banner/label, or raise AlbumNotFoundError (404)."""
     with lib.music_dir_context():
         album = lib.get_album(album_id)
         if album is None:
             raise AlbumNotFoundError(f"album {album_id} not found")
-        plugin = _make_lyrics_plugin()
-        outcomes = [
-            fetch_item_lyrics(plugin, item, force=force, write=write) for item in album.items()
-        ]
-    return _aggregate(album_id, outcomes, writes_enabled=write)
+        artist = str(album.albumartist or "").strip()
+        title = str(album.album or "").strip()
+        label = " — ".join(p for p in (artist, title) if p)
+        return label or f"album {album_id}"
 
 
-async def fetch_album_lyrics_op(request_obj: Any, album_id: int) -> AlbumLyricsResult:
-    """Per-album fetch: 409 import-gate + shared swap-lock + threadpool (like cover/edit)."""
+async def start_album_lyrics_op(request_obj: Any, album_id: int) -> LyricsBackfillStatus:
+    """Start an album-scoped lyrics fetch JOB (marching progress); returns its status.
+
+    Mirrors the library backfill start: 409 if an import/backfill/other library op
+    is in flight, 404 for an unknown album, then spawns the daemon sweep and returns
+    immediately (does NOT hold the swap-lock for the fetch). The FE polls
+    GET /api/lyrics/backfill.
+    """
     from fastapi import HTTPException
-    from fastapi.concurrency import run_in_threadpool
+    from fastapi import status as http_status
 
-    from app.beets.config_editor import _swap_lock
     from app.import_jobs.registry import get_registry
-    from app.lyrics_jobs.registry import lyrics_backfill_active
+    from app.lyrics_jobs.registry import get_lyrics_backfill, lyrics_backfill_active
+    from app.lyrics_jobs.runner import start_backfill
 
     app = request_obj.app
+    reg = get_lyrics_backfill()
     if get_registry().has_active_job() or lyrics_backfill_active():
         raise HTTPException(
-            status_code=409,
+            status_code=http_status.HTTP_409_CONFLICT,
             detail="A library operation is in progress — lyrics fetch available when it finishes",
         )
-    async with _swap_lock(app):
-        handle = app.state.beets_library
-        write = writes_enabled()
-        try:
-            return await run_in_threadpool(
-                fetch_album_lyrics, handle.lib, album_id, force=False, write=write
-            )
-        except AlbumNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except Exception as exc:  # structured 500, like cover/edit
-            raise HTTPException(
-                status_code=500,
-                detail={"message": f"Lyrics fetch failed: {exc}", "recovery": "Reload and retry."},
-            ) from exc
+    lock = getattr(app.state, "beets_swap_lock", None)
+    if lock is not None and lock.locked():
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail="A library operation is in progress — lyrics fetch available when it finishes",
+        )
+    handle = app.state.beets_library
+    try:
+        label = _album_scope_label(handle.lib, album_id)
+    except AlbumNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    write = writes_enabled()
+    try:
+        reg.start(writes_enabled=write, album_id=album_id, scope_label=label)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT, detail="A lyrics fetch is already running"
+        ) from None
+    app_settings = getattr(app.state, "settings", None)
+    delay = float(getattr(app_settings, "lyrics_backfill_delay_seconds", 0.2))
+    start_backfill(reg, handle.lib, delay=delay, write=write, album_id=album_id)
+    return reg.state()
 
 
 def lyrics_coverage(lib: Library) -> LyricsCoverage:

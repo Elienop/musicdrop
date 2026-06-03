@@ -167,9 +167,8 @@ export interface paths {
         put?: never;
         /**
          * Fetch Album Lyrics Endpoint
-         * @description Fetch missing lyrics for an album's tracks into the files (Plex reads them).
-         *
-         *     Skip-existing; per-track outcomes + counts. 404 unknown album, 409 while importing.
+         * @description Start an album-scoped lyrics fetch job (writes tags → Plex). Poll
+         *     GET /api/lyrics/backfill for marching progress. 404 unknown album, 409 if busy.
          */
         post: operations["fetch_album_lyrics_endpoint_api_albums__album_id__lyrics_fetch_post"];
         delete?: never;
@@ -720,23 +719,6 @@ export interface components {
             /** Genre */
             genre?: string | null;
         };
-        /** AlbumLyricsResult */
-        AlbumLyricsResult: {
-            /** Album Id */
-            album_id: number;
-            /** Fetched */
-            fetched: number;
-            /** Not Found */
-            not_found: number;
-            /** Failed */
-            failed: number;
-            /** Skipped */
-            skipped: number;
-            /** Items */
-            items: components["schemas"]["ItemLyricsOutcome"][];
-            /** Writes Enabled */
-            writes_enabled: boolean;
-        };
         /** AlbumMissingReport */
         AlbumMissingReport: {
             /**
@@ -1161,20 +1143,6 @@ export interface components {
             /** Has Current Art */
             has_current_art: boolean;
         };
-        /** ItemLyricsOutcome */
-        ItemLyricsOutcome: {
-            /** Item Id */
-            item_id: number;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "found" | "not_found" | "fetch_failed" | "skipped_existing" | "skipped_no_metadata";
-            /** Source */
-            source: string | null;
-            /** Written */
-            written: boolean;
-        };
         /**
          * ItemWriteResult
          * @description The per-track outcome of an apply (replaces beets' silent all-or-nothing).
@@ -1220,6 +1188,10 @@ export interface components {
             writes_enabled: boolean;
             /** Error */
             error: string | null;
+            /** Album Id */
+            album_id: number | null;
+            /** Scope Label */
+            scope_label: string;
         };
         /** LyricsCoverage */
         LyricsCoverage: {
@@ -1847,7 +1819,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AlbumLyricsResult"];
+                    "application/json": components["schemas"]["LyricsBackfillStatus"];
                 };
             };
             /** @description Validation Error */

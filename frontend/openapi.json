@@ -427,7 +427,7 @@
           "albums"
         ],
         "summary": "Fetch Album Lyrics Endpoint",
-        "description": "Fetch missing lyrics for an album's tracks into the files (Plex reads them).\n\nSkip-existing; per-track outcomes + counts. 404 unknown album, 409 while importing.",
+        "description": "Start an album-scoped lyrics fetch job (writes tags \u2192 Plex). Poll\nGET /api/lyrics/backfill for marching progress. 404 unknown album, 409 if busy.",
         "operationId": "fetch_album_lyrics_endpoint_api_albums__album_id__lyrics_fetch_post",
         "parameters": [
           {
@@ -446,7 +446,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AlbumLyricsResult"
+                  "$ref": "#/components/schemas/LyricsBackfillStatus"
                 }
               }
             }
@@ -1747,52 +1747,6 @@
         "title": "AlbumFieldEdits",
         "description": "Album-header fields to change; only set (non-None) keys are applied.\n\nThese propagate to every track (beets ``inherit``). Clearing a field (set\nto null) is out of scope, so None means \"leave unchanged\"."
       },
-      "AlbumLyricsResult": {
-        "properties": {
-          "album_id": {
-            "type": "integer",
-            "title": "Album Id"
-          },
-          "fetched": {
-            "type": "integer",
-            "title": "Fetched"
-          },
-          "not_found": {
-            "type": "integer",
-            "title": "Not Found"
-          },
-          "failed": {
-            "type": "integer",
-            "title": "Failed"
-          },
-          "skipped": {
-            "type": "integer",
-            "title": "Skipped"
-          },
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/ItemLyricsOutcome"
-            },
-            "type": "array",
-            "title": "Items"
-          },
-          "writes_enabled": {
-            "type": "boolean",
-            "title": "Writes Enabled"
-          }
-        },
-        "type": "object",
-        "required": [
-          "album_id",
-          "fetched",
-          "not_found",
-          "failed",
-          "skipped",
-          "items",
-          "writes_enabled"
-        ],
-        "title": "AlbumLyricsResult"
-      },
       "AlbumMissingReport": {
         "properties": {
           "status": {
@@ -2855,48 +2809,6 @@
         "title": "IncomingAlbum",
         "description": "A slim view of the album being imported \u2014 symmetric with ExistingAlbum.\n\nBuilt from the import task's current files (works for both an APPLY match and\nan ASIS import, neither of which is needed to render the duplicate decision).\n``has_current_art`` drives whether the FE attempts the current-files cover."
       },
-      "ItemLyricsOutcome": {
-        "properties": {
-          "item_id": {
-            "type": "integer",
-            "title": "Item Id"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "found",
-              "not_found",
-              "fetch_failed",
-              "skipped_existing",
-              "skipped_no_metadata"
-            ],
-            "title": "Status"
-          },
-          "source": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source"
-          },
-          "written": {
-            "type": "boolean",
-            "title": "Written"
-          }
-        },
-        "type": "object",
-        "required": [
-          "item_id",
-          "status",
-          "source",
-          "written"
-        ],
-        "title": "ItemLyricsOutcome"
-      },
       "ItemWriteResult": {
         "properties": {
           "item_id": {
@@ -3027,6 +2939,21 @@
               }
             ],
             "title": "Error"
+          },
+          "album_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Id"
+          },
+          "scope_label": {
+            "type": "string",
+            "title": "Scope Label"
           }
         },
         "type": "object",
@@ -3041,7 +2968,9 @@
           "skipped",
           "current",
           "writes_enabled",
-          "error"
+          "error",
+          "album_id",
+          "scope_label"
         ],
         "title": "LyricsBackfillStatus"
       },

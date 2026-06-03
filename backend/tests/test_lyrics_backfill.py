@@ -175,12 +175,12 @@ def test_lyrics_coverage(edit_lib: Library) -> None:
 def test_per_album_fetch_409_during_backfill(
     edit_lib: Library, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A running backfill blocks the per-album fetch op (409)."""
+    """A running backfill blocks the per-album fetch start op (409)."""
     import asyncio
 
     from fastapi import HTTPException
 
-    from app.beets.lyrics import fetch_album_lyrics_op
+    from app.beets.lyrics import start_album_lyrics_op
     from app.lyrics_jobs.registry import reset_lyrics_backfill
 
     reset_lyrics_backfill().start(writes_enabled=True)
@@ -193,7 +193,7 @@ def test_per_album_fetch_409_during_backfill(
         app = _App()
 
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(fetch_album_lyrics_op(_Req(), 1))
+        asyncio.run(start_album_lyrics_op(_Req(), 1))
     assert ei.value.status_code == 409
     reset_lyrics_backfill()
 

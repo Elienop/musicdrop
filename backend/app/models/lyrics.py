@@ -23,16 +23,6 @@ class ItemLyricsOutcome(BaseModel):
     written: bool  # try_write() ran (writes enabled AND found)
 
 
-class AlbumLyricsResult(BaseModel):
-    album_id: int
-    fetched: int
-    not_found: int
-    failed: int
-    skipped: int
-    items: list[ItemLyricsOutcome]
-    writes_enabled: bool  # the resolved should_write() at request time
-
-
 class LyricsCoverage(BaseModel):
     total: int
     with_lyrics: int
