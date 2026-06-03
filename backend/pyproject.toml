@@ -37,7 +37,7 @@ strict = true
 files = ["app", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["beets.*", "beetsplug.*", "mediafile", "yaml"]
+module = ["beets.*", "beetsplug.*", "mediafile", "yaml", "requests.*"]
 ignore_missing_imports = true
 
 # beets is untyped; calling its functions trips disallow_untyped_calls under
@@ -80,6 +80,8 @@ module = [
     "tests.test_edit_adapter",
     "tests.test_cover_adapter",
     "tests.test_cover_api",
+    "app.beets.completeness",
+    "tests.test_completeness_adapter",
 ]
 disallow_untyped_calls = false
 
