@@ -14,14 +14,16 @@ store plain lyrics into ``item.lyrics`` + flex fields and write the file tag
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from typing import Any
 
 import beets
 import requests
+from beets.library import Library
 from beets.util.lyrics import Lyrics
 from beetsplug._utils.requests import HTTPNotFoundError
 
-from app.models.lyrics import ItemLyricsOutcome, ItemLyricsStatus
+from app.models.lyrics import AlbumLyricsResult, ItemLyricsOutcome, ItemLyricsStatus
 
 _log = logging.getLogger(__name__)
 
@@ -90,3 +92,64 @@ def fetch_item_lyrics(plugin: Any, item: Any, *, force: bool, write: bool) -> It
                     )
     status: ItemLyricsStatus = "fetch_failed" if failed else "not_found"
     return ItemLyricsOutcome(item_id=item_id, status=status, source=None, written=False)
+
+
+def _aggregate(
+    album_id: int, outcomes: list[ItemLyricsOutcome], *, writes_enabled: bool
+) -> AlbumLyricsResult:
+    counts: Counter[str] = Counter(o.status for o in outcomes)
+    return AlbumLyricsResult(
+        album_id=album_id,
+        fetched=counts["found"],
+        not_found=counts["not_found"],
+        failed=counts["fetch_failed"],
+        skipped=counts["skipped_existing"] + counts["skipped_no_metadata"],
+        items=outcomes,
+        writes_enabled=writes_enabled,
+    )
+
+
+def fetch_album_lyrics(
+    lib: Library, album_id: int, *, force: bool, write: bool
+) -> AlbumLyricsResult:
+    """Fetch lyrics for an album's items (skip-existing unless force). 404 -> AlbumNotFoundError."""
+    with lib.music_dir_context():
+        album = lib.get_album(album_id)
+        if album is None:
+            raise AlbumNotFoundError(f"album {album_id} not found")
+        plugin = _make_lyrics_plugin()
+        outcomes = [
+            fetch_item_lyrics(plugin, item, force=force, write=write) for item in album.items()
+        ]
+    return _aggregate(album_id, outcomes, writes_enabled=write)
+
+
+async def fetch_album_lyrics_op(request_obj: Any, album_id: int) -> AlbumLyricsResult:
+    """Per-album fetch: 409 import-gate + shared swap-lock + threadpool (like cover/edit)."""
+    from beets.ui import should_write
+    from fastapi import HTTPException
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.beets.config_editor import _swap_lock
+    from app.import_jobs.registry import get_registry
+
+    app = request_obj.app
+    if get_registry().has_active_job():
+        raise HTTPException(
+            status_code=409,
+            detail="Import in progress — lyrics fetch available when it finishes",
+        )
+    async with _swap_lock(app):
+        handle = app.state.beets_library
+        write = bool(should_write(None))
+        try:
+            return await run_in_threadpool(
+                fetch_album_lyrics, handle.lib, album_id, force=False, write=write
+            )
+        except AlbumNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:  # structured 500, like cover/edit
+            raise HTTPException(
+                status_code=500,
+                detail={"message": f"Lyrics fetch failed: {exc}", "recovery": "Reload and retry."},
+            ) from exc
