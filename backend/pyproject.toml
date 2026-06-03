@@ -88,6 +88,8 @@ module = [
     "app.beets.lyrics",
     "tests.test_lyrics_adapter",
     "tests.test_lyrics_api",
+    "app.lyrics_jobs.registry",
+    "tests.test_lyrics_backfill",
 ]
 disallow_untyped_calls = false
 
