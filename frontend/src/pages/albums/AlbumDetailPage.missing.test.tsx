@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AlbumDetail } from "@/api/useAlbum";
 import type { AlbumMissingReport } from "@/api/useAlbumMissing";
 
@@ -26,18 +27,31 @@ vi.mock("@/api/useAlbumLyrics", async (orig) => {
   const actual = await orig<typeof import("@/api/useAlbumLyrics")>();
   return {
     ...actual,
-    useAlbumLyricsFetch: () => ({ mutate: vi.fn(), isPending: false, data: undefined }),
+    useStartAlbumLyricsFetch: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   };
 });
+vi.mock("@/api/useLyricsBackfill", () => ({
+  useLyricsBackfillStatus: () => ({
+    data: {
+      phase: "idle", job_id: null, total: 0, processed: 0, found: 0,
+      not_found: 0, failed: 0, skipped: 0, current: null,
+      writes_enabled: false, error: null, album_id: null, scope_label: "library",
+    },
+  }),
+  useStopLyricsBackfill: () => ({ mutate: vi.fn(), isPending: false }),
+}));
 
 async function renderPage() {
   const { AlbumDetailPage } = await import("@/pages/albums/AlbumDetailPage");
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={["/albums/7"]}>
-      <Routes>
-        <Route path="/albums/:albumId" element={<AlbumDetailPage />} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={["/albums/7"]}>
+        <Routes>
+          <Route path="/albums/:albumId" element={<AlbumDetailPage />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

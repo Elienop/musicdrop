@@ -18,7 +18,9 @@ export function LyricsBackfillPanel() {
   const start = useStartLyricsBackfill();
   const stop = useStopLyricsBackfill();
   const phase = status.data?.phase;
-  const running = phase === "running";
+  const job = status.data;
+  const libraryRunning = phase === "running" && job?.album_id == null;
+  const albumFetchRunning = phase === "running" && job?.album_id != null;
 
   // Once a job reaches a terminal phase the coverage % a backfill wrote is
   // stale — refresh it. Keyed on the phase so it fires once per transition
@@ -44,7 +46,7 @@ export function LyricsBackfillPanel() {
         )}
       </header>
 
-      {running && status.data ? (
+      {libraryRunning && status.data ? (
         <div className="flex flex-col gap-2" role="status">
           <div className="flex items-center gap-3 text-sm">
             <Loader2 className="text-muted-foreground size-5 shrink-0 animate-spin" aria-hidden="true" />
@@ -62,7 +64,7 @@ export function LyricsBackfillPanel() {
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-3">
-          <Button onClick={() => start.mutate()} disabled={start.isPending}>
+          <Button onClick={() => start.mutate()} disabled={start.isPending || albumFetchRunning}>
             {start.isPending ? (
               <>
                 <Loader2 className="size-4 animate-spin" aria-hidden="true" /> Starting…
@@ -72,6 +74,9 @@ export function LyricsBackfillPanel() {
             )}
           </Button>
           <span className="text-muted-foreground text-sm">writes tags → Plex reads them</span>
+          {albumFetchRunning && (
+            <span className="text-muted-foreground text-sm">A lyrics fetch is in progress.</span>
+          )}
           {start.isError && (
             <span className="text-destructive text-sm" role="alert">
               {(start.error as Error).message}
@@ -79,7 +84,8 @@ export function LyricsBackfillPanel() {
           )}
           {/* A finished or interrupted run shows its tally so the user knows
               what happened without watching the live feed. */}
-          {status.data && (status.data.phase === "done" || status.data.phase === "stopped") && (
+          {status.data && status.data.album_id == null &&
+            (status.data.phase === "done" || status.data.phase === "stopped") && (
             <span className="text-muted-foreground text-sm" role="status">
               {status.data.phase === "done" ? "Done" : "Stopped"} — found {status.data.found} · none{" "}
               {status.data.not_found} · failed {status.data.failed}
@@ -87,7 +93,7 @@ export function LyricsBackfillPanel() {
           )}
           {/* A failed job surfaces its error inline so a 409/library-locked
               run isn't a silent no-op. */}
-          {status.data && status.data.phase === "failed" && (
+          {status.data && status.data.album_id == null && status.data.phase === "failed" && (
             <span className="text-destructive text-sm" role="alert">
               Backfill failed{status.data.error ? `: ${status.data.error}` : "."}
             </span>

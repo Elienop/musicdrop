@@ -33,7 +33,7 @@ describe("useLyricsCoverage", () => {
 const idleStatus = {
   phase: "idle", job_id: null, total: 0, processed: 0, found: 0,
   not_found: 0, failed: 0, skipped: 0, current: null,
-  writes_enabled: false, error: null,
+  writes_enabled: false, error: null, album_id: null, scope_label: "library",
 };
 
 describe("useLyricsBackfillStatus", () => {

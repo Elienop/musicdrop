@@ -8,7 +8,7 @@ const startMock = vi.fn();
 const baseStatus: LyricsBackfillStatus = {
   phase: "idle", job_id: null, total: 0, processed: 0, found: 0,
   not_found: 0, failed: 0, skipped: 0, current: null,
-  writes_enabled: false, error: null,
+  writes_enabled: false, error: null, album_id: null, scope_label: "library",
 };
 let statusData: LyricsBackfillStatus = baseStatus;
 
@@ -64,5 +64,17 @@ describe("LyricsBackfillPanel", () => {
     const alert = screen.getByRole("alert");
     expect(alert).toHaveTextContent(/library locked/i);
     expect(screen.getByRole("button", { name: /backfill missing lyrics/i })).toBeInTheDocument();
+  });
+
+  it("disables Backfill and explains while an album fetch is running", async () => {
+    statusData = {
+      ...baseStatus, phase: "running", album_id: 7, scope_label: "Radiohead — In Rainbows",
+      processed: 1, total: 3,
+    };
+    await renderPanel();
+    expect(screen.getByRole("button", { name: /backfill missing lyrics/i })).toBeDisabled();
+    expect(screen.getByText(/a lyrics fetch is in progress/i)).toBeInTheDocument();
+    // No library live feed for an album-scoped job.
+    expect(screen.queryByText(/Backfilling…/)).not.toBeInTheDocument();
   });
 });

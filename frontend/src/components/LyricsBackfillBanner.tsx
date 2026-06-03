@@ -19,7 +19,9 @@ export function LyricsBackfillBanner() {
       >
         <Loader2 className="text-muted-foreground size-5 shrink-0 animate-spin" aria-hidden="true" />
         <span className="flex-1">
-          Backfilling lyrics… {data.processed} / {data.total}
+          {data.album_id != null
+            ? `Fetching lyrics — ${data.scope_label}… ${data.processed} / ${data.total}`
+            : `Backfilling lyrics… ${data.processed} / ${data.total}`}
         </span>
       </div>
     );

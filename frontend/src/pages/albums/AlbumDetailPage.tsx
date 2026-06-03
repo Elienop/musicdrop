@@ -1,10 +1,12 @@
 import { AlertCircle, Image as ImageIcon, Loader2, Music, Pencil, ScrollText } from "lucide-react";
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
+import { useQueryClient } from "@tanstack/react-query";
 
 import type { AlbumDetail, Track } from "@/api/useAlbum";
 import { AlbumNotFoundError, useAlbum } from "@/api/useAlbum";
-import { useAlbumLyricsFetch } from "@/api/useAlbumLyrics";
+import { useStartAlbumLyricsFetch } from "@/api/useAlbumLyrics";
+import { useLyricsBackfillStatus, useStopLyricsBackfill } from "@/api/useLyricsBackfill";
 import { useAlbumMissing, type MissingReleaseTrack } from "@/api/useAlbumMissing";
 import { buildDiscGroups, type DiscGroup } from "@/pages/albums/missingTracks";
 import { BackLink } from "@/components/albums/album-grid";
@@ -72,7 +74,6 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
   const discs: DiscGroup[] = buildDiscGroups(album.tracks, missingTracks);
   const multiDisc = discs.length > 1;
 
-  const lyricsFetch = useAlbumLyricsFetch(album.id);
   const withLyrics = album.tracks.filter((t) => t.has_lyrics).length;
   const missingLyrics = album.tracks.length - withLyrics;
 
@@ -154,10 +155,10 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
         <div className="flex flex-wrap items-center justify-between gap-2">
           <TracklistStatus query={missingQuery} report={report} />
           <LyricsStatus
+            albumId={album.id}
             total={album.tracks.length}
             withLyrics={withLyrics}
             missing={missingLyrics}
-            fetch={lyricsFetch}
           />
         </div>
         <Table>
@@ -428,17 +429,49 @@ function NotFoundState() {
 }
 
 function LyricsStatus({
+  albumId,
   total,
   withLyrics,
   missing,
-  fetch,
 }: {
+  albumId: number;
   total: number;
   withLyrics: number;
   missing: number;
-  fetch: ReturnType<typeof useAlbumLyricsFetch>;
 }) {
-  const result = fetch.data;
+  const queryClient = useQueryClient();
+  const status = useLyricsBackfillStatus();
+  const start = useStartAlbumLyricsFetch(albumId);
+  const stop = useStopLyricsBackfill();
+  const job = status.data;
+  const isThisAlbum = job?.album_id === albumId;
+  const runningThis = job?.phase === "running" && isThisAlbum;
+  const otherRunning = job?.phase === "running" && !isThisAlbum;
+  const terminalThis =
+    isThisAlbum && (job?.phase === "done" || job?.phase === "stopped");
+  const phase = job?.phase;
+
+  // When THIS album's job ends, the per-track has_lyrics flags are stale — refresh.
+  useEffect(() => {
+    if (isThisAlbum && (phase === "done" || phase === "stopped" || phase === "failed")) {
+      void queryClient.invalidateQueries({ queryKey: ["album", albumId] });
+    }
+  }, [isThisAlbum, phase, albumId, queryClient]);
+
+  if (runningThis && job) {
+    return (
+      <div className="flex flex-wrap items-center gap-3" role="status">
+        <Loader2 className="text-muted-foreground size-4 shrink-0 animate-spin" aria-hidden="true" />
+        <span className="text-muted-foreground text-sm">
+          Fetching lyrics… {job.processed} / {job.total} · found {job.found}
+        </span>
+        <Button variant="outline" size="sm" onClick={() => stop.mutate()} disabled={stop.isPending}>
+          Stop
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-wrap items-center gap-3">
       <span className="text-muted-foreground text-sm">
@@ -448,29 +481,30 @@ function LyricsStatus({
         <Button
           variant="outline"
           size="sm"
-          onClick={() => fetch.mutate()}
-          disabled={fetch.isPending}
+          onClick={() => start.mutate()}
+          disabled={start.isPending || otherRunning}
         >
-          {fetch.isPending ? (
+          {start.isPending ? (
             <>
-              <Loader2 className="size-4 animate-spin" aria-hidden="true" /> Fetching…
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" /> Starting…
             </>
           ) : (
             `Fetch missing lyrics (${missing})`
           )}
         </Button>
       )}
-      {result && (
+      {otherRunning && (
+        <span className="text-muted-foreground text-sm">another lyrics job is running</span>
+      )}
+      {terminalThis && job && (
         <span className="text-muted-foreground text-sm" role="status">
-          {result.fetched} added · {result.not_found} none · {result.failed} failed
-          {result.writes_enabled ? "" : " · not written to files (enable writes in config)"}
+          {job.found} added · {job.not_found} none · {job.failed} failed
+          {job.writes_enabled ? "" : " · not written to files (enable writes in config)"}
         </span>
       )}
-      {/* A 409 (library busy) or 500 leaves the button non-pending — surface
-          the error so the click isn't a silent no-op. */}
-      {fetch.isError && (
+      {start.isError && (
         <span className="text-destructive text-sm" role="alert">
-          {(fetch.error as Error).message}
+          {(start.error as Error).message}
         </span>
       )}
     </div>
