@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import httpx
@@ -6,6 +6,7 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
+from app.api.albums import get_library
 from app.api.artists import get_artist_image_service
 from app.artwork.cache import ArtistImageCache
 from app.artwork.deezer import DeezerArtistImageSource
@@ -21,13 +22,22 @@ class _StubService:
         self._result = result
         self.calls: list[str] = []
 
-    async def get_artist_image(self, name: str) -> tuple[bytes, str] | None:
+    async def get_artist_image(
+        self, name: str, *, get_mbid: object = None
+    ) -> tuple[bytes, str] | None:
         self.calls.append(name)
         return self._result
 
 
+class _StubHandle:
+    """Minimal LibraryHandle stand-in; only ``.lib`` is read by the endpoint."""
+
+    lib = object()
+
+
 def _client_with(service: object) -> Iterator[TestClient]:
     app.dependency_overrides[get_artist_image_service] = lambda: service
+    app.dependency_overrides[get_library] = lambda: _StubHandle()
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -122,4 +132,37 @@ def test_integration_real_service_resolves_through_deezer(tmp_path: Path) -> Non
         assert resp.content == b"REALIMG"
         assert resp.headers["content-type"] == "image/jpeg"
     finally:
+        app.dependency_overrides.clear()
+
+
+def test_endpoint_passes_artist_mbid_to_service() -> None:
+    # A stub service that records the mbid the endpoint resolves + threads.
+    seen: dict[str, str | None] = {}
+
+    class _RecordingService:
+        async def get_artist_image(
+            self, name: str, *, get_mbid: Callable[[], str | None] | None = None
+        ) -> tuple[bytes, str] | None:
+            seen["mbid"] = get_mbid() if get_mbid is not None else None
+            return (b"JPEGBYTES", "image/jpeg")
+
+    class _Handle:  # only `.lib` is read; the lookup is stubbed below
+        lib = object()
+
+    from app.api.albums import get_library
+    from app.beets import library as library_mod
+
+    def fake_get_artist_mbid(lib: object, name: str) -> str | None:
+        return "the-mbid" if name == "ABBA" else None
+
+    app.dependency_overrides[get_artist_image_service] = lambda: _RecordingService()
+    app.dependency_overrides[get_library] = lambda: _Handle()
+    mp = pytest.MonkeyPatch()
+    mp.setattr(library_mod, "get_artist_mbid", fake_get_artist_mbid)
+    try:
+        resp = TestClient(app).get("/api/artists/image", params={"name": "ABBA"})
+        assert resp.status_code == 200
+        assert seen["mbid"] == "the-mbid"
+    finally:
+        mp.undo()
         app.dependency_overrides.clear()

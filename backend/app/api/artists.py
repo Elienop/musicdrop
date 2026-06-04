@@ -7,6 +7,7 @@ from app.artwork.cache import ArtistImageCache
 from app.artwork.images import MAX_IMAGE_BYTES, sniff_image_mime
 from app.artwork.service import ArtistImageService
 from app.artwork.toggle import ArtistImageToggle
+from app.beets import library as beets_library
 from app.beets.library import LibraryHandle, list_artists
 from app.models.artist import Artist, ArtistImageOverrideResult, ArtistImageSettings
 
@@ -53,10 +54,13 @@ async def list_artists_endpoint(
 async def get_artist_image_endpoint(
     name: Annotated[str, Query(min_length=1)],
     service: Annotated[ArtistImageService, Depends(get_artist_image_service)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> Response:
-    # Query param (not path) so names containing "/" (e.g. "AC/DC") work without
-    # the %2F-in-path footgun.
-    result = await service.get_artist_image(name)
+    # Query param (not path) so "AC/DC" works. The MBID is resolved lazily — the
+    # service only invokes get_mbid on a cache miss (fanart.tv is MBID-keyed).
+    result = await service.get_artist_image(
+        name, get_mbid=lambda: beets_library.get_artist_mbid(handle.lib, name)
+    )
     if result is None:
         # Covers disabled / no verified match / transient error; the frontend
         # falls back to the person glyph on 404.
