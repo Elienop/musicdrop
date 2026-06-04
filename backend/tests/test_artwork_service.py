@@ -287,3 +287,34 @@ async def test_is_enabled_callable_consulted_per_call(
     assert await service.get_artist_image("ABBA") is None  # off
     flag["on"] = True
     assert await service.get_artist_image("ABBA") == (b"IMG", "image/jpeg")  # on, no rebuild
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_get_mbid_called_only_on_cache_miss(
+    cache: ArtistImageCache, client: httpx.AsyncClient
+) -> None:
+    respx.get(SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [_hit(name="ABBA", nb_fan=1, nb_album=1, picture_xl="https://img/a.jpg")]
+            },
+        )
+    )
+    respx.get("https://img/a.jpg").mock(
+        return_value=httpx.Response(200, content=b"IMG", headers={"content-type": "image/jpeg"})
+    )
+    calls = {"n": 0}
+
+    def get_mbid() -> str | None:
+        calls["n"] += 1
+        return "the-mbid"
+
+    service = _make_service(cache=cache, client=client)
+    # Cache miss -> resolve -> get_mbid invoked once.
+    assert await service.get_artist_image("ABBA", get_mbid=get_mbid) == (b"IMG", "image/jpeg")
+    assert calls["n"] == 1
+    # Cache hit -> short-circuit -> get_mbid NOT invoked again.
+    assert await service.get_artist_image("ABBA", get_mbid=get_mbid) == (b"IMG", "image/jpeg")
+    assert calls["n"] == 1

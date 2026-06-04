@@ -40,7 +40,9 @@ class ArtistImageService:
         self._negative_ttl_seconds = negative_ttl_seconds
         self._transient_ttl_seconds = transient_ttl_seconds
 
-    async def get_artist_image(self, name: str) -> tuple[bytes, str] | None:
+    async def get_artist_image(
+        self, name: str, *, get_mbid: Callable[[], str | None] | None = None
+    ) -> tuple[bytes, str] | None:
         if not self._is_enabled():
             return None
 
@@ -50,10 +52,11 @@ class ArtistImageService:
         if cached is NEGATIVE:
             return None
 
-        # Cache miss (or expired negative): resolve once, under the limiter.
+        # Cache miss: resolve the MBID lazily (only now), then resolve under the limiter.
+        mbid = get_mbid() if get_mbid is not None else None
         try:
             async with self._limiter.slot():
-                resolved = await self._source.resolve(name)
+                resolved = await self._source.resolve(name, mbid=mbid)
         except TransientSourceError:
             self._cache.store_negative(name, ttl_seconds=self._transient_ttl_seconds)
             return None
