@@ -1,8 +1,9 @@
-import { ChevronLeft, ChevronRight, Disc3, Loader2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Disc3, Image as ImageIcon, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 
 import { useAlbums } from "@/api/useAlbums";
+import { useArtistImageSettings } from "@/api/useArtistImage";
 import {
   AlbumCard,
   AlbumsGridSkeleton,
@@ -11,6 +12,7 @@ import {
   GRID_CLASS,
 } from "@/components/albums/album-grid";
 import { ArtistImage } from "@/components/artists/ArtistImage";
+import { ArtistImageEditPanel } from "@/components/artists/ArtistImageEditPanel";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -45,6 +47,10 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
   // restored when navigating back from album detail.
   const [searchParams, setSearchParams] = useSearchParams();
   const offset = Math.max(0, Number(searchParams.get("offset") ?? "0") || 0);
+
+  const [editingImage, setEditingImage] = useState(false);
+  const [imageVersion, setImageVersion] = useState(0);
+  const imagesEnabled = useArtistImageSettings().data?.enabled ?? false;
 
   const { data, isPending, isError, isFetching, refetch } = useAlbums({
     limit,
@@ -88,15 +94,26 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
           <ArtistImage
             name={displayName}
             decorative
+            version={imageVersion}
             className="size-40 shrink-0 rounded-xl shadow-sm"
             monogramClassName="text-6xl"
           />
           <div className="flex min-w-0 flex-col gap-1">
-            {/* The heading is the artist, so the count stays a plain
-                "{n} albums" (no "by {artist}" — that would be redundant). */}
-            <h2 className="text-3xl font-semibold tracking-tight break-words">
-              {displayName}
-            </h2>
+            <div className="flex flex-wrap items-center gap-3">
+              <h2 className="text-3xl font-semibold tracking-tight break-words">
+                {displayName}
+              </h2>
+              {imagesEnabled && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditingImage((v) => !v)}
+                  aria-label="Edit artist image"
+                >
+                  <ImageIcon className="size-4" /> Image
+                </Button>
+              )}
+            </div>
             {/* Live region mounted unconditionally so assistive tech can
                 observe it before the count arrives; only the text toggles. */}
             <p
@@ -110,6 +127,14 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
           </div>
         </div>
       </div>
+
+      {editingImage && (
+        <ArtistImageEditPanel
+          name={displayName}
+          onSaved={() => setImageVersion((v) => v + 1)}
+          onClose={() => setEditingImage(false)}
+        />
+      )}
 
       {isPending ? (
         <>
