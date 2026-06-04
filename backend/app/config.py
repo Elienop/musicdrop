@@ -46,5 +46,9 @@ class Settings(BaseSettings):
     artist_image_spotify_client_id: str = ""
     artist_image_spotify_client_secret: str = ""
 
+    # Phase 2: write artist art into the library for Plex (off by default).
+    # (env MUSICDROP_ARTIST_ART_WRITE_ENABLED)
+    artist_art_write_enabled: bool = False
+
 
 settings = Settings()

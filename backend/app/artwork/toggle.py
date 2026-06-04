@@ -41,3 +41,11 @@ class ArtistImageToggle:
         tmp.write_text(json.dumps({"enabled": value}), encoding="utf-8")
         tmp.replace(self._path)
         return value
+
+
+class ArtistArtWriteToggle(ArtistImageToggle):
+    """Persisted on/off for writing artist art into the library (Phase 2).
+
+    Same mechanics as ArtistImageToggle (a JSON file holding {"enabled": bool});
+    a distinct type/file keeps it separate from the image-fetch toggle.
+    """
