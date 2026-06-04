@@ -1,4 +1,3 @@
-# app/artwork/chained.py
 """Try multiple artist-image sources in order; first verified hit wins.
 
 A child raising :class:`TransientSourceError` is logged and skipped, so one

@@ -1,4 +1,3 @@
-# tests/test_artwork_chained.py
 import pytest
 
 from app.artwork.chained import ChainedArtistImageSource
