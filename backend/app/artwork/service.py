@@ -15,6 +15,8 @@ only benches an artist for minutes, while a genuine no-match is honored for days
 Each artist costs at most one network resolution until its marker expires.
 """
 
+from collections.abc import Callable
+
 from app.artwork.cache import NEGATIVE, ArtistImageCache, CachedImage
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.source import ArtistImageSource, TransientSourceError
@@ -27,19 +29,19 @@ class ArtistImageService:
         source: ArtistImageSource,
         cache: ArtistImageCache,
         limiter: TokenBucketLimiter,
-        enabled: bool,
+        is_enabled: Callable[[], bool],
         negative_ttl_seconds: float,
         transient_ttl_seconds: float,
     ) -> None:
         self._source = source
         self._cache = cache
         self._limiter = limiter
-        self._enabled = enabled
+        self._is_enabled = is_enabled
         self._negative_ttl_seconds = negative_ttl_seconds
         self._transient_ttl_seconds = transient_ttl_seconds
 
     async def get_artist_image(self, name: str) -> tuple[bytes, str] | None:
-        if not self._enabled:
+        if not self._is_enabled():
             return None
 
         cached = self._cache.get(name)

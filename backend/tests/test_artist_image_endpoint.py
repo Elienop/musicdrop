@@ -109,7 +109,7 @@ def test_integration_real_service_resolves_through_deezer(tmp_path: Path) -> Non
         source=DeezerArtistImageSource(client=client, search_limit=5),
         cache=ArtistImageCache(tmp_path),
         limiter=TokenBucketLimiter(rate_per_sec=1000.0, max_concurrency=2),
-        enabled=True,
+        is_enabled=lambda: True,
         negative_ttl_seconds=3600,
         transient_ttl_seconds=600,
     )

@@ -19,6 +19,7 @@ from app.artwork.cache import ArtistImageCache
 from app.artwork.deezer import DeezerArtistImageSource
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
+from app.artwork.toggle import ArtistImageToggle
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
 from app.config import settings
@@ -50,9 +51,10 @@ def _resolve_cache_dir() -> Path:
     return _REPO_ROOT / configured
 
 
-def _build_artist_image_service(client: httpx.AsyncClient) -> ArtistImageService:
+def _build_artist_image_service(
+    client: httpx.AsyncClient, cache: ArtistImageCache, toggle: ArtistImageToggle
+) -> ArtistImageService:
     source = DeezerArtistImageSource(client=client, search_limit=settings.artist_image_search_limit)
-    cache = ArtistImageCache(_resolve_cache_dir())
     limiter = TokenBucketLimiter(
         rate_per_sec=settings.artist_image_rate_per_sec,
         max_concurrency=settings.artist_image_max_concurrency,
@@ -61,7 +63,7 @@ def _build_artist_image_service(client: httpx.AsyncClient) -> ArtistImageService
         source=source,
         cache=cache,
         limiter=limiter,
-        enabled=settings.artist_images_enabled,
+        is_enabled=toggle.is_enabled,
         negative_ttl_seconds=settings.artist_image_negative_ttl_seconds,
         transient_ttl_seconds=settings.artist_image_transient_ttl_seconds,
     )
@@ -94,9 +96,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Trash the /duplicates page uses).
     import_registry.attach_library(handle.lib, resolve_trash_dir(settings, handle))
 
-    # Build the artist-image stack once: a shared httpx client (timeout +
-    # descriptive User-Agent) behind the rate-limited, disk-cached service.
-    # The cache dir is created lazily on first write, so no startup mkdir.
+    # Build the artist-image stack once: the disk cache + the persisted enabled
+    # toggle are shared on app.state so the override + settings endpoints reach
+    # the SAME instances the service uses. The cache dir is created lazily on
+    # first write, so no startup mkdir.
+    cache = ArtistImageCache(_resolve_cache_dir())
+    toggle = ArtistImageToggle(
+        _resolve_cache_dir() / "_enabled.json", default=settings.artist_images_enabled
+    )
+    app.state.artist_image_cache = cache
+    app.state.artist_image_toggle = toggle
     http_client = httpx.AsyncClient(
         timeout=10.0,
         headers={
@@ -105,7 +114,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
         },
     )
-    app.state.artist_image_service = _build_artist_image_service(http_client)
+    app.state.artist_image_service = _build_artist_image_service(http_client, cache, toggle)
 
     try:
         yield
