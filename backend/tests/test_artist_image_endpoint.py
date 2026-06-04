@@ -82,9 +82,17 @@ def test_missing_name_param_is_422(hit_client: TestClient) -> None:
     assert resp.status_code == 422
 
 
-def test_default_settings_disabled_endpoint_404s() -> None:
-    # No dependency override: the real wired service is constructed from default
-    # settings (artist_images_enabled=False), so it returns None -> 404.
+def test_default_settings_disabled_endpoint_404s(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Point the artist-image cache dir at a fresh tmp so a developer's persisted
+    # enabled toggle (data/cache/artist-images/_enabled.json) can't leak in and
+    # flip the feature on — the env default (artist_images_enabled=False) then
+    # governs. No dependency override: the real wired service is constructed from
+    # default settings, so it returns None -> 404 (no outbound call when off).
+    from app.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "artist_image_cache_dir", str(tmp_path))
     with TestClient(app) as client:
         resp = client.get("/api/artists/image", params={"name": "ABBA"})
         assert resp.status_code == 404
