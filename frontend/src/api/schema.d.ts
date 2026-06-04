@@ -247,6 +247,76 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/artists/art/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Artist Art Settings */
+        get: operations["get_artist_art_settings_api_artists_art_settings_get"];
+        /** Set Artist Art Settings */
+        put: operations["set_artist_art_settings_api_artists_art_settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/artists/art/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply Artist Art */
+        post: operations["apply_artist_art_api_artists_art_apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/artists/art/backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Artist Art Backfill Status */
+        get: operations["get_artist_art_backfill_status_api_artists_art_backfill_get"];
+        put?: never;
+        /** Start Artist Art Backfill */
+        post: operations["start_artist_art_backfill_api_artists_art_backfill_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/artists/art/backfill/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop Artist Art Backfill */
+        post: operations["stop_artist_art_backfill_api_artists_art_backfill_stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/search": {
         parameters: {
             query?: never;
@@ -788,6 +858,39 @@ export interface components {
             name: string;
             /** Album Count */
             album_count: number;
+        };
+        /** ArtistArtBackfillStatus */
+        ArtistArtBackfillStatus: {
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "idle" | "running" | "done" | "stopped" | "failed";
+            /** Job Id */
+            job_id: string | null;
+            /** Total */
+            total: number;
+            /** Processed */
+            processed: number;
+            /** Written */
+            written: number;
+            /** Skipped */
+            skipped: number;
+            /** Failed */
+            failed: number;
+            /** Current */
+            current: string | null;
+            /** Error */
+            error: string | null;
+            /** Artist */
+            artist: string | null;
+            /** Scope Label */
+            scope_label: string;
+        };
+        /** ArtistArtWriteSettings */
+        ArtistArtWriteSettings: {
+            /** Enabled */
+            enabled: boolean;
         };
         /**
          * ArtistImageOverrideResult
@@ -2064,6 +2167,150 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_artist_art_settings_api_artists_art_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtistArtWriteSettings"];
+                };
+            };
+        };
+    };
+    set_artist_art_settings_api_artists_art_settings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ArtistArtWriteSettings"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtistArtWriteSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_artist_art_api_artists_art_apply_post: {
+        parameters: {
+            query: {
+                name: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtistArtBackfillStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_artist_art_backfill_status_api_artists_art_backfill_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtistArtBackfillStatus"];
+                };
+            };
+        };
+    };
+    start_artist_art_backfill_api_artists_art_backfill_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtistArtBackfillStatus"];
+                };
+            };
+        };
+    };
+    stop_artist_art_backfill_api_artists_art_backfill_stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtistArtBackfillStatus"];
                 };
             };
         };
