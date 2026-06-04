@@ -18,7 +18,7 @@ from app.api.search import router as search_router
 from app.artwork.cache import ArtistImageCache
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
-from app.artwork.toggle import ArtistImageToggle
+from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
 from app.config import settings
@@ -106,6 +106,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.artist_image_cache = cache
     app.state.artist_image_toggle = toggle
+    art_write_toggle = ArtistArtWriteToggle(
+        _resolve_cache_dir() / "_art_write_enabled.json",
+        default=settings.artist_art_write_enabled,
+    )
+    app.state.artist_art_write_toggle = art_write_toggle
     http_client = httpx.AsyncClient(
         timeout=10.0,
         headers={
@@ -114,9 +119,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
         },
     )
+    # The write toggle ALSO enables fetching (one switch): the engine resolves
+    # portraits whenever EITHER the image toggle OR the write toggle is on.
     app.state.artist_image_service = _build_artist_image_service(
-        http_client, cache, toggle.is_enabled
+        http_client, cache, lambda: toggle.is_enabled() or art_write_toggle.is_enabled()
     )
+    from app.artwork.factory import build_fanart_background_source
+
+    app.state.artist_background_source = build_fanart_background_source(http_client, settings)
 
     try:
         yield
