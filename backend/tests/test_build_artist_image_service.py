@@ -41,7 +41,7 @@ def test_deezer_only_when_no_credentials(parts: Parts, monkeypatch: pytest.Monke
     monkeypatch.setattr(settings, "artist_image_fanarttv_api_key", "")
     monkeypatch.setattr(settings, "artist_image_spotify_client_id", "")
     monkeypatch.setattr(settings, "artist_image_spotify_client_secret", "")
-    service = main_mod._build_artist_image_service(client, cache, toggle)
+    service = main_mod._build_artist_image_service(client, cache, toggle.is_enabled)
     assert _chain_types(service) == [DeezerArtistImageSource]
 
 
@@ -52,7 +52,7 @@ def test_full_chain_order_when_all_configured(
     monkeypatch.setattr(settings, "artist_image_fanarttv_api_key", "K")
     monkeypatch.setattr(settings, "artist_image_spotify_client_id", "ID")
     monkeypatch.setattr(settings, "artist_image_spotify_client_secret", "SEC")
-    service = main_mod._build_artist_image_service(client, cache, toggle)
+    service = main_mod._build_artist_image_service(client, cache, toggle.is_enabled)
     assert _chain_types(service) == [
         FanartTvArtistImageSource,
         SpotifyArtistImageSource,
@@ -65,5 +65,5 @@ def test_spotify_skipped_without_both_creds(parts: Parts, monkeypatch: pytest.Mo
     monkeypatch.setattr(settings, "artist_image_fanarttv_api_key", "")
     monkeypatch.setattr(settings, "artist_image_spotify_client_id", "ID")
     monkeypatch.setattr(settings, "artist_image_spotify_client_secret", "")  # no secret
-    service = main_mod._build_artist_image_service(client, cache, toggle)
+    service = main_mod._build_artist_image_service(client, cache, toggle.is_enabled)
     assert _chain_types(service) == [DeezerArtistImageSource]
