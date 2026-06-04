@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { useArtistArtSettings } from "@/api/useArtistArt";
 import { useArtistImageSettings } from "@/api/useArtistImage";
 import { cn } from "@/lib/utils";
 
@@ -46,10 +47,14 @@ export function ArtistImage({
   version?: number;
 }) {
   const [failed, setFailed] = useState(false);
-  const settings = useArtistImageSettings();
-  // Loaded-and-disabled -> monogram with NO request (avoids a 404-per-artist
-  // storm when off). While the setting is loading or enabled, attempt the img.
-  const disabled = settings.data?.enabled === false;
+  const imageSettings = useArtistImageSettings();
+  const artSettings = useArtistArtSettings();
+  // Fetching is on when EITHER the image toggle OR the "write to library" toggle
+  // is on (one switch — the write toggle also turns image fetching on). Only
+  // short-circuit to the monogram (no request) when BOTH are loaded-and-off,
+  // which avoids a 404-per-artist storm; while either loads or is on, attempt it.
+  const disabled =
+    imageSettings.data?.enabled === false && artSettings.data?.enabled === false;
 
   // A new version (or artist) means the portrait may now exist — clear a stale
   // error so the <img> is retried instead of stuck on the monogram.
