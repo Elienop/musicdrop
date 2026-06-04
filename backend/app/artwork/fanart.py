@@ -31,7 +31,19 @@ class FanartTvArtistImageSource:
         data = await self._fetch_artist_json(mbid)
         if data is None:
             return None
-        url = _best_thumb_url(data)
+        url = _best_image_url(data, "artistthumb")
+        if not url:
+            return None
+        return await download_image(self._client, url)
+
+    async def resolve_background(self, mbid: str | None = None) -> ResolvedImage | None:
+        """The artist's landscape background (fanart.tv only). None when absent."""
+        if not mbid:
+            return None
+        data = await self._fetch_artist_json(mbid)
+        if data is None:
+            return None
+        url = _best_image_url(data, "artistbackground")
         if not url:
             return None
         return await download_image(self._client, url)
@@ -56,12 +68,12 @@ class FanartTvArtistImageSource:
         return payload
 
 
-def _best_thumb_url(data: dict[str, Any]) -> str:
-    thumbs = data.get("artistthumb")
-    if not isinstance(thumbs, list):
+def _best_image_url(data: dict[str, Any], key: str) -> str:
+    images = data.get(key)
+    if not isinstance(images, list):
         return ""
     candidates = [
-        t for t in thumbs if isinstance(t, dict) and isinstance(t.get("url"), str) and t["url"]
+        t for t in images if isinstance(t, dict) and isinstance(t.get("url"), str) and t["url"]
     ]
     if not candidates:
         return ""
