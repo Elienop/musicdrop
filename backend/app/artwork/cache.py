@@ -111,6 +111,17 @@ class ArtistImageCache:
         (self._dir / f"{key}.override.mime").write_text(content_type, encoding="utf-8")
         (self._dir / f"{key}.override").write_bytes(data)
 
+    def clear_override(self, name: str) -> None:
+        """Remove a manual override -> next get() falls back to auto/cache.
+
+        Unlink the BYTES before the MIME (mirror-image of write_override's
+        mime-before-bytes order) so a concurrent get() never reads override
+        bytes paired with a missing mime sidecar.
+        """
+        key = self._key(name)
+        (self._dir / f"{key}.override").unlink(missing_ok=True)
+        (self._dir / f"{key}.override.mime").unlink(missing_ok=True)
+
     @staticmethod
     def _read_expiry(miss_path: Path) -> float:
         """Absolute expiry stored in the marker; 0.0 (already-stale) if corrupt."""

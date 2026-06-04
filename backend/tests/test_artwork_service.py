@@ -45,7 +45,7 @@ def _make_service(
         source=source,
         cache=cache,
         limiter=limiter,
-        enabled=enabled,
+        is_enabled=lambda: enabled,
         negative_ttl_seconds=negative_ttl_seconds,
         transient_ttl_seconds=transient_ttl_seconds,
     )
@@ -237,7 +237,7 @@ async def test_resolution_runs_under_the_rate_limiter(
     peak = 0
 
     class _SlowSource:
-        async def resolve(self, name: str) -> ResolvedImage | None:
+        async def resolve(self, name: str, *, mbid: str | None = None) -> ResolvedImage | None:
             nonlocal active, peak
             active += 1
             peak = max(peak, active)
@@ -250,10 +250,71 @@ async def test_resolution_runs_under_the_rate_limiter(
         source=_SlowSource(),
         cache=cache,
         limiter=limiter,
-        enabled=True,
+        is_enabled=lambda: True,
         negative_ttl_seconds=3600,
         transient_ttl_seconds=600,
     )
 
     await asyncio.gather(*(service.get_artist_image(f"artist-{i}") for i in range(6)))
     assert peak <= 2
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_is_enabled_callable_consulted_per_call(
+    cache: ArtistImageCache, client: httpx.AsyncClient
+) -> None:
+    respx.get(SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [_hit(name="ABBA", nb_fan=1, nb_album=1, picture_xl="https://img/a.jpg")]
+            },
+        )
+    )
+    respx.get("https://img/a.jpg").mock(
+        return_value=httpx.Response(200, content=b"IMG", headers={"content-type": "image/jpeg"})
+    )
+    flag = {"on": False}
+    service = ArtistImageService(
+        source=DeezerArtistImageSource(client=client, search_limit=5),
+        cache=cache,
+        limiter=TokenBucketLimiter(rate_per_sec=1000.0, max_concurrency=2),
+        is_enabled=lambda: flag["on"],
+        negative_ttl_seconds=3600,
+        transient_ttl_seconds=600,
+    )
+    assert await service.get_artist_image("ABBA") is None  # off
+    flag["on"] = True
+    assert await service.get_artist_image("ABBA") == (b"IMG", "image/jpeg")  # on, no rebuild
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_get_mbid_called_only_on_cache_miss(
+    cache: ArtistImageCache, client: httpx.AsyncClient
+) -> None:
+    respx.get(SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [_hit(name="ABBA", nb_fan=1, nb_album=1, picture_xl="https://img/a.jpg")]
+            },
+        )
+    )
+    respx.get("https://img/a.jpg").mock(
+        return_value=httpx.Response(200, content=b"IMG", headers={"content-type": "image/jpeg"})
+    )
+    calls = {"n": 0}
+
+    def get_mbid() -> str | None:
+        calls["n"] += 1
+        return "the-mbid"
+
+    service = _make_service(cache=cache, client=client)
+    # Cache miss -> resolve -> get_mbid invoked once.
+    assert await service.get_artist_image("ABBA", get_mbid=get_mbid) == (b"IMG", "image/jpeg")
+    assert calls["n"] == 1
+    # Cache hit -> short-circuit -> get_mbid NOT invoked again.
+    assert await service.get_artist_image("ABBA", get_mbid=get_mbid) == (b"IMG", "image/jpeg")
+    assert calls["n"] == 1

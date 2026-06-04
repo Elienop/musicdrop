@@ -37,6 +37,8 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.error import YAMLError
 
+from app.artist_art_jobs.registry import artist_art_backfill_active
+
 # Re-exported from config_snapshot so save() can import both the masking
 # sentinel and the path discoverer from one module. ``build_config_snapshot``
 # is used by save() to return the post-write snapshot.
@@ -546,7 +548,7 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
     # Pulling the gate inside the asyncio.Lock would block Apply behind
     # any concurrent Apply request even when no import is active, which is
     # worse UX for the single-user case this product targets.
-    if get_registry().has_active_job() or lyrics_backfill_active():
+    if get_registry().has_active_job() or lyrics_backfill_active() or artist_art_backfill_active():
         raise HTTPException(
             status_code=409,
             detail="Import in progress — Apply available when it finishes / lyrics backfill",

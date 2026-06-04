@@ -26,14 +26,13 @@ from beets.ui import should_write
 from beetsplug._utils import art
 from fastapi import Request
 
+from app.artwork.images import MAX_IMAGE_BYTES, sniff_image_mime
 from app.models.cover import CoverInstallResult
 
 _log = logging.getLogger("musicdrop.cover")
 
-# Hard cap on cover bytes we will materialize, mirroring the API upload cap. A
-# remote fetchart candidate can point at an arbitrarily large download; refuse to
-# read it into memory past this size (DoS guard).
-MAX_COVER_BYTES = 10 * 1024 * 1024
+# Re-exported from the shared image utils so cover + artist uploads share one cap.
+MAX_COVER_BYTES = MAX_IMAGE_BYTES
 
 # Sniffed mime -> the extension we give the temp file (drives ``cover.<ext>``).
 _MIME_EXT = {
@@ -58,19 +57,6 @@ class UnsupportedImageError(Exception):
     """The bytes are not a supported image (png/jpeg/gif/webp). Maps to 422."""
 
 
-def _sniff_mime(data: bytes) -> str | None:
-    """Best-effort image mime from magic bytes; None if not a known image."""
-    if data[:8] == b"\x89PNG\r\n\x1a\n":
-        return "image/png"
-    if data[:3] == b"\xff\xd8\xff":
-        return "image/jpeg"
-    if data[:6] in (b"GIF87a", b"GIF89a"):
-        return "image/gif"
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp"
-    return None
-
-
 def _embed_enabled() -> bool:
     """Config gate: the user opted ``embedart`` into their plugins AND writes are on."""
     plugins = beets.config["plugins"].as_str_seq()
@@ -79,7 +65,7 @@ def _embed_enabled() -> bool:
 
 def install_cover(lib: Library, *, album_id: int, image_bytes: bytes) -> CoverInstallResult:
     """Install ``image_bytes`` as the album cover (artpath) + optional embed."""
-    mime = _sniff_mime(image_bytes)
+    mime = sniff_image_mime(image_bytes)
     if mime is None:
         raise UnsupportedImageError("not a supported image (png/jpeg/gif/webp)")
     ext = _MIME_EXT[mime]
@@ -164,7 +150,7 @@ def fetch_cover_candidate(lib: Library, *, album_id: int) -> FetchedCover | None
             return None
         data = Path(path).read_bytes()
         _cleanup()
-    mime = _sniff_mime(data)
+    mime = sniff_image_mime(data)
     if mime is None:
         return None  # candidate wasn't a recognizable image -> treat as not found
     return FetchedCover(image_bytes=data, content_type=mime, source=source)
@@ -192,12 +178,13 @@ async def install_cover_op(
     from fastapi import HTTPException
     from fastapi.concurrency import run_in_threadpool
 
+    from app.artist_art_jobs.registry import artist_art_backfill_active
     from app.beets.config_editor import _swap_lock
     from app.import_jobs.registry import get_registry
     from app.lyrics_jobs.registry import lyrics_backfill_active
 
     app = request_obj.app
-    if get_registry().has_active_job() or lyrics_backfill_active():
+    if get_registry().has_active_job() or lyrics_backfill_active() or artist_art_backfill_active():
         raise HTTPException(
             status_code=409,
             detail="A library operation is in progress — cover changes available when it finishes",

@@ -25,7 +25,6 @@ class Settings(BaseSettings):
 
     # Artist images (app/artwork/) — opt-in, conservative defaults.
     artist_images_enabled: bool = False
-    artist_image_source: str = "deezer"
     artist_image_cache_dir: str = "data/cache/artist-images"
     # Deezer allows ~50 req / 5s; stay well under it.
     artist_image_rate_per_sec: float = 5.0
@@ -38,6 +37,18 @@ class Settings(BaseSettings):
     # A TRANSIENT failure (429 / timeout / malformed body / bad download) is
     # honored only briefly so a Deezer blip doesn't bench a real artist.
     artist_image_transient_ttl_seconds: int = 600
+
+    # Optional artist-image source credentials (env-only). A source joins the
+    # resolution chain only when its credentials are present; with none set the
+    # behaviour is exactly Deezer-only. (env MUSICDROP_ARTIST_IMAGE_*)
+    artist_image_fanarttv_api_key: str = ""
+    artist_image_fanarttv_client_key: str = ""
+    artist_image_spotify_client_id: str = ""
+    artist_image_spotify_client_secret: str = ""
+
+    # Phase 2: write artist art into the library for Plex (off by default).
+    # (env MUSICDROP_ARTIST_ART_WRITE_ENABLED)
+    artist_art_write_enabled: bool = False
 
 
 settings = Settings()

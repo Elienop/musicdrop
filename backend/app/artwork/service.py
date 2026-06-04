@@ -15,6 +15,8 @@ only benches an artist for minutes, while a genuine no-match is honored for days
 Each artist costs at most one network resolution until its marker expires.
 """
 
+from collections.abc import Callable
+
 from app.artwork.cache import NEGATIVE, ArtistImageCache, CachedImage
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.source import ArtistImageSource, TransientSourceError
@@ -27,19 +29,21 @@ class ArtistImageService:
         source: ArtistImageSource,
         cache: ArtistImageCache,
         limiter: TokenBucketLimiter,
-        enabled: bool,
+        is_enabled: Callable[[], bool],
         negative_ttl_seconds: float,
         transient_ttl_seconds: float,
     ) -> None:
         self._source = source
         self._cache = cache
         self._limiter = limiter
-        self._enabled = enabled
+        self._is_enabled = is_enabled
         self._negative_ttl_seconds = negative_ttl_seconds
         self._transient_ttl_seconds = transient_ttl_seconds
 
-    async def get_artist_image(self, name: str) -> tuple[bytes, str] | None:
-        if not self._enabled:
+    async def get_artist_image(
+        self, name: str, *, get_mbid: Callable[[], str | None] | None = None
+    ) -> tuple[bytes, str] | None:
+        if not self._is_enabled():
             return None
 
         cached = self._cache.get(name)
@@ -48,10 +52,11 @@ class ArtistImageService:
         if cached is NEGATIVE:
             return None
 
-        # Cache miss (or expired negative): resolve once, under the limiter.
+        # Cache miss: resolve the MBID lazily (only now), then resolve under the limiter.
+        mbid = get_mbid() if get_mbid is not None else None
         try:
             async with self._limiter.slot():
-                resolved = await self._source.resolve(name)
+                resolved = await self._source.resolve(name, mbid=mbid)
         except TransientSourceError:
             self._cache.store_negative(name, ttl_seconds=self._transient_ttl_seconds)
             return None

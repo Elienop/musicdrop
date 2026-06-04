@@ -94,8 +94,10 @@ describe("ArtistAlbumsPage", () => {
     // Wait for the page to settle, then find the header poster. It's decorative
     // (the <h2> names the artist), so it has no accessible name — query by src.
     await screen.findByRole("heading", { level: 2, name: "Radiohead" });
+    // The header poster carries a cache-bust `&v=` suffix (image edit/version),
+    // so match by the stable name-scoped prefix rather than the exact src.
     const poster = container.querySelector(
-      'img[src="/api/artists/image?name=Radiohead"]',
+      'img[src^="/api/artists/image?name=Radiohead"]',
     );
     expect(poster).not.toBeNull();
     expect(poster).toHaveAttribute("alt", "");

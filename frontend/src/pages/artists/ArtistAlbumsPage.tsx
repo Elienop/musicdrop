@@ -1,8 +1,21 @@
-import { ChevronLeft, ChevronRight, Disc3, Loader2 } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Disc3,
+  Image as ImageIcon,
+  Loader2,
+  UploadCloud,
+} from "lucide-react";
 import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 
 import { useAlbums } from "@/api/useAlbums";
+import {
+  useArtistArtBackfillStatus,
+  useArtistArtSettings,
+  useStartArtistArtApply,
+} from "@/api/useArtistArt";
+import { useArtistImageSettings } from "@/api/useArtistImage";
 import {
   AlbumCard,
   AlbumsGridSkeleton,
@@ -11,6 +24,7 @@ import {
   GRID_CLASS,
 } from "@/components/albums/album-grid";
 import { ArtistImage } from "@/components/artists/ArtistImage";
+import { ArtistImageEditPanel } from "@/components/artists/ArtistImageEditPanel";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -45,6 +59,13 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
   // restored when navigating back from album detail.
   const [searchParams, setSearchParams] = useSearchParams();
   const offset = Math.max(0, Number(searchParams.get("offset") ?? "0") || 0);
+
+  const [editingImage, setEditingImage] = useState(false);
+  const [imageVersion, setImageVersion] = useState(0);
+  const imagesEnabled = useArtistImageSettings().data?.enabled ?? false;
+  // The single write-to-library toggle drives BOTH fetch + write; when on, the
+  // header gains a per-artist "Apply to library" action with marching progress.
+  const writeEnabled = useArtistArtSettings().data?.enabled ?? false;
 
   const { data, isPending, isError, isFetching, refetch } = useAlbums({
     limit,
@@ -88,15 +109,27 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
           <ArtistImage
             name={displayName}
             decorative
+            version={imageVersion}
             className="size-40 shrink-0 rounded-xl shadow-sm"
             monogramClassName="text-6xl"
           />
           <div className="flex min-w-0 flex-col gap-1">
-            {/* The heading is the artist, so the count stays a plain
-                "{n} albums" (no "by {artist}" — that would be redundant). */}
-            <h2 className="text-3xl font-semibold tracking-tight break-words">
-              {displayName}
-            </h2>
+            <div className="flex flex-wrap items-center gap-3">
+              <h2 className="text-3xl font-semibold tracking-tight break-words">
+                {displayName}
+              </h2>
+              {imagesEnabled && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditingImage((v) => !v)}
+                  aria-label="Edit artist image"
+                >
+                  <ImageIcon className="size-4" /> Image
+                </Button>
+              )}
+              {writeEnabled && <ArtistArtStatus displayName={displayName} />}
+            </div>
             {/* Live region mounted unconditionally so assistive tech can
                 observe it before the count arrives; only the text toggles. */}
             <p
@@ -110,6 +143,14 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
           </div>
         </div>
       </div>
+
+      {editingImage && (
+        <ArtistImageEditPanel
+          name={displayName}
+          onSaved={() => setImageVersion((v) => v + 1)}
+          onClose={() => setEditingImage(false)}
+        />
+      )}
 
       {isPending ? (
         <>
@@ -164,10 +205,14 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
                 aria-live="polite"
               >
                 {isFetching && (
-                  <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                  <Loader2
+                    className="size-3.5 animate-spin"
+                    aria-hidden="true"
+                  />
                 )}
                 <span>
-                  {offset + 1}&ndash;{Math.min(offset + limit, total)} of {total}
+                  {offset + 1}&ndash;{Math.min(offset + limit, total)} of{" "}
+                  {total}
                 </span>
               </span>
               <Button
@@ -184,6 +229,71 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
         </>
       )}
     </section>
+  );
+}
+
+/** The per-artist "Apply to library" action + marching progress, mirroring the
+ * album `LyricsStatus`. This artist owns the single backfill slot when the
+ * running job's scoped `artist` equals our `displayName`; otherwise the button
+ * just kicks off a per-artist apply (force-overwrite). */
+function ArtistArtStatus({ displayName }: { displayName: string }) {
+  const status = useArtistArtBackfillStatus();
+  const start = useStartArtistArtApply(displayName);
+  const job = status.data;
+  const isThisArtist = job?.artist === displayName;
+  const runningThis = job?.phase === "running" && isThisArtist;
+  const otherRunning = job?.phase === "running" && !isThisArtist;
+  const terminalThis =
+    isThisArtist && (job?.phase === "done" || job?.phase === "stopped");
+
+  if (runningThis && job) {
+    return (
+      <span
+        className="text-muted-foreground flex items-center gap-2 text-sm"
+        role="status"
+      >
+        <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
+        Writing artist art… {job.processed} / {job.total}
+      </span>
+    );
+  }
+
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => start.mutate()}
+        disabled={start.isPending || otherRunning}
+        aria-label="Apply to library"
+      >
+        {start.isPending ? (
+          <>
+            <Loader2 className="size-4 animate-spin" aria-hidden="true" />{" "}
+            Starting…
+          </>
+        ) : (
+          <>
+            <UploadCloud className="size-4" /> Apply to library
+          </>
+        )}
+      </Button>
+      {otherRunning && (
+        <span className="text-muted-foreground text-sm">
+          another artist-art job is running
+        </span>
+      )}
+      {terminalThis && job && (
+        <span className="text-muted-foreground text-sm" role="status">
+          {job.written} written · {job.skipped} skipped · {job.failed} failed
+        </span>
+      )}
+      {start.isError && (
+        <span className="text-destructive text-sm" role="alert">
+          {(start.error as Error).message}
+        </span>
+      )}
+    </span>
   );
 }
 

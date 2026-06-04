@@ -5,7 +5,8 @@ import httpx
 import pytest
 import respx
 
-from app.artwork.deezer import MAX_IMAGE_BYTES, DeezerArtistImageSource
+from app.artwork.deezer import DeezerArtistImageSource
+from app.artwork.images import MAX_IMAGE_BYTES
 from app.artwork.source import ResolvedImage, TransientSourceError
 
 SEARCH_URL = "https://api.deezer.com/search/artist"
@@ -317,3 +318,25 @@ async def test_null_name_hit_does_not_match(source: DeezerArtistImageSource) -> 
     img = respx.get("https://img/n.jpg")
     assert await source.resolve("None") is None
     assert not img.called
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_resolve_accepts_and_ignores_mbid(client: httpx.AsyncClient) -> None:
+    search = respx.get(SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [_hit(name="ABBA", nb_fan=1, nb_album=1, picture_xl="https://img/a.jpg")]
+            },
+        )
+    )
+    respx.get("https://img/a.jpg").mock(
+        return_value=httpx.Response(200, content=b"IMG", headers={"content-type": "image/jpeg"})
+    )
+    source = DeezerArtistImageSource(client=client, search_limit=5)
+    # mbid is accepted (keyword-only) and ignored — Deezer is name-based.
+    assert await source.resolve("ABBA", mbid="ignored") == ResolvedImage(
+        data=b"IMG", content_type="image/jpeg"
+    )
+    assert search.called

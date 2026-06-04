@@ -16,6 +16,8 @@ import {
 } from "@/api/useBeetsConfig";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { ArtistArtPanel } from "@/pages/settings/ArtistArtPanel";
+import { ArtistImagesPanel } from "@/pages/settings/ArtistImagesPanel";
 import { LyricsBackfillPanel } from "@/pages/settings/LyricsBackfillPanel";
 import { SettingsConflict } from "@/pages/settings/SettingsConflict";
 import {
@@ -429,6 +431,8 @@ export function SettingsPage() {
         )}
       </section>
       <LyricsBackfillPanel />
+      <ArtistImagesPanel />
+      <ArtistArtPanel />
     </div>
   );
 }
