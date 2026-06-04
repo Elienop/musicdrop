@@ -6,12 +6,13 @@ global config singletons, and version quirks stay isolated here.
 """
 
 import os
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from beets.dbcore.query import ParsingError
+from beets.dbcore.query import MatchQuery, ParsingError
 from beets.library import Album as BeetsAlbum
 from beets.library import Library
 from beets.ui import get_path_formats, get_replacements
@@ -198,6 +199,25 @@ def list_artists(lib: Library) -> list[Artist]:
     artists = [Artist(name=name, album_count=count) for name, count in counts.items()]
     artists.sort(key=lambda a: a.name.casefold())
     return artists
+
+
+def get_artist_mbid(lib: Library, name: str) -> str | None:
+    """Return the MusicBrainz artist MBID for an albumartist name, or None.
+
+    Reads ``mb_albumartistid`` off the artist's albums. Uses a ``MatchQuery``
+    (parameterized ``albumartist = ?``) rather than a string-interpolated query,
+    so quotes/colons/metacharacters in the name cannot break it. Returns the
+    first value that parses as a UUID (rejecting an empty field or junk like
+    ``"520"``); ``None`` if the artist is absent or has no valid MBID.
+    """
+    for album in lib.albums(MatchQuery("albumartist", name)):
+        raw = _coerce_str(album.mb_albumartistid)
+        try:
+            uuid.UUID(raw)
+        except ValueError:
+            continue
+        return raw
+    return None
 
 
 def _to_search_track(item: Any) -> SearchTrack:

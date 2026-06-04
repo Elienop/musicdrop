@@ -92,6 +92,7 @@ module = [
     "app.lyrics_jobs.registry",
     "app.lyrics_jobs.runner",
     "tests.test_lyrics_backfill",
+    "tests.test_artwork_library_mbid",
 ]
 disallow_untyped_calls = false
 
