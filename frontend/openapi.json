@@ -534,6 +534,153 @@
         }
       }
     },
+    "/api/artists/image/settings": {
+      "get": {
+        "tags": [
+          "artists"
+        ],
+        "summary": "Get Artist Image Settings Endpoint",
+        "operationId": "get_artist_image_settings_endpoint_api_artists_image_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtistImageSettings"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "artists"
+        ],
+        "summary": "Set Artist Image Settings Endpoint",
+        "operationId": "set_artist_image_settings_endpoint_api_artists_image_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtistImageSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtistImageSettings"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artists/image/override": {
+      "post": {
+        "tags": [
+          "artists"
+        ],
+        "summary": "Upload Artist Image Override Endpoint",
+        "operationId": "upload_artist_image_override_endpoint_api_artists_image_override_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_artist_image_override_endpoint_api_artists_image_override_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtistImageOverrideResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "artists"
+        ],
+        "summary": "Clear Artist Image Override Endpoint",
+        "operationId": "clear_artist_image_override_endpoint_api_artists_image_override_delete",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/search": {
       "get": {
         "tags": [
@@ -1845,6 +1992,39 @@
         ],
         "title": "Artist"
       },
+      "ArtistImageOverrideResult": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "content_type": {
+            "type": "string",
+            "title": "Content Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ok",
+          "content_type"
+        ],
+        "title": "ArtistImageOverrideResult",
+        "description": "Outcome of pinning a manual artist-image override."
+      },
+      "ArtistImageSettings": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "ArtistImageSettings",
+        "description": "The artist-image feature on/off flag (GET + PUT body + PUT response)."
+      },
       "BeetsConfigSnapshot": {
         "properties": {
           "yaml_text": {
@@ -1906,6 +2086,20 @@
           "file"
         ],
         "title": "Body_install_album_cover_endpoint_api_albums__album_id__cover_post"
+      },
+      "Body_upload_artist_image_override_endpoint_api_artists_image_override_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_artist_image_override_endpoint_api_artists_image_override_post"
       },
       "Candidate": {
         "properties": {

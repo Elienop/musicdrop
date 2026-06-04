@@ -211,6 +211,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/artists/image/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Artist Image Settings Endpoint */
+        get: operations["get_artist_image_settings_endpoint_api_artists_image_settings_get"];
+        /** Set Artist Image Settings Endpoint */
+        put: operations["set_artist_image_settings_endpoint_api_artists_image_settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/artists/image/override": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload Artist Image Override Endpoint */
+        post: operations["upload_artist_image_override_endpoint_api_artists_image_override_post"];
+        /** Clear Artist Image Override Endpoint */
+        delete: operations["clear_artist_image_override_endpoint_api_artists_image_override_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/search": {
         parameters: {
             query?: never;
@@ -754,6 +790,24 @@ export interface components {
             album_count: number;
         };
         /**
+         * ArtistImageOverrideResult
+         * @description Outcome of pinning a manual artist-image override.
+         */
+        ArtistImageOverrideResult: {
+            /** Ok */
+            ok: boolean;
+            /** Content Type */
+            content_type: string;
+        };
+        /**
+         * ArtistImageSettings
+         * @description The artist-image feature on/off flag (GET + PUT body + PUT response).
+         */
+        ArtistImageSettings: {
+            /** Enabled */
+            enabled: boolean;
+        };
+        /**
          * BeetsConfigSnapshot
          * @description Read-only snapshot of beets' effective config + file freshness.
          */
@@ -776,6 +830,11 @@ export interface components {
         };
         /** Body_install_album_cover_endpoint_api_albums__album_id__cover_post */
         Body_install_album_cover_endpoint_api_albums__album_id__cover_post: {
+            /** File */
+            file: string;
+        };
+        /** Body_upload_artist_image_override_endpoint_api_artists_image_override_post */
+        Body_upload_artist_image_override_endpoint_api_artists_image_override_post: {
             /** File */
             file: string;
         };
@@ -1876,6 +1935,123 @@ export interface operations {
             };
             /** @description Feature disabled, no verified match, or transient error. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_artist_image_settings_endpoint_api_artists_image_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtistImageSettings"];
+                };
+            };
+        };
+    };
+    set_artist_image_settings_endpoint_api_artists_image_settings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ArtistImageSettings"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtistImageSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_artist_image_override_endpoint_api_artists_image_override_post: {
+        parameters: {
+            query: {
+                name: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_artist_image_override_endpoint_api_artists_image_override_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtistImageOverrideResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_artist_image_override_endpoint_api_artists_image_override_delete: {
+        parameters: {
+            query: {
+                name: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };
