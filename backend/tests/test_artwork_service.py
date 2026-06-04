@@ -267,7 +267,9 @@ async def test_is_enabled_callable_consulted_per_call(
     respx.get(SEARCH_URL).mock(
         return_value=httpx.Response(
             200,
-            json={"data": [_hit(name="ABBA", nb_fan=1, nb_album=1, picture_xl="https://img/a.jpg")]},
+            json={
+                "data": [_hit(name="ABBA", nb_fan=1, nb_album=1, picture_xl="https://img/a.jpg")]
+            },
         )
     )
     respx.get("https://img/a.jpg").mock(
