@@ -69,7 +69,7 @@ async def start_import(
     if lyrics_backfill_active() or artist_art_backfill_active():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="A lyrics backfill is in progress — import available when it finishes",
+            detail="A library backfill is in progress — import available when it finishes",
         )
     try:
         job_id = reg.start(body.path)

@@ -38,3 +38,12 @@ def test_cover_install_409_when_artist_art_running(
         files={"file": ("c.png", PNG.read_bytes(), "image/png")},
     )
     assert r.status_code == 409
+
+
+def test_lyrics_backfill_409_when_artist_art_running() -> None:
+    # Symmetry: the lyrics backfill must also refuse while an artist-art job runs
+    # (the gate is checked before any app.state read, so no lifespan needed).
+    reg = reset_artist_art_backfill()
+    reg.start(force=False)
+    r = TestClient(app).post("/api/lyrics/backfill")
+    assert r.status_code == 409

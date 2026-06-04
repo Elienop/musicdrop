@@ -36,11 +36,18 @@ async def start_lyrics_backfill(
 ) -> LyricsBackfillStatus:
     """Start a library-wide backfill. 409 if an import, another backfill, or a
     config-apply/edit/cover op is in flight."""
+    from app.artist_art_jobs.registry import artist_art_backfill_active
+
     app = request.app
     if get_registry().has_active_job():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="An import is in progress — backfill available when it finishes",
+        )
+    if artist_art_backfill_active():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An artist-art job is in progress — backfill available when it finishes",
         )
     lock = getattr(app.state, "beets_swap_lock", None)
     if lock is not None and lock.locked():
