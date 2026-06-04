@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
+import { useArtistImageSettings } from "@/api/useArtistImage";
 import { cn } from "@/lib/utils";
 
 /** First alphanumeric character of the name, uppercased — the monogram letter.
@@ -35,35 +36,46 @@ export function ArtistImage({
   className,
   monogramClassName = "text-2xl",
   decorative = false,
+  version,
 }: {
   name: string;
   className?: string;
   monogramClassName?: string;
   decorative?: boolean;
+  /** Bump to defeat the max-age cache after an override save/reset. */
+  version?: number;
 }) {
   const [failed, setFailed] = useState(false);
+  const settings = useArtistImageSettings();
+  // Loaded-and-disabled -> monogram with NO request (avoids a 404-per-artist
+  // storm when off). While the setting is loading or enabled, attempt the img.
+  const disabled = settings.data?.enabled === false;
 
-  if (failed) {
+  // A new version (or artist) means the portrait may now exist — clear a stale
+  // error so the <img> is retried instead of stuck on the monogram.
+  useEffect(() => setFailed(false), [name, version]);
+
+  if (failed || disabled) {
     return (
       <div
         className={cn(
           "bg-muted text-muted-foreground flex items-center justify-center font-semibold select-none",
           className,
         )}
-        {...(decorative
-          ? { "aria-hidden": true }
-          : { role: "img", "aria-label": name })}
+        {...(decorative ? { "aria-hidden": true } : { role: "img", "aria-label": name })}
       >
-        <span className={cn("leading-none", monogramClassName)}>
-          {monogram(name)}
-        </span>
+        <span className={cn("leading-none", monogramClassName)}>{monogram(name)}</span>
       </div>
     );
   }
 
+  const src =
+    `/api/artists/image?name=${encodeURIComponent(name)}` +
+    (version !== undefined ? `&v=${version}` : "");
+
   return (
     <img
-      src={`/api/artists/image?name=${encodeURIComponent(name)}`}
+      src={src}
       alt={decorative ? "" : `${name} portrait`}
       loading="lazy"
       onError={() => setFailed(true)}
