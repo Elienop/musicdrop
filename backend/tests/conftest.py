@@ -98,6 +98,15 @@ def reset_lyrics_backfill_registry() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def reset_artist_art_backfill_registry() -> Iterator[None]:
+    from app.artist_art_jobs.registry import reset_artist_art_backfill
+
+    reset_artist_art_backfill()
+    yield
+    reset_artist_art_backfill()
+
+
+@pytest.fixture(autouse=True)
 def _clear_beets_globals() -> Iterator[None]:
     """Reset beets' global confuse + plugin singletons between every test.
 
