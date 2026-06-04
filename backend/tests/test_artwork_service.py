@@ -237,7 +237,7 @@ async def test_resolution_runs_under_the_rate_limiter(
     peak = 0
 
     class _SlowSource:
-        async def resolve(self, name: str) -> ResolvedImage | None:
+        async def resolve(self, name: str, *, mbid: str | None = None) -> ResolvedImage | None:
             nonlocal active, peak
             active += 1
             peak = max(peak, active)

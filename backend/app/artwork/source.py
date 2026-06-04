@@ -30,8 +30,8 @@ class TransientSourceError(Exception):
 
 @runtime_checkable
 class ArtistImageSource(Protocol):
-    async def resolve(self, name: str) -> ResolvedImage | None:
-        """Resolve ``name`` to a portrait.
+    async def resolve(self, name: str, *, mbid: str | None = None) -> ResolvedImage | None:
+        """Resolve ``name`` (optionally aided by a MusicBrainz ``mbid``) to a portrait.
 
         Returns ``None`` ONLY for a confirmed no-verified-match. Raises
         :class:`TransientSourceError` for any transient failure.

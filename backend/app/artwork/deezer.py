@@ -37,7 +37,7 @@ class DeezerArtistImageSource:
         self._client = client
         self._search_limit = search_limit
 
-    async def resolve(self, name: str) -> ResolvedImage | None:
+    async def resolve(self, name: str, *, mbid: str | None = None) -> ResolvedImage | None:
         hits = await self._search(name)
 
         target = normalize_artist_name(name)

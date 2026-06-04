@@ -15,7 +15,9 @@ PNG = Path(__file__).parent / "fixtures" / "cover.png"
 class _NeverSource:
     """A source that must never be called (the override short-circuits resolve)."""
 
-    async def resolve(self, name: str) -> None:  # pragma: no cover - guard
+    async def resolve(
+        self, name: str, *, mbid: str | None = None
+    ) -> None:  # pragma: no cover - guard
         raise AssertionError("resolve() should not be called when an override exists")
 
 
