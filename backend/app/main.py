@@ -16,9 +16,13 @@ from app.api.import_ import router as import_router
 from app.api.lyrics import router as lyrics_router
 from app.api.search import router as search_router
 from app.artwork.cache import ArtistImageCache
+from app.artwork.chained import ChainedArtistImageSource
 from app.artwork.deezer import DeezerArtistImageSource
+from app.artwork.fanart import FanartTvArtistImageSource
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
+from app.artwork.source import ArtistImageSource
+from app.artwork.spotify import SpotifyArtistImageSource
 from app.artwork.toggle import ArtistImageToggle
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
@@ -54,13 +58,34 @@ def _resolve_cache_dir() -> Path:
 def _build_artist_image_service(
     client: httpx.AsyncClient, cache: ArtistImageCache, toggle: ArtistImageToggle
 ) -> ArtistImageService:
-    source = DeezerArtistImageSource(client=client, search_limit=settings.artist_image_search_limit)
+    sources: list[ArtistImageSource] = []
+    if settings.artist_image_fanarttv_api_key:
+        sources.append(
+            FanartTvArtistImageSource(
+                client=client,
+                api_key=settings.artist_image_fanarttv_api_key,
+                client_key=settings.artist_image_fanarttv_client_key,
+            )
+        )
+    if settings.artist_image_spotify_client_id and settings.artist_image_spotify_client_secret:
+        sources.append(
+            SpotifyArtistImageSource(
+                client=client,
+                client_id=settings.artist_image_spotify_client_id,
+                client_secret=settings.artist_image_spotify_client_secret,
+                search_limit=settings.artist_image_search_limit,
+            )
+        )
+    # Deezer is always the keyless backstop, tried last.
+    sources.append(
+        DeezerArtistImageSource(client=client, search_limit=settings.artist_image_search_limit)
+    )
     limiter = TokenBucketLimiter(
         rate_per_sec=settings.artist_image_rate_per_sec,
         max_concurrency=settings.artist_image_max_concurrency,
     )
     return ArtistImageService(
-        source=source,
+        source=ChainedArtistImageSource(sources),
         cache=cache,
         limiter=limiter,
         is_enabled=toggle.is_enabled,
