@@ -25,14 +25,11 @@ from typing import Any  # Deezer JSON is untyped; we validate it structurally.
 
 import httpx
 
+from app.artwork.download import download_image
 from app.artwork.normalize import normalize_artist_name
 from app.artwork.source import ResolvedImage, TransientSourceError
 
 _SEARCH_URL = "https://api.deezer.com/search/artist"
-
-# Reject absurdly large downloads (an error page mislabeled as an image, or a
-# hostile/huge file). Artist portraits are well under this.
-MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
 class DeezerArtistImageSource:
@@ -61,7 +58,7 @@ class DeezerArtistImageSource:
         if not url:
             return None
 
-        return await self._download(url)
+        return await download_image(self._client, url)
 
     async def _search(self, name: str) -> list[dict[str, Any]]:
         try:
@@ -81,27 +78,6 @@ class DeezerArtistImageSource:
         if not isinstance(data, list):
             raise TransientSourceError("Deezer search payload had no 'data' list")
         return [item for item in data if isinstance(item, dict)]
-
-    async def _download(self, url: str) -> ResolvedImage:
-        try:
-            response = await self._client.get(url)
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise TransientSourceError(f"Deezer image download failed: {exc}") from exc
-
-        declared = response.headers.get("content-length")
-        if declared is not None and declared.isdigit() and int(declared) > MAX_IMAGE_BYTES:
-            raise TransientSourceError("Deezer image exceeds size limit (Content-Length)")
-
-        content_type = response.headers.get("content-type", "")
-        if not content_type.lower().startswith("image/"):
-            raise TransientSourceError(f"Deezer download was not an image: {content_type!r}")
-
-        data = response.content
-        if len(data) > MAX_IMAGE_BYTES:
-            raise TransientSourceError("Deezer image exceeds size limit")
-
-        return ResolvedImage(data=data, content_type=content_type)
 
     @staticmethod
     def _prominence(hit: dict[str, Any]) -> tuple[int, int]:

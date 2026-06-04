@@ -5,7 +5,8 @@ import httpx
 import pytest
 import respx
 
-from app.artwork.deezer import MAX_IMAGE_BYTES, DeezerArtistImageSource
+from app.artwork.deezer import DeezerArtistImageSource
+from app.artwork.images import MAX_IMAGE_BYTES
 from app.artwork.source import ResolvedImage, TransientSourceError
 
 SEARCH_URL = "https://api.deezer.com/search/artist"
