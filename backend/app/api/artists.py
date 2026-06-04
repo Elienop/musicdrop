@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from app.api.albums import get_library
 from app.artwork.service import ArtistImageService
+from app.artwork.toggle import ArtistImageToggle
 from app.beets.library import LibraryHandle, list_artists
-from app.models.artist import Artist
+from app.models.artist import Artist, ArtistImageSettings
 
 router = APIRouter(tags=["artists"])
 
@@ -19,6 +20,12 @@ def get_artist_image_service(request: Request) -> ArtistImageService:
     """
     service: ArtistImageService = request.app.state.artist_image_service
     return service
+
+
+def get_artist_image_toggle(request: Request) -> ArtistImageToggle:
+    """The process-wide persisted enabled toggle, built in the app lifespan."""
+    toggle: ArtistImageToggle = request.app.state.artist_image_toggle
+    return toggle
 
 
 @router.get("/artists", response_model=list[Artist])
@@ -53,3 +60,18 @@ async def get_artist_image_endpoint(
         media_type=mime,
         headers={"Cache-Control": "public, max-age=86400"},
     )
+
+
+@router.get("/artists/image/settings", response_model=ArtistImageSettings)
+async def get_artist_image_settings_endpoint(
+    toggle: Annotated[ArtistImageToggle, Depends(get_artist_image_toggle)],
+) -> ArtistImageSettings:
+    return ArtistImageSettings(enabled=toggle.is_enabled())
+
+
+@router.put("/artists/image/settings", response_model=ArtistImageSettings)
+async def set_artist_image_settings_endpoint(
+    body: ArtistImageSettings,
+    toggle: Annotated[ArtistImageToggle, Depends(get_artist_image_toggle)],
+) -> ArtistImageSettings:
+    return ArtistImageSettings(enabled=toggle.set_enabled(body.enabled))
