@@ -1,4 +1,3 @@
-// frontend/src/api/useArtistImage.ts
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";

@@ -1,4 +1,3 @@
-// frontend/src/pages/artists/ArtistAlbumsPage.edit.test.tsx
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";

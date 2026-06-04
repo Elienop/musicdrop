@@ -1,4 +1,3 @@
-# backend/tests/test_artwork_images.py
 from app.artwork.images import MAX_IMAGE_BYTES, sniff_image_mime
 
 

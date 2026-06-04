@@ -1,4 +1,3 @@
-# backend/app/artwork/images.py
 """Generic image validation shared by the cover + artist-image endpoints.
 
 No beets here — magic-byte sniffing and the upload size cap are plain image

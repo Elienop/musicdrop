@@ -1,4 +1,3 @@
-# backend/tests/test_artist_image_override_endpoint.py
 from collections.abc import Iterator
 from pathlib import Path
 

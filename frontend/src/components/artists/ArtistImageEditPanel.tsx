@@ -1,4 +1,3 @@
-// frontend/src/components/artists/ArtistImageEditPanel.tsx
 import { AlertCircle, RotateCcw, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 

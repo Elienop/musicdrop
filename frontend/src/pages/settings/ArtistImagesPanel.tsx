@@ -1,4 +1,3 @@
-// frontend/src/pages/settings/ArtistImagesPanel.tsx
 import { Loader2 } from "lucide-react";
 
 import { useArtistImageSettings, useSetArtistImageSettings } from "@/api/useArtistImage";
