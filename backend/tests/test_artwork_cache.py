@@ -93,3 +93,23 @@ def test_positive_mime_written_before_bytes(cache: ArtistImageCache, tmp_path: P
     key = cache._key("ABBA")
     assert (tmp_path / f"{key}.mime").exists()
     assert (tmp_path / f"{key}.bin").exists()
+
+
+def test_clear_override_removes_both_files_and_falls_through(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    cache.store_positive("ABBA", b"auto", "image/png")
+    cache.write_override("ABBA", b"manual", "image/jpeg")
+    cache.clear_override("ABBA")
+    key = cache._key("ABBA")
+    assert not (tmp_path / f"{key}.override").exists()
+    assert not (tmp_path / f"{key}.override.mime").exists()
+    # With the override gone, get() falls through to the positive slot.
+    result = cache.get("ABBA")
+    assert isinstance(result, CachedImage)
+    assert result.data == b"auto"
+
+
+def test_clear_override_is_idempotent_when_absent(cache: ArtistImageCache) -> None:
+    cache.clear_override("Nobody")  # no error, no-op
+    assert cache.get("Nobody") is None
