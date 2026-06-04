@@ -18,8 +18,31 @@ const settings = { enabled: true };
 vi.mock("@/api/useArtistImage", () => ({
   ARTIST_IMAGE_SETTINGS_KEY: ["artist-image", "settings"],
   useArtistImageSettings: () => ({ data: settings }),
-  useUploadArtistImageOverride: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
-  useResetArtistImageOverride: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
+  useUploadArtistImageOverride: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+    error: null,
+  }),
+  useResetArtistImageOverride: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+    error: null,
+  }),
+}));
+
+// This suite covers the artist-image edit flow; keep the orthogonal artist-art
+// write toggle OFF so its header action doesn't render here.
+vi.mock("@/api/useArtistArt", () => ({
+  useArtistArtSettings: () => ({ data: { enabled: false } }),
+  useArtistArtBackfillStatus: () => ({ data: { phase: "idle", artist: null } }),
+  useStartArtistArtApply: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+    error: null,
+  }),
 }));
 
 function renderAt(name: string) {
@@ -50,6 +73,8 @@ describe("ArtistAlbumsPage artist-image edit", () => {
   it("hides the Edit button when images are disabled", () => {
     settings.enabled = false;
     renderAt("ABBA");
-    expect(screen.queryByRole("button", { name: /edit artist image/i })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /edit artist image/i }),
+    ).toBeNull();
   });
 });
