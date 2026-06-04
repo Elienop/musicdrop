@@ -63,9 +63,10 @@ async def start_import(
             detail="A library operation is in progress — import available when it finishes",
         )
 
+    from app.artist_art_jobs.registry import artist_art_backfill_active
     from app.lyrics_jobs.registry import lyrics_backfill_active
 
-    if lyrics_backfill_active():
+    if lyrics_backfill_active() or artist_art_backfill_active():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A lyrics backfill is in progress — import available when it finishes",

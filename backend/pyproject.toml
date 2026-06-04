@@ -94,6 +94,7 @@ module = [
     "tests.test_lyrics_backfill",
     "tests.test_artwork_library_mbid",
     "tests.test_artist_art_write",
+    "tests.test_artist_art_mutex",
 ]
 disallow_untyped_calls = false
 
