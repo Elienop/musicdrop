@@ -130,8 +130,10 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
                 : ""}
             </p>
             {/* Per-artist maintenance actions, grouped below the title so they
-                don't crowd the name. */}
-            <div className="border-border mt-3 flex flex-wrap items-center gap-3 border-t pt-3">
+                don't crowd the name. Stacked so a running/expanded control (art
+                progress, reorganize preview) gets its own line instead of
+                cramming against the others. */}
+            <div className="border-border mt-3 flex flex-col items-start gap-3 border-t pt-3">
               {imagesEnabled && (
                 <Button
                   variant="outline"
