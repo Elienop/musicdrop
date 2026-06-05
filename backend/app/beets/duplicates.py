@@ -20,6 +20,8 @@ from beets.library import Library
 from fastapi import HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
+from app.artist_art_jobs.registry import artist_art_backfill_active
+
 # Reuse config-Apply's lock + settings accessors so resolve shares the SAME
 # app.state.beets_swap_lock (genuine mutual exclusion with Apply) and the same
 # lifespan-less TestClient fallback. Both live in the app/beets/ boundary.
@@ -32,6 +34,7 @@ from app.beets.library import (
 )
 from app.beets.trash import album_folder, album_format_bitrate, resolve_trash_dir, trash_album
 from app.import_jobs.registry import get_registry
+from app.lyrics_jobs.registry import lyrics_backfill_active
 from app.models.duplicates import (
     DuplicateAlbum,
     DuplicateGroup,
@@ -45,6 +48,7 @@ from app.models.duplicates import (
     ResolveResult,
     SkippedGroup,
 )
+from app.reorganize_jobs.registry import reorganize_backfill_active
 
 _PAREN_RE = re.compile(r"[\(\[].*?[\)\]]")
 _FEAT_RE = re.compile(r"\b(?:feat|ft|featuring)\b.*", re.IGNORECASE)
@@ -221,7 +225,12 @@ async def resolve_duplicates_op(request: Request, req: ResolveRequest) -> Resolv
        config Apply uses; flat ``detail: str`` for the 409/404 siblings).
     """
     app = request.app
-    if get_registry().has_active_job():
+    if (
+        get_registry().has_active_job()
+        or lyrics_backfill_active()
+        or artist_art_backfill_active()
+        or reorganize_backfill_active()
+    ):
         raise HTTPException(
             status_code=409,
             detail="Import in progress — resolve available when it finishes",
@@ -308,7 +317,12 @@ async def resolve_all_op(request: Request, req: ResolveAllRequest) -> ResolveAll
     200 with an empty ``resolved`` + populated ``skipped_stale``.
     """
     app = request.app
-    if get_registry().has_active_job():
+    if (
+        get_registry().has_active_job()
+        or lyrics_backfill_active()
+        or artist_art_backfill_active()
+        or reorganize_backfill_active()
+    ):
         raise HTTPException(
             status_code=409,
             detail="Import in progress — resolve available when it finishes",
