@@ -96,24 +96,52 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
     }
   }, [isThis, phase, scope.scope, queryClient]);
 
-  if (runningThis && job) {
-    return (
-      <div className="flex flex-wrap items-center gap-3" role="status">
-        <Loader2 className="text-muted-foreground size-4 shrink-0 animate-spin" aria-hidden="true" />
-        <span className="text-muted-foreground text-sm">
+  return (
+    <div className="flex flex-col items-start gap-2">
+      {/* Messages (top row): running progress / preview / terminal tally / errors. */}
+      {runningThis && job && (
+        <span className="text-muted-foreground flex items-center gap-2 text-sm" role="status">
+          <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
           Reorganizing… {job.processed} / {job.total} · moved {job.moved} · skipped {job.skipped} · failed {job.failed}
         </span>
-        <Button variant="outline" size="sm" onClick={() => stop.mutate()} disabled={stop.isPending}>
-          Stop
-        </Button>
-      </div>
-    );
-  }
+      )}
+      {!runningThis && showTally && job && (job.phase === "done" || job.phase === "stopped") && (
+        <span className="text-muted-foreground text-sm" role="status">
+          {job.phase === "done" ? "Done" : "Stopped"} — moved {job.moved} · skipped {job.skipped} · failed {job.failed}
+        </span>
+      )}
+      {!runningThis && showTally && job?.phase === "failed" && (
+        <span className="text-destructive text-sm" role="alert">
+          Reorganize failed{job.error ? `: ${job.error}` : "."}
+        </span>
+      )}
+      {otherRunning && (
+        <span className="text-muted-foreground text-sm">another library job is running</span>
+      )}
+      {plan != null && plan.will_move > 0 && <PlanView plan={plan} />}
+      {plan != null && plan.will_move === 0 && (
+        <span className="text-muted-foreground text-sm" aria-label="Reorganize preview">
+          Nothing to reorganize — everything already matches your config.
+        </span>
+      )}
+      {preview.isError && (
+        <span className="text-destructive text-sm" role="alert">
+          {(preview.error as Error).message}
+        </span>
+      )}
+      {start.isError && (
+        <span className="text-destructive text-sm" role="alert">
+          {(start.error as Error).message}
+        </span>
+      )}
 
-  return (
-    <div className="flex flex-col gap-3">
-      {plan == null ? (
-        <div className="flex flex-wrap items-center gap-3">
+      {/* Buttons (bottom row). */}
+      <div className="flex flex-wrap items-center gap-3">
+        {runningThis ? (
+          <Button variant="outline" size="sm" onClick={() => stop.mutate()} disabled={stop.isPending}>
+            Stop
+          </Button>
+        ) : plan == null ? (
           <Button
             variant="outline"
             size="sm"
@@ -122,58 +150,25 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
           >
             {preview.isPending ? "Building preview…" : "Preview reorganize"}
           </Button>
-          {otherRunning && (
-            <span className="text-muted-foreground text-sm">another library job is running</span>
-          )}
-          {showTally && job && (job.phase === "done" || job.phase === "stopped") && (
-            <span className="text-muted-foreground text-sm" role="status">
-              {job.phase === "done" ? "Done" : "Stopped"} — moved {job.moved} · skipped {job.skipped} · failed {job.failed}
-            </span>
-          )}
-          {showTally && job?.phase === "failed" && (
-            <span className="text-destructive text-sm" role="alert">
-              Reorganize failed{job.error ? `: ${job.error}` : "."}
-            </span>
-          )}
-          {preview.isError && (
-            <span className="text-destructive text-sm" role="alert">
-              {(preview.error as Error).message}
-            </span>
-          )}
-        </div>
-      ) : (
-        plan.will_move === 0 ? (
-          <div className="flex flex-wrap items-center gap-3" aria-label="Reorganize preview">
-            <span className="text-muted-foreground text-sm">
-              Nothing to reorganize — everything already matches your config.
-            </span>
-            <Button variant="outline" size="sm" onClick={() => setPlan(null)}>
-              Done
-            </Button>
-          </div>
+        ) : plan.will_move === 0 ? (
+          <Button variant="outline" size="sm" onClick={() => setPlan(null)}>
+            Done
+          </Button>
         ) : (
           <>
-            <PlanView plan={plan} />
-            <div className="flex flex-wrap items-center gap-3">
-              <Button
-                size="sm"
-                disabled={start.isPending || otherRunning}
-                onClick={() => start.mutate(scope, { onSuccess: () => setPlan(null) })}
-              >
-                {start.isPending ? "Starting…" : `Reorganize ${plan.will_move} item${plan.will_move === 1 ? "" : "s"}`}
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setPlan(null)} disabled={start.isPending}>
-                Cancel
-              </Button>
-              {start.isError && (
-                <span className="text-destructive text-sm" role="alert">
-                  {(start.error as Error).message}
-                </span>
-              )}
-            </div>
+            <Button
+              size="sm"
+              disabled={start.isPending || otherRunning}
+              onClick={() => start.mutate(scope, { onSuccess: () => setPlan(null) })}
+            >
+              {start.isPending ? "Starting…" : `Reorganize ${plan.will_move} item${plan.will_move === 1 ? "" : "s"}`}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setPlan(null)} disabled={start.isPending}>
+              Cancel
+            </Button>
           </>
-        )
-      )}
+        )}
+      </div>
     </div>
   );
 }

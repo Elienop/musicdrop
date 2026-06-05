@@ -129,11 +129,11 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
                 ? `${total.toLocaleString()} ${total === 1 ? "album" : "albums"}`
                 : ""}
             </p>
-            {/* Per-artist maintenance actions, grouped below the title so they
-                don't crowd the name. Stacked so a running/expanded control (art
-                progress, reorganize preview) gets its own line instead of
-                cramming against the others. */}
-            <div className="border-border mt-3 flex flex-col items-start gap-3 border-t pt-3">
+            {/* Per-artist maintenance actions, below the title. Each control is a
+                [messages-on-top, button-below] unit, bottom-aligned so the
+                buttons line up in a row while any running/terminal message sits
+                in the top row above them (not crammed onto the button line). */}
+            <div className="border-border mt-3 flex flex-wrap items-end gap-x-6 gap-y-3 border-t pt-3">
               {imagesEnabled && (
                 <Button
                   variant="outline"
@@ -255,46 +255,26 @@ function ArtistArtStatus({ displayName }: { displayName: string }) {
   // The finished tally fades ~8s after completion instead of lingering.
   const showTally = useAutoDismiss(terminalThis, job?.job_id ?? null);
 
-  if (runningThis && job) {
-    return (
-      <span
-        className="text-muted-foreground flex items-center gap-2 text-sm"
-        role="status"
-      >
-        <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
-        Writing artist art… {job.processed} / {job.total}
-      </span>
-    );
-  }
-
   return (
-    <span className="flex flex-wrap items-center gap-2">
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={() => start.mutate()}
-        disabled={start.isPending || otherRunning}
-        aria-label="Write artist art"
-      >
-        {start.isPending ? (
-          <>
-            <Loader2 className="size-4 animate-spin" aria-hidden="true" />{" "}
-            Starting…
-          </>
-        ) : (
-          <>
-            <UploadCloud className="size-4" /> Write artist art
-          </>
-        )}
-      </Button>
+    <div className="flex flex-col items-start gap-2">
+      {/* Messages (top row): running progress / terminal tally / errors. */}
+      {runningThis && job && (
+        <span
+          className="text-muted-foreground flex items-center gap-2 text-sm"
+          role="status"
+        >
+          <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
+          Writing artist art… {job.processed} / {job.total}
+        </span>
+      )}
+      {!runningThis && showTally && job && (
+        <span className="text-muted-foreground text-sm" role="status">
+          {job.written} written · {job.skipped} skipped · {job.failed} failed
+        </span>
+      )}
       {otherRunning && (
         <span className="text-muted-foreground text-sm">
           another artist-art job is running
-        </span>
-      )}
-      {showTally && job && (
-        <span className="text-muted-foreground text-sm" role="status">
-          {job.written} written · {job.skipped} skipped · {job.failed} failed
         </span>
       )}
       {start.isError && (
@@ -302,7 +282,29 @@ function ArtistArtStatus({ displayName }: { displayName: string }) {
           {(start.error as Error).message}
         </span>
       )}
-    </span>
+
+      {/* Button (bottom row) — hidden while this artist's job runs. */}
+      {!runningThis && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => start.mutate()}
+          disabled={start.isPending || otherRunning}
+          aria-label="Write artist art"
+        >
+          {start.isPending ? (
+            <>
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" />{" "}
+              Starting…
+            </>
+          ) : (
+            <>
+              <UploadCloud className="size-4" /> Write artist art
+            </>
+          )}
+        </Button>
+      )}
+    </div>
   );
 }
 
