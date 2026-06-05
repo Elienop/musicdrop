@@ -26,6 +26,7 @@ import {
 import { ArtistImage } from "@/components/artists/ArtistImage";
 import { ArtistImageEditPanel } from "@/components/artists/ArtistImageEditPanel";
 import { ReorganizeControl } from "@/components/reorganize/ReorganizeControl";
+import { useAutoDismiss } from "@/lib/useAutoDismiss";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -249,6 +250,8 @@ function ArtistArtStatus({ displayName }: { displayName: string }) {
   const otherRunning = job?.phase === "running" && !isThisArtist;
   const terminalThis =
     isThisArtist && (job?.phase === "done" || job?.phase === "stopped");
+  // The finished tally fades ~8s after completion instead of lingering.
+  const showTally = useAutoDismiss(terminalThis, job?.job_id ?? null);
 
   if (runningThis && job) {
     return (
@@ -287,7 +290,7 @@ function ArtistArtStatus({ displayName }: { displayName: string }) {
           another artist-art job is running
         </span>
       )}
-      {terminalThis && job && (
+      {showTally && job && (
         <span className="text-muted-foreground text-sm" role="status">
           {job.written} written · {job.skipped} skipped · {job.failed} failed
         </span>

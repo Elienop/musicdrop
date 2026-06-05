@@ -14,6 +14,7 @@ import {
   useStopReorganize,
 } from "@/api/useReorganize";
 import { Button } from "@/components/ui/button";
+import { useAutoDismiss } from "@/lib/useAutoDismiss";
 
 function jobMatches(
   job: ReorganizeBackfillStatus | undefined,
@@ -80,6 +81,8 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
   const runningThis = phase === "running" && isThis;
   const otherRunning = phase === "running" && !isThis;
   const terminalThis = isThis && (phase === "done" || phase === "stopped" || phase === "failed");
+  // The finished-job tally fades ~8s after it completes instead of lingering.
+  const showTally = useAutoDismiss(terminalThis, job?.job_id ?? null);
 
   // Files moved + DB paths changed — refresh the album/artist rosters that show
   // those paths once THIS scope's job reaches a terminal state.
@@ -122,12 +125,12 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
           {otherRunning && (
             <span className="text-muted-foreground text-sm">another library job is running</span>
           )}
-          {terminalThis && job && (job.phase === "done" || job.phase === "stopped") && (
+          {showTally && job && (job.phase === "done" || job.phase === "stopped") && (
             <span className="text-muted-foreground text-sm" role="status">
               {job.phase === "done" ? "Done" : "Stopped"} — moved {job.moved} · skipped {job.skipped} · failed {job.failed}
             </span>
           )}
-          {terminalThis && job?.phase === "failed" && (
+          {showTally && job?.phase === "failed" && (
             <span className="text-destructive text-sm" role="alert">
               Reorganize failed{job.error ? `: ${job.error}` : "."}
             </span>
