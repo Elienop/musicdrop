@@ -1,0 +1,156 @@
+# backend/app/beets/reorganize.py
+"""Reorganize: re-apply the live beets paths/replace config to EXISTING files.
+
+All beets access for the feature lives here (rule 3). A preview is read-only
+(``item.destination`` compared to ``item.path``, exactly as ``beet move`` filters);
+the move (Task 4) is ``Album.move``/``Item.move`` with ``MoveOperation.MOVE``, which
+relocates files + art and prunes the vacated dirs. Every op binds
+``lib.music_dir_context()`` because beets 2.11 stores DB paths relative to the
+library dir and re-expands them via a ContextVar a worker thread does not inherit.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any, Literal
+
+from app.models.reorganize import ReorganizeMove, ReorganizePlan
+
+#: Scope is internal (carried by route + query at the API layer), not a wire field.
+ReorganizeScope = Literal["library", "artist", "album"]
+
+#: Detailed preview rows are capped here; counts stay exact, truncated=True past it.
+PREVIEW_ROW_CAP = 1000
+
+
+def _albums_for_scope(
+    lib: Any, *, scope: ReorganizeScope, artist: str | None, album_id: int | None
+) -> list[Any]:
+    from beets.dbcore.query import MatchQuery
+
+    if scope == "album":
+        album = lib.get_album(album_id) if album_id is not None else None
+        return [album] if album is not None else []
+    if scope == "artist":
+        # Parameterized query (not f-string) so metacharacters in the name are safe.
+        return list(lib.albums(MatchQuery("albumartist", artist)))
+    return list(lib.albums())
+
+
+def _singletons_for_scope(lib: Any, *, scope: ReorganizeScope) -> list[Any]:
+    # Singletons (album_id IS NULL) only sweep at library scope.
+    if scope == "library":
+        return list(lib.items("singleton:true"))
+    return []
+
+
+def collect_units(
+    lib: Any, *, scope: ReorganizeScope, artist: str | None, album_id: int | None
+) -> tuple[list[Any], list[Any]]:
+    """(albums, singletons) for the scope. The runner snapshots these."""
+    return (
+        _albums_for_scope(lib, scope=scope, artist=artist, album_id=album_id),
+        _singletons_for_scope(lib, scope=scope),
+    )
+
+
+def _item_moves(lib: Any, item: Any) -> bool:
+    """True iff this item's file would relocate — beets' own per-item filter."""
+    return bool(item.path != item.destination(basedir=lib.directory))
+
+
+def _commonpath_of_dirs(paths: list[bytes]) -> str:
+    """The deepest directory shared by all of ``paths`` (the unit's album root).
+
+    commonpath over the item DIRS yields the album root even for multi-disc
+    layouts ($album/Disc N/...). Falls back to the first dir on the rare
+    ValueError (mixed roots / empty)."""
+    dirs = [os.path.dirname(os.fsdecode(p)) for p in paths]
+    if not dirs:
+        return ""
+    try:
+        return os.path.commonpath(dirs)
+    except ValueError:
+        return dirs[0]
+
+
+def album_label(album: Any) -> str:
+    artist = str(getattr(album, "albumartist", "") or "").strip() or "Unknown"
+    return f"{artist} — {album.album}"
+
+
+def singleton_label(item: Any) -> str:
+    artist = str(item.artist or item.albumartist or "").strip() or "Unknown"
+    return f"{artist} — {item.title}"
+
+
+def _describe_album(lib: Any, album: Any) -> ReorganizeMove | None:
+    items = list(album.items())
+    moving = [i for i in items if _item_moves(lib, i)]
+    if not moving:
+        return None
+    from_path = _commonpath_of_dirs([i.path for i in items])
+    to_path = _commonpath_of_dirs([i.destination(basedir=lib.directory) for i in items])
+    return ReorganizeMove(
+        kind="album",
+        label=album_label(album),
+        from_path=from_path,
+        to_path=to_path,
+        track_count=len(moving),
+    )
+
+
+def _describe_singleton(lib: Any, item: Any) -> ReorganizeMove | None:
+    if not _item_moves(lib, item):
+        return None
+    from_path = os.path.dirname(os.fsdecode(item.path))
+    to_path = os.path.dirname(os.fsdecode(item.destination(basedir=lib.directory)))
+    return ReorganizeMove(
+        kind="singleton",
+        label=singleton_label(item),
+        from_path=from_path,
+        to_path=to_path,
+        track_count=1,
+    )
+
+
+def _scope_label(
+    *, scope: ReorganizeScope, artist: str | None, album_id: int | None, albums: list[Any]
+) -> str:
+    if scope == "album":
+        return album_label(albums[0]) if albums else f"album {album_id}"
+    if scope == "artist":
+        return artist or "Unknown"
+    return "library"
+
+
+def plan_reorganize(
+    lib: Any, *, scope: ReorganizeScope, artist: str | None = None, album_id: int | None = None
+) -> ReorganizePlan:
+    """Read-only dry run: what would move under the current path config."""
+    with lib.music_dir_context():
+        albums = _albums_for_scope(lib, scope=scope, artist=artist, album_id=album_id)
+        singletons = _singletons_for_scope(lib, scope=scope)
+        total = len(albums) + len(singletons)
+        moves: list[ReorganizeMove] = []
+        will_move = 0
+        for album in albums:
+            m = _describe_album(lib, album)
+            if m is not None:
+                will_move += 1
+                if len(moves) < PREVIEW_ROW_CAP:
+                    moves.append(m)
+        for item in singletons:
+            m = _describe_singleton(lib, item)
+            if m is not None:
+                will_move += 1
+                if len(moves) < PREVIEW_ROW_CAP:
+                    moves.append(m)
+        return ReorganizePlan(
+            scope_label=_scope_label(scope=scope, artist=artist, album_id=album_id, albums=albums),
+            total=total,
+            will_move=will_move,
+            already_in_place=total - will_move,
+            moves=moves,
+            truncated=will_move > len(moves),
+        )
