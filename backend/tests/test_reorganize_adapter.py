@@ -1,6 +1,11 @@
 # backend/tests/test_reorganize_adapter.py
-from beets.library import Album, Library
+import os
+from pathlib import Path
 
+import pytest
+from beets.library import Album, Item, Library
+
+from app.beets import reorganize as reorg
 from app.beets.reorganize import (
     _describe_album,
     _item_moves,
@@ -69,3 +74,37 @@ def test_plan_artist_scope(reorganize_lib: Library) -> None:
     plan = plan_reorganize(reorganize_lib, scope="artist", artist="Radiohead", album_id=None)
     assert plan.scope_label == "Radiohead"
     assert plan.total == 1 and plan.will_move == 1
+
+
+def test_multidisc_to_path_is_album_root(tmp_path: Path) -> None:
+    music = tmp_path / "music"
+    lib = Library(
+        str(tmp_path / "library.db"),
+        directory=str(music),
+        path_formats=[("default", "$albumartist/$album/Disc $disc/$track $title")],
+    )
+    base = music / "junk"
+    base.mkdir(parents=True, exist_ok=True)
+    items = []
+    for disc in (1, 2):
+        f = base / f"d{disc}.mp3"
+        f.write_bytes(b"\x00")
+        it = Item(album="Wall", albumartist="PF", artist="PF", title=f"T{disc}", track=1, disc=disc)
+        it.path = os.fsencode(str(f))
+        items.append(it)
+    lib.add_album(items).store()
+    with lib.music_dir_context():
+        album = next(iter(lib.albums()))
+        m = reorg._describe_album(lib, album)
+    assert m is not None
+    # New layout splits across Disc 1/ Disc 2/, but the reported root is the album dir.
+    assert m.to_path.endswith("PF/Wall")
+    assert m.track_count == 2
+
+
+def test_preview_row_cap(monkeypatch: pytest.MonkeyPatch, reorganize_lib: Library) -> None:
+    monkeypatch.setattr(reorg, "PREVIEW_ROW_CAP", 1)
+    plan = reorg.plan_reorganize(reorganize_lib, scope="library", artist=None, album_id=None)
+    assert plan.will_move == 3  # exact count unaffected by the cap
+    assert len(plan.moves) == 1  # rows capped
+    assert plan.truncated is True
