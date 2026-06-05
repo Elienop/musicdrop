@@ -139,28 +139,37 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
           )}
         </div>
       ) : (
-        <>
-          <PlanView plan={plan} />
-          <div className="flex flex-wrap items-center gap-3">
-            <Button
-              size="sm"
-              disabled={start.isPending || plan.will_move === 0 || otherRunning}
-              onClick={() =>
-                start.mutate(scope, { onSuccess: () => setPlan(null) })
-              }
-            >
-              {start.isPending ? "Starting…" : `Reorganize ${plan.will_move} item${plan.will_move === 1 ? "" : "s"}`}
+        plan.will_move === 0 ? (
+          <div className="flex flex-wrap items-center gap-3" aria-label="Reorganize preview">
+            <span className="text-muted-foreground text-sm">
+              Nothing to reorganize — everything already matches your config.
+            </span>
+            <Button variant="outline" size="sm" onClick={() => setPlan(null)}>
+              Done
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => setPlan(null)} disabled={start.isPending}>
-              Cancel
-            </Button>
-            {start.isError && (
-              <span className="text-destructive text-sm" role="alert">
-                {(start.error as Error).message}
-              </span>
-            )}
           </div>
-        </>
+        ) : (
+          <>
+            <PlanView plan={plan} />
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                size="sm"
+                disabled={start.isPending || otherRunning}
+                onClick={() => start.mutate(scope, { onSuccess: () => setPlan(null) })}
+              >
+                {start.isPending ? "Starting…" : `Reorganize ${plan.will_move} item${plan.will_move === 1 ? "" : "s"}`}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setPlan(null)} disabled={start.isPending}>
+                Cancel
+              </Button>
+              {start.isError && (
+                <span className="text-destructive text-sm" role="alert">
+                  {(start.error as Error).message}
+                </span>
+              )}
+            </div>
+          </>
+        )
       )}
     </div>
   );

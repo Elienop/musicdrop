@@ -58,3 +58,23 @@ test("confirm starts the job", async () => {
   await userEvent.click(screen.getByRole("button", { name: /reorganize/i }));
   await waitFor(() => expect(client.POST).toHaveBeenCalledWith("/api/reorganize", { params: { query: {} } }));
 });
+
+test("zero-move preview shows 'nothing to reorganize' + Done clears it (no dead button)", async () => {
+  vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
+    if (path === "/api/reorganize/status")
+      return { data: idle, response: { ok: true, status: 200 } } as never;
+    if (path === "/api/reorganize/preview")
+      return {
+        data: { scope: "library", scope_label: "library", total: 14, will_move: 0, already_in_place: 14, truncated: false, moves: [] },
+        response: { ok: true, status: 200 },
+      } as never;
+    return { data: undefined, response: { ok: false, status: 404 } } as never;
+  });
+  wrap(<ReorganizeControl scope={{ scope: "library" }} />);
+  await userEvent.click(screen.getByRole("button", { name: /preview reorganize/i }));
+  expect(await screen.findByText(/nothing to reorganize/i)).toBeInTheDocument();
+  // no dead disabled "Reorganize 0 items" button
+  expect(screen.queryByRole("button", { name: /reorganize 0 items/i })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /^done$/i }));
+  expect(screen.getByRole("button", { name: /preview reorganize/i })).toBeInTheDocument();
+});
