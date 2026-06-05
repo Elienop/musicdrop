@@ -26,7 +26,9 @@ vi.mock("@/api/useArtistImage", () => ({
 // raw render (no QueryClientProvider) doesn't crash. Idle status + no-op
 // mutations keep the control inert and out of the way of this suite.
 vi.mock("@/api/useReorganize", () => ({
-  useReorganizeStatus: () => ({ data: { phase: "idle", scope: null, artist: null, album_id: null } }),
+  useReorganizeStatus: () => ({
+    data: { phase: "idle", scope: null, artist: null, album_id: null },
+  }),
   usePreviewReorganize: () => ({ mutate: vi.fn(), isPending: false }),
   useStartReorganize: () => ({ mutate: vi.fn(), isPending: false }),
   useStopReorganize: () => ({ mutate: vi.fn(), isPending: false }),
@@ -111,18 +113,24 @@ describe("ArtistAlbumsPage artist-art apply", () => {
     backfillStatus.processed = 1;
     backfillStatus.total = 3;
     renderAt("ABBA");
-    expect(screen.getByRole("button", { name: /write artist art/i })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /write artist art/i }),
+    ).toBeDisabled();
     // No inline progress — it must not duplicate the top app banner.
     expect(screen.queryByText(/1 \/ 3/)).toBeNull();
   });
 
-  it("shows a terminal tally when this artist's job finishes", () => {
+  it("re-enables the button after the job finishes (no inline tally)", () => {
     backfillStatus.phase = "done";
     backfillStatus.artist = "ABBA";
     backfillStatus.processed = 1;
     backfillStatus.total = 1;
     backfillStatus.written = 1;
     renderAt("ABBA");
-    expect(screen.getByText(/1 written/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /write artist art/i }),
+    ).toBeEnabled();
+    // Result/tally now shows in the app banner, not inline.
+    expect(screen.queryByText(/1 written/i)).toBeNull();
   });
 });

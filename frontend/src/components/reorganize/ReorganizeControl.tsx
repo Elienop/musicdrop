@@ -14,7 +14,6 @@ import {
 } from "@/api/useReorganize";
 import { useReorganizeNotice } from "@/components/reorganize/reorganizeNotice";
 import { Button } from "@/components/ui/button";
-import { useAutoDismiss } from "@/lib/useAutoDismiss";
 
 function jobMatches(
   job: ReorganizeBackfillStatus | undefined,
@@ -84,10 +83,6 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
   const isThis = jobMatches(job, scope);
   const runningThis = phase === "running" && isThis;
   const otherRunning = phase === "running" && !isThis;
-  const terminalThis =
-    isThis && (phase === "done" || phase === "stopped" || phase === "failed");
-  // The finished-job tally fades ~8s after it completes instead of lingering.
-  const showTally = useAutoDismiss(terminalThis, job?.job_id ?? null);
 
   // Files moved + DB paths changed — refresh the album/artist rosters that show
   // those paths once THIS scope's job reaches a terminal state.
@@ -116,42 +111,16 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
     }
   }
 
+  // Errors surface in the top banner too, so the action row stays one line.
+  function onActionError(e: unknown) {
+    showNotice((e as Error).message);
+  }
+
   return (
     <div className="flex flex-col items-start gap-2">
-      {/* Messages (top): preview / terminal tally / errors. Live running
-          progress lives in the app banner (ReorganizeBanner), not inline. */}
-      {!runningThis &&
-        showTally &&
-        job &&
-        (job.phase === "done" || job.phase === "stopped") && (
-          <span className="text-muted-foreground text-sm" role="status">
-            {job.phase === "done" ? "Done" : "Stopped"} — moved {job.moved} ·
-            skipped {job.skipped} · failed {job.failed}
-          </span>
-        )}
-      {!runningThis && showTally && job?.phase === "failed" && (
-        <span className="text-destructive text-sm" role="alert">
-          Reorganize failed{job.error ? `: ${job.error}` : "."}
-        </span>
-      )}
-      {otherRunning && (
-        <span className="text-muted-foreground text-sm">
-          another library job is running
-        </span>
-      )}
+      {/* Only the interactive preview (review) shows inline; running progress,
+          the empty-preview result, and errors all show in the app banner. */}
       {plan != null && <PlanView plan={plan} />}
-      {preview.isError && (
-        <span className="text-destructive text-sm" role="alert">
-          {(preview.error as Error).message}
-        </span>
-      )}
-      {start.isError && (
-        <span className="text-destructive text-sm" role="alert">
-          {(start.error as Error).message}
-        </span>
-      )}
-
-      {/* Buttons (bottom row). */}
       <div className="flex flex-wrap items-center gap-3">
         {runningThis ? (
           <Button
@@ -167,7 +136,12 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
             variant="outline"
             size="sm"
             disabled={preview.isPending || otherRunning}
-            onClick={() => preview.mutate(scope, { onSuccess: onPreviewed })}
+            onClick={() =>
+              preview.mutate(scope, {
+                onSuccess: onPreviewed,
+                onError: onActionError,
+              })
+            }
           >
             {preview.isPending ? "Building preview…" : "Preview reorganize"}
           </Button>
@@ -177,7 +151,10 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
               size="sm"
               disabled={start.isPending || otherRunning}
               onClick={() =>
-                start.mutate(scope, { onSuccess: () => setPlan(null) })
+                start.mutate(scope, {
+                  onSuccess: () => setPlan(null),
+                  onError: onActionError,
+                })
               }
             >
               {start.isPending
