@@ -14,7 +14,9 @@ from __future__ import annotations
 import os
 from typing import Any, Literal
 
-from app.models.reorganize import ReorganizeMove, ReorganizePlan
+from beets.util import MoveOperation
+
+from app.models.reorganize import ReorganizeMove, ReorganizeOutcome, ReorganizePlan
 
 #: Scope is internal (carried by route + query at the API layer), not a wire field.
 ReorganizeScope = Literal["library", "artist", "album"]
@@ -154,3 +156,40 @@ def plan_reorganize(
             moves=moves,
             truncated=will_move > len(moves),
         )
+
+
+def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
+    """Move one album to match the current path config. Never raises.
+
+    Skips empty albums and already-organized albums. ``Album.move`` relocates all
+    items + art, prunes the vacated dirs, and updates DB paths (store=True).
+    """
+    label = album_label(album)
+    with lib.music_dir_context():
+        try:
+            items = list(album.items())
+            if not items or not any(_item_moves(lib, i) for i in items):
+                return ReorganizeOutcome(status="skipped", label=label)
+            with lib.transaction():
+                album.move(MoveOperation.MOVE, store=True)
+            return ReorganizeOutcome(status="moved", label=label)
+        except (ValueError, OSError) as exc:
+            return ReorganizeOutcome(
+                status="failed", label=label, error=str(exc) or exc.__class__.__name__
+            )
+
+
+def reorganize_singleton(lib: Any, item: Any) -> ReorganizeOutcome:
+    """Move one singleton (album_id is None) to match the config. Never raises."""
+    label = singleton_label(item)
+    with lib.music_dir_context():
+        try:
+            if not _item_moves(lib, item):
+                return ReorganizeOutcome(status="skipped", label=label)
+            with lib.transaction():
+                item.move(MoveOperation.MOVE, with_album=False, store=True)
+            return ReorganizeOutcome(status="moved", label=label)
+        except (ValueError, OSError) as exc:
+            return ReorganizeOutcome(
+                status="failed", label=label, error=str(exc) or exc.__class__.__name__
+            )

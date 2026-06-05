@@ -108,3 +108,47 @@ def test_preview_row_cap(monkeypatch: pytest.MonkeyPatch, reorganize_lib: Librar
     assert plan.will_move == 3  # exact count unaffected by the cap
     assert len(plan.moves) == 1  # rows capped
     assert plan.truncated is True
+
+
+def test_reorganize_album_moves_and_prunes(reorganize_lib: Library) -> None:
+    with reorganize_lib.music_dir_context():
+        album = _album(reorganize_lib, "In Rainbows")
+        old_dir = os.path.dirname(os.fsdecode(next(iter(album.items())).path))
+        outcome = reorg.reorganize_album(reorganize_lib, album)
+    assert outcome.status == "moved"
+    assert not os.path.exists(old_dir)  # vacated source pruned
+    music = os.fsdecode(reorganize_lib.directory)
+    moved = os.path.join(music, "Radiohead", "In Rainbows")
+    assert os.path.isdir(moved)
+    # DB paths now point at the new location.
+    with reorganize_lib.music_dir_context():
+        again = _album(reorganize_lib, "In Rainbows")
+        assert all(not reorg._item_moves(reorganize_lib, i) for i in again.items())
+
+
+def test_reorganize_album_already_in_place_skips(reorganize_lib: Library) -> None:
+    with reorganize_lib.music_dir_context():
+        outcome = reorg.reorganize_album(reorganize_lib, _album(reorganize_lib, "Discovery"))
+    assert outcome.status == "skipped"
+
+
+def test_reorganize_singleton_moves(reorganize_lib: Library) -> None:
+    with reorganize_lib.music_dir_context():
+        item = next(iter(reorganize_lib.items("singleton:true")))
+        outcome = reorg.reorganize_singleton(reorganize_lib, item)
+    assert outcome.status == "moved"
+
+
+def test_reorganize_album_failure_is_caught(
+    monkeypatch: pytest.MonkeyPatch, reorganize_lib: Library
+) -> None:
+    with reorganize_lib.music_dir_context():
+        album = _album(reorganize_lib, "In Rainbows")
+
+        def boom(*a: object, **k: object) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(type(album), "move", boom)
+        outcome = reorg.reorganize_album(reorganize_lib, album)
+    assert outcome.status == "failed"
+    assert "disk full" in (outcome.error or "")
