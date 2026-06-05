@@ -115,10 +115,22 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
             monogramClassName="text-6xl"
           />
           <div className="flex min-w-0 flex-col gap-1">
-            <div className="flex flex-wrap items-center gap-3">
-              <h2 className="text-3xl font-semibold tracking-tight break-words">
-                {displayName}
-              </h2>
+            <h2 className="text-3xl font-semibold tracking-tight break-words">
+              {displayName}
+            </h2>
+            {/* Live region mounted unconditionally so assistive tech can
+                observe it before the count arrives; only the text toggles. */}
+            <p
+              className="text-muted-foreground min-h-5 text-sm"
+              aria-live="polite"
+            >
+              {!isPending && !isError && total > 0
+                ? `${total.toLocaleString()} ${total === 1 ? "album" : "albums"}`
+                : ""}
+            </p>
+            {/* Per-artist maintenance actions, grouped below the title so they
+                don't crowd the name. */}
+            <div className="border-border mt-3 flex flex-wrap items-center gap-3 border-t pt-3">
               {imagesEnabled && (
                 <Button
                   variant="outline"
@@ -132,16 +144,6 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
               {writeEnabled && <ArtistArtStatus displayName={displayName} />}
               <ReorganizeControl scope={{ scope: "artist", artist: displayName }} />
             </div>
-            {/* Live region mounted unconditionally so assistive tech can
-                observe it before the count arrives; only the text toggles. */}
-            <p
-              className="text-muted-foreground min-h-5 text-sm"
-              aria-live="polite"
-            >
-              {!isPending && !isError && total > 0
-                ? `${total.toLocaleString()} ${total === 1 ? "album" : "albums"}`
-                : ""}
-            </p>
           </div>
         </div>
       </div>
@@ -267,7 +269,7 @@ function ArtistArtStatus({ displayName }: { displayName: string }) {
         size="sm"
         onClick={() => start.mutate()}
         disabled={start.isPending || otherRunning}
-        aria-label="Apply to library"
+        aria-label="Write artist art"
       >
         {start.isPending ? (
           <>
@@ -276,7 +278,7 @@ function ArtistArtStatus({ displayName }: { displayName: string }) {
           </>
         ) : (
           <>
-            <UploadCloud className="size-4" /> Apply to library
+            <UploadCloud className="size-4" /> Write artist art
           </>
         )}
       </Button>

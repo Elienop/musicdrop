@@ -90,18 +90,18 @@ afterEach(() => {
 });
 
 describe("ArtistAlbumsPage artist-art apply", () => {
-  it("shows the Apply to library button and starts the job when write is enabled", () => {
+  it("shows the Write artist art button and starts the job when write is enabled", () => {
     renderAt("ABBA");
-    const btn = screen.getByRole("button", { name: /apply to library/i });
+    const btn = screen.getByRole("button", { name: /write artist art/i });
     fireEvent.click(btn);
     expect(applyMutate).toHaveBeenCalledTimes(1);
   });
 
-  it("hides the Apply to library button when write is disabled", () => {
+  it("hides the Write artist art button when write is disabled", () => {
     writeSettings.enabled = false;
     renderAt("ABBA");
     expect(
-      screen.queryByRole("button", { name: /apply to library/i }),
+      screen.queryByRole("button", { name: /write artist art/i }),
     ).toBeNull();
   });
 
