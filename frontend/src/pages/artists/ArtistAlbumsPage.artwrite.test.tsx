@@ -105,14 +105,15 @@ describe("ArtistAlbumsPage artist-art apply", () => {
     ).toBeNull();
   });
 
-  it("shows marching progress while this artist owns the running job", () => {
+  it("disables the button while this artist's job runs (progress is in the app banner)", () => {
     backfillStatus.phase = "running";
     backfillStatus.artist = "ABBA";
     backfillStatus.processed = 1;
     backfillStatus.total = 3;
     renderAt("ABBA");
-    expect(screen.getByText(/writing artist art/i)).toBeInTheDocument();
-    expect(screen.getByText(/1 \/ 3/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /write artist art/i })).toBeDisabled();
+    // No inline progress — it must not duplicate the top app banner.
+    expect(screen.queryByText(/1 \/ 3/)).toBeNull();
   });
 
   it("shows a terminal tally when this artist's job finishes", () => {

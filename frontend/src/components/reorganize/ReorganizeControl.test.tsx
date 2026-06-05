@@ -13,20 +13,49 @@ function wrap(ui: React.ReactNode) {
 }
 
 const idle = {
-  phase: "idle", job_id: null, scope: null, total: 0, processed: 0, moved: 0, skipped: 0,
-  failed: 0, current: null, error: null, artist: null, album_id: null, scope_label: "library",
+  phase: "idle",
+  job_id: null,
+  scope: null,
+  total: 0,
+  processed: 0,
+  moved: 0,
+  skipped: 0,
+  failed: 0,
+  current: null,
+  error: null,
+  artist: null,
+  album_id: null,
+  scope_label: "library",
 };
 
 beforeEach(() => {
   vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
-    if (path === "/api/reorganize/status") return { data: idle, response: { ok: true, status: 200 } } as never;
+    if (path === "/api/reorganize/status")
+      return { data: idle, response: { ok: true, status: 200 } } as never;
     if (path === "/api/reorganize/preview")
       return {
         data: {
-          scope: "library", scope_label: "library", total: 4, will_move: 3, already_in_place: 1, truncated: false,
+          scope: "library",
+          scope_label: "library",
+          total: 4,
+          will_move: 3,
+          already_in_place: 1,
+          truncated: false,
           moves: [
-            { kind: "album", label: "Radiohead — In Rainbows", from_path: "/m/junk/ir", to_path: "/m/Radiohead/In Rainbows", track_count: 3 },
-            { kind: "album", label: "BoC — Geogaddi", from_path: "/m/BoC/Geogaddi", to_path: "/m/BoC/Geogaddi", track_count: 2 },
+            {
+              kind: "album",
+              label: "Radiohead — In Rainbows",
+              from_path: "/m/junk/ir",
+              to_path: "/m/Radiohead/In Rainbows",
+              track_count: 3,
+            },
+            {
+              kind: "album",
+              label: "BoC — Geogaddi",
+              from_path: "/m/BoC/Geogaddi",
+              to_path: "/m/BoC/Geogaddi",
+              track_count: 2,
+            },
           ],
         },
         response: { ok: true, status: 200 },
@@ -34,7 +63,8 @@ beforeEach(() => {
     return { data: undefined, response: { ok: false, status: 404 } } as never;
   });
   vi.spyOn(client, "POST").mockResolvedValue({
-    data: { ...idle, phase: "running" }, response: { ok: true, status: 200 },
+    data: { ...idle, phase: "running" },
+    response: { ok: true, status: 200 },
   } as never);
 });
 
@@ -56,25 +86,46 @@ test("confirm starts the job", async () => {
   await userEvent.click(screen.getByRole("button", { name: /preview/i }));
   await screen.findByText(/3 will move/i);
   await userEvent.click(screen.getByRole("button", { name: /reorganize/i }));
-  await waitFor(() => expect(client.POST).toHaveBeenCalledWith("/api/reorganize", { params: { query: {} } }));
+  await waitFor(() =>
+    expect(client.POST).toHaveBeenCalledWith("/api/reorganize", {
+      params: { query: {} },
+    }),
+  );
 });
 
-test("zero-move preview shows 'nothing to reorganize' + Done clears it (no dead button)", async () => {
+test("zero-move preview raises a banner notice — no inline message, no Done", async () => {
   vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
     if (path === "/api/reorganize/status")
       return { data: idle, response: { ok: true, status: 200 } } as never;
     if (path === "/api/reorganize/preview")
       return {
-        data: { scope: "library", scope_label: "library", total: 14, will_move: 0, already_in_place: 14, truncated: false, moves: [] },
+        data: {
+          scope: "library",
+          scope_label: "library",
+          total: 14,
+          will_move: 0,
+          already_in_place: 14,
+          truncated: false,
+          moves: [],
+        },
         response: { ok: true, status: 200 },
       } as never;
     return { data: undefined, response: { ok: false, status: 404 } } as never;
   });
   wrap(<ReorganizeControl scope={{ scope: "library" }} />);
-  await userEvent.click(screen.getByRole("button", { name: /preview reorganize/i }));
-  expect(await screen.findByText(/nothing to reorganize/i)).toBeInTheDocument();
-  // no dead disabled "Reorganize 0 items" button
-  expect(screen.queryByRole("button", { name: /reorganize 0 items/i })).not.toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: /^done$/i }));
-  expect(screen.getByRole("button", { name: /preview reorganize/i })).toBeInTheDocument();
+  await userEvent.click(
+    screen.getByRole("button", { name: /preview reorganize/i }),
+  );
+  await waitFor(() =>
+    expect(client.GET).toHaveBeenCalledWith("/api/reorganize/preview", {
+      params: { query: {} },
+    }),
+  );
+  // The "nothing to reorganize" result is raised to the top banner notice, so it
+  // is NOT inline here and there is no Done button — the control stays idle.
+  expect(screen.queryByText(/nothing to reorganize/i)).toBeNull();
+  expect(screen.queryByRole("button", { name: /^done$/i })).toBeNull();
+  expect(
+    screen.getByRole("button", { name: /preview reorganize/i }),
+  ).toBeInTheDocument();
 });

@@ -21,6 +21,7 @@ import { client } from "@/api/client";
 import { ArtistArtBackfillBanner } from "@/components/ArtistArtBackfillBanner";
 import { LyricsBackfillBanner } from "@/components/LyricsBackfillBanner";
 import { ReorganizeBanner } from "@/components/ReorganizeBanner";
+import { ReorganizeNoticeProvider } from "@/components/reorganize/reorganizeNotice";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
@@ -176,69 +177,73 @@ export function HealthStatus() {
 export function App() {
   const location = useLocation();
   return (
-    <div className="bg-background text-foreground min-h-svh">
-      <header className="border-border bg-background/80 sticky top-0 z-10 border-b backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center gap-4 px-6 py-4">
-          <h1 className="shrink-0 text-xl font-semibold tracking-tight">
-            <Link
-              to="/"
-              className="focus-visible:ring-ring rounded-sm focus-visible:ring-2 focus-visible:outline-none"
+    <ReorganizeNoticeProvider>
+      <div className="bg-background text-foreground min-h-svh">
+        <header className="border-border bg-background/80 sticky top-0 z-10 border-b backdrop-blur">
+          <div className="mx-auto flex max-w-7xl items-center gap-4 px-6 py-4">
+            <h1 className="shrink-0 text-xl font-semibold tracking-tight">
+              <Link
+                to="/"
+                className="focus-visible:ring-ring rounded-sm focus-visible:ring-2 focus-visible:outline-none"
+              >
+                MusicDrop
+              </Link>
+            </h1>
+            <HeaderSearch />
+            <nav
+              className="ml-auto flex shrink-0 items-center gap-4"
+              aria-label="Primary"
             >
-              MusicDrop
-            </Link>
-          </h1>
-          <HeaderSearch />
-          <nav
-            className="ml-auto flex shrink-0 items-center gap-4"
-            aria-label="Primary"
-          >
-            <Link
-              to="/import"
-              aria-label="Import"
-              aria-current={
-                location.pathname.startsWith("/import") ? "page" : undefined
-              }
-              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
-            >
-              <FolderInput className="size-4" aria-hidden="true" />
-              {/* Label hides below sm to preserve header width, like the health
+              <Link
+                to="/import"
+                aria-label="Import"
+                aria-current={
+                  location.pathname.startsWith("/import") ? "page" : undefined
+                }
+                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
+              >
+                <FolderInput className="size-4" aria-hidden="true" />
+                {/* Label hides below sm to preserve header width, like the health
                   status; the Link's aria-label carries the name when icon-only. */}
-              <span className="hidden sm:inline">Import</span>
-            </Link>
-            <Link
-              to="/settings"
-              aria-label="Settings"
-              aria-current={
-                location.pathname.startsWith("/settings") ? "page" : undefined
-              }
-              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
-            >
-              <Settings className="size-4" aria-hidden="true" />
-              <span className="hidden sm:inline">Settings</span>
-            </Link>
-            <Link
-              to="/duplicates"
-              aria-label="Duplicates"
-              aria-current={
-                location.pathname.startsWith("/duplicates") ? "page" : undefined
-              }
-              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
-            >
-              <CopyCheck className="size-4" aria-hidden="true" />
-              <span className="hidden sm:inline">Duplicates</span>
-            </Link>
-          </nav>
-          <div className="shrink-0">
-            <HealthStatus />
+                <span className="hidden sm:inline">Import</span>
+              </Link>
+              <Link
+                to="/settings"
+                aria-label="Settings"
+                aria-current={
+                  location.pathname.startsWith("/settings") ? "page" : undefined
+                }
+                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
+              >
+                <Settings className="size-4" aria-hidden="true" />
+                <span className="hidden sm:inline">Settings</span>
+              </Link>
+              <Link
+                to="/duplicates"
+                aria-label="Duplicates"
+                aria-current={
+                  location.pathname.startsWith("/duplicates")
+                    ? "page"
+                    : undefined
+                }
+                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
+              >
+                <CopyCheck className="size-4" aria-hidden="true" />
+                <span className="hidden sm:inline">Duplicates</span>
+              </Link>
+            </nav>
+            <div className="shrink-0">
+              <HealthStatus />
+            </div>
           </div>
-        </div>
-      </header>
-      <main className="mx-auto max-w-7xl px-6 py-8">
-        <LyricsBackfillBanner />
-        <ArtistArtBackfillBanner />
-        <ReorganizeBanner />
-        <Outlet />
-      </main>
-    </div>
+        </header>
+        <main className="mx-auto max-w-7xl px-6 py-8">
+          <LyricsBackfillBanner />
+          <ArtistArtBackfillBanner />
+          <ReorganizeBanner />
+          <Outlet />
+        </main>
+      </div>
+    </ReorganizeNoticeProvider>
   );
 }

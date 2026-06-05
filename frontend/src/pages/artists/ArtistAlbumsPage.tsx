@@ -257,16 +257,8 @@ function ArtistArtStatus({ displayName }: { displayName: string }) {
 
   return (
     <div className="flex flex-col items-start gap-2">
-      {/* Messages (top row): running progress / terminal tally / errors. */}
-      {runningThis && job && (
-        <span
-          className="text-muted-foreground flex items-center gap-2 text-sm"
-          role="status"
-        >
-          <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
-          Writing artist art… {job.processed} / {job.total}
-        </span>
-      )}
+      {/* Messages (top): terminal tally / errors. Live running progress lives in
+          the app banner (ArtistArtBackfillBanner), not inline. */}
       {!runningThis && showTally && job && (
         <span className="text-muted-foreground text-sm" role="status">
           {job.written} written · {job.skipped} skipped · {job.failed} failed
@@ -283,27 +275,24 @@ function ArtistArtStatus({ displayName }: { displayName: string }) {
         </span>
       )}
 
-      {/* Button (bottom row) — hidden while this artist's job runs. */}
-      {!runningThis && (
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => start.mutate()}
-          disabled={start.isPending || otherRunning}
-          aria-label="Write artist art"
-        >
-          {start.isPending ? (
-            <>
-              <Loader2 className="size-4 animate-spin" aria-hidden="true" />{" "}
-              Starting…
-            </>
-          ) : (
-            <>
-              <UploadCloud className="size-4" /> Write artist art
-            </>
-          )}
-        </Button>
-      )}
+      {/* Button (bottom) — disabled while a job is running. */}
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => start.mutate()}
+        disabled={start.isPending || otherRunning || runningThis}
+        aria-label="Write artist art"
+      >
+        {start.isPending ? (
+          <>
+            <Loader2 className="size-4 animate-spin" aria-hidden="true" /> Starting…
+          </>
+        ) : (
+          <>
+            <UploadCloud className="size-4" /> Write artist art
+          </>
+        )}
+      </Button>
     </div>
   );
 }

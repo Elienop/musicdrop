@@ -1,6 +1,5 @@
 // frontend/src/components/reorganize/ReorganizeControl.tsx
 import { useQueryClient } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import {
@@ -13,6 +12,7 @@ import {
   useStartReorganize,
   useStopReorganize,
 } from "@/api/useReorganize";
+import { useReorganizeNotice } from "@/components/reorganize/reorganizeNotice";
 import { Button } from "@/components/ui/button";
 import { useAutoDismiss } from "@/lib/useAutoDismiss";
 
@@ -21,8 +21,10 @@ function jobMatches(
   scope: ReorganizeScope,
 ): boolean {
   if (!job || job.scope == null) return false;
-  if (scope.scope === "album") return job.scope === "album" && job.album_id === scope.albumId;
-  if (scope.scope === "artist") return job.scope === "artist" && job.artist === scope.artist;
+  if (scope.scope === "album")
+    return job.scope === "album" && job.album_id === scope.albumId;
+  if (scope.scope === "artist")
+    return job.scope === "artist" && job.artist === scope.artist;
   return job.scope === "library";
 }
 
@@ -33,7 +35,8 @@ function MoveRow({ m }: { m: ReorganizeMove }) {
       <span className="font-medium">{m.label}</span>
       {renameInPlace ? (
         <span className="text-muted-foreground text-xs">
-          {m.track_count} file{m.track_count === 1 ? "" : "s"} renamed in place · {m.to_path}
+          {m.track_count} file{m.track_count === 1 ? "" : "s"} renamed in place
+          · {m.to_path}
         </span>
       ) : (
         <span className="text-muted-foreground truncate text-xs">
@@ -73,6 +76,7 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
   const preview = usePreviewReorganize();
   const start = useStartReorganize();
   const stop = useStopReorganize();
+  const { showNotice } = useReorganizeNotice();
   const [plan, setPlan] = useState<ReorganizePlan | null>(null);
 
   const job = status.data;
@@ -80,14 +84,18 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
   const isThis = jobMatches(job, scope);
   const runningThis = phase === "running" && isThis;
   const otherRunning = phase === "running" && !isThis;
-  const terminalThis = isThis && (phase === "done" || phase === "stopped" || phase === "failed");
+  const terminalThis =
+    isThis && (phase === "done" || phase === "stopped" || phase === "failed");
   // The finished-job tally fades ~8s after it completes instead of lingering.
   const showTally = useAutoDismiss(terminalThis, job?.job_id ?? null);
 
   // Files moved + DB paths changed — refresh the album/artist rosters that show
   // those paths once THIS scope's job reaches a terminal state.
   useEffect(() => {
-    if (isThis && (phase === "done" || phase === "stopped" || phase === "failed")) {
+    if (
+      isThis &&
+      (phase === "done" || phase === "stopped" || phase === "failed")
+    ) {
       void queryClient.invalidateQueries({ queryKey: ["album"] });
       void queryClient.invalidateQueries({ queryKey: ["albums"] });
       if (scope.scope === "library") {
@@ -96,43 +104,42 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
     }
   }, [isThis, phase, scope.scope, queryClient]);
 
-  // An empty preview ("nothing to reorganize") clears itself after a few
-  // seconds instead of hanging until the user dismisses it.
-  useEffect(() => {
-    if (plan && plan.will_move === 0) {
-      const t = setTimeout(() => setPlan(null), 8000);
-      return () => clearTimeout(t);
+  // A preview with moves opens the inline review; an empty preview raises a
+  // transient banner notice instead (no inline message, no Done button).
+  function onPreviewed(result: ReorganizePlan) {
+    if (result.will_move === 0) {
+      showNotice(
+        "Nothing to reorganize — everything already matches your config.",
+      );
+    } else {
+      setPlan(result);
     }
-  }, [plan]);
+  }
 
   return (
     <div className="flex flex-col items-start gap-2">
-      {/* Messages (top row): running progress / preview / terminal tally / errors. */}
-      {runningThis && job && (
-        <span className="text-muted-foreground flex items-center gap-2 text-sm" role="status">
-          <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
-          Reorganizing… {job.processed} / {job.total} · moved {job.moved} · skipped {job.skipped} · failed {job.failed}
-        </span>
-      )}
-      {!runningThis && showTally && job && (job.phase === "done" || job.phase === "stopped") && (
-        <span className="text-muted-foreground text-sm" role="status">
-          {job.phase === "done" ? "Done" : "Stopped"} — moved {job.moved} · skipped {job.skipped} · failed {job.failed}
-        </span>
-      )}
+      {/* Messages (top): preview / terminal tally / errors. Live running
+          progress lives in the app banner (ReorganizeBanner), not inline. */}
+      {!runningThis &&
+        showTally &&
+        job &&
+        (job.phase === "done" || job.phase === "stopped") && (
+          <span className="text-muted-foreground text-sm" role="status">
+            {job.phase === "done" ? "Done" : "Stopped"} — moved {job.moved} ·
+            skipped {job.skipped} · failed {job.failed}
+          </span>
+        )}
       {!runningThis && showTally && job?.phase === "failed" && (
         <span className="text-destructive text-sm" role="alert">
           Reorganize failed{job.error ? `: ${job.error}` : "."}
         </span>
       )}
       {otherRunning && (
-        <span className="text-muted-foreground text-sm">another library job is running</span>
-      )}
-      {plan != null && plan.will_move > 0 && <PlanView plan={plan} />}
-      {plan != null && plan.will_move === 0 && (
-        <span className="text-muted-foreground text-sm" aria-label="Reorganize preview">
-          Nothing to reorganize — everything already matches your config.
+        <span className="text-muted-foreground text-sm">
+          another library job is running
         </span>
       )}
+      {plan != null && <PlanView plan={plan} />}
       {preview.isError && (
         <span className="text-destructive text-sm" role="alert">
           {(preview.error as Error).message}
@@ -147,7 +154,12 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
       {/* Buttons (bottom row). */}
       <div className="flex flex-wrap items-center gap-3">
         {runningThis ? (
-          <Button variant="outline" size="sm" onClick={() => stop.mutate()} disabled={stop.isPending}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => stop.mutate()}
+            disabled={stop.isPending}
+          >
             Stop
           </Button>
         ) : plan == null ? (
@@ -155,24 +167,29 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
             variant="outline"
             size="sm"
             disabled={preview.isPending || otherRunning}
-            onClick={() => preview.mutate(scope, { onSuccess: setPlan })}
+            onClick={() => preview.mutate(scope, { onSuccess: onPreviewed })}
           >
             {preview.isPending ? "Building preview…" : "Preview reorganize"}
-          </Button>
-        ) : plan.will_move === 0 ? (
-          <Button variant="outline" size="sm" onClick={() => setPlan(null)}>
-            Done
           </Button>
         ) : (
           <>
             <Button
               size="sm"
               disabled={start.isPending || otherRunning}
-              onClick={() => start.mutate(scope, { onSuccess: () => setPlan(null) })}
+              onClick={() =>
+                start.mutate(scope, { onSuccess: () => setPlan(null) })
+              }
             >
-              {start.isPending ? "Starting…" : `Reorganize ${plan.will_move} item${plan.will_move === 1 ? "" : "s"}`}
+              {start.isPending
+                ? "Starting…"
+                : `Reorganize ${plan.will_move} item${plan.will_move === 1 ? "" : "s"}`}
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => setPlan(null)} disabled={start.isPending}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setPlan(null)}
+              disabled={start.isPending}
+            >
               Cancel
             </Button>
           </>
