@@ -21,6 +21,16 @@ vi.mock("@/api/useArtistImage", () => ({
   useArtistImageSettings: () => ({ data: { enabled: false } }),
 }));
 
+// The reorganize header control runs a live status useQuery; stub it so this
+// raw render (no QueryClientProvider) doesn't crash. Idle status + no-op
+// mutations keep the control inert and out of the way of this suite.
+vi.mock("@/api/useReorganize", () => ({
+  useReorganizeStatus: () => ({ data: { phase: "idle", artist: null, album_id: null } }),
+  usePreviewReorganize: () => ({ mutate: vi.fn(), isPending: false }),
+  useStartReorganize: () => ({ mutate: vi.fn(), isPending: false }),
+  useStopReorganize: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
 const writeSettings = { enabled: true };
 const applyMutate = vi.fn();
 const backfillStatus: {

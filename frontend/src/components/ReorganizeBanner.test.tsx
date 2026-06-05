@@ -1,7 +1,7 @@
 // frontend/src/components/ReorganizeBanner.test.tsx
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 
 import { client } from "@/api/client";
 import { ReorganizeBanner } from "./ReorganizeBanner";

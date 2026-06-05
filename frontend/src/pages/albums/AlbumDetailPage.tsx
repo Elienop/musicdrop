@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ReorganizeControl } from "@/components/reorganize/ReorganizeControl";
 import { AlbumEditPanel } from "@/pages/albums/AlbumEditPanel";
 import { CoverEditPanel } from "@/pages/albums/CoverEditPanel";
 import {
@@ -118,6 +119,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
             >
               <ImageIcon className="size-4" /> Cover
             </Button>
+            <ReorganizeControl scope={{ scope: "album", albumId: album.id }} />
           </div>
           <p className="text-muted-foreground text-lg">{album.album_artist}</p>
           <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-sm">

@@ -25,6 +25,7 @@ import {
 } from "@/components/albums/album-grid";
 import { ArtistImage } from "@/components/artists/ArtistImage";
 import { ArtistImageEditPanel } from "@/components/artists/ArtistImageEditPanel";
+import { ReorganizeControl } from "@/components/reorganize/ReorganizeControl";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -129,6 +130,7 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
                 </Button>
               )}
               {writeEnabled && <ArtistArtStatus displayName={displayName} />}
+              <ReorganizeControl scope={{ scope: "artist", artist: displayName }} />
             </div>
             {/* Live region mounted unconditionally so assistive tech can
                 observe it before the count arrives; only the text toggles. */}
