@@ -96,6 +96,15 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
     }
   }, [isThis, phase, scope.scope, queryClient]);
 
+  // An empty preview ("nothing to reorganize") clears itself after a few
+  // seconds instead of hanging until the user dismisses it.
+  useEffect(() => {
+    if (plan && plan.will_move === 0) {
+      const t = setTimeout(() => setPlan(null), 8000);
+      return () => clearTimeout(t);
+    }
+  }, [plan]);
+
   return (
     <div className="flex flex-col items-start gap-2">
       {/* Messages (top row): running progress / preview / terminal tally / errors. */}

@@ -130,10 +130,10 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
                 : ""}
             </p>
             {/* Per-artist maintenance actions, below the title. Each control is a
-                [messages-on-top, button-below] unit, bottom-aligned so the
-                buttons line up in a row while any running/terminal message sits
-                in the top row above them (not crammed onto the button line). */}
-            <div className="border-border mt-3 flex flex-wrap items-end gap-x-6 gap-y-3 border-t pt-3">
+                [messages-on-top, button-below] unit; the controls stack — the
+                artist-art row, then the reorganize row beneath it — so neither
+                crowds the other. */}
+            <div className="border-border mt-3 flex flex-col items-start gap-4 border-t pt-3">
               {imagesEnabled && (
                 <Button
                   variant="outline"
