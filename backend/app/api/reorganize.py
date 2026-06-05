@@ -1,0 +1,115 @@
+# backend/app/api/reorganize.py
+"""Reorganize Library endpoints: dry-run preview + the single-slot move job.
+
+Scope is carried by route + ``?artist=`` query (library = no query; artist =
+?artist=NAME; album = nested under /albums/{id}). One global registry serves all
+three — only one reorganize at a time — and it is mutually exclusive with every
+other library write (see _gate_busy + the gate sites in edit/cover/config/
+duplicates/import/lyrics/artists)."""
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.concurrency import run_in_threadpool
+
+from app.api.albums import get_library
+from app.artist_art_jobs.registry import artist_art_backfill_active
+from app.beets.library import LibraryHandle
+from app.beets.reorganize import ReorganizeScope, album_label, plan_reorganize
+from app.import_jobs.registry import get_registry
+from app.lyrics_jobs.registry import lyrics_backfill_active
+from app.models.reorganize import ReorganizeBackfillStatus, ReorganizePlan
+from app.reorganize_jobs.registry import (
+    ReorganizeRegistry,
+    get_reorganize_backfill,
+)
+from app.reorganize_jobs.runner import start_backfill
+
+router = APIRouter(tags=["reorganize"])
+
+_BUSY = "A library operation is in progress — reorganize available when it finishes"
+
+
+def _gate_busy(app: object) -> None:
+    if get_registry().has_active_job() or lyrics_backfill_active() or artist_art_backfill_active():
+        raise HTTPException(status.HTTP_409_CONFLICT, _BUSY)
+    lock = getattr(app.state, "beets_swap_lock", None)  # type: ignore[attr-defined]
+    if lock is not None and lock.locked():
+        raise HTTPException(status.HTTP_409_CONFLICT, _BUSY)
+
+
+@router.get("/reorganize/preview", response_model=ReorganizePlan)
+async def preview_reorganize(
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+    artist: Annotated[str | None, Query(min_length=1)] = None,
+) -> ReorganizePlan:
+    """Dry run: what would move under the current path config. Read-only."""
+    scope: ReorganizeScope = "artist" if artist is not None else "library"
+    return await run_in_threadpool(
+        plan_reorganize, handle.lib, scope=scope, artist=artist, album_id=None
+    )
+
+
+@router.get("/albums/{album_id}/reorganize/preview", response_model=ReorganizePlan)
+async def preview_album_reorganize(
+    album_id: int,
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> ReorganizePlan:
+    exists = await run_in_threadpool(lambda: handle.lib.get_album(album_id) is not None)
+    if not exists:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Album not found")
+    return await run_in_threadpool(
+        plan_reorganize, handle.lib, scope="album", artist=None, album_id=album_id
+    )
+
+
+@router.post("/reorganize", response_model=ReorganizeBackfillStatus)
+async def start_reorganize(
+    request: Request,
+    reg: Annotated[ReorganizeRegistry, Depends(get_reorganize_backfill)],
+    artist: Annotated[str | None, Query(min_length=1)] = None,
+) -> ReorganizeBackfillStatus:
+    _gate_busy(request.app)
+    scope: ReorganizeScope = "artist" if artist is not None else "library"
+    label = artist if artist is not None else "library"
+    try:
+        reg.start(artist=artist, album_id=None, scope_label=label)
+    except RuntimeError:
+        raise HTTPException(status.HTTP_409_CONFLICT, "A reorganize is already running") from None
+    handle = request.app.state.beets_library
+    start_backfill(reg, handle.lib, scope=scope, artist=artist, album_id=None)
+    return reg.state()
+
+
+@router.post("/albums/{album_id}/reorganize", response_model=ReorganizeBackfillStatus)
+async def start_album_reorganize(
+    album_id: int,
+    request: Request,
+    reg: Annotated[ReorganizeRegistry, Depends(get_reorganize_backfill)],
+) -> ReorganizeBackfillStatus:
+    handle = request.app.state.beets_library
+    album = await run_in_threadpool(lambda: handle.lib.get_album(album_id))
+    if album is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Album not found")
+    _gate_busy(request.app)
+    try:
+        reg.start(artist=None, album_id=album_id, scope_label=album_label(album))
+    except RuntimeError:
+        raise HTTPException(status.HTTP_409_CONFLICT, "A reorganize is already running") from None
+    start_backfill(reg, handle.lib, scope="album", artist=None, album_id=album_id)
+    return reg.state()
+
+
+@router.get("/reorganize/status", response_model=ReorganizeBackfillStatus)
+async def reorganize_status(
+    reg: Annotated[ReorganizeRegistry, Depends(get_reorganize_backfill)],
+) -> ReorganizeBackfillStatus:
+    return reg.state()
+
+
+@router.post("/reorganize/stop", response_model=ReorganizeBackfillStatus)
+async def stop_reorganize(
+    reg: Annotated[ReorganizeRegistry, Depends(get_reorganize_backfill)],
+) -> ReorganizeBackfillStatus:
+    reg.request_stop()
+    return reg.state()
