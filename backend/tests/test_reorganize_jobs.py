@@ -1,5 +1,6 @@
 # backend/tests/test_reorganize_jobs.py
 import pytest
+from beets.library import Library
 
 from app.models.reorganize import ReorganizeOutcome
 from app.reorganize_jobs.registry import (
@@ -7,6 +8,7 @@ from app.reorganize_jobs.registry import (
     reorganize_backfill_active,
     reset_reorganize_backfill,
 )
+from app.reorganize_jobs.runner import sweep
 
 
 def test_start_then_running_then_finish() -> None:
@@ -52,3 +54,39 @@ def test_module_global_active_and_reset() -> None:
     assert reorganize_backfill_active() is True
     reset_reorganize_backfill()
     assert reorganize_backfill_active() is False
+
+
+def test_sweep_library_moves_three_skips_one(reorganize_lib: Library) -> None:
+    reg = ReorganizeRegistry()
+    reg.start(artist=None, album_id=None, scope_label="library")
+    sweep(reg, reorganize_lib, scope="library", artist=None, album_id=None, delay=0.0)
+    s = reg.state()
+    assert s.phase == "done"
+    assert s.total == 4 and s.processed == 4
+    assert s.moved == 3 and s.skipped == 1 and s.failed == 0
+
+
+def test_sweep_honors_stop(reorganize_lib: Library) -> None:
+    reg = ReorganizeRegistry()
+    reg.start(artist=None, album_id=None, scope_label="library")
+    reg.request_stop()
+    sweep(reg, reorganize_lib, scope="library", artist=None, album_id=None, delay=0.0)
+    s = reg.state()
+    assert s.phase == "stopped"
+    assert s.processed == 0
+
+
+def test_sweep_failure_marks_failed(
+    reorganize_lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reg = ReorganizeRegistry()
+    reg.start(artist=None, album_id=None, scope_label="library")
+    from app.reorganize_jobs import runner
+
+    def boom(*a: object, **k: object) -> None:
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(runner, "collect_units", boom)
+    sweep(reg, reorganize_lib, scope="library", artist=None, album_id=None, delay=0.0)
+    s = reg.state()
+    assert s.phase == "failed" and "kaboom" in (s.error or "")
