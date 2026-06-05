@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -32,6 +33,16 @@ vi.mock("@/api/useArtistImage", () => ({
   }),
 }));
 
+// The reorganize header control runs a live status useQuery; stub it so this
+// raw render (no QueryClientProvider) doesn't crash. Idle status + no-op
+// mutations keep the control inert and out of the way of this suite.
+vi.mock("@/api/useReorganize", () => ({
+  useReorganizeStatus: () => ({ data: { phase: "idle", scope: null, artist: null, album_id: null } }),
+  usePreviewReorganize: () => ({ mutate: vi.fn(), isPending: false }),
+  useStartReorganize: () => ({ mutate: vi.fn(), isPending: false }),
+  useStopReorganize: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
 // This suite covers the artist-image edit flow; keep the orthogonal artist-art
 // write toggle OFF so its header action doesn't render here.
 vi.mock("@/api/useArtistArt", () => ({
@@ -46,13 +57,16 @@ vi.mock("@/api/useArtistArt", () => ({
 }));
 
 function renderAt(name: string) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={[`/artists/${name}`]}>
-      <Routes>
-        <Route path="/artists/:artistName" element={<ArtistAlbumsPage />} />
-        <Route path="/" element={<div>home</div>} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[`/artists/${name}`]}>
+        <Routes>
+          <Route path="/artists/:artistName" element={<ArtistAlbumsPage />} />
+          <Route path="/" element={<div>home</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

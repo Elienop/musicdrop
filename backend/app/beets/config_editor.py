@@ -63,6 +63,7 @@ from app.models.config_editor import (
     ValidationErrorItem,
     loc_to_dot_sep,
 )
+from app.reorganize_jobs.registry import reorganize_backfill_active
 
 __all__ = [
     "REDACTED_TOMBSTONE",
@@ -548,7 +549,12 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
     # Pulling the gate inside the asyncio.Lock would block Apply behind
     # any concurrent Apply request even when no import is active, which is
     # worse UX for the single-user case this product targets.
-    if get_registry().has_active_job() or lyrics_backfill_active() or artist_art_backfill_active():
+    if (
+        get_registry().has_active_job()
+        or lyrics_backfill_active()
+        or artist_art_backfill_active()
+        or reorganize_backfill_active()
+    ):
         raise HTTPException(
             status_code=409,
             detail="Import in progress — Apply available when it finishes / lyrics backfill",

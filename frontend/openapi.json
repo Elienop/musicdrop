@@ -1603,6 +1603,233 @@
           }
         }
       }
+    },
+    "/api/reorganize/preview": {
+      "get": {
+        "tags": [
+          "reorganize"
+        ],
+        "summary": "Preview Reorganize",
+        "description": "Dry run: what would move under the current path config. Read-only.",
+        "operationId": "preview_reorganize_api_reorganize_preview_get",
+        "parameters": [
+          {
+            "name": "artist",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Artist"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReorganizePlan"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/albums/{album_id}/reorganize/preview": {
+      "get": {
+        "tags": [
+          "reorganize"
+        ],
+        "summary": "Preview Album Reorganize",
+        "operationId": "preview_album_reorganize_api_albums__album_id__reorganize_preview_get",
+        "parameters": [
+          {
+            "name": "album_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Album Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReorganizePlan"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reorganize": {
+      "post": {
+        "tags": [
+          "reorganize"
+        ],
+        "summary": "Start Reorganize",
+        "operationId": "start_reorganize_api_reorganize_post",
+        "parameters": [
+          {
+            "name": "artist",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Artist"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReorganizeBackfillStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/albums/{album_id}/reorganize": {
+      "post": {
+        "tags": [
+          "reorganize"
+        ],
+        "summary": "Start Album Reorganize",
+        "operationId": "start_album_reorganize_api_albums__album_id__reorganize_post",
+        "parameters": [
+          {
+            "name": "album_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Album Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReorganizeBackfillStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reorganize/status": {
+      "get": {
+        "tags": [
+          "reorganize"
+        ],
+        "summary": "Reorganize Status",
+        "operationId": "reorganize_status_api_reorganize_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReorganizeBackfillStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reorganize/stop": {
+      "post": {
+        "tags": [
+          "reorganize"
+        ],
+        "summary": "Stop Reorganize",
+        "operationId": "stop_reorganize_api_reorganize_stop_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReorganizeBackfillStatus"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3584,6 +3811,221 @@
         ],
         "title": "Recommendation",
         "description": "Mirror of beets' Recommendation enum (beets/autotag/match.py).\n\nBeets uses an IntEnum (none=0..strong=3); we expose the names as strings so\nthe JSON contract is self-describing for the frontend."
+      },
+      "ReorganizeBackfillStatus": {
+        "properties": {
+          "phase": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "running",
+              "done",
+              "stopped",
+              "failed"
+            ],
+            "title": "Phase"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "library",
+                  "artist",
+                  "album"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "processed": {
+            "type": "integer",
+            "title": "Processed"
+          },
+          "moved": {
+            "type": "integer",
+            "title": "Moved"
+          },
+          "skipped": {
+            "type": "integer",
+            "title": "Skipped"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "artist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist"
+          },
+          "album_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Id"
+          },
+          "scope_label": {
+            "type": "string",
+            "title": "Scope Label"
+          }
+        },
+        "type": "object",
+        "required": [
+          "phase",
+          "job_id",
+          "scope",
+          "total",
+          "processed",
+          "moved",
+          "skipped",
+          "failed",
+          "current",
+          "error",
+          "artist",
+          "album_id",
+          "scope_label"
+        ],
+        "title": "ReorganizeBackfillStatus"
+      },
+      "ReorganizeMove": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "album",
+              "singleton"
+            ],
+            "title": "Kind"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "from_path": {
+            "type": "string",
+            "title": "From Path"
+          },
+          "to_path": {
+            "type": "string",
+            "title": "To Path"
+          },
+          "track_count": {
+            "type": "integer",
+            "title": "Track Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "label",
+          "from_path",
+          "to_path",
+          "track_count"
+        ],
+        "title": "ReorganizeMove"
+      },
+      "ReorganizePlan": {
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "library",
+              "artist",
+              "album"
+            ],
+            "title": "Scope"
+          },
+          "scope_label": {
+            "type": "string",
+            "title": "Scope Label"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "will_move": {
+            "type": "integer",
+            "title": "Will Move"
+          },
+          "already_in_place": {
+            "type": "integer",
+            "title": "Already In Place"
+          },
+          "moves": {
+            "items": {
+              "$ref": "#/components/schemas/ReorganizeMove"
+            },
+            "type": "array",
+            "title": "Moves"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scope",
+          "scope_label",
+          "total",
+          "will_move",
+          "already_in_place",
+          "moves",
+          "truncated"
+        ],
+        "title": "ReorganizePlan"
       },
       "ResolveAllRequest": {
         "properties": {

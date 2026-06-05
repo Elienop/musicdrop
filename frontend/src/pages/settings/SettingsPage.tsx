@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { ArtistArtPanel } from "@/pages/settings/ArtistArtPanel";
 import { ArtistImagesPanel } from "@/pages/settings/ArtistImagesPanel";
 import { LyricsBackfillPanel } from "@/pages/settings/LyricsBackfillPanel";
+import { ReorganizeLibraryPanel } from "./ReorganizeLibraryPanel";
 import { SettingsConflict } from "@/pages/settings/SettingsConflict";
 import {
   READ_ONLY_EXTENSION,
@@ -433,6 +434,7 @@ export function SettingsPage() {
       <LyricsBackfillPanel />
       <ArtistImagesPanel />
       <ArtistArtPanel />
+      <ReorganizeLibraryPanel />
     </div>
   );
 }

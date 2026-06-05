@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ReorganizeControl } from "@/components/reorganize/ReorganizeControl";
 import { AlbumEditPanel } from "@/pages/albums/AlbumEditPanel";
 import { CoverEditPanel } from "@/pages/albums/CoverEditPanel";
 import {
@@ -92,16 +93,34 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
         label={album.album_artist}
       />
 
-      <header className="flex flex-col gap-6 sm:flex-row sm:items-center">
+      <header className="flex flex-col gap-6 sm:flex-row sm:items-stretch">
         <CoverImage album={album} version={coverVersion} />
         <div className="flex min-w-0 flex-col gap-2">
-          <div className="flex flex-wrap items-center gap-3">
-            <h2
-              id="album-detail-title"
-              className="text-3xl font-semibold tracking-tight break-words"
-            >
-              {album.title}
-            </h2>
+          <h2
+            id="album-detail-title"
+            className="text-3xl font-semibold tracking-tight break-words"
+          >
+            {album.title}
+          </h2>
+          <p className="text-muted-foreground text-lg">{album.album_artist}</p>
+          <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-sm">
+            {album.year !== null && (
+              <Badge variant="secondary">{album.year}</Badge>
+            )}
+            <span>
+              {album.track_count} {album.track_count === 1 ? "track" : "tracks"}
+            </span>
+            {album.genre && (
+              <>
+                <span aria-hidden="true">&middot;</span>
+                <span>{album.genre}</span>
+              </>
+            )}
+          </div>
+          {/* Maintenance actions — a single row pushed to the bottom of the
+              column so it lines up with the bottom of the cover, mirroring the
+              artist page. Reorganize status shows in the top banner, not inline. */}
+          <div className="border-border mt-auto flex flex-wrap items-center gap-3 border-t pt-3">
             <Button
               variant="outline"
               size="sm"
@@ -118,21 +137,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
             >
               <ImageIcon className="size-4" /> Cover
             </Button>
-          </div>
-          <p className="text-muted-foreground text-lg">{album.album_artist}</p>
-          <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-sm">
-            {album.year !== null && (
-              <Badge variant="secondary">{album.year}</Badge>
-            )}
-            <span>
-              {album.track_count} {album.track_count === 1 ? "track" : "tracks"}
-            </span>
-            {album.genre && (
-              <>
-                <span aria-hidden="true">&middot;</span>
-                <span>{album.genre}</span>
-              </>
-            )}
+            <ReorganizeControl scope={{ scope: "album", albumId: album.id }} />
           </div>
         </div>
       </header>

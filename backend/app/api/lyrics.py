@@ -49,6 +49,13 @@ async def start_lyrics_backfill(
             status_code=status.HTTP_409_CONFLICT,
             detail="An artist-art job is in progress — backfill available when it finishes",
         )
+    from app.reorganize_jobs.registry import reorganize_backfill_active
+
+    if reorganize_backfill_active():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A reorganize is in progress — backfill available when it finishes",
+        )
     lock = getattr(app.state, "beets_swap_lock", None)
     if lock is not None and lock.locked():
         raise HTTPException(

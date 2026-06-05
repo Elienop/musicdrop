@@ -107,6 +107,15 @@ def reset_artist_art_backfill_registry() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def reset_reorganize_backfill_registry() -> Iterator[None]:
+    from app.reorganize_jobs.registry import reset_reorganize_backfill
+
+    reset_reorganize_backfill()
+    yield
+    reset_reorganize_backfill()
+
+
+@pytest.fixture(autouse=True)
 def _clear_beets_globals() -> Iterator[None]:
     """Reset beets' global confuse + plugin singletons between every test.
 
@@ -302,6 +311,76 @@ def edit_lib(tmp_path: "Path") -> "Library":
     album["genre"] = "Alternative Rock"
     album["year"] = 2007
     album.store()
+    return lib
+
+
+@pytest.fixture
+def reorganize_lib(tmp_path: "Path") -> "Library":
+    """A hermetic library for reorganize tests.
+
+    path_formats = "$albumartist/$album/$track $title". Seeds:
+      - "Radiohead / In Rainbows" 3 trk, filed in WRONG dir "junk/ir" -> WILL MOVE
+      - "Daft Punk / Discovery" 2 trk, filed CORRECTLY -> already in place
+      - "Boards of Canada / Geogaddi" 2 trk, right dir but WRONG filenames -> rename-in-place
+      - one SINGLETON "Aphex Twin / Xtal" in WRONG dir -> WILL MOVE
+    Real files on disk (b"\\x00" stubs; tests never read audio) so Album.move works.
+    """
+    import os
+
+    from beets.library import Item, Library
+
+    music = tmp_path / "music"
+    lib = Library(
+        str(tmp_path / "library.db"),
+        directory=str(music),
+        path_formats=[("default", "$albumartist/$album/$track $title")],
+    )
+
+    def album(*, artist: str, name: str, titles: list[str], folder: str, names: list[str]) -> None:
+        base = music / folder
+        base.mkdir(parents=True, exist_ok=True)
+        items = []
+        for i, (title, fname) in enumerate(zip(titles, names, strict=True), start=1):
+            f = base / fname
+            f.write_bytes(b"\x00")
+            it = Item(album=name, albumartist=artist, artist=artist, title=title, track=i, disc=1)
+            it.path = os.fsencode(str(f))
+            items.append(it)
+        lib.add_album(items).store()
+
+    # mis-filed -> destination "Radiohead/In Rainbows/0N <title>.mp3" differs
+    album(
+        artist="Radiohead",
+        name="In Rainbows",
+        titles=["15 Step", "Bodysnatchers", "Nude"],
+        folder="junk/ir",
+        names=["a.mp3", "b.mp3", "c.mp3"],
+    )
+    # already correct
+    album(
+        artist="Daft Punk",
+        name="Discovery",
+        titles=["One More Time", "Aerodynamic"],
+        folder="Daft Punk/Discovery",
+        names=["01 One More Time.mp3", "02 Aerodynamic.mp3"],
+    )
+    # right dir, wrong filenames -> rename-in-place
+    album(
+        artist="Boards of Canada",
+        name="Geogaddi",
+        titles=["Ready Lets Go", "Music Is Math"],
+        folder="Boards of Canada/Geogaddi",
+        names=["x.mp3", "y.mp3"],
+    )
+
+    # singleton (album_id is None): add via lib.add(), not add_album
+    s_dir = music / "loose"
+    s_dir.mkdir(parents=True, exist_ok=True)
+    sf = s_dir / "z.mp3"
+    sf.write_bytes(b"\x00")
+    si = Item(artist="Aphex Twin", albumartist="Aphex Twin", title="Xtal", track=1)
+    si.path = os.fsencode(str(sf))
+    lib.add(si)
     return lib
 
 

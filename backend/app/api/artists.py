@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from app.api.albums import get_library
 from app.artist_art_jobs.registry import (
     ArtistArtBackfillRegistry,
+    artist_art_backfill_active,
     get_artist_art_backfill,
 )
 from app.artist_art_jobs.runner import start_backfill as start_art_backfill
@@ -19,6 +20,7 @@ from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import lyrics_backfill_active
 from app.models.artist import Artist, ArtistImageOverrideResult, ArtistImageSettings
 from app.models.artist_art import ArtistArtBackfillStatus, ArtistArtWriteSettings
+from app.reorganize_jobs.registry import reorganize_backfill_active
 
 router = APIRouter(tags=["artists"])
 
@@ -139,7 +141,12 @@ def _gate_library_busy(app: object) -> None:
     from fastapi import HTTPException
     from fastapi import status as st
 
-    if get_registry().has_active_job() or lyrics_backfill_active():
+    if (
+        get_registry().has_active_job()
+        or lyrics_backfill_active()
+        or artist_art_backfill_active()
+        or reorganize_backfill_active()
+    ):
         raise HTTPException(
             st.HTTP_409_CONFLICT,
             "A library operation is in progress — try again when it finishes",

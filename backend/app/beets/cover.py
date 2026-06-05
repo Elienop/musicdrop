@@ -182,9 +182,15 @@ async def install_cover_op(
     from app.beets.config_editor import _swap_lock
     from app.import_jobs.registry import get_registry
     from app.lyrics_jobs.registry import lyrics_backfill_active
+    from app.reorganize_jobs.registry import reorganize_backfill_active
 
     app = request_obj.app
-    if get_registry().has_active_job() or lyrics_backfill_active() or artist_art_backfill_active():
+    if (
+        get_registry().has_active_job()
+        or lyrics_backfill_active()
+        or artist_art_backfill_active()
+        or reorganize_backfill_active()
+    ):
         raise HTTPException(
             status_code=409,
             detail="A library operation is in progress — cover changes available when it finishes",

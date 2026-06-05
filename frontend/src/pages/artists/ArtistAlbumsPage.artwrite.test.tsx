@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +20,18 @@ vi.mock("@/api/useAlbums", () => ({
 vi.mock("@/api/useArtistImage", () => ({
   ARTIST_IMAGE_SETTINGS_KEY: ["artist-image", "settings"],
   useArtistImageSettings: () => ({ data: { enabled: false } }),
+}));
+
+// The reorganize header control runs a live status useQuery; stub it so this
+// raw render (no QueryClientProvider) doesn't crash. Idle status + no-op
+// mutations keep the control inert and out of the way of this suite.
+vi.mock("@/api/useReorganize", () => ({
+  useReorganizeStatus: () => ({
+    data: { phase: "idle", scope: null, artist: null, album_id: null },
+  }),
+  usePreviewReorganize: () => ({ mutate: vi.fn(), isPending: false }),
+  useStartReorganize: () => ({ mutate: vi.fn(), isPending: false }),
+  useStopReorganize: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 const writeSettings = { enabled: true };
@@ -53,13 +66,16 @@ vi.mock("@/api/useArtistArt", () => ({
 }));
 
 function renderAt(name: string) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={[`/artists/${name}`]}>
-      <Routes>
-        <Route path="/artists/:artistName" element={<ArtistAlbumsPage />} />
-        <Route path="/" element={<div>home</div>} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[`/artists/${name}`]}>
+        <Routes>
+          <Route path="/artists/:artistName" element={<ArtistAlbumsPage />} />
+          <Route path="/" element={<div>home</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -76,38 +92,45 @@ afterEach(() => {
 });
 
 describe("ArtistAlbumsPage artist-art apply", () => {
-  it("shows the Apply to library button and starts the job when write is enabled", () => {
+  it("shows the Write artist art button and starts the job when write is enabled", () => {
     renderAt("ABBA");
-    const btn = screen.getByRole("button", { name: /apply to library/i });
+    const btn = screen.getByRole("button", { name: /write artist art/i });
     fireEvent.click(btn);
     expect(applyMutate).toHaveBeenCalledTimes(1);
   });
 
-  it("hides the Apply to library button when write is disabled", () => {
+  it("hides the Write artist art button when write is disabled", () => {
     writeSettings.enabled = false;
     renderAt("ABBA");
     expect(
-      screen.queryByRole("button", { name: /apply to library/i }),
+      screen.queryByRole("button", { name: /write artist art/i }),
     ).toBeNull();
   });
 
-  it("shows marching progress while this artist owns the running job", () => {
+  it("disables the button while this artist's job runs (progress is in the app banner)", () => {
     backfillStatus.phase = "running";
     backfillStatus.artist = "ABBA";
     backfillStatus.processed = 1;
     backfillStatus.total = 3;
     renderAt("ABBA");
-    expect(screen.getByText(/writing artist art/i)).toBeInTheDocument();
-    expect(screen.getByText(/1 \/ 3/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /write artist art/i }),
+    ).toBeDisabled();
+    // No inline progress — it must not duplicate the top app banner.
+    expect(screen.queryByText(/1 \/ 3/)).toBeNull();
   });
 
-  it("shows a terminal tally when this artist's job finishes", () => {
+  it("re-enables the button after the job finishes (no inline tally)", () => {
     backfillStatus.phase = "done";
     backfillStatus.artist = "ABBA";
     backfillStatus.processed = 1;
     backfillStatus.total = 1;
     backfillStatus.written = 1;
     renderAt("ABBA");
-    expect(screen.getByText(/1 written/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /write artist art/i }),
+    ).toBeEnabled();
+    // Result/tally now shows in the app banner, not inline.
+    expect(screen.queryByText(/1 written/i)).toBeNull();
   });
 });

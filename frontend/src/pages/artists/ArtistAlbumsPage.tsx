@@ -4,7 +4,6 @@ import {
   Disc3,
   Image as ImageIcon,
   Loader2,
-  UploadCloud,
 } from "lucide-react";
 import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
@@ -25,6 +24,7 @@ import {
 } from "@/components/albums/album-grid";
 import { ArtistImage } from "@/components/artists/ArtistImage";
 import { ArtistImageEditPanel } from "@/components/artists/ArtistImageEditPanel";
+import { ReorganizeControl } from "@/components/reorganize/ReorganizeControl";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -105,7 +105,7 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
         <BackLink to="/" label="Artists" />
         {/* Poster + name row, mirroring the album-detail header. The poster is
             decorative — the adjacent <h2> already names the artist. */}
-        <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
+        <div className="flex flex-col gap-6 sm:flex-row sm:items-stretch">
           <ArtistImage
             name={displayName}
             decorative
@@ -114,10 +114,24 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
             monogramClassName="text-6xl"
           />
           <div className="flex min-w-0 flex-col gap-1">
-            <div className="flex flex-wrap items-center gap-3">
-              <h2 className="text-3xl font-semibold tracking-tight break-words">
-                {displayName}
-              </h2>
+            <h2 className="text-3xl font-semibold tracking-tight break-words">
+              {displayName}
+            </h2>
+            {/* Live region mounted unconditionally so assistive tech can
+                observe it before the count arrives; only the text toggles. */}
+            <p
+              className="text-muted-foreground min-h-5 text-sm"
+              aria-live="polite"
+            >
+              {!isPending && !isError && total > 0
+                ? `${total.toLocaleString()} ${total === 1 ? "album" : "albums"}`
+                : ""}
+            </p>
+            {/* Per-artist maintenance actions — a single button row pushed to the
+                bottom of the column so it lines up with the bottom of the poster.
+                All status/progress shows in the top banner, not inline, so the
+                buttons stay put. */}
+            <div className="border-border mt-auto flex flex-wrap items-center gap-3 border-t pt-3">
               {imagesEnabled && (
                 <Button
                   variant="outline"
@@ -129,17 +143,10 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
                 </Button>
               )}
               {writeEnabled && <ArtistArtStatus displayName={displayName} />}
+              <ReorganizeControl
+                scope={{ scope: "artist", artist: displayName }}
+              />
             </div>
-            {/* Live region mounted unconditionally so assistive tech can
-                observe it before the count arrives; only the text toggles. */}
-            <p
-              className="text-muted-foreground min-h-5 text-sm"
-              aria-live="polite"
-            >
-              {!isPending && !isError && total > 0
-                ? `${total.toLocaleString()} ${total === 1 ? "album" : "albums"}`
-                : ""}
-            </p>
           </div>
         </div>
       </div>
@@ -232,68 +239,31 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
   );
 }
 
-/** The per-artist "Apply to library" action + marching progress, mirroring the
- * album `LyricsStatus`. This artist owns the single backfill slot when the
- * running job's scoped `artist` equals our `displayName`; otherwise the button
- * just kicks off a per-artist apply (force-overwrite). */
+/** The per-artist "Write artist art" action. Just the button — progress + the
+ * failed state show in the app banner (ArtistArtBackfillBanner), so the action
+ * row stays a single clean line. Disabled while any artist-art job runs. */
 function ArtistArtStatus({ displayName }: { displayName: string }) {
   const status = useArtistArtBackfillStatus();
   const start = useStartArtistArtApply(displayName);
-  const job = status.data;
-  const isThisArtist = job?.artist === displayName;
-  const runningThis = job?.phase === "running" && isThisArtist;
-  const otherRunning = job?.phase === "running" && !isThisArtist;
-  const terminalThis =
-    isThisArtist && (job?.phase === "done" || job?.phase === "stopped");
-
-  if (runningThis && job) {
-    return (
-      <span
-        className="text-muted-foreground flex items-center gap-2 text-sm"
-        role="status"
-      >
-        <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
-        Writing artist art… {job.processed} / {job.total}
-      </span>
-    );
-  }
+  const running = status.data?.phase === "running";
 
   return (
-    <span className="flex flex-wrap items-center gap-2">
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={() => start.mutate()}
-        disabled={start.isPending || otherRunning}
-        aria-label="Apply to library"
-      >
-        {start.isPending ? (
-          <>
-            <Loader2 className="size-4 animate-spin" aria-hidden="true" />{" "}
-            Starting…
-          </>
-        ) : (
-          <>
-            <UploadCloud className="size-4" /> Apply to library
-          </>
-        )}
-      </Button>
-      {otherRunning && (
-        <span className="text-muted-foreground text-sm">
-          another artist-art job is running
-        </span>
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={() => start.mutate()}
+      disabled={start.isPending || running}
+      aria-label="Write artist art"
+    >
+      {start.isPending ? (
+        <>
+          <Loader2 className="size-4 animate-spin" aria-hidden="true" />{" "}
+          Starting…
+        </>
+      ) : (
+        "Write artist art"
       )}
-      {terminalThis && job && (
-        <span className="text-muted-foreground text-sm" role="status">
-          {job.written} written · {job.skipped} skipped · {job.failed} failed
-        </span>
-      )}
-      {start.isError && (
-        <span className="text-destructive text-sm" role="alert">
-          {(start.error as Error).message}
-        </span>
-      )}
-    </span>
+    </Button>
   );
 }
 
