@@ -22,7 +22,7 @@ export function useReorganizeStatus() {
       const { data, response } = await client.GET("/api/reorganize/status");
       if (!response.ok || !data) {
         return {
-          phase: "idle", job_id: null, total: 0, processed: 0, moved: 0,
+          phase: "idle", job_id: null, scope: null, total: 0, processed: 0, moved: 0,
           skipped: 0, failed: 0, current: null, error: null, artist: null,
           album_id: null, scope_label: "library",
         };

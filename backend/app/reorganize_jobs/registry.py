@@ -12,12 +12,18 @@ import threading
 import uuid
 from dataclasses import dataclass
 
-from app.models.reorganize import ReorganizeBackfillStatus, ReorganizeOutcome, ReorganizePhase
+from app.models.reorganize import (
+    ReorganizeBackfillStatus,
+    ReorganizeOutcome,
+    ReorganizePhase,
+    ReorganizeScope,
+)
 
 
 @dataclass
 class _ReorganizeJob:
     id: str
+    scope: ReorganizeScope = "library"
     phase: ReorganizePhase = "running"
     total: int = 0
     processed: int = 0
@@ -43,12 +49,23 @@ class ReorganizeRegistry:
         with self._lock:
             return self._job is not None and self._job.phase == "running"
 
-    def start(self, *, artist: str | None, album_id: int | None, scope_label: str) -> str:
+    def start(
+        self,
+        *,
+        scope: ReorganizeScope,
+        artist: str | None,
+        album_id: int | None,
+        scope_label: str,
+    ) -> str:
         with self._lock:
             if self._job is not None and self._job.phase == "running":
                 raise RuntimeError("a reorganize is already running")
             job = _ReorganizeJob(
-                id=uuid.uuid4().hex, artist=artist, album_id=album_id, scope_label=scope_label
+                id=uuid.uuid4().hex,
+                scope=scope,
+                artist=artist,
+                album_id=album_id,
+                scope_label=scope_label,
             )
             self._job = job
             return job.id
@@ -105,6 +122,7 @@ class ReorganizeRegistry:
                 return ReorganizeBackfillStatus(
                     phase="idle",
                     job_id=None,
+                    scope=None,
                     total=0,
                     processed=0,
                     moved=0,
@@ -119,6 +137,7 @@ class ReorganizeRegistry:
             return ReorganizeBackfillStatus(
                 phase=job.phase,
                 job_id=job.id,
+                scope=job.scope,
                 total=job.total,
                 processed=job.processed,
                 moved=job.moved,

@@ -9,6 +9,11 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+#: Which set of files a reorganize targets. Carried by route + ``?artist=`` query
+#: at the API layer; echoed on the wire (plan + status) so the UI can tell which
+#: scope a plan/job belongs to without inferring from ``artist``/``album_id``.
+ReorganizeScope = Literal["library", "artist", "album"]
+
 #: One row in the preview. ``kind`` distinguishes an album folder from a loose
 #: singleton track. ``from_path``/``to_path`` are the unit's album-root dirs
 #: (commonpath of its items' dirs) — equal when only filenames change.
@@ -24,6 +29,7 @@ class ReorganizeMove(BaseModel):
 
 
 class ReorganizePlan(BaseModel):
+    scope: ReorganizeScope  # which set of files this plan describes
     scope_label: str  # "library" / artist name / "Artist — Album"
     total: int  # units in scope (albums [+ singletons at library scope])
     will_move: int  # exact
@@ -50,6 +56,7 @@ ReorganizePhase = Literal["idle", "running", "done", "stopped", "failed"]
 class ReorganizeBackfillStatus(BaseModel):
     phase: ReorganizePhase
     job_id: str | None
+    scope: ReorganizeScope | None  # None when idle; else the running job's scope
     total: int
     processed: int
     moved: int

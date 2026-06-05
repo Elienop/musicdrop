@@ -10,13 +10,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from app.beets.reorganize import (
-    ReorganizeScope,
-    collect_units,
-    reorganize_album,
-    reorganize_singleton,
-)
-from app.models.reorganize import ReorganizeOutcome
+from app.beets.reorganize import collect_units, reorganize_album, reorganize_singleton
+from app.models.reorganize import ReorganizeOutcome, ReorganizeScope
 from app.reorganize_jobs.registry import ReorganizeRegistry
 
 

@@ -3836,6 +3836,22 @@
             ],
             "title": "Job Id"
           },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "library",
+                  "artist",
+                  "album"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
           "total": {
             "type": "integer",
             "title": "Total"
@@ -3909,6 +3925,7 @@
         "required": [
           "phase",
           "job_id",
+          "scope",
           "total",
           "processed",
           "moved",
@@ -3961,6 +3978,15 @@
       },
       "ReorganizePlan": {
         "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "library",
+              "artist",
+              "album"
+            ],
+            "title": "Scope"
+          },
           "scope_label": {
             "type": "string",
             "title": "Scope Label"
@@ -3991,6 +4017,7 @@
         },
         "type": "object",
         "required": [
+          "scope",
           "scope_label",
           "total",
           "will_move",

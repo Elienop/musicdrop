@@ -23,7 +23,9 @@ def reorg_client(reorganize_lib: Library, tmp_path: Path) -> Iterator[TestClient
 
 def test_lyrics_backfill_409_while_reorganize_runs(reorg_client: TestClient) -> None:
     # Pin a reorganize job in 'running' so the slot is occupied.
-    get_reorganize_backfill().start(artist=None, album_id=None, scope_label="library")
+    get_reorganize_backfill().start(
+        scope="library", artist=None, album_id=None, scope_label="library"
+    )
     resp = reorg_client.post("/api/lyrics/backfill")
     assert resp.status_code == 409
 

@@ -15,10 +15,10 @@ from fastapi.concurrency import run_in_threadpool
 from app.api.albums import get_library
 from app.artist_art_jobs.registry import artist_art_backfill_active
 from app.beets.library import LibraryHandle
-from app.beets.reorganize import ReorganizeScope, album_label, plan_reorganize
+from app.beets.reorganize import album_label, plan_reorganize
 from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import lyrics_backfill_active
-from app.models.reorganize import ReorganizeBackfillStatus, ReorganizePlan
+from app.models.reorganize import ReorganizeBackfillStatus, ReorganizePlan, ReorganizeScope
 from app.reorganize_jobs.registry import (
     ReorganizeRegistry,
     get_reorganize_backfill,
@@ -73,7 +73,7 @@ async def start_reorganize(
     scope: ReorganizeScope = "artist" if artist is not None else "library"
     label = artist if artist is not None else "library"
     try:
-        reg.start(artist=artist, album_id=None, scope_label=label)
+        reg.start(scope=scope, artist=artist, album_id=None, scope_label=label)
     except RuntimeError:
         raise HTTPException(status.HTTP_409_CONFLICT, "A reorganize is already running") from None
     handle = request.app.state.beets_library
@@ -93,7 +93,7 @@ async def start_album_reorganize(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Album not found")
     _gate_busy(request.app)
     try:
-        reg.start(artist=None, album_id=album_id, scope_label=album_label(album))
+        reg.start(scope="album", artist=None, album_id=album_id, scope_label=album_label(album))
     except RuntimeError:
         raise HTTPException(status.HTTP_409_CONFLICT, "A reorganize is already running") from None
     start_backfill(reg, handle.lib, scope="album", artist=None, album_id=album_id)

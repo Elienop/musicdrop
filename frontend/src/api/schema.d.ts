@@ -1523,6 +1523,8 @@ export interface components {
             phase: "idle" | "running" | "done" | "stopped" | "failed";
             /** Job Id */
             job_id: string | null;
+            /** Scope */
+            scope: ("library" | "artist" | "album") | null;
             /** Total */
             total: number;
             /** Processed */
@@ -1562,6 +1564,11 @@ export interface components {
         };
         /** ReorganizePlan */
         ReorganizePlan: {
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "library" | "artist" | "album";
             /** Scope Label */
             scope_label: string;
             /** Total */

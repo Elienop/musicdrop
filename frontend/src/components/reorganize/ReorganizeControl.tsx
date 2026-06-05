@@ -1,8 +1,10 @@
 // frontend/src/components/reorganize/ReorganizeControl.tsx
+import { useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
+  type ReorganizeBackfillStatus,
   type ReorganizeMove,
   type ReorganizePlan,
   type ReorganizeScope,
@@ -14,13 +16,13 @@ import {
 import { Button } from "@/components/ui/button";
 
 function jobMatches(
-  job: { artist: string | null; album_id: number | null } | undefined,
+  job: ReorganizeBackfillStatus | undefined,
   scope: ReorganizeScope,
 ): boolean {
-  if (!job) return false;
-  if (scope.scope === "album") return job.album_id === scope.albumId;
-  if (scope.scope === "artist") return job.album_id === null && job.artist === scope.artist;
-  return job.album_id === null && job.artist === null;
+  if (!job || job.scope == null) return false;
+  if (scope.scope === "album") return job.scope === "album" && job.album_id === scope.albumId;
+  if (scope.scope === "artist") return job.scope === "artist" && job.artist === scope.artist;
+  return job.scope === "library";
 }
 
 function MoveRow({ m }: { m: ReorganizeMove }) {
@@ -65,6 +67,7 @@ function PlanView({ plan }: { plan: ReorganizePlan }) {
 }
 
 export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
+  const queryClient = useQueryClient();
   const status = useReorganizeStatus();
   const preview = usePreviewReorganize();
   const start = useStartReorganize();
@@ -72,11 +75,23 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
   const [plan, setPlan] = useState<ReorganizePlan | null>(null);
 
   const job = status.data;
-  const runningThis = job?.phase === "running" && jobMatches(job, scope);
-  const otherRunning = job?.phase === "running" && !jobMatches(job, scope);
-  const terminalThis =
-    jobMatches(job, scope) &&
-    (job?.phase === "done" || job?.phase === "stopped" || job?.phase === "failed");
+  const phase = job?.phase;
+  const isThis = jobMatches(job, scope);
+  const runningThis = phase === "running" && isThis;
+  const otherRunning = phase === "running" && !isThis;
+  const terminalThis = isThis && (phase === "done" || phase === "stopped" || phase === "failed");
+
+  // Files moved + DB paths changed — refresh the album/artist rosters that show
+  // those paths once THIS scope's job reaches a terminal state.
+  useEffect(() => {
+    if (isThis && (phase === "done" || phase === "stopped" || phase === "failed")) {
+      void queryClient.invalidateQueries({ queryKey: ["album"] });
+      void queryClient.invalidateQueries({ queryKey: ["albums"] });
+      if (scope.scope === "library") {
+        void queryClient.invalidateQueries({ queryKey: ["artists"] });
+      }
+    }
+  }, [isThis, phase, scope.scope, queryClient]);
 
   if (runningThis && job) {
     return (

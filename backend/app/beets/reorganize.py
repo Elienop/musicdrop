@@ -12,14 +12,16 @@ library dir and re-expands them via a ContextVar a worker thread does not inheri
 from __future__ import annotations
 
 import os
-from typing import Any, Literal
+from typing import Any
 
 from beets.util import MoveOperation
 
-from app.models.reorganize import ReorganizeMove, ReorganizeOutcome, ReorganizePlan
-
-#: Scope is internal (carried by route + query at the API layer), not a wire field.
-ReorganizeScope = Literal["library", "artist", "album"]
+from app.models.reorganize import (
+    ReorganizeMove,
+    ReorganizeOutcome,
+    ReorganizePlan,
+    ReorganizeScope,
+)
 
 #: Detailed preview rows are capped here; counts stay exact, truncated=True past it.
 PREVIEW_ROW_CAP = 1000
@@ -149,6 +151,7 @@ def plan_reorganize(
                 if len(moves) < PREVIEW_ROW_CAP:
                     moves.append(m)
         return ReorganizePlan(
+            scope=scope,
             scope_label=_scope_label(scope=scope, artist=artist, album_id=album_id, albums=albums),
             total=total,
             will_move=will_move,

@@ -20,6 +20,7 @@ def test_move_holds_album_dirs() -> None:
 
 def test_plan_counts_and_truncation() -> None:
     p = ReorganizePlan(
+        scope="library",
         scope_label="library",
         total=50,
         will_move=42,
@@ -27,6 +28,7 @@ def test_plan_counts_and_truncation() -> None:
         moves=[],
         truncated=True,
     )
+    assert p.scope == "library"
     assert p.already_in_place == 8
     assert p.truncated is True
 
@@ -40,6 +42,7 @@ def test_status_idle_shape() -> None:
     s = ReorganizeBackfillStatus(
         phase="idle",
         job_id=None,
+        scope=None,
         total=0,
         processed=0,
         moved=0,
