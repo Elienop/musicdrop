@@ -20,6 +20,7 @@ import {
 import { client } from "@/api/client";
 import { ArtistArtBackfillBanner } from "@/components/ArtistArtBackfillBanner";
 import { LyricsBackfillBanner } from "@/components/LyricsBackfillBanner";
+import { ReorganizeBanner } from "@/components/ReorganizeBanner";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
@@ -235,6 +236,7 @@ export function App() {
       <main className="mx-auto max-w-7xl px-6 py-8">
         <LyricsBackfillBanner />
         <ArtistArtBackfillBanner />
+        <ReorganizeBanner />
         <Outlet />
       </main>
     </div>
