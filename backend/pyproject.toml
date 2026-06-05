@@ -95,6 +95,14 @@ module = [
     "tests.test_artwork_library_mbid",
     "tests.test_artist_art_write",
     "tests.test_artist_art_mutex",
+    "app.beets.reorganize",
+    "app.reorganize_jobs.registry",
+    "app.reorganize_jobs.runner",
+    "app.api.reorganize",
+    "tests.test_reorganize_adapter",
+    "tests.test_reorganize_jobs",
+    "tests.test_reorganize_api",
+    "tests.test_reorganize_mutex",
 ]
 disallow_untyped_calls = false
 
