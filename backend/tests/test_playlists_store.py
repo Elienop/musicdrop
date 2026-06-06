@@ -51,9 +51,7 @@ def test_list_skips_corrupt_files(tmp_path: Path) -> None:
 
 def test_update_changes_fields_and_touches_updated_at(tmp_path: Path) -> None:
     created = store.create_playlist(tmp_path, name="Old", description="x")
-    updated = store.update_playlist(
-        tmp_path, created.id, name="New", description="y"
-    )
+    updated = store.update_playlist(tmp_path, created.id, name="New", description="y")
     assert updated is not None
     assert updated.name == "New"
     assert updated.description == "y"

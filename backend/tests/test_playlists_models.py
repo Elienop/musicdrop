@@ -2,7 +2,6 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.playlist import (
-    Playlist,
     PlaylistCreateRequest,
     PlaylistDetail,
     PlaylistUpdateRequest,

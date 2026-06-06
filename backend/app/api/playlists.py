@@ -50,9 +50,7 @@ def _to_playlist(record: StoredPlaylist) -> Playlist:
 
 
 def _to_detail(record: StoredPlaylist) -> PlaylistDetail:
-    return PlaylistDetail(
-        **_to_playlist(record).model_dump(), track_ids=record.track_ids
-    )
+    return PlaylistDetail(**_to_playlist(record).model_dump(), track_ids=record.track_ids)
 
 
 @router.get("/playlists", response_model=list[Playlist])
@@ -111,9 +109,7 @@ async def delete_playlist_endpoint(
     playlist_id: str,
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
 ) -> Response:
-    deleted = await run_in_threadpool(
-        store.delete_playlist, playlists_dir, playlist_id
-    )
+    deleted = await run_in_threadpool(store.delete_playlist, playlists_dir, playlist_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Playlist not found")
     return Response(status_code=204)

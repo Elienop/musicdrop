@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -32,7 +32,7 @@ class StoredPlaylist(BaseModel):
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _record_path(playlists_dir: Path, playlist_id: str) -> Path:
@@ -63,9 +63,7 @@ def _write_atomic(path: Path, record: StoredPlaylist) -> None:
                 pass
 
 
-def create_playlist(
-    playlists_dir: Path, *, name: str, description: str = ""
-) -> StoredPlaylist:
+def create_playlist(playlists_dir: Path, *, name: str, description: str = "") -> StoredPlaylist:
     now = _now()
     record = StoredPlaylist(
         id=uuid.uuid4().hex,
@@ -99,11 +97,7 @@ def list_playlists(playlists_dir: Path) -> list[StoredPlaylist]:
     records: list[StoredPlaylist] = []
     for child in playlists_dir.glob("*.json"):
         try:
-            records.append(
-                StoredPlaylist.model_validate_json(
-                    child.read_text(encoding="utf-8")
-                )
-            )
+            records.append(StoredPlaylist.model_validate_json(child.read_text(encoding="utf-8")))
         except (OSError, ValueError):
             continue
     records.sort(key=lambda record: record.created_at)
