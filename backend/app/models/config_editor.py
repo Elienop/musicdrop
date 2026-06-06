@@ -158,3 +158,77 @@ class ValidateResponse(BaseModel):
     """
 
     errors: list[ValidationErrorItem]
+
+
+class NamingRuleInput(BaseModel):
+    """One ``paths:`` entry as the panel sees it: a beets query key (``default`` /
+    ``comp`` / ``singleton`` / any query like ``albumtype:soundtrack``) and its
+    path-format template string."""
+
+    query: str
+    template: str
+
+
+class ReplaceRuleInput(BaseModel):
+    """One ``replace:`` entry — a regex ``pattern`` and its ``replacement`` string
+    (empty replacement = delete the matched text)."""
+
+    pattern: str
+    replacement: str
+
+
+class RenderedRule(BaseModel):
+    """A single rule's live preview: the path a sample track would get under this
+    template. ``sample_source`` labels where the sample came from (an album label,
+    or a built-in example). ``error`` is a defensive per-row field — beets'
+    ``functemplate`` is lenient and rarely raises, so it is usually ``None``."""
+
+    query: str
+    sample_path: str
+    sample_source: str
+    error: str | None = None
+
+
+class ReplaceError(BaseModel):
+    """A ``replace:`` row whose regex failed to compile. ``index`` points at the
+    row in the request's ``replace`` list."""
+
+    index: int
+    pattern: str
+    message: str
+
+
+class NamingConfig(BaseModel):
+    """Response of ``GET /api/config/naming`` — the current ``paths:``/``replace:``
+    split into structured rows, the CAS ``sha256`` token (same one the config
+    snapshot uses), plus the initial previews so the panel paints fully populated."""
+
+    default: str | None
+    comp: str | None
+    singleton: str | None
+    custom: list[NamingRuleInput]
+    replace: list[ReplaceRuleInput]
+    sha256: str
+    previews: list[RenderedRule]
+    replace_errors: list[ReplaceError]
+
+
+class NamingPreviewRequest(BaseModel):
+    """Body of ``POST /api/config/naming/preview`` — read-only render, no CAS."""
+
+    rules: list[NamingRuleInput]
+    replace: list[ReplaceRuleInput]
+
+
+class NamingPreviewResponse(BaseModel):
+    rendered: list[RenderedRule]
+    replace_errors: list[ReplaceError]
+
+
+class SaveNamingRequest(BaseModel):
+    """Body of ``POST /api/config/naming/save``. ``base_sha256`` is the CAS token
+    echoed from the snapshot the panel loaded; mismatch -> 409."""
+
+    rules: list[NamingRuleInput]
+    replace: list[ReplaceRuleInput]
+    base_sha256: str
