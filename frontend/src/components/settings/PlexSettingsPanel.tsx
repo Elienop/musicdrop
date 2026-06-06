@@ -55,6 +55,11 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
   const [baseUrl, setBaseUrl] = useState(initial.base_url);
   const [token, setToken] = useState("");
   const [libraryPath, setLibraryPath] = useState(initial.library_path);
+  // Drives the single, always-mounted polite live region below. A live region
+  // must already exist when its text changes to be reliably announced, so we
+  // set this state from the save/test handlers rather than conditionally
+  // mounting the confirmation nodes.
+  const [statusMsg, setStatusMsg] = useState("");
 
   // Reseed the inputs when the persisted snapshot changes (e.g. after a Save
   // refetch) WITHOUT remounting. A remount-on-key would destroy the focused
@@ -84,7 +89,22 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
     // keeps the already-saved one (the API never returns it to prefill).
     const trimmed = token.trim();
     if (trimmed) body.token = trimmed;
-    save.mutate(body, { onSuccess: () => setToken("") });
+    save.mutate(body, {
+      onSuccess: () => {
+        setToken("");
+        setStatusMsg("Plex settings saved.");
+      },
+    });
+  }
+
+  function handleTest() {
+    test.mutate(undefined, {
+      onSuccess: (connection) => {
+        if (connection.ok) {
+          setStatusMsg(`Connected to ${connection.server_name ?? "Plex"}.`);
+        }
+      },
+    });
   }
 
   const result = test.data;
@@ -113,8 +133,9 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
             id="plex-token"
             type="password"
             // Stop browsers/password managers from autofilling a login password
-            // or prompting to save this server secret.
-            autoComplete="off"
+            // or prompting to save this server secret. "new-password" is honored
+            // more reliably than "off" for password inputs.
+            autoComplete="new-password"
             placeholder={initial.has_token ? "Token saved — enter to replace" : "X-Plex-Token"}
             value={token}
             onChange={(e) => setToken(e.target.value)}
@@ -152,7 +173,7 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
         </Button>
         <Button
           variant="outline"
-          onClick={() => test.mutate()}
+          onClick={handleTest}
           disabled={test.isPending || dirty}
           title={dirty ? "Save before testing — Test uses your saved settings" : undefined}
         >
@@ -172,22 +193,27 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
           </p>
         )}
 
+        {/* One always-mounted polite live region for save/test success. A
+            region populated on insertion is often missed by screen readers, so
+            we keep it mounted and only set its text — styled visible (success)
+            when there is a message, sr-only when idle. Errors are separate
+            role="alert" regions (announced on insertion by design). */}
+        <p
+          role="status"
+          aria-live="polite"
+          className={statusMsg ? "text-success flex items-center gap-1 text-sm" : "sr-only"}
+        >
+          {statusMsg ? (
+            <>
+              <CheckCircle2 className="size-4" aria-hidden="true" />
+              {statusMsg}
+            </>
+          ) : null}
+        </p>
+
         {save.isError && (
           <p className="text-destructive text-sm" role="alert">
             Couldn’t save Plex settings. Try again.
-          </p>
-        )}
-        {save.isSuccess && !dirty && (
-          <p className="text-success text-sm" role="status">
-            <CheckCircle2 className="mr-1 inline size-4" aria-hidden="true" />
-            Plex settings saved.
-          </p>
-        )}
-
-        {result?.ok && (
-          <p className="text-success text-sm" role="status">
-            <CheckCircle2 className="mr-1 inline size-4" aria-hidden="true" />
-            Connected to {result.server_name ?? "Plex"}.
           </p>
         )}
         {result && !result.ok && (
@@ -210,9 +236,11 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
  * holding the form. */
 function Panel({ children }: { children: React.ReactNode }) {
   return (
-    <section aria-label="Plex" className="flex flex-col gap-4">
+    <section aria-labelledby="plex-settings-heading" className="flex flex-col gap-4">
       <header className="flex flex-col gap-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Plex</h2>
+        <h2 id="plex-settings-heading" className="text-2xl font-semibold tracking-tight">
+          Plex
+        </h2>
         <p className="text-muted-foreground text-sm">
           Connect your Plex server so playlists can be pushed to it. The admin token is
           write-only — it’s stored on the server and never shown again.
