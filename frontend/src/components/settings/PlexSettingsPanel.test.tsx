@@ -15,14 +15,28 @@ function settings(overrides: Record<string, unknown> = {}) {
 }
 
 describe("PlexSettingsPanel", () => {
-  test("saves settings, omitting a blank token so the saved one is kept", async () => {
+  test("renders a real h2 heading (not a CardTitle div)", async () => {
+    server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
+    renderWithProviders(<PlexSettingsPanel />);
+    expect(await screen.findByRole("heading", { level: 2, name: "Plex" })).toBeInTheDocument();
+  });
+
+  test("saves settings, omitting a blank token, and confirms the save", async () => {
     let body: Record<string, unknown> | null = null;
+    let saved = false;
     server.use(
+      // The GET reflects the saved value once the PUT lands, matching a real
+      // backend round-trip (so the editor reseeds and confirms, not strands).
       http.get(SETTINGS, () =>
-        HttpResponse.json(settings({ base_url: "http://plex:32400", has_token: true })),
+        HttpResponse.json(
+          saved
+            ? settings({ base_url: "http://plex:9999", has_token: true })
+            : settings({ base_url: "http://plex:32400", has_token: true }),
+        ),
       ),
       http.put(SETTINGS, async ({ request }) => {
         body = (await request.json()) as Record<string, unknown>;
+        saved = true;
         return HttpResponse.json(settings({ base_url: "http://plex:9999", has_token: true }));
       }),
     );
@@ -37,6 +51,22 @@ describe("PlexSettingsPanel", () => {
     expect(body!.base_url).toBe("http://plex:9999");
     // The token field was left blank, so the PUT omits it (keeps the saved one).
     expect("token" in body!).toBe(false);
+    // A polite confirmation appears once the reseeded snapshot is clean again.
+    expect(await screen.findByText(/plex settings saved/i)).toBeInTheDocument();
+  });
+
+  test("disables Test connection while the form is dirty (Test uses saved settings)", async () => {
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings({ base_url: "http://plex:32400" }))),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    const input = await screen.findByLabelText(/base url/i);
+    const testBtn = screen.getByRole("button", { name: /test connection/i });
+    expect(testBtn).toBeEnabled();
+    await userEvent.type(input, "9");
+    expect(testBtn).toBeDisabled();
+    expect(screen.getByText(/save before testing/i)).toBeInTheDocument();
   });
 
   test("tests the connection and shows the server name", async () => {

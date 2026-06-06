@@ -144,39 +144,27 @@ describe("PlaylistDetailPage", () => {
     expect(await screen.findByText(/unavailable/i)).toBeInTheDocument();
   });
 
-  test("syncs to plex and shows status", async () => {
+  test("syncs to plex, shows the synced state, and announces the real outcome", async () => {
     let synced = false;
+    // Realistic timestamps: the playlist was last edited (updated_at) BEFORE its
+    // last push (synced_at), so the now-fixed backend reads as "Synced", not
+    // "Out of date" (set_plex_state no longer bumps updated_at).
+    const okAdmin = {
+      admin: {
+        rating_key: "777",
+        status: "ok",
+        missing: 0,
+        synced_at: "2026-06-07T01:00:00+00:00",
+        error: null,
+      },
+    };
     server.use(
       http.get(BASE, () =>
-        HttpResponse.json({
-          ...detail([track(1, "Alpha")]),
-          plex: synced
-            ? {
-                admin: {
-                  rating_key: "777",
-                  status: "ok",
-                  missing: 0,
-                  synced_at: "2026-06-07T01:00:00+00:00",
-                  error: null,
-                },
-              }
-            : {},
-        }),
+        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: synced ? okAdmin : {} }),
       ),
       http.post(`${BASE}/sync`, () => {
         synced = true;
-        return HttpResponse.json({
-          ...detail([track(1, "Alpha")]),
-          plex: {
-            admin: {
-              rating_key: "777",
-              status: "ok",
-              missing: 0,
-              synced_at: "2026-06-07T01:00:00+00:00",
-              error: null,
-            },
-          },
-        });
+        return HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: okAdmin });
       }),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -184,7 +172,31 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
+    // Before syncing the status line reads "Not synced to Plex".
+    expect(screen.getByText(/not synced to plex/i)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
-    await waitFor(() => expect(screen.getByText(/synced/i)).toBeInTheDocument());
+    // The polite region announces the derived outcome — not a generic "complete"
+    // and not the ambiguous "Not synced".
+    expect(await screen.findByText(/plex sync — synced/i)).toBeInTheDocument();
+    // And the visible per-playlist status line settles on exactly "Synced".
+    await waitFor(() => expect(screen.getByText("Synced")).toBeInTheDocument());
+  });
+
+  test("points to Settings when sync fails because Plex isn't connected", async () => {
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha")]))),
+      http.post(`${BASE}/sync`, () =>
+        HttpResponse.json({ detail: "Connect Plex first" }, { status: 409 }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/connect plex in\s*settings\s*first/i);
+    expect(screen.getByRole("link", { name: /settings/i })).toHaveAttribute("href", "/settings");
   });
 });

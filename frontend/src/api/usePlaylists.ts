@@ -132,7 +132,11 @@ export function useSyncPlaylist(id: string) {
         "/api/playlists/{playlist_id}/sync",
         { params: { path: { playlist_id: id } } },
       );
-      if (error || !response.ok || !data) throw new Error("Sync failed");
+      // Tag the error with the HTTP status so the detail page can tell the
+      // "Plex not connected" 409 apart from a generic failure.
+      if (error || !response.ok || !data) {
+        throw Object.assign(new Error("Sync failed"), { status: response.status });
+      }
       return data;
     },
     onSettled: () => {

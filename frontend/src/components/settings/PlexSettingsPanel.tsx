@@ -1,5 +1,5 @@
 import { CheckCircle2, Loader2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   type PlexSettings,
@@ -9,14 +9,7 @@ import {
 } from "@/api/usePlex";
 import type { components } from "@/api/schema";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
 /** Settings → Plex: the single-account connection (base URL + write-only admin
@@ -48,9 +41,11 @@ export function PlexSettingsPanel() {
       </Panel>
     );
   }
-  // Remount on a fresh snapshot (post-save) so the inputs reseed from disk.
-  const d = settings.data;
-  return <PlexSettingsEditor key={`${d.base_url}|${d.library_path}|${d.has_token}`} initial={d} />;
+  return (
+    <Panel>
+      <PlexSettingsEditor initial={settings.data} />
+    </Panel>
+  );
 }
 
 function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
@@ -60,6 +55,25 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
   const [baseUrl, setBaseUrl] = useState(initial.base_url);
   const [token, setToken] = useState("");
   const [libraryPath, setLibraryPath] = useState(initial.library_path);
+
+  // Reseed the inputs when the persisted snapshot changes (e.g. after a Save
+  // refetch) WITHOUT remounting. A remount-on-key would destroy the focused
+  // Save button and strand keyboard focus on <body> — most visibly on the first
+  // token save, which flips `has_token`. Keyed on the snapshot's field identity
+  // so an unchanged background refetch leaves an in-progress edit alone.
+  useEffect(() => {
+    setBaseUrl(initial.base_url);
+    setLibraryPath(initial.library_path);
+    setToken("");
+  }, [initial.base_url, initial.library_path, initial.has_token]);
+
+  // The form differs from what's saved on the server. "Test connection" probes
+  // the SAVED config (not the typed-but-unsaved values), so testing a dirty form
+  // would silently test stale settings — disable Test until the user Saves.
+  const dirty =
+    baseUrl !== initial.base_url ||
+    libraryPath !== initial.library_path ||
+    token.trim().length > 0;
 
   function handleSave() {
     const body: components["schemas"]["PlexSettingsUpdate"] = {
@@ -76,7 +90,7 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
   const result = test.data;
 
   return (
-    <Panel>
+    <>
       <CardContent className="flex flex-col gap-4">
         <div className="flex flex-col gap-1">
           <label htmlFor="plex-base-url" className="text-sm font-medium">
@@ -98,6 +112,9 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
           <Input
             id="plex-token"
             type="password"
+            // Stop browsers/password managers from autofilling a login password
+            // or prompting to save this server secret.
+            autoComplete="off"
             placeholder={initial.has_token ? "Token saved — enter to replace" : "X-Plex-Token"}
             value={token}
             onChange={(e) => setToken(e.target.value)}
@@ -133,7 +150,12 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
             "Save"
           )}
         </Button>
-        <Button variant="outline" onClick={() => test.mutate()} disabled={test.isPending}>
+        <Button
+          variant="outline"
+          onClick={() => test.mutate()}
+          disabled={test.isPending || dirty}
+          title={dirty ? "Save before testing — Test uses your saved settings" : undefined}
+        >
           {test.isPending ? (
             <>
               <Loader2 className="size-4 animate-spin" aria-hidden="true" />
@@ -144,14 +166,26 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
           )}
         </Button>
 
+        {dirty && (
+          <p className="text-muted-foreground text-xs">
+            Save before testing — Test uses your saved settings.
+          </p>
+        )}
+
         {save.isError && (
           <p className="text-destructive text-sm" role="alert">
             Couldn’t save Plex settings. Try again.
           </p>
         )}
+        {save.isSuccess && !dirty && (
+          <p className="text-success text-sm" role="status">
+            <CheckCircle2 className="mr-1 inline size-4" aria-hidden="true" />
+            Plex settings saved.
+          </p>
+        )}
 
         {result?.ok && (
-          <p className="text-sm text-green-700 dark:text-green-400" role="status">
+          <p className="text-success text-sm" role="status">
             <CheckCircle2 className="mr-1 inline size-4" aria-hidden="true" />
             Connected to {result.server_name ?? "Plex"}.
           </p>
@@ -167,21 +201,24 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
           </p>
         )}
       </CardFooter>
-    </Panel>
+    </>
   );
 }
 
+/** Section shell matching the sibling Settings panels: a real <h2> heading (so
+ * it shows up in heading navigation, unlike a shadcn CardTitle div) over a Card
+ * holding the form. */
 function Panel({ children }: { children: React.ReactNode }) {
   return (
-    <Card aria-label="Plex">
-      <CardHeader>
-        <CardTitle className="text-2xl tracking-tight">Plex</CardTitle>
-        <CardDescription>
+    <section aria-label="Plex" className="flex flex-col gap-4">
+      <header className="flex flex-col gap-1">
+        <h2 className="text-2xl font-semibold tracking-tight">Plex</h2>
+        <p className="text-muted-foreground text-sm">
           Connect your Plex server so playlists can be pushed to it. The admin token is
           write-only — it’s stored on the server and never shown again.
-        </CardDescription>
-      </CardHeader>
-      {children}
-    </Card>
+        </p>
+      </header>
+      <Card>{children}</Card>
+    </section>
   );
 }

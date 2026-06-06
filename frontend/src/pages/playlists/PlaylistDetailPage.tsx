@@ -11,7 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 
 import {
   type PlaylistDetail,
@@ -86,6 +86,13 @@ function plexStatusLabel(playlist: PlaylistDetail): string {
     return "No matching tracks";
   }
   return "Not synced to Plex";
+}
+
+/** A first-time sync fails with a 409 when Plex isn't connected yet (no base
+ * URL / token). `useSyncPlaylist` tags the thrown error with the HTTP status so
+ * we can point the user at Settings instead of showing the generic retry copy. */
+function isPlexNotConfigured(err: unknown): boolean {
+  return err instanceof Error && (err as { status?: number }).status === 409;
 }
 
 export function PlaylistDetailPage() {
@@ -284,7 +291,14 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => sync.mutate(undefined, { onSuccess: () => setStatusMsg("Plex sync complete") })}
+            onClick={() =>
+              sync.mutate(undefined, {
+                // Announce the real outcome (synced / N not in Plex / no
+                // matching tracks) instead of a blanket "complete" — derived
+                // from the same label the visible status line shows.
+                onSuccess: (updated) => setStatusMsg(`Plex sync — ${plexStatusLabel(updated)}`),
+              })
+            }
             disabled={sync.isPending}
           >
             {sync.isPending ? (
@@ -363,11 +377,20 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
           Couldn&rsquo;t remove the track. Try again.
         </p>
       )}
-      {sync.isError && (
-        <p className="text-destructive text-sm" role="alert">
-          Couldn&rsquo;t sync to Plex. Try again.
-        </p>
-      )}
+      {sync.isError &&
+        (isPlexNotConfigured(sync.error) ? (
+          <p className="text-destructive text-sm" role="alert">
+            Connect Plex in{" "}
+            <Link to="/settings" className="underline">
+              Settings
+            </Link>{" "}
+            first.
+          </p>
+        ) : (
+          <p className="text-destructive text-sm" role="alert">
+            Couldn&rsquo;t sync to Plex. Try again.
+          </p>
+        ))}
 
       {tracks.length === 0 ? (
         <EmptyTracks headingRef={emptyRef} />
