@@ -76,3 +76,13 @@ def test_missing_id_is_unavailable(tmp_path: Path) -> None:
 def test_empty_ids(tmp_path: Path) -> None:
     lib, _ = _lib_with_items(tmp_path)
     assert resolve_tracks(lib, []) == []
+
+
+def test_get_item_error_degrades_to_unavailable() -> None:
+    class _BoomLib:
+        def get_item(self, item_id: int) -> object:
+            raise RuntimeError("library is locked")
+
+    tracks = resolve_tracks(_BoomLib(), [7])  # type: ignore[arg-type]  # duck-typed lib
+    assert tracks[0].available is False
+    assert tracks[0].id == 7

@@ -69,17 +69,35 @@ class PlaylistUpdateRequest(BaseModel):
         return stripped
 
 
+# A generous ceiling on the ids accepted in one request — far above any real
+# playlist, but it stops a pathological/buggy client from forcing an unbounded
+# number of per-id library lookups in one call.
+_MAX_TRACK_IDS = 10_000
+
+
 class PlaylistAddTracksRequest(BaseModel):
     track_ids: list[int]
     position: int | None = None
 
     @field_validator("track_ids")
     @classmethod
-    def _non_empty(cls, value: list[int]) -> list[int]:
+    def _non_empty_and_bounded(cls, value: list[int]) -> list[int]:
         if not value:
             raise ValueError("track_ids must not be empty")
+        if len(value) > _MAX_TRACK_IDS:
+            raise ValueError(f"track_ids must contain at most {_MAX_TRACK_IDS} items")
         return value
 
 
 class PlaylistReorderRequest(BaseModel):
+    # An empty list is allowed and clears the playlist — reorder is a full
+    # replacement ("the tracks are now exactly this ordered list"), and there is
+    # no separate clear endpoint.
     track_ids: list[int]
+
+    @field_validator("track_ids")
+    @classmethod
+    def _bounded(cls, value: list[int]) -> list[int]:
+        if len(value) > _MAX_TRACK_IDS:
+            raise ValueError(f"track_ids must contain at most {_MAX_TRACK_IDS} items")
+        return value

@@ -147,3 +147,24 @@ def test_reorder_tracks(client: TestClient, beets_library: LibraryHandle) -> Non
 def test_reorder_missing_playlist_404(client: TestClient) -> None:
     r = client.put(f"/api/playlists/{'0' * 32}/tracks", json={"track_ids": [1]})
     assert r.status_code == 404
+
+
+def test_remove_track_missing_playlist_404(client: TestClient) -> None:
+    r = client.delete(f"/api/playlists/{'0' * 32}/tracks/1")
+    assert r.status_code == 404
+
+
+def test_reorder_empty_clears_playlist(client: TestClient, beets_library: LibraryHandle) -> None:
+    t1 = _add_track(beets_library, "Alpha")
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
+    # Reorder is a full replacement; an empty list is a valid "clear".
+    r = client.put(f"/api/playlists/{pid}/tracks", json={"track_ids": []})
+    assert r.status_code == 200
+    assert r.json()["tracks"] == []
+
+
+def test_add_too_many_tracks_422(client: TestClient) -> None:
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    r = client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": list(range(10_001))})
+    assert r.status_code == 422

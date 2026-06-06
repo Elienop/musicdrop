@@ -54,8 +54,8 @@ def _to_playlist(record: StoredPlaylist) -> Playlist:
     )
 
 
-async def _detail_response(record: StoredPlaylist, lib: LibraryHandle) -> PlaylistDetail:
-    tracks = await run_in_threadpool(resolve_tracks, lib.lib, record.track_ids)
+async def _detail_response(record: StoredPlaylist, handle: LibraryHandle) -> PlaylistDetail:
+    tracks = await run_in_threadpool(resolve_tracks, handle.lib, record.track_ids)
     return PlaylistDetail(**_to_playlist(record).model_dump(), tracks=tracks)
 
 

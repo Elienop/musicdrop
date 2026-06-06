@@ -28,22 +28,30 @@ def _resolved(item: Any) -> PlaylistTrack:
     )
 
 
+def _unavailable(item_id: int) -> PlaylistTrack:
+    return PlaylistTrack(
+        id=item_id,
+        title="",
+        artist="",
+        album="",
+        duration_seconds=None,
+        available=False,
+    )
+
+
 def resolve_tracks(lib: Library, ids: list[int]) -> list[PlaylistTrack]:
-    """Resolve ``ids`` to ordered tracks; unknown ids become unavailable rows."""
+    """Resolve ``ids`` to ordered tracks; unknown ids become unavailable rows.
+
+    A per-item lookup failure (a missing id, or a locked/odd library row that
+    raises) degrades that one entry to "unavailable" rather than failing the
+    whole playlist view with a 500 — the owned store still holds the membership.
+    """
     tracks: list[PlaylistTrack] = []
     for item_id in ids:
-        item = lib.get_item(item_id)
-        if item is None:
-            tracks.append(
-                PlaylistTrack(
-                    id=item_id,
-                    title="",
-                    artist="",
-                    album="",
-                    duration_seconds=None,
-                    available=False,
-                )
-            )
-        else:
-            tracks.append(_resolved(item))
+        try:
+            item = lib.get_item(item_id)
+            track = _resolved(item) if item is not None else _unavailable(item_id)
+        except Exception:  # one bad row degrades to unavailable, never 500s the view
+            track = _unavailable(item_id)
+        tracks.append(track)
     return tracks
