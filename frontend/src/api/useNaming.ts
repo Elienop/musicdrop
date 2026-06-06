@@ -9,7 +9,8 @@ export type NamingRuleInput = components["schemas"]["NamingRuleInput"];
 export type ReplaceRuleInput = components["schemas"]["ReplaceRuleInput"];
 export type RenderedRule = components["schemas"]["RenderedRule"];
 export type ReplaceError = components["schemas"]["ReplaceError"];
-export type NamingPreviewResponse = components["schemas"]["NamingPreviewResponse"];
+export type NamingPreviewResponse =
+  components["schemas"]["NamingPreviewResponse"];
 export type BeetsConfigSnapshot = components["schemas"]["BeetsConfigSnapshot"];
 
 export const NAMING_KEY = ["config", "naming"] as const;
@@ -24,7 +25,8 @@ export function useNaming() {
     queryKey: NAMING_KEY,
     queryFn: async (): Promise<NamingConfig> => {
       const { data, response } = await client.GET("/api/config/naming");
-      if (!response.ok || !data) throw new Error("Failed to load naming config");
+      if (!response.ok || !data)
+        throw new Error("Failed to load naming config");
       return data;
     },
   });
@@ -33,9 +35,12 @@ export function useNaming() {
 export function usePreviewNaming() {
   return useMutation<NamingPreviewResponse, Error, NamingDraft>({
     mutationFn: async (body): Promise<NamingPreviewResponse> => {
-      const { data, response } = await client.POST("/api/config/naming/preview", {
-        body,
-      });
+      const { data, response } = await client.POST(
+        "/api/config/naming/preview",
+        {
+          body,
+        },
+      );
       if (!response.ok || !data) throw new Error("Preview failed");
       return data;
     },

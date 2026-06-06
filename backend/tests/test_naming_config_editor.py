@@ -63,9 +63,7 @@ def test_save_naming_roundtrip_preserves_other_keys_and_comments(
 
 def test_save_naming_empty_rules_drops_paths_key(beets_library: LibraryHandle) -> None:
     cfg_path = beets_library.config_path
-    cfg_path.write_text(
-        "directory: /tmp/music\nlibrary: library.db\npaths:\n  default: $title\n"
-    )
+    cfg_path.write_text("directory: /tmp/music\nlibrary: library.db\npaths:\n  default: $title\n")
     req = SaveNamingRequest(rules=[], replace=[], base_sha256=_sha(cfg_path))
     save_naming(beets_library, req)
     assert "paths:" not in cfg_path.read_text()
