@@ -1,7 +1,12 @@
 import type { Diagnostic } from "@codemirror/lint";
 import { useQueryClient } from "@tanstack/react-query";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
-import { AlertCircle, CheckCircle2, Loader2, TriangleAlert } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  Loader2,
+  TriangleAlert,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useActiveImport } from "@/api/useActiveImport";
@@ -19,6 +24,7 @@ import { cn } from "@/lib/utils";
 import { ArtistArtPanel } from "@/pages/settings/ArtistArtPanel";
 import { ArtistImagesPanel } from "@/pages/settings/ArtistImagesPanel";
 import { LyricsBackfillPanel } from "@/pages/settings/LyricsBackfillPanel";
+import { NamingPanel } from "@/pages/settings/NamingPanel";
 import { ReorganizeLibraryPanel } from "./ReorganizeLibraryPanel";
 import { SettingsConflict } from "@/pages/settings/SettingsConflict";
 import {
@@ -435,6 +441,7 @@ export function SettingsPage() {
       <ArtistImagesPanel />
       <ArtistArtPanel />
       <ReorganizeLibraryPanel />
+      <NamingPanel />
     </div>
   );
 }
@@ -620,4 +627,3 @@ function isConfigOpError(err: unknown): err is ConfigOpError {
     typeof (err as ConfigOpError).status === "number"
   );
 }
-
