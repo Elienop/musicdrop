@@ -90,3 +90,48 @@ def get_playlist(playlists_dir: Path, playlist_id: str) -> StoredPlaylist | None
         return StoredPlaylist.model_validate_json(raw)
     except ValueError:
         return None
+
+
+def list_playlists(playlists_dir: Path) -> list[StoredPlaylist]:
+    """All playlists, sorted by ``created_at`` ascending. Skips unreadable files."""
+    if not playlists_dir.exists():
+        return []
+    records: list[StoredPlaylist] = []
+    for child in playlists_dir.glob("*.json"):
+        try:
+            records.append(
+                StoredPlaylist.model_validate_json(
+                    child.read_text(encoding="utf-8")
+                )
+            )
+        except (OSError, ValueError):
+            continue
+    records.sort(key=lambda record: record.created_at)
+    return records
+
+
+def update_playlist(
+    playlists_dir: Path,
+    playlist_id: str,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+) -> StoredPlaylist | None:
+    record = get_playlist(playlists_dir, playlist_id)
+    if record is None:
+        return None
+    if name is not None:
+        record.name = name
+    if description is not None:
+        record.description = description
+    record.updated_at = _now()
+    _write_atomic(_record_path(playlists_dir, playlist_id), record)
+    return record
+
+
+def delete_playlist(playlists_dir: Path, playlist_id: str) -> bool:
+    try:
+        _record_path(playlists_dir, playlist_id).unlink()
+        return True
+    except FileNotFoundError:
+        return False
