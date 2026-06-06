@@ -4,6 +4,7 @@ import {
   CircleSlash,
   CopyCheck,
   FolderInput,
+  ListMusic,
   Loader2,
   Search,
   Settings,
@@ -217,6 +218,17 @@ export function App() {
               >
                 <Settings className="size-4" aria-hidden="true" />
                 <span className="hidden sm:inline">Settings</span>
+              </Link>
+              <Link
+                to="/playlists"
+                aria-label="Playlists"
+                aria-current={
+                  location.pathname.startsWith("/playlists") ? "page" : undefined
+                }
+                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
+              >
+                <ListMusic className="size-4" aria-hidden="true" />
+                <span className="hidden sm:inline">Playlists</span>
               </Link>
               <Link
                 to="/duplicates"
