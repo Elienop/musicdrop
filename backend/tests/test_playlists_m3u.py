@@ -5,10 +5,18 @@ from app.playlists.m3u import M3uEntry, delete_m3u, render_m3u, write_m3u
 
 def test_render_extm3u_format() -> None:
     entries = [
-        M3uEntry(duration_seconds=204, artist="Radiohead", title="Reckoner",
-                 path="../Radiohead/In Rainbows/07 Reckoner.flac"),
-        M3uEntry(duration_seconds=251, artist="Boards of Canada", title="Roygbiv",
-                 path="../Boards of Canada/Music Has.../Roygbiv.flac"),
+        M3uEntry(
+            duration_seconds=204,
+            artist="Radiohead",
+            title="Reckoner",
+            path="../Radiohead/In Rainbows/07 Reckoner.flac",
+        ),
+        M3uEntry(
+            duration_seconds=251,
+            artist="Boards of Canada",
+            title="Roygbiv",
+            path="../Boards of Canada/Music Has.../Roygbiv.flac",
+        ),
     ]
     text = render_m3u("Late night", entries)
     lines = text.split("\n")
