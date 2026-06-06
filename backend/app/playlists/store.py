@@ -107,6 +107,7 @@ def update_playlist(
     *,
     name: str | None = None,
     description: str | None = None,
+    target_plex_users: list[str] | None = None,
 ) -> StoredPlaylist | None:
     record = get_playlist(playlists_dir, playlist_id)
     if record is None:
@@ -115,6 +116,8 @@ def update_playlist(
         record.name = name
     if description is not None:
         record.description = description
+    if target_plex_users is not None:
+        record.target_plex_users = target_plex_users
     record.updated_at = _now()
     _write_atomic(_record_path(playlists_dir, playlist_id), record)
     return record
@@ -177,6 +180,19 @@ def set_plex_state(
     # have ``updated_at > synced_at`` and the editor would wrongly read
     # "out of date" the instant after a successful sync.
     record.plex[target] = state
+    _write_atomic(_record_path(playlists_dir, playlist_id), record)
+    return record
+
+
+def replace_plex_states(
+    playlists_dir: Path, playlist_id: str, states: dict[str, PlexTargetState]
+) -> StoredPlaylist | None:
+    record = get_playlist(playlists_dir, playlist_id)
+    if record is None:
+        return None
+    # Whole-map replace (a sync recomputes every target's state). Bookkeeping,
+    # NOT a content edit — must not bump updated_at (see set_plex_state).
+    record.plex = states
     _write_atomic(_record_path(playlists_dir, playlist_id), record)
     return record
 

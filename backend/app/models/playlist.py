@@ -60,6 +60,7 @@ class PlaylistCreateRequest(BaseModel):
 class PlaylistUpdateRequest(BaseModel):
     name: str | None = None
     description: str | None = None
+    target_plex_users: list[str] | None = None
 
     @field_validator("name")
     @classmethod

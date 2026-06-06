@@ -193,3 +193,31 @@ def test_set_plex_state_missing_playlist(tmp_path: Path) -> None:
     from app.models.plex import PlexTargetState
 
     assert store.set_plex_state(tmp_path, "0" * 32, "admin", PlexTargetState()) is None
+
+
+def test_update_sets_target_plex_users(tmp_path: Path) -> None:
+    p = store.create_playlist(tmp_path, name="P")
+    updated = store.update_playlist(tmp_path, p.id, target_plex_users=["1", "2"])
+    assert updated is not None
+    assert updated.target_plex_users == ["1", "2"]
+    assert updated.updated_at >= p.updated_at  # changing targets is a real edit
+
+
+def test_replace_plex_states_sets_whole_map(tmp_path: Path) -> None:
+    from app.models.plex import PlexTargetState
+
+    p = store.create_playlist(tmp_path, name="P")
+    states = {
+        "admin": PlexTargetState(rating_key="1", status="ok", synced_at="t"),
+        "7": PlexTargetState(rating_key="2", status="partial", missing=1, synced_at="t"),
+    }
+    updated = store.replace_plex_states(tmp_path, p.id, states)
+    assert updated is not None
+    assert set(updated.plex) == {"admin", "7"}
+    assert updated.plex["7"].status == "partial"
+    # whole-map replace drops a prior target not in the new map
+    again = store.replace_plex_states(
+        tmp_path, p.id, {"admin": PlexTargetState(status="ok", synced_at="t")}
+    )
+    assert again is not None
+    assert set(again.plex) == {"admin"}
