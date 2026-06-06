@@ -14,6 +14,7 @@ from app.api.duplicates import router as duplicates_router
 from app.api.health import router as health_router
 from app.api.import_ import router as import_router
 from app.api.lyrics import router as lyrics_router
+from app.api.playlists import router as playlists_router
 from app.api.reorganize import router as reorganize_router
 from app.api.search import router as search_router
 from app.api.stats import router as stats_router
@@ -157,3 +158,4 @@ app.include_router(duplicates_router, prefix="/api")
 app.include_router(lyrics_router, prefix="/api")
 app.include_router(reorganize_router, prefix="/api")
 app.include_router(stats_router, prefix="/api")
+app.include_router(playlists_router, prefix="/api")
