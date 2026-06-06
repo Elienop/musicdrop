@@ -166,3 +166,28 @@ def test_track_ops_on_missing_playlist_return_none(tmp_path: Path) -> None:
     missing = "0" * 32
     assert store.remove_track(tmp_path, missing, 1) is None
     assert store.set_track_order(tmp_path, missing, track_ids=[1]) is None
+
+
+def test_set_plex_state_records_per_target(tmp_path: Path) -> None:
+    from app.models.plex import PlexTargetState
+
+    p = store.create_playlist(tmp_path, name="P")
+    updated = store.set_plex_state(
+        tmp_path,
+        p.id,
+        "admin",
+        PlexTargetState(rating_key="218550", status="ok", missing=0, synced_at="2026-06-07T00:00:00+00:00"),
+    )
+    assert updated is not None
+    assert updated.plex["admin"].rating_key == "218550"
+    assert updated.plex["admin"].status == "ok"
+    # round-trips through disk
+    reloaded = store.get_playlist(tmp_path, p.id)
+    assert reloaded is not None
+    assert reloaded.plex["admin"].rating_key == "218550"
+
+
+def test_set_plex_state_missing_playlist(tmp_path: Path) -> None:
+    from app.models.plex import PlexTargetState
+
+    assert store.set_plex_state(tmp_path, "0" * 32, "admin", PlexTargetState()) is None

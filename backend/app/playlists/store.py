@@ -18,6 +18,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from app.models.plex import PlexTargetState
 from app.playlists.atomic import write_atomic_text
 
 # Playlist ids are ``uuid.uuid4().hex`` — exactly 32 lowercase hex chars. Any
@@ -39,6 +40,7 @@ class StoredPlaylist(BaseModel):
     description: str = ""
     track_ids: list[int] = []
     target_plex_users: list[str] = []
+    plex: dict[str, PlexTargetState] = {}
     created_at: str
     updated_at: str
 
@@ -159,6 +161,18 @@ def set_track_order(
     if record is None:
         return None
     record.track_ids = list(track_ids)
+    record.updated_at = _now()
+    _write_atomic(_record_path(playlists_dir, playlist_id), record)
+    return record
+
+
+def set_plex_state(
+    playlists_dir: Path, playlist_id: str, target: str, state: PlexTargetState
+) -> StoredPlaylist | None:
+    record = get_playlist(playlists_dir, playlist_id)
+    if record is None:
+        return None
+    record.plex[target] = state
     record.updated_at = _now()
     _write_atomic(_record_path(playlists_dir, playlist_id), record)
     return record

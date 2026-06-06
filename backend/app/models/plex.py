@@ -35,3 +35,17 @@ class PlexUserInfo(BaseModel):
 
 class PlexUserList(BaseModel):
     users: list[PlexUserInfo]
+
+
+class PlexTargetState(BaseModel):
+    """Per-target Plex sync bookkeeping recorded on a playlist.
+
+    Keyed by target in ``StoredPlaylist.plex`` — ``"admin"`` for the owner's
+    account (Chunk 6); per-user account ids in Chunk 7.
+    """
+
+    rating_key: str | None = None
+    status: str = "pending"  # ok | partial | empty | failed | pending
+    missing: int = 0  # tracks not found in Plex
+    synced_at: str | None = None
+    error: str | None = None

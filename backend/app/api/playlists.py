@@ -53,6 +53,7 @@ def _to_playlist(record: StoredPlaylist) -> Playlist:
         description=record.description,
         track_count=len(record.track_ids),
         target_plex_users=record.target_plex_users,
+        plex=record.plex,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )

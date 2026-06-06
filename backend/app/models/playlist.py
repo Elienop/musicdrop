@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, field_validator
 
+from app.models.plex import PlexTargetState
+
 
 class Playlist(BaseModel):
     """Summary view of a playlist (list rows + create/patch responses)."""
@@ -18,6 +20,7 @@ class Playlist(BaseModel):
     description: str
     track_count: int
     target_plex_users: list[str]
+    plex: dict[str, PlexTargetState]
     created_at: str
     updated_at: str
 
