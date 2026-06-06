@@ -4,10 +4,10 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Navigate, RouterProvider } from "react-router";
 
 import { App } from "@/App";
+import { HomePage } from "@/pages/HomePage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { AlbumDetailPage } from "@/pages/albums/AlbumDetailPage";
 import { ArtistAlbumsPage } from "@/pages/artists/ArtistAlbumsPage";
-import { ArtistsPage } from "@/pages/artists/ArtistsPage";
 import { DuplicatesPage } from "@/pages/duplicates/DuplicatesPage";
 import { ImportCandidatePage } from "@/pages/import/ImportCandidatePage";
 import { ImportDuplicatePage } from "@/pages/import/ImportDuplicatePage";
@@ -41,14 +41,17 @@ const router = createBrowserRouter([
   {
     element: <App />,
     children: [
-      { index: true, element: <ArtistsPage /> },
+      { index: true, element: <HomePage /> },
       { path: "/artists", element: <Navigate to="/" replace /> },
       { path: "/artists/:artistName", element: <ArtistAlbumsPage /> },
       { path: "/albums/:albumId", element: <AlbumDetailPage /> },
       { path: "/search", element: <SearchPage /> },
       { path: "/import", element: <ImportPage /> },
       { path: "/import/albums/:index", element: <ImportCandidatePage /> },
-      { path: "/import/albums/:index/duplicate", element: <ImportDuplicatePage /> },
+      {
+        path: "/import/albums/:index/duplicate",
+        element: <ImportDuplicatePage />,
+      },
       { path: "/settings", element: <SettingsPage /> },
       { path: "/duplicates", element: <DuplicatesPage /> },
       { path: "*", element: <NotFoundPage /> },
