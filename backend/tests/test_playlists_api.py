@@ -1,5 +1,6 @@
 import os
 
+import pytest
 from beets.library import Item
 from fastapi.testclient import TestClient
 
@@ -202,3 +203,90 @@ def test_export_removed_on_delete(client: TestClient, beets_library: LibraryHand
     assert os.path.isfile(m3u)
     client.delete(f"/api/playlists/{pid}")
     assert not os.path.exists(m3u)
+
+
+class _SyncTrack:
+    def __init__(self, rating_key: int, locations: list[str]) -> None:
+        self.ratingKey = rating_key
+        self.locations = locations
+
+
+class _SyncSection:
+    TYPE = "artist"
+
+    def __init__(self, tracks: list[_SyncTrack]) -> None:
+        self._tracks = tracks
+
+    def searchTracks(self) -> list[_SyncTrack]:
+        return self._tracks
+
+
+class _SyncPlaylist:
+    def __init__(self, title: str, items: list[_SyncTrack]) -> None:
+        self.title = title
+        self.ratingKey = 777
+        self._items = list(items)
+
+    def items(self) -> list[_SyncTrack]:
+        return list(self._items)
+
+    def addItems(self, tracks: list[_SyncTrack]) -> None:
+        self._items.extend(tracks)
+
+    def removeItems(self, tracks: list[_SyncTrack]) -> None:
+        self._items = []
+
+    def delete(self) -> None:
+        self._items = []
+
+
+class _SyncServer:
+    def __init__(self, tracks: list[_SyncTrack]) -> None:
+        section = _SyncSection(tracks)
+        self.library = type("L", (), {"sections": lambda _s: [section]})()
+        self._created: list[_SyncPlaylist] = []
+
+    def playlists(self) -> list[_SyncPlaylist]:
+        return []
+
+    def createPlaylist(self, title: str, items: list[_SyncTrack]) -> _SyncPlaylist:
+        pl = _SyncPlaylist(title, items)
+        self._created.append(pl)
+        return pl
+
+
+def test_sync_pushes_to_plex(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    t1 = _add_track(beets_library, "Alpha")
+    plex_path = os.path.join(os.fsdecode(beets_library.lib.directory), "Seed", "Alpha.flac")
+    from app.plex import sync as plex_sync
+
+    monkeypatch.setattr(
+        plex_sync.client,
+        "connect",
+        lambda base_url, token: _SyncServer([_SyncTrack(10, [plex_path])]),
+    )
+    client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
+
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
+
+    r = client.post(f"/api/playlists/{pid}/sync")
+    assert r.status_code == 200
+    state = r.json()["plex"]["admin"]
+    assert state["status"] == "ok"
+    assert state["rating_key"] == "777"
+    assert state["synced_at"]
+
+
+def test_sync_unconfigured_409(client: TestClient) -> None:
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    r = client.post(f"/api/playlists/{pid}/sync")
+    assert r.status_code == 409
+
+
+def test_sync_missing_playlist_404(client: TestClient) -> None:
+    client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
+    r = client.post(f"/api/playlists/{'0' * 32}/sync")
+    assert r.status_code == 404

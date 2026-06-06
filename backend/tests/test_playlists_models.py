@@ -15,6 +15,7 @@ def test_playlist_detail_extends_playlist() -> None:
         description="",
         track_count=0,
         target_plex_users=[],
+        plex={},
         created_at="2026-06-06T00:00:00+00:00",
         updated_at="2026-06-06T00:00:00+00:00",
         tracks=[],

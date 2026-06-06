@@ -16,7 +16,7 @@ from plexapi.exceptions import PlexApiException
 from requests.exceptions import RequestException
 
 from app.models.plex import PlexTargetState
-from app.plex import client
+from app.plex import client as client  # explicit re-export: the patchable seam (sync.client)
 from app.plex.config import PlexConfig
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
 from app.plex.mapping import resolve_ordered_tracks
@@ -61,8 +61,6 @@ def sync_playlist(config: PlexConfig, title: str, plex_paths: list[str]) -> Plex
             playlist = server.createPlaylist(title, items=tracks)
 
         status = "ok" if missing == 0 else "partial"
-        return PlexTargetState(
-            rating_key=str(playlist.ratingKey), status=status, missing=missing
-        )
+        return PlexTargetState(rating_key=str(playlist.ratingKey), status=status, missing=missing)
     except (PlexApiException, RequestException) as exc:
         raise PlexConnectionError("Plex sync failed.") from exc

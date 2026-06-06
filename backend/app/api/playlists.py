@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -16,8 +17,9 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.albums import get_library
+from app.api.plex import get_plex_store
 from app.beets.library import LibraryHandle
-from app.beets.playlists import m3u_entries, resolve_tracks
+from app.beets.playlists import m3u_entries, resolve_tracks, track_abs_paths
 from app.config import settings
 from app.models.playlist import (
     Playlist,
@@ -30,6 +32,10 @@ from app.models.playlist import (
 from app.playlists import store
 from app.playlists.m3u import delete_m3u, write_m3u
 from app.playlists.store import StoredPlaylist
+from app.plex import sync as plex_sync
+from app.plex.config import PlexConfig, PlexConfigStore
+from app.plex.errors import PlexConnectionError, PlexNotConfigured
+from app.plex.paths import translate_path
 
 router = APIRouter(tags=["playlists"])
 logger = logging.getLogger(__name__)
@@ -178,6 +184,43 @@ async def reorder_tracks_endpoint(
         raise HTTPException(status_code=404, detail="Playlist not found")
     await _export_playlist(record, handle)
     return await _detail_response(record, handle)
+
+
+@router.post("/playlists/{playlist_id}/sync", response_model=PlaylistDetail)
+async def sync_playlist_endpoint(
+    playlist_id: str,
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+    plex_store: Annotated[PlexConfigStore, Depends(get_plex_store)],
+) -> PlaylistDetail:
+    record = await run_in_threadpool(store.get_playlist, playlists_dir, playlist_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    config = plex_store.get()
+    if not (config.base_url and config.token):
+        raise HTTPException(status_code=409, detail="Connect Plex first")
+
+    plex_paths = await run_in_threadpool(_plex_paths_for, record, handle, config)
+    try:
+        state = await run_in_threadpool(plex_sync.sync_playlist, config, record.name, plex_paths)
+    except PlexNotConfigured as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PlexConnectionError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    state = state.model_copy(update={"synced_at": datetime.now(UTC).isoformat()})
+    record = await run_in_threadpool(
+        store.set_plex_state, playlists_dir, playlist_id, "admin", state
+    )
+    if record is None:  # deleted mid-flight
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    return await _detail_response(record, handle)
+
+
+def _plex_paths_for(record: StoredPlaylist, handle: LibraryHandle, config: PlexConfig) -> list[str]:
+    beets_root = os.fsdecode(handle.lib.directory)
+    abs_paths = track_abs_paths(handle.lib, record.track_ids)
+    return [translate_path(p, beets_root, config.library_path) for p in abs_paths]
 
 
 @router.patch("/playlists/{playlist_id}", response_model=Playlist)

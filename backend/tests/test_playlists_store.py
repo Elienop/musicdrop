@@ -176,7 +176,9 @@ def test_set_plex_state_records_per_target(tmp_path: Path) -> None:
         tmp_path,
         p.id,
         "admin",
-        PlexTargetState(rating_key="218550", status="ok", missing=0, synced_at="2026-06-07T00:00:00+00:00"),
+        PlexTargetState(
+            rating_key="218550", status="ok", missing=0, synced_at="2026-06-07T00:00:00+00:00"
+        ),
     )
     assert updated is not None
     assert updated.plex["admin"].rating_key == "218550"
