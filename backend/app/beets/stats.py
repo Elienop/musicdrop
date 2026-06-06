@@ -29,12 +29,15 @@ def compute_stats(lib: Any) -> LibraryStats:
         total_bytes += int(bitrate * length / 8)
 
     album_count = 0
-    # ``_coerce_str`` mirrors ``list_artists`` exactly, so ``artist_count``
-    # equals the number of rows the roster shows.
+    # Match ``list_artists`` exactly (it skips blank/whitespace album artists),
+    # so ``artist_count`` equals the number of rows the roster shows below.
     artists: set[str] = set()
     for album in lib.albums():
         album_count += 1
-        artists.add(_coerce_str(album.albumartist))
+        name = _coerce_str(album.albumartist)
+        if not name.strip():
+            continue
+        artists.add(name)
 
     return LibraryStats(
         track_count=track_count,

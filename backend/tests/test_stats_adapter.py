@@ -3,6 +3,7 @@ from pathlib import Path
 
 from beets.library import Item, Library
 
+from app.beets.library import list_artists
 from app.beets.stats import build_stats_response, compute_stats, recent_albums
 
 
@@ -103,3 +104,32 @@ def test_empty_library_is_all_zero(tmp_path: Path) -> None:
     assert resp.stats.track_count == 0
     assert resp.stats.total_bytes == 0
     assert resp.recently_added == []
+
+
+def test_artist_count_skips_blank_and_matches_roster(tmp_path: Path) -> None:
+    music = tmp_path / "music"
+    lib = Library(
+        str(tmp_path / "library.db"),
+        directory=str(music),
+        path_formats=[("default", "$albumartist/$album/$track $title")],
+    )
+
+    def add(folder: str, fname: str, **fields: object) -> Item:
+        base = music / folder
+        base.mkdir(parents=True, exist_ok=True)
+        f = base / fname
+        f.write_bytes(b"\x00")
+        it = Item(**fields)  # type: ignore[arg-type]  # beets Item kwargs are untyped
+        it.path = os.fsencode(str(f))
+        return it
+
+    real = add("A/X", "01.flac", album="X", albumartist="A", artist="A", title="t", track=1)
+    lib.add_album([real]).store()
+    # An untagged album with a blank album artist — the roster filters it out.
+    blank = add("blank", "01.flac", album="Y", albumartist="  ", artist="", title="t", track=1)
+    lib.add_album([blank]).store()
+
+    stats = compute_stats(lib)
+    assert stats.album_count == 2  # both albums counted
+    assert stats.artist_count == 1  # blank albumartist excluded
+    assert stats.artist_count == len(list_artists(lib))  # matches the roster
