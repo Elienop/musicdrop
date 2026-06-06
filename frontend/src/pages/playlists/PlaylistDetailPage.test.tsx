@@ -1,6 +1,6 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { beforeEach, describe, expect, test } from "vitest";
 
 import { PlaylistDetailPage } from "@/pages/playlists/PlaylistDetailPage";
@@ -229,6 +229,94 @@ describe("PlaylistDetailPage", () => {
     const cb = await screen.findByRole("checkbox", { name: /partner/i });
     await userEvent.click(cb);
     await waitFor(() => expect(targets).toEqual(["7"]));
+  });
+
+  test("toggling a target is optimistic and keeps the checkbox enabled", async () => {
+    server.use(
+      http.get(USERS, () =>
+        HttpResponse.json({ users: [{ id: "7", name: "Partner", home: true }] }),
+      ),
+      http.get(BASE, () =>
+        HttpResponse.json({ ...detail([track(1, "Alpha")]), target_plex_users: [] }),
+      ),
+      // The PATCH hangs so we observe the OPTIMISTIC state without a settle/refetch
+      // reseeding the local target set.
+      http.patch(BASE, async () => {
+        await delay("infinite");
+        return HttpResponse.json(detail([track(1, "Alpha")]));
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    const cb = await screen.findByRole("checkbox", { name: /partner/i });
+    expect(cb).not.toBeChecked();
+    await userEvent.click(cb);
+    // Reflects intent immediately and stays interactive (no shared-pending disable
+    // that would strand focus).
+    expect(cb).toBeChecked();
+    expect(cb).toBeEnabled();
+    // A freshly-checked target with no sync state yet reads "Not synced yet".
+    expect(await screen.findByText(/not synced yet/i)).toBeInTheDocument();
+  });
+
+  test("a checked target with no sync state reads 'Not synced yet'", async () => {
+    server.use(
+      http.get(USERS, () =>
+        HttpResponse.json({ users: [{ id: "7", name: "Partner", home: true }] }),
+      ),
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          target_plex_users: ["7"],
+          plex: {}, // no per-target bookkeeping recorded yet
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    expect(await screen.findByRole("checkbox", { name: /partner/i })).toBeChecked();
+    expect(await screen.findByText(/not synced yet/i)).toBeInTheDocument();
+  });
+
+  test("points the picker at Settings when Plex isn't configured (409)", async () => {
+    server.use(
+      http.get(USERS, () => new HttpResponse(null, { status: 409 })),
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha")]))),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    expect(await screen.findByText(/choose who gets this playlist/i)).toBeInTheDocument();
+    // The generic "couldn't load" copy is NOT shown for a 409.
+    expect(screen.queryByText(/couldn.t load plex accounts/i)).not.toBeInTheDocument();
+  });
+
+  test("offers Retry in the picker when Plex accounts fail to load (non-409)", async () => {
+    let calls = 0;
+    server.use(
+      http.get(USERS, () => {
+        calls += 1;
+        return calls === 1
+          ? new HttpResponse(null, { status: 500 })
+          : HttpResponse.json({ users: [{ id: "7", name: "Partner", home: true }] });
+      }),
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha")]))),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    expect(await screen.findByText(/couldn.t load plex accounts/i)).toBeInTheDocument();
+    // Not the 409 "configure Plex" copy.
+    expect(screen.queryByText(/choose who gets this playlist/i)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /retry/i }));
+    expect(await screen.findByRole("checkbox", { name: /partner/i })).toBeInTheDocument();
   });
 
   test("per-target sync status names admin and a user", async () => {

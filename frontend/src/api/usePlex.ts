@@ -12,10 +12,18 @@ export function usePlexUsers() {
     queryKey: ["plex", "users"],
     queryFn: async (): Promise<PlexUserList> => {
       const { data, error, response } = await client.GET("/api/plex/users");
-      if (error || !response.ok || !data) throw new Error("Failed to load Plex users");
+      // Tag the error with the HTTP status so the picker can tell the "Plex not
+      // configured" 409 (point at Settings) apart from a generic load failure
+      // (offer a Retry).
+      if (error || !response.ok || !data) {
+        throw Object.assign(new Error("Failed to load Plex users"), {
+          status: response.status,
+        });
+      }
       return data;
     },
-    retry: false, // a 409 (Plex not configured) shouldn't be retried
+    retry: false, // a 409 (Plex not configured) shouldn't be retried, and a
+    // generic failure shouldn't silently loop — the picker offers Retry.
   });
 }
 

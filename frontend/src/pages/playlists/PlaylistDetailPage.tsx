@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   Check,
@@ -69,49 +70,86 @@ function displayTitle(track: PlaylistTrack): string {
   return track.available ? track.title : track.title || "(removed track)";
 }
 
-/** The one-line Plex sync state derived from the playlist's recorded `admin`
- * target. "Out of date" wins when the playlist changed after its last push. */
-function plexStatusLabel(playlist: PlaylistDetail): string {
-  const admin = playlist.plex?.admin;
-  if (!admin) {
-    return "Not synced to Plex";
-  }
-  if (admin.synced_at != null && playlist.updated_at > admin.synced_at) {
-    return "Out of date — re-sync";
-  }
-  if (admin.status === "ok") {
-    return "Synced";
-  }
-  if (admin.status === "partial") {
-    return `${admin.missing} not in Plex`;
-  }
-  if (admin.status === "empty") {
-    return "No matching tracks";
-  }
-  return "Not synced to Plex";
-}
-
 type PlexTargetState = PlaylistDetail["plex"][string];
 
-/** The one-line status for a single fan-out target — mirrors `plexStatusLabel`
- * but for an arbitrary `PlexTargetState`, keeping the same "out of date"
- * precedence (the playlist changed after this target's last push). */
-function targetStatusLabel(state: PlexTargetState, playlist: PlaylistDetail): string {
-  if (state.synced_at != null && playlist.updated_at > state.synced_at) {
-    return "Out of date — re-sync";
+/** Visual tone for a sync status, mapped to a leading icon + a semantic text
+ * color so the state reads at a glance (the text label stays the non-color
+ * carrier for screen readers / color-blind users). */
+type StatusTone = "success" | "warning" | "destructive" | "muted";
+
+interface SyncStatus {
+  label: string;
+  tone: StatusTone;
+}
+
+/** True when ISO instant `a` is strictly later than `b`. Compares parsed
+ * instants (not raw strings) so it's robust to timezone-offset / sub-second
+ * precision drift between the two timestamps. */
+function isAfter(a: string, b: string): boolean {
+  return new Date(a).getTime() > new Date(b).getTime();
+}
+
+/** The one-line Plex sync status for one target (admin or a fan-out user).
+ * "Out of date" wins when the playlist changed after this target's last push.
+ * An absent/unknown state falls back to `notSyncedLabel` (e.g. a freshly-checked
+ * target that hasn't synced yet). */
+function syncStatus(
+  state: PlexTargetState | undefined,
+  playlist: PlaylistDetail,
+  notSyncedLabel: string,
+): SyncStatus {
+  if (!state) {
+    return { label: notSyncedLabel, tone: "muted" };
+  }
+  if (state.synced_at != null && isAfter(playlist.updated_at, state.synced_at)) {
+    return { label: "Out of date — re-sync", tone: "warning" };
   }
   switch (state.status) {
     case "ok":
-      return "Synced";
+      return { label: "Synced", tone: "success" };
     case "partial":
-      return `${state.missing} not in Plex`;
+      return { label: `${state.missing} not in Plex`, tone: "warning" };
     case "empty":
-      return "No matching tracks";
+      return { label: "No matching tracks", tone: "muted" };
     case "failed":
-      return state.error ?? "Failed";
+      return { label: state.error ?? "Failed", tone: "destructive" };
     default:
-      return "Not synced";
+      return { label: notSyncedLabel, tone: "muted" };
   }
+}
+
+/** The owner's own copy: the `admin` target, with a Plex-specific "not synced"
+ * label. */
+function adminSyncStatus(playlist: PlaylistDetail): SyncStatus {
+  return syncStatus(playlist.plex?.admin, playlist, "Not synced to Plex");
+}
+
+/** Render a sync status with a leading lucide icon + semantic color. The text
+ * label is always present (the color/icon are emphasis, not the only signal). */
+function StatusLine({ status }: { status: SyncStatus }) {
+  const { label, tone } = status;
+  const Icon =
+    tone === "success"
+      ? Check
+      : tone === "warning"
+        ? AlertTriangle
+        : tone === "destructive"
+          ? AlertCircle
+          : null;
+  const colorClass =
+    tone === "success"
+      ? "text-success"
+      : tone === "warning"
+        ? "text-warning"
+        : tone === "destructive"
+          ? "text-destructive"
+          : "text-muted-foreground";
+  return (
+    <span className={`inline-flex items-center gap-1 ${colorClass}`}>
+      {Icon ? <Icon className="size-3.5 shrink-0" aria-hidden="true" /> : null}
+      {label}
+    </span>
+  );
 }
 
 /** A first-time sync fails with a 409 when Plex isn't connected yet (no base
@@ -156,6 +194,16 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
   useEffect(() => {
     setTracks(playlist.tracks);
   }, [playlist.tracks]);
+
+  // Optimistic copy of the fan-out target set so a toggled checkbox reflects
+  // intent immediately (no wait on the PATCH round-trip) and stays ENABLED while
+  // the save is in flight — disabling it on a shared `isPending` would strand
+  // keyboard focus and block every other checkbox. Re-seeded from the server on
+  // settle (the refetch reverts the optimistic state if the save failed).
+  const [targetIds, setTargetIds] = useState(() => new Set(playlist.target_plex_users));
+  useEffect(() => {
+    setTargetIds(new Set(playlist.target_plex_users));
+  }, [playlist.target_plex_users]);
 
   // Single polite live region for reorder/remove announcements.
   const [statusMsg, setStatusMsg] = useState("");
@@ -203,17 +251,24 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     rename.mutate({ name: next }, { onSuccess: () => setEditingName(false) });
   }
 
-  /** Add/remove a Plex Home user from this playlist's fan-out targets. Saving
-   * targets bumps `updated_at`, so a newly-added account immediately reads
-   * "out of date" until the next sync pushes its copy. */
-  function toggleTarget(userId: string) {
-    const current = playlist.target_plex_users;
-    const next = current.includes(userId)
-      ? current.filter((id) => id !== userId)
-      : [...current, userId];
-    setTargets.mutate(next, {
-      onSuccess: () => setStatusMsg("Saved Plex sync targets"),
-    });
+  /** Add/remove a Plex Home user from this playlist's fan-out targets. Updates
+   * the optimistic set immediately, then PATCHes the new full list. Announces the
+   * specific action (so consecutive saves re-announce) via the live region. A
+   * newly-added account reads "Not synced yet" until the next sync pushes its
+   * copy. */
+  function toggleTarget(user: { id: string; name: string }) {
+    const checked = targetIds.has(user.id);
+    const next = new Set(targetIds);
+    if (checked) {
+      next.delete(user.id);
+    } else {
+      next.add(user.id);
+    }
+    setTargetIds(next);
+    setStatusMsg(
+      `${checked ? "Removed" : "Added"} ${user.name} ${checked ? "from" : "to"} Plex sync`,
+    );
+    setTargets.mutate([...next]);
   }
 
   /** Move the track at `index` one slot in `dir`: reorder locally for instant
@@ -336,7 +391,8 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
                 // Announce the real outcome (synced / N not in Plex / no
                 // matching tracks) instead of a blanket "complete" — derived
                 // from the same label the visible status line shows.
-                onSuccess: (updated) => setStatusMsg(`Plex sync — ${plexStatusLabel(updated)}`),
+                onSuccess: (updated) =>
+                  setStatusMsg(`Plex sync — ${adminSyncStatus(updated).label}`),
               })
             }
             disabled={sync.isPending}
@@ -446,35 +502,47 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
           {/* The owner always gets their own copy — shown first, no checkbox. */}
           <li className="flex items-center justify-between gap-3 text-sm">
             <span className="font-medium">You (admin)</span>
-            <span className="text-muted-foreground">{plexStatusLabel(playlist)}</span>
+            <StatusLine status={adminSyncStatus(playlist)} />
           </li>
           {plexUsers.isError ? (
-            <li className="text-muted-foreground text-sm">
-              Connect Plex in{" "}
-              <Link to="/settings" className="underline">
-                Settings
-              </Link>{" "}
-              to choose who gets this playlist.
-            </li>
+            isPlexNotConfigured(plexUsers.error) ? (
+              <li className="text-muted-foreground text-sm">
+                Connect Plex in{" "}
+                <Link to="/settings" className="underline">
+                  Settings
+                </Link>{" "}
+                to choose who gets this playlist.
+              </li>
+            ) : (
+              <li
+                className="text-muted-foreground flex items-center justify-between gap-3 text-sm"
+                role="alert"
+              >
+                Couldn&rsquo;t load Plex accounts.
+                <Button variant="outline" size="sm" onClick={() => void plexUsers.refetch()}>
+                  Retry
+                </Button>
+              </li>
+            )
           ) : (
             (plexUsers.data?.users ?? []).map((user) => {
-              const checked = playlist.target_plex_users.includes(user.id);
+              const checked = targetIds.has(user.id);
               const state = playlist.plex?.[user.id];
               return (
                 <li key={user.id} className="flex items-center justify-between gap-3 text-sm">
                   <label className="flex items-center gap-2">
                     <Checkbox
                       checked={checked}
-                      onCheckedChange={() => toggleTarget(user.id)}
+                      onCheckedChange={() => toggleTarget(user)}
                       aria-label={user.name}
-                      disabled={setTargets.isPending}
                     />
                     <span className="font-medium">{user.name}</span>
                   </label>
-                  {state && (
-                    <span className="text-muted-foreground">
-                      {targetStatusLabel(state, playlist)}
-                    </span>
+                  {/* Show a status for every checked target — even before its
+                      first sync (state undefined → "Not synced yet"), matching
+                      the admin row which always shows one. */}
+                  {checked && (
+                    <StatusLine status={syncStatus(state, playlist, "Not synced yet")} />
                   )}
                 </li>
               );
