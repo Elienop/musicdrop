@@ -9,7 +9,7 @@ from app.models.album import Album
 
 class LibraryStats(BaseModel):
     """Headline library counts. ``total_bytes`` is an ESTIMATE
-    (``Σ bitrate × length / 8``), surfaced with ``size_is_estimate`` on the
+    (``sum(bitrate * length / 8)``), surfaced with ``size_is_estimate`` on the
     response so the UI can render it with a leading ``~``."""
 
     track_count: int
