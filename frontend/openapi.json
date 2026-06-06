@@ -1936,6 +1936,28 @@
           }
         }
       }
+    },
+    "/api/stats": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Get Stats",
+        "description": "Library counts + recently-added albums. Pure read; one library scan,\noffloaded to the threadpool so the event loop stays free.",
+        "operationId": "get_stats_api_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryStatsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3667,6 +3689,66 @@
         ],
         "title": "ItemWriteResult",
         "description": "The per-track outcome of an apply (replaces beets' silent all-or-nothing)."
+      },
+      "LibraryStats": {
+        "properties": {
+          "track_count": {
+            "type": "integer",
+            "title": "Track Count"
+          },
+          "album_count": {
+            "type": "integer",
+            "title": "Album Count"
+          },
+          "artist_count": {
+            "type": "integer",
+            "title": "Artist Count"
+          },
+          "total_seconds": {
+            "type": "number",
+            "title": "Total Seconds"
+          },
+          "total_bytes": {
+            "type": "integer",
+            "title": "Total Bytes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "track_count",
+          "album_count",
+          "artist_count",
+          "total_seconds",
+          "total_bytes"
+        ],
+        "title": "LibraryStats",
+        "description": "Headline library counts. ``total_bytes`` is an ESTIMATE\n(``sum(bitrate * length / 8)``), surfaced with ``size_is_estimate`` on the\nresponse so the UI can render it with a leading ``~``."
+      },
+      "LibraryStatsResponse": {
+        "properties": {
+          "stats": {
+            "$ref": "#/components/schemas/LibraryStats"
+          },
+          "recently_added": {
+            "items": {
+              "$ref": "#/components/schemas/Album"
+            },
+            "type": "array",
+            "title": "Recently Added"
+          },
+          "size_is_estimate": {
+            "type": "boolean",
+            "title": "Size Is Estimate",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "stats",
+          "recently_added"
+        ],
+        "title": "LibraryStatsResponse",
+        "description": "Response of ``GET /api/stats`` \u2014 headline stats plus the newest albums\n(reusing the existing :class:`Album` shape the roster already renders)."
       },
       "LyricsBackfillStatus": {
         "properties": {
