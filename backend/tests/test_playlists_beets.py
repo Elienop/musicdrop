@@ -3,7 +3,7 @@ from pathlib import Path
 
 from beets.library import Item, Library
 
-from app.beets.playlists import resolve_tracks
+from app.beets.playlists import m3u_entries, resolve_tracks
 
 
 def _lib_with_items(tmp_path: Path) -> tuple[Library, list[int]]:
@@ -86,3 +86,27 @@ def test_get_item_error_degrades_to_unavailable() -> None:
     tracks = resolve_tracks(_BoomLib(), [7])  # type: ignore[arg-type]  # duck-typed lib
     assert tracks[0].available is False
     assert tracks[0].id == 7
+
+
+def test_m3u_entries_relative_paths(tmp_path: Path) -> None:
+    lib, ids = _lib_with_items(tmp_path)
+    export_dir = str(tmp_path / "music" / ".playlists")
+    entries = m3u_entries(lib, ids, export_dir)
+    assert [e.title for e in entries] == ["Alpha", "Beta"]
+    # tracks live at <music>/A/One/0X.flac; export dir is <music>/.playlists
+    assert entries[0].path == "../A/One/01.flac"
+    assert entries[0].duration_seconds == 100
+    assert entries[0].artist == "A"
+
+
+def test_m3u_entries_skips_unavailable(tmp_path: Path) -> None:
+    lib, ids = _lib_with_items(tmp_path)
+    export_dir = str(tmp_path / "music" / ".playlists")
+    entries = m3u_entries(lib, [ids[0], 999_999, ids[1]], export_dir)
+    # the missing id has no file path, so it is dropped from the .m3u8
+    assert [e.title for e in entries] == ["Alpha", "Beta"]
+
+
+def test_m3u_entries_empty(tmp_path: Path) -> None:
+    lib, _ = _lib_with_items(tmp_path)
+    assert m3u_entries(lib, [], str(tmp_path / "music" / ".playlists")) == []
