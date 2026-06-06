@@ -103,6 +103,9 @@ module = [
     "tests.test_reorganize_jobs",
     "tests.test_reorganize_api",
     "tests.test_reorganize_mutex",
+    "app.beets.naming",
+    "tests.test_naming_adapter",
+    "tests.test_naming_api",
 ]
 disallow_untyped_calls = false
 
