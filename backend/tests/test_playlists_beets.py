@@ -23,10 +23,26 @@ def _lib_with_items(tmp_path: Path) -> tuple[Library, list[int]]:
         it.path = os.fsencode(str(f))
         return it
 
-    a = add("A/One", "01.flac", album="One", albumartist="A", artist="A",
-            title="Alpha", track=1, length=100.0)
-    b = add("A/One", "02.flac", album="One", albumartist="A", artist="A",
-            title="Beta", track=2, length=200.0)
+    a = add(
+        "A/One",
+        "01.flac",
+        album="One",
+        albumartist="A",
+        artist="A",
+        title="Alpha",
+        track=1,
+        length=100.0,
+    )
+    b = add(
+        "A/One",
+        "02.flac",
+        album="One",
+        albumartist="A",
+        artist="A",
+        title="Beta",
+        track=2,
+        length=200.0,
+    )
     lib.add_album([a, b])
     return lib, [int(a.id), int(b.id)]
 

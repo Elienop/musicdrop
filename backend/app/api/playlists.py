@@ -54,9 +54,7 @@ def _to_playlist(record: StoredPlaylist) -> Playlist:
     )
 
 
-async def _detail_response(
-    record: StoredPlaylist, lib: LibraryHandle
-) -> PlaylistDetail:
+async def _detail_response(record: StoredPlaylist, lib: LibraryHandle) -> PlaylistDetail:
     tracks = await run_in_threadpool(resolve_tracks, lib.lib, record.track_ids)
     return PlaylistDetail(**_to_playlist(record).model_dump(), tracks=tracks)
 
@@ -121,9 +119,7 @@ async def remove_track_endpoint(
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> PlaylistDetail:
-    record = await run_in_threadpool(
-        store.remove_track, playlists_dir, playlist_id, item_id
-    )
+    record = await run_in_threadpool(store.remove_track, playlists_dir, playlist_id, item_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Playlist not found")
     return await _detail_response(record, handle)

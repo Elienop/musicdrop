@@ -160,9 +160,7 @@ def add_tracks(
     return record
 
 
-def remove_track(
-    playlists_dir: Path, playlist_id: str, item_id: int
-) -> StoredPlaylist | None:
+def remove_track(playlists_dir: Path, playlist_id: str, item_id: int) -> StoredPlaylist | None:
     record = get_playlist(playlists_dir, playlist_id)
     if record is None:
         return None

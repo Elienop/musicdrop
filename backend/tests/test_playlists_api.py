@@ -88,9 +88,7 @@ def _add_track(handle: LibraryHandle, title: str) -> int:
     return int(item.id)
 
 
-def test_add_tracks_then_detail_resolves(
-    client: TestClient, beets_library: LibraryHandle
-) -> None:
+def test_add_tracks_then_detail_resolves(client: TestClient, beets_library: LibraryHandle) -> None:
     t1 = _add_track(beets_library, "Alpha")
     t2 = _add_track(beets_library, "Beta")
     pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]

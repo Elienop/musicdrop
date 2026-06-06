@@ -17,9 +17,9 @@ def test_playlist_detail_extends_playlist() -> None:
         target_plex_users=[],
         created_at="2026-06-06T00:00:00+00:00",
         updated_at="2026-06-06T00:00:00+00:00",
-        track_ids=[],
+        tracks=[],
     )
-    assert detail.track_ids == []
+    assert detail.tracks == []
     assert detail.track_count == 0
 
 
