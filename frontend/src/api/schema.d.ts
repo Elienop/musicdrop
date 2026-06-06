@@ -928,6 +928,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/playlists/{playlist_id}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync Playlist Endpoint */
+        post: operations["sync_playlist_endpoint_api_playlists__playlist_id__sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/plex/settings": {
         parameters: {
             query?: never;
@@ -1812,6 +1829,10 @@ export interface components {
             track_count: number;
             /** Target Plex Users */
             target_plex_users: string[];
+            /** Plex */
+            plex: {
+                [key: string]: components["schemas"]["PlexTargetState"];
+            };
             /** Created At */
             created_at: string;
             /** Updated At */
@@ -1849,6 +1870,10 @@ export interface components {
             track_count: number;
             /** Target Plex Users */
             target_plex_users: string[];
+            /** Plex */
+            plex: {
+                [key: string]: components["schemas"]["PlexTargetState"];
+            };
             /** Created At */
             created_at: string;
             /** Updated At */
@@ -1920,6 +1945,31 @@ export interface components {
             library_path?: string | null;
             /** Token */
             token?: string | null;
+        };
+        /**
+         * PlexTargetState
+         * @description Per-target Plex sync bookkeeping recorded on a playlist.
+         *
+         *     Keyed by target in ``StoredPlaylist.plex`` — ``"admin"`` for the owner's
+         *     account (Chunk 6); per-user account ids in Chunk 7.
+         */
+        PlexTargetState: {
+            /** Rating Key */
+            rating_key?: string | null;
+            /**
+             * Status
+             * @default pending
+             */
+            status: string;
+            /**
+             * Missing
+             * @default 0
+             */
+            missing: number;
+            /** Synced At */
+            synced_at?: string | null;
+            /** Error */
+            error?: string | null;
         };
         /** PlexUserInfo */
         PlexUserInfo: {
@@ -4030,6 +4080,37 @@ export interface operations {
             path: {
                 playlist_id: string;
                 item_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaylistDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_playlist_endpoint_api_playlists__playlist_id__sync_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playlist_id: string;
             };
             cookie?: never;
         };

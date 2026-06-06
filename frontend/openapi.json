@@ -2301,6 +2301,48 @@
         }
       }
     },
+    "/api/playlists/{playlist_id}/sync": {
+      "post": {
+        "tags": [
+          "playlists"
+        ],
+        "summary": "Sync Playlist Endpoint",
+        "operationId": "sync_playlist_endpoint_api_playlists__playlist_id__sync_post",
+        "parameters": [
+          {
+            "name": "playlist_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Playlist Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaylistDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/plex/settings": {
       "get": {
         "tags": [
@@ -4608,6 +4650,13 @@
             "type": "array",
             "title": "Target Plex Users"
           },
+          "plex": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PlexTargetState"
+            },
+            "type": "object",
+            "title": "Plex"
+          },
           "created_at": {
             "type": "string",
             "title": "Created At"
@@ -4624,6 +4673,7 @@
           "description",
           "track_count",
           "target_plex_users",
+          "plex",
           "created_at",
           "updated_at"
         ],
@@ -4700,6 +4750,13 @@
             "type": "array",
             "title": "Target Plex Users"
           },
+          "plex": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PlexTargetState"
+            },
+            "type": "object",
+            "title": "Plex"
+          },
           "created_at": {
             "type": "string",
             "title": "Created At"
@@ -4723,6 +4780,7 @@
           "description",
           "track_count",
           "target_plex_users",
+          "plex",
           "created_at",
           "updated_at",
           "tracks"
@@ -4918,6 +4976,56 @@
         "type": "object",
         "title": "PlexSettingsUpdate",
         "description": "PUT body \u2014 any omitted field is left unchanged; token is write-only."
+      },
+      "PlexTargetState": {
+        "properties": {
+          "rating_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rating Key"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "pending"
+          },
+          "missing": {
+            "type": "integer",
+            "title": "Missing",
+            "default": 0
+          },
+          "synced_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Synced At"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "title": "PlexTargetState",
+        "description": "Per-target Plex sync bookkeeping recorded on a playlist.\n\nKeyed by target in ``StoredPlaylist.plex`` \u2014 ``\"admin\"`` for the owner's\naccount (Chunk 6); per-user account ids in Chunk 7."
       },
       "PlexUserInfo": {
         "properties": {
