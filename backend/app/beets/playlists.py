@@ -78,7 +78,12 @@ def m3u_entries(lib: Library, ids: list[int], export_dir: str) -> list[M3uEntry]
             if item is None:
                 continue
             abs_path = _abs_path(lib, item.path)
-            rel_path = os.path.relpath(abs_path, export_dir).replace(os.sep, "/")
+            try:
+                rel_path = os.path.relpath(abs_path, export_dir).replace(os.sep, "/")
+            except ValueError:
+                # Different mounts/drives have no relative path (Windows); the
+                # track simply can't be expressed in this .m3u8, so skip it.
+                continue
             entries.append(
                 M3uEntry(
                     duration_seconds=int(_coerce_duration(item.length) or 0),

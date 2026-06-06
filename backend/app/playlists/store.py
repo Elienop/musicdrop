@@ -11,13 +11,14 @@ tmp-then-replace (with fsync) recipe, so no lock is needed.
 
 from __future__ import annotations
 
-import os
 import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel
+
+from app.playlists.atomic import write_atomic_text
 
 # Playlist ids are ``uuid.uuid4().hex`` — exactly 32 lowercase hex chars. Any
 # other value (``..``, an absolute path, a stray slash) is rejected before it
@@ -51,27 +52,8 @@ def _record_path(playlists_dir: Path, playlist_id: str) -> Path:
 
 
 def _write_atomic(path: Path, record: StoredPlaylist) -> None:
-    """Crash-safe write: tmp in same dir -> fsync -> os.replace -> dir fsync."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / f".{path.name}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as handle:
-            handle.write(record.model_dump_json(indent=2))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, path)
-        dir_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+    """Crash-safe write of the JSON record (shared atomic-text recipe)."""
+    write_atomic_text(path, record.model_dump_json(indent=2))
 
 
 def create_playlist(playlists_dir: Path, *, name: str, description: str = "") -> StoredPlaylist:

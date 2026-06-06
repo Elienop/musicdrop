@@ -8,10 +8,11 @@ so the id-based filename stays stable across renames.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from pydantic import BaseModel
+
+from app.playlists.atomic import write_atomic_text
 
 
 class M3uEntry(BaseModel):
@@ -23,38 +24,30 @@ class M3uEntry(BaseModel):
     path: str  # relative to the playlist file's directory, POSIX separators
 
 
+def _sanitize_line(text: str) -> str:
+    """Strip the characters that would break or inject m3u directives.
+
+    The playlist name and a track's artist/title/path go onto their own lines;
+    an embedded CR/LF (or form feed) would split a value across lines and could
+    forge a fake ``#EXTINF`` entry, so collapse them to a space.
+    """
+    return text.replace("\r", "").replace("\n", " ").replace("\x0c", " ")
+
+
 def render_m3u(name: str, entries: list[M3uEntry]) -> str:
     """Render EXTM3U text (UTF-8). A trailing newline always terminates the file."""
-    lines = ["#EXTM3U", f"#PLAYLIST:{name}"]
+    lines = ["#EXTM3U", f"#PLAYLIST:{_sanitize_line(name)}"]
     for entry in entries:
-        lines.append(f"#EXTINF:{entry.duration_seconds},{entry.artist} - {entry.title}")
-        lines.append(entry.path)
+        artist = _sanitize_line(entry.artist)
+        title = _sanitize_line(entry.title)
+        lines.append(f"#EXTINF:{entry.duration_seconds},{artist} - {title}")
+        lines.append(_sanitize_line(entry.path))
     return "\n".join(lines) + "\n"
 
 
 def write_m3u(path: Path, name: str, entries: list[M3uEntry]) -> None:
-    """Atomically write the `.m3u8` (tmp -> fsync -> replace -> dir fsync)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = render_m3u(name, entries)
-    tmp = path.parent / f".{path.name}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, path)
-        dir_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+    """Atomically write the `.m3u8` (crash-safe; creates the export dir)."""
+    write_atomic_text(path, render_m3u(name, entries))
 
 
 def delete_m3u(path: Path) -> None:

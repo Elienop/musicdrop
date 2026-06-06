@@ -32,6 +32,25 @@ def test_render_empty_playlist() -> None:
     assert text == "#EXTM3U\n#PLAYLIST:Empty\n"
 
 
+def test_render_sanitizes_newline_in_name() -> None:
+    # A name with an embedded directive must not become its own line.
+    text = render_m3u("Evil\n#EXTINF:9,x - y", [])
+    assert "\n#EXTINF" not in text
+    lines = text.split("\n")
+    assert lines[1].startswith("#PLAYLIST:Evil ")
+
+
+def test_render_sanitizes_crlf_in_metadata() -> None:
+    entries = [
+        M3uEntry(duration_seconds=100, artist="A\nInjected", title="T\rBad", path="x.flac"),
+    ]
+    text = render_m3u("Name", entries)
+    assert "\r" not in text
+    extinf_lines = [ln for ln in text.split("\n") if ln.startswith("#EXTINF")]
+    assert len(extinf_lines) == 1  # the artist newline folded inline, no forged line
+    assert "Injected" in extinf_lines[0]
+
+
 def test_write_and_delete(tmp_path: Path) -> None:
     dest = tmp_path / "sub" / "abc.m3u8"
     entries = [M3uEntry(duration_seconds=100, artist="A", title="T", path="../A/t.flac")]

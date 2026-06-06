@@ -7,6 +7,7 @@ test fixture; tests drive it via the monkeypatched ``settings.beets_dir``.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Annotated
@@ -31,6 +32,7 @@ from app.playlists.m3u import delete_m3u, write_m3u
 from app.playlists.store import StoredPlaylist
 
 router = APIRouter(tags=["playlists"])
+logger = logging.getLogger(__name__)
 
 
 def get_playlists_dir() -> Path:
@@ -78,15 +80,17 @@ async def _export_playlist(record: StoredPlaylist, handle: LibraryHandle) -> Non
     a filesystem hiccup never fails the mutation."""
     try:
         await run_in_threadpool(_render_export, record, handle, _export_dir(handle))
-    except OSError:
-        pass
+    except Exception:
+        # Best-effort: a filesystem hiccup (or any export failure) must never
+        # fail the mutation — the owned store already holds the truth. Log it.
+        logger.warning("Playlist .m3u8 export failed for %s", record.id, exc_info=True)
 
 
 async def _remove_export(playlist_id: str, handle: LibraryHandle) -> None:
     try:
         await run_in_threadpool(delete_m3u, _export_dir(handle) / f"{playlist_id}.m3u8")
-    except OSError:
-        pass
+    except Exception:
+        logger.warning("Playlist .m3u8 removal failed for %s", playlist_id, exc_info=True)
 
 
 @router.get("/playlists", response_model=list[Playlist])
