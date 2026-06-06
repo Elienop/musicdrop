@@ -12,6 +12,7 @@ import { DuplicatesPage } from "@/pages/duplicates/DuplicatesPage";
 import { ImportCandidatePage } from "@/pages/import/ImportCandidatePage";
 import { ImportDuplicatePage } from "@/pages/import/ImportDuplicatePage";
 import { ImportPage } from "@/pages/import/ImportPage";
+import { PlaylistDetailPage } from "@/pages/playlists/PlaylistDetailPage";
 import { PlaylistsPage } from "@/pages/playlists/PlaylistsPage";
 import { SearchPage } from "@/pages/search/SearchPage";
 import { SettingsPage } from "@/pages/settings/SettingsPage";
@@ -56,6 +57,7 @@ const router = createBrowserRouter([
       { path: "/settings", element: <SettingsPage /> },
       { path: "/duplicates", element: <DuplicatesPage /> },
       { path: "/playlists", element: <PlaylistsPage /> },
+      { path: "/playlists/:playlistId", element: <PlaylistDetailPage /> },
       { path: "*", element: <NotFoundPage /> },
     ],
   },
