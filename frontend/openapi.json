@@ -1372,6 +1372,112 @@
         }
       }
     },
+    "/api/config/naming": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Get Naming",
+        "description": "Current ``paths:``/``replace:`` split into rows, with live previews.",
+        "operationId": "get_naming_api_config_naming_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NamingConfig"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config/naming/preview": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Preview Naming",
+        "description": "Pure render of draft rules + replace against auto-picked samples. Read-only.",
+        "operationId": "preview_naming_api_config_naming_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NamingPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NamingPreviewResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config/naming/save": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Save Naming Route",
+        "description": "Write ``paths:``/``replace:`` back into config.yaml (CAS, 409/422). Apply\nis the existing ``POST /api/config/apply``.",
+        "operationId": "save_naming_route_api_config_naming_save_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveNamingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BeetsConfigSnapshot"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/config/apply": {
       "post": {
         "tags": [
@@ -3801,6 +3907,156 @@
         ],
         "title": "MovedAlbum"
       },
+      "NamingConfig": {
+        "properties": {
+          "default": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default"
+          },
+          "comp": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comp"
+          },
+          "singleton": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Singleton"
+          },
+          "custom": {
+            "items": {
+              "$ref": "#/components/schemas/NamingRuleInput"
+            },
+            "type": "array",
+            "title": "Custom"
+          },
+          "replace": {
+            "items": {
+              "$ref": "#/components/schemas/ReplaceRuleInput"
+            },
+            "type": "array",
+            "title": "Replace"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          },
+          "previews": {
+            "items": {
+              "$ref": "#/components/schemas/RenderedRule"
+            },
+            "type": "array",
+            "title": "Previews"
+          },
+          "replace_errors": {
+            "items": {
+              "$ref": "#/components/schemas/ReplaceError"
+            },
+            "type": "array",
+            "title": "Replace Errors"
+          }
+        },
+        "type": "object",
+        "required": [
+          "default",
+          "comp",
+          "singleton",
+          "custom",
+          "replace",
+          "sha256",
+          "previews",
+          "replace_errors"
+        ],
+        "title": "NamingConfig",
+        "description": "Response of ``GET /api/config/naming`` \u2014 the current ``paths:``/``replace:``\nsplit into structured rows, the CAS ``sha256`` token (same one the config\nsnapshot uses), plus the initial previews so the panel paints fully populated."
+      },
+      "NamingPreviewRequest": {
+        "properties": {
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/NamingRuleInput"
+            },
+            "type": "array",
+            "title": "Rules"
+          },
+          "replace": {
+            "items": {
+              "$ref": "#/components/schemas/ReplaceRuleInput"
+            },
+            "type": "array",
+            "title": "Replace"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rules",
+          "replace"
+        ],
+        "title": "NamingPreviewRequest",
+        "description": "Body of ``POST /api/config/naming/preview`` \u2014 read-only render, no CAS."
+      },
+      "NamingPreviewResponse": {
+        "properties": {
+          "rendered": {
+            "items": {
+              "$ref": "#/components/schemas/RenderedRule"
+            },
+            "type": "array",
+            "title": "Rendered"
+          },
+          "replace_errors": {
+            "items": {
+              "$ref": "#/components/schemas/ReplaceError"
+            },
+            "type": "array",
+            "title": "Replace Errors"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rendered",
+          "replace_errors"
+        ],
+        "title": "NamingPreviewResponse"
+      },
+      "NamingRuleInput": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "template": {
+            "type": "string",
+            "title": "Template"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "template"
+        ],
+        "title": "NamingRuleInput",
+        "description": "One ``paths:`` entry as the panel sees it: a beets query key (``default`` /\n``comp`` / ``singleton`` / any query like ``albumtype:soundtrack``) and its\npath-format template string."
+      },
       "Recommendation": {
         "type": "string",
         "enum": [
@@ -3811,6 +4067,41 @@
         ],
         "title": "Recommendation",
         "description": "Mirror of beets' Recommendation enum (beets/autotag/match.py).\n\nBeets uses an IntEnum (none=0..strong=3); we expose the names as strings so\nthe JSON contract is self-describing for the frontend."
+      },
+      "RenderedRule": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "sample_path": {
+            "type": "string",
+            "title": "Sample Path"
+          },
+          "sample_source": {
+            "type": "string",
+            "title": "Sample Source"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "sample_path",
+          "sample_source"
+        ],
+        "title": "RenderedRule",
+        "description": "A single rule's live preview: the path a sample track would get under this\ntemplate. ``sample_source`` labels where the sample came from (an album label,\nor a built-in example). ``error`` is a defensive per-row field \u2014 beets'\n``functemplate`` is lenient and rarely raises, so it is usually ``None``."
       },
       "ReorganizeBackfillStatus": {
         "properties": {
@@ -4027,6 +4318,49 @@
         ],
         "title": "ReorganizePlan"
       },
+      "ReplaceError": {
+        "properties": {
+          "index": {
+            "type": "integer",
+            "title": "Index"
+          },
+          "pattern": {
+            "type": "string",
+            "title": "Pattern"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "index",
+          "pattern",
+          "message"
+        ],
+        "title": "ReplaceError",
+        "description": "A ``replace:`` row whose regex failed to compile. ``index`` points at the\nrow in the request's ``replace`` list."
+      },
+      "ReplaceRuleInput": {
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "title": "Pattern"
+          },
+          "replacement": {
+            "type": "string",
+            "title": "Replacement"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pattern",
+          "replacement"
+        ],
+        "title": "ReplaceRuleInput",
+        "description": "One ``replace:`` entry \u2014 a regex ``pattern`` and its ``replacement`` string\n(empty replacement = delete the matched text)."
+      },
       "ResolveAllRequest": {
         "properties": {
           "mode": {
@@ -4131,6 +4465,36 @@
           "moved"
         ],
         "title": "ResolveResult"
+      },
+      "SaveNamingRequest": {
+        "properties": {
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/NamingRuleInput"
+            },
+            "type": "array",
+            "title": "Rules"
+          },
+          "replace": {
+            "items": {
+              "$ref": "#/components/schemas/ReplaceRuleInput"
+            },
+            "type": "array",
+            "title": "Replace"
+          },
+          "base_sha256": {
+            "type": "string",
+            "title": "Base Sha256"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rules",
+          "replace",
+          "base_sha256"
+        ],
+        "title": "SaveNamingRequest",
+        "description": "Body of ``POST /api/config/naming/save``. ``base_sha256`` is the CAS token\nechoed from the snapshot the panel loaded; mismatch -> 409."
       },
       "SaveRequest": {
         "properties": {

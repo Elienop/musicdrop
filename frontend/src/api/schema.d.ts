@@ -527,6 +527,67 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/config/naming": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Naming
+         * @description Current ``paths:``/``replace:`` split into rows, with live previews.
+         */
+        get: operations["get_naming_api_config_naming_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/naming/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Naming
+         * @description Pure render of draft rules + replace against auto-picked samples. Read-only.
+         */
+        post: operations["preview_naming_api_config_naming_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/naming/save": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Save Naming Route
+         * @description Write ``paths:``/``replace:`` back into config.yaml (CAS, 409/422). Apply
+         *     is the existing ``POST /api/config/apply``.
+         */
+        post: operations["save_naming_route_api_config_naming_save_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/config/apply": {
         parameters: {
             query?: never;
@@ -1506,6 +1567,59 @@ export interface components {
             trash_path: string;
         };
         /**
+         * NamingConfig
+         * @description Response of ``GET /api/config/naming`` — the current ``paths:``/``replace:``
+         *     split into structured rows, the CAS ``sha256`` token (same one the config
+         *     snapshot uses), plus the initial previews so the panel paints fully populated.
+         */
+        NamingConfig: {
+            /** Default */
+            default: string | null;
+            /** Comp */
+            comp: string | null;
+            /** Singleton */
+            singleton: string | null;
+            /** Custom */
+            custom: components["schemas"]["NamingRuleInput"][];
+            /** Replace */
+            replace: components["schemas"]["ReplaceRuleInput"][];
+            /** Sha256 */
+            sha256: string;
+            /** Previews */
+            previews: components["schemas"]["RenderedRule"][];
+            /** Replace Errors */
+            replace_errors: components["schemas"]["ReplaceError"][];
+        };
+        /**
+         * NamingPreviewRequest
+         * @description Body of ``POST /api/config/naming/preview`` — read-only render, no CAS.
+         */
+        NamingPreviewRequest: {
+            /** Rules */
+            rules: components["schemas"]["NamingRuleInput"][];
+            /** Replace */
+            replace: components["schemas"]["ReplaceRuleInput"][];
+        };
+        /** NamingPreviewResponse */
+        NamingPreviewResponse: {
+            /** Rendered */
+            rendered: components["schemas"]["RenderedRule"][];
+            /** Replace Errors */
+            replace_errors: components["schemas"]["ReplaceError"][];
+        };
+        /**
+         * NamingRuleInput
+         * @description One ``paths:`` entry as the panel sees it: a beets query key (``default`` /
+         *     ``comp`` / ``singleton`` / any query like ``albumtype:soundtrack``) and its
+         *     path-format template string.
+         */
+        NamingRuleInput: {
+            /** Query */
+            query: string;
+            /** Template */
+            template: string;
+        };
+        /**
          * Recommendation
          * @description Mirror of beets' Recommendation enum (beets/autotag/match.py).
          *
@@ -1514,6 +1628,23 @@ export interface components {
          * @enum {string}
          */
         Recommendation: "none" | "low" | "medium" | "strong";
+        /**
+         * RenderedRule
+         * @description A single rule's live preview: the path a sample track would get under this
+         *     template. ``sample_source`` labels where the sample came from (an album label,
+         *     or a built-in example). ``error`` is a defensive per-row field — beets'
+         *     ``functemplate`` is lenient and rarely raises, so it is usually ``None``.
+         */
+        RenderedRule: {
+            /** Query */
+            query: string;
+            /** Sample Path */
+            sample_path: string;
+            /** Sample Source */
+            sample_source: string;
+            /** Error */
+            error?: string | null;
+        };
         /** ReorganizeBackfillStatus */
         ReorganizeBackfillStatus: {
             /**
@@ -1583,6 +1714,30 @@ export interface components {
             truncated: boolean;
         };
         /**
+         * ReplaceError
+         * @description A ``replace:`` row whose regex failed to compile. ``index`` points at the
+         *     row in the request's ``replace`` list.
+         */
+        ReplaceError: {
+            /** Index */
+            index: number;
+            /** Pattern */
+            pattern: string;
+            /** Message */
+            message: string;
+        };
+        /**
+         * ReplaceRuleInput
+         * @description One ``replace:`` entry — a regex ``pattern`` and its ``replacement`` string
+         *     (empty replacement = delete the matched text).
+         */
+        ReplaceRuleInput: {
+            /** Pattern */
+            pattern: string;
+            /** Replacement */
+            replacement: string;
+        };
+        /**
          * ResolveAllRequest
          * @description Body of ``POST /api/duplicates/resolve-all`` — resolve many groups at once.
          */
@@ -1628,6 +1783,19 @@ export interface components {
             kept_album_id: number;
             /** Moved */
             moved: components["schemas"]["MovedAlbum"][];
+        };
+        /**
+         * SaveNamingRequest
+         * @description Body of ``POST /api/config/naming/save``. ``base_sha256`` is the CAS token
+         *     echoed from the snapshot the panel loaded; mismatch -> 409.
+         */
+        SaveNamingRequest: {
+            /** Rules */
+            rules: components["schemas"]["NamingRuleInput"][];
+            /** Replace */
+            replace: components["schemas"]["ReplaceRuleInput"][];
+            /** Base Sha256 */
+            base_sha256: string;
         };
         /**
          * SaveRequest
@@ -2831,6 +2999,92 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["SaveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BeetsConfigSnapshot"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_naming_api_config_naming_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NamingConfig"];
+                };
+            };
+        };
+    };
+    preview_naming_api_config_naming_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NamingPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NamingPreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_naming_route_api_config_naming_save_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveNamingRequest"];
             };
         };
         responses: {
