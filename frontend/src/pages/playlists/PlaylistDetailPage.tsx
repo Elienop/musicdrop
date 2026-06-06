@@ -1,5 +1,15 @@
-import { AlertCircle, ArrowDown, ArrowUp, Check, Music, Pencil, Trash2, X } from "lucide-react";
-import { useState } from "react";
+import {
+  AlertCircle,
+  ArrowDown,
+  ArrowUp,
+  Check,
+  Loader2,
+  Music,
+  Pencil,
+  Trash2,
+  X,
+} from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 
 import {
@@ -48,6 +58,12 @@ function formatDuration(seconds: number | null): string {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
+/** What the row shows (and what we announce): a vanished beets item keeps its
+ * slot but reads as "(removed track)" when it has no title. */
+function displayTitle(track: PlaylistTrack): string {
+  return track.available ? track.title : track.title || "(removed track)";
+}
+
 export function PlaylistDetailPage() {
   const { playlistId } = useParams<{ playlistId: string }>();
   const id = playlistId ?? "";
@@ -72,7 +88,51 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
   const [editingName, setEditingName] = useState(false);
   const [draftName, setDraftName] = useState(playlist.name);
 
-  const order = playlist.tracks.map((t) => t.id);
+  // Local copy of the tracklist so reorder/remove update the UI immediately
+  // (optimistic) and keyboard focus can be restored deterministically once the
+  // new row order has rendered — instead of waiting on the refetch round-trip.
+  // Re-seeded whenever the server hands back a fresh tracklist.
+  const [tracks, setTracks] = useState(playlist.tracks);
+  useEffect(() => {
+    setTracks(playlist.tracks);
+  }, [playlist.tracks]);
+
+  // Single polite live region for reorder/remove announcements.
+  const [statusMsg, setStatusMsg] = useState("");
+
+  // Focus restoration: a move reshuffles rows and a remove unmounts one, both of
+  // which drop keyboard focus to <body>. We record which control to refocus and
+  // apply it in a layout effect after the new order paints. Buttons are keyed by
+  // `${trackId}:up|down|remove` so the lookup survives reordering.
+  const buttonRefs = useRef(new Map<string, HTMLButtonElement | null>());
+  const emptyRef = useRef<HTMLParagraphElement | null>(null);
+  const pendingFocus = useRef<{ keys: string[]; empty?: boolean } | null>(null);
+
+  function setButtonRef(key: string, el: HTMLButtonElement | null) {
+    if (el) {
+      buttonRefs.current.set(key, el);
+    } else {
+      buttonRefs.current.delete(key);
+    }
+  }
+
+  useLayoutEffect(() => {
+    const req = pendingFocus.current;
+    if (!req) {
+      return;
+    }
+    pendingFocus.current = null;
+    for (const key of req.keys) {
+      const el = buttonRefs.current.get(key);
+      if (el && !el.disabled) {
+        el.focus();
+        return;
+      }
+    }
+    if (req.empty) {
+      emptyRef.current?.focus();
+    }
+  }, [tracks]);
 
   function saveName() {
     const next = draftName.trim();
@@ -83,20 +143,58 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     rename.mutate({ name: next }, { onSuccess: () => setEditingName(false) });
   }
 
-  /** Move the track at `index` one slot in `dir` and PUT the new full order. */
+  /** Move the track at `index` one slot in `dir`: reorder locally for instant
+   * feedback, PUT the new full order, and refocus the moved row's move button
+   * (falling back to its sibling button when the move lands it at an end). */
   function move(index: number, dir: -1 | 1) {
     const target = index + dir;
-    if (target < 0 || target >= order.length) {
+    if (target < 0 || target >= tracks.length) {
       return;
     }
-    const next = [...order];
+    const prev = tracks;
+    const next = [...tracks];
     [next[index], next[target]] = [next[target], next[index]];
-    reorder.mutate(next);
+    setTracks(next);
+
+    const moved = next[target];
+    setStatusMsg(`Moved ${displayTitle(moved)} to position ${target + 1}`);
+    const dirKey = dir === -1 ? "up" : "down";
+    const altKey = dir === -1 ? "down" : "up";
+    pendingFocus.current = { keys: [`${moved.id}:${dirKey}`, `${moved.id}:${altKey}`] };
+
+    reorder.mutate(
+      next.map((t) => t.id),
+      { onError: () => setTracks(prev) },
+    );
+  }
+
+  /** Remove the track at `index`. On success announce it and move focus to a
+   * surviving sibling (the row that shifts up into its slot, else the previous
+   * row, else the empty-state heading) — the refetch unmounts the row and the
+   * layout effect applies the queued focus once the new order paints. */
+  function handleRemove(index: number) {
+    const removed = tracks[index];
+    const afterRemoval = tracks.filter((_, i) => i !== index);
+    removeTrack.mutate(removed.id, {
+      onSuccess: () => {
+        setStatusMsg(`Removed ${displayTitle(removed)}`);
+        if (afterRemoval.length === 0) {
+          pendingFocus.current = { keys: [], empty: true };
+        } else {
+          const survivor = afterRemoval[Math.min(index, afterRemoval.length - 1)];
+          pendingFocus.current = { keys: [`${survivor.id}:remove`] };
+        }
+      },
+    });
   }
 
   return (
     <section className="flex flex-col gap-6" aria-label="Playlist">
       <BackLink to="/playlists" label="Playlists" />
+
+      <p className="sr-only" role="status" aria-live="polite">
+        {statusMsg}
+      </p>
 
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-2">
@@ -152,7 +250,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
             </div>
           )}
           <p className="text-muted-foreground text-sm">
-            {playlist.track_count} {playlist.track_count === 1 ? "track" : "tracks"}
+            {tracks.length} {tracks.length === 1 ? "track" : "tracks"}
           </p>
         </div>
 
@@ -170,17 +268,34 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
                 library.
               </AlertDialogDescription>
             </AlertDialogHeader>
+            {remove.isError && (
+              <p className="text-destructive text-sm" role="alert">
+                Couldn&rsquo;t delete the playlist. Try again.
+              </p>
+            )}
             <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
               <AlertDialogAction
                 variant="destructive"
-                onClick={() =>
+                disabled={remove.isPending}
+                onClick={(e) => {
+                  // Keep the dialog mounted while the DELETE is in flight: it
+                  // would otherwise auto-close on click, hiding the pending state
+                  // and any error. We navigate away ourselves on success.
+                  e.preventDefault();
                   remove.mutate(playlist.id, {
                     onSuccess: () => navigate("/playlists"),
-                  })
-                }
+                  });
+                }}
               >
-                Delete
+                {remove.isPending ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                    Deleting&hellip;
+                  </>
+                ) : (
+                  "Delete"
+                )}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -192,9 +307,19 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
           Couldn&rsquo;t rename the playlist. Try again.
         </p>
       )}
+      {reorder.isError && (
+        <p className="text-destructive text-sm" role="alert">
+          Couldn&rsquo;t save the new order. Try again.
+        </p>
+      )}
+      {removeTrack.isError && (
+        <p className="text-destructive text-sm" role="alert">
+          Couldn&rsquo;t remove the track. Try again.
+        </p>
+      )}
 
-      {playlist.tracks.length === 0 ? (
-        <EmptyTracks />
+      {tracks.length === 0 ? (
+        <EmptyTracks headingRef={emptyRef} />
       ) : (
         <Table>
           <TableHeader>
@@ -202,21 +327,23 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
               <TableHead className="w-12 pr-4 text-right">#</TableHead>
               <TableHead>Title</TableHead>
               <TableHead className="w-20 text-right">Length</TableHead>
-              <TableHead className="w-28 text-right">Reorder</TableHead>
+              <TableHead className="w-28 text-right">
+                <span className="sr-only">Actions</span>
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {playlist.tracks.map((track, index) => (
+            {tracks.map((track, index) => (
               <PlaylistTrackRow
                 key={track.id}
                 track={track}
                 position={index + 1}
                 isFirst={index === 0}
-                isLast={index === playlist.tracks.length - 1}
-                reordering={reorder.isPending}
+                isLast={index === tracks.length - 1}
                 onMoveUp={() => move(index, -1)}
                 onMoveDown={() => move(index, 1)}
-                onRemove={() => removeTrack.mutate(track.id)}
+                onRemove={() => handleRemove(index)}
+                registerRef={setButtonRef}
               />
             ))}
           </TableBody>
@@ -231,23 +358,23 @@ function PlaylistTrackRow({
   position,
   isFirst,
   isLast,
-  reordering,
   onMoveUp,
   onMoveDown,
   onRemove,
+  registerRef,
 }: {
   track: PlaylistTrack;
   position: number;
   isFirst: boolean;
   isLast: boolean;
-  reordering: boolean;
   onMoveUp: () => void;
   onMoveDown: () => void;
   onRemove: () => void;
+  registerRef: (key: string, el: HTMLButtonElement | null) => void;
 }) {
   // A track whose beets item no longer resolves: keep its slot (so it can be
   // removed) but grey it and label the gap.
-  const title = track.available ? track.title : track.title || "(removed track)";
+  const title = displayTitle(track);
   return (
     <TableRow className={track.available ? undefined : "bg-muted/40"}>
       <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
@@ -263,7 +390,7 @@ function PlaylistTrackRow({
             </span>
             {!track.available && (
               <Badge variant="outline" className="shrink-0 text-xs font-normal">
-                Unavailable
+                unavailable
               </Badge>
             )}
           </div>
@@ -286,24 +413,27 @@ function PlaylistTrackRow({
       <TableCell>
         <div className="flex items-center justify-end gap-1">
           <Button
+            ref={(el) => registerRef(`${track.id}:up`, el)}
             size="icon-sm"
             variant="ghost"
             onClick={onMoveUp}
-            disabled={isFirst || reordering}
+            disabled={isFirst}
             aria-label={`Move ${title} up`}
           >
             <ArrowUp className="size-4" aria-hidden="true" />
           </Button>
           <Button
+            ref={(el) => registerRef(`${track.id}:down`, el)}
             size="icon-sm"
             variant="ghost"
             onClick={onMoveDown}
-            disabled={isLast || reordering}
+            disabled={isLast}
             aria-label={`Move ${title} down`}
           >
             <ArrowDown className="size-4" aria-hidden="true" />
           </Button>
           <Button
+            ref={(el) => registerRef(`${track.id}:remove`, el)}
             size="icon-sm"
             variant="ghost"
             onClick={onRemove}
@@ -317,11 +447,17 @@ function PlaylistTrackRow({
   );
 }
 
-function EmptyTracks() {
+function EmptyTracks({
+  headingRef,
+}: {
+  headingRef?: React.Ref<HTMLParagraphElement>;
+}) {
   return (
     <div className="rounded-xl border border-dashed p-8 text-center" role="status">
       <Music className="text-muted-foreground mx-auto mb-2 size-8" aria-hidden="true" />
-      <p className="font-medium">No tracks yet</p>
+      <p ref={headingRef} tabIndex={-1} className="font-medium outline-none">
+        No tracks yet
+      </p>
       <p className="text-muted-foreground text-sm">
         Add some from an album or search.
       </p>

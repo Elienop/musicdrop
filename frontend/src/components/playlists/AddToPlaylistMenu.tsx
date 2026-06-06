@@ -1,5 +1,5 @@
 import { ListPlus, Plus } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useAddTracks, usePlaylists } from "@/api/usePlaylists";
 import { CreatePlaylistDialog } from "@/components/playlists/CreatePlaylistDialog";
@@ -30,41 +30,74 @@ export function AddToPlaylistMenu({
 }) {
   const menuLabel = label ?? "Add to playlist";
   const [createOpen, setCreateOpen] = useState(false);
+  // Radix closes the dropdown on item-select, unmounting its content before the
+  // add mutation resolves — so any feedback rendered inside the menu would be
+  // torn down before it could speak. The confirmation lives on the always-mounted
+  // root instead: role="status" announces it to assistive tech and it is visible
+  // (a small floating pill) so sighted users also get acknowledgement.
+  const [msg, setMsg] = useState("");
   const addTracks = useAddTracks();
 
-  function addTo(playlistId: string) {
-    addTracks.mutate({ playlistId, trackIds });
+  // Self-dismiss so the floating confirmation doesn't linger over later rows.
+  useEffect(() => {
+    if (!msg) {
+      return;
+    }
+    const timer = setTimeout(() => setMsg(""), 3000);
+    return () => clearTimeout(timer);
+  }, [msg]);
+
+  function addTo(playlistId: string, name: string) {
+    addTracks.mutate(
+      { playlistId, trackIds },
+      {
+        onSuccess: () => setMsg(`Added to ${name}`),
+        onError: () => setMsg("Couldn't add — try again"),
+      },
+    );
   }
 
   return (
     <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="sm" aria-label={menuLabel}>
-            <ListPlus className="size-4" aria-hidden="true" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="min-w-52">
-          <DropdownMenuLabel>Add to playlist</DropdownMenuLabel>
-          <DropdownMenuSeparator />
-          <PlaylistItems onPick={addTo} pending={addTracks.isPending} />
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            onSelect={(e) => {
-              // Keep the dropdown's select from also dismissing the dialog we open.
-              e.preventDefault();
-              setCreateOpen(true);
-            }}
+      <span className="relative inline-flex">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon-sm" aria-label={menuLabel}>
+              <ListPlus className="size-4" aria-hidden="true" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-52">
+            <DropdownMenuLabel>Add to playlist</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <PlaylistItems onPick={addTo} pending={addTracks.isPending} />
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={(e) => {
+                // Keep the dropdown's select from also dismissing the dialog we open.
+                e.preventDefault();
+                setCreateOpen(true);
+              }}
+            >
+              <Plus className="size-4" aria-hidden="true" /> New playlist&hellip;
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        {msg && (
+          <span
+            role="status"
+            aria-live="polite"
+            className="bg-foreground text-background pointer-events-none absolute top-full right-0 z-50 mt-1 rounded-md px-2 py-1 text-xs whitespace-nowrap shadow-md"
           >
-            <Plus className="size-4" aria-hidden="true" /> New playlist&hellip;
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+            {msg}
+          </span>
+        )}
+      </span>
 
       <CreatePlaylistDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
-        onCreated={(playlist) => addTo(playlist.id)}
+        onCreated={(playlist) => addTo(playlist.id, playlist.name)}
       />
     </>
   );
@@ -76,7 +109,7 @@ function PlaylistItems({
   onPick,
   pending,
 }: {
-  onPick: (playlistId: string) => void;
+  onPick: (playlistId: string, name: string) => void;
   pending: boolean;
 }) {
   const { data, isPending, isError } = usePlaylists();
@@ -98,7 +131,7 @@ function PlaylistItems({
         <DropdownMenuItem
           key={playlist.id}
           disabled={pending}
-          onSelect={() => onPick(playlist.id)}
+          onSelect={() => onPick(playlist.id, playlist.name)}
         >
           <span className="truncate">{playlist.name}</span>
         </DropdownMenuItem>

@@ -77,6 +77,64 @@ describe("PlaylistDetailPage", () => {
     await waitFor(() => expect(body).toEqual([2, 1]));
   });
 
+  test("announces a reorder via the status region", async () => {
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
+      http.put(`${BASE}/tracks`, () =>
+        HttpResponse.json(detail([track(2, "Beta"), track(1, "Alpha")])),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /move alpha down/i }));
+    expect(await screen.findByText(/moved alpha to position 2/i)).toBeInTheDocument();
+  });
+
+  test("announces a removal via the status region", async () => {
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
+      http.delete(`${BASE}/tracks/1`, () => HttpResponse.json(detail([track(2, "Beta")]))),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /remove alpha/i }));
+    expect(await screen.findByText(/removed alpha/i)).toBeInTheDocument();
+  });
+
+  test("surfaces a reorder failure", async () => {
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
+      http.put(`${BASE}/tracks`, () => new HttpResponse(null, { status: 500 })),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /move alpha down/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t save the new order/i);
+  });
+
+  test("surfaces a remove failure", async () => {
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
+      http.delete(`${BASE}/tracks/1`, () => new HttpResponse(null, { status: 500 })),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /remove alpha/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t remove the track/i);
+  });
+
   test("shows unavailable tracks as such", async () => {
     server.use(http.get(BASE, () => HttpResponse.json(detail([track(9, "Gone", false)]))));
     renderWithProviders(<PlaylistDetailPage />, {

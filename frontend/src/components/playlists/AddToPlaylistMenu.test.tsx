@@ -39,4 +39,21 @@ describe("AddToPlaylistMenu", () => {
 
     await waitFor(() => expect(added).toEqual([42]));
   });
+
+  test("announces which playlist a track was added to", async () => {
+    server.use(
+      http.get(LIST, () => HttpResponse.json([playlist()])),
+      http.post(`${LIST}/${PID}/tracks`, () =>
+        HttpResponse.json({ ...playlist(), tracks: [] }),
+      ),
+    );
+    renderWithProviders(<AddToPlaylistMenu trackIds={[42]} label="Add to playlist" />);
+
+    await userEvent.click(screen.getByRole("button", { name: /add to playlist/i }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /late night/i }));
+
+    // The dropdown content unmounts on select, so the confirmation must live on
+    // the always-mounted root.
+    expect(await screen.findByText(/added to late night/i)).toBeInTheDocument();
+  });
 });
