@@ -16,6 +16,7 @@ from app.api.import_ import router as import_router
 from app.api.lyrics import router as lyrics_router
 from app.api.reorganize import router as reorganize_router
 from app.api.search import router as search_router
+from app.api.stats import router as stats_router
 from app.artwork.cache import ArtistImageCache
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
@@ -155,3 +156,4 @@ app.include_router(config_router, prefix="/api")
 app.include_router(duplicates_router, prefix="/api")
 app.include_router(lyrics_router, prefix="/api")
 app.include_router(reorganize_router, prefix="/api")
+app.include_router(stats_router, prefix="/api")
