@@ -835,6 +835,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Stats
+         * @description Library counts + recently-added albums. Pure read; one library scan,
+         *     offloaded to the threadpool so the event loop stays free.
+         */
+        get: operations["get_stats_api_stats_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1488,6 +1509,39 @@ export interface components {
             moved: boolean;
             /** Error */
             error?: string | null;
+        };
+        /**
+         * LibraryStats
+         * @description Headline library counts. ``total_bytes`` is an ESTIMATE
+         *     (``sum(bitrate * length / 8)``), surfaced with ``size_is_estimate`` on the
+         *     response so the UI can render it with a leading ``~``.
+         */
+        LibraryStats: {
+            /** Track Count */
+            track_count: number;
+            /** Album Count */
+            album_count: number;
+            /** Artist Count */
+            artist_count: number;
+            /** Total Seconds */
+            total_seconds: number;
+            /** Total Bytes */
+            total_bytes: number;
+        };
+        /**
+         * LibraryStatsResponse
+         * @description Response of ``GET /api/stats`` — headline stats plus the newest albums
+         *     (reusing the existing :class:`Album` shape the roster already renders).
+         */
+        LibraryStatsResponse: {
+            stats: components["schemas"]["LibraryStats"];
+            /** Recently Added */
+            recently_added: components["schemas"]["Album"][];
+            /**
+             * Size Is Estimate
+             * @default true
+             */
+            size_is_estimate: boolean;
         };
         /** LyricsBackfillStatus */
         LyricsBackfillStatus: {
@@ -3465,6 +3519,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReorganizeBackfillStatus"];
+                };
+            };
+        };
+    };
+    get_stats_api_stats_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryStatsResponse"];
                 };
             };
         };

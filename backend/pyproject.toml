@@ -106,6 +106,10 @@ module = [
     "app.beets.naming",
     "tests.test_naming_adapter",
     "tests.test_naming_api",
+    "app.beets.stats",
+    "app.api.stats",
+    "tests.test_stats_adapter",
+    "tests.test_stats_api",
 ]
 disallow_untyped_calls = false
 
