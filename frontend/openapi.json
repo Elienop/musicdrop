@@ -4873,6 +4873,20 @@
               }
             ],
             "title": "Description"
+          },
+          "target_plex_users": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Plex Users"
           }
         },
         "type": "object",

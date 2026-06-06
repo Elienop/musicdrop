@@ -1912,6 +1912,8 @@ export interface components {
             name?: string | null;
             /** Description */
             description?: string | null;
+            /** Target Plex Users */
+            target_plex_users?: string[] | null;
         };
         /** PlexConnection */
         PlexConnection: {
