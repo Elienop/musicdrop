@@ -18,6 +18,7 @@ Time is stamped by the caller (this module has no clock): the returned
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from app.models.plex import PlexTargetState
@@ -34,8 +35,25 @@ def _find_existing(server: Any, title: str) -> Any | None:
     return None
 
 
+def _reconcile_on(server: Any, title: str, tracks: list[Any], missing: int) -> PlexTargetState:
+    """Rebuild the playlist ``title`` on ``server``: delete any existing one of
+    that title, then recreate it from ``tracks`` (or leave it absent if empty).
+
+    Delete-then-recreate (rather than emptying in place) keeps the result a clean
+    rebuild in either branch — no reliance on Plex's emptied-playlist behaviour.
+    """
+    existing = _find_existing(server, title)
+    if existing is not None:
+        existing.delete()
+    if not tracks:
+        return PlexTargetState(rating_key=None, status="empty", missing=missing)
+    playlist = server.createPlaylist(title, items=tracks)
+    status = "ok" if missing == 0 else "partial"
+    return PlexTargetState(rating_key=str(playlist.ratingKey), status=status, missing=missing)
+
+
 def sync_playlist(config: PlexConfig, title: str, plex_paths: list[str]) -> PlexTargetState:
-    """Create/reconcile the Plex playlist ``title`` with ``plex_paths`` (ordered)."""
+    """Create/reconcile the playlist on the admin account only."""
     if not (config.base_url and config.token):
         raise PlexNotConfigured("Plex is not configured.")
     try:
@@ -44,20 +62,7 @@ def sync_playlist(config: PlexConfig, title: str, plex_paths: list[str]) -> Plex
         if section is None:
             raise PlexConnectionError("No music library found in Plex.")
         tracks, missing = resolve_ordered_tracks(section, plex_paths)
-        existing = _find_existing(server, title)
-
-        # Delete any existing playlist of this title first, so the result is a
-        # clean rebuild in either branch (empty or repopulated) — no reliance on
-        # Plex's emptied-playlist behaviour.
-        if existing is not None:
-            existing.delete()
-
-        if not tracks:
-            return PlexTargetState(rating_key=None, status="empty", missing=missing)
-
-        playlist = server.createPlaylist(title, items=tracks)
-        status = "ok" if missing == 0 else "partial"
-        return PlexTargetState(rating_key=str(playlist.ratingKey), status=status, missing=missing)
+        return _reconcile_on(server, title, tracks, missing)
     except PlexConnectionError:
         raise  # already our type (e.g. no music section) — don't re-wrap
     except Exception as exc:
@@ -65,3 +70,45 @@ def sync_playlist(config: PlexConfig, title: str, plex_paths: list[str]) -> Plex
         # any unexpected library failure) into our connection error, so the
         # caller only ever sees PlexNotConfigured / PlexConnectionError.
         raise PlexConnectionError("Plex sync failed.") from exc
+
+
+def sync_playlist_to_targets(
+    config: PlexConfig, title: str, plex_paths: list[str], target_user_ids: list[str]
+) -> dict[str, PlexTargetState]:
+    """Reconcile the playlist on the admin account AND each target user.
+
+    The owner ("admin") always gets their copy. Each target user is synced via
+    ``switchUser`` and ISOLATED — one user's failure marks only that user
+    ``failed`` and never aborts the others. Tracks are resolved once (the admin
+    library scan) and reused for every target (ratingKeys are library-global).
+    """
+    if not (config.base_url and config.token):
+        raise PlexNotConfigured("Plex is not configured.")
+    try:
+        admin = client.connect(config.base_url, config.token)
+        section = client.music_section(admin)
+        if section is None:
+            raise PlexConnectionError("No music library found in Plex.")
+        tracks, missing = resolve_ordered_tracks(section, plex_paths)
+    except PlexConnectionError:
+        raise
+    except Exception as exc:
+        raise PlexConnectionError("Plex sync failed.") from exc
+
+    # Bind each target id through a factory call so the closure captures the
+    # current uid per iteration — sidesteps the late-binding-loop-variable trap.
+    def _run_for(uid: str) -> Callable[[], PlexTargetState]:
+        return lambda: _reconcile_on(admin.switchUser(uid), title, tracks, missing)
+
+    results: dict[str, PlexTargetState] = {}
+    results["admin"] = _safe_reconcile(lambda: _reconcile_on(admin, title, tracks, missing))
+    for uid in target_user_ids:
+        results[uid] = _safe_reconcile(_run_for(uid))
+    return results
+
+
+def _safe_reconcile(run: Callable[[], PlexTargetState]) -> PlexTargetState:
+    try:
+        return run()
+    except Exception:
+        return PlexTargetState(status="failed", error="Couldn't sync to this Plex account.")

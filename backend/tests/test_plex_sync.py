@@ -129,3 +129,48 @@ def test_unexpected_error_translated(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sync.client, "connect", boom)
     with pytest.raises(PlexConnectionError):
         sync.sync_playlist(CONFIG, "Mix", ["/m/a.flac"])
+
+
+def test_fan_out_to_admin_and_users(monkeypatch: pytest.MonkeyPatch) -> None:
+    server = _FakeServer([_FakeTrack(10, ["/m/a.flac"])])
+
+    user_servers: dict[str, _FakeServer] = {
+        "7": _FakeServer([_FakeTrack(10, ["/m/a.flac"])]),
+        "8": _FakeServer([_FakeTrack(10, ["/m/a.flac"])]),
+    }
+
+    def _switch(uid: str) -> _FakeServer:
+        return user_servers[uid]
+
+    server.switchUser = _switch  # type: ignore[attr-defined]
+    _patch(monkeypatch, server)
+
+    states = sync.sync_playlist_to_targets(CONFIG, "Mix", ["/m/a.flac"], ["7", "8"])
+    assert set(states) == {"admin", "7", "8"}
+    assert states["admin"].status == "ok"
+    assert states["7"].status == "ok"
+    # each user server actually got a playlist created
+    assert len(user_servers["7"].created) == 1
+
+
+def test_fan_out_isolates_a_failing_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    server = _FakeServer([_FakeTrack(10, ["/m/a.flac"])])
+
+    def _switch(uid: str) -> _FakeServer:
+        if uid == "bad":
+            raise RuntimeError("no access")
+        return _FakeServer([_FakeTrack(10, ["/m/a.flac"])])
+
+    server.switchUser = _switch  # type: ignore[attr-defined]
+    _patch(monkeypatch, server)
+
+    states = sync.sync_playlist_to_targets(CONFIG, "Mix", ["/m/a.flac"], ["bad", "ok"])
+    assert states["admin"].status == "ok"
+    assert states["bad"].status == "failed"
+    assert states["bad"].error
+    assert states["ok"].status == "ok"
+
+
+def test_fan_out_not_configured() -> None:
+    with pytest.raises(PlexNotConfigured):
+        sync.sync_playlist_to_targets(PlexConfig(), "Mix", ["/m/a.flac"], ["7"])
