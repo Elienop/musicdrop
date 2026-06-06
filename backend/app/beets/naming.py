@@ -98,23 +98,56 @@ def _synthetic_item(query: str) -> tuple[Any, str]:
     return it, "built-in sample"
 
 
-def _pick_sample(lib: Any, query: str) -> tuple[Any, str]:
-    """First library item fitting the rule's query, else a synthetic sample.
+#: How many items to scan looking for a legible sample before settling for the
+#: first match — bounds the per-preview cost on a large library.
+_SAMPLE_SCAN_CAP = 200
 
-    ``default`` -> first item that belongs to an album (``album_id`` set) and is
-    not a compilation; ``comp``/``singleton`` -> the mapped beets query; a custom
-    query -> itself.
+
+def _is_legible(text: str) -> bool:
+    """True if ``text`` reads as mostly Latin/ASCII letters.
+
+    The preview is an illustration, so we prefer a sample whose artist name is
+    easy to eyeball in a path over, e.g., an RTL (Arabic) or CJK name — which is
+    technically correct but hard to read at a glance. Falls back to any item
+    when nothing legible is found.
+    """
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return False
+    return sum(c.isascii() for c in letters) / len(letters) >= 0.6
+
+
+def _label(item: Any) -> str:
+    artist = item.albumartist or item.artist or "Unknown"
+    return f"{artist} — {item.album or item.title}"
+
+
+def _pick_sample(lib: Any, query: str) -> tuple[Any, str]:
+    """A representative library item for the rule's query, else a synthetic sample.
+
+    ``default`` -> an item that belongs to an album (``album_id`` set) and is not
+    a compilation; ``comp``/``singleton`` -> the mapped beets query; a custom
+    query -> itself. Among the first ``_SAMPLE_SCAN_CAP`` matches, prefer a
+    legible (mostly-Latin) artist so the preview reads cleanly; otherwise use the
+    first match.
     """
     sel = _SAMPLE_QUERY.get(query, query)
     try:
-        if query == "default":
-            for it in lib.items():
-                if it.album_id is not None and not it.comp:
-                    return it, f"{it.albumartist or it.artist} — {it.album}"
-        else:
-            for it in lib.items(sel):
-                artist = it.albumartist or it.artist or "Unknown"
-                return it, f"{artist} — {it.album or it.title}"
+        items = lib.items() if query == "default" else lib.items(sel)
+        first: Any = None
+        scanned = 0
+        for it in items:
+            if query == "default" and (it.album_id is None or it.comp):
+                continue
+            if first is None:
+                first = it
+            if _is_legible(it.albumartist or it.artist or ""):
+                return it, _label(it)
+            scanned += 1
+            if scanned >= _SAMPLE_SCAN_CAP:
+                break
+        if first is not None:
+            return first, _label(first)
     except Exception:
         # A malformed custom query string (beets ParsingError) -> synthetic.
         pass

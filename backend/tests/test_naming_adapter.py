@@ -4,7 +4,12 @@ from pathlib import Path
 import pytest
 from beets.library import Item, Library
 
-from app.beets.naming import assemble_rules, compile_replacements, render_samples
+from app.beets.naming import (
+    _is_legible,
+    assemble_rules,
+    compile_replacements,
+    render_samples,
+)
 from app.models.config_editor import NamingRuleInput, ReplaceRuleInput
 
 
@@ -127,6 +132,60 @@ def test_compile_replacements_splits_valid_and_bad() -> None:
     )
     assert len(valid) == 1  # empty pattern skipped, "(" errored
     assert [e.index for e in errs] == [1]
+
+
+def test_is_legible_prefers_latin() -> None:
+    assert _is_legible("Daft Punk")
+    assert _is_legible("Sigur Rós")  # mostly Latin
+    assert not _is_legible("سلوى القطريب")  # RTL / Arabic
+    assert not _is_legible("")
+
+
+def test_default_prefers_legible_sample_over_rtl(tmp_path: Path) -> None:
+    music = tmp_path / "music"
+    lib = Library(
+        str(tmp_path / "l.db"),
+        directory=str(music),
+        path_formats=[("default", "$albumartist/$album/$track $title")],
+    )
+
+    def add(folder: str, fname: str, **f: object) -> Item:
+        base = music / folder
+        base.mkdir(parents=True, exist_ok=True)
+        p = base / fname
+        p.write_bytes(b"\x00")
+        it = Item(**f)  # type: ignore[arg-type]  # beets Item kwargs are untyped
+        it.path = os.fsencode(str(p))
+        return it
+
+    # An RTL album whose leading "(" sorts it first (the naive pick) + a Latin one.
+    rtl = add(
+        "rtl",
+        "01 a.flac",
+        album="(٢٠) ألبوم",
+        albumartist="(سلوى)",
+        artist="(سلوى)",
+        title="أغنية",
+        track=1,
+        disc=1,
+    )
+    lib.add_album([rtl]).store()
+    latin = add(
+        "Daft Punk/Discovery",
+        "01 One More Time.flac",
+        album="Discovery",
+        albumartist="Daft Punk",
+        artist="Daft Punk",
+        title="One More Time",
+        track=1,
+        disc=1,
+    )
+    lib.add_album([latin]).store()
+
+    rules = [NamingRuleInput(query="default", template="$albumartist/$album/$track $title")]
+    rendered, _ = render_samples(lib, rules=rules, replace=[])
+    assert rendered[0].sample_path.startswith("Daft Punk/")
+    assert "Daft Punk" in rendered[0].sample_source
 
 
 def test_assemble_rules_orders_known_then_custom() -> None:
