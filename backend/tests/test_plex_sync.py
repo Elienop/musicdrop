@@ -89,10 +89,12 @@ def test_reconciles_existing_playlist(monkeypatch: pytest.MonkeyPatch) -> None:
     server._playlists.append(existing)
     _patch(monkeypatch, server)
     state = sync.sync_playlist(CONFIG, "Mix", ["/m/b.flac"])
-    # existing playlist is reused (same ratingKey) and its items replaced
+    # An existing playlist of this title is DELETED then recreated fresh (so we
+    # never rely on Plex's emptied-playlist behaviour).
+    assert existing.items() == []  # deleted
+    assert len(server.created) == 1
+    assert [t.ratingKey for t in server.created[0].items()] == [20]
     assert state.rating_key == "500"
-    assert [t.ratingKey for t in existing.items()] == [20]
-    assert server.created == []  # reused, not recreated
 
 
 def test_empty_when_no_tracks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -113,6 +115,16 @@ def test_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def boom(base_url: str, token: str) -> object:
         raise ReqConnErr("no route")
+
+    monkeypatch.setattr(sync.client, "connect", boom)
+    with pytest.raises(PlexConnectionError):
+        sync.sync_playlist(CONFIG, "Mix", ["/m/a.flac"])
+
+
+def test_unexpected_error_translated(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Any non-plexapi/non-requests failure is still surfaced as PlexConnectionError.
+    def boom(base_url: str, token: str) -> object:
+        raise RuntimeError("kaboom")
 
     monkeypatch.setattr(sync.client, "connect", boom)
     with pytest.raises(PlexConnectionError):

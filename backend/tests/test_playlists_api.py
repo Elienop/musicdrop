@@ -290,3 +290,18 @@ def test_sync_missing_playlist_404(client: TestClient) -> None:
     client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
     r = client.post(f"/api/playlists/{'0' * 32}/sync")
     assert r.status_code == 404
+
+
+def test_sync_connection_error_502(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from requests.exceptions import ConnectionError as ReqConnErr
+
+    from app.plex import sync as plex_sync
+
+    def boom(base_url: str, token: str) -> object:
+        raise ReqConnErr("no route")
+
+    monkeypatch.setattr(plex_sync.client, "connect", boom)
+    client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    r = client.post(f"/api/playlists/{pid}/sync")
+    assert r.status_code == 502

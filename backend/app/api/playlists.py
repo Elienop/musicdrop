@@ -200,18 +200,25 @@ async def sync_playlist_endpoint(
     if not (config.base_url and config.token):
         raise HTTPException(status_code=409, detail="Connect Plex first")
 
-    plex_paths = await run_in_threadpool(_plex_paths_for, record, handle, config)
     try:
+        plex_paths = await run_in_threadpool(_plex_paths_for, record, handle, config)
         state = await run_in_threadpool(plex_sync.sync_playlist, config, record.name, plex_paths)
     except PlexNotConfigured as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PlexConnectionError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except OSError as exc:
+        # Reading the library files to resolve paths failed — surface a clean
+        # error instead of a raw 500.
+        raise HTTPException(status_code=502, detail="Couldn't read the library files.") from exc
 
     state = state.model_copy(update={"synced_at": datetime.now(UTC).isoformat()})
-    record = await run_in_threadpool(
-        store.set_plex_state, playlists_dir, playlist_id, "admin", state
-    )
+    try:
+        record = await run_in_threadpool(
+            store.set_plex_state, playlists_dir, playlist_id, "admin", state
+        )
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Failed to record sync state.") from exc
     if record is None:  # deleted mid-flight
         raise HTTPException(status_code=404, detail="Playlist not found")
     return await _detail_response(record, handle)

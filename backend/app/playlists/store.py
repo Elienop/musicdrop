@@ -172,8 +172,11 @@ def set_plex_state(
     record = get_playlist(playlists_dir, playlist_id)
     if record is None:
         return None
+    # Recording a Plex sync result is bookkeeping, NOT a content edit, so it
+    # must NOT bump ``updated_at`` — otherwise a freshly-synced playlist would
+    # have ``updated_at > synced_at`` and the editor would wrongly read
+    # "out of date" the instant after a successful sync.
     record.plex[target] = state
-    record.updated_at = _now()
     _write_atomic(_record_path(playlists_dir, playlist_id), record)
     return record
 
