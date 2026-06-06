@@ -893,6 +893,41 @@ export interface paths {
         patch: operations["update_playlist_endpoint_api_playlists__playlist_id__patch"];
         trace?: never;
     };
+    "/api/playlists/{playlist_id}/tracks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Reorder Tracks Endpoint */
+        put: operations["reorder_tracks_endpoint_api_playlists__playlist_id__tracks_put"];
+        /** Add Tracks Endpoint */
+        post: operations["add_tracks_endpoint_api_playlists__playlist_id__tracks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/playlists/{playlist_id}/tracks/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove Track Endpoint */
+        delete: operations["remove_track_endpoint_api_playlists__playlist_id__tracks__item_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1730,6 +1765,13 @@ export interface components {
             /** Updated At */
             updated_at: string;
         };
+        /** PlaylistAddTracksRequest */
+        PlaylistAddTracksRequest: {
+            /** Track Ids */
+            track_ids: number[];
+            /** Position */
+            position?: number | null;
+        };
         /** PlaylistCreateRequest */
         PlaylistCreateRequest: {
             /** Name */
@@ -1742,7 +1784,7 @@ export interface components {
         };
         /**
          * PlaylistDetail
-         * @description Single-playlist view. Chunk 2 adds resolved ``tracks`` alongside ids.
+         * @description Single-playlist view with the ordered, resolved tracklist.
          */
         PlaylistDetail: {
             /** Id */
@@ -1759,8 +1801,33 @@ export interface components {
             created_at: string;
             /** Updated At */
             updated_at: string;
+            /** Tracks */
+            tracks: components["schemas"]["PlaylistTrack"][];
+        };
+        /** PlaylistReorderRequest */
+        PlaylistReorderRequest: {
             /** Track Ids */
             track_ids: number[];
+        };
+        /**
+         * PlaylistTrack
+         * @description A track as shown in a playlist. ``available`` is False when the beets
+         *     ``item.id`` no longer resolves (deleted from the library); such entries
+         *     still occupy their position and can be removed.
+         */
+        PlaylistTrack: {
+            /** Id */
+            id: number;
+            /** Title */
+            title: string;
+            /** Artist */
+            artist: string;
+            /** Album */
+            album: string;
+            /** Duration Seconds */
+            duration_seconds: number | null;
+            /** Available */
+            available: boolean;
         };
         /** PlaylistUpdateRequest */
         PlaylistUpdateRequest: {
@@ -3774,6 +3841,108 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Playlist"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reorder_tracks_endpoint_api_playlists__playlist_id__tracks_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaylistReorderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaylistDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_tracks_endpoint_api_playlists__playlist_id__tracks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaylistAddTracksRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaylistDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_track_endpoint_api_playlists__playlist_id__tracks__item_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playlist_id: string;
+                item_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaylistDetail"];
                 };
             };
             /** @description Validation Error */

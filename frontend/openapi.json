@@ -2147,6 +2147,159 @@
           }
         }
       }
+    },
+    "/api/playlists/{playlist_id}/tracks": {
+      "post": {
+        "tags": [
+          "playlists"
+        ],
+        "summary": "Add Tracks Endpoint",
+        "operationId": "add_tracks_endpoint_api_playlists__playlist_id__tracks_post",
+        "parameters": [
+          {
+            "name": "playlist_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Playlist Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaylistAddTracksRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaylistDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "playlists"
+        ],
+        "summary": "Reorder Tracks Endpoint",
+        "operationId": "reorder_tracks_endpoint_api_playlists__playlist_id__tracks_put",
+        "parameters": [
+          {
+            "name": "playlist_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Playlist Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaylistReorderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaylistDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playlists/{playlist_id}/tracks/{item_id}": {
+      "delete": {
+        "tags": [
+          "playlists"
+        ],
+        "summary": "Remove Track Endpoint",
+        "operationId": "remove_track_endpoint_api_playlists__playlist_id__tracks__item_id__delete",
+        "parameters": [
+          {
+            "name": "playlist_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Playlist Id"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaylistDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4375,6 +4528,33 @@
         "title": "Playlist",
         "description": "Summary view of a playlist (list rows + create/patch responses)."
       },
+      "PlaylistAddTracksRequest": {
+        "properties": {
+          "track_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Track Ids"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          }
+        },
+        "type": "object",
+        "required": [
+          "track_ids"
+        ],
+        "title": "PlaylistAddTracksRequest"
+      },
       "PlaylistCreateRequest": {
         "properties": {
           "name": {
@@ -4426,12 +4606,12 @@
             "type": "string",
             "title": "Updated At"
           },
-          "track_ids": {
+          "tracks": {
             "items": {
-              "type": "integer"
+              "$ref": "#/components/schemas/PlaylistTrack"
             },
             "type": "array",
-            "title": "Track Ids"
+            "title": "Tracks"
           }
         },
         "type": "object",
@@ -4443,10 +4623,72 @@
           "target_plex_users",
           "created_at",
           "updated_at",
-          "track_ids"
+          "tracks"
         ],
         "title": "PlaylistDetail",
-        "description": "Single-playlist view. Chunk 2 adds resolved ``tracks`` alongside ids."
+        "description": "Single-playlist view with the ordered, resolved tracklist."
+      },
+      "PlaylistReorderRequest": {
+        "properties": {
+          "track_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Track Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "track_ids"
+        ],
+        "title": "PlaylistReorderRequest"
+      },
+      "PlaylistTrack": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "artist": {
+            "type": "string",
+            "title": "Artist"
+          },
+          "album": {
+            "type": "string",
+            "title": "Album"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Seconds"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "artist",
+          "album",
+          "duration_seconds",
+          "available"
+        ],
+        "title": "PlaylistTrack",
+        "description": "A track as shown in a playlist. ``available`` is False when the beets\n``item.id`` no longer resolves (deleted from the library); such entries\nstill occupy their position and can be removed."
       },
       "PlaylistUpdateRequest": {
         "properties": {
