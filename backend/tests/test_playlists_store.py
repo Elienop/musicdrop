@@ -221,3 +221,14 @@ def test_replace_plex_states_sets_whole_map(tmp_path: Path) -> None:
     )
     assert again is not None
     assert set(again.plex) == {"admin"}
+    # Recording sync state is bookkeeping — it must NOT bump updated_at (else a
+    # freshly-synced playlist would read "out of date").
+    assert updated.updated_at == p.updated_at
+    assert again.updated_at == p.updated_at
+
+
+def test_patch_target_users_excludes_admin_and_dedupes() -> None:
+    from app.models.playlist import PlaylistUpdateRequest
+
+    body = PlaylistUpdateRequest(target_plex_users=["7", "admin", "7", "8"])
+    assert body.target_plex_users == ["7", "8"]

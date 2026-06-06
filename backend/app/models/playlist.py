@@ -72,6 +72,23 @@ class PlaylistUpdateRequest(BaseModel):
             raise ValueError("name must not be blank")
         return stripped
 
+    @field_validator("target_plex_users")
+    @classmethod
+    def _clean_targets(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        # "admin" is the owner's own sync key (synced unconditionally) — it is
+        # never a *target* user; drop it (and any duplicates) so the fan-out
+        # can't sync the admin account twice.
+        seen: set[str] = set()
+        cleaned: list[str] = []
+        for uid in value:
+            if uid == "admin" or uid in seen:
+                continue
+            seen.add(uid)
+            cleaned.append(uid)
+        return cleaned
+
 
 # A generous ceiling on the ids accepted in one request — far above any real
 # playlist, but it stops a pathological/buggy client from forcing an unbounded
