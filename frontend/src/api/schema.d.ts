@@ -856,6 +856,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/playlists": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Playlists Endpoint */
+        get: operations["list_playlists_endpoint_api_playlists_get"];
+        put?: never;
+        /** Create Playlist Endpoint */
+        post: operations["create_playlist_endpoint_api_playlists_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/playlists/{playlist_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Playlist Endpoint */
+        get: operations["get_playlist_endpoint_api_playlists__playlist_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Playlist Endpoint */
+        delete: operations["delete_playlist_endpoint_api_playlists__playlist_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Playlist Endpoint */
+        patch: operations["update_playlist_endpoint_api_playlists__playlist_id__patch"];
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1672,6 +1709,65 @@ export interface components {
             query: string;
             /** Template */
             template: string;
+        };
+        /**
+         * Playlist
+         * @description Summary view of a playlist (list rows + create/patch responses).
+         */
+        Playlist: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string;
+            /** Track Count */
+            track_count: number;
+            /** Target Plex Users */
+            target_plex_users: string[];
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+        };
+        /** PlaylistCreateRequest */
+        PlaylistCreateRequest: {
+            /** Name */
+            name: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+        };
+        /**
+         * PlaylistDetail
+         * @description Single-playlist view. Chunk 2 adds resolved ``tracks`` alongside ids.
+         */
+        PlaylistDetail: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string;
+            /** Track Count */
+            track_count: number;
+            /** Target Plex Users */
+            target_plex_users: string[];
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+            /** Track Ids */
+            track_ids: number[];
+        };
+        /** PlaylistUpdateRequest */
+        PlaylistUpdateRequest: {
+            /** Name */
+            name?: string | null;
+            /** Description */
+            description?: string | null;
         };
         /**
          * Recommendation
@@ -3539,6 +3635,154 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LibraryStatsResponse"];
+                };
+            };
+        };
+    };
+    list_playlists_endpoint_api_playlists_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Playlist"][];
+                };
+            };
+        };
+    };
+    create_playlist_endpoint_api_playlists_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaylistCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Playlist"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_playlist_endpoint_api_playlists__playlist_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaylistDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_playlist_endpoint_api_playlists__playlist_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_playlist_endpoint_api_playlists__playlist_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaylistUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Playlist"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
