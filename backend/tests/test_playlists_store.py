@@ -76,3 +76,30 @@ def test_delete_returns_true_then_false(tmp_path: Path) -> None:
     assert store.delete_playlist(tmp_path, created.id) is True
     assert store.get_playlist(tmp_path, created.id) is None
     assert store.delete_playlist(tmp_path, created.id) is False
+
+
+def test_get_rejects_non_uuid_ids(tmp_path: Path) -> None:
+    # Anything that is not a 32-char lowercase-hex uuid is treated as missing.
+    for bad_id in ["does-not-exist", "ABC", "../../etc/passwd", "/etc/passwd", ""]:
+        assert store.get_playlist(tmp_path, bad_id) is None
+
+
+def test_traversal_id_cannot_read_outside_dir(tmp_path: Path) -> None:
+    playlists_dir = tmp_path / "playlists"
+    playlists_dir.mkdir()
+    secret = tmp_path / "secret.json"
+    secret.write_text('{"id": "x"}', encoding="utf-8")
+    # ../secret would escape playlists_dir if the id were trusted.
+    assert store.get_playlist(playlists_dir, "../secret") is None
+
+
+def test_traversal_id_cannot_delete_outside_dir(tmp_path: Path) -> None:
+    playlists_dir = tmp_path / "playlists"
+    playlists_dir.mkdir()
+    victim = tmp_path / "victim.json"
+    victim.write_text("{}", encoding="utf-8")
+    assert store.delete_playlist(playlists_dir, "../victim") is False
+    assert victim.exists()  # untouched
+    # An absolute-path id is likewise rejected, not followed.
+    assert store.delete_playlist(playlists_dir, str(victim.with_suffix(""))) is False
+    assert victim.exists()

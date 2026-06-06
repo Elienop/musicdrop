@@ -12,11 +12,22 @@ tmp-then-replace (with fsync) recipe, so no lock is needed.
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel
+
+# Playlist ids are ``uuid.uuid4().hex`` — exactly 32 lowercase hex chars. Any
+# other value (``..``, an absolute path, a stray slash) is rejected before it
+# touches the filesystem, so a hostile ``{playlist_id}`` URL parameter cannot
+# escape the playlists dir via path traversal.
+_VALID_ID = re.compile(r"\A[0-9a-f]{32}\Z")
+
+
+def _is_valid_id(playlist_id: str) -> bool:
+    return bool(_VALID_ID.match(playlist_id))
 
 
 class StoredPlaylist(BaseModel):
@@ -79,6 +90,8 @@ def create_playlist(playlists_dir: Path, *, name: str, description: str = "") ->
 
 
 def get_playlist(playlists_dir: Path, playlist_id: str) -> StoredPlaylist | None:
+    if not _is_valid_id(playlist_id):
+        return None
     path = _record_path(playlists_dir, playlist_id)
     try:
         raw = path.read_text(encoding="utf-8")
@@ -124,6 +137,8 @@ def update_playlist(
 
 
 def delete_playlist(playlists_dir: Path, playlist_id: str) -> bool:
+    if not _is_valid_id(playlist_id):
+        return False
     try:
         _record_path(playlists_dir, playlist_id).unlink()
         return True

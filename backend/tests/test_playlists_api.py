@@ -61,3 +61,10 @@ def test_delete_then_404(client: TestClient) -> None:
     assert r.status_code == 204
     assert client.get(f"/api/playlists/{pid}").status_code == 404
     assert client.delete(f"/api/playlists/{pid}").status_code == 404
+
+
+def test_malformed_id_is_404_not_500(client: TestClient) -> None:
+    # A non-uuid {playlist_id} is rejected as not-found (never touches the FS).
+    assert client.get("/api/playlists/not-a-uuid").status_code == 404
+    assert client.patch("/api/playlists/not-a-uuid", json={"name": "X"}).status_code == 404
+    assert client.delete("/api/playlists/not-a-uuid").status_code == 404
