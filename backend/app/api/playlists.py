@@ -202,7 +202,13 @@ async def sync_playlist_endpoint(
 
     try:
         plex_paths = await run_in_threadpool(_plex_paths_for, record, handle, config)
-        state = await run_in_threadpool(plex_sync.sync_playlist, config, record.name, plex_paths)
+        states = await run_in_threadpool(
+            plex_sync.sync_playlist_to_targets,
+            config,
+            record.name,
+            plex_paths,
+            record.target_plex_users,
+        )
     except PlexNotConfigured as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PlexConnectionError as exc:
@@ -212,10 +218,11 @@ async def sync_playlist_endpoint(
         # error instead of a raw 500.
         raise HTTPException(status_code=502, detail="Couldn't read the library files.") from exc
 
-    state = state.model_copy(update={"synced_at": datetime.now(UTC).isoformat()})
+    now = datetime.now(UTC).isoformat()
+    states = {key: state.model_copy(update={"synced_at": now}) for key, state in states.items()}
     try:
         record = await run_in_threadpool(
-            store.set_plex_state, playlists_dir, playlist_id, "admin", state
+            store.replace_plex_states, playlists_dir, playlist_id, states
         )
     except OSError as exc:
         raise HTTPException(status_code=500, detail="Failed to record sync state.") from exc
@@ -243,6 +250,7 @@ async def update_playlist_endpoint(
         playlist_id,
         name=body.name,
         description=body.description,
+        target_plex_users=body.target_plex_users,
     )
     if record is None:
         raise HTTPException(status_code=404, detail="Playlist not found")

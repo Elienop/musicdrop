@@ -305,3 +305,71 @@ def test_sync_connection_error_502(client: TestClient, monkeypatch: pytest.Monke
     pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
     r = client.post(f"/api/playlists/{pid}/sync")
     assert r.status_code == 502
+
+
+def test_patch_sets_target_users(client: TestClient) -> None:
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    r = client.patch(f"/api/playlists/{pid}", json={"target_plex_users": ["7", "8"]})
+    assert r.status_code == 200
+    assert r.json()["target_plex_users"] == ["7", "8"]
+
+
+def test_sync_fans_out_to_targets(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    t1 = _add_track(beets_library, "Alpha")
+    plex_path = os.path.join(os.fsdecode(beets_library.lib.directory), "Seed", "Alpha.flac")
+
+    from app.plex import sync as plex_sync
+
+    class _FakePL:
+        def __init__(self) -> None:
+            self.title = "Mix"
+            self.ratingKey = 1
+            self._i: list[object] = []
+
+        def items(self) -> list[object]:
+            return self._i
+
+        def addItems(self, t: list[object]) -> None:
+            self._i.extend(t)
+
+        def removeItems(self, t: list[object]) -> None:
+            self._i = []
+
+        def delete(self) -> None:
+            self._i = []
+
+    class _Sec:
+        TYPE = "artist"
+
+        def searchTracks(self) -> list[object]:
+            tr = type("T", (), {"ratingKey": 9, "locations": [plex_path]})()
+            return [tr]
+
+    class _Srv:
+        def __init__(self) -> None:
+            self.library = type("L", (), {"sections": lambda _s: [_Sec()]})()
+
+        def playlists(self) -> list[object]:
+            return []
+
+        def createPlaylist(self, title: str, items: list[object]) -> _FakePL:
+            return _FakePL()
+
+        def switchUser(self, uid: str) -> "_Srv":
+            return _Srv()
+
+    monkeypatch.setattr(plex_sync.client, "connect", lambda base_url, token: _Srv())
+    client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
+
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
+    client.patch(f"/api/playlists/{pid}", json={"target_plex_users": ["7"]})
+
+    r = client.post(f"/api/playlists/{pid}/sync")
+    assert r.status_code == 200
+    plex = r.json()["plex"]
+    assert set(plex) == {"admin", "7"}
+    assert plex["admin"]["status"] == "ok"
+    assert plex["7"]["synced_at"]
