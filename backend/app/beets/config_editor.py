@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import re
 import shutil
 from contextlib import suppress
 from pathlib import Path
@@ -59,6 +60,10 @@ from app.lyrics_jobs.registry import lyrics_backfill_active
 from app.models.config_api import BeetsConfigSnapshot
 from app.models.config_editor import (
     KnownKeysSchema,
+    NamingConfig,
+    NamingRuleInput,
+    ReplaceRuleInput,
+    SaveNamingRequest,
     SaveRequest,
     ValidationErrorItem,
     loc_to_dot_sep,
@@ -72,7 +77,9 @@ __all__ = [
     "find_redacted_paths",
     "merge_preserve_secrets",
     "parse_yaml",
+    "read_naming",
     "save",
+    "save_naming",
     "validate_known_keys",
     "walk_get",
     "walk_set",
@@ -456,6 +463,125 @@ def save(handle: LibraryHandle, req: SaveRequest) -> BeetsConfigSnapshot:
 
     # 6. Return the new snapshot. apply_pending will be True because mtime
     # advanced past handle.file_mtime_at_load — Task 8's Apply endpoint clears it.
+    return build_config_snapshot(handle)
+
+
+def read_naming(handle: LibraryHandle) -> NamingConfig:
+    """Parse the on-disk ``paths:``/``replace:`` into structured rows + CAS sha.
+
+    ``previews`` and ``replace_errors`` are left empty here — the router fills
+    them by calling the renderer with ``handle.lib`` (this function stays
+    config-only, no library access)."""
+    on_disk_bytes = handle.config_path.read_bytes()
+    sha = hashlib.sha256(on_disk_bytes).hexdigest()
+    doc = parse_yaml(on_disk_bytes.decode("utf-8"))
+
+    paths = doc.get("paths") or {}
+    default = comp = singleton = None
+    custom: list[NamingRuleInput] = []
+    for key, val in paths.items():
+        tmpl = "" if val is None else str(val)
+        skey = str(key)
+        if skey == "default":
+            default = tmpl
+        elif skey == "comp":
+            comp = tmpl
+        elif skey == "singleton":
+            singleton = tmpl
+        else:
+            custom.append(NamingRuleInput(query=skey, template=tmpl))
+
+    replace_map = doc.get("replace") or {}
+    replace = [
+        ReplaceRuleInput(pattern=str(p), replacement="" if r is None else str(r))
+        for p, r in replace_map.items()
+    ]
+
+    return NamingConfig(
+        default=default,
+        comp=comp,
+        singleton=singleton,
+        custom=custom,
+        replace=replace,
+        sha256=sha,
+        previews=[],
+        replace_errors=[],
+    )
+
+
+def _naming_map(rules: list[NamingRuleInput]) -> CommentedMap:
+    """A ruamel mapping of query -> template, skipping empty templates."""
+    m = CommentedMap()
+    for rule in rules:
+        if rule.template:
+            m[rule.query] = rule.template
+    return m
+
+
+def _replace_map(replace: list[ReplaceRuleInput]) -> CommentedMap:
+    """A ruamel mapping of pattern -> replacement, skipping empty patterns."""
+    m = CommentedMap()
+    for row in replace:
+        if row.pattern:
+            m[row.pattern] = row.replacement
+    return m
+
+
+def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSnapshot:
+    """Write ``paths:``/``replace:`` back into the same ``config.yaml``.
+
+    1. **Regex validate** — any ``replace`` pattern that fails ``re.compile`` ->
+       422 (beets' ``get_replacements()`` would otherwise raise on config load).
+    2. **SHA-256 CAS** — ``req.base_sha256`` vs the on-disk bytes; mismatch -> 409
+       with ``current_sha256`` (same shape as ``save``'s 409).
+    3. **ruamel round-trip** — load the on-disk doc, replace ONLY the ``paths:``
+       and ``replace:`` nodes (empty -> drop the key); every other key, comment,
+       and secret is untouched.
+    4. **Atomic write** + return the standard snapshot (``apply_pending`` True
+       until Apply reloads beets).
+    """
+    yaml = _yaml()
+
+    # 1. Regex validate.
+    bad: list[dict[str, object]] = []
+    for i, row in enumerate(req.replace):
+        if not row.pattern:
+            continue
+        try:
+            re.compile(row.pattern)
+        except re.error as exc:
+            bad.append({"loc": f"replace[{i}]", "msg": f"invalid regex: {exc}", "type": "regex"})
+    if bad:
+        raise HTTPException(status_code=422, detail=bad)
+
+    # 2. CAS.
+    on_disk_bytes = handle.config_path.read_bytes()
+    on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
+    if on_disk_sha != req.base_sha256:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "detail": "File changed on disk",
+                "current_yaml_text": on_disk_bytes.decode("utf-8"),
+                "current_sha256": on_disk_sha,
+            },
+        )
+
+    # 3. Round-trip merge — only the two nodes change.
+    doc = parse_yaml(on_disk_bytes.decode("utf-8"))
+    paths = _naming_map(req.rules)
+    if paths:
+        doc["paths"] = paths
+    else:
+        doc.pop("paths", None)
+    replace = _replace_map(req.replace)
+    if replace:
+        doc["replace"] = replace
+    else:
+        doc.pop("replace", None)
+
+    # 4. Atomic write + snapshot.
+    atomic_write(handle.config_path, doc, yaml)
     return build_config_snapshot(handle)
 
 
