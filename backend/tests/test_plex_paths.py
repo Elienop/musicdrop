@@ -7,8 +7,7 @@ def test_identity_when_no_plex_root() -> None:
 
 def test_replaces_root_prefix() -> None:
     assert (
-        translate_path("/srv/music/A/x.flac", "/srv/music", "/data/music")
-        == "/data/music/A/x.flac"
+        translate_path("/srv/music/A/x.flac", "/srv/music", "/data/music") == "/data/music/A/x.flac"
     )
 
 

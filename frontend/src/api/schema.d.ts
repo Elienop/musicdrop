@@ -928,6 +928,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/plex/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Plex Settings */
+        get: operations["get_plex_settings_api_plex_settings_get"];
+        /** Put Plex Settings */
+        put: operations["put_plex_settings_api_plex_settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plex/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test Plex */
+        post: operations["test_plex_api_plex_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plex/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Plex Users */
+        get: operations["list_plex_users_api_plex_users_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1835,6 +1887,53 @@ export interface components {
             name?: string | null;
             /** Description */
             description?: string | null;
+        };
+        /** PlexConnection */
+        PlexConnection: {
+            /** Ok */
+            ok: boolean;
+            /** Server Name */
+            server_name?: string | null;
+            /** Error */
+            error?: string | null;
+        };
+        /**
+         * PlexSettings
+         * @description GET /plex/settings — the token is never returned, only whether one is set.
+         */
+        PlexSettings: {
+            /** Base Url */
+            base_url: string;
+            /** Library Path */
+            library_path: string;
+            /** Has Token */
+            has_token: boolean;
+        };
+        /**
+         * PlexSettingsUpdate
+         * @description PUT body — any omitted field is left unchanged; token is write-only.
+         */
+        PlexSettingsUpdate: {
+            /** Base Url */
+            base_url?: string | null;
+            /** Library Path */
+            library_path?: string | null;
+            /** Token */
+            token?: string | null;
+        };
+        /** PlexUserInfo */
+        PlexUserInfo: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Home */
+            home: boolean;
+        };
+        /** PlexUserList */
+        PlexUserList: {
+            /** Users */
+            users: components["schemas"]["PlexUserInfo"][];
         };
         /**
          * Recommendation
@@ -3952,6 +4051,99 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_plex_settings_api_plex_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlexSettings"];
+                };
+            };
+        };
+    };
+    put_plex_settings_api_plex_settings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlexSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlexSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_plex_api_plex_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlexConnection"];
+                };
+            };
+        };
+    };
+    list_plex_users_api_plex_users_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlexUserList"];
                 };
             };
         };

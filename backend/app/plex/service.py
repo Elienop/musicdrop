@@ -12,7 +12,7 @@ from plexapi.exceptions import PlexApiException, Unauthorized
 from requests.exceptions import RequestException
 
 from app.models.plex import PlexConnection, PlexUserInfo
-from app.plex import client
+from app.plex import client as client  # explicit re-export: the patchable seam (service.client)
 from app.plex.config import PlexConfig
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
 
