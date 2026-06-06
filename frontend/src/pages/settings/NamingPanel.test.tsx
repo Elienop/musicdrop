@@ -38,6 +38,11 @@ beforeEach(() => {
         data: { active: false },
         response: { ok: true, status: 200 },
       } as never;
+    if (path === "/api/config")
+      return {
+        data: { apply_pending: false },
+        response: { ok: true, status: 200 },
+      } as never;
     return { data: undefined, response: { ok: false, status: 404 } } as never;
   });
   vi.spyOn(client, "POST").mockImplementation(async (path: string) => {
@@ -83,5 +88,5 @@ test("Add rule reveals a custom query input", async () => {
   wrap(<NamingPanel />);
   await screen.findByDisplayValue(/\$albumartist/);
   await userEvent.click(screen.getByRole("button", { name: /add rule/i }));
-  expect(screen.getByLabelText(/custom rule query 1/i)).toBeInTheDocument();
+  expect(screen.getByLabelText(/custom rule 1 query/i)).toBeInTheDocument();
 });

@@ -1,10 +1,12 @@
 // frontend/src/pages/settings/NamingPanel.tsx
+import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useActiveImport } from "@/api/useActiveImport";
-import { useApplyConfig } from "@/api/useBeetsConfig";
+import { useApplyConfig, useBeetsConfig } from "@/api/useBeetsConfig";
 import {
+  NAMING_KEY,
   type NamingConfig,
   type NamingRuleInput,
   type RenderedRule,
@@ -88,10 +90,16 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
   );
   const [conflict, setConflict] = useState(false);
 
+  const qc = useQueryClient();
   const preview = usePreviewNaming();
   const save = useSaveNaming();
   const apply = useApplyConfig();
   const active = useActiveImport();
+  // Read apply-pending from the shared config snapshot (queryKey ["beets-config"]),
+  // so the "Saved — now Apply" cue survives this panel's post-save remount and
+  // clears automatically once Apply reloads beets.
+  const config = useBeetsConfig();
+  const applyPending = config.data?.apply_pending ?? false;
   const importActive = active.data?.active ?? false;
 
   // Tracks the focused template input so the Insert palette writes at the caret.
@@ -136,6 +144,10 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
     }
   }
 
+  // Insert a token into the last-focused template input. Wired to `onClick` (not
+  // `onMouseDown`) so KEYBOARD activation (Enter/Space) works too — `focusedRef`
+  // still points at the input the user came from. The chip's `onMouseDown`
+  // preventDefault keeps the caret for the mouse path.
   function insertToken(token: string) {
     const el = focusedRef.current;
     if (!el) return;
@@ -169,7 +181,18 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
     );
   }
 
+  function reloadFromDisk() {
+    setConflict(false);
+    // Reseed THIS panel from the on-disk values (a fresh sha remounts the
+    // editor) — far less destructive than reloading the whole window.
+    void qc.invalidateQueries({ queryKey: NAMING_KEY });
+    void qc.invalidateQueries({ queryKey: ["beets-config"] });
+  }
+
   const hasReplaceErrors = replaceErrors.length > 0;
+  // A save error other than the 409 conflict (which has its own banner): a 422
+  // from a template/regex the preview missed, a 500, or a network failure.
+  const saveError = save.isError && save.error?.status !== 409;
 
   return (
     <Section>
@@ -179,30 +202,28 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
           Edit how files are named (beets{" "}
           <code className="font-mono">paths</code> /{" "}
           <code className="font-mono">replace</code>) with a live preview. New
-          names apply to imported files — use{" "}
-          <span className="font-medium">Reorganize</span> below to rename{" "}
-          existing files. Saving writes to the same config;{" "}
-          <span className="font-medium">Apply</span> to load it.
+          names apply to imported files — use the{" "}
+          <span className="font-medium">Reorganize library</span> section to
+          rename existing files. Saving writes to the same config;{" "}
+          <span className="font-medium">Apply</span> to load it. Leave a field
+          blank to use beets&rsquo; built-in default.
         </p>
       </header>
 
       {conflict && (
         <div
-          className="border-border bg-muted/50 flex items-center gap-3 rounded-xl border p-3 text-sm"
-          role="status"
+          className="border-destructive/40 bg-destructive/5 flex items-center gap-3 rounded-xl border p-3 text-sm"
+          role="alert"
         >
           <AlertCircle
-            className="text-muted-foreground size-5 shrink-0"
+            className="text-destructive size-5 shrink-0"
             aria-hidden="true"
           />
           <span className="flex-1">
-            Config changed on disk — reload to get the latest.
+            Config changed on disk — your save was refused. Reload to load the
+            on-disk version (your unsaved edits here will be discarded).
           </span>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => window.location.reload()}
-          >
+          <Button size="sm" variant="outline" onClick={reloadFromDisk}>
             Reload
           </Button>
         </div>
@@ -241,7 +262,7 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
           >
             <div className="flex items-center gap-2">
               <Input
-                aria-label={`Custom rule query ${i + 1}`}
+                aria-label={`Custom rule ${i + 1} query`}
                 placeholder="query (e.g. albumtype:soundtrack)"
                 value={row.query}
                 onChange={(e) =>
@@ -266,6 +287,7 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
             </div>
             <PathRow
               label=""
+              ariaLabel={`Custom rule ${i + 1} template`}
               name={`custom-tmpl-${row.id}`}
               value={row.template}
               onChange={(v) =>
@@ -334,7 +356,29 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
             Invalid replace pattern — fix to save.
           </p>
         )}
+        {!hasReplaceErrors && applyPending && !save.isPending && (
+          <p className="text-muted-foreground text-sm" role="status">
+            Saved — click <span className="font-medium">Apply</span> to load it.
+          </p>
+        )}
+        {importActive && (
+          <p className="text-muted-foreground text-sm">
+            1 import running — Apply available when it finishes.
+          </p>
+        )}
       </div>
+
+      {saveError && (
+        <p className="text-destructive text-sm" role="alert">
+          Save failed: {save.error?.message ?? "unknown error"}
+        </p>
+      )}
+      {apply.isError && (
+        <p className="text-destructive text-sm" role="alert">
+          Apply failed — your config is saved on disk; try again or restart
+          MusicDrop.
+        </p>
+      )}
     </Section>
   );
 }
@@ -352,6 +396,7 @@ function Section({ children }: { children: React.ReactNode }) {
 
 function PathRow({
   label,
+  ariaLabel,
   name,
   value,
   onChange,
@@ -359,6 +404,7 @@ function PathRow({
   focusedRef,
 }: {
   label: string;
+  ariaLabel?: string;
   name: string;
   value: string;
   onChange: (v: string) => void;
@@ -376,7 +422,7 @@ function PathRow({
         id={`naming-${name}`}
         name={name}
         value={value}
-        aria-label={label || `template ${name}`}
+        aria-label={label || ariaLabel}
         placeholder="beets path template"
         className="font-mono"
         onChange={(e) => onChange(e.target.value)}
@@ -385,6 +431,7 @@ function PathRow({
       <p className="text-muted-foreground text-xs">
         {rendered ? (
           <>
+            <span className="sr-only">Preview: </span>
             <span aria-hidden="true">→ </span>
             <span className="font-mono">{rendered.sample_path || "—"}</span>
             {rendered.sample_source && (
@@ -416,11 +463,11 @@ function InsertPalette({ onInsert }: { onInsert: (token: string) => void }) {
             key={t.insert}
             type="button"
             title={t.hint}
-            onMouseDown={(e) => {
-              // Keep the focused input focused — mousedown fires before blur.
-              e.preventDefault();
-              onInsert(t.insert);
-            }}
+            // Mouse: preventDefault on mousedown keeps the input caret (mousedown
+            // fires before blur). Keyboard + mouse both trigger the insert via
+            // onClick, so Enter/Space on a focused chip works.
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => onInsert(t.insert)}
             className="border-border hover:bg-muted rounded-md border px-2 py-0.5 font-mono text-xs"
           >
             {t.label}
@@ -446,11 +493,14 @@ function ReplaceEditor({
       <h3 className="text-sm font-medium">Replace characters</h3>
       {rows.map((row, i) => {
         const err = errorAt(i);
+        const errId = `replace-err-${row.id}`;
         return (
           <div key={row.id} className="flex flex-col gap-1">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Input
                 aria-label={`Replace pattern ${i + 1}`}
+                aria-invalid={err ? true : undefined}
+                aria-describedby={err ? errId : undefined}
                 placeholder="pattern (regex)"
                 value={row.pattern}
                 onChange={(e) =>
@@ -490,7 +540,7 @@ function ReplaceEditor({
               </Button>
             </div>
             {err && (
-              <p className="text-destructive text-xs">
+              <p id={errId} role="alert" className="text-destructive text-xs">
                 Invalid regex: {err.message}
               </p>
             )}
