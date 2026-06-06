@@ -11,12 +11,17 @@ from fastapi import APIRouter, Request
 from ruamel.yaml.error import YAMLError
 
 from app.beets.config_editor import apply as apply_config_op
-from app.beets.config_editor import parse_yaml, validate_known_keys
+from app.beets.config_editor import parse_yaml, read_naming, save_naming, validate_known_keys
 from app.beets.config_editor import save as save_config_op
 from app.beets.config_snapshot import build_config_snapshot
 from app.beets.library import LibraryHandle
+from app.beets.naming import assemble_rules, render_samples
 from app.models.config_api import BeetsConfigSnapshot
 from app.models.config_editor import (
+    NamingConfig,
+    NamingPreviewRequest,
+    NamingPreviewResponse,
+    SaveNamingRequest,
     SaveRequest,
     ValidateRequest,
     ValidateResponse,
@@ -65,6 +70,34 @@ def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
     """
     handle: LibraryHandle = request.app.state.beets_library
     return save_config_op(handle, req)
+
+
+@router.get("/config/naming", response_model=NamingConfig)
+def get_naming(request: Request) -> NamingConfig:
+    """Current ``paths:``/``replace:`` split into rows, with live previews."""
+    handle: LibraryHandle = request.app.state.beets_library
+    cfg = read_naming(handle)
+    rules = assemble_rules(
+        default=cfg.default, comp=cfg.comp, singleton=cfg.singleton, custom=cfg.custom
+    )
+    rendered, replace_errors = render_samples(handle.lib, rules=rules, replace=cfg.replace)
+    return cfg.model_copy(update={"previews": rendered, "replace_errors": replace_errors})
+
+
+@router.post("/config/naming/preview", response_model=NamingPreviewResponse)
+def preview_naming(req: NamingPreviewRequest, request: Request) -> NamingPreviewResponse:
+    """Pure render of draft rules + replace against auto-picked samples. Read-only."""
+    handle: LibraryHandle = request.app.state.beets_library
+    rendered, replace_errors = render_samples(handle.lib, rules=req.rules, replace=req.replace)
+    return NamingPreviewResponse(rendered=rendered, replace_errors=replace_errors)
+
+
+@router.post("/config/naming/save", response_model=BeetsConfigSnapshot)
+def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSnapshot:
+    """Write ``paths:``/``replace:`` back into config.yaml (CAS, 409/422). Apply
+    is the existing ``POST /api/config/apply``."""
+    handle: LibraryHandle = request.app.state.beets_library
+    return save_naming(handle, req)
 
 
 @router.post("/config/apply", response_model=BeetsConfigSnapshot)
