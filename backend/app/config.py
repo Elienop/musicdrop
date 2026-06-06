@@ -50,5 +50,11 @@ class Settings(BaseSettings):
     # (env MUSICDROP_ARTIST_ART_WRITE_ENABLED)
     artist_art_write_enabled: bool = False
 
+    # Playlists (app/playlists/) — MusicDrop owns playlist state as JSON files.
+    # Empty string = default to <beets_dir>/playlists, computed at resolve time
+    # (sidesteps the cwd-relative gotcha when beets_dir is absolute in tests).
+    # Set an absolute path to override. (env MUSICDROP_PLAYLISTS_DIR)
+    playlists_dir: str = ""
+
 
 settings = Settings()
