@@ -5,6 +5,7 @@ import type { SearchTrack } from "@/api/useSearch";
 import { useSearch } from "@/api/useSearch";
 import { AlbumCard, GRID_CLASS } from "@/components/albums/album-grid";
 import { ArtistCard } from "@/components/artists/ArtistCard";
+import { AddToPlaylistMenu } from "@/components/playlists/AddToPlaylistMenu";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -203,6 +204,10 @@ function TrackRow({ track }: { track: SearchTrack }) {
       <span className="text-muted-foreground shrink-0 text-sm tabular-nums">
         {formatDuration(track.duration_seconds)}
       </span>
+      <AddToPlaylistMenu
+        trackIds={[track.id]}
+        label={`Add ${track.title} to playlist`}
+      />
     </div>
   );
 }
