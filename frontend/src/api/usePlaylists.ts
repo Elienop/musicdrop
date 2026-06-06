@@ -124,6 +124,24 @@ export function useRemoveTrack(id: string) {
   });
 }
 
+export function useSyncPlaylist(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation<PlaylistDetail, Error, void>({
+    mutationFn: async () => {
+      const { data, error, response } = await client.POST(
+        "/api/playlists/{playlist_id}/sync",
+        { params: { path: { playlist_id: id } } },
+      );
+      if (error || !response.ok || !data) throw new Error("Sync failed");
+      return data;
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["playlist", id] });
+      void queryClient.invalidateQueries({ queryKey: ["playlists"] });
+    },
+  });
+}
+
 export function useReorderTracks(id: string) {
   const queryClient = useQueryClient();
   return useMutation<PlaylistDetail, Error, number[]>({

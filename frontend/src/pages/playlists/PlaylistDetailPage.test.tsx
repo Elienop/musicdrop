@@ -143,4 +143,48 @@ describe("PlaylistDetailPage", () => {
     });
     expect(await screen.findByText(/unavailable/i)).toBeInTheDocument();
   });
+
+  test("syncs to plex and shows status", async () => {
+    let synced = false;
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: synced
+            ? {
+                admin: {
+                  rating_key: "777",
+                  status: "ok",
+                  missing: 0,
+                  synced_at: "2026-06-07T01:00:00+00:00",
+                  error: null,
+                },
+              }
+            : {},
+        }),
+      ),
+      http.post(`${BASE}/sync`, () => {
+        synced = true;
+        return HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: {
+            admin: {
+              rating_key: "777",
+              status: "ok",
+              missing: 0,
+              synced_at: "2026-06-07T01:00:00+00:00",
+              error: null,
+            },
+          },
+        });
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
+    await waitFor(() => expect(screen.getByText(/synced/i)).toBeInTheDocument());
+  });
 });

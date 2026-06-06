@@ -19,6 +19,7 @@ import {
   useSaveConfig,
   useValidateConfig,
 } from "@/api/useBeetsConfig";
+import { PlexSettingsPanel } from "@/components/settings/PlexSettingsPanel";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ArtistArtPanel } from "@/pages/settings/ArtistArtPanel";
@@ -442,6 +443,7 @@ export function SettingsPage() {
       <ArtistArtPanel />
       <ReorganizeLibraryPanel />
       <NamingPanel />
+      <PlexSettingsPanel />
     </div>
   );
 }

@@ -6,6 +6,7 @@ import {
   Loader2,
   Music,
   Pencil,
+  RefreshCw,
   Trash2,
   X,
 } from "lucide-react";
@@ -20,6 +21,7 @@ import {
   useRemoveTrack,
   useRenamePlaylist,
   useReorderTracks,
+  useSyncPlaylist,
 } from "@/api/usePlaylists";
 import { BackLink } from "@/components/albums/album-grid";
 import {
@@ -64,6 +66,28 @@ function displayTitle(track: PlaylistTrack): string {
   return track.available ? track.title : track.title || "(removed track)";
 }
 
+/** The one-line Plex sync state derived from the playlist's recorded `admin`
+ * target. "Out of date" wins when the playlist changed after its last push. */
+function plexStatusLabel(playlist: PlaylistDetail): string {
+  const admin = playlist.plex?.admin;
+  if (!admin) {
+    return "Not synced to Plex";
+  }
+  if (admin.synced_at != null && playlist.updated_at > admin.synced_at) {
+    return "Out of date — re-sync";
+  }
+  if (admin.status === "ok") {
+    return "Synced";
+  }
+  if (admin.status === "partial") {
+    return `${admin.missing} not in Plex`;
+  }
+  if (admin.status === "empty") {
+    return "No matching tracks";
+  }
+  return "Not synced to Plex";
+}
+
 export function PlaylistDetailPage() {
   const { playlistId } = useParams<{ playlistId: string }>();
   const id = playlistId ?? "";
@@ -84,6 +108,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
   const remove = useDeletePlaylist();
   const reorder = useReorderTracks(playlist.id);
   const removeTrack = useRemoveTrack(playlist.id);
+  const sync = useSyncPlaylist(playlist.id);
 
   const [editingName, setEditingName] = useState(false);
   const [draftName, setDraftName] = useState(playlist.name);
@@ -252,14 +277,34 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
           <p className="text-muted-foreground text-sm">
             {tracks.length} {tracks.length === 1 ? "track" : "tracks"}
           </p>
+          <p className="text-muted-foreground text-sm">{plexStatusLabel(playlist)}</p>
         </div>
 
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button variant="outline" size="sm">
-              <Trash2 className="size-4" aria-hidden="true" /> Delete playlist
-            </Button>
-          </AlertDialogTrigger>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => sync.mutate(undefined, { onSuccess: () => setStatusMsg("Plex sync complete") })}
+            disabled={sync.isPending}
+          >
+            {sync.isPending ? (
+              <>
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                Syncing&hellip;
+              </>
+            ) : (
+              <>
+                <RefreshCw className="size-4" aria-hidden="true" /> Sync to Plex
+              </>
+            )}
+          </Button>
+
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="outline" size="sm">
+                <Trash2 className="size-4" aria-hidden="true" /> Delete playlist
+              </Button>
+            </AlertDialogTrigger>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Delete &ldquo;{playlist.name}&rdquo;?</AlertDialogTitle>
@@ -299,7 +344,8 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
-        </AlertDialog>
+          </AlertDialog>
+        </div>
       </header>
 
       {rename.isError && (
@@ -315,6 +361,11 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
       {removeTrack.isError && (
         <p className="text-destructive text-sm" role="alert">
           Couldn&rsquo;t remove the track. Try again.
+        </p>
+      )}
+      {sync.isError && (
+        <p className="text-destructive text-sm" role="alert">
+          Couldn&rsquo;t sync to Plex. Try again.
         </p>
       )}
 
