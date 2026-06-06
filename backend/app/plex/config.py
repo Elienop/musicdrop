@@ -14,8 +14,15 @@ from pydantic import BaseModel
 
 from app.playlists.atomic import write_atomic_text
 
+# The Plex token file is owner-only — it holds the admin token (full server
+# control), so it must not be world-readable like the playlist/`.m3u8` files.
+_TOKEN_FILE_MODE = 0o600
+
 
 class PlexConfig(BaseModel):
+    # ``base_url`` is admin-controlled (only the single self-hosted owner can set
+    # it via Settings), so the SSRF surface of "the server connects to this URL"
+    # is mitigated by the single-user threat model — we don't restrict it.
     base_url: str = ""
     token: str = ""
     library_path: str = ""  # Plex-visible music root; empty = same mount as the app
@@ -55,5 +62,9 @@ class PlexConfigStore:
             token=current.token if token is None else token,
             library_path=current.library_path if library_path is None else library_path,
         )
-        write_atomic_text(self._path, self._config.model_dump_json(indent=2))
+        write_atomic_text(
+            self._path,
+            self._config.model_dump_json(indent=2),
+            mode=_TOKEN_FILE_MODE,
+        )
         return self._config

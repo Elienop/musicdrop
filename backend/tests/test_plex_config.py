@@ -40,3 +40,12 @@ def test_not_configured_without_url_or_token(tmp_path: Path) -> None:
     assert store.is_configured() is False
     store.update(base_url="http://a:32400")
     assert store.is_configured() is False  # token still missing
+
+
+def test_token_file_is_owner_only(tmp_path: Path) -> None:
+    # The persisted config holds the Plex admin token; it must be owner-only
+    # (0o600), unlike the world-readable playlist/.m3u8 files.
+    path = tmp_path / "plex.json"
+    store = PlexConfigStore(path, env_defaults=PlexConfig())
+    store.update(base_url="http://a:32400", token="secret")
+    assert (path.stat().st_mode & 0o777) == 0o600
