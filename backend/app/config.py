@@ -61,5 +61,14 @@ class Settings(BaseSettings):
     # (env MUSICDROP_PLAYLISTS_EXPORT_DIR)
     playlists_export_dir: str = ""
 
+    # Plex sync (app/plex/). Empty plex_settings_dir = <beets_dir>/plex.
+    # base URL + admin token + the music-library path AS PLEX SEES IT (for the
+    # Docker mount difference). All env-seed the persisted JSON config.
+    # (env MUSICDROP_PLEX_URL / MUSICDROP_PLEX_TOKEN / MUSICDROP_PLEX_LIBRARY_PATH)
+    plex_settings_dir: str = ""
+    plex_url: str = ""
+    plex_token: str = ""
+    plex_library_path: str = ""
+
 
 settings = Settings()
