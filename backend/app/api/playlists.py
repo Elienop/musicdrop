@@ -13,11 +13,16 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.concurrency import run_in_threadpool
 
+from app.api.albums import get_library
+from app.beets.library import LibraryHandle
+from app.beets.playlists import resolve_tracks
 from app.config import settings
 from app.models.playlist import (
     Playlist,
+    PlaylistAddTracksRequest,
     PlaylistCreateRequest,
     PlaylistDetail,
+    PlaylistReorderRequest,
     PlaylistUpdateRequest,
 )
 from app.playlists import store
@@ -49,8 +54,11 @@ def _to_playlist(record: StoredPlaylist) -> Playlist:
     )
 
 
-def _to_detail(record: StoredPlaylist) -> PlaylistDetail:
-    return PlaylistDetail(**_to_playlist(record).model_dump(), track_ids=record.track_ids)
+async def _detail_response(
+    record: StoredPlaylist, lib: LibraryHandle
+) -> PlaylistDetail:
+    tracks = await run_in_threadpool(resolve_tracks, lib.lib, record.track_ids)
+    return PlaylistDetail(**_to_playlist(record).model_dump(), tracks=tracks)
 
 
 @router.get("/playlists", response_model=list[Playlist])
@@ -79,11 +87,61 @@ async def create_playlist_endpoint(
 async def get_playlist_endpoint(
     playlist_id: str,
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> PlaylistDetail:
     record = await run_in_threadpool(store.get_playlist, playlists_dir, playlist_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Playlist not found")
-    return _to_detail(record)
+    return await _detail_response(record, handle)
+
+
+@router.post("/playlists/{playlist_id}/tracks", response_model=PlaylistDetail)
+async def add_tracks_endpoint(
+    playlist_id: str,
+    body: PlaylistAddTracksRequest,
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> PlaylistDetail:
+    record = await run_in_threadpool(
+        store.add_tracks,
+        playlists_dir,
+        playlist_id,
+        track_ids=body.track_ids,
+        position=body.position,
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    return await _detail_response(record, handle)
+
+
+@router.delete("/playlists/{playlist_id}/tracks/{item_id}", response_model=PlaylistDetail)
+async def remove_track_endpoint(
+    playlist_id: str,
+    item_id: int,
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> PlaylistDetail:
+    record = await run_in_threadpool(
+        store.remove_track, playlists_dir, playlist_id, item_id
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    return await _detail_response(record, handle)
+
+
+@router.put("/playlists/{playlist_id}/tracks", response_model=PlaylistDetail)
+async def reorder_tracks_endpoint(
+    playlist_id: str,
+    body: PlaylistReorderRequest,
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> PlaylistDetail:
+    record = await run_in_threadpool(
+        store.set_track_order, playlists_dir, playlist_id, track_ids=body.track_ids
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    return await _detail_response(record, handle)
 
 
 @router.patch("/playlists/{playlist_id}", response_model=Playlist)

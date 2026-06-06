@@ -36,9 +36,9 @@ class PlaylistTrack(BaseModel):
 
 
 class PlaylistDetail(Playlist):
-    """Single-playlist view. Chunk 2 adds resolved ``tracks`` alongside ids."""
+    """Single-playlist view with the ordered, resolved tracklist."""
 
-    track_ids: list[int]
+    tracks: list[PlaylistTrack]
 
 
 class PlaylistCreateRequest(BaseModel):
@@ -67,3 +67,19 @@ class PlaylistUpdateRequest(BaseModel):
         if not stripped:
             raise ValueError("name must not be blank")
         return stripped
+
+
+class PlaylistAddTracksRequest(BaseModel):
+    track_ids: list[int]
+    position: int | None = None
+
+    @field_validator("track_ids")
+    @classmethod
+    def _non_empty(cls, value: list[int]) -> list[int]:
+        if not value:
+            raise ValueError("track_ids must not be empty")
+        return value
+
+
+class PlaylistReorderRequest(BaseModel):
+    track_ids: list[int]
