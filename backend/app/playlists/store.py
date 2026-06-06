@@ -136,6 +136,54 @@ def update_playlist(
     return record
 
 
+def add_tracks(
+    playlists_dir: Path,
+    playlist_id: str,
+    *,
+    track_ids: list[int],
+    position: int | None = None,
+) -> StoredPlaylist | None:
+    record = get_playlist(playlists_dir, playlist_id)
+    if record is None:
+        return None
+    if position is None:
+        record.track_ids = [*record.track_ids, *track_ids]
+    else:
+        index = max(0, min(position, len(record.track_ids)))
+        record.track_ids = [
+            *record.track_ids[:index],
+            *track_ids,
+            *record.track_ids[index:],
+        ]
+    record.updated_at = _now()
+    _write_atomic(_record_path(playlists_dir, playlist_id), record)
+    return record
+
+
+def remove_track(
+    playlists_dir: Path, playlist_id: str, item_id: int
+) -> StoredPlaylist | None:
+    record = get_playlist(playlists_dir, playlist_id)
+    if record is None:
+        return None
+    record.track_ids = [tid for tid in record.track_ids if tid != item_id]
+    record.updated_at = _now()
+    _write_atomic(_record_path(playlists_dir, playlist_id), record)
+    return record
+
+
+def set_track_order(
+    playlists_dir: Path, playlist_id: str, *, track_ids: list[int]
+) -> StoredPlaylist | None:
+    record = get_playlist(playlists_dir, playlist_id)
+    if record is None:
+        return None
+    record.track_ids = list(track_ids)
+    record.updated_at = _now()
+    _write_atomic(_record_path(playlists_dir, playlist_id), record)
+    return record
+
+
 def delete_playlist(playlists_dir: Path, playlist_id: str) -> bool:
     if not _is_valid_id(playlist_id):
         return False

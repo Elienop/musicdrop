@@ -103,3 +103,66 @@ def test_traversal_id_cannot_delete_outside_dir(tmp_path: Path) -> None:
     # An absolute-path id is likewise rejected, not followed.
     assert store.delete_playlist(playlists_dir, str(victim.with_suffix(""))) is False
     assert victim.exists()
+
+
+def test_add_tracks_appends(tmp_path: Path) -> None:
+    p = store.create_playlist(tmp_path, name="P")
+    updated = store.add_tracks(tmp_path, p.id, track_ids=[1, 2])
+    assert updated is not None
+    assert updated.track_ids == [1, 2]
+    again = store.add_tracks(tmp_path, p.id, track_ids=[3])
+    assert again is not None
+    assert again.track_ids == [1, 2, 3]
+
+
+def test_add_tracks_at_position(tmp_path: Path) -> None:
+    p = store.create_playlist(tmp_path, name="P")
+    store.add_tracks(tmp_path, p.id, track_ids=[1, 2, 3])
+    updated = store.add_tracks(tmp_path, p.id, track_ids=[9], position=1)
+    assert updated is not None
+    assert updated.track_ids == [1, 9, 2, 3]
+
+
+def test_add_tracks_position_clamps(tmp_path: Path) -> None:
+    p = store.create_playlist(tmp_path, name="P")
+    store.add_tracks(tmp_path, p.id, track_ids=[1, 2])
+    high = store.add_tracks(tmp_path, p.id, track_ids=[5], position=99)
+    assert high is not None
+    assert high.track_ids == [1, 2, 5]
+    low = store.add_tracks(tmp_path, p.id, track_ids=[0], position=-3)
+    assert low is not None
+    assert low.track_ids == [0, 1, 2, 5]
+
+
+def test_add_tracks_missing_playlist(tmp_path: Path) -> None:
+    assert store.add_tracks(tmp_path, "0" * 32, track_ids=[1]) is None
+
+
+def test_remove_track_drops_all_occurrences(tmp_path: Path) -> None:
+    p = store.create_playlist(tmp_path, name="P")
+    store.add_tracks(tmp_path, p.id, track_ids=[1, 2, 1, 3, 1])
+    updated = store.remove_track(tmp_path, p.id, 1)
+    assert updated is not None
+    assert updated.track_ids == [2, 3]
+
+
+def test_remove_track_absent_is_noop(tmp_path: Path) -> None:
+    p = store.create_playlist(tmp_path, name="P")
+    store.add_tracks(tmp_path, p.id, track_ids=[1, 2])
+    updated = store.remove_track(tmp_path, p.id, 99)
+    assert updated is not None
+    assert updated.track_ids == [1, 2]
+
+
+def test_set_track_order_replaces(tmp_path: Path) -> None:
+    p = store.create_playlist(tmp_path, name="P")
+    store.add_tracks(tmp_path, p.id, track_ids=[1, 2, 3])
+    updated = store.set_track_order(tmp_path, p.id, track_ids=[3, 1, 2])
+    assert updated is not None
+    assert updated.track_ids == [3, 1, 2]
+
+
+def test_track_ops_on_missing_playlist_return_none(tmp_path: Path) -> None:
+    missing = "0" * 32
+    assert store.remove_track(tmp_path, missing, 1) is None
+    assert store.set_track_order(tmp_path, missing, track_ids=[1]) is None
