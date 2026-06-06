@@ -110,6 +110,8 @@ module = [
     "app.api.stats",
     "tests.test_stats_adapter",
     "tests.test_stats_api",
+    "app.beets.playlists",
+    "tests.test_playlists_beets",
 ]
 disallow_untyped_calls = false
 

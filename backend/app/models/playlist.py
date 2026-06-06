@@ -22,6 +22,19 @@ class Playlist(BaseModel):
     updated_at: str
 
 
+class PlaylistTrack(BaseModel):
+    """A track as shown in a playlist. ``available`` is False when the beets
+    ``item.id`` no longer resolves (deleted from the library); such entries
+    still occupy their position and can be removed."""
+
+    id: int
+    title: str
+    artist: str
+    album: str
+    duration_seconds: float | None
+    available: bool
+
+
 class PlaylistDetail(Playlist):
     """Single-playlist view. Chunk 2 adds resolved ``tracks`` alongside ids."""
 
