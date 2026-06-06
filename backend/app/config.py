@@ -56,5 +56,10 @@ class Settings(BaseSettings):
     # Set an absolute path to override. (env MUSICDROP_PLAYLISTS_DIR)
     playlists_dir: str = ""
 
+    # Where the Plex-readable .m3u8 exports are written. Empty string = default
+    # to <music library>/.playlists (resolved from the live library directory).
+    # (env MUSICDROP_PLAYLISTS_EXPORT_DIR)
+    playlists_export_dir: str = ""
+
 
 settings = Settings()

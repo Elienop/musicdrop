@@ -168,3 +168,37 @@ def test_add_too_many_tracks_422(client: TestClient) -> None:
     pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
     r = client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": list(range(10_001))})
     assert r.status_code == 422
+
+
+def _export_dir(handle: LibraryHandle) -> str:
+    return os.path.join(os.fsdecode(handle.lib.directory), ".playlists")
+
+
+def test_export_written_on_add(client: TestClient, beets_library: LibraryHandle) -> None:
+    t1 = _add_track(beets_library, "Alpha")
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
+
+    m3u = os.path.join(_export_dir(beets_library), f"{pid}.m3u8")
+    assert os.path.isfile(m3u)
+    with open(m3u, encoding="utf-8") as fh:
+        body = fh.read()
+    assert body.startswith("#EXTM3U\n#PLAYLIST:Mix\n")
+    assert "Alpha" in body
+    assert "../Seed/Alpha.flac" in body
+
+
+def test_export_updates_name_on_rename(client: TestClient, beets_library: LibraryHandle) -> None:
+    pid = client.post("/api/playlists", json={"name": "Old"}).json()["id"]
+    client.patch(f"/api/playlists/{pid}", json={"name": "Renamed"})
+    m3u = os.path.join(_export_dir(beets_library), f"{pid}.m3u8")
+    with open(m3u, encoding="utf-8") as fh:
+        assert "#PLAYLIST:Renamed" in fh.read()
+
+
+def test_export_removed_on_delete(client: TestClient, beets_library: LibraryHandle) -> None:
+    pid = client.post("/api/playlists", json={"name": "Bye"}).json()["id"]
+    m3u = os.path.join(_export_dir(beets_library), f"{pid}.m3u8")
+    assert os.path.isfile(m3u)
+    client.delete(f"/api/playlists/{pid}")
+    assert not os.path.exists(m3u)
