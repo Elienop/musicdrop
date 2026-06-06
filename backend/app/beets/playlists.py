@@ -59,6 +59,23 @@ def resolve_tracks(lib: Library, ids: list[int]) -> list[PlaylistTrack]:
     return tracks
 
 
+def track_abs_paths(lib: Library, ids: list[int]) -> list[str]:
+    """Ordered absolute file paths for resolvable tracks (missing ids dropped).
+
+    Read inside ``music_dir_context`` so beets re-expands DB-relative paths."""
+    paths: list[str] = []
+    with lib.music_dir_context():
+        for item_id in ids:
+            try:
+                item = lib.get_item(item_id)
+            except Exception:  # a locked/odd row is simply skipped
+                item = None
+            if item is None:
+                continue
+            paths.append(_abs_path(lib, item.path))
+    return paths
+
+
 def m3u_entries(lib: Library, ids: list[int], export_dir: str) -> list[M3uEntry]:
     """Resolve ``ids`` to EXTM3U rows with paths relative to ``export_dir``.
 

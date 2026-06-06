@@ -1,5 +1,5 @@
 from app.plex.client import music_section
-from app.plex.mapping import index_tracks_by_path
+from app.plex.mapping import index_tracks_by_path, resolve_ordered_tracks
 
 
 class _FakeTrack:
@@ -57,3 +57,14 @@ def test_music_section_picks_artist_type() -> None:
 def test_music_section_none_when_absent() -> None:
     server = _FakeServer([_FakeOtherSection()])
     assert music_section(server) is None
+
+
+def test_resolve_ordered_tracks_preserves_order_and_counts_missing() -> None:
+    t1 = _FakeTrack(10, ["/data/music/A/1.flac"])
+    t2 = _FakeTrack(20, ["/data/music/B/2.flac"])
+    section = _FakeSection([t1, t2])
+    tracks, missing = resolve_ordered_tracks(
+        section, ["/data/music/B/2.flac", "/data/music/GONE.flac", "/data/music/A/1.flac"]
+    )
+    assert [t.ratingKey for t in tracks] == [20, 10]
+    assert missing == 1

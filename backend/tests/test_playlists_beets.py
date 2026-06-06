@@ -3,7 +3,7 @@ from pathlib import Path
 
 from beets.library import Item, Library
 
-from app.beets.playlists import m3u_entries, resolve_tracks
+from app.beets.playlists import m3u_entries, resolve_tracks, track_abs_paths
 
 
 def _lib_with_items(tmp_path: Path) -> tuple[Library, list[int]]:
@@ -110,3 +110,18 @@ def test_m3u_entries_skips_unavailable(tmp_path: Path) -> None:
 def test_m3u_entries_empty(tmp_path: Path) -> None:
     lib, _ = _lib_with_items(tmp_path)
     assert m3u_entries(lib, [], str(tmp_path / "music" / ".playlists")) == []
+
+
+def test_track_abs_paths_ordered_absolute(tmp_path: Path) -> None:
+    lib, ids = _lib_with_items(tmp_path)
+    paths = track_abs_paths(lib, [ids[1], ids[0]])
+    assert paths == [
+        str(tmp_path / "music" / "A" / "One" / "02.flac"),
+        str(tmp_path / "music" / "A" / "One" / "01.flac"),
+    ]
+
+
+def test_track_abs_paths_skips_missing(tmp_path: Path) -> None:
+    lib, ids = _lib_with_items(tmp_path)
+    paths = track_abs_paths(lib, [ids[0], 999_999])
+    assert len(paths) == 1
