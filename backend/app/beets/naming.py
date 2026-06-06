@@ -20,7 +20,6 @@ import unicodedata
 from typing import Any
 
 import beets
-import confuse
 from beets import util
 from beets.library import Item
 from beets.util.functemplate import template
@@ -122,17 +121,26 @@ def _pick_sample(lib: Any, query: str) -> tuple[Any, str]:
     return _synthetic_item(query)
 
 
-def _render_one(item: Any, tmpl: str, replacements: list[tuple[re.Pattern[str], str]]) -> str:
+def _render_one(
+    item: Any,
+    tmpl: str,
+    replacements: list[tuple[re.Pattern[str], str]],
+    *,
+    asciify: bool,
+    sep: str,
+) -> str:
     """Render one template against ``item`` -> a legalized relative path string.
 
     Mirrors the tail of ``Item.destination``: evaluate template -> Unicode
-    normalize -> asciify (only when the user's ``asciify_paths`` is on; a
-    read-only global read) -> ``legalize_path`` with the DRAFT replacements.
+    normalize -> asciify (when the user's ``asciify_paths`` is on) ->
+    ``legalize_path`` with the DRAFT replacements. ``asciify``/``sep`` are read
+    ONCE in :func:`render_samples` (not per-rule) so a present-but-non-bool
+    ``asciify_paths`` can't make every row error.
     """
     sub = item.evaluate_template(template(tmpl), True)
     sub = unicodedata.normalize("NFD" if sys.platform == "darwin" else "NFC", sub)
-    if beets.config["asciify_paths"].get(confuse.TypeTemplate(bool, default=False)):
-        sub = util.asciify_path(sub, beets.config["path_sep_replace"].as_str())
+    if asciify:
+        sub = util.asciify_path(sub, sep)
     legal, _ = util.legalize_path(sub, replacements, ".flac")
     return legal
 
@@ -146,12 +154,19 @@ def render_samples(
     adapter (cheap insurance; the renders are scalar field reads). Returns the
     per-rule previews and any malformed-regex errors (shared across rules)."""
     replacements, replace_errors = compile_replacements(replace)
+    # Read the asciify settings ONCE, mirroring beets' own lenient truthy check
+    # (``if beets.config["asciify_paths"]:`` in ``Item.destination``) — a
+    # present-but-non-bool value (e.g. quoted ``"true"``) is accepted, not raised.
+    asciify = bool(beets.config["asciify_paths"])
+    sep = beets.config["path_sep_replace"].as_str()
     rendered: list[RenderedRule] = []
     with lib.music_dir_context():
         for rule in rules:
             item, source = _pick_sample(lib, rule.query)
             try:
-                sample_path = _render_one(item, rule.template, replacements)
+                sample_path = _render_one(
+                    item, rule.template, replacements, asciify=asciify, sep=sep
+                )
                 err: str | None = None
             except Exception as exc:  # defensive — functemplate is lenient
                 sample_path = ""

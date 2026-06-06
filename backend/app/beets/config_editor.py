@@ -476,7 +476,11 @@ def read_naming(handle: LibraryHandle) -> NamingConfig:
     sha = hashlib.sha256(on_disk_bytes).hexdigest()
     doc = parse_yaml(on_disk_bytes.decode("utf-8"))
 
-    paths = doc.get("paths") or {}
+    # ``or {}`` is not enough — a truthy scalar/list (from a hand-corrupted
+    # config like ``paths: somestring``) would survive it and then ``.items()``
+    # would raise. Coerce any non-mapping to empty so read never 500s.
+    paths_raw = doc.get("paths")
+    paths = paths_raw if isinstance(paths_raw, dict) else {}
     default = comp = singleton = None
     custom: list[NamingRuleInput] = []
     for key, val in paths.items():
@@ -491,7 +495,8 @@ def read_naming(handle: LibraryHandle) -> NamingConfig:
         else:
             custom.append(NamingRuleInput(query=skey, template=tmpl))
 
-    replace_map = doc.get("replace") or {}
+    replace_raw = doc.get("replace")
+    replace_map = replace_raw if isinstance(replace_raw, dict) else {}
     replace = [
         ReplaceRuleInput(pattern=str(p), replacement="" if r is None else str(r))
         for p, r in replace_map.items()
@@ -510,10 +515,11 @@ def read_naming(handle: LibraryHandle) -> NamingConfig:
 
 
 def _naming_map(rules: list[NamingRuleInput]) -> CommentedMap:
-    """A ruamel mapping of query -> template, skipping empty templates."""
+    """A ruamel mapping of query -> template, skipping rows with an empty query
+    or template (an empty query would otherwise write a stray ``'': tmpl`` key)."""
     m = CommentedMap()
     for rule in rules:
-        if rule.template:
+        if rule.query and rule.template:
             m[rule.query] = rule.template
     return m
 

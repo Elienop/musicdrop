@@ -104,6 +104,19 @@ def test_synthetic_fallback_on_empty_library(tmp_path: Path) -> None:
     assert "built-in" in rendered[0].sample_source
 
 
+def test_present_but_non_bool_asciify_does_not_error_rows(naming_lib: Library) -> None:
+    # beets tolerates a quoted/non-bool ``asciify_paths`` (truthy check); the
+    # preview must too — it must NOT raise ConfigTypeError on every row.
+    import beets
+
+    beets.config["asciify_paths"] = "true"
+    rules = [NamingRuleInput(query="default", template="$albumartist/$album/$track $title")]
+    rendered, errs = render_samples(naming_lib, rules=rules, replace=[])
+    assert errs == []
+    assert rendered[0].error is None
+    assert rendered[0].sample_path == "Adele/25/01 Hello.flac"
+
+
 def test_compile_replacements_splits_valid_and_bad() -> None:
     valid, errs = compile_replacements(
         [

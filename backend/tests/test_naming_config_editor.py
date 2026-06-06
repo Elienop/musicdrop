@@ -86,3 +86,25 @@ def test_save_naming_422_on_bad_regex(beets_library: LibraryHandle) -> None:
     with pytest.raises(HTTPException) as ei:
         save_naming(beets_library, req)
     assert ei.value.status_code == 422
+
+
+def test_read_naming_tolerates_non_mapping_paths(beets_library: LibraryHandle) -> None:
+    # A hand-corrupted config (paths: scalar) must not 500 — coerce to empty.
+    cfg_path = beets_library.config_path
+    cfg_path.write_text("directory: /tmp/music\nlibrary: library.db\npaths: just-a-string\n")
+    cfg = read_naming(beets_library)
+    assert cfg.default is None and cfg.comp is None and cfg.custom == []
+
+
+def test_save_naming_skips_empty_query_custom_row(beets_library: LibraryHandle) -> None:
+    cfg_path = beets_library.config_path
+    cfg_path.write_text("directory: /tmp/music\nlibrary: library.db\n")
+    req = SaveNamingRequest(
+        rules=[NamingRuleInput(query="", template="$title")],
+        replace=[],
+        base_sha256=_sha(cfg_path),
+    )
+    save_naming(beets_library, req)
+    text = cfg_path.read_text()
+    assert "''" not in text  # no stray empty-query key written
+    assert "paths:" not in text  # the empty-query row was the only rule -> key dropped
