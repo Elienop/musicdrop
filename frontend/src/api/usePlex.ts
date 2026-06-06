@@ -5,6 +5,19 @@ import type { components } from "@/api/schema";
 
 export type PlexSettings = components["schemas"]["PlexSettings"];
 export type PlexConnection = components["schemas"]["PlexConnection"];
+export type PlexUserList = components["schemas"]["PlexUserList"];
+
+export function usePlexUsers() {
+  return useQuery({
+    queryKey: ["plex", "users"],
+    queryFn: async (): Promise<PlexUserList> => {
+      const { data, error, response } = await client.GET("/api/plex/users");
+      if (error || !response.ok || !data) throw new Error("Failed to load Plex users");
+      return data;
+    },
+    retry: false, // a 409 (Plex not configured) shouldn't be retried
+  });
+}
 
 async function fetchPlexSettings(): Promise<PlexSettings> {
   const { data, error, response } = await client.GET("/api/plex/settings");

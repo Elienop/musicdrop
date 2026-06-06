@@ -1,7 +1,7 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
 
 import { PlaylistDetailPage } from "@/pages/playlists/PlaylistDetailPage";
 import { renderWithProviders } from "@/test/render";
@@ -9,6 +9,7 @@ import { server } from "@/test/msw-server";
 
 const ID = "a".repeat(32);
 const BASE = `${window.location.origin}/api/playlists/${ID}`;
+const USERS = `${window.location.origin}/api/plex/users`;
 
 function detail(tracks: unknown[], name = "Late night") {
   return {
@@ -28,6 +29,13 @@ function track(id: number, title: string, available = true) {
 }
 
 describe("PlaylistDetailPage", () => {
+  // The detail page now discovers Plex users for the target picker. Default to
+  // "no users" so existing tests don't hit an unhandled request; tests that care
+  // register their own /api/plex/users handler (which takes precedence).
+  beforeEach(() => {
+    server.use(http.get(USERS, () => HttpResponse.json({ users: [] })));
+  });
+
   test("renders the tracklist", async () => {
     server.use(http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))));
     renderWithProviders(<PlaylistDetailPage />, {
@@ -198,5 +206,64 @@ describe("PlaylistDetailPage", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(/connect plex in\s*settings\s*first/i);
     expect(screen.getByRole("link", { name: /settings/i })).toHaveAttribute("href", "/settings");
+  });
+
+  test("shows the target-user picker and saves a selection", async () => {
+    let targets: string[] = [];
+    server.use(
+      http.get(USERS, () =>
+        HttpResponse.json({ users: [{ id: "7", name: "Partner", home: true }] }),
+      ),
+      http.get(BASE, () =>
+        HttpResponse.json({ ...detail([track(1, "Alpha")]), target_plex_users: targets }),
+      ),
+      http.patch(BASE, async ({ request }) => {
+        targets = ((await request.json()) as { target_plex_users: string[] }).target_plex_users;
+        return HttpResponse.json({ ...detail([track(1, "Alpha")]), target_plex_users: targets });
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    const cb = await screen.findByRole("checkbox", { name: /partner/i });
+    await userEvent.click(cb);
+    await waitFor(() => expect(targets).toEqual(["7"]));
+  });
+
+  test("per-target sync status names admin and a user", async () => {
+    server.use(
+      http.get(USERS, () =>
+        HttpResponse.json({ users: [{ id: "7", name: "Partner", home: true }] }),
+      ),
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          target_plex_users: ["7"],
+          plex: {
+            admin: {
+              rating_key: "1",
+              status: "ok",
+              missing: 0,
+              synced_at: "2026-06-07T01:00:00+00:00",
+              error: null,
+            },
+            "7": {
+              rating_key: "2",
+              status: "partial",
+              missing: 1,
+              synced_at: "2026-06-07T01:00:00+00:00",
+              error: null,
+            },
+          },
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    expect(await screen.findByText(/you \(admin\)/i)).toBeInTheDocument();
+    expect(await screen.findByText(/partner/i)).toBeInTheDocument();
   });
 });

@@ -73,6 +73,24 @@ export function useRenamePlaylist(id: string) {
   });
 }
 
+export function useSetTargets(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation<Playlist, Error, string[]>({
+    mutationFn: async (targetPlexUsers) => {
+      const { data, error, response } = await client.PATCH("/api/playlists/{playlist_id}", {
+        params: { path: { playlist_id: id } },
+        body: { target_plex_users: targetPlexUsers },
+      });
+      if (error || !response.ok || !data) throw new Error("Failed to save targets");
+      return data;
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["playlist", id] });
+      void queryClient.invalidateQueries({ queryKey: ["playlists"] });
+    },
+  });
+}
+
 export function useDeletePlaylist() {
   const queryClient = useQueryClient();
   return useMutation<void, Error, string>({

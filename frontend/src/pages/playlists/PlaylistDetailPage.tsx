@@ -21,8 +21,10 @@ import {
   useRemoveTrack,
   useRenamePlaylist,
   useReorderTracks,
+  useSetTargets,
   useSyncPlaylist,
 } from "@/api/usePlaylists";
+import { usePlexUsers } from "@/api/usePlex";
 import { BackLink } from "@/components/albums/album-grid";
 import {
   AlertDialog,
@@ -37,6 +39,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -88,6 +91,29 @@ function plexStatusLabel(playlist: PlaylistDetail): string {
   return "Not synced to Plex";
 }
 
+type PlexTargetState = PlaylistDetail["plex"][string];
+
+/** The one-line status for a single fan-out target — mirrors `plexStatusLabel`
+ * but for an arbitrary `PlexTargetState`, keeping the same "out of date"
+ * precedence (the playlist changed after this target's last push). */
+function targetStatusLabel(state: PlexTargetState, playlist: PlaylistDetail): string {
+  if (state.synced_at != null && playlist.updated_at > state.synced_at) {
+    return "Out of date — re-sync";
+  }
+  switch (state.status) {
+    case "ok":
+      return "Synced";
+    case "partial":
+      return `${state.missing} not in Plex`;
+    case "empty":
+      return "No matching tracks";
+    case "failed":
+      return state.error ?? "Failed";
+    default:
+      return "Not synced";
+  }
+}
+
 /** A first-time sync fails with a 409 when Plex isn't connected yet (no base
  * URL / token). `useSyncPlaylist` tags the thrown error with the HTTP status so
  * we can point the user at Settings instead of showing the generic retry copy. */
@@ -116,6 +142,8 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
   const reorder = useReorderTracks(playlist.id);
   const removeTrack = useRemoveTrack(playlist.id);
   const sync = useSyncPlaylist(playlist.id);
+  const plexUsers = usePlexUsers();
+  const setTargets = useSetTargets(playlist.id);
 
   const [editingName, setEditingName] = useState(false);
   const [draftName, setDraftName] = useState(playlist.name);
@@ -173,6 +201,19 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
       return;
     }
     rename.mutate({ name: next }, { onSuccess: () => setEditingName(false) });
+  }
+
+  /** Add/remove a Plex Home user from this playlist's fan-out targets. Saving
+   * targets bumps `updated_at`, so a newly-added account immediately reads
+   * "out of date" until the next sync pushes its copy. */
+  function toggleTarget(userId: string) {
+    const current = playlist.target_plex_users;
+    const next = current.includes(userId)
+      ? current.filter((id) => id !== userId)
+      : [...current, userId];
+    setTargets.mutate(next, {
+      onSuccess: () => setStatusMsg("Saved Plex sync targets"),
+    });
   }
 
   /** Move the track at `index` one slot in `dir`: reorder locally for instant
@@ -284,7 +325,6 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
           <p className="text-muted-foreground text-sm">
             {tracks.length} {tracks.length === 1 ? "track" : "tracks"}
           </p>
-          <p className="text-muted-foreground text-sm">{plexStatusLabel(playlist)}</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -391,6 +431,57 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
             Couldn&rsquo;t sync to Plex. Try again.
           </p>
         ))}
+      {setTargets.isError && (
+        <p className="text-destructive text-sm" role="alert">
+          Couldn&rsquo;t save the Plex targets. Try again.
+        </p>
+      )}
+
+      <section
+        className="flex flex-col gap-2 rounded-xl border p-4"
+        aria-label="Plex sync"
+      >
+        <h3 className="text-sm font-semibold">Plex sync</h3>
+        <ul className="flex flex-col gap-2">
+          {/* The owner always gets their own copy — shown first, no checkbox. */}
+          <li className="flex items-center justify-between gap-3 text-sm">
+            <span className="font-medium">You (admin)</span>
+            <span className="text-muted-foreground">{plexStatusLabel(playlist)}</span>
+          </li>
+          {plexUsers.isError ? (
+            <li className="text-muted-foreground text-sm">
+              Connect Plex in{" "}
+              <Link to="/settings" className="underline">
+                Settings
+              </Link>{" "}
+              to choose who gets this playlist.
+            </li>
+          ) : (
+            (plexUsers.data?.users ?? []).map((user) => {
+              const checked = playlist.target_plex_users.includes(user.id);
+              const state = playlist.plex?.[user.id];
+              return (
+                <li key={user.id} className="flex items-center justify-between gap-3 text-sm">
+                  <label className="flex items-center gap-2">
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={() => toggleTarget(user.id)}
+                      aria-label={user.name}
+                      disabled={setTargets.isPending}
+                    />
+                    <span className="font-medium">{user.name}</span>
+                  </label>
+                  {state && (
+                    <span className="text-muted-foreground">
+                      {targetStatusLabel(state, playlist)}
+                    </span>
+                  )}
+                </li>
+              );
+            })
+          )}
+        </ul>
+      </section>
 
       {tracks.length === 0 ? (
         <EmptyTracks headingRef={emptyRef} />
