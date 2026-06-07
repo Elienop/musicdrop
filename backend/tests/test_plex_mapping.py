@@ -88,7 +88,11 @@ def test_resolve_ordered_tracks_preserves_order_and_counts_missing() -> None:
     section = _FakeSection([t1, t2])
     tracks, missing = resolve_ordered_tracks(
         section,
-        [_spec("/data/music/B/2.flac"), _spec("/data/music/GONE.flac"), _spec("/data/music/A/1.flac")],
+        [
+            _spec("/data/music/B/2.flac"),
+            _spec("/data/music/GONE.flac"),
+            _spec("/data/music/A/1.flac"),
+        ],
     )
     assert [t.ratingKey for t in tracks] == [20, 10]
     assert missing == 1
@@ -96,11 +100,22 @@ def test_resolve_ordered_tracks_preserves_order_and_counts_missing() -> None:
 
 def test_path_miss_falls_back_to_unique_artist_title() -> None:
     # Plex file is named differently; only metadata can bridge it.
-    t = _FakeTrack(10, ["/plex/Adele_19_01_Daydreamer.flac"],
-                   grandparentTitle="Adele", parentTitle="19", title="Daydreamer", index=1)
+    t = _FakeTrack(
+        10,
+        ["/plex/Adele_19_01_Daydreamer.flac"],
+        grandparentTitle="Adele",
+        parentTitle="19",
+        title="Daydreamer",
+        index=1,
+    )
     section = _FakeSection([t])
-    spec = _spec("/beets/Adele/19/01 Daydreamer.flac",
-                 albumartist="Adele", album="19", title="Daydreamer", track=1)
+    spec = _spec(
+        "/beets/Adele/19/01 Daydreamer.flac",
+        albumartist="Adele",
+        album="19",
+        title="Daydreamer",
+        track=1,
+    )
     tracks, missing = resolve_ordered_tracks(section, [spec])
     assert [x.ratingKey for x in tracks] == [10]
     assert missing == 0
@@ -118,7 +133,9 @@ def test_fallback_is_case_and_whitespace_insensitive() -> None:
 def test_fallback_disambiguates_same_title_by_artist() -> None:
     # "What's Up" exists under two album-artists; the albumartist key disambiguates.
     blondes = _FakeTrack(1, ["/plex/a.flac"], grandparentTitle="4 Non Blondes", title="What's Up")
-    dalmatians = _FakeTrack(2, ["/plex/b.flac"], grandparentTitle="The Cast of 101 Dalmatians", title="What's Up")
+    dalmatians = _FakeTrack(
+        2, ["/plex/b.flac"], grandparentTitle="The Cast of 101 Dalmatians", title="What's Up"
+    )
     section = _FakeSection([blondes, dalmatians])
     spec = _spec("/beets/none.flac", albumartist="4 Non Blondes", title="What's Up")
     tracks, missing = resolve_ordered_tracks(section, [spec])
@@ -128,8 +145,12 @@ def test_fallback_disambiguates_same_title_by_artist() -> None:
 
 def test_fallback_album_then_track_tiebreak() -> None:
     # Same artist+title twice -> album breaks the tie.
-    studio = _FakeTrack(1, ["/plex/s.flac"], grandparentTitle="X", parentTitle="Album", title="Song", index=3)
-    live = _FakeTrack(2, ["/plex/l.flac"], grandparentTitle="X", parentTitle="Live", title="Song", index=9)
+    studio = _FakeTrack(
+        1, ["/plex/s.flac"], grandparentTitle="X", parentTitle="Album", title="Song", index=3
+    )
+    live = _FakeTrack(
+        2, ["/plex/l.flac"], grandparentTitle="X", parentTitle="Live", title="Song", index=9
+    )
     section = _FakeSection([studio, live])
     spec = _spec("/beets/none.flac", albumartist="X", album="Album", title="Song", track=3)
     tracks, missing = resolve_ordered_tracks(section, [spec])

@@ -71,9 +71,7 @@ def _build_indexes(
     return by_path, by_meta
 
 
-def _meta_match(
-    by_meta: dict[tuple[str, str], list[Any]], spec: PlexTrackSpec
-) -> Any | None:
+def _meta_match(by_meta: dict[tuple[str, str], list[Any]], spec: PlexTrackSpec) -> Any | None:
     """Resolve a path-missed spec by metadata, or None when ambiguous/absent.
 
     Unique album-artist+title -> that track. Otherwise narrow by album, then by
@@ -98,9 +96,7 @@ def _meta_match(
     return None
 
 
-def resolve_ordered_tracks(
-    section: Any, specs: list[PlexTrackSpec]
-) -> tuple[list[Any], int]:
+def resolve_ordered_tracks(section: Any, specs: list[PlexTrackSpec]) -> tuple[list[Any], int]:
     """Resolve ordered specs to Track objects (one library scan).
 
     Each spec is matched by exact path first, then by metadata. Returns

@@ -198,14 +198,21 @@ def test_fan_out_not_configured() -> None:
 def test_sync_metadata_fallback_populates(monkeypatch: pytest.MonkeyPatch) -> None:
     # Plex has the song at a different filename; only metadata bridges it.
     track = _FakeTrack(
-        42, ["/plex/Adele_19_01_Daydreamer.flac"],
-        grandparentTitle="Adele", parentTitle="19", title="Daydreamer", index=1,
+        42,
+        ["/plex/Adele_19_01_Daydreamer.flac"],
+        grandparentTitle="Adele",
+        parentTitle="19",
+        title="Daydreamer",
+        index=1,
     )
     server = _FakeServer([track])
     _patch(monkeypatch, server)
     spec = PlexTrackSpec(
         path="/beets/Adele/19/01 Daydreamer.flac",
-        albumartist="Adele", album="19", title="Daydreamer", track=1,
+        albumartist="Adele",
+        album="19",
+        title="Daydreamer",
+        track=1,
     )
     state = sync.sync_playlist(CONFIG, "Mix", [spec])
     assert state.status == "ok"
