@@ -115,32 +115,45 @@ def _safe_reconcile(run: Callable[[], PlexTargetState]) -> PlexTargetState:
 
 
 def delete_playlist_on_targets(
-    config: PlexConfig, title: str, targets: list[str]
+    config: PlexConfig, rating_keys: dict[str, str | None]
 ) -> dict[str, str]:
-    """Best-effort delete of playlist ``title`` from each target account.
+    """Best-effort delete of a playlist from each target account, by ratingKey.
 
-    ``targets`` are state-map keys: ``"admin"`` (the owner's server) or a Plex
-    user id (deleted via ``admin.switchUser(uid)``). Each target is ISOLATED —
-    one failure never aborts the others. Returns ``{target: "deleted" |
-    "absent" | "failed"}`` for logging. Raises only ``PlexNotConfigured`` (no
-    URL/token); a connect failure raises ``PlexConnectionError`` (callers wrap
-    this best-effort)."""
+    ``rating_keys`` maps a state-map key -> the playlist's Plex ratingKey on that
+    account (``"admin"`` is the owner's server; a uid is reached via
+    ``admin.switchUser(uid)``). Deleting by the *recorded ratingKey* (not by
+    title) keeps it precise — it can never remove a same-titled playlist that
+    belongs to a different MusicDrop playlist or was made by hand in Plex, and it
+    survives renames. A ``None`` ratingKey means nothing was ever synced there
+    (-> "absent"). Each target is ISOLATED — one failure never aborts the others.
+    Returns ``{target: "deleted" | "absent" | "failed"}``. Raises only
+    ``PlexNotConfigured`` (no URL/token); a connect failure raises
+    ``PlexConnectionError`` (callers wrap this best-effort)."""
     if not (config.base_url and config.token):
         raise PlexNotConfigured("Plex is not configured.")
     try:
         admin = client.connect(config.base_url, config.token)
     except Exception as exc:
         raise PlexConnectionError("Plex sync failed.") from exc
-    return {target: _safe_delete(admin, target, title) for target in targets}
+    return {target: _safe_delete(admin, target, rk) for target, rk in rating_keys.items()}
 
 
-def _safe_delete(admin: Any, target: str, title: str) -> str:
+def _safe_delete(admin: Any, target: str, rating_key: str | None) -> str:
+    if rating_key is None:  # never synced to this account — nothing to remove
+        return "absent"
     try:
         server = admin if target == "admin" else admin.switchUser(target)
-        existing = _find_existing(server, title)
+        existing = _find_by_rating_key(server, rating_key)
         if existing is None:
             return "absent"
         existing.delete()
         return "deleted"
     except Exception:  # one account failing must never abort the others
         return "failed"
+
+
+def _find_by_rating_key(server: Any, rating_key: str) -> Any | None:
+    for playlist in server.playlists():
+        if str(playlist.ratingKey) == str(rating_key):
+            return playlist
+    return None

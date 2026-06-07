@@ -223,31 +223,50 @@ def test_sync_metadata_fallback_populates(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_delete_on_targets_admin_and_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Deletion targets the RECORDED ratingKey, not the title, so it can never
+    # stomp a same-titled playlist belonging to a different MusicDrop playlist.
     admin_pl = _FakePlaylist("Mix", [_FakeTrack(1, ["/m/a.flac"])])
+    admin_pl.ratingKey = 500
     server = _FakeServer([])
     server._playlists.append(admin_pl)
 
     user7 = _FakeServer([])
     user7_pl = _FakePlaylist("Mix", [_FakeTrack(2, ["/m/b.flac"])])
+    user7_pl.ratingKey = 600
     user7._playlists.append(user7_pl)
     server.switchUser = lambda uid: user7  # type: ignore[attr-defined]
     _patch(monkeypatch, server)
 
-    results = sync.delete_playlist_on_targets(CONFIG, "Mix", ["admin", "7"])
+    results = sync.delete_playlist_on_targets(CONFIG, {"admin": "500", "7": "600"})
     assert results == {"admin": "deleted", "7": "deleted"}
     assert admin_pl.deleted is True
     assert user7_pl.deleted is True
 
 
-def test_delete_on_targets_absent_is_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    server = _FakeServer([])  # no playlists of that title
+def test_delete_on_targets_wrong_rating_key_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A same-titled playlist with a DIFFERENT ratingKey is left untouched.
+    other = _FakePlaylist("Mix", [_FakeTrack(1, ["/m/a.flac"])])
+    other.ratingKey = 999
+    server = _FakeServer([])
+    server._playlists.append(other)
     _patch(monkeypatch, server)
-    results = sync.delete_playlist_on_targets(CONFIG, "Mix", ["admin"])
+    results = sync.delete_playlist_on_targets(CONFIG, {"admin": "500"})
+    assert results == {"admin": "absent"}
+    assert other.deleted is False  # the unrelated same-titled playlist survives
+
+
+def test_delete_on_targets_none_rating_key_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A target that never got a playlist (rating_key None) is simply "absent" —
+    # no lookup, nothing to remove.
+    server = _FakeServer([])
+    _patch(monkeypatch, server)
+    results = sync.delete_playlist_on_targets(CONFIG, {"admin": None})
     assert results == {"admin": "absent"}
 
 
 def test_delete_on_targets_isolates_a_failing_account(monkeypatch: pytest.MonkeyPatch) -> None:
     admin_pl = _FakePlaylist("Mix", [_FakeTrack(1, ["/m/a.flac"])])
+    admin_pl.ratingKey = 500
     server = _FakeServer([])
     server._playlists.append(admin_pl)
 
@@ -257,7 +276,7 @@ def test_delete_on_targets_isolates_a_failing_account(monkeypatch: pytest.Monkey
     server.switchUser = _switch  # type: ignore[attr-defined]
     _patch(monkeypatch, server)
 
-    results = sync.delete_playlist_on_targets(CONFIG, "Mix", ["admin", "bad"])
+    results = sync.delete_playlist_on_targets(CONFIG, {"admin": "500", "bad": "700"})
     assert results["admin"] == "deleted"  # the failing user never aborts the others
     assert results["bad"] == "failed"
     assert admin_pl.deleted is True
@@ -265,4 +284,4 @@ def test_delete_on_targets_isolates_a_failing_account(monkeypatch: pytest.Monkey
 
 def test_delete_on_targets_not_configured() -> None:
     with pytest.raises(PlexNotConfigured):
-        sync.delete_playlist_on_targets(PlexConfig(), "Mix", ["admin"])
+        sync.delete_playlist_on_targets(PlexConfig(), {"admin": "500"})

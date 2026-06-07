@@ -102,14 +102,15 @@ async def _remove_export(playlist_id: str, handle: LibraryHandle) -> None:
 
 
 async def _best_effort_plex_delete(
-    config: PlexConfig, title: str, targets: list[str], ctx: str
+    config: PlexConfig, rating_keys: dict[str, str | None], ctx: str
 ) -> None:
-    """Remove the playlist from the given Plex accounts. Best-effort: a Plex
-    hiccup (or no Plex configured) must never fail the local operation."""
-    if not (config.base_url and config.token) or not targets:
+    """Remove the playlist (by recorded ratingKey) from the given Plex accounts.
+    Best-effort: a Plex hiccup (or no Plex configured) must never fail the local
+    operation."""
+    if not (config.base_url and config.token) or not rating_keys:
         return
     try:
-        await run_in_threadpool(plex_sync.delete_playlist_on_targets, config, title, targets)
+        await run_in_threadpool(plex_sync.delete_playlist_on_targets, config, rating_keys)
     except Exception:  # best-effort cleanup — log and move on, never fail the op
         logger.warning("Plex playlist cleanup failed (%s)", ctx, exc_info=True)
 
@@ -236,7 +237,8 @@ async def sync_playlist_endpoint(
     # longer a target (unticked) — best-effort, so a cleanup hiccup never fails
     # the sync. `record` still holds the PRE-sync plex state map.
     removed = sorted(set(record.plex) - {"admin"} - set(record.target_plex_users))
-    await _best_effort_plex_delete(config, record.name, removed, f"de-target {playlist_id}")
+    removed_keys = {uid: record.plex[uid].rating_key for uid in removed}
+    await _best_effort_plex_delete(config, removed_keys, f"de-target {playlist_id}")
 
     now = datetime.now(UTC).isoformat()
     states = {key: state.model_copy(update={"synced_at": now}) for key, state in states.items()}
@@ -296,16 +298,16 @@ async def delete_playlist_endpoint(
     handle: Annotated[LibraryHandle, Depends(get_library)],
     plex_store: Annotated[PlexConfigStore, Depends(get_plex_store)],
 ) -> Response:
-    # Read the record first so we know its name + which Plex accounts it was
-    # synced to before the owned record is gone.
+    # Read the record first so we know which Plex accounts (+ ratingKeys) it was
+    # synced to before the owned record is gone. `delete_playlist` stays the 404
+    # authority, so a present-but-unreadable record is still removable (we just
+    # skip the Plex cascade, since its targets are then unknown).
     record = await run_in_threadpool(store.get_playlist, playlists_dir, playlist_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="Playlist not found")
     deleted = await run_in_threadpool(store.delete_playlist, playlists_dir, playlist_id)
-    if not deleted:  # vanished between read and delete — already gone
+    if not deleted:
         raise HTTPException(status_code=404, detail="Playlist not found")
     await _remove_export(playlist_id, handle)
-    await _best_effort_plex_delete(
-        plex_store.get(), record.name, list(record.plex), f"delete {playlist_id}"
-    )
+    if record is not None:
+        rating_keys = {target: state.rating_key for target, state in record.plex.items()}
+        await _best_effort_plex_delete(plex_store.get(), rating_keys, f"delete {playlist_id}")
     return Response(status_code=204)

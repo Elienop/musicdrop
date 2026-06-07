@@ -324,16 +324,16 @@ def test_delete_cascades_to_plex(
     client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
     client.post(f"/api/playlists/{pid}/sync")  # now record.plex == {"admin": ...}
 
-    calls: list[tuple[str, list[str]]] = []
+    captured: list[dict[str, str | None]] = []
 
-    def _record(config: object, title: str, targets: list[str]) -> dict[str, str]:
-        calls.append((title, list(targets)))
+    def _record(config: object, rating_keys: dict[str, str | None]) -> dict[str, str]:
+        captured.append(dict(rating_keys))
         return {}
 
     monkeypatch.setattr(plex_sync, "delete_playlist_on_targets", _record)
     r = client.delete(f"/api/playlists/{pid}")
     assert r.status_code == 204
-    assert calls == [("Mix", ["admin"])]
+    assert captured == [{"admin": "777"}]  # deletes by the recorded ratingKey
 
 
 def test_delete_best_effort_when_plex_errors(
@@ -353,7 +353,7 @@ def test_delete_best_effort_when_plex_errors(
     client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
     client.post(f"/api/playlists/{pid}/sync")
 
-    def boom(config: object, title: str, targets: list[str]) -> dict[str, str]:
+    def boom(config: object, rating_keys: dict[str, str | None]) -> dict[str, str]:
         raise RuntimeError("plex down")
 
     monkeypatch.setattr(plex_sync, "delete_playlist_on_targets", boom)
@@ -369,7 +369,7 @@ def test_delete_unconfigured_skips_plex(
 
     called = False
 
-    def _mark(config: object, title: str, targets: list[str]) -> dict[str, str]:
+    def _mark(config: object, rating_keys: dict[str, str | None]) -> dict[str, str]:
         nonlocal called
         called = True
         return {}
@@ -486,14 +486,14 @@ def test_sync_cleans_up_detargeted_user(
 
     # Untick user 7, then re-sync: user 7's copy must be cleaned up.
     client.patch(f"/api/playlists/{pid}", json={"target_plex_users": []})
-    calls: list[tuple[str, list[str]]] = []
+    captured: list[dict[str, str | None]] = []
 
-    def _record(config: object, title: str, targets: list[str]) -> dict[str, str]:
-        calls.append((title, list(targets)))
+    def _record(config: object, rating_keys: dict[str, str | None]) -> dict[str, str]:
+        captured.append(dict(rating_keys))
         return {}
 
     monkeypatch.setattr(plex_sync, "delete_playlist_on_targets", _record)
     r = client.post(f"/api/playlists/{pid}/sync")
     assert r.status_code == 200
-    assert calls == [("Mix", ["7"])]  # the de-targeted user gets cleaned up
+    assert captured == [{"7": "1"}]  # the de-targeted user's recorded ratingKey
     assert set(r.json()["plex"]) == {"admin"}  # state map no longer lists 7
