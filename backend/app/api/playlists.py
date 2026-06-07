@@ -35,6 +35,7 @@ from app.playlists.store import StoredPlaylist
 from app.plex import sync as plex_sync
 from app.plex.config import PlexConfig, PlexConfigStore
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
+from app.plex.mapping import PlexTrackSpec
 from app.plex.paths import translate_path
 
 router = APIRouter(tags=["playlists"])
@@ -201,12 +202,12 @@ async def sync_playlist_endpoint(
         raise HTTPException(status_code=409, detail="Connect Plex first")
 
     try:
-        plex_paths = await run_in_threadpool(_plex_paths_for, record, handle, config)
+        specs = await run_in_threadpool(_plex_specs_for, record, handle, config)
         states = await run_in_threadpool(
             plex_sync.sync_playlist_to_targets,
             config,
             record.name,
-            plex_paths,
+            specs,
             record.target_plex_users,
         )
     except PlexNotConfigured as exc:
@@ -231,10 +232,21 @@ async def sync_playlist_endpoint(
     return await _detail_response(record, handle)
 
 
-def _plex_paths_for(record: StoredPlaylist, handle: LibraryHandle, config: PlexConfig) -> list[str]:
+def _plex_specs_for(
+    record: StoredPlaylist, handle: LibraryHandle, config: PlexConfig
+) -> list[PlexTrackSpec]:
     beets_root = os.fsdecode(handle.lib.directory)
     refs: list[TrackRef] = track_match_refs(handle.lib, record.track_ids)
-    return [translate_path(r.abs_path, beets_root, config.library_path) for r in refs]
+    return [
+        PlexTrackSpec(
+            path=translate_path(r.abs_path, beets_root, config.library_path),
+            albumartist=r.albumartist,
+            album=r.album,
+            title=r.title,
+            track=r.track,
+        )
+        for r in refs
+    ]
 
 
 @router.patch("/playlists/{playlist_id}", response_model=Playlist)
