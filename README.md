@@ -1,15 +1,15 @@
 # MusicDrop
 
-**The eye on your music library** — see what you have (and what you're missing), and drive your tagging and enrichment without ever touching a terminal.
+**The eye on your music library** — see what you have (and what you're missing), drive your tagging and enrichment, and build Plex-ready playlists, all without touching a terminal.
 
-MusicDrop is a from-scratch rebuild. It keeps the name, logo, and product vision of the original (now archived at `../MusicDrop-old`), but inverts the architecture: rather than maintaining its own metadata matcher, MusicDrop puts a comprehensive **web UI on top of [beets](https://beets.io)** — the mature, ~15-year-old music tagger — and adds what beets lacks: a rich visual library, playlists, and multi-user sync.
+MusicDrop is a from-scratch rebuild. It keeps the name, logo, and product vision of the original (now archived for reference), but inverts the architecture: rather than maintaining its own metadata matcher, MusicDrop puts a comprehensive **web UI on top of [beets](https://beets.io)** — the mature, ~15-year-old music tagger — and adds what beets lacks: a rich visual library, playlists, and multi-user Plex sync.
 
 ## What it does
 
-- **See your library.** Browse artists, albums, and tracks; spot the gaps (what you have vs. don't); search, filter, and view cover art, lyrics, and track info. The library as a visual surface, not a file explorer.
+- **See your library.** Browse artists, albums, and tracks; spot the gaps (what you have vs. don't); search, and view cover art, lyrics, and track info. The library as a visual surface, not a file explorer.
 - **A UI for beets.** beets' *toggles* (its config) and *actions* (`import`, `modify`, `fetchart`, `duplicates`, …) surfaced as real pages — do everything you'd do at the `beet` CLI, in the browser. The interactive import/match step gets a proper candidate-picker.
 - **Playlists.** Create, edit, and delete them easily. **Plex-compatible**, multi-user.
-- **Acquisition.** Integrates deemix / slskd to get music onto disk (beets has no acquisition layer), then hands files to beets to match and organize.
+- **Acquisition** *(planned).* Will integrate deemix / slskd to get music onto disk (beets has no acquisition layer), then hand files to beets to match and organize.
 
 ## Architecture — the layers
 
@@ -17,18 +17,77 @@ beets owns the **engine and the library** (its `library.db` is the source of tru
 
 | Layer | Owner |
 |---|---|
-| Acquisition (deemix / slskd) | MusicDrop |
+| Acquisition (deemix / slskd) — *planned* | MusicDrop |
 | Match · enrich · organize · library | **beets** |
 | Decision (auto-accept policy + human review UI) | MusicDrop |
 | Presentation (browse · search · art / lyrics / info) | MusicDrop |
 | Playlists · Plex sync · multi-user | MusicDrop |
 
-beets and MusicDrop are co-located on the same host: beets' library (`library.db`) and config (`config.yaml`) live on a shared path; beets' actions run via its CLI/Python (and, where it helps, a small long-lived beets service).
+beets and MusicDrop are co-located on the same host: beets' library (`library.db`) and config (`config.yaml`) live on a shared path; beets' actions run in-process through a typed adapter (`app/beets/`).
+
+## Stack
+
+- **Backend** — Python ≥ 3.11, **FastAPI + Pydantic** on Uvicorn; **beets 2.11** runs in-process behind the typed adapter in `app/beets/`. HTTP via httpx, Plex via [python-plexapi](https://github.com/pkkid/python-plexapi), YAML config editing via ruamel.yaml. Packaged with **uv**; `mypy --strict`, **Ruff** (lint + format), and **pytest** enforced in CI.
+- **Frontend** — **React 19 + TypeScript**, built with **Vite**. UI is **shadcn/ui** (Radix primitives) + **Tailwind CSS 4** + lucide icons; server state via **TanStack Query**; routing via React Router. The API client is **openapi-fetch**, and the TypeScript API types are **generated** from the backend's OpenAPI schema — never hand-written. Tested with Vitest + Testing Library + MSW.
 
 ## Status
 
-🚧 **Greenfield, day one.** The prior Go implementation is archived at `../MusicDrop-old` for reference — the React frontend, the deemix/slskd integration, and the UX patterns will be ported from it.
+**Actively built.** A deep beets integration and the web UI are in place.
 
-## Open decisions
+**Shipped**
 
-- **Backend language.** Go (with beets as a Python *sidecar* over a local port) vs. **Python-native** (FastAPI/Flask wrapping beets directly — collapses to a single runtime, since deemix is Python and slskd is just an HTTP API). *Currently leaning Python-native; not yet locked.*
+- **Browse** — artist → albums → tracklist, with cover art, lyrics, and a release's missing tracks.
+- **Search** across the library.
+- **Cover art** — fetch + replace. **Artist images** — multi-source (fanart.tv / Spotify / Deezer) with manual override, written into the library for Plex.
+- **Lyrics** — presence, per-album fetch, and a library-wide backfill.
+- **Edit tags** — album & track, from the UI.
+- **Import** — interactive candidate picker, resume, and an import-time duplicate guard.
+- **Duplicates** — find & resolve duplicate albums (resolve one, or resolve-all).
+- **beets config** — viewer + writable editor.
+- **Naming** — edit beets path/replace rules with a live preview. **Reorganize** — re-apply them to existing files.
+- **Library dashboard** — counts, duration, size, recently added.
+- **Playlists** — create / edit / delete; `.m3u8` export; Plex-compatible, multi-user sync (metadata-matched, with cascade-delete). Configure Plex under **Settings → Plex** (base URL + admin token + the music-library path *as Plex sees it*), or seed it from `MUSICDROP_PLEX_URL` / `MUSICDROP_PLEX_TOKEN` / `MUSICDROP_PLEX_LIBRARY_PATH`.
+
+**Planned** — acquisition (deemix / slskd), faceted search.
+
+## Development
+
+MusicDrop is two apps: a FastAPI backend (`backend/`) and a Vite + React frontend (`frontend/`). Run both in dev — the frontend proxies `/api` to the backend, so there's no CORS or base-URL juggling. Layout: `backend/app/` is the API (`api/` routers · `models/` the Pydantic contract · `beets/` the beets-adapter boundary) with tests in `backend/tests/`; `frontend/` is the React + shadcn UI.
+
+**Prerequisites:** Python ≥ 3.11 with [uv](https://docs.astral.sh/uv/); Node 22+ with npm.
+
+**Backend** (from `backend/`):
+
+```bash
+uv sync --extra dev                                # install (incl. dev tools)
+uv run uvicorn app.main:app --port 3030 --reload   # API on http://localhost:3030
+uv run pytest                                      # tests
+uv run mypy                                         # strict typecheck (must be clean)
+uv run ruff check                                  # lint
+uv run ruff format                                 # format
+```
+
+**Frontend** (from `frontend/`):
+
+```bash
+npm install        # install
+npm run dev        # Vite dev server on http://localhost:5173 (proxies /api -> :3030)
+npm run test       # vitest
+npm run typecheck  # tsc
+npm run build      # production build
+```
+
+Keep the backend on port **3030** — that's the target of the Vite dev proxy.
+
+**API types are generated, not hand-written.** The frontend's TypeScript API types come from the backend's OpenAPI schema — never edit `src/api/schema.d.ts` by hand. After changing a Pydantic model, refresh `frontend/openapi.json` from the backend schema, then regenerate:
+
+```bash
+npm run gen:api   # frontend/openapi.json -> src/api/schema.d.ts
+```
+
+## Decisions
+
+- **Backend: Python-native** (FastAPI + Pydantic, beets driven in-process behind a typed adapter in `app/beets/`). Locked — one runtime, since deemix is Python and slskd is just an HTTP API.
+- **The API is the contract.** Every endpoint takes/returns Pydantic models; the OpenAPI schema is the source of truth, and the frontend TypeScript types are generated from it (never hand-written).
+- **beets owns the engine + library.** All beets access lives behind the typed adapter in `app/beets/`, where beets' global config/plugin singletons stay isolated.
+- **Browse is a single artist spine** (roster → artist → albums → tracks), not a flat album grid.
