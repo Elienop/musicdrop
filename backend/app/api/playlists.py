@@ -232,6 +232,12 @@ async def sync_playlist_endpoint(
         # error instead of a raw 500.
         raise HTTPException(status_code=502, detail="Couldn't read the library files.") from exc
 
+    # Remove the playlist from any user that was previously synced but is no
+    # longer a target (unticked) — best-effort, so a cleanup hiccup never fails
+    # the sync. `record` still holds the PRE-sync plex state map.
+    removed = sorted(set(record.plex) - {"admin"} - set(record.target_plex_users))
+    await _best_effort_plex_delete(config, record.name, removed, f"de-target {playlist_id}")
+
     now = datetime.now(UTC).isoformat()
     states = {key: state.model_copy(update={"synced_at": now}) for key, state in states.items()}
     try:

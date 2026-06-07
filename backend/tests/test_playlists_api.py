@@ -441,3 +441,51 @@ def test_sync_fans_out_to_targets(
     assert set(plex) == {"admin", "7"}
     assert plex["admin"]["status"] == "ok"
     assert plex["7"]["synced_at"]
+
+
+def test_sync_cleans_up_detargeted_user(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.plex import sync as plex_sync
+
+    t1 = _add_track(beets_library, "Alpha")
+    plex_path = os.path.join(os.fsdecode(beets_library.lib.directory), "Seed", "Alpha.flac")
+
+    class _Sec:
+        TYPE = "artist"
+
+        def searchTracks(self) -> list[object]:
+            return [type("T", (), {"ratingKey": 9, "locations": [plex_path]})()]
+
+    class _Srv:
+        def __init__(self) -> None:
+            self.library = type("L", (), {"sections": lambda _s: [_Sec()]})()
+
+        def playlists(self) -> list[object]:
+            return []
+
+        def createPlaylist(self, title: str, items: list[object]) -> object:
+            return type("PL", (), {"title": title, "ratingKey": 1, "items": lambda _s: items})()
+
+        def switchUser(self, uid: str) -> "_Srv":
+            return _Srv()
+
+    monkeypatch.setattr(plex_sync.client, "connect", lambda base_url, token: _Srv())
+    client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
+
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
+    client.patch(f"/api/playlists/{pid}", json={"target_plex_users": ["7"]})
+    client.post(f"/api/playlists/{pid}/sync")  # plex == {"admin", "7"}
+
+    # Untick user 7, then re-sync: user 7's copy must be cleaned up.
+    client.patch(f"/api/playlists/{pid}", json={"target_plex_users": []})
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        plex_sync, "delete_playlist_on_targets",
+        lambda config, title, targets: calls.append((title, list(targets))) or {},
+    )
+    r = client.post(f"/api/playlists/{pid}/sync")
+    assert r.status_code == 200
+    assert calls == [("Mix", ["7"])]  # the de-targeted user gets cleaned up
+    assert set(r.json()["plex"]) == {"admin"}  # state map no longer lists 7
