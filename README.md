@@ -23,12 +23,27 @@ beets owns the **engine and the library** (its `library.db` is the source of tru
 | Presentation (browse · search · art / lyrics / info) | MusicDrop |
 | Playlists · Plex sync · multi-user | MusicDrop |
 
-beets and MusicDrop are co-located on the same host: beets' library (`library.db`) and config (`config.yaml`) live on a shared path; beets' actions run via its CLI/Python (and, where it helps, a small long-lived beets service).
+beets and MusicDrop are co-located on the same host: beets' library (`library.db`) and config (`config.yaml`) live on a shared path; beets' actions run in-process through a typed adapter (`app/beets/`).
 
 ## Status
 
-🚧 **Greenfield, day one.** The prior Go implementation is archived at `../MusicDrop-old` for reference — the React frontend, the deemix/slskd integration, and the UX patterns will be ported from it.
+**Actively built.** A deep beets integration and the web UI are in place. The React frontend and UX patterns are ported from the prior Go implementation, archived at `../MusicDrop-old`.
 
-## Open decisions
+**Shipped**
 
-- **Backend language.** Go (with beets as a Python *sidecar* over a local port) vs. **Python-native** (FastAPI/Flask wrapping beets directly — collapses to a single runtime, since deemix is Python and slskd is just an HTTP API). *Currently leaning Python-native; not yet locked.*
+- **Browse** — artist → albums → tracklist, with cover art, lyrics, and a release's missing tracks.
+- **Search** across the library.
+- **Cover art** — fetch + replace. **Artist images** — multi-source (fanart.tv / Spotify / Deezer) with manual override, written into the library for Plex.
+- **Lyrics** — presence, per-album fetch, and a library-wide backfill.
+- **Edit tags** — album & track, from the UI.
+- **Import** — interactive candidate picker, resume, and duplicate handling.
+- **beets config** — viewer + writable editor.
+- **Naming** — edit beets path/replace rules with a live preview. **Reorganize** — re-apply them to existing files.
+- **Library dashboard** — counts, duration, size, recently added.
+- **Playlists** — create / edit / delete; `.m3u8` export; Plex-compatible, multi-user sync (metadata-matched, with cascade-delete).
+
+**Planned** — acquisition (deemix / slskd), faceted search.
+
+## Decisions
+
+- **Backend: Python-native** (FastAPI + Pydantic, beets driven in-process behind a typed adapter in `app/beets/`). Locked — it collapses to a single runtime, since deemix is Python and slskd is just an HTTP API.
