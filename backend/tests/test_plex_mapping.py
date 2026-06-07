@@ -156,6 +156,15 @@ def test_no_metadata_hit_is_missing() -> None:
     assert missing == 1
 
 
+def test_empty_metadata_spec_never_metadata_matches() -> None:
+    # A path-only spec (no album-artist/title) must not collide with a track that
+    # also happens to have empty metadata — only an exact path can resolve it.
+    section = _FakeSection([_FakeTrack(1, ["/plex/a.flac"])])
+    tracks, missing = resolve_ordered_tracks(section, [_spec("/beets/gone.flac")])
+    assert tracks == []
+    assert missing == 1
+
+
 def test_path_match_wins_over_metadata() -> None:
     # An exact path present -> used directly, metadata never consulted.
     t = _FakeTrack(10, ["/plex/exact.flac"], grandparentTitle="X", title="Song")

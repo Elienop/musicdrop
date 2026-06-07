@@ -79,7 +79,10 @@ def _meta_match(
     Unique album-artist+title -> that track. Otherwise narrow by album, then by
     track number; a single survivor wins, anything still tied is left missing
     (never guessed)."""
-    cands = by_meta.get((_norm(spec.albumartist), _norm(spec.title)))
+    key = (_norm(spec.albumartist), _norm(spec.title))
+    if not any(key):  # no metadata to match on -> only an exact path can resolve it
+        return None
+    cands = by_meta.get(key)
     if not cands:
         return None
     if len(cands) == 1:

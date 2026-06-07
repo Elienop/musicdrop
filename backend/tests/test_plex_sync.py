@@ -3,12 +3,26 @@ import pytest
 from app.plex import sync
 from app.plex.config import PlexConfig
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
+from app.plex.mapping import PlexTrackSpec
 
 
 class _FakeTrack:
-    def __init__(self, rating_key: int, locations: list[str]) -> None:
+    def __init__(
+        self,
+        rating_key: int,
+        locations: list[str],
+        *,
+        grandparentTitle: str = "",
+        parentTitle: str = "",
+        title: str = "",
+        index: int | None = None,
+    ) -> None:
         self.ratingKey = rating_key
         self.locations = locations
+        self.grandparentTitle = grandparentTitle
+        self.parentTitle = parentTitle
+        self.title = title
+        self.index = index
 
 
 class _FakeSection:
@@ -65,10 +79,15 @@ def _patch(monkeypatch: pytest.MonkeyPatch, server: object) -> None:
     monkeypatch.setattr(sync.client, "connect", lambda base_url, token: server)
 
 
+def _p(path: str) -> PlexTrackSpec:
+    """A path-only spec (no metadata) — exercises the exact-path branch."""
+    return PlexTrackSpec(path=path, albumartist="", album="", title="", track=None)
+
+
 def test_creates_playlist_with_matched_tracks(monkeypatch: pytest.MonkeyPatch) -> None:
     server = _FakeServer([_FakeTrack(10, ["/m/a.flac"]), _FakeTrack(20, ["/m/b.flac"])])
     _patch(monkeypatch, server)
-    state = sync.sync_playlist(CONFIG, "Mix", ["/m/a.flac", "/m/b.flac"])
+    state = sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac"), _p("/m/b.flac")])
     assert state.status == "ok"
     assert state.missing == 0
     assert state.rating_key == "500"
@@ -78,7 +97,7 @@ def test_creates_playlist_with_matched_tracks(monkeypatch: pytest.MonkeyPatch) -
 def test_partial_when_some_paths_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     server = _FakeServer([_FakeTrack(10, ["/m/a.flac"])])
     _patch(monkeypatch, server)
-    state = sync.sync_playlist(CONFIG, "Mix", ["/m/a.flac", "/m/gone.flac"])
+    state = sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac"), _p("/m/gone.flac")])
     assert state.status == "partial"
     assert state.missing == 1
 
@@ -88,7 +107,7 @@ def test_reconciles_existing_playlist(monkeypatch: pytest.MonkeyPatch) -> None:
     existing = _FakePlaylist("Mix", [_FakeTrack(99, ["/m/old.flac"])])
     server._playlists.append(existing)
     _patch(monkeypatch, server)
-    state = sync.sync_playlist(CONFIG, "Mix", ["/m/b.flac"])
+    state = sync.sync_playlist(CONFIG, "Mix", [_p("/m/b.flac")])
     # An existing playlist of this title is DELETED then recreated fresh (so we
     # never rely on Plex's emptied-playlist behaviour).
     assert existing.items() == []  # deleted
@@ -100,14 +119,14 @@ def test_reconciles_existing_playlist(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_empty_when_no_tracks(monkeypatch: pytest.MonkeyPatch) -> None:
     server = _FakeServer([])
     _patch(monkeypatch, server)
-    state = sync.sync_playlist(CONFIG, "Mix", ["/m/gone.flac"])
+    state = sync.sync_playlist(CONFIG, "Mix", [_p("/m/gone.flac")])
     assert state.status == "empty"
     assert state.rating_key is None
 
 
 def test_not_configured() -> None:
     with pytest.raises(PlexNotConfigured):
-        sync.sync_playlist(PlexConfig(), "Mix", ["/m/a.flac"])
+        sync.sync_playlist(PlexConfig(), "Mix", [_p("/m/a.flac")])
 
 
 def test_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -118,7 +137,7 @@ def test_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(sync.client, "connect", boom)
     with pytest.raises(PlexConnectionError):
-        sync.sync_playlist(CONFIG, "Mix", ["/m/a.flac"])
+        sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")])
 
 
 def test_unexpected_error_translated(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -128,7 +147,7 @@ def test_unexpected_error_translated(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(sync.client, "connect", boom)
     with pytest.raises(PlexConnectionError):
-        sync.sync_playlist(CONFIG, "Mix", ["/m/a.flac"])
+        sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")])
 
 
 def test_fan_out_to_admin_and_users(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -145,7 +164,7 @@ def test_fan_out_to_admin_and_users(monkeypatch: pytest.MonkeyPatch) -> None:
     server.switchUser = _switch  # type: ignore[attr-defined]
     _patch(monkeypatch, server)
 
-    states = sync.sync_playlist_to_targets(CONFIG, "Mix", ["/m/a.flac"], ["7", "8"])
+    states = sync.sync_playlist_to_targets(CONFIG, "Mix", [_p("/m/a.flac")], ["7", "8"])
     assert set(states) == {"admin", "7", "8"}
     assert states["admin"].status == "ok"
     assert states["7"].status == "ok"
@@ -164,7 +183,7 @@ def test_fan_out_isolates_a_failing_user(monkeypatch: pytest.MonkeyPatch) -> Non
     server.switchUser = _switch  # type: ignore[attr-defined]
     _patch(monkeypatch, server)
 
-    states = sync.sync_playlist_to_targets(CONFIG, "Mix", ["/m/a.flac"], ["bad", "ok"])
+    states = sync.sync_playlist_to_targets(CONFIG, "Mix", [_p("/m/a.flac")], ["bad", "ok"])
     assert states["admin"].status == "ok"
     assert states["bad"].status == "failed"
     assert states["bad"].error
@@ -173,4 +192,22 @@ def test_fan_out_isolates_a_failing_user(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_fan_out_not_configured() -> None:
     with pytest.raises(PlexNotConfigured):
-        sync.sync_playlist_to_targets(PlexConfig(), "Mix", ["/m/a.flac"], ["7"])
+        sync.sync_playlist_to_targets(PlexConfig(), "Mix", [_p("/m/a.flac")], ["7"])
+
+
+def test_sync_metadata_fallback_populates(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Plex has the song at a different filename; only metadata bridges it.
+    track = _FakeTrack(
+        42, ["/plex/Adele_19_01_Daydreamer.flac"],
+        grandparentTitle="Adele", parentTitle="19", title="Daydreamer", index=1,
+    )
+    server = _FakeServer([track])
+    _patch(monkeypatch, server)
+    spec = PlexTrackSpec(
+        path="/beets/Adele/19/01 Daydreamer.flac",
+        albumartist="Adele", album="19", title="Daydreamer", track=1,
+    )
+    state = sync.sync_playlist(CONFIG, "Mix", [spec])
+    assert state.status == "ok"
+    assert state.missing == 0
+    assert [t.ratingKey for t in server.created[0].items()] == [42]

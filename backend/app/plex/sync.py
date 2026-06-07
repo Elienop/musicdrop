@@ -5,8 +5,8 @@ tracks: an existing playlist is **deleted and recreated** (rather than emptied
 in place) so we never depend on Plex's behaviour for a playlist whose items were
 all removed — some servers auto-delete an emptied playlist, which would make a
 subsequent ``addItems`` fail. Resolution is one library scan
-(``resolve_ordered_tracks``). The caller passes paths already translated to
-Plex's view.
+(``resolve_ordered_tracks``). The caller passes ``PlexTrackSpec``s whose paths
+are already translated to Plex's view.
 
 Exception contract — raises ONLY:
 - ``PlexNotConfigured`` when no URL/token is set, or
@@ -25,7 +25,7 @@ from app.models.plex import PlexTargetState
 from app.plex import client as client  # explicit re-export: the patchable seam (sync.client)
 from app.plex.config import PlexConfig
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
-from app.plex.mapping import resolve_ordered_tracks
+from app.plex.mapping import PlexTrackSpec, resolve_ordered_tracks
 
 
 def _find_existing(server: Any, title: str) -> Any | None:
@@ -52,7 +52,7 @@ def _reconcile_on(server: Any, title: str, tracks: list[Any], missing: int) -> P
     return PlexTargetState(rating_key=str(playlist.ratingKey), status=status, missing=missing)
 
 
-def sync_playlist(config: PlexConfig, title: str, plex_paths: list[str]) -> PlexTargetState:
+def sync_playlist(config: PlexConfig, title: str, specs: list[PlexTrackSpec]) -> PlexTargetState:
     """Create/reconcile the playlist on the admin account only."""
     if not (config.base_url and config.token):
         raise PlexNotConfigured("Plex is not configured.")
@@ -61,7 +61,7 @@ def sync_playlist(config: PlexConfig, title: str, plex_paths: list[str]) -> Plex
         section = client.music_section(server)
         if section is None:
             raise PlexConnectionError("No music library found in Plex.")
-        tracks, missing = resolve_ordered_tracks(section, plex_paths)
+        tracks, missing = resolve_ordered_tracks(section, specs)
         return _reconcile_on(server, title, tracks, missing)
     except PlexConnectionError:
         raise  # already our type (e.g. no music section) — don't re-wrap
@@ -73,7 +73,7 @@ def sync_playlist(config: PlexConfig, title: str, plex_paths: list[str]) -> Plex
 
 
 def sync_playlist_to_targets(
-    config: PlexConfig, title: str, plex_paths: list[str], target_user_ids: list[str]
+    config: PlexConfig, title: str, specs: list[PlexTrackSpec], target_user_ids: list[str]
 ) -> dict[str, PlexTargetState]:
     """Reconcile the playlist on the admin account AND each target user.
 
@@ -89,7 +89,7 @@ def sync_playlist_to_targets(
         section = client.music_section(admin)
         if section is None:
             raise PlexConnectionError("No music library found in Plex.")
-        tracks, missing = resolve_ordered_tracks(section, plex_paths)
+        tracks, missing = resolve_ordered_tracks(section, specs)
     except PlexConnectionError:
         raise
     except Exception as exc:
