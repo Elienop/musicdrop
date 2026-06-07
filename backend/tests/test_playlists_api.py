@@ -315,7 +315,8 @@ def test_delete_cascades_to_plex(
     t1 = _add_track(beets_library, "Alpha")
     plex_path = os.path.join(os.fsdecode(beets_library.lib.directory), "Seed", "Alpha.flac")
     monkeypatch.setattr(
-        plex_sync.client, "connect",
+        plex_sync.client,
+        "connect",
         lambda base_url, token: _SyncServer([_SyncTrack(10, [plex_path])]),
     )
     client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
@@ -324,10 +325,12 @@ def test_delete_cascades_to_plex(
     client.post(f"/api/playlists/{pid}/sync")  # now record.plex == {"admin": ...}
 
     calls: list[tuple[str, list[str]]] = []
-    monkeypatch.setattr(
-        plex_sync, "delete_playlist_on_targets",
-        lambda config, title, targets: calls.append((title, list(targets))) or {},
-    )
+
+    def _record(config: object, title: str, targets: list[str]) -> dict[str, str]:
+        calls.append((title, list(targets)))
+        return {}
+
+    monkeypatch.setattr(plex_sync, "delete_playlist_on_targets", _record)
     r = client.delete(f"/api/playlists/{pid}")
     assert r.status_code == 204
     assert calls == [("Mix", ["admin"])]
@@ -341,7 +344,8 @@ def test_delete_best_effort_when_plex_errors(
     t1 = _add_track(beets_library, "Alpha")
     plex_path = os.path.join(os.fsdecode(beets_library.lib.directory), "Seed", "Alpha.flac")
     monkeypatch.setattr(
-        plex_sync.client, "connect",
+        plex_sync.client,
+        "connect",
         lambda base_url, token: _SyncServer([_SyncTrack(10, [plex_path])]),
     )
     client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
@@ -358,7 +362,9 @@ def test_delete_best_effort_when_plex_errors(
     assert client.get(f"/api/playlists/{pid}").status_code == 404  # really gone
 
 
-def test_delete_unconfigured_skips_plex(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_delete_unconfigured_skips_plex(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from app.plex import sync as plex_sync
 
     called = False
@@ -481,10 +487,12 @@ def test_sync_cleans_up_detargeted_user(
     # Untick user 7, then re-sync: user 7's copy must be cleaned up.
     client.patch(f"/api/playlists/{pid}", json={"target_plex_users": []})
     calls: list[tuple[str, list[str]]] = []
-    monkeypatch.setattr(
-        plex_sync, "delete_playlist_on_targets",
-        lambda config, title, targets: calls.append((title, list(targets))) or {},
-    )
+
+    def _record(config: object, title: str, targets: list[str]) -> dict[str, str]:
+        calls.append((title, list(targets)))
+        return {}
+
+    monkeypatch.setattr(plex_sync, "delete_playlist_on_targets", _record)
     r = client.post(f"/api/playlists/{pid}/sync")
     assert r.status_code == 200
     assert calls == [("Mix", ["7"])]  # the de-targeted user gets cleaned up
