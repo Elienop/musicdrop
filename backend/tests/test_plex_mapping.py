@@ -1,5 +1,5 @@
 from app.plex.client import music_section
-from app.plex.mapping import PlexTrackSpec, index_tracks_by_path, resolve_ordered_tracks
+from app.plex.mapping import PlexTrackSpec, resolve_ordered_tracks
 
 
 class _FakeTrack:
@@ -46,19 +46,6 @@ class _FakeLibrary:
 class _FakeServer:
     def __init__(self, sections: list[object]) -> None:
         self.library = _FakeLibrary(sections)
-
-
-def test_index_maps_each_location_to_rating_key() -> None:
-    section = _FakeSection(
-        [
-            _FakeTrack(10, ["/data/music/A/1.flac"]),
-            _FakeTrack(20, ["/data/music/B/2.flac", "/data/music/B/2.alt.flac"]),
-        ]
-    )
-    index = index_tracks_by_path(section)
-    assert index["/data/music/A/1.flac"] == 10
-    assert index["/data/music/B/2.flac"] == 20
-    assert index["/data/music/B/2.alt.flac"] == 20
 
 
 def test_music_section_picks_artist_type() -> None:
@@ -182,6 +169,30 @@ def test_empty_metadata_spec_never_metadata_matches() -> None:
     # also happens to have empty metadata — only an exact path can resolve it.
     section = _FakeSection([_FakeTrack(1, ["/plex/a.flac"])])
     tracks, missing = resolve_ordered_tracks(section, [_spec("/beets/gone.flac")])
+    assert tracks == []
+    assert missing == 1
+
+
+def test_empty_albumartist_with_title_never_metadata_matches() -> None:
+    # Empty album-artist but a real title must NOT match on title alone — without a
+    # known artist a title-only match is a guess and could land a DIFFERENT song in
+    # a target user's Plex (the `not all(key)` guard, not just `not any(key)`).
+    section = _FakeSection(
+        [_FakeTrack(777, ["/plex/other.flac"], grandparentTitle="", title="Interlude")]
+    )
+    spec = _spec("/beets/gone.flac", albumartist="", title="Interlude")
+    tracks, missing = resolve_ordered_tracks(section, [spec])
+    assert tracks == []
+    assert missing == 1
+
+
+def test_empty_title_with_albumartist_never_metadata_matches() -> None:
+    # Symmetric guard: a real album-artist but a blank title can't metadata-match.
+    section = _FakeSection(
+        [_FakeTrack(778, ["/plex/other.flac"], grandparentTitle="Adele", title="")]
+    )
+    spec = _spec("/beets/gone.flac", albumartist="Adele", title="")
+    tracks, missing = resolve_ordered_tracks(section, [spec])
     assert tracks == []
     assert missing == 1
 

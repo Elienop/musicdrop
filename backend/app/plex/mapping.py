@@ -48,15 +48,6 @@ def _track_no(track: Any) -> int | None:
     return None
 
 
-def index_tracks_by_path(section: Any) -> dict[str, int]:
-    index: dict[str, int] = {}
-    for track in section.searchTracks():
-        rating_key = int(track.ratingKey)
-        for location in track.locations:
-            index[location] = rating_key
-    return index
-
-
 def _build_indexes(
     section: Any,
 ) -> tuple[dict[str, Any], dict[tuple[str, str], list[Any]]]:
@@ -78,7 +69,7 @@ def _meta_match(by_meta: dict[tuple[str, str], list[Any]], spec: PlexTrackSpec) 
     track number; a single survivor wins, anything still tied is left missing
     (never guessed)."""
     key = (_norm(spec.albumartist), _norm(spec.title))
-    if not any(key):  # no metadata to match on -> only an exact path can resolve it
+    if not all(key):  # need BOTH album-artist and title — a title-only match is a guess
         return None
     cands = by_meta.get(key)
     if not cands:
