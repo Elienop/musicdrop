@@ -112,3 +112,35 @@ def _safe_reconcile(run: Callable[[], PlexTargetState]) -> PlexTargetState:
         return run()
     except Exception:
         return PlexTargetState(status="failed", error="Couldn't sync to this Plex account.")
+
+
+def delete_playlist_on_targets(
+    config: PlexConfig, title: str, targets: list[str]
+) -> dict[str, str]:
+    """Best-effort delete of playlist ``title`` from each target account.
+
+    ``targets`` are state-map keys: ``"admin"`` (the owner's server) or a Plex
+    user id (deleted via ``admin.switchUser(uid)``). Each target is ISOLATED —
+    one failure never aborts the others. Returns ``{target: "deleted" |
+    "absent" | "failed"}`` for logging. Raises only ``PlexNotConfigured`` (no
+    URL/token); a connect failure raises ``PlexConnectionError`` (callers wrap
+    this best-effort)."""
+    if not (config.base_url and config.token):
+        raise PlexNotConfigured("Plex is not configured.")
+    try:
+        admin = client.connect(config.base_url, config.token)
+    except Exception as exc:
+        raise PlexConnectionError("Plex sync failed.") from exc
+    return {target: _safe_delete(admin, target, title) for target in targets}
+
+
+def _safe_delete(admin: Any, target: str, title: str) -> str:
+    try:
+        server = admin if target == "admin" else admin.switchUser(target)
+        existing = _find_existing(server, title)
+        if existing is None:
+            return "absent"
+        existing.delete()
+        return "deleted"
+    except Exception:  # one account failing must never abort the others
+        return "failed"
