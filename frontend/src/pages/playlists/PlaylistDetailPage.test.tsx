@@ -354,4 +354,43 @@ describe("PlaylistDetailPage", () => {
     expect(await screen.findByText(/you \(admin\)/i)).toBeInTheDocument();
     expect(await screen.findByText(/partner/i)).toBeInTheDocument();
   });
+
+  test("delete dialog notes Plex removal when the playlist has Plex copies", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: {
+            admin: {
+              rating_key: "1",
+              status: "ok",
+              missing: 0,
+              synced_at: "2026-06-07T01:00:00+00:00",
+              error: null,
+            },
+          },
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /delete playlist/i }));
+    expect(await screen.findByText(/also removes it from Plex/i)).toBeInTheDocument();
+  });
+
+  test("delete dialog omits the Plex note when there are no Plex copies", async () => {
+    server.use(
+      http.get(BASE, () => HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: {} })),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /delete playlist/i }));
+    expect(screen.queryByText(/also removes it from Plex/i)).not.toBeInTheDocument();
+  });
 });

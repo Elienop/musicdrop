@@ -421,6 +421,13 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
               <AlertDialogDescription>
                 This removes the playlist and its exported file. Your tracks stay in the
                 library.
+                {Object.keys(playlist.plex ?? {}).length > 0 ? (
+                  <>
+                    {" "}
+                    This also removes it from Plex ({Object.keys(playlist.plex).length} account
+                    {Object.keys(playlist.plex).length === 1 ? "" : "s"}).
+                  </>
+                ) : null}
               </AlertDialogDescription>
             </AlertDialogHeader>
             {remove.isError && (
