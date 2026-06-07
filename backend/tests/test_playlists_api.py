@@ -307,6 +307,74 @@ def test_sync_connection_error_502(client: TestClient, monkeypatch: pytest.Monke
     assert r.status_code == 502
 
 
+def test_delete_cascades_to_plex(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.plex import sync as plex_sync
+
+    t1 = _add_track(beets_library, "Alpha")
+    plex_path = os.path.join(os.fsdecode(beets_library.lib.directory), "Seed", "Alpha.flac")
+    monkeypatch.setattr(
+        plex_sync.client, "connect",
+        lambda base_url, token: _SyncServer([_SyncTrack(10, [plex_path])]),
+    )
+    client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
+    client.post(f"/api/playlists/{pid}/sync")  # now record.plex == {"admin": ...}
+
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        plex_sync, "delete_playlist_on_targets",
+        lambda config, title, targets: calls.append((title, list(targets))) or {},
+    )
+    r = client.delete(f"/api/playlists/{pid}")
+    assert r.status_code == 204
+    assert calls == [("Mix", ["admin"])]
+
+
+def test_delete_best_effort_when_plex_errors(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.plex import sync as plex_sync
+
+    t1 = _add_track(beets_library, "Alpha")
+    plex_path = os.path.join(os.fsdecode(beets_library.lib.directory), "Seed", "Alpha.flac")
+    monkeypatch.setattr(
+        plex_sync.client, "connect",
+        lambda base_url, token: _SyncServer([_SyncTrack(10, [plex_path])]),
+    )
+    client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
+    client.post(f"/api/playlists/{pid}/sync")
+
+    def boom(config: object, title: str, targets: list[str]) -> dict[str, str]:
+        raise RuntimeError("plex down")
+
+    monkeypatch.setattr(plex_sync, "delete_playlist_on_targets", boom)
+    r = client.delete(f"/api/playlists/{pid}")
+    assert r.status_code == 204  # cleanup failure never fails the local delete
+    assert client.get(f"/api/playlists/{pid}").status_code == 404  # really gone
+
+
+def test_delete_unconfigured_skips_plex(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.plex import sync as plex_sync
+
+    called = False
+
+    def _mark(config: object, title: str, targets: list[str]) -> dict[str, str]:
+        nonlocal called
+        called = True
+        return {}
+
+    monkeypatch.setattr(plex_sync, "delete_playlist_on_targets", _mark)
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    r = client.delete(f"/api/playlists/{pid}")
+    assert r.status_code == 204
+    assert called is False  # no Plex configured -> no cleanup attempt
+
+
 def test_patch_sets_target_users(client: TestClient) -> None:
     pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
     r = client.patch(f"/api/playlists/{pid}", json={"target_plex_users": ["7", "8"]})

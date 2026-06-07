@@ -101,6 +101,19 @@ async def _remove_export(playlist_id: str, handle: LibraryHandle) -> None:
         logger.warning("Playlist .m3u8 removal failed for %s", playlist_id, exc_info=True)
 
 
+async def _best_effort_plex_delete(
+    config: PlexConfig, title: str, targets: list[str], ctx: str
+) -> None:
+    """Remove the playlist from the given Plex accounts. Best-effort: a Plex
+    hiccup (or no Plex configured) must never fail the local operation."""
+    if not (config.base_url and config.token) or not targets:
+        return
+    try:
+        await run_in_threadpool(plex_sync.delete_playlist_on_targets, config, title, targets)
+    except Exception:  # best-effort cleanup — log and move on, never fail the op
+        logger.warning("Plex playlist cleanup failed (%s)", ctx, exc_info=True)
+
+
 @router.get("/playlists", response_model=list[Playlist])
 async def list_playlists_endpoint(
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
@@ -275,9 +288,18 @@ async def delete_playlist_endpoint(
     playlist_id: str,
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
     handle: Annotated[LibraryHandle, Depends(get_library)],
+    plex_store: Annotated[PlexConfigStore, Depends(get_plex_store)],
 ) -> Response:
+    # Read the record first so we know its name + which Plex accounts it was
+    # synced to before the owned record is gone.
+    record = await run_in_threadpool(store.get_playlist, playlists_dir, playlist_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Playlist not found")
     deleted = await run_in_threadpool(store.delete_playlist, playlists_dir, playlist_id)
-    if not deleted:
+    if not deleted:  # vanished between read and delete — already gone
         raise HTTPException(status_code=404, detail="Playlist not found")
     await _remove_export(playlist_id, handle)
+    await _best_effort_plex_delete(
+        plex_store.get(), record.name, list(record.plex), f"delete {playlist_id}"
+    )
     return Response(status_code=204)
