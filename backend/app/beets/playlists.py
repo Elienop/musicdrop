@@ -10,6 +10,7 @@ playlists stays in this module (CLAUDE.md rule 3).
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Any
 
 from beets.library import Library
@@ -17,6 +18,31 @@ from beets.library import Library
 from app.beets.library import _abs_path, _coerce_duration, _coerce_str
 from app.models.playlist import PlaylistTrack
 from app.playlists.m3u import M3uEntry
+
+
+@dataclass(frozen=True)
+class TrackRef:
+    """A resolvable track's absolute path plus the metadata Plex matches on.
+
+    Plex-unaware on purpose (CLAUDE.md rule 3): the API translates ``abs_path``
+    into a Plex view and pairs it with this metadata as a ``PlexTrackSpec``.
+    """
+
+    abs_path: str
+    albumartist: str
+    album: str
+    title: str
+    track: int | None
+
+
+def _coerce_track(value: object) -> int | None:
+    """beets ``item.track`` -> a positive int, or None (0/absent/unparseable)."""
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str) and value.isdigit():
+        n = int(value)
+        return n if n > 0 else None
+    return None
 
 
 def _resolved(item: Any) -> PlaylistTrack:
@@ -59,11 +85,13 @@ def resolve_tracks(lib: Library, ids: list[int]) -> list[PlaylistTrack]:
     return tracks
 
 
-def track_abs_paths(lib: Library, ids: list[int]) -> list[str]:
-    """Ordered absolute file paths for resolvable tracks (missing ids dropped).
+def track_match_refs(lib: Library, ids: list[int]) -> list[TrackRef]:
+    """Ordered ``TrackRef``s for resolvable tracks (missing ids dropped).
 
-    Read inside ``music_dir_context`` so beets re-expands DB-relative paths."""
-    paths: list[str] = []
+    Read inside ``music_dir_context`` so beets re-expands DB-relative paths.
+    Carries album-artist/album/title/track so the Plex side can fall back to
+    metadata matching when the exact file path isn't present in Plex."""
+    refs: list[TrackRef] = []
     with lib.music_dir_context():
         for item_id in ids:
             try:
@@ -72,8 +100,16 @@ def track_abs_paths(lib: Library, ids: list[int]) -> list[str]:
                 item = None
             if item is None:
                 continue
-            paths.append(_abs_path(lib, item.path))
-    return paths
+            refs.append(
+                TrackRef(
+                    abs_path=_abs_path(lib, item.path),
+                    albumartist=_coerce_str(item.albumartist),
+                    album=_coerce_str(item.album),
+                    title=_coerce_str(item.title),
+                    track=_coerce_track(item.track),
+                )
+            )
+    return refs
 
 
 def m3u_entries(lib: Library, ids: list[int], export_dir: str) -> list[M3uEntry]:

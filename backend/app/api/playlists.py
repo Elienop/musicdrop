@@ -19,7 +19,7 @@ from fastapi.concurrency import run_in_threadpool
 from app.api.albums import get_library
 from app.api.plex import get_plex_store
 from app.beets.library import LibraryHandle
-from app.beets.playlists import m3u_entries, resolve_tracks, track_abs_paths
+from app.beets.playlists import TrackRef, m3u_entries, resolve_tracks, track_match_refs
 from app.config import settings
 from app.models.playlist import (
     Playlist,
@@ -233,8 +233,8 @@ async def sync_playlist_endpoint(
 
 def _plex_paths_for(record: StoredPlaylist, handle: LibraryHandle, config: PlexConfig) -> list[str]:
     beets_root = os.fsdecode(handle.lib.directory)
-    abs_paths = track_abs_paths(handle.lib, record.track_ids)
-    return [translate_path(p, beets_root, config.library_path) for p in abs_paths]
+    refs: list[TrackRef] = track_match_refs(handle.lib, record.track_ids)
+    return [translate_path(r.abs_path, beets_root, config.library_path) for r in refs]
 
 
 @router.patch("/playlists/{playlist_id}", response_model=Playlist)

@@ -3,7 +3,7 @@ from pathlib import Path
 
 from beets.library import Item, Library
 
-from app.beets.playlists import m3u_entries, resolve_tracks, track_abs_paths
+from app.beets.playlists import TrackRef, m3u_entries, resolve_tracks, track_match_refs
 
 
 def _lib_with_items(tmp_path: Path) -> tuple[Library, list[int]]:
@@ -112,16 +112,35 @@ def test_m3u_entries_empty(tmp_path: Path) -> None:
     assert m3u_entries(lib, [], str(tmp_path / "music" / ".playlists")) == []
 
 
-def test_track_abs_paths_ordered_absolute(tmp_path: Path) -> None:
+def test_track_match_refs_ordered_with_metadata(tmp_path: Path) -> None:
     lib, ids = _lib_with_items(tmp_path)
-    paths = track_abs_paths(lib, [ids[1], ids[0]])
-    assert paths == [
-        str(tmp_path / "music" / "A" / "One" / "02.flac"),
-        str(tmp_path / "music" / "A" / "One" / "01.flac"),
-    ]
+    refs = track_match_refs(lib, [ids[1], ids[0]])  # reversed
+    assert [r.title for r in refs] == ["Beta", "Alpha"]
+    assert [r.track for r in refs] == [2, 1]
+    assert refs[0].albumartist == "A"
+    assert refs[0].album == "One"
+    # absolute, order-preserving paths (what translate_path will consume)
+    assert all(isinstance(r, TrackRef) for r in refs)
+    assert all(os.path.isabs(r.abs_path) for r in refs)
+    assert refs[0].abs_path.endswith("02.flac")
+    assert refs[1].abs_path.endswith("01.flac")
 
 
-def test_track_abs_paths_skips_missing(tmp_path: Path) -> None:
+def test_track_match_refs_skips_missing(tmp_path: Path) -> None:
     lib, ids = _lib_with_items(tmp_path)
-    paths = track_abs_paths(lib, [ids[0], 999_999])
-    assert len(paths) == 1
+    refs = track_match_refs(lib, [ids[0], 999_999])
+    assert len(refs) == 1
+    assert refs[0].title == "Alpha"
+
+
+def test_track_match_refs_track_zero_becomes_none(tmp_path: Path) -> None:
+    music = tmp_path / "music"
+    lib = Library(str(tmp_path / "library.db"), directory=str(music))
+    music.mkdir(parents=True, exist_ok=True)
+    f = music / "x.flac"
+    f.write_bytes(b"\x00")
+    it = Item(album="Al", albumartist="Ar", artist="Ar", title="T", track=0, length=10.0)
+    it.path = os.fsencode(str(f))
+    lib.add(it)
+    refs = track_match_refs(lib, [int(it.id)])
+    assert refs[0].track is None  # absent/zero track number -> None
