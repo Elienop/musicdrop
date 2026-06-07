@@ -50,5 +50,25 @@ class Settings(BaseSettings):
     # (env MUSICDROP_ARTIST_ART_WRITE_ENABLED)
     artist_art_write_enabled: bool = False
 
+    # Playlists (app/playlists/) — MusicDrop owns playlist state as JSON files.
+    # Empty string = default to <beets_dir>/playlists, computed at resolve time
+    # (sidesteps the cwd-relative gotcha when beets_dir is absolute in tests).
+    # Set an absolute path to override. (env MUSICDROP_PLAYLISTS_DIR)
+    playlists_dir: str = ""
+
+    # Where the Plex-readable .m3u8 exports are written. Empty string = default
+    # to <music library>/.playlists (resolved from the live library directory).
+    # (env MUSICDROP_PLAYLISTS_EXPORT_DIR)
+    playlists_export_dir: str = ""
+
+    # Plex sync (app/plex/). Empty plex_settings_dir = <beets_dir>/plex.
+    # base URL + admin token + the music-library path AS PLEX SEES IT (for the
+    # Docker mount difference). All env-seed the persisted JSON config.
+    # (env MUSICDROP_PLEX_URL / MUSICDROP_PLEX_TOKEN / MUSICDROP_PLEX_LIBRARY_PATH)
+    plex_settings_dir: str = ""
+    plex_url: str = ""
+    plex_token: str = ""
+    plex_library_path: str = ""
+
 
 settings = Settings()

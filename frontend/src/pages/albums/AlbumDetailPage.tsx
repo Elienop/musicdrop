@@ -10,6 +10,7 @@ import { useLyricsBackfillStatus, useStopLyricsBackfill } from "@/api/useLyricsB
 import { useAlbumMissing, type MissingReleaseTrack } from "@/api/useAlbumMissing";
 import { buildDiscGroups, type DiscGroup } from "@/pages/albums/missingTracks";
 import { BackLink } from "@/components/albums/album-grid";
+import { AddToPlaylistMenu } from "@/components/playlists/AddToPlaylistMenu";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -138,6 +139,10 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
               <ImageIcon className="size-4" /> Cover
             </Button>
             <ReorganizeControl scope={{ scope: "album", albumId: album.id }} />
+            <AddToPlaylistMenu
+              trackIds={album.tracks.map((t) => t.id)}
+              label="Add album to playlist"
+            />
           </div>
         </div>
       </header>
@@ -173,6 +178,9 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
               <TableHead>Title</TableHead>
               <TableHead className="w-20 text-right">Length</TableHead>
               <TableHead className="w-16 text-center">Lyrics</TableHead>
+              <TableHead className="w-12 text-center">
+                <span className="sr-only">Add to playlist</span>
+              </TableHead>
             </TableRow>
           </TableHeader>
           {discs.map((group) => (
@@ -182,7 +190,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
                   <TableRow className="hover:bg-transparent">
                     <TableHead
                       scope="rowgroup"
-                      colSpan={4}
+                      colSpan={5}
                       className="text-muted-foreground h-auto pt-6 text-xs font-medium tracking-wide uppercase"
                     >
                       Disc {group.disc}
@@ -248,6 +256,12 @@ function TrackRow({
           </span>
         )}
       </TableCell>
+      <TableCell className="text-center">
+        <AddToPlaylistMenu
+          trackIds={[track.id]}
+          label={`Add ${track.title} to playlist`}
+        />
+      </TableCell>
     </TableRow>
   );
 }
@@ -288,6 +302,8 @@ function MissingTrackRow({ track }: { track: MissingReleaseTrack }) {
       <TableCell aria-hidden="true" className="text-muted-foreground text-center">
         –
       </TableCell>
+      {/* No add-to-playlist for a track that isn't in the library. */}
+      <TableCell aria-hidden="true" />
     </TableRow>
   );
 }

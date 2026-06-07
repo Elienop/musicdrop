@@ -595,6 +595,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "langdetect" },
+    { name = "plexapi" },
     { name = "pydantic-settings" },
     { name = "python-multipart" },
     { name = "ruamel-yaml" },
@@ -617,6 +618,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "langdetect", specifier = ">=1.0.9" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11" },
+    { name = "plexapi", specifier = ">=4.15,<5" },
     { name = "pydantic-settings", specifier = ">=2.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
     { name = "python-multipart", specifier = ">=0.0.30" },
@@ -832,6 +834,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/9f/4a/0883b8e3802965322523f0b200ecf33d31f10991d0401162f4b23c698b42/platformdirs-4.9.6.tar.gz", hash = "sha256:3bfa75b0ad0db84096ae777218481852c0ebc6c727b3168c1b9e0118e458cf0a", size = 29400, upload-time = "2026-04-09T00:04:10.812Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/75/a6/a0a304dc33b49145b21f4808d763822111e67d1c3a32b524a1baf947b6e1/platformdirs-4.9.6-py3-none-any.whl", hash = "sha256:e61adb1d5e5cb3441b4b7710bea7e4c12250ca49439228cc1021c00dcfac0917", size = 21348, upload-time = "2026-04-09T00:04:09.463Z" },
+]
+
+[[package]]
+name = "plexapi"
+version = "4.18.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e6/37/5b3d926db8f5cfe20bb8d9652df0272ca23fa028f3b2798038ec41218ca1/plexapi-4.18.1.tar.gz", hash = "sha256:deba96e94b8b51fc0b042334ebbd48a14e407efd33f281a5d8e9897f9e5dba5f", size = 161393, upload-time = "2026-03-22T22:14:14.356Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/17/a8/9f1c54ce351d681aa0eb2221f7deccbdd5a95421507eb59e6f7ec83931d7/plexapi-4.18.1-py3-none-any.whl", hash = "sha256:d8330cee337bc55dc006c392a58b3259239d787a32cbe4064b50a9b07a6e0b35", size = 176427, upload-time = "2026-03-22T22:14:12.563Z" },
 ]
 
 [[package]]

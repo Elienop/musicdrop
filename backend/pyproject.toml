@@ -13,6 +13,7 @@ dependencies = [
     "httpx>=0.28.1",
     "ruamel.yaml>=0.15.93",
     "python-multipart>=0.0.30",
+    "plexapi>=4.15,<5",
 ]
 
 [project.optional-dependencies]
@@ -39,7 +40,7 @@ strict = true
 files = ["app", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["beets.*", "beetsplug.*", "mediafile", "yaml", "requests.*"]
+module = ["beets.*", "beetsplug.*", "mediafile", "yaml", "requests.*", "plexapi.*"]
 ignore_missing_imports = true
 
 # beets is untyped; calling its functions trips disallow_untyped_calls under
@@ -110,6 +111,17 @@ module = [
     "app.api.stats",
     "tests.test_stats_adapter",
     "tests.test_stats_api",
+    "app.beets.playlists",
+    "tests.test_playlists_beets",
+    "tests.test_playlists_api",
+    "app.plex.client",
+    "app.plex.mapping",
+    "app.plex.service",
+    "app.plex.sync",
+    "tests.test_plex_adapter",
+    "tests.test_plex_mapping",
+    "tests.test_plex_api",
+    "tests.test_plex_sync",
 ]
 disallow_untyped_calls = false
 
