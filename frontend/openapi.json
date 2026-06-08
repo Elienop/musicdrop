@@ -2444,10 +2444,93 @@
           }
         }
       }
+    },
+    "/api/acquisition/status": {
+      "get": {
+        "tags": [
+          "acquisition"
+        ],
+        "summary": "Get Acquisition Status",
+        "operationId": "get_acquisition_status_api_acquisition_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcquisitionQueueStatus"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AcquisitionQueueStatus": {
+        "properties": {
+          "phase": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "running"
+            ],
+            "title": "Phase"
+          },
+          "queued": {
+            "type": "integer",
+            "title": "Queued"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current"
+          },
+          "processed": {
+            "type": "integer",
+            "title": "Processed"
+          },
+          "set_aside": {
+            "type": "integer",
+            "title": "Set Aside"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "phase",
+          "queued",
+          "current",
+          "processed",
+          "set_aside",
+          "failed",
+          "error"
+        ],
+        "title": "AcquisitionQueueStatus",
+        "description": "Informational snapshot of the serial acquisition queue.\n\n``phase`` is ``\"running\"`` while the drain holds the import slot (or is\nwaiting for the gate to clear), else ``\"idle\"``. The counters are\nprocess-lifetime totals; ``error`` carries the last drain error (best-effort,\nnever raised to the caller). Status is informational only \u2014 the queue is NOT\na mutex participant (it consumes the existing import-slot gate)."
+      },
       "ActiveImportStatus": {
         "properties": {
           "active": {
