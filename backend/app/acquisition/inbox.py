@@ -14,10 +14,16 @@ outside is rejected too — the resolved target is no longer under the inbox.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from app.beets.library import LibraryHandle
 from app.config import Settings
+
+# A leaf folder slskd fires a separate completion for: "CD1", "Disc 2",
+# "disk_3", "CD-04". A multi-disc album fragments into one event per disc, so we
+# walk up to the shared album parent and enqueue it once.
+_DISC_DIR_RE = re.compile(r"(?i)^(cd|disc|disk)[\s_-]*\d+$")
 
 
 def resolve_inbox_dir(settings: Settings, handle: LibraryHandle) -> Path:
@@ -47,3 +53,25 @@ def contain(path: str, inbox_dir: Path) -> Path | None:
     if resolved == root or root in resolved.parents:
         return resolved
     return None
+
+
+def coalesce_album_root(folder: Path, inbox_dir: Path) -> Path:
+    """Walk a per-disc leaf up to its album parent; otherwise return ``folder``.
+
+    slskd flattens trees and fires one ``DownloadDirectoryComplete`` per leaf
+    dir, so a multi-disc album (``Artist/Album/CD1``, ``.../CD2``) would enqueue
+    each disc separately. When ``folder`` is named like a disc dir AND its parent
+    is *strictly* under ``inbox_dir`` (a real album dir, never the inbox root
+    itself), return that parent so the whole album imports once. Deterministic —
+    no timer/debounce: two disc siblings both resolve to the same parent and the
+    queue's dedupe collapses them.
+    """
+    if not _DISC_DIR_RE.match(folder.name):
+        return folder
+    parent = folder.parent
+    # ``strictly under`` = the inbox root is among the parent's ancestors (so the
+    # parent is NOT the inbox root). Coalescing up to the inbox root would import
+    # the entire inbox, so that case is refused.
+    if inbox_dir.resolve() in parent.resolve().parents:
+        return parent
+    return folder

@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from app.acquisition.inbox import contain, resolve_inbox_dir
+from app.acquisition.inbox import coalesce_album_root, contain, resolve_inbox_dir
 from app.config import Settings
 from tests.conftest import make_test_handle
 
@@ -64,3 +64,45 @@ def test_contain_rejects_symlink_escape(tmp_path: Path) -> None:
     link.symlink_to(outside)
     # realpath resolves the symlink to ``outside`` (NOT under inbox) -> rejected.
     assert contain(str(link), inbox) is None
+
+
+def test_coalesce_disc_dir_returns_album_parent(tmp_path: Path) -> None:
+    inbox = tmp_path / "inbox"
+    folder = inbox / "Artist" / "Album" / "CD1"
+    folder.mkdir(parents=True)
+    assert coalesce_album_root(folder, inbox) == inbox / "Artist" / "Album"
+
+
+def test_coalesce_non_disc_dir_returns_itself(tmp_path: Path) -> None:
+    inbox = tmp_path / "inbox"
+    folder = inbox / "Artist" / "Album"
+    folder.mkdir(parents=True)
+    assert coalesce_album_root(folder, inbox) == folder
+
+
+def test_coalesce_matches_disc_variants(tmp_path: Path) -> None:
+    inbox = tmp_path / "inbox"
+    album = inbox / "Artist" / "Album"
+    for name in ("Disc 2", "disk_3", "CD-04", "cd5"):
+        folder = album / name
+        folder.mkdir(parents=True, exist_ok=True)
+        assert coalesce_album_root(folder, inbox) == album
+
+
+def test_coalesce_disc_dir_at_inbox_root_does_not_escape(tmp_path: Path) -> None:
+    # A disc-named dir whose parent IS the inbox root must NOT coalesce up to the
+    # inbox itself (that would import the whole inbox).
+    inbox = tmp_path / "inbox"
+    folder = inbox / "CD1"
+    folder.mkdir(parents=True)
+    assert coalesce_album_root(folder, inbox) == folder
+
+
+def test_coalesce_two_disc_siblings_collapse_to_same_album(tmp_path: Path) -> None:
+    inbox = tmp_path / "inbox"
+    album = inbox / "Artist" / "Album"
+    cd1 = album / "CD1"
+    cd2 = album / "CD2"
+    cd1.mkdir(parents=True)
+    cd2.mkdir(parents=True)
+    assert coalesce_album_root(cd1, inbox) == coalesce_album_root(cd2, inbox) == album
