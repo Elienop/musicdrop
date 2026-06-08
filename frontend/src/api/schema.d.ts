@@ -999,6 +999,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/slskd/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Slskd Settings */
+        get: operations["get_slskd_settings_api_slskd_settings_get"];
+        /** Put Slskd Settings */
+        put: operations["put_slskd_settings_api_slskd_settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/slskd/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test Slskd */
+        post: operations["test_slskd_api_slskd_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/slskd/webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Slskd Webhook */
+        post: operations["slskd_webhook_api_slskd_webhook_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/acquisition/status": {
         parameters: {
             query?: never;
@@ -2312,6 +2364,62 @@ export interface components {
             reason: string;
         };
         /**
+         * SlskdConnection
+         * @description POST /slskd/test — the reported version on success, a friendly error otherwise.
+         */
+        SlskdConnection: {
+            /** Ok */
+            ok: boolean;
+            /** Version */
+            version?: string | null;
+            /** Error */
+            error?: string | null;
+        };
+        /**
+         * SlskdSettings
+         * @description GET /slskd/settings — secrets are never returned, only ``has_token``.
+         */
+        SlskdSettings: {
+            /** Base Url */
+            base_url: string;
+            /** Downloads Prefix */
+            downloads_prefix: string;
+            /** Auto Import */
+            auto_import: boolean;
+            /** Has Token */
+            has_token: boolean;
+        };
+        /**
+         * SlskdSettingsUpdate
+         * @description PUT body — any omitted field is left unchanged; token/secret are write-only.
+         */
+        SlskdSettingsUpdate: {
+            /** Base Url */
+            base_url?: string | null;
+            /** Downloads Prefix */
+            downloads_prefix?: string | null;
+            /** Auto Import */
+            auto_import?: boolean | null;
+            /** Token */
+            token?: string | null;
+            /** Webhook Secret */
+            webhook_secret?: string | null;
+        };
+        /**
+         * SlskdWebhookEvent
+         * @description The inbound slskd completion webhook payload (camelCase wire fields).
+         */
+        SlskdWebhookEvent: {
+            /** Type */
+            type: string;
+            /** Localdirectoryname */
+            localDirectoryName?: string | null;
+            /** Remotedirectoryname */
+            remoteDirectoryName?: string | null;
+            /** Username */
+            username?: string | null;
+        };
+        /**
          * StartImportRequest
          * @description Body of ``POST /api/import``.
          *
@@ -2468,6 +2576,17 @@ export interface components {
             line?: number | null;
             /** Column */
             column?: number | null;
+        };
+        /**
+         * WebhookAck
+         * @description The webhook's typed 2xx body. ``401`` is the only non-2xx it ever returns.
+         */
+        WebhookAck: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "ignored";
         };
     };
     responses: never;
@@ -4314,6 +4433,112 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlexUserList"];
+                };
+            };
+        };
+    };
+    get_slskd_settings_api_slskd_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlskdSettings"];
+                };
+            };
+        };
+    };
+    put_slskd_settings_api_slskd_settings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlskdSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlskdSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_slskd_api_slskd_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlskdConnection"];
+                };
+            };
+        };
+    };
+    slskd_webhook_api_slskd_webhook_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlskdWebhookEvent"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookAck"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

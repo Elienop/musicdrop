@@ -2445,6 +2445,128 @@
         }
       }
     },
+    "/api/slskd/settings": {
+      "get": {
+        "tags": [
+          "slskd"
+        ],
+        "summary": "Get Slskd Settings",
+        "operationId": "get_slskd_settings_api_slskd_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlskdSettings"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "slskd"
+        ],
+        "summary": "Put Slskd Settings",
+        "operationId": "put_slskd_settings_api_slskd_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SlskdSettingsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlskdSettings"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/slskd/test": {
+      "post": {
+        "tags": [
+          "slskd"
+        ],
+        "summary": "Test Slskd",
+        "operationId": "test_slskd_api_slskd_test_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlskdConnection"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/slskd/webhook": {
+      "post": {
+        "tags": [
+          "slskd"
+        ],
+        "summary": "Slskd Webhook",
+        "operationId": "slskd_webhook_api_slskd_webhook_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SlskdWebhookEvent"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/acquisition/status": {
       "get": {
         "tags": [
@@ -5789,6 +5911,180 @@
         "title": "SkippedGroup",
         "description": "A group skipped in a batch because it drifted since the report\n(``StaleGroupError``). ``keep_album_id`` identifies which one for the UI."
       },
+      "SlskdConnection": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "title": "SlskdConnection",
+        "description": "POST /slskd/test \u2014 the reported version on success, a friendly error otherwise."
+      },
+      "SlskdSettings": {
+        "properties": {
+          "base_url": {
+            "type": "string",
+            "title": "Base Url"
+          },
+          "downloads_prefix": {
+            "type": "string",
+            "title": "Downloads Prefix"
+          },
+          "auto_import": {
+            "type": "boolean",
+            "title": "Auto Import"
+          },
+          "has_token": {
+            "type": "boolean",
+            "title": "Has Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "base_url",
+          "downloads_prefix",
+          "auto_import",
+          "has_token"
+        ],
+        "title": "SlskdSettings",
+        "description": "GET /slskd/settings \u2014 secrets are never returned, only ``has_token``."
+      },
+      "SlskdSettingsUpdate": {
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "downloads_prefix": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloads Prefix"
+          },
+          "auto_import": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Import"
+          },
+          "token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token"
+          },
+          "webhook_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Secret"
+          }
+        },
+        "type": "object",
+        "title": "SlskdSettingsUpdate",
+        "description": "PUT body \u2014 any omitted field is left unchanged; token/secret are write-only."
+      },
+      "SlskdWebhookEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "localDirectoryName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Localdirectoryname"
+          },
+          "remoteDirectoryName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remotedirectoryname"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "SlskdWebhookEvent",
+        "description": "The inbound slskd completion webhook payload (camelCase wire fields)."
+      },
       "StartImportRequest": {
         "properties": {
           "path": {
@@ -6207,6 +6503,24 @@
         ],
         "title": "ValidationErrorItem",
         "description": "One row of the ``POST /api/config/validate`` and ``POST /api/config/save``\nerror responses. ``line`` is 1-based for CodeMirror's ``state.doc.line(n)``\n(CodeMirror reference manual)."
+      },
+      "WebhookAck": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "ignored"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "WebhookAck",
+        "description": "The webhook's typed 2xx body. ``401`` is the only non-2xx it ever returns."
       }
     }
   }
