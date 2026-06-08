@@ -94,9 +94,11 @@ def test_contain_rejects_symlink_escape(tmp_path: Path) -> None:
 
 def test_coalesce_disc_dir_returns_album_parent(tmp_path: Path) -> None:
     inbox = tmp_path / "inbox"
-    folder = inbox / "Artist" / "Album" / "CD1"
+    album = inbox / "Artist" / "Album"
+    folder = album / "CD1"
     folder.mkdir(parents=True)
-    assert coalesce_album_root(folder, inbox) == inbox / "Artist" / "Album"
+    (album / "CD2").mkdir()  # a real multi-disc album has a second disc sibling
+    assert coalesce_album_root(folder, inbox) == album
 
 
 def test_coalesce_non_disc_dir_returns_itself(tmp_path: Path) -> None:
@@ -109,10 +111,22 @@ def test_coalesce_non_disc_dir_returns_itself(tmp_path: Path) -> None:
 def test_coalesce_matches_disc_variants(tmp_path: Path) -> None:
     inbox = tmp_path / "inbox"
     album = inbox / "Artist" / "Album"
-    for name in ("Disc 2", "disk_3", "CD-04", "cd5"):
-        folder = album / name
-        folder.mkdir(parents=True, exist_ok=True)
-        assert coalesce_album_root(folder, inbox) == album
+    names = ("Disc 2", "disk_3", "CD-04", "cd5")
+    for name in names:
+        (album / name).mkdir(parents=True, exist_ok=True)
+    # with disc siblings present, every disc-named variant coalesces to the album
+    for name in names:
+        assert coalesce_album_root(album / name, inbox) == album
+
+
+def test_coalesce_lone_disc_named_album_imports_itself(tmp_path: Path) -> None:
+    # An album whose OWN folder merely looks like a disc dir (no disc siblings in
+    # the parent) must NOT walk up and MOVE-import the whole parent directory.
+    inbox = tmp_path / "inbox"
+    album = inbox / "Some Artist" / "CD1"  # a lone album literally named "CD1"
+    album.mkdir(parents=True)
+    (inbox / "Some Artist" / "Another Album").mkdir()  # a non-disc sibling only
+    assert coalesce_album_root(album, inbox) == album
 
 
 def test_coalesce_disc_dir_at_inbox_root_does_not_escape(tmp_path: Path) -> None:

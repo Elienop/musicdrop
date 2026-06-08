@@ -80,6 +80,17 @@ def coalesce_album_root(folder: Path, inbox_dir: Path) -> Path:
     # ``strictly under`` = the inbox root is among the parent's ancestors (so the
     # parent is NOT the inbox root). Coalescing up to the inbox root would import
     # the entire inbox, so that case is refused.
-    if inbox_dir.resolve() in parent.resolve().parents:
-        return parent
-    return folder
+    if inbox_dir.resolve() not in parent.resolve().parents:
+        return folder
+    # Only coalesce a GENUINE multi-disc album: the parent must hold a second
+    # disc-named subdir besides ``folder``. Otherwise a lone album whose own
+    # folder merely looks like a disc dir (e.g. an album named "CD1") would walk
+    # up and MOVE-import the entire parent (artist) directory, merging unrelated
+    # albums.
+    try:
+        disc_siblings = sum(
+            1 for child in parent.iterdir() if child.is_dir() and _DISC_DIR_RE.match(child.name)
+        )
+    except OSError:
+        return folder
+    return parent if disc_siblings >= 2 else folder
