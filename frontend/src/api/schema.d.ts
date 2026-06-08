@@ -1584,6 +1584,28 @@ export interface components {
             error: string | null;
         };
         /**
+         * ImportOptions
+         * @description Per-import overrides (replaces the reserved ``dict[str, str]``).
+         *
+         *     ``operation`` ``"default"`` falls through to the user's beets config (the
+         *     manual-import default). ``"move"``/``"copy"`` force that operation for this
+         *     import only. ``unattended`` ``True`` is the inbox path: no human review —
+         *     uncertain/duplicate albums are set aside rather than parked.
+         */
+        ImportOptions: {
+            /**
+             * Operation
+             * @default default
+             * @enum {string}
+             */
+            operation: "default" | "move" | "copy";
+            /**
+             * Unattended
+             * @default false
+             */
+            unattended: boolean;
+        };
+        /**
          * ImportPhase
          * @description Coarse lifecycle phase of an import job (the registry owns transitions).
          *
@@ -2227,16 +2249,14 @@ export interface components {
          * @description Body of ``POST /api/import``.
          *
          *     ``path`` is a server-side folder (maps 1:1 to ``beet import <path>``).
-         *     ``options`` is reserved for future per-import overrides (copy/move/autotag);
-         *     v1 reads those from the user's beets config, so it is accepted but unused.
+         *     ``options`` carries per-import overrides (operation move/copy/default +
+         *     unattended). ``None`` falls through to today's manual default (the user's
+         *     beets config, attended review).
          */
         StartImportRequest: {
             /** Path */
             path: string;
-            /** Options */
-            options?: {
-                [key: string]: string;
-            } | null;
+            options?: components["schemas"]["ImportOptions"] | null;
         };
         /**
          * StartImportResponse

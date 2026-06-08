@@ -6,6 +6,7 @@ from beets.library import Library
 
 from app.beets.import_session import ImportBridge, WebImportSession
 from app.import_jobs.runner import BeetsImportRunner
+from app.models.import_models import ImportOptions
 
 
 def test_beets_runner_builds_session_and_invokes_run(
@@ -100,3 +101,46 @@ def test_runner_passes_trash_dir_to_session(monkeypatch: pytest.MonkeyPatch) -> 
             break
         time.sleep(0.01)
     assert captured["trash_dir"] == Path("/tmp/t")
+
+
+@pytest.mark.parametrize(
+    ("options", "expected_move"),
+    [
+        # The chunk's central new behavior: operation -> the run_import_worker
+        # ``move`` kwarg that scopes the file op. An inversion here would ship a
+        # wrong file operation while keeping every other test green.
+        (ImportOptions(operation="move"), True),
+        (ImportOptions(operation="copy"), False),
+        (ImportOptions(operation="default"), None),  # falls through to beets config
+        (None, None),  # today's manual default
+    ],
+)
+def test_runner_translates_options_operation_to_move(
+    options: ImportOptions | None,
+    expected_move: bool | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.import_jobs.runner as runner_mod
+
+    captured: dict[str, object] = {}
+
+    class _FakeSession:
+        def __init__(self, *args: object) -> None:
+            pass
+
+    def _capture_worker(session: object, *, move: bool | None = None) -> None:
+        captured["move"] = move
+
+    monkeypatch.setattr(runner_mod, "WebImportSession", _FakeSession)
+    monkeypatch.setattr(runner_mod, "run_import_worker", _capture_worker)
+
+    finished = threading.Event()
+    BeetsImportRunner(lib=object()).run(
+        "/music",
+        ImportBridge(),
+        on_finish=finished.set,
+        on_error=lambda _message: None,
+        options=options,
+    )
+    assert finished.wait(timeout=2.0)
+    assert captured["move"] == expected_move
