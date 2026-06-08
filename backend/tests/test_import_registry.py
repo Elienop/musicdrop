@@ -12,6 +12,7 @@ from app.models.import_models import (
     Candidate,
     ImportAction,
     ImportChoice,
+    ImportOptions,
     ParkedAlbum,
     Recommendation,
 )
@@ -260,3 +261,22 @@ def test_progress_applied_matches_summary_imported() -> None:
     assert state.summary is not None
     assert "1 imported" in state.summary
     assert "1 skipped" in state.summary
+
+
+def test_start_forwards_options_to_runner() -> None:
+    fake = FakeImportRunner(applied=[_applied_outcome(0)])
+    reg = ImportJobRegistry(runner=fake)
+    job_id = reg.start(
+        "/music/incoming", options=ImportOptions(operation="move", unattended=True)
+    )
+    _poll(lambda: fake.received_options, lambda o: o is not None)
+    assert fake.received_options == ImportOptions(operation="move", unattended=True)
+    assert reg.get(job_id) is not None
+
+
+def test_start_without_options_is_none() -> None:
+    fake = FakeImportRunner(applied=[_applied_outcome(0)])
+    reg = ImportJobRegistry(runner=fake)
+    job_id = reg.start("/music/incoming")
+    _poll(lambda: reg.get(job_id) is not None, lambda x: x)
+    assert fake.received_options is None

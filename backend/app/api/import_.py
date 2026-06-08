@@ -73,7 +73,7 @@ async def start_import(
             detail="A library backfill is in progress — import available when it finishes",
         )
     try:
-        job_id = reg.start(body.path)
+        job_id = reg.start(body.path, options=body.options)
     except RuntimeError:
         # An import is already running (single-slot policy).
         raise HTTPException(

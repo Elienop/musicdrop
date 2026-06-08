@@ -35,6 +35,8 @@ from app.models.import_models import (
     DuplicatePrompt,
     ImportAction,
     ImportChoice,
+    ImportOptions,
+    ImportOrigin,
     ParkedAlbum,
 )
 
@@ -129,8 +131,20 @@ class ImportJobRegistry:
                 return self._job.id
             return None
 
-    def start(self, path: str) -> str:
-        """Start an import; raise RuntimeError if one is already active."""
+    def start(
+        self,
+        path: str,
+        *,
+        options: ImportOptions | None = None,
+        origin: ImportOrigin = "manual",
+    ) -> str:
+        """Start an import; raise RuntimeError if one is already active.
+
+        ``options`` threads per-import overrides (operation move/copy,
+        unattended) to the runner; ``None`` is today's manual default.
+        ``origin`` (manual/inbox) is accepted for the acquisition seam and
+        surfaced on the job state in a later chunk.
+        """
         with self._lock:
             if self._job is not None and self._job.phase in _ACTIVE_PHASES:
                 raise RuntimeError("an import is already running")
@@ -143,6 +157,7 @@ class ImportJobRegistry:
             job.bridge,
             on_finish=lambda: self._on_finish(job.id),
             on_error=lambda message: self._on_error(job.id, message),
+            options=options,
         )
         return job.id
 

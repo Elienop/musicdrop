@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Protocol
 
 from app.beets.import_session import ImportBridge, WebImportSession, run_import_worker
+from app.models.import_models import ImportOptions
 
 
 class ImportRunner(Protocol):
@@ -28,6 +29,9 @@ class ImportRunner(Protocol):
     clean abort); ``on_error`` is called with the exception message when the
     worker raises. Implementations MUST be non-blocking (spawn a thread and
     return) so the API start endpoint returns immediately.
+
+    ``options`` carries per-import overrides (operation move/copy, unattended);
+    ``None`` is today's manual default.
     """
 
     def run(
@@ -36,6 +40,7 @@ class ImportRunner(Protocol):
         bridge: ImportBridge,
         on_finish: Callable[[], None],
         on_error: Callable[[str], None],
+        options: ImportOptions | None = None,
     ) -> None: ...
 
 
@@ -59,7 +64,16 @@ class BeetsImportRunner:
         bridge: ImportBridge,
         on_finish: Callable[[], None],
         on_error: Callable[[str], None],
+        options: ImportOptions | None = None,
     ) -> None:
+        # "default" / None falls through to the user's beets config (manual
+        # default); "move"/"copy" force that operation for this run only,
+        # applied as a snapshot/restore mutation inside run_import_worker.
+        move = (
+            None
+            if options is None or options.operation == "default"
+            else (options.operation == "move")
+        )
         session = WebImportSession(
             self._lib,
             None,  # loghandler -> beets installs a NullHandler
@@ -71,7 +85,7 @@ class BeetsImportRunner:
 
         def target() -> None:
             try:
-                run_import_worker(session)
+                run_import_worker(session, move=move)
             # Broad by design: any worker crash must become a failed job, never
             # an unhandled thread exception (which the API could not surface).
             except Exception as exc:
