@@ -49,6 +49,11 @@ function ImportEntry() {
   // banner never renders a link to a null id.
   const activeJobId = active.data?.job_id ?? null;
   const importActive = (active.data?.active ?? false) && activeJobId !== null;
+  // An inbox-origin import is the unattended slskd path: name it as such and,
+  // when it set albums aside, surface the count so the user knows there's a
+  // review to do once it finishes.
+  const origin = active.data?.origin;
+  const needsReview = active.data?.needs_review_count ?? 0;
 
   const trimmed = path.trim();
   const conflict = start.error instanceof ImportConflictError;
@@ -105,7 +110,16 @@ function ImportEntry() {
             aria-hidden="true"
           />
           <p id="resume-import-hint" className="flex-1 font-medium">
-            An import is already running.
+            {origin === "inbox"
+              ? "An inbox import is running."
+              : "An import is already running."}
+            {origin === "inbox" && needsReview > 0 && (
+              <span className="text-muted-foreground font-normal">
+                {" — "}
+                {needsReview} album{needsReview === 1 ? "" : "s"} set aside for
+                review
+              </span>
+            )}
           </p>
           <Button size="sm" asChild>
             <Link to={`/import?job=${activeJobId}`}>Resume</Link>
