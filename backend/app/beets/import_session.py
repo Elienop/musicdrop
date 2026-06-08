@@ -429,7 +429,7 @@ class WebImportSession(ImportSession):
         return ""
 
 
-def run_import_worker(session: WebImportSession) -> None:
+def run_import_worker(session: WebImportSession, *, move: bool | None = None) -> None:
     """Run one import session serially on the calling (worker) thread.
 
     Forces single-threaded execution and ``import.duplicate_action: ask`` (so the
@@ -437,10 +437,26 @@ def run_import_worker(session: WebImportSession) -> None:
     IS the "ask"), then runs beets. After run() returns, moves any album the
     Replace action recorded to the reversible Trash, by stable id — beets imports
     the new album first, so the old copy is only touched once the new one is safe.
+
+    ``move`` scopes the file operation to this one run: ``True`` forces a move
+    (``copy=False``), ``False`` forces a copy (``move=False``). Because
+    ``config["import"]`` is a process-global confuse singleton, the prior
+    move/copy values are snapshotted and restored in a ``finally`` so an inbox
+    move never leaks into the next manual import. ``None`` touches nothing — the
+    manual-import default falls through to the user's beets config untouched.
     """
     config["threaded"] = False
     config["import"]["duplicate_action"] = "ask"
-    session.run()
+    orig_move = config["import"]["move"].get(bool)
+    orig_copy = config["import"]["copy"].get(bool)
+    if move is not None:
+        config["import"]["move"] = move
+        config["import"]["copy"] = not move
+    try:
+        session.run()
+    finally:
+        config["import"]["move"] = orig_move
+        config["import"]["copy"] = orig_copy
     _trash_replaced_albums(session)
 
 

@@ -597,3 +597,55 @@ def test_run_import_worker_trashes_replace_ids_after_run(monkeypatch: pytest.Mon
 
     run_import_worker(FakeSession())  # type: ignore[arg-type]
     assert sorted(trashed) == [11, 22]
+
+
+class _ScopedMoveSession:
+    """Minimal session that records config['import']['move'] seen during run()."""
+
+    lib = None
+    _replace_album_ids: ClassVar[set[int]] = set()
+    _trash_dir = None
+
+    def __init__(self) -> None:
+        self.seen: bool | None = None
+
+    def run(self) -> None:
+        self.seen = config["import"]["move"].get(bool)
+
+
+def test_scoped_move_sets_then_restores() -> None:
+    from app.beets.import_session import run_import_worker
+
+    config["import"]["move"] = False
+    config["import"]["copy"] = True
+    s = _ScopedMoveSession()
+    run_import_worker(s, move=True)  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
+    assert s.seen is True  # honored during run
+    assert config["import"]["move"].get(bool) is False  # restored after
+    assert config["import"]["copy"].get(bool) is True
+
+
+def test_scoped_move_restores_on_raise() -> None:
+    from app.beets.import_session import run_import_worker
+
+    config["import"]["move"] = False
+    config["import"]["copy"] = True
+
+    class _Boom(_ScopedMoveSession):
+        def run(self) -> None:
+            raise RuntimeError("x")
+
+    with pytest.raises(RuntimeError):
+        run_import_worker(_Boom(), move=True)  # type: ignore[arg-type]  # minimal stand-in
+    assert config["import"]["move"].get(bool) is False  # finally restored
+    assert config["import"]["copy"].get(bool) is True
+
+
+def test_default_move_none_touches_nothing() -> None:
+    from app.beets.import_session import run_import_worker
+
+    config["import"]["move"] = False
+    config["import"]["copy"] = True
+    run_import_worker(_ScopedMoveSession(), move=None)  # type: ignore[arg-type]  # minimal stand-in
+    assert config["import"]["move"].get(bool) is False
+    assert config["import"]["copy"].get(bool) is True
