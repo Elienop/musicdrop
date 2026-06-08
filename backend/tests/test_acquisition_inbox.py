@@ -43,6 +43,23 @@ def test_contain_accepts_inbox_root_itself(tmp_path: Path) -> None:
     assert contain(str(inbox), inbox) == inbox.resolve()
 
 
+def test_contain_strict_rejects_inbox_root(tmp_path: Path) -> None:
+    # The inbox root passes the default (root-inclusive) contain but is rejected
+    # under strict=True: a MOVE target must be a strict descendant, never the root
+    # (importing the root would sweep the whole inbox).
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    assert contain(str(inbox), inbox) == inbox.resolve()
+    assert contain(str(inbox), inbox, strict=True) is None
+
+
+def test_contain_strict_accepts_descendant(tmp_path: Path) -> None:
+    inbox = tmp_path / "inbox"
+    target = inbox / "Artist" / "Album"
+    target.mkdir(parents=True)
+    assert contain(str(target), inbox, strict=True) == target.resolve()
+
+
 def test_contain_rejects_dotdot_escape(tmp_path: Path) -> None:
     inbox = tmp_path / "inbox"
     inbox.mkdir()

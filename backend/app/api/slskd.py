@@ -125,10 +125,15 @@ async def slskd_webhook(
 
     inbox_dir: Path = request.app.state.inbox_dir
     remapped = _remap_to_inbox(event.localDirectoryName, config.downloads_prefix, inbox_dir)
-    contained = contain(remapped, inbox_dir)
+    # ``strict=True`` also rejects an EMPTY remainder (localDirectoryName ==
+    # downloads_prefix, or "/" under the default empty prefix) that remaps to the
+    # inbox ROOT — a whole-inbox MOVE would sweep in unrelated/still-downloading
+    # siblings (and the ledger); only a strict descendant is a valid album target.
+    contained = contain(remapped, inbox_dir, strict=True)
     if contained is None:
         logger.warning(
-            "slskd webhook: %r maps outside the inbox; ignored", event.localDirectoryName
+            "slskd webhook: %r maps outside the inbox (or to its root); ignored",
+            event.localDirectoryName,
         )
         return WebhookAck(status="ignored")
 

@@ -38,19 +38,25 @@ def resolve_inbox_dir(settings: Settings, handle: LibraryHandle) -> Path:
     return handle.beets_dir / "inbox"
 
 
-def contain(path: str, inbox_dir: Path) -> Path | None:
+def contain(path: str, inbox_dir: Path, *, strict: bool = False) -> Path | None:
     """Return ``realpath(path)`` only if it is the inbox root or strictly under it.
 
     Rejects ``../`` escapes, absolute paths outside the inbox, and symlink
     escapes (``resolve()`` follows the link, so the resolved target is checked).
     Returns ``None`` on any of those, or on an OS error while resolving.
+
+    With ``strict=True`` the inbox ROOT itself is ALSO rejected (only a strict
+    descendant passes). A MOVE-import target must be strict: importing the inbox
+    root would sweep in every unrelated/still-downloading sibling and the ledger.
     """
     try:
         resolved = Path(path).resolve()
         root = inbox_dir.resolve()
     except OSError:
         return None
-    if resolved == root or root in resolved.parents:
+    if root in resolved.parents:
+        return resolved
+    if resolved == root and not strict:
         return resolved
     return None
 

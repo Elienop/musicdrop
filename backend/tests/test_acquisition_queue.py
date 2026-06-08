@@ -211,6 +211,36 @@ def test_queue_refuses_out_of_inbox_path(tmp_path: Path) -> None:
     assert q.status().queued == 1
 
 
+def test_queue_refuses_inbox_root_itself(tmp_path: Path) -> None:
+    # The inbox ROOT is contained (contain() admits ``resolved == root``) but is
+    # NOT a valid MOVE target: importing it would sweep the whole inbox. The queue
+    # re-rejects it (defense in depth behind the webhook). Drain not started.
+    fake = FakeImportRunner()
+    reg = ImportJobRegistry(runner=fake)
+    led = AcquisitionLedger(tmp_path / "ledger.json")
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    q = AcquisitionQueue(
+        import_registry=reg,
+        ledger=led,
+        inbox_dir=inbox,
+        poll_interval=0.01,
+        busy_backoff=0.02,
+    )
+
+    q.enqueue(inbox)
+    assert q._queue.qsize() == 0
+    assert q.status().queued == 0
+    assert len(q._dedupe) == 0
+
+    # A strict descendant is still accepted.
+    inside = inbox / "Artist" / "Album"
+    inside.mkdir(parents=True)
+    q.enqueue(inside)
+    assert q._queue.qsize() == 1
+    assert q.status().queued == 1
+
+
 def test_stop_is_idempotent_and_unblocks_drain(tmp_path: Path) -> None:
     q, _fake, _reg, _led = _make_queue(tmp_path)
     q.start()

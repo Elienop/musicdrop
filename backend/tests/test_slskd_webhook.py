@@ -169,6 +169,67 @@ def test_webhook_ignores_path_escaping_inbox(
         assert probe.status().queued == 0
 
 
+def test_webhook_ignores_empty_remainder_inbox_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # localDirectoryName == downloads_prefix -> empty remainder -> the inbox ROOT.
+    # A whole-inbox MOVE would sweep in unrelated siblings, so it is refused with a
+    # 200/ignored (never queued), not allowed through like a real album drop.
+    _write_config(tmp_path)
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    (tmp_path / "inbox").mkdir()
+    app.dependency_overrides.clear()
+    with TestClient(app) as client:
+        probe = _probe_queue(tmp_path)
+        monkeypatch.setattr(app.state, "acquisition_queue", probe)
+        _configure(
+            client,
+            base_url="http://slskd:5030",
+            token="t",
+            downloads_prefix="/downloads",
+            webhook_secret="hook",
+            auto_import=True,
+        )
+        r = client.post(
+            "/api/slskd/webhook",
+            headers={"X-API-Key": "hook"},
+            json={"type": "DownloadDirectoryComplete", "localDirectoryName": "/downloads"},
+        )
+        assert r.status_code == 200
+        assert r.json() == {"status": "ignored"}
+        assert probe.status().queued == 0
+
+
+def test_webhook_ignores_root_slash_under_empty_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Default empty downloads_prefix + localDirectoryName "/" -> lstrip("/") -> ""
+    # -> the inbox ROOT again. Same whole-inbox MOVE; refused 200/ignored.
+    _write_config(tmp_path)
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    (tmp_path / "inbox").mkdir()
+    app.dependency_overrides.clear()
+    with TestClient(app) as client:
+        probe = _probe_queue(tmp_path)
+        monkeypatch.setattr(app.state, "acquisition_queue", probe)
+        _configure(
+            client,
+            base_url="http://slskd:5030",
+            token="t",
+            downloads_prefix="",
+            webhook_secret="hook",
+            auto_import=True,
+        )
+        r = client.post(
+            "/api/slskd/webhook",
+            headers={"X-API-Key": "hook"},
+            json={"type": "DownloadDirectoryComplete", "localDirectoryName": "/"},
+        )
+        assert r.status_code == 200
+        assert r.json() == {"status": "ignored"}
+        assert probe.status().queued == 0
+
+
 def test_webhook_remaps_prefix_to_inbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_config(tmp_path)
     monkeypatch.setattr(settings, "beets_dir", str(tmp_path))

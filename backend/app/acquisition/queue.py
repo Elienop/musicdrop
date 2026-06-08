@@ -96,9 +96,13 @@ class AcquisitionQueue:
         """
         if self._stop.is_set():
             return
-        if self._inbox_dir is not None and contain(str(folder), self._inbox_dir) is None:
-            logger.warning("acquisition: refusing out-of-inbox path %s", folder)
-            return
+        # ``strict=True``: a strict descendant only. contain() admits the inbox ROOT
+        # itself, but MOVE-importing the root would sweep the whole inbox, so the
+        # root is rejected here too. Belt-and-suspenders behind the webhook's guard.
+        if self._inbox_dir is not None:
+            if contain(str(folder), self._inbox_dir, strict=True) is None:
+                logger.warning("acquisition: refusing non-descendant inbox path %s", folder)
+                return
         key = str(folder.resolve())
         with self._lock:
             if key in self._dedupe:
