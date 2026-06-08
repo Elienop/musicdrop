@@ -7,6 +7,7 @@ import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.acquisition import router as acquisition_router
 from app.api.albums import router as albums_router
 from app.api.artists import router as artists_router
 from app.api.config_ import router as config_router
@@ -100,6 +101,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Trash the /duplicates page uses).
     import_registry.attach_library(handle.lib, resolve_trash_dir(settings, handle))
 
+    # The acquisition seam drives completed inbox drops through the SAME single
+    # import slot (Option A) — constructed AFTER attach_library so it shares that
+    # registry, and started here so it can drain in the background. It defers
+    # while the import slot / backfills / the swap lock are busy (it consumes the
+    # existing gate; it is not a new mutex participant). Built before the ``try``
+    # so it is in scope for the ``finally`` teardown.
+    from app.acquisition.inbox import resolve_inbox_dir
+    from app.acquisition.ledger import AcquisitionLedger
+    from app.acquisition.queue import AcquisitionQueue
+
+    inbox_dir = resolve_inbox_dir(settings, handle)
+    ledger = AcquisitionLedger(inbox_dir / ".musicdrop-ledger.json")
+    acquisition_queue = AcquisitionQueue(
+        import_registry=import_registry,
+        ledger=ledger,
+        swap_lock=app.state.beets_swap_lock,
+    )
+    app.state.acquisition_queue = acquisition_queue
+    app.state.inbox_dir = inbox_dir
+    acquisition_queue.start()
+
     # Build the artist-image stack once: the disk cache + the persisted enabled
     # toggle are shared on app.state so the override + settings endpoints reach
     # the SAME instances the service uses. The cache dir is created lazily on
@@ -135,6 +157,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Stop the drain (join its thread) BEFORE closing the library so it can
+        # never be mid-import against a closing SQLite connection.
+        acquisition_queue.stop()
         await http_client.aclose()
         close_library(handle.lib)
 
@@ -161,3 +186,4 @@ app.include_router(reorganize_router, prefix="/api")
 app.include_router(stats_router, prefix="/api")
 app.include_router(playlists_router, prefix="/api")
 app.include_router(plex_router, prefix="/api")
+app.include_router(acquisition_router, prefix="/api")
