@@ -12,6 +12,7 @@ def test_settings_round_trip_redacts_secrets(client: TestClient) -> None:
         "downloads_prefix": "",
         "auto_import": False,
         "has_token": False,
+        "has_webhook_secret": False,
     }
 
     r = client.put(
@@ -31,6 +32,7 @@ def test_settings_round_trip_redacts_secrets(client: TestClient) -> None:
         "downloads_prefix": "/downloads",
         "auto_import": True,
         "has_token": True,
+        "has_webhook_secret": True,
     }
     # Neither secret is ever returned — not as a field, not anywhere in the body.
     assert "token" not in body
@@ -47,6 +49,19 @@ def test_put_blank_token_keeps_existing(client: TestClient) -> None:
     )
     assert r.json()["has_token"] is True
     assert r.json()["auto_import"] is True
+
+
+def test_get_reflects_has_webhook_secret_without_leaking_it(client: TestClient) -> None:
+    # Before any save, no secret is configured.
+    assert client.get("/api/slskd/settings").json()["has_webhook_secret"] is False
+
+    client.put("/api/slskd/settings", json={"webhook_secret": "hooksecret"})
+
+    r = client.get("/api/slskd/settings")
+    assert r.status_code == 200
+    assert r.json()["has_webhook_secret"] is True
+    # The flag is exposed, never the value itself.
+    assert "hooksecret" not in r.text
 
 
 def test_test_endpoint_ok(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

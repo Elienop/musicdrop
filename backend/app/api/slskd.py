@@ -57,6 +57,7 @@ def _to_settings(config: SlskdConfig) -> SlskdSettings:
         downloads_prefix=config.downloads_prefix,
         auto_import=config.auto_import,
         has_token=bool(config.token),
+        has_webhook_secret=bool(config.webhook_secret),
     )
 
 

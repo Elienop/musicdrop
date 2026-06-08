@@ -14,12 +14,18 @@ from pydantic import BaseModel
 
 
 class SlskdSettings(BaseModel):
-    """GET /slskd/settings — secrets are never returned, only ``has_token``."""
+    """GET /slskd/settings — secrets are never returned, only ``has_*`` flags.
+
+    ``has_token`` / ``has_webhook_secret`` let the panel show a "saved — enter to
+    replace" placeholder for each write-only secret without ever exposing the
+    value.
+    """
 
     base_url: str
     downloads_prefix: str
     auto_import: bool
     has_token: bool
+    has_webhook_secret: bool
 
 
 class SlskdSettingsUpdate(BaseModel):
