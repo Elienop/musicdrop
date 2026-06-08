@@ -1,6 +1,14 @@
-import { Check, CheckCircle2, Copy, Loader2 } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  Copy,
+  Inbox,
+  Loader2,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { useAcquisitionStatus } from "@/api/useAcquisitionStatus";
 import {
   type SlskdSettings,
   type SlskdSettingsUpdate,
@@ -287,6 +295,8 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
             {WEBHOOK_SNIPPET}
           </pre>
         </div>
+
+        <AcquisitionActivity />
       </CardContent>
 
       <CardFooter className="flex flex-wrap items-center gap-3">
@@ -362,6 +372,79 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
         )}
       </CardFooter>
     </>
+  );
+}
+
+/** The basename of an inbox folder path, for a compact "currently importing"
+ * line (the full host path is noisy and leaks the inbox layout). */
+function folderName(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : path;
+}
+
+/** The DURABLE outcome surface for unattended inbox imports.
+ *
+ * An inbox import is webhook-triggered in the background, so the transient
+ * active-import banner on the import page almost always misses it. These
+ * process-lifetime counters persist after the import finishes — so the
+ * "N set aside for review" signal (the human-in-the-loop half of the feature)
+ * is legible here regardless of whether the user ever saw the run. Polls via
+ * {@link useAcquisitionStatus}; the probe never throws, so a backend hiccup
+ * just shows the idle baseline. */
+function AcquisitionActivity() {
+  const { data } = useAcquisitionStatus();
+  if (!data) return null;
+
+  const { phase, current, set_aside, failed, processed, error } = data;
+  const imported = Math.max(processed - set_aside - failed, 0);
+  const nothingYet = processed === 0 && phase === "idle" && !error;
+
+  return (
+    <section
+      aria-label="Acquisition activity"
+      className="flex flex-col gap-2 border-t pt-4"
+    >
+      <p className="text-sm font-medium">Acquisition activity</p>
+
+      {phase === "running" && (
+        <p
+          className="text-muted-foreground flex items-center gap-2 text-sm"
+          role="status"
+        >
+          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+          {current
+            ? `Importing ${folderName(current)}…`
+            : "Importing a completed download…"}
+        </p>
+      )}
+
+      {nothingYet ? (
+        <p className="text-muted-foreground text-sm">
+          No completed downloads have been imported yet.
+        </p>
+      ) : (
+        <p className="text-muted-foreground text-sm">
+          {imported} imported · {set_aside} set aside · {failed} failed
+        </p>
+      )}
+
+      {set_aside > 0 && (
+        <p className="text-warning flex items-start gap-2 text-sm">
+          <Inbox className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span>
+            {set_aside} {set_aside === 1 ? "download" : "downloads"} set aside
+            for review — left in the inbox for a manual import pass.
+          </span>
+        </p>
+      )}
+
+      {error && (
+        <p className="text-destructive flex items-start gap-2 text-sm">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span>Last error: {error}</span>
+        </p>
+      )}
+    </section>
   );
 }
 
