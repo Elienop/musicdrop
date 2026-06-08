@@ -266,9 +266,7 @@ def test_progress_applied_matches_summary_imported() -> None:
 def test_start_forwards_options_to_runner() -> None:
     fake = FakeImportRunner(applied=[_applied_outcome(0)])
     reg = ImportJobRegistry(runner=fake)
-    job_id = reg.start(
-        "/music/incoming", options=ImportOptions(operation="move", unattended=True)
-    )
+    job_id = reg.start("/music/incoming", options=ImportOptions(operation="move", unattended=True))
     _poll(lambda: fake.received_options, lambda o: o is not None)
     assert fake.received_options == ImportOptions(operation="move", unattended=True)
     assert reg.get(job_id) is not None
