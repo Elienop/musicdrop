@@ -72,6 +72,15 @@ def test_contain_rejects_absolute_outside(tmp_path: Path) -> None:
     assert contain("/etc", inbox) is None
 
 
+def test_contain_rejects_embedded_null_byte(tmp_path: Path) -> None:
+    # A malformed path (embedded NUL) makes Path.resolve raise ValueError, not
+    # OSError. contain() must swallow it and return None so a hostile webhook
+    # path can never surface as an unhandled 500 (keeps "only 401 is non-2xx").
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    assert contain(str(inbox / "evil\x00album"), inbox) is None
+
+
 def test_contain_rejects_symlink_escape(tmp_path: Path) -> None:
     inbox = tmp_path / "inbox"
     inbox.mkdir()
