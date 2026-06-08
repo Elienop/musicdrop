@@ -19,6 +19,7 @@ from app.api.playlists import router as playlists_router
 from app.api.plex import router as plex_router
 from app.api.reorganize import router as reorganize_router
 from app.api.search import router as search_router
+from app.api.slskd import router as slskd_router
 from app.api.stats import router as stats_router
 from app.artwork.cache import ArtistImageCache
 from app.artwork.rate_limit import TokenBucketLimiter
@@ -204,4 +205,5 @@ app.include_router(reorganize_router, prefix="/api")
 app.include_router(stats_router, prefix="/api")
 app.include_router(playlists_router, prefix="/api")
 app.include_router(plex_router, prefix="/api")
+app.include_router(slskd_router, prefix="/api")
 app.include_router(acquisition_router, prefix="/api")
