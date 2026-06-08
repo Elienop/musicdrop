@@ -16,7 +16,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, StringConstraints
 
-from app.models.import_models import ImportOptions, Recommendation
+from app.models.import_models import ImportOptions, ImportOrigin, Recommendation
 
 
 class ImportPhase(StrEnum):
@@ -114,6 +114,13 @@ class ImportJobState(BaseModel):
     summary: str | None
     # The worker's failure message when phase == failed; None otherwise.
     error: str | None
+    # Where the import came from: "manual" (the web Start flow) or "inbox" (the
+    # unattended acquisition seam). Defaulted so manual imports need no change.
+    origin: ImportOrigin = "manual"
+    # Albums left in the source for a later manual pass: needs_review (uncertain)
+    # + needs_dup_resolution (a library duplicate). For an unattended import this
+    # is everything that did not auto-apply.
+    set_aside: int
 
 
 class ActiveImportStatus(BaseModel):
@@ -136,3 +143,9 @@ class ActiveImportStatus(BaseModel):
     active: bool
     # The active job's id (the Start screen's Resume target), or None when idle.
     job_id: str | None = None
+    # The active import's origin (manual/inbox). Optional/defaulted so the
+    # idle ``{active: false}`` fallback type-checks against the same model.
+    origin: ImportOrigin = "manual"
+    # How many albums the active import has set aside (needs_review +
+    # needs_dup_resolution) — the FE inbox cue's "N set aside for review".
+    needs_review_count: int = 0

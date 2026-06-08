@@ -20,6 +20,7 @@ from app.beets.import_mapping import embedded_art
 from app.beets.import_session import ImportBridge
 from app.import_jobs.runner import BeetsImportRunner, ImportRunner
 from app.models.import_api import (
+    ActiveImportStatus,
     ImportAlbumStatus,
     ImportAlbumSummary,
     ImportJobState,
@@ -42,6 +43,12 @@ from app.models.import_models import (
 
 # Phases in which a job still owns the single import slot.
 _ACTIVE_PHASES = {ImportPhase.scanning, ImportPhase.reviewing, ImportPhase.applying}
+# Feed statuses that count as "set aside" (left in the source for a later pass):
+# an uncertain match awaiting review, or an unresolved library duplicate.
+_SET_ASIDE_STATUSES = {
+    ImportAlbumStatus.needs_review,
+    ImportAlbumStatus.needs_dup_resolution,
+}
 # Decisions that count as "imported" in the truthful summary.
 _APPLY_ACTIONS = {ImportAction.apply, ImportAction.asis, ImportAction.astracks}
 # Duplicate decisions that count as "imported" (skip_new is the only skip).
@@ -86,6 +93,9 @@ class ImportJob:
     albums: dict[int, _FeedAlbum] = field(default_factory=dict)
     summary: str | None = None
     error: str | None = None
+    # Where this import came from: "manual" (the web Start flow) or "inbox" (the
+    # unattended acquisition seam). Surfaced on the job state + the active probe.
+    origin: ImportOrigin = "manual"
 
 
 class ImportJobRegistry:
@@ -142,13 +152,13 @@ class ImportJobRegistry:
 
         ``options`` threads per-import overrides (operation move/copy,
         unattended) to the runner; ``None`` is today's manual default.
-        ``origin`` (manual/inbox) is accepted for the acquisition seam and
-        surfaced on the job state in a later chunk.
+        ``origin`` (manual/inbox) is recorded on the job and surfaced on the job
+        state + the active probe.
         """
         with self._lock:
             if self._job is not None and self._job.phase in _ACTIVE_PHASES:
                 raise RuntimeError("an import is already running")
-            job = ImportJob(id=uuid.uuid4().hex, bridge=ImportBridge())
+            job = ImportJob(id=uuid.uuid4().hex, bridge=ImportBridge(), origin=origin)
             self._job = job
 
         runner = self._resolve_runner()
@@ -346,6 +356,7 @@ class ImportJobRegistry:
                 1 for a in job.albums.values() if a.status is ImportAlbumStatus.needs_review
             )
             skipped = sum(1 for a in job.albums.values() if self._is_skipped(a))
+            set_aside = sum(1 for a in job.albums.values() if a.status in _SET_ASIDE_STATUSES)
             return ImportJobState(
                 job_id=job.id,
                 phase=job.phase,
@@ -355,6 +366,36 @@ class ImportJobRegistry:
                 albums=self._summaries(job),
                 summary=job.summary,
                 error=job.error,
+                origin=job.origin,
+                set_aside=set_aside,
+            )
+
+    def active_status(self) -> ActiveImportStatus:
+        """The active-import probe: ``active`` + resume ``job_id`` (invariant:
+        equal), plus the live job's ``origin`` and set-aside count (the FE inbox
+        cue's "N set aside for review").
+
+        Drains the active job first so the count tracks the worker's latest
+        outcomes; returns the idle ``{active: false}`` shape (with the defaulted
+        origin/count) when nothing owns the slot — or when the slot finished
+        between the snapshot and the drain.
+        """
+        with self._lock:
+            job = self._job
+            job_id = job.id if job is not None and job.phase in _ACTIVE_PHASES else None
+        if job_id is None:
+            return ActiveImportStatus(active=False, job_id=None)
+        self.drain(job_id)  # refresh the feed (acquires the lock itself)
+        with self._lock:
+            job = self._job
+            if job is None or job.id != job_id or job.phase not in _ACTIVE_PHASES:
+                return ActiveImportStatus(active=False, job_id=None)
+            set_aside = sum(1 for a in job.albums.values() if a.status in _SET_ASIDE_STATUSES)
+            return ActiveImportStatus(
+                active=True,
+                job_id=job.id,
+                origin=job.origin,
+                needs_review_count=set_aside,
             )
 
     # ----- helpers -----
