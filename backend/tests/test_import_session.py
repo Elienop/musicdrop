@@ -187,6 +187,53 @@ def test_unattended_choose_match_skips_instead_of_parking(
     assert any(o.status is AlbumOutcomeStatus.needs_review for o in outcomes)
 
 
+def test_unattended_worker_runs_to_completion_without_parking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guard: an unattended worker never blocks the worker thread.
+
+    Drives the real worker entrypoint ``run_import_worker`` over a real
+    ``WebImportSession(unattended=True)``; a true import would read + group the
+    folder and then hit ``choose_match``, so we stub ``run()`` to drive the REAL
+    unattended ``choose_match`` for a canned non-strong proposal (via
+    ``_patch_tag_album``/``_make_task``). It must complete (no park, no deadlock)
+    and record the album as set aside (needs_review).
+    """
+    from app.beets.import_session import run_import_worker
+
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    session.unattended = True
+    # run_import_worker's post-run trash pass reads these (trash_dir=None -> it
+    # returns before touching lib); __init__ is bypassed, so set them here.
+    session._trash_dir = None
+    session._replace_album_ids = set()
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+
+    def fake_run(self: WebImportSession) -> None:
+        task.choose_match(self)
+
+    monkeypatch.setattr(WebImportSession, "run", fake_run)
+
+    done = threading.Event()
+
+    def worker() -> None:
+        run_import_worker(session, move=None)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    # If the unattended path ever parked, the worker would block here forever.
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+
+    assert task.choice_flag is Action.SKIP  # set aside, not applied
+    assert bridge.pending_count() == 0  # nothing parked
+    outcomes = bridge.drain_outcomes()
+    assert any(o.status is AlbumOutcomeStatus.needs_review for o in outcomes)
+
+
 def test_abort_choice_raises_import_abort(monkeypatch: pytest.MonkeyPatch) -> None:
     from beets.importer.session import ImportAbortError
 
