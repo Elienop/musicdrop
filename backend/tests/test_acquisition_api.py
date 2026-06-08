@@ -9,12 +9,16 @@ endpoint must fall back to an idle status rather than 500 (it is polled often).
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.main import app
+
+if TYPE_CHECKING:
+    from beets.library import Library
 
 
 def _write_config(tmp_path: Path) -> None:
@@ -45,6 +49,49 @@ def test_acquisition_status_idle_via_lifespan(
         "failed": 0,
         "error": None,
     }
+
+
+def test_lifespan_waits_for_in_flight_import_before_closing_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Shutdown stops the inbox drain but cannot join the beets worker thread, so
+    # an import still owning the single slot must be given a bounded moment to
+    # release it BEFORE close_library tears down the SQLite connection. Drive a
+    # real lifespan, report the slot busy for two teardown polls, then free it,
+    # and assert close_library only ran after the slot reported idle.
+    import app.import_jobs.registry as reg_mod
+    from app.beets.library import close_library as real_close
+
+    _write_config(tmp_path)
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    app.dependency_overrides.clear()
+
+    poll_count = 0
+    closed_at_poll: int | None = None
+
+    def fake_has_active_job() -> bool:
+        nonlocal poll_count
+        poll_count += 1
+        return poll_count <= 2  # busy for the first two teardown polls
+
+    def recording_close(lib: Library) -> None:
+        nonlocal closed_at_poll
+        closed_at_poll = poll_count
+        real_close(lib)
+
+    # Patch the live global registry instance the lifespan reads at runtime; the
+    # parked (un-fed) drain never calls has_active_job, so the teardown loop is
+    # the only caller and the poll counter is deterministic.
+    monkeypatch.setattr(reg_mod.registry, "has_active_job", fake_has_active_job)
+    monkeypatch.setattr("app.main.close_library", recording_close)
+
+    with TestClient(app):  # context-manager form runs (and tears down) the lifespan
+        pass
+
+    # The slot reported busy twice then idle on the third poll; close_library
+    # must have waited for that idle poll rather than racing the worker.
+    assert poll_count >= 3
+    assert closed_at_poll == poll_count
 
 
 def test_acquisition_status_lazy_fallback_without_lifespan(client: TestClient) -> None:

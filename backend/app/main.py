@@ -33,6 +33,14 @@ from app.config import settings
 # artist-image cache lands in the gitignored repo-root data/, not backend/data/.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# Shutdown grace: after the inbox drain is stopped, poll the import slot for up
+# to TICKS * INTERVAL seconds (~5s) so an import already in flight gets a
+# best-effort moment to release the slot (commit its DB row) before we close the
+# library's SQLite connection. The beets worker runs on its own daemon thread we
+# cannot join, so this only narrows — never eliminates — the shutdown race.
+_SHUTDOWN_IMPORT_DRAIN_TICKS = 50
+_SHUTDOWN_IMPORT_DRAIN_INTERVAL = 0.1
+
 
 def _resolve_library() -> LibraryHandle:
     """Run beets' startup and return the opened library handle.
@@ -157,9 +165,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        # Stop the drain (join its thread) BEFORE closing the library so it can
-        # never be mid-import against a closing SQLite connection.
+        # Stop the inbox drain first (join its thread) so teardown triggers no
+        # NEW import. The drain runs each beets import on its own daemon worker
+        # thread that we cannot join, so an import already in flight — an
+        # auto-triggered inbox drop OR a manual import — may still own the single
+        # slot here. Give it a bounded, best-effort moment to release that slot
+        # (and commit its DB row) before we close the SQLite connection beneath
+        # it: the same best-effort posture a manual import running at shutdown
+        # already has — we never hard-kill the worker.
         acquisition_queue.stop()
+        for _ in range(_SHUTDOWN_IMPORT_DRAIN_TICKS):
+            if not import_registry.has_active_job():
+                break
+            await asyncio.sleep(_SHUTDOWN_IMPORT_DRAIN_INTERVAL)
         await http_client.aclose()
         close_library(handle.lib)
 
