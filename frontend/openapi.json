@@ -906,7 +906,7 @@
           "import"
         ],
         "summary": "Get Active Import",
-        "description": "Probe used two ways: the ``/settings`` Apply gate polls ``active``, and\nthe import Start screen reads ``job_id`` to offer \"Resume\" back into a\nrunning import the user navigated away from.\n\n``active`` is ``True`` exactly while the registry's single slot is in\n``_ACTIVE_PHASES`` (``POST /api/config/apply`` 409s in that case); ``job_id``\ncarries the resume target (``None`` when idle). Both come from one\n``active_job_id()`` call so they can never disagree.",
+        "description": "Probe used two ways: the ``/settings`` Apply gate polls ``active``, and\nthe import Start screen reads ``job_id`` to offer \"Resume\" back into a\nrunning import the user navigated away from.\n\n``active`` is ``True`` exactly while the registry's single slot is in\n``_ACTIVE_PHASES`` (``POST /api/config/apply`` 409s in that case); ``job_id``\ncarries the resume target (``None`` when idle). The probe also surfaces the\nactive import's ``origin`` (manual/inbox) and set-aside ``needs_review_count``\nso the Resume cue can flag an unattended inbox import. All come from one\n``active_status()`` call so they can never disagree.",
         "operationId": "get_active_import_api_imports_active_get",
         "responses": {
           "200": {
@@ -2444,10 +2444,215 @@
           }
         }
       }
+    },
+    "/api/slskd/settings": {
+      "get": {
+        "tags": [
+          "slskd"
+        ],
+        "summary": "Get Slskd Settings",
+        "operationId": "get_slskd_settings_api_slskd_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlskdSettings"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "slskd"
+        ],
+        "summary": "Put Slskd Settings",
+        "operationId": "put_slskd_settings_api_slskd_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SlskdSettingsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlskdSettings"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/slskd/test": {
+      "post": {
+        "tags": [
+          "slskd"
+        ],
+        "summary": "Test Slskd",
+        "operationId": "test_slskd_api_slskd_test_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlskdConnection"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/slskd/webhook": {
+      "post": {
+        "tags": [
+          "slskd"
+        ],
+        "summary": "Slskd Webhook",
+        "operationId": "slskd_webhook_api_slskd_webhook_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SlskdWebhookEvent"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/acquisition/status": {
+      "get": {
+        "tags": [
+          "acquisition"
+        ],
+        "summary": "Get Acquisition Status",
+        "operationId": "get_acquisition_status_api_acquisition_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcquisitionQueueStatus"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AcquisitionQueueStatus": {
+        "properties": {
+          "phase": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "running"
+            ],
+            "title": "Phase"
+          },
+          "queued": {
+            "type": "integer",
+            "title": "Queued"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current"
+          },
+          "processed": {
+            "type": "integer",
+            "title": "Processed"
+          },
+          "set_aside": {
+            "type": "integer",
+            "title": "Set Aside"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "phase",
+          "queued",
+          "current",
+          "processed",
+          "set_aside",
+          "failed",
+          "error"
+        ],
+        "title": "AcquisitionQueueStatus",
+        "description": "Informational snapshot of the serial acquisition queue.\n\n``phase`` is ``\"running\"`` while the drain holds the import slot (or is\nwaiting for the gate to clear), else ``\"idle\"``. The counters are\nprocess-lifetime totals; ``error`` carries the last drain error (best-effort,\nnever raised to the caller). Status is informational only \u2014 the queue is NOT\na mutex participant (it consumes the existing import-slot gate)."
+      },
       "ActiveImportStatus": {
         "properties": {
           "active": {
@@ -2464,6 +2669,20 @@
               }
             ],
             "title": "Job Id"
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "inbox"
+            ],
+            "title": "Origin",
+            "default": "manual"
+          },
+          "needs_review_count": {
+            "type": "integer",
+            "title": "Needs Review Count",
+            "default": 0
           }
         },
         "type": "object",
@@ -3985,6 +4204,19 @@
               }
             ],
             "title": "Error"
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "inbox"
+            ],
+            "title": "Origin",
+            "default": "manual"
+          },
+          "set_aside": {
+            "type": "integer",
+            "title": "Set Aside"
           }
         },
         "type": "object",
@@ -3994,10 +4226,33 @@
           "progress",
           "albums",
           "summary",
-          "error"
+          "error",
+          "set_aside"
         ],
         "title": "ImportJobState",
         "description": "Response of ``GET /api/import/{job}``: phase + progress + the live feed."
+      },
+      "ImportOptions": {
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "default",
+              "move",
+              "copy"
+            ],
+            "title": "Operation",
+            "default": "default"
+          },
+          "unattended": {
+            "type": "boolean",
+            "title": "Unattended",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "ImportOptions",
+        "description": "Per-import overrides (replaces the reserved ``dict[str, str]``).\n\n``operation`` ``\"default\"`` falls through to the user's beets config (the\nmanual-import default). ``\"move\"``/``\"copy\"`` force that operation for this\nimport only. ``unattended`` ``True`` is the inbox path: no human review \u2014\nuncertain/duplicate albums are set aside rather than parked."
       },
       "ImportPhase": {
         "type": "string",
@@ -5656,6 +5911,185 @@
         "title": "SkippedGroup",
         "description": "A group skipped in a batch because it drifted since the report\n(``StaleGroupError``). ``keep_album_id`` identifies which one for the UI."
       },
+      "SlskdConnection": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "title": "SlskdConnection",
+        "description": "POST /slskd/test \u2014 the reported version on success, a friendly error otherwise."
+      },
+      "SlskdSettings": {
+        "properties": {
+          "base_url": {
+            "type": "string",
+            "title": "Base Url"
+          },
+          "downloads_prefix": {
+            "type": "string",
+            "title": "Downloads Prefix"
+          },
+          "auto_import": {
+            "type": "boolean",
+            "title": "Auto Import"
+          },
+          "has_token": {
+            "type": "boolean",
+            "title": "Has Token"
+          },
+          "has_webhook_secret": {
+            "type": "boolean",
+            "title": "Has Webhook Secret"
+          }
+        },
+        "type": "object",
+        "required": [
+          "base_url",
+          "downloads_prefix",
+          "auto_import",
+          "has_token",
+          "has_webhook_secret"
+        ],
+        "title": "SlskdSettings",
+        "description": "GET /slskd/settings \u2014 secrets are never returned, only ``has_*`` flags.\n\n``has_token`` / ``has_webhook_secret`` let the panel show a \"saved \u2014 enter to\nreplace\" placeholder for each write-only secret without ever exposing the\nvalue."
+      },
+      "SlskdSettingsUpdate": {
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "downloads_prefix": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloads Prefix"
+          },
+          "auto_import": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Import"
+          },
+          "token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token"
+          },
+          "webhook_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Secret"
+          }
+        },
+        "type": "object",
+        "title": "SlskdSettingsUpdate",
+        "description": "PUT body \u2014 any omitted field is left unchanged; token/secret are write-only."
+      },
+      "SlskdWebhookEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "localDirectoryName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Localdirectoryname"
+          },
+          "remoteDirectoryName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remotedirectoryname"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "SlskdWebhookEvent",
+        "description": "The inbound slskd completion webhook payload (camelCase wire fields)."
+      },
       "StartImportRequest": {
         "properties": {
           "path": {
@@ -5666,16 +6100,12 @@
           "options": {
             "anyOf": [
               {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object"
+                "$ref": "#/components/schemas/ImportOptions"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Options"
+            ]
           }
         },
         "type": "object",
@@ -5683,7 +6113,7 @@
           "path"
         ],
         "title": "StartImportRequest",
-        "description": "Body of ``POST /api/import``.\n\n``path`` is a server-side folder (maps 1:1 to ``beet import <path>``).\n``options`` is reserved for future per-import overrides (copy/move/autotag);\nv1 reads those from the user's beets config, so it is accepted but unused."
+        "description": "Body of ``POST /api/import``.\n\n``path`` is a server-side folder (maps 1:1 to ``beet import <path>``).\n``options`` carries per-import overrides (operation move/copy/default +\nunattended). ``None`` falls through to today's manual default (the user's\nbeets config, attended review)."
       },
       "StartImportResponse": {
         "properties": {
@@ -6078,6 +6508,24 @@
         ],
         "title": "ValidationErrorItem",
         "description": "One row of the ``POST /api/config/validate`` and ``POST /api/config/save``\nerror responses. ``line`` is 1-based for CodeMirror's ``state.doc.line(n)``\n(CodeMirror reference manual)."
+      },
+      "WebhookAck": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "ignored"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "WebhookAck",
+        "description": "The webhook's typed 2xx body. ``401`` is the only non-2xx it ever returns."
       }
     }
   }

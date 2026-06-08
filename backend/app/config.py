@@ -70,5 +70,25 @@ class Settings(BaseSettings):
     plex_token: str = ""
     plex_library_path: str = ""
 
+    # Acquisition (app/acquisition/). Where completed downloads land before the
+    # unattended import; empty = default to <beets_dir>/inbox, computed at resolve
+    # time from the live library handle (sidesteps the cwd-relative gotcha, like
+    # trash_dir). (env MUSICDROP_INBOX_DIR)
+    inbox_dir: str = ""
+
+    # slskd acquisition source (app/slskd/). The API key + webhook secret are
+    # secrets: these env vars seed the INITIAL persisted JSON config (file > env);
+    # the file is stored 0o600 and the secrets are never returned by the API.
+    # ``slskd_auto_import`` is the OPERATIVE auto-import toggle — a completed slskd
+    # download imports itself only when it is on. Empty slskd_settings_dir =
+    # <beets_dir>/slskd. (env MUSICDROP_SLSKD_SETTINGS_DIR / _URL / _TOKEN /
+    # _DOWNLOADS_PREFIX / _WEBHOOK_SECRET / _AUTO_IMPORT)
+    slskd_settings_dir: str = ""
+    slskd_url: str = ""
+    slskd_token: str = ""
+    slskd_downloads_prefix: str = ""
+    slskd_webhook_secret: str = ""
+    slskd_auto_import: bool = False
+
 
 settings = Settings()

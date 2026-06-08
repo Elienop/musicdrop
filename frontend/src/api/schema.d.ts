@@ -349,8 +349,10 @@ export interface paths {
          *
          *     ``active`` is ``True`` exactly while the registry's single slot is in
          *     ``_ACTIVE_PHASES`` (``POST /api/config/apply`` 409s in that case); ``job_id``
-         *     carries the resume target (``None`` when idle). Both come from one
-         *     ``active_job_id()`` call so they can never disagree.
+         *     carries the resume target (``None`` when idle). The probe also surfaces the
+         *     active import's ``origin`` (manual/inbox) and set-aside ``needs_review_count``
+         *     so the Resume cue can flag an unattended inbox import. All come from one
+         *     ``active_status()`` call so they can never disagree.
          */
         get: operations["get_active_import_api_imports_active_get"];
         put?: never;
@@ -997,10 +999,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/slskd/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Slskd Settings */
+        get: operations["get_slskd_settings_api_slskd_settings_get"];
+        /** Put Slskd Settings */
+        put: operations["put_slskd_settings_api_slskd_settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/slskd/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test Slskd */
+        post: operations["test_slskd_api_slskd_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/slskd/webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Slskd Webhook */
+        post: operations["slskd_webhook_api_slskd_webhook_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/acquisition/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Acquisition Status */
+        get: operations["get_acquisition_status_api_acquisition_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AcquisitionQueueStatus
+         * @description Informational snapshot of the serial acquisition queue.
+         *
+         *     ``phase`` is ``"running"`` while the drain holds the import slot (or is
+         *     waiting for the gate to clear), else ``"idle"``. The counters are
+         *     process-lifetime totals; ``error`` carries the last drain error (best-effort,
+         *     never raised to the caller). Status is informational only — the queue is NOT
+         *     a mutex participant (it consumes the existing import-slot gate).
+         */
+        AcquisitionQueueStatus: {
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "idle" | "running";
+            /** Queued */
+            queued: number;
+            /** Current */
+            current: string | null;
+            /** Processed */
+            processed: number;
+            /** Set Aside */
+            set_aside: number;
+            /** Failed */
+            failed: number;
+            /** Error */
+            error: string | null;
+        };
         /**
          * ActiveImportStatus
          * @description Response of ``GET /api/imports/active``.
@@ -1023,6 +1123,17 @@ export interface components {
             active: boolean;
             /** Job Id */
             job_id?: string | null;
+            /**
+             * Origin
+             * @default manual
+             * @enum {string}
+             */
+            origin: "manual" | "inbox";
+            /**
+             * Needs Review Count
+             * @default 0
+             */
+            needs_review_count: number;
         };
         /** Album */
         Album: {
@@ -1582,6 +1693,36 @@ export interface components {
             summary: string | null;
             /** Error */
             error: string | null;
+            /**
+             * Origin
+             * @default manual
+             * @enum {string}
+             */
+            origin: "manual" | "inbox";
+            /** Set Aside */
+            set_aside: number;
+        };
+        /**
+         * ImportOptions
+         * @description Per-import overrides (replaces the reserved ``dict[str, str]``).
+         *
+         *     ``operation`` ``"default"`` falls through to the user's beets config (the
+         *     manual-import default). ``"move"``/``"copy"`` force that operation for this
+         *     import only. ``unattended`` ``True`` is the inbox path: no human review —
+         *     uncertain/duplicate albums are set aside rather than parked.
+         */
+        ImportOptions: {
+            /**
+             * Operation
+             * @default default
+             * @enum {string}
+             */
+            operation: "default" | "move" | "copy";
+            /**
+             * Unattended
+             * @default false
+             */
+            unattended: boolean;
         };
         /**
          * ImportPhase
@@ -2223,20 +2364,80 @@ export interface components {
             reason: string;
         };
         /**
+         * SlskdConnection
+         * @description POST /slskd/test — the reported version on success, a friendly error otherwise.
+         */
+        SlskdConnection: {
+            /** Ok */
+            ok: boolean;
+            /** Version */
+            version?: string | null;
+            /** Error */
+            error?: string | null;
+        };
+        /**
+         * SlskdSettings
+         * @description GET /slskd/settings — secrets are never returned, only ``has_*`` flags.
+         *
+         *     ``has_token`` / ``has_webhook_secret`` let the panel show a "saved — enter to
+         *     replace" placeholder for each write-only secret without ever exposing the
+         *     value.
+         */
+        SlskdSettings: {
+            /** Base Url */
+            base_url: string;
+            /** Downloads Prefix */
+            downloads_prefix: string;
+            /** Auto Import */
+            auto_import: boolean;
+            /** Has Token */
+            has_token: boolean;
+            /** Has Webhook Secret */
+            has_webhook_secret: boolean;
+        };
+        /**
+         * SlskdSettingsUpdate
+         * @description PUT body — any omitted field is left unchanged; token/secret are write-only.
+         */
+        SlskdSettingsUpdate: {
+            /** Base Url */
+            base_url?: string | null;
+            /** Downloads Prefix */
+            downloads_prefix?: string | null;
+            /** Auto Import */
+            auto_import?: boolean | null;
+            /** Token */
+            token?: string | null;
+            /** Webhook Secret */
+            webhook_secret?: string | null;
+        };
+        /**
+         * SlskdWebhookEvent
+         * @description The inbound slskd completion webhook payload (camelCase wire fields).
+         */
+        SlskdWebhookEvent: {
+            /** Type */
+            type: string;
+            /** Localdirectoryname */
+            localDirectoryName?: string | null;
+            /** Remotedirectoryname */
+            remoteDirectoryName?: string | null;
+            /** Username */
+            username?: string | null;
+        };
+        /**
          * StartImportRequest
          * @description Body of ``POST /api/import``.
          *
          *     ``path`` is a server-side folder (maps 1:1 to ``beet import <path>``).
-         *     ``options`` is reserved for future per-import overrides (copy/move/autotag);
-         *     v1 reads those from the user's beets config, so it is accepted but unused.
+         *     ``options`` carries per-import overrides (operation move/copy/default +
+         *     unattended). ``None`` falls through to today's manual default (the user's
+         *     beets config, attended review).
          */
         StartImportRequest: {
             /** Path */
             path: string;
-            /** Options */
-            options?: {
-                [key: string]: string;
-            } | null;
+            options?: components["schemas"]["ImportOptions"] | null;
         };
         /**
          * StartImportResponse
@@ -2381,6 +2582,17 @@ export interface components {
             line?: number | null;
             /** Column */
             column?: number | null;
+        };
+        /**
+         * WebhookAck
+         * @description The webhook's typed 2xx body. ``401`` is the only non-2xx it ever returns.
+         */
+        WebhookAck: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "ignored";
         };
     };
     responses: never;
@@ -4227,6 +4439,132 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlexUserList"];
+                };
+            };
+        };
+    };
+    get_slskd_settings_api_slskd_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlskdSettings"];
+                };
+            };
+        };
+    };
+    put_slskd_settings_api_slskd_settings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlskdSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlskdSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_slskd_api_slskd_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlskdConnection"];
+                };
+            };
+        };
+    };
+    slskd_webhook_api_slskd_webhook_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlskdWebhookEvent"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookAck"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_acquisition_status_api_acquisition_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcquisitionQueueStatus"];
                 };
             };
         };

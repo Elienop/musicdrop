@@ -1,0 +1,229 @@
+"""The serial acquisition queue — FIFO + dedupe + gate-deferred drain.
+
+A single daemon thread drains enqueued inbox folders through the EXISTING
+``ImportJobRegistry.start`` — the same single import slot manual import uses.
+That reuse is the whole design (Option A): the queue is NOT a new mutex
+participant. Before each ``start`` it waits for the existing gate to clear (the
+import slot itself + the three backfill predicates + the optional beets swap
+lock), backing off without a tight spin and bailing promptly on shutdown. Its
+status is informational only.
+
+No beets/beetsplug imports here: the queue drives imports purely through the
+public registry seam.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import queue
+import threading
+from pathlib import Path
+
+from app.acquisition.inbox import contain
+from app.acquisition.ledger import AcquisitionLedger
+from app.import_jobs.registry import ImportJobRegistry
+from app.models.acquisition import AcquisitionQueueStatus, LedgerOutcome
+from app.models.import_api import ImportPhase
+from app.models.import_models import ImportOptions
+
+logger = logging.getLogger(__name__)
+
+
+class AcquisitionQueue:
+    """Thread-safe FIFO that serially imports inbox folders, deferring on a busy gate."""
+
+    def __init__(
+        self,
+        *,
+        import_registry: ImportJobRegistry,
+        ledger: AcquisitionLedger,
+        inbox_dir: Path | None = None,
+        swap_lock: asyncio.Lock | None = None,
+        poll_interval: float = 0.5,
+        busy_backoff: float = 1.0,
+    ) -> None:
+        self._import_registry = import_registry
+        self._ledger = ledger
+        # When set, enqueue() re-rejects any path not contained under it — belt
+        # and suspenders behind the webhook's own contain(), because the drain
+        # performs the destructive MOVE import. None = no extra check (the unit
+        # tests that drive the queue directly with already-trusted folders).
+        self._inbox_dir = inbox_dir
+        self._swap_lock = swap_lock
+        self._poll_interval = poll_interval
+        self._busy_backoff = busy_backoff
+
+        # ``None`` is the shutdown sentinel that unblocks a parked ``get()``.
+        self._queue: queue.Queue[Path | None] = queue.Queue()
+        self._dedupe: set[str] = set()
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+        # Informational status (process-lifetime totals).
+        self._phase: str = "idle"
+        self._current: str | None = None
+        self._processed = 0
+        self._set_aside = 0
+        self._failed = 0
+        self._error: str | None = None
+
+    # ----- lifecycle -----
+
+    def start(self) -> None:
+        """Spawn the single drain daemon thread (idempotent-safe to call once)."""
+        self._thread = threading.Thread(
+            target=self._drain, name="musicdrop-acquisition", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self, timeout: float = 5.0) -> None:
+        """Signal shutdown, unblock the drain, and join it. Safe to call twice."""
+        self._stop.set()
+        self._queue.put(None)  # unblock a blocking get()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=timeout)
+
+    # ----- producer -----
+
+    def enqueue(self, folder: Path) -> None:
+        """Add ``folder`` unless it is already queued/in-flight or in the ledger.
+
+        Idempotent: a webhook retry (same folder) is a no-op. Refused once
+        shutdown has begun so no work is accepted that the drain won't run.
+        """
+        if self._stop.is_set():
+            return
+        # ``strict=True``: a strict descendant only. contain() admits the inbox ROOT
+        # itself, but MOVE-importing the root would sweep the whole inbox, so the
+        # root is rejected here too. Belt-and-suspenders behind the webhook's guard.
+        if self._inbox_dir is not None:
+            if contain(str(folder), self._inbox_dir, strict=True) is None:
+                logger.warning("acquisition: refusing non-descendant inbox path %s", folder)
+                return
+        key = str(folder.resolve())
+        with self._lock:
+            if key in self._dedupe:
+                return
+            if self._ledger.seen(folder):
+                return
+            self._dedupe.add(key)
+        self._queue.put(folder)
+
+    # ----- status -----
+
+    def status(self) -> AcquisitionQueueStatus:
+        with self._lock:
+            in_flight = 1 if self._current is not None else 0
+            queued = max(len(self._dedupe) - in_flight, 0)
+            phase: str = self._phase
+            return AcquisitionQueueStatus(
+                phase="running" if phase == "running" else "idle",
+                queued=queued,
+                current=self._current,
+                processed=self._processed,
+                set_aside=self._set_aside,
+                failed=self._failed,
+                error=self._error,
+            )
+
+    # ----- drain -----
+
+    def _drain(self) -> None:
+        while not self._stop.is_set():
+            folder = self._queue.get()
+            if folder is None or self._stop.is_set():
+                return
+            self._process_one(folder)
+
+    def _process_one(self, folder: Path) -> None:
+        key = str(folder.resolve())
+        with self._lock:
+            self._phase = "running"
+            self._current = str(folder)
+
+        if not self._wait_for_gate():
+            return  # shutting down
+
+        try:
+            job_id = self._import_registry.start(
+                str(folder),
+                options=ImportOptions(operation="move", unattended=True),
+                origin="inbox",
+            )
+        except RuntimeError:
+            # The slot was claimed between the gate check and start() (TOCTOU).
+            # Defer: back off briefly, requeue, leave dedupe + status as-is.
+            self._stop.wait(self._busy_backoff)
+            if not self._stop.is_set():
+                self._queue.put(folder)
+            return
+
+        result = self._wait_for_import(job_id)
+        if result is None:
+            return  # shutting down before the import finished
+        outcome, error = result
+        try:
+            self._ledger.mark(folder, outcome=outcome)
+        except OSError:
+            pass  # best-effort; never crash the drain on a ledger write
+        self._finish(key, outcome, error)
+
+    def _wait_for_gate(self) -> bool:
+        """Block until the import slot + gates are free. ``False`` if shutting down."""
+        while not self._stop.is_set():
+            if self._gate_clear():
+                return True
+            self._stop.wait(self._poll_interval)
+        return False
+
+    def _gate_clear(self) -> bool:
+        """The existing job-mutex gate, consumed (never extended) by the queue."""
+        if self._import_registry.has_active_job():
+            return False
+        if self._swap_lock is not None and self._swap_lock.locked():
+            return False
+        # Lazy imports (like api/import_.py) so the predicates' modules can never
+        # form an import cycle with the acquisition package.
+        from app.artist_art_jobs.registry import artist_art_backfill_active
+        from app.lyrics_jobs.registry import lyrics_backfill_active
+        from app.reorganize_jobs.registry import reorganize_backfill_active
+
+        if lyrics_backfill_active() or artist_art_backfill_active() or reorganize_backfill_active():
+            return False
+        return True
+
+    def _wait_for_import(self, job_id: str) -> tuple[LedgerOutcome, str | None] | None:
+        """Wait until the import releases the slot, then classify it. ``None`` on stop."""
+        while not self._stop.is_set():
+            if not self._import_registry.has_active_job():
+                return self._result_for(job_id)
+            self._stop.wait(self._poll_interval)
+        return None
+
+    def _result_for(self, job_id: str) -> tuple[LedgerOutcome, str | None]:
+        try:
+            state = self._import_registry.state(job_id)
+        except KeyError:
+            # Our job was replaced before we could read it; assume handled.
+            return ("imported", None)
+        if state.phase == ImportPhase.failed:
+            return ("failed", state.error)
+        if state.set_aside > 0:
+            return ("set_aside", None)
+        return ("imported", None)
+
+    def _finish(self, key: str, outcome: LedgerOutcome, error: str | None) -> None:
+        with self._lock:
+            self._dedupe.discard(key)
+            self._current = None
+            self._processed += 1
+            if outcome == "set_aside":
+                self._set_aside += 1
+            elif outcome == "failed":
+                self._failed += 1
+            self._error = error
+            if not self._dedupe:
+                self._phase = "idle"

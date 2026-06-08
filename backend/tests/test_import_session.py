@@ -86,6 +86,8 @@ def _make_session(bridge: ImportBridge) -> WebImportSession:
     session.bridge = bridge
     # __init__ is skipped, so set the park-index counter the hook relies on.
     session._album_index = 0
+    # __init__ is skipped, so default the attended flag the hooks now read.
+    session.unattended = False
     return session
 
 
@@ -164,6 +166,72 @@ def test_uncertain_rec_skip_choice_skips(monkeypatch: pytest.MonkeyPatch) -> Non
     assert task.choice_flag is Action.SKIP
     assert task.skip is True
     assert task.match is None
+
+
+def test_unattended_choose_match_skips_instead_of_parking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Unattended: a non-strong match emits the needs_review outcome (so the feed
+    # records the set-aside) but returns SKIP instead of parking + blocking.
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    session.unattended = True
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+
+    result = session.choose_match(task)
+
+    assert result is Action.SKIP
+    assert bridge.pending_count() == 0  # did NOT park
+    outcomes = bridge.drain_outcomes()
+    assert any(o.status is AlbumOutcomeStatus.needs_review for o in outcomes)
+
+
+def test_unattended_worker_runs_to_completion_without_parking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guard: an unattended worker never blocks the worker thread.
+
+    Drives the real worker entrypoint ``run_import_worker`` over a real
+    ``WebImportSession(unattended=True)``; a true import would read + group the
+    folder and then hit ``choose_match``, so we stub ``run()`` to drive the REAL
+    unattended ``choose_match`` for a canned non-strong proposal (via
+    ``_patch_tag_album``/``_make_task``). It must complete (no park, no deadlock)
+    and record the album as set aside (needs_review).
+    """
+    from app.beets.import_session import run_import_worker
+
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    session.unattended = True
+    # run_import_worker's post-run trash pass reads these (trash_dir=None -> it
+    # returns before touching lib); __init__ is bypassed, so set them here.
+    session._trash_dir = None
+    session._replace_album_ids = set()
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+
+    def fake_run(self: WebImportSession) -> None:
+        task.choose_match(self)
+
+    monkeypatch.setattr(WebImportSession, "run", fake_run)
+
+    done = threading.Event()
+
+    def worker() -> None:
+        run_import_worker(session, move=None)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    # If the unattended path ever parked, the worker would block here forever.
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+
+    assert task.choice_flag is Action.SKIP  # set aside, not applied
+    assert bridge.pending_count() == 0  # nothing parked
+    outcomes = bridge.drain_outcomes()
+    assert any(o.status is AlbumOutcomeStatus.needs_review for o in outcomes)
 
 
 def test_abort_choice_raises_import_abort(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -597,3 +665,55 @@ def test_run_import_worker_trashes_replace_ids_after_run(monkeypatch: pytest.Mon
 
     run_import_worker(FakeSession())  # type: ignore[arg-type]
     assert sorted(trashed) == [11, 22]
+
+
+class _ScopedMoveSession:
+    """Minimal session that records config['import']['move'] seen during run()."""
+
+    lib = None
+    _replace_album_ids: ClassVar[set[int]] = set()
+    _trash_dir = None
+
+    def __init__(self) -> None:
+        self.seen: bool | None = None
+
+    def run(self) -> None:
+        self.seen = config["import"]["move"].get(bool)
+
+
+def test_scoped_move_sets_then_restores() -> None:
+    from app.beets.import_session import run_import_worker
+
+    config["import"]["move"] = False
+    config["import"]["copy"] = True
+    s = _ScopedMoveSession()
+    run_import_worker(s, move=True)  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
+    assert s.seen is True  # honored during run
+    assert config["import"]["move"].get(bool) is False  # restored after
+    assert config["import"]["copy"].get(bool) is True
+
+
+def test_scoped_move_restores_on_raise() -> None:
+    from app.beets.import_session import run_import_worker
+
+    config["import"]["move"] = False
+    config["import"]["copy"] = True
+
+    class _Boom(_ScopedMoveSession):
+        def run(self) -> None:
+            raise RuntimeError("x")
+
+    with pytest.raises(RuntimeError):
+        run_import_worker(_Boom(), move=True)  # type: ignore[arg-type]  # minimal stand-in
+    assert config["import"]["move"].get(bool) is False  # finally restored
+    assert config["import"]["copy"].get(bool) is True
+
+
+def test_default_move_none_touches_nothing() -> None:
+    from app.beets.import_session import run_import_worker
+
+    config["import"]["move"] = False
+    config["import"]["copy"] = True
+    run_import_worker(_ScopedMoveSession(), move=None)  # type: ignore[arg-type]  # minimal stand-in
+    assert config["import"]["move"].get(bool) is False
+    assert config["import"]["copy"].get(bool) is True

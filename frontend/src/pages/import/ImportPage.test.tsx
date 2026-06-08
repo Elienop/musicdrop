@@ -39,6 +39,8 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
     ],
     summary: null,
     error: null,
+    origin: "manual",
+    set_aside: 0,
     ...overrides,
   };
 }
@@ -145,6 +147,27 @@ describe("ImportPage — entry", () => {
     expect(
       screen.getByRole("button", { name: /start import/i }),
     ).toBeDisabled();
+  });
+
+  test("shows the inbox-origin + set-aside cue for an unattended import", async () => {
+    server.use(
+      http.get(ACTIVE_URL, () =>
+        HttpResponse.json({
+          active: true,
+          job_id: "job-7",
+          origin: "inbox",
+          needs_review_count: 3,
+        }),
+      ),
+    );
+    renderAt("/import");
+
+    expect(
+      await screen.findByText(/an inbox import is running/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/3 albums set aside for review/i),
+    ).toBeInTheDocument();
   });
 
   test("a 409 refreshes the probe so the Resume banner appears (race recovery)", async () => {

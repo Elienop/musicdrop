@@ -6,6 +6,7 @@ from app.import_jobs.fakes import FakeImportRunner
 from app.import_jobs.registry import reset_registry
 from app.main import app
 from app.models.import_api import (
+    ActiveImportStatus,
     ImportAlbumStatus,
     ImportAlbumSummary,
     ImportJobState,
@@ -50,6 +51,17 @@ def test_start_request_defaults_options_to_none() -> None:
     assert req.options is None
 
 
+def test_start_request_accepts_typed_options() -> None:
+    from app.models.import_models import ImportOptions
+
+    req = StartImportRequest.model_validate(
+        {"path": "/m", "options": {"operation": "move", "unattended": True}}
+    )
+    assert isinstance(req.options, ImportOptions)
+    assert req.options.operation == "move"
+    assert req.options.unattended is True
+
+
 def test_start_response_carries_job_id() -> None:
     resp = StartImportResponse(job_id="abc123")
     assert resp.job_id == "abc123"
@@ -82,6 +94,7 @@ def test_job_state_round_trips() -> None:
         ],
         summary=None,
         error=None,
+        set_aside=1,
     )
     dumped = state.model_dump(mode="json")
     assert dumped["phase"] == "reviewing"
@@ -90,6 +103,54 @@ def test_job_state_round_trips() -> None:
     assert dumped["albums"][1]["status"] == "needs_review"
     assert dumped["summary"] is None
     assert dumped["error"] is None
+    assert dumped["origin"] == "manual"  # defaulted
+    assert dumped["set_aside"] == 1
+
+
+def test_active_status_defaults_origin_manual() -> None:
+    # origin + needs_review_count must be optional/defaulted so the FE
+    # {active:false} fallback (no job) type-checks against the same model.
+    s = ActiveImportStatus(active=False)
+    assert s.origin == "manual"
+    assert s.needs_review_count == 0
+
+
+def test_job_state_exposes_origin_and_set_aside() -> None:
+    # Drive the REAL drain path: a job whose bridge holds one needs_review and
+    # one needs_dup_resolution outcome -> set_aside counts both (2). origin is
+    # carried off the job (defaults manual).
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob, ImportJobRegistry
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="set-aside-job", bridge=ImportBridge())
+    reg._job = job  # white-box: install the job in the single slot for state()
+    job.bridge.note_outcome(
+        AlbumOutcome(
+            album_index=0,
+            folder="/in/0",
+            artist="A",
+            album="X",
+            recommendation=Recommendation.medium,
+            confidence=50.0,
+            status=AlbumOutcomeStatus.needs_review,
+        )
+    )
+    job.bridge.note_outcome(
+        AlbumOutcome(
+            album_index=1,
+            folder="/in/1",
+            artist="A",
+            album="Y",
+            recommendation=Recommendation.strong,
+            confidence=0.0,
+            status=AlbumOutcomeStatus.needs_dup_resolution,
+        )
+    )
+
+    state = reg.state("set-aside-job")
+    assert state.origin == "manual"
+    assert state.set_aside == 2  # needs_review + needs_dup_resolution
 
 
 def test_start_import_blank_path_is_422() -> None:
@@ -225,7 +286,13 @@ def test_active_probe_false_when_no_job() -> None:
     client = TestClient(app)
     resp = client.get("/api/imports/active")
     assert resp.status_code == 200
-    assert resp.json() == {"active": False, "job_id": None}
+    # Idle: defaulted origin/needs_review_count keep the {active:false} shape stable.
+    assert resp.json() == {
+        "active": False,
+        "job_id": None,
+        "origin": "manual",
+        "needs_review_count": 0,
+    }
 
 
 def test_active_probe_true_while_import_runs() -> None:
@@ -236,7 +303,13 @@ def test_active_probe_true_while_import_runs() -> None:
     job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
     resp = client.get("/api/imports/active")
     assert resp.status_code == 200
-    assert resp.json() == {"active": True, "job_id": job_id}
+    body = resp.json()
+    assert body["active"] is True
+    assert body["job_id"] == job_id
+    assert body["origin"] == "manual"
+    # needs_review_count is the live set-aside tally; present + non-negative (its
+    # exact value races the worker thread emitting the parked album's outcome).
+    assert body["needs_review_count"] >= 0
 
 
 def test_second_concurrent_import_is_409() -> None:

@@ -6,6 +6,17 @@ import type { components } from "@/api/schema";
 /** Response of `GET /api/imports/active` (generated contract). */
 export type ActiveImportStatus = components["schemas"]["ActiveImportStatus"];
 
+/** The "no import running" fallback returned when the probe fails or is empty.
+ *
+ * `origin` + `needs_review_count` carry server defaults ("manual"/0), so the
+ * generated contract types them as always-present; the fallback mirrors those
+ * defaults to stay a valid `ActiveImportStatus`. */
+const IDLE_STATUS: ActiveImportStatus = {
+  active: false,
+  origin: "manual",
+  needs_review_count: 0,
+};
+
 /** Default cadence — quiet polling while no import is running.
  *
  * 30s is long enough that an idle Settings tab is essentially free; the live
@@ -53,10 +64,10 @@ export function useActiveImport() {
       // but invisible to anyone tracing a "gate stuck open" report.
       if (!response.ok) {
         console.warn("[useActiveImport] probe failed:", response.status);
-        return { active: false };
+        return IDLE_STATUS;
       }
       if (!data) {
-        return { active: false };
+        return IDLE_STATUS;
       }
       return data;
     },

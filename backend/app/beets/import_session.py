@@ -186,6 +186,9 @@ class WebImportSession(ImportSession):
     """An ImportSession driven by the web UI instead of a terminal prompt."""
 
     bridge: ImportBridge
+    # Unattended (inbox) imports auto-apply strong matches and set the rest aside
+    # (SKIP, never park) so the worker never blocks on a human decision.
+    unattended: bool
 
     def __init__(
         self,
@@ -195,6 +198,8 @@ class WebImportSession(ImportSession):
         query: Any,
         bridge: ImportBridge,
         trash_dir: Path | None = None,
+        *,
+        unattended: bool = False,
     ) -> None:
         super().__init__(lib, loghandler, paths, query)
         self.bridge = bridge
@@ -205,6 +210,9 @@ class WebImportSession(ImportSession):
         self._trash_dir = trash_dir
         # Existing duplicate album ids recorded by Replace, trashed AFTER run().
         self._replace_album_ids: set[int] = set()
+        # When True, uncertain matches + duplicates are set aside (SKIP), not
+        # parked — the inbox auto-import path (no human in the loop).
+        self.unattended = unattended
 
     # ----- the four decision hooks -----
 
@@ -238,6 +246,11 @@ class WebImportSession(ImportSession):
         incoming = self._to_incoming_album(task)
         existing = [self._to_existing_album(album) for album in found_duplicates]
         self.bridge.note_outcome(self._dup_outcome(index, task))
+        if self.unattended:
+            # Unattended: the outcome above records the set-aside; SKIP the new
+            # album (keeps the library copy) without parking + blocking.
+            task.set_choice(Action.SKIP)
+            return None
         decision = self.bridge.park_duplicate(
             DuplicatePrompt(album_index=index, incoming=incoming, existing=existing),
             art_source=art_source,
@@ -316,6 +329,10 @@ class WebImportSession(ImportSession):
         self.bridge.note_outcome(
             self._outcome(index, task, recommendation, AlbumOutcomeStatus.needs_review, match=top)
         )
+        if self.unattended:
+            # Unattended: the needs_review outcome above records the set-aside;
+            # SKIP instead of parking so the worker never blocks on a decision.
+            return Action.SKIP
         choice = self.bridge.park(
             ParkedAlbum(album_index=index, folder=folder, candidate=candidate),
             art_source=art_source,
@@ -429,7 +446,7 @@ class WebImportSession(ImportSession):
         return ""
 
 
-def run_import_worker(session: WebImportSession) -> None:
+def run_import_worker(session: WebImportSession, *, move: bool | None = None) -> None:
     """Run one import session serially on the calling (worker) thread.
 
     Forces single-threaded execution and ``import.duplicate_action: ask`` (so the
@@ -437,10 +454,26 @@ def run_import_worker(session: WebImportSession) -> None:
     IS the "ask"), then runs beets. After run() returns, moves any album the
     Replace action recorded to the reversible Trash, by stable id — beets imports
     the new album first, so the old copy is only touched once the new one is safe.
+
+    ``move`` scopes the file operation to this one run: ``True`` forces a move
+    (``copy=False``), ``False`` forces a copy (``move=False``). Because
+    ``config["import"]`` is a process-global confuse singleton, the prior
+    move/copy values are snapshotted and restored in a ``finally`` so an inbox
+    move never leaks into the next manual import. ``None`` touches nothing — the
+    manual-import default falls through to the user's beets config untouched.
     """
     config["threaded"] = False
     config["import"]["duplicate_action"] = "ask"
-    session.run()
+    orig_move = config["import"]["move"].get(bool)
+    orig_copy = config["import"]["copy"].get(bool)
+    if move is not None:
+        config["import"]["move"] = move
+        config["import"]["copy"] = not move
+    try:
+        session.run()
+    finally:
+        config["import"]["move"] = orig_move
+        config["import"]["copy"] = orig_copy
     _trash_replaced_albums(session)
 
 

@@ -19,6 +19,7 @@ from app.models.import_models import (
     AlbumOutcome,
     AlbumOutcomeStatus,
     DuplicatePrompt,
+    ImportOptions,
     ParkedAlbum,
     Recommendation,
 )
@@ -42,6 +43,9 @@ class FakeImportRunner:
         # park (mirrors the worker's choose_match). Keyed by album_index.
         self._art_sources = art_sources or {}
         self._duplicates = duplicates or []
+        # The ImportOptions forwarded by the registry's start(), recorded so the
+        # plumbing tests can assert start -> runner.run threading (None = manual).
+        self.received_options: ImportOptions | None = None
 
     def run(
         self,
@@ -49,7 +53,10 @@ class FakeImportRunner:
         bridge: ImportBridge,
         on_finish: Callable[[], None],
         on_error: Callable[[str], None],
+        options: ImportOptions | None = None,
     ) -> None:
+        self.received_options = options
+
         def target() -> None:
             if self._fail_with is not None:
                 on_error(self._fail_with)

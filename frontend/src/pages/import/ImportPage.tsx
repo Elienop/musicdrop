@@ -49,6 +49,11 @@ function ImportEntry() {
   // banner never renders a link to a null id.
   const activeJobId = active.data?.job_id ?? null;
   const importActive = (active.data?.active ?? false) && activeJobId !== null;
+  // An inbox-origin import is the unattended slskd path: name it as such and,
+  // when it set albums aside, surface the count so the user knows there's a
+  // review to do once it finishes.
+  const origin = active.data?.origin;
+  const needsReview = active.data?.needs_review_count ?? 0;
 
   const trimmed = path.trim();
   const conflict = start.error instanceof ImportConflictError;
@@ -79,7 +84,10 @@ function ImportEntry() {
   }
 
   return (
-    <section className="flex max-w-2xl flex-col gap-6" aria-label="Import music">
+    <section
+      className="flex max-w-2xl flex-col gap-6"
+      aria-label="Import music"
+    >
       <div className="flex flex-col gap-1">
         <h2 className="text-2xl font-semibold tracking-tight">Import music</h2>
         <p className="text-muted-foreground text-sm">
@@ -105,7 +113,18 @@ function ImportEntry() {
             aria-hidden="true"
           />
           <p id="resume-import-hint" className="flex-1 font-medium">
-            An import is already running.
+            {origin === "inbox"
+              ? needsReview > 0
+                ? "An inbox import is running" // the set-aside clause completes the sentence
+                : "An inbox import is running."
+              : "An import is already running."}
+            {origin === "inbox" && needsReview > 0 && (
+              <span className="text-muted-foreground font-normal">
+                {" — "}
+                {needsReview} album{needsReview === 1 ? "" : "s"} set aside for
+                review.
+              </span>
+            )}
           </p>
           <Button size="sm" asChild>
             <Link to={`/import?job=${activeJobId}`}>Resume</Link>
@@ -135,8 +154,8 @@ function ImportEntry() {
         )}
         {genericError && (
           <p className="text-destructive text-sm" role="alert">
-            Couldn&rsquo;t start the import. Check the path and the backend, then
-            try again.
+            Couldn&rsquo;t start the import. Check the path and the backend,
+            then try again.
           </p>
         )}
 
@@ -286,7 +305,8 @@ function LiveFeed({ state, jobId }: { state: ImportJobState; jobId: string }) {
                 the count so that invariant is self-evident. */}
             {state.progress.applied}{" "}
             {state.progress.applied === 1 ? "album" : "albums"} imported
-            {state.progress.skipped > 0 && ` · ${state.progress.skipped} skipped`}
+            {state.progress.skipped > 0 &&
+              ` · ${state.progress.skipped} skipped`}
             {state.progress.needs_review > 0 &&
               ` · ${state.progress.needs_review} album${state.progress.needs_review === 1 ? "" : "s"} needs review`}
             {needsDup > 0 &&
@@ -351,8 +371,7 @@ function FeedRow({
   const needsDup = album.status === "needs_dup_resolution";
   // Final fallback is non-empty: `album` may be null and `folder` may be ""/"/",
   // in which case folderName() returns "" — never show an empty title.
-  const title =
-    (album.album ?? folderName(album.folder)) || "Unknown album";
+  const title = (album.album ?? folderName(album.folder)) || "Unknown album";
   return (
     <div
       className={cn(
@@ -430,7 +449,10 @@ function JobDone({ state, jobId }: { state: ImportJobState; jobId: string }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="border-border flex flex-col items-center gap-3 rounded-xl border py-12 text-center">
-        <CircleCheck className="text-muted-foreground size-10" aria-hidden="true" />
+        <CircleCheck
+          className="text-muted-foreground size-10"
+          aria-hidden="true"
+        />
         <div className="flex flex-col gap-1">
           <p className="font-medium">Import finished</p>
           <p className="text-muted-foreground text-sm">
@@ -442,7 +464,9 @@ function JobDone({ state, jobId }: { state: ImportJobState; jobId: string }) {
           <Link to="/">View in library</Link>
         </Button>
       </div>
-      {state.albums.length > 0 && <FeedList albums={state.albums} jobId={jobId} />}
+      {state.albums.length > 0 && (
+        <FeedList albums={state.albums} jobId={jobId} />
+      )}
     </div>
   );
 }
@@ -472,7 +496,10 @@ function JobFailed({ error }: { error: string | null }) {
 function JobNotFound() {
   return (
     <div className="border-border flex flex-col items-center gap-3 rounded-xl border py-16 text-center">
-      <AlertCircle className="text-muted-foreground size-10" aria-hidden="true" />
+      <AlertCircle
+        className="text-muted-foreground size-10"
+        aria-hidden="true"
+      />
       <div className="flex flex-col gap-1">
         <p className="font-medium">This import is no longer available</p>
         <p className="text-muted-foreground text-sm">
