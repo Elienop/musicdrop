@@ -70,5 +70,13 @@ class Settings(BaseSettings):
     plex_token: str = ""
     plex_library_path: str = ""
 
+    # Acquisition (app/acquisition/). Where completed downloads land before the
+    # unattended import; empty = default to <beets_dir>/inbox, computed at resolve
+    # time from the live library handle (sidesteps the cwd-relative gotcha, like
+    # trash_dir). auto_import gates whether completed inbox drops import
+    # themselves. (env MUSICDROP_INBOX_DIR / MUSICDROP_AUTO_IMPORT)
+    inbox_dir: str = ""
+    auto_import: bool = False
+
 
 settings = Settings()
