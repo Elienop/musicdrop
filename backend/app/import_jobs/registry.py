@@ -228,11 +228,25 @@ class ImportJobRegistry:
         Caller holds ``self._lock``. Both bridge calls are non-blocking.
         """
         for outcome in job.bridge.drain_outcomes():
-            if outcome.album_index not in job.albums:
+            row = job.albums.get(outcome.album_index)
+            if row is None:
                 job.albums[outcome.album_index] = _FeedAlbum(
                     outcome=outcome,
                     status=_OUTCOME_STATUS.get(outcome.status, ImportAlbumStatus.needs_review),
                 )
+            elif outcome.status in (
+                AlbumOutcomeStatus.needs_review,
+                AlbumOutcomeStatus.needs_dup_resolution,
+            ):
+                # A later set-aside outcome for an album already in the feed must
+                # upgrade its row. In UNATTENDED mode a strong match auto-applies
+                # (applied outcome) and then resolve_duplicate emits
+                # needs_dup_resolution for the SAME index and SKIPs WITHOUT
+                # parking — so the park-duplicate flip below never runs. Without
+                # this the row stays `applied` and the SKIPped album is
+                # mis-reported as imported (and uncounted as set-aside). Mirrors
+                # the manual flow's park-duplicate status flip.
+                row.status = _OUTCOME_STATUS[outcome.status]
         while True:
             parked = job.bridge.get_parked(timeout=0)
             if parked is None:
@@ -385,7 +399,15 @@ class ImportJobRegistry:
             job_id = job.id if job is not None and job.phase in _ACTIVE_PHASES else None
         if job_id is None:
             return ActiveImportStatus(active=False, job_id=None)
-        self.drain(job_id)  # refresh the feed (acquires the lock itself)
+        try:
+            self.drain(job_id)  # refresh the feed (acquires the lock itself)
+        except KeyError:
+            # TOCTOU: between the snapshot above and this drain the slot can
+            # finish AND a fresh import claim it (the swap leaves a new uuid in
+            # the slot), so the captured job_id no longer resolves and drain()
+            # raises KeyError. Report idle rather than 500 a frequently-polled
+            # probe — same outcome as the post-drain re-check below.
+            return ActiveImportStatus(active=False, job_id=None)
         with self._lock:
             job = self._job
             if job is None or job.id != job_id or job.phase not in _ACTIVE_PHASES:

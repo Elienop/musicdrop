@@ -278,3 +278,59 @@ def test_start_without_options_is_none() -> None:
     job_id = reg.start("/music/incoming")
     _poll(lambda: reg.get(job_id) is not None, lambda x: x)
     assert fake.received_options is None
+
+
+def test_unattended_strong_then_duplicate_is_set_aside_not_imported() -> None:
+    # White-box the unattended collision the feed-drain must survive: choose_match
+    # auto-applies a strong match (applied outcome for index 0), then
+    # resolve_duplicate emits needs_dup_resolution for the SAME index and SKIPs
+    # WITHOUT parking (no dup prompt on the bridge -> the park-duplicate flip never
+    # runs). The later set-aside outcome must upgrade the existing row so the album
+    # counts as set-aside, not the SKIPped album being mis-reported as imported.
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="dup-unattended", bridge=ImportBridge())
+    reg._job = job  # white-box: install the job in the single slot for state()
+    job.bridge.note_outcome(_applied_outcome(0))
+    job.bridge.note_outcome(
+        AlbumOutcome(
+            album_index=0,
+            folder="/music/incoming/album0",
+            artist="Radiohead",
+            album="OK Computer",
+            recommendation=Recommendation.strong,
+            confidence=0.0,
+            status=AlbumOutcomeStatus.needs_dup_resolution,
+        )
+    )
+
+    state = reg.state("dup-unattended")
+    assert state.albums[0].status is ImportAlbumStatus.needs_dup_resolution
+    assert state.set_aside == 1
+    assert state.progress.applied == 0  # _is_imported() is False
+    assert reg._is_imported(job.albums[0]) is False
+
+
+def test_active_status_tolerates_slot_vanishing_during_drain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # TOCTOU: active_status snapshots the active job_id under the lock, releases
+    # it, then drains. If the slot finished AND a fresh import claimed it in that
+    # window, the captured id no longer resolves and drain() raises KeyError. The
+    # frequently-polled probe must report idle, not propagate a 500.
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+    from app.models.import_api import ImportAlbumSummary
+
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="old", bridge=ImportBridge(), phase=ImportPhase.reviewing)
+
+    def vanishing_drain(job_id: str) -> list[ImportAlbumSummary]:
+        raise KeyError(job_id)  # the captured slot no longer resolves
+
+    monkeypatch.setattr(reg, "drain", vanishing_drain)
+    status = reg.active_status()
+    assert status.active is False
+    assert status.job_id is None
