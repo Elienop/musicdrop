@@ -70,7 +70,9 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
 
   const [baseUrl, setBaseUrl] = useState(initial.base_url);
   const [token, setToken] = useState("");
-  const [downloadsPrefix, setDownloadsPrefix] = useState(initial.downloads_prefix);
+  const [downloadsPrefix, setDownloadsPrefix] = useState(
+    initial.downloads_prefix,
+  );
   const [webhookSecret, setWebhookSecret] = useState("");
   const [autoImport, setAutoImport] = useState(initial.auto_import);
   // Drives the single, always-mounted polite live region below (see the Plex
@@ -134,7 +136,11 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
     test.mutate(undefined, {
       onSuccess: (connection) => {
         if (connection.ok) {
-          setStatusMsg(`Connected to slskd ${connection.version ?? ""}.`.trim());
+          setStatusMsg(
+            connection.version
+              ? `Connected to slskd ${connection.version}.`
+              : "Connected to slskd.",
+          );
         }
       },
     });
@@ -179,7 +185,11 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
             // Stop browsers/password managers from autofilling a login password
             // or prompting to save this server secret.
             autoComplete="new-password"
-            placeholder={initial.has_token ? "API key saved — enter to replace" : "slskd API key"}
+            placeholder={
+              initial.has_token
+                ? "API key saved — enter to replace"
+                : "slskd API key"
+            }
             value={token}
             onChange={(e) => setToken(e.target.value)}
             className="max-w-md font-mono"
@@ -187,7 +197,10 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
         </div>
 
         <div className="flex flex-col gap-1">
-          <label htmlFor="slskd-downloads-prefix" className="text-sm font-medium">
+          <label
+            htmlFor="slskd-downloads-prefix"
+            className="text-sm font-medium"
+          >
             Downloads path
           </label>
           <Input
@@ -198,8 +211,8 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
             className="max-w-md font-mono"
           />
           <p className="text-muted-foreground text-xs">
-            slskd&rsquo;s download root, as slskd sees it — stripped when a completed drop is
-            mapped into the inbox
+            slskd&rsquo;s download root, as slskd sees it — stripped when a
+            completed drop is mapped into the inbox
           </p>
         </div>
 
@@ -212,15 +225,18 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
             type="password"
             autoComplete="new-password"
             placeholder={
-              initial.has_webhook_secret ? "Secret saved — enter to replace" : "shared webhook secret"
+              initial.has_webhook_secret
+                ? "Secret saved — enter to replace"
+                : "shared webhook secret"
             }
             value={webhookSecret}
             onChange={(e) => setWebhookSecret(e.target.value)}
             className="max-w-md font-mono"
           />
           <p className="text-muted-foreground text-xs">
-            the shared secret slskd sends as <code className="font-mono">X-API-Key</code> on each
-            completion webhook
+            the shared secret slskd sends as{" "}
+            <code className="font-mono">X-API-Key</code> on each completion
+            webhook
           </p>
         </div>
 
@@ -229,15 +245,14 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
             id="slskd-auto-import"
             checked={autoImport}
             onCheckedChange={setAutoImport}
-            aria-label="Auto-import completed downloads"
           />
           <div className="flex flex-col gap-1">
             <label htmlFor="slskd-auto-import" className="text-sm font-medium">
               Auto-import completed downloads
             </label>
             <p className="text-muted-foreground text-xs">
-              when on, a finished slskd download imports itself into the library; uncertain matches
-              are set aside for review
+              when on, a finished slskd download imports itself into the
+              library; uncertain matches are set aside for review
             </p>
           </div>
         </div>
@@ -245,7 +260,12 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between gap-2">
             <p className="text-sm font-medium">Webhook configuration</p>
-            <Button type="button" variant="outline" size="sm" onClick={handleCopy}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleCopy}
+            >
               {copied ? (
                 <>
                   <Check className="size-4" aria-hidden="true" />
@@ -260,8 +280,8 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
             </Button>
           </div>
           <p className="text-muted-foreground text-xs">
-            Add this to slskd&rsquo;s config so it notifies MusicDrop when a download finishes (use
-            the webhook secret you set above).
+            Add this to slskd&rsquo;s config so it notifies MusicDrop when a
+            download finishes (use the webhook secret you set above).
           </p>
           <pre className="bg-muted overflow-x-auto rounded-lg p-3 font-mono text-xs">
             {WEBHOOK_SNIPPET}
@@ -284,7 +304,11 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
           variant="outline"
           onClick={handleTest}
           disabled={test.isPending || dirty}
-          title={dirty ? "Save before testing — Test uses your saved settings" : undefined}
+          title={
+            dirty
+              ? "Save before testing — Test uses your saved settings"
+              : undefined
+          }
         >
           {test.isPending ? (
             <>
@@ -307,7 +331,11 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
         <p
           role="status"
           aria-live="polite"
-          className={statusMsg ? "text-success flex items-center gap-1 text-sm" : "sr-only"}
+          className={
+            statusMsg
+              ? "text-success flex items-center gap-1 text-sm"
+              : "sr-only"
+          }
         >
           {statusMsg ? (
             <>
@@ -342,14 +370,21 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
  * holding the form. */
 function Panel({ children }: { children: React.ReactNode }) {
   return (
-    <section aria-labelledby="slskd-settings-heading" className="flex flex-col gap-4">
+    <section
+      aria-labelledby="slskd-settings-heading"
+      className="flex flex-col gap-4"
+    >
       <header className="flex flex-col gap-1">
-        <h2 id="slskd-settings-heading" className="text-2xl font-semibold tracking-tight">
+        <h2
+          id="slskd-settings-heading"
+          className="text-2xl font-semibold tracking-tight"
+        >
           slskd
         </h2>
         <p className="text-muted-foreground text-sm">
-          Connect slskd so completed Soulseek downloads import themselves into the library. The API
-          key and webhook secret are write-only — stored on the server and never shown again.
+          Connect slskd so completed Soulseek downloads import themselves into
+          the library. The API key and webhook secret are write-only — stored on
+          the server and never shown again.
         </p>
       </header>
       <Card>{children}</Card>
