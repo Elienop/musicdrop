@@ -86,6 +86,8 @@ def _make_session(bridge: ImportBridge) -> WebImportSession:
     session.bridge = bridge
     # __init__ is skipped, so set the park-index counter the hook relies on.
     session._album_index = 0
+    # __init__ is skipped, so default the attended flag the hooks now read.
+    session.unattended = False
     return session
 
 
@@ -164,6 +166,25 @@ def test_uncertain_rec_skip_choice_skips(monkeypatch: pytest.MonkeyPatch) -> Non
     assert task.choice_flag is Action.SKIP
     assert task.skip is True
     assert task.match is None
+
+
+def test_unattended_choose_match_skips_instead_of_parking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Unattended: a non-strong match emits the needs_review outcome (so the feed
+    # records the set-aside) but returns SKIP instead of parking + blocking.
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    session.unattended = True
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+
+    result = session.choose_match(task)
+
+    assert result is Action.SKIP
+    assert bridge.pending_count() == 0  # did NOT park
+    outcomes = bridge.drain_outcomes()
+    assert any(o.status is AlbumOutcomeStatus.needs_review for o in outcomes)
 
 
 def test_abort_choice_raises_import_abort(monkeypatch: pytest.MonkeyPatch) -> None:

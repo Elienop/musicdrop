@@ -74,6 +74,9 @@ class BeetsImportRunner:
             if options is None or options.operation == "default"
             else (options.operation == "move")
         )
+        # Unattended (inbox) imports set uncertain/duplicate albums aside instead
+        # of parking for a human; None options = today's attended manual default.
+        unattended = options.unattended if options is not None else False
         session = WebImportSession(
             self._lib,
             None,  # loghandler -> beets installs a NullHandler
@@ -81,6 +84,7 @@ class BeetsImportRunner:
             None,  # query -> path import, not a library query
             bridge,
             self._trash_dir,
+            unattended=unattended,
         )
 
         def target() -> None:

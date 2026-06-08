@@ -186,6 +186,9 @@ class WebImportSession(ImportSession):
     """An ImportSession driven by the web UI instead of a terminal prompt."""
 
     bridge: ImportBridge
+    # Unattended (inbox) imports auto-apply strong matches and set the rest aside
+    # (SKIP, never park) so the worker never blocks on a human decision.
+    unattended: bool
 
     def __init__(
         self,
@@ -195,6 +198,8 @@ class WebImportSession(ImportSession):
         query: Any,
         bridge: ImportBridge,
         trash_dir: Path | None = None,
+        *,
+        unattended: bool = False,
     ) -> None:
         super().__init__(lib, loghandler, paths, query)
         self.bridge = bridge
@@ -205,6 +210,9 @@ class WebImportSession(ImportSession):
         self._trash_dir = trash_dir
         # Existing duplicate album ids recorded by Replace, trashed AFTER run().
         self._replace_album_ids: set[int] = set()
+        # When True, uncertain matches + duplicates are set aside (SKIP), not
+        # parked — the inbox auto-import path (no human in the loop).
+        self.unattended = unattended
 
     # ----- the four decision hooks -----
 
@@ -316,6 +324,10 @@ class WebImportSession(ImportSession):
         self.bridge.note_outcome(
             self._outcome(index, task, recommendation, AlbumOutcomeStatus.needs_review, match=top)
         )
+        if self.unattended:
+            # Unattended: the needs_review outcome above records the set-aside;
+            # SKIP instead of parking so the worker never blocks on a decision.
+            return Action.SKIP
         choice = self.bridge.park(
             ParkedAlbum(album_index=index, folder=folder, candidate=candidate),
             art_source=art_source,
