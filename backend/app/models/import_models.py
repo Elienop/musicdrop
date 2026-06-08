@@ -6,8 +6,24 @@ so beets internals never leak past the adapter boundary. No beets imports here.
 """
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel
+
+ImportOrigin = Literal["manual", "inbox"]
+
+
+class ImportOptions(BaseModel):
+    """Per-import overrides (replaces the reserved ``dict[str, str]``).
+
+    ``operation`` ``"default"`` falls through to the user's beets config (the
+    manual-import default). ``"move"``/``"copy"`` force that operation for this
+    import only. ``unattended`` ``True`` is the inbox path: no human review —
+    uncertain/duplicate albums are set aside rather than parked.
+    """
+
+    operation: Literal["default", "move", "copy"] = "default"
+    unattended: bool = False
 
 
 class Recommendation(StrEnum):

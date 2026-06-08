@@ -156,3 +156,26 @@ def test_needs_dup_resolution_status_exists() -> None:
     from app.models.import_models import AlbumOutcomeStatus
 
     assert AlbumOutcomeStatus.needs_dup_resolution.value == "needs_dup_resolution"
+
+
+def test_import_options_defaults_are_todays_behavior() -> None:
+    from app.models.import_models import ImportOptions
+
+    o = ImportOptions()
+    assert o.operation == "default"
+    assert o.unattended is False
+
+
+def test_import_options_round_trips() -> None:
+    from app.models.import_models import ImportOptions
+
+    o = ImportOptions.model_validate({"operation": "move", "unattended": True})
+    assert o.model_dump() == {"operation": "move", "unattended": True}
+
+
+def test_import_origin_values() -> None:
+    from typing import get_args
+
+    from app.models.import_models import ImportOrigin
+
+    assert set(get_args(ImportOrigin)) == {"manual", "inbox"}
