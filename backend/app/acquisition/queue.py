@@ -15,15 +15,19 @@ public registry seam.
 from __future__ import annotations
 
 import asyncio
+import logging
 import queue
 import threading
 from pathlib import Path
 
+from app.acquisition.inbox import contain
 from app.acquisition.ledger import AcquisitionLedger
 from app.import_jobs.registry import ImportJobRegistry
 from app.models.acquisition import AcquisitionQueueStatus, LedgerOutcome
 from app.models.import_api import ImportPhase
 from app.models.import_models import ImportOptions
+
+logger = logging.getLogger(__name__)
 
 
 class AcquisitionQueue:
@@ -34,12 +38,18 @@ class AcquisitionQueue:
         *,
         import_registry: ImportJobRegistry,
         ledger: AcquisitionLedger,
+        inbox_dir: Path | None = None,
         swap_lock: asyncio.Lock | None = None,
         poll_interval: float = 0.5,
         busy_backoff: float = 1.0,
     ) -> None:
         self._import_registry = import_registry
         self._ledger = ledger
+        # When set, enqueue() re-rejects any path not contained under it — belt
+        # and suspenders behind the webhook's own contain(), because the drain
+        # performs the destructive MOVE import. None = no extra check (the unit
+        # tests that drive the queue directly with already-trusted folders).
+        self._inbox_dir = inbox_dir
         self._swap_lock = swap_lock
         self._poll_interval = poll_interval
         self._busy_backoff = busy_backoff
@@ -85,6 +95,9 @@ class AcquisitionQueue:
         shutdown has begun so no work is accepted that the drain won't run.
         """
         if self._stop.is_set():
+            return
+        if self._inbox_dir is not None and contain(str(folder), self._inbox_dir) is None:
+            logger.warning("acquisition: refusing out-of-inbox path %s", folder)
             return
         key = str(folder.resolve())
         with self._lock:

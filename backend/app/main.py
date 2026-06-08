@@ -125,6 +125,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     acquisition_queue = AcquisitionQueue(
         import_registry=import_registry,
         ledger=ledger,
+        inbox_dir=inbox_dir,
         swap_lock=app.state.beets_swap_lock,
     )
     app.state.acquisition_queue = acquisition_queue

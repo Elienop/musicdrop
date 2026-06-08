@@ -179,6 +179,38 @@ def test_queue_defers_while_swap_lock_held(tmp_path: Path) -> None:
         q.stop()
 
 
+def test_queue_refuses_out_of_inbox_path(tmp_path: Path) -> None:
+    # Defense in depth: even though the webhook contains() first, the queue
+    # performs the destructive MOVE import, so it re-rejects any path not under
+    # its configured inbox_dir. Do NOT start the drain (deterministic).
+    fake = FakeImportRunner()
+    reg = ImportJobRegistry(runner=fake)
+    led = AcquisitionLedger(tmp_path / "ledger.json")
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    q = AcquisitionQueue(
+        import_registry=reg,
+        ledger=led,
+        inbox_dir=inbox,
+        poll_interval=0.01,
+        busy_backoff=0.02,
+    )
+
+    outside = tmp_path / "outside" / "Album"
+    outside.mkdir(parents=True)
+    q.enqueue(outside)
+    assert q._queue.qsize() == 0
+    assert q.status().queued == 0
+    assert len(q._dedupe) == 0
+
+    # A path under the inbox is still accepted.
+    inside = inbox / "Album"
+    inside.mkdir()
+    q.enqueue(inside)
+    assert q._queue.qsize() == 1
+    assert q.status().queued == 1
+
+
 def test_stop_is_idempotent_and_unblocks_drain(tmp_path: Path) -> None:
     q, _fake, _reg, _led = _make_queue(tmp_path)
     q.start()
