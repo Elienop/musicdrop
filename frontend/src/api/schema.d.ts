@@ -2377,7 +2377,11 @@ export interface components {
         };
         /**
          * SlskdSettings
-         * @description GET /slskd/settings — secrets are never returned, only ``has_token``.
+         * @description GET /slskd/settings — secrets are never returned, only ``has_*`` flags.
+         *
+         *     ``has_token`` / ``has_webhook_secret`` let the panel show a "saved — enter to
+         *     replace" placeholder for each write-only secret without ever exposing the
+         *     value.
          */
         SlskdSettings: {
             /** Base Url */
@@ -2388,6 +2392,8 @@ export interface components {
             auto_import: boolean;
             /** Has Token */
             has_token: boolean;
+            /** Has Webhook Secret */
+            has_webhook_secret: boolean;
         };
         /**
          * SlskdSettingsUpdate

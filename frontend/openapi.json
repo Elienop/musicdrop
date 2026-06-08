@@ -5964,6 +5964,10 @@
           "has_token": {
             "type": "boolean",
             "title": "Has Token"
+          },
+          "has_webhook_secret": {
+            "type": "boolean",
+            "title": "Has Webhook Secret"
           }
         },
         "type": "object",
@@ -5971,10 +5975,11 @@
           "base_url",
           "downloads_prefix",
           "auto_import",
-          "has_token"
+          "has_token",
+          "has_webhook_secret"
         ],
         "title": "SlskdSettings",
-        "description": "GET /slskd/settings \u2014 secrets are never returned, only ``has_token``."
+        "description": "GET /slskd/settings \u2014 secrets are never returned, only ``has_*`` flags.\n\n``has_token`` / ``has_webhook_secret`` let the panel show a \"saved \u2014 enter to\nreplace\" placeholder for each write-only secret without ever exposing the\nvalue."
       },
       "SlskdSettingsUpdate": {
         "properties": {
