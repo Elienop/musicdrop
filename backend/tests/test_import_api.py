@@ -50,6 +50,17 @@ def test_start_request_defaults_options_to_none() -> None:
     assert req.options is None
 
 
+def test_start_request_accepts_typed_options() -> None:
+    from app.models.import_models import ImportOptions
+
+    req = StartImportRequest.model_validate(
+        {"path": "/m", "options": {"operation": "move", "unattended": True}}
+    )
+    assert isinstance(req.options, ImportOptions)
+    assert req.options.operation == "move"
+    assert req.options.unattended is True
+
+
 def test_start_response_carries_job_id() -> None:
     resp = StartImportResponse(job_id="abc123")
     assert resp.job_id == "abc123"

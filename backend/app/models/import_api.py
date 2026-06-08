@@ -16,7 +16,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, StringConstraints
 
-from app.models.import_models import Recommendation
+from app.models.import_models import ImportOptions, Recommendation
 
 
 class ImportPhase(StrEnum):
@@ -59,13 +59,14 @@ class StartImportRequest(BaseModel):
     """Body of ``POST /api/import``.
 
     ``path`` is a server-side folder (maps 1:1 to ``beet import <path>``).
-    ``options`` is reserved for future per-import overrides (copy/move/autotag);
-    v1 reads those from the user's beets config, so it is accepted but unused.
+    ``options`` carries per-import overrides (operation move/copy/default +
+    unattended). ``None`` falls through to today's manual default (the user's
+    beets config, attended review).
     """
 
     # Non-blank after stripping (a blank/whitespace path is a 422).
     path: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-    options: dict[str, str] | None = None
+    options: ImportOptions | None = None
 
 
 class StartImportResponse(BaseModel):
