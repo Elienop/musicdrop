@@ -67,6 +67,8 @@ def _session(bridge: ImportBridge, *, trash_dir: Path | None = None) -> WebImpor
     session._album_index = 0
     session._trash_dir = trash_dir
     session._replace_album_ids = set()
+    # __init__ is skipped, so default the attended flag resolve_duplicate reads.
+    session.unattended = False
     return session
 
 
@@ -123,6 +125,25 @@ def test_resolve_duplicate_parks_and_emits_needs_dup_resolution(
     bridge.push_duplicate_decision(7, DuplicateDecision(action=DuplicateAction.keep_both))
     t.join(timeout=2.0)
     assert task.choice_flag is Action.APPLY  # keep_both leaves the choice intact
+
+
+def test_unattended_resolve_duplicate_skips_without_parking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Unattended: a library duplicate emits the needs_dup_resolution outcome (so
+    # the feed records the set-aside) but sets SKIP without parking + blocking.
+    match = _match()
+    bridge = ImportBridge()
+    session = _session(bridge)
+    session.unattended = True
+    task = _task(match, monkeypatch)
+    task.md_album_index = 0  # type: ignore[attr-defined]  # dynamic attr (see above)
+
+    session.resolve_duplicate(task, [_FakeAlbum(1)])
+
+    assert bridge.pending_count() == 0  # did NOT park
+    assert task.choice_flag is Action.SKIP
+    assert any(o.status is AlbumOutcomeStatus.needs_dup_resolution for o in bridge.drain_outcomes())
 
 
 def test_resolve_duplicate_records_art_source(

@@ -246,6 +246,11 @@ class WebImportSession(ImportSession):
         incoming = self._to_incoming_album(task)
         existing = [self._to_existing_album(album) for album in found_duplicates]
         self.bridge.note_outcome(self._dup_outcome(index, task))
+        if self.unattended:
+            # Unattended: the outcome above records the set-aside; SKIP the new
+            # album (keeps the library copy) without parking + blocking.
+            task.set_choice(Action.SKIP)
+            return None
         decision = self.bridge.park_duplicate(
             DuplicatePrompt(album_index=index, incoming=incoming, existing=existing),
             art_source=art_source,
