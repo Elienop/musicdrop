@@ -349,8 +349,10 @@ export interface paths {
          *
          *     ``active`` is ``True`` exactly while the registry's single slot is in
          *     ``_ACTIVE_PHASES`` (``POST /api/config/apply`` 409s in that case); ``job_id``
-         *     carries the resume target (``None`` when idle). Both come from one
-         *     ``active_job_id()`` call so they can never disagree.
+         *     carries the resume target (``None`` when idle). The probe also surfaces the
+         *     active import's ``origin`` (manual/inbox) and set-aside ``needs_review_count``
+         *     so the Resume cue can flag an unattended inbox import. All come from one
+         *     ``active_status()`` call so they can never disagree.
          */
         get: operations["get_active_import_api_imports_active_get"];
         put?: never;
@@ -1023,6 +1025,17 @@ export interface components {
             active: boolean;
             /** Job Id */
             job_id?: string | null;
+            /**
+             * Origin
+             * @default manual
+             * @enum {string}
+             */
+            origin: "manual" | "inbox";
+            /**
+             * Needs Review Count
+             * @default 0
+             */
+            needs_review_count: number;
         };
         /** Album */
         Album: {
@@ -1582,6 +1595,14 @@ export interface components {
             summary: string | null;
             /** Error */
             error: string | null;
+            /**
+             * Origin
+             * @default manual
+             * @enum {string}
+             */
+            origin: "manual" | "inbox";
+            /** Set Aside */
+            set_aside: number;
         };
         /**
          * ImportOptions

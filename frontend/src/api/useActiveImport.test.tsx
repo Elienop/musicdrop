@@ -61,7 +61,15 @@ describe("useActiveImport", () => {
     );
 
     const { result } = renderHook(() => useActiveImport(), { wrapper: wrapper() });
-    await waitFor(() => expect(result.current.data).toEqual({ active: false }));
+    // The fallback mirrors the server defaults (origin "manual", count 0) so it
+    // stays a valid ActiveImportStatus now those fields are always-present.
+    await waitFor(() =>
+      expect(result.current.data).toEqual({
+        active: false,
+        origin: "manual",
+        needs_review_count: 0,
+      }),
+    );
     expect(result.current.isError).toBe(false);
   });
 

@@ -39,6 +39,8 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
     ],
     summary: null,
     error: null,
+    origin: "manual",
+    set_aside: 0,
     ...overrides,
   };
 }
