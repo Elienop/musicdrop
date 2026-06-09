@@ -85,6 +85,38 @@ def test_list_inbox_lists_audio_folders_skips_empty(tmp_path: Path) -> None:
     assert items["Direct Album"]["source"] == "slskd"
 
 
+def test_list_inbox_skips_symlinked_top_dir(tmp_path: Path) -> None:
+    # A symlink planted in the inbox that points at an audio tree OUTSIDE the
+    # inbox must NOT be listed or walked — parity with the import path's contain()
+    # symlink-escape rejection.
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    outside = tmp_path / "outside"
+    (outside / "Album").mkdir(parents=True)
+    (outside / "Album" / "01.flac").write_bytes(b"\0")
+    (inbox / "escape").symlink_to(outside)
+    _album(inbox, "Real Album", tracks=1)  # a genuine inbox item
+    reset_registry(runner=FakeImportRunner(parked=[]))
+    with _state(inbox):
+        resp = TestClient(app).get("/api/acquisition/inbox/items")
+    names = {it["name"] for it in resp.json()["items"]}
+    assert names == {"Real Album"}  # the symlink is skipped
+
+
+def test_status_inbox_pending_counts_only_audio_dirs(tmp_path: Path) -> None:
+    # The nav badge (inbox_pending) must match the listing's item definition, so a
+    # loose file or an empty leftover dir can't keep a phantom badge lit.
+    inbox = tmp_path / "inbox"
+    _album(inbox, "Real Album", tracks=1)
+    (inbox / "Empty Leftover").mkdir()  # no audio
+    (inbox / "cover.jpg").write_bytes(b"\0")  # a loose non-audio file
+    reset_registry(runner=FakeImportRunner(parked=[]))
+    with _state(inbox):
+        resp = TestClient(app).get("/api/acquisition/status")
+    assert resp.status_code == 200
+    assert resp.json()["inbox_pending"] == 1
+
+
 def test_list_inbox_annotates_set_aside_without_filtering(tmp_path: Path) -> None:
     inbox = tmp_path / "inbox"
     album = _album(inbox, "Some Artist", "Nested Album", tracks=1)

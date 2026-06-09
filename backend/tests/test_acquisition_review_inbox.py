@@ -66,7 +66,9 @@ def test_review_inbox_only_ledger_is_empty_noop(tmp_path: Path) -> None:
 
 def test_review_inbox_starts_attended_move_import(tmp_path: Path) -> None:
     inbox = tmp_path / "inbox"
-    (inbox / "ZZ Artist" / "Some Album").mkdir(parents=True)
+    album = inbox / "ZZ Artist" / "Some Album"
+    album.mkdir(parents=True)
+    (album / "01 track.flac").write_bytes(b"\0")  # a real (audio-bearing) drop
     fake = FakeImportRunner(parked=[])
     reset_registry(runner=fake)
     with _inbox_on_state(inbox):

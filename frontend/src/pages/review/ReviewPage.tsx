@@ -1,4 +1,5 @@
 import { AlertTriangle, Inbox } from "lucide-react";
+import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { useAcquisitionStatus } from "@/api/useAcquisitionStatus";
@@ -30,11 +31,12 @@ import { Button } from "@/components/ui/button";
  */
 export function ReviewPage() {
   const navigate = useNavigate();
-  const { data: active } = useActiveImport();
+  const activeQuery = useActiveImport();
+  const active = activeQuery.data;
   // Only fetch the job when an import is actually running (the hook is disabled
   // on an undefined id), so the page is a cheap aggregator when idle.
   const job = useImportJob(active?.active ? (active.job_id ?? undefined) : undefined);
-  const { data: inbox } = useInboxItems();
+  const inboxQuery = useInboxItems();
   const { data: status } = useAcquisitionStatus();
   // The library finder is a full library scan (no cheap count) — fetched lazily
   // and cached; the link renders immediately and the count fills in when ready.
@@ -43,9 +45,12 @@ export function ReviewPage() {
   const decisions = (job.data?.albums ?? []).filter(
     (a) => a.status === "needs_review" || a.status === "needs_dup_resolution",
   );
-  const items = inbox?.items ?? [];
+  const items = inboxQuery.data?.items ?? [];
   const importActive = active?.active ?? false;
-  const nothingPending = decisions.length === 0 && items.length === 0;
+  // Only declare "nothing to review" once the probes have resolved, so the empty
+  // state never flashes on first paint before the lists load.
+  const settled = !activeQuery.isLoading && !inboxQuery.isLoading;
+  const nothingPending = settled && decisions.length === 0 && items.length === 0;
 
   return (
     <section aria-label="Review" className="flex max-w-3xl flex-col gap-8">
@@ -166,12 +171,26 @@ function InboxSection({
 }) {
   const reviewOne = useImportInboxItem();
   const reviewAll = useReviewInbox();
+  const [noneLeft, setNoneLeft] = useState(false);
   const busy = importActive || reviewOne.isPending || reviewAll.isPending;
+  const disabledReason = importActive
+    ? "An import is already running"
+    : undefined;
 
   if (items.length === 0) return null;
 
-  const onSuccess = (res: { started?: boolean; job_id?: string | null }) => {
-    if (res.started && res.job_id) onStarted(res.job_id);
+  // A started import navigates away; a no-op start (the inbox emptied since the
+  // last poll) shows a notice — the list also refetches (the hooks invalidate
+  // it), so the stale rows clear on their own.
+  const mutateOpts = {
+    onSuccess: (res: { started?: boolean; job_id?: string | null }) => {
+      if (res.started && res.job_id) onStarted(res.job_id);
+      else setNoneLeft(true);
+    },
+  };
+  const start = (run: () => void) => {
+    setNoneLeft(false);
+    run();
   };
 
   return (
@@ -183,7 +202,8 @@ function InboxSection({
           variant="outline"
           size="sm"
           disabled={busy}
-          onClick={() => reviewAll.mutate(undefined, { onSuccess })}
+          title={disabledReason}
+          onClick={() => start(() => reviewAll.mutate(undefined, mutateOpts))}
         >
           {reviewAll.isPending ? "Starting…" : "Review all"}
         </Button>
@@ -214,7 +234,8 @@ function InboxSection({
                 type="button"
                 size="sm"
                 disabled={busy}
-                onClick={() => reviewOne.mutate(item.name, { onSuccess })}
+                title={disabledReason}
+                onClick={() => start(() => reviewOne.mutate(item.name, mutateOpts))}
               >
                 {starting ? "Starting…" : "Review"}
               </Button>
@@ -228,6 +249,15 @@ function InboxSection({
           another.
         </p>
       )}
+      {/* Always-mounted polite region so the no-op result is announced reliably
+          (a region created together with its text reads inconsistently). */}
+      <span
+        role="status"
+        aria-live="polite"
+        className={noneLeft ? "text-muted-foreground text-sm" : "sr-only"}
+      >
+        {noneLeft ? "Nothing left to import — the inbox just cleared." : ""}
+      </span>
       {(reviewOne.isError || reviewAll.isError) && (
         <p className="text-destructive text-sm" role="alert">
           Couldn’t start — it may have just been imported, or another import is
@@ -254,7 +284,7 @@ function RecentSection({
 }) {
   return (
     <section aria-label="Recent" className="flex flex-col gap-2 border-t pt-4">
-      <p className="text-sm font-medium">Recent</p>
+      <h3 className="text-sm font-medium">Recent</h3>
       {processed === 0 && !error ? (
         <p className="text-muted-foreground text-sm">
           No completed downloads have been imported yet.

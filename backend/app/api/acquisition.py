@@ -68,20 +68,25 @@ async def get_acquisition_status(request: Request) -> AcquisitionQueueStatus:
 
 
 def _count_pending(inbox_dir: Path) -> int:
-    """Non-hidden immediate children of the inbox, excluding the ledger file.
-
-    A cheap proxy for "is there anything to review": after an auto-import run the
-    inbox holds exactly the set-aside albums (strong matches were already moved
-    out). Hidden dotfiles and the ledger file never count.
+    """Count top-level inbox folders holding audio — the SAME item definition the
+    Review listing uses, so the nav badge can't show a phantom count from a loose
+    non-audio file, an empty leftover dir, or a symlink. Skips hidden entries, the
+    ledger file, and symlinked entries (parity with the import path's symlink
+    guard). 0 on any OS error.
     """
     try:
-        return sum(
-            1
-            for entry in os.scandir(inbox_dir)
-            if not entry.name.startswith(".") and entry.name != _LEDGER_FILENAME
-        )
+        entries = list(os.scandir(inbox_dir))
     except OSError:
         return 0
+    count = 0
+    for entry in entries:
+        if entry.name.startswith(".") or entry.name == _LEDGER_FILENAME:
+            continue
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        if _has_audio(Path(entry.path)):
+            count += 1
+    return count
 
 
 @router.post("/acquisition/review-inbox", response_model=ReviewInboxResponse)
@@ -119,15 +124,38 @@ async def review_inbox(
     return ReviewInboxResponse(started=True, job_id=job_id, pending=pending)
 
 
-def _count_audio(folder: Path) -> int:
-    """Audio files anywhere beneath ``folder`` (bounded walk; 0 on any OS error)."""
-    total = 0
+def _has_audio(folder: Path) -> bool:
+    """True as soon as one audio file is found beneath ``folder`` (early-exit).
+
+    ``os.walk``'s ``followlinks`` default is False, so a symlinked subdir (or a
+    symlink loop) inside a real inbox folder is never descended into.
+    """
     try:
         for _root, _dirs, files in os.walk(folder):
-            total += sum(1 for f in files if os.path.splitext(f)[1].lower() in _AUDIO_EXTS)
+            if any(os.path.splitext(f)[1].lower() in _AUDIO_EXTS for f in files):
+                return True
     except OSError:
-        return total
-    return total
+        return False
+    return False
+
+
+def _audio_stats(folder: Path) -> tuple[int, int]:
+    """``(track_count, total_bytes)`` of audio files beneath ``folder``."""
+    count = 0
+    size = 0
+    try:
+        for root, _dirs, files in os.walk(folder):
+            for name in files:
+                if os.path.splitext(name)[1].lower() not in _AUDIO_EXTS:
+                    continue
+                count += 1
+                try:
+                    size += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    pass
+    except OSError:
+        return count, size
+    return count, size
 
 
 def _list_inbox(inbox_dir: Path, ledger: AcquisitionLedger | None) -> list[InboxItem]:
@@ -146,9 +174,13 @@ def _list_inbox(inbox_dir: Path, ledger: AcquisitionLedger | None) -> list[Inbox
         return items
     ledger_rows = ledger.entries() if ledger is not None else []
     for entry in entries:
-        if entry.name.startswith(".") or entry.name == _LEDGER_FILENAME or not entry.is_dir():
+        if entry.name.startswith(".") or entry.name == _LEDGER_FILENAME:
             continue
-        tracks = _count_audio(Path(entry.path))
+        # Skip symlinked entries: the import path's contain() rejects symlink
+        # escapes, so the listing must not follow one out of the inbox either.
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        tracks, size = _audio_stats(Path(entry.path))
         if tracks == 0:
             continue
         try:
@@ -160,7 +192,10 @@ def _list_inbox(inbox_dir: Path, ledger: AcquisitionLedger | None) -> list[Inbox
         for row in ledger_rows:
             if row.outcome not in ("set_aside", "failed"):
                 continue
-            row_path = Path(row.path).resolve()
+            try:
+                row_path = Path(row.path).resolve()
+            except (OSError, ValueError):
+                continue  # a corrupt/NUL on-disk ledger path never 500s the list
             if row_path == folder or folder in row_path.parents:
                 outcome = row.outcome
                 break
@@ -168,7 +203,7 @@ def _list_inbox(inbox_dir: Path, ledger: AcquisitionLedger | None) -> list[Inbox
             InboxItem(
                 name=entry.name,
                 mtime=st.st_mtime,
-                size=st.st_size,
+                size=size,
                 track_count=tracks,
                 outcome=outcome,
             )

@@ -31,10 +31,11 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 /** The Review nav link with a count badge = items needing a decision now (the
- * live parked import + the inbox backlog). Both numbers come from already-polled
- * cheap probes, so the badge adds no new global request; it can transiently
- * over-count by 1 while an inbox import is mid-apply (the parked item still sits
- * in the inbox), which is fine for an at-a-glance badge. */
+ * live parked import + the inbox backlog). Both numbers reuse the existing
+ * `useActiveImport` + `useAcquisitionStatus` probes (now polled app-wide from the
+ * header, at their quiet 30s idle cadence) — two lightweight reads, no per-item
+ * fetch. It can transiently over-count by 1 while an inbox import is mid-apply
+ * (the parked item still sits in the inbox), which is fine for a glance badge. */
 function ReviewNavLink() {
   const location = useLocation();
   const { data: active } = useActiveImport();

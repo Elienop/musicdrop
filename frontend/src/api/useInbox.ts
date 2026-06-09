@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
 import type { components } from "@/api/schema";
@@ -41,6 +41,7 @@ export function useInboxItems() {
  * running) or a 404 (the folder vanished) throws so the caller can react.
  */
 export function useImportInboxItem() {
+  const qc = useQueryClient();
   return useMutation<ReviewInboxResponse, Error, string>({
     mutationFn: async (name) => {
       const { data, error, response } = await client.POST(
@@ -50,6 +51,13 @@ export function useImportInboxItem() {
       if (error || !response.ok || !data)
         throw new Error("Failed to start inbox review");
       return data;
+    },
+    // Refresh the backlog + the import gate whatever the outcome: a start
+    // emptied/changed the inbox, a 404 means the folder vanished (drop the stale
+    // row), a 409 means the slot is now busy (disable the actions).
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["inbox-items"] });
+      void qc.invalidateQueries({ queryKey: ["active-import"] });
     },
   });
 }

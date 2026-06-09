@@ -48,6 +48,7 @@ export function useTestSlskd() {
  * empty inbox returns `started: false` (a no-op, not an error). A 409 (an import
  * already running) surfaces as a thrown Error so the caller can show a retry. */
 export function useReviewInbox() {
+  const qc = useQueryClient();
   return useMutation<ReviewInboxResponse, Error, void>({
     mutationFn: async () => {
       const { data, error, response } = await client.POST(
@@ -56,6 +57,12 @@ export function useReviewInbox() {
       if (error || !response.ok || !data)
         throw new Error("Failed to start inbox review");
       return data;
+    },
+    // Refresh the backlog + the import gate whatever the outcome (a start changed
+    // the inbox; an empty result / 409 should re-sync the list and the gate).
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["inbox-items"] });
+      void qc.invalidateQueries({ queryKey: ["active-import"] });
     },
   });
 }
