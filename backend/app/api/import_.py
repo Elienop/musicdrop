@@ -43,20 +43,21 @@ async def get_active_import(
     return reg.active_status()
 
 
-@router.post("/import", response_model=StartImportResponse, status_code=status.HTTP_202_ACCEPTED)
-async def start_import(
-    body: StartImportRequest,
-    request: Request,
-    reg: Annotated[ImportJobRegistry, Depends(get_registry)],
-) -> StartImportResponse:
-    # Refuse while another in-process beets mutation holds the shared swap lock
-    # (config Apply or duplicate resolve). beets' safety model is strictly
-    # serial — never two threads in beets at once — and the importer spawns its
-    # own worker thread that would otherwise race a resolve/Apply mutating the
-    # same Library + SQLite. This closes the import-start direction of the
-    # mutual-exclusion invariant (Apply/resolve already refuse while an import
-    # is active); best-effort `asyncio.Lock.locked()`, the same single-user
-    # TOCTOU posture as config_editor.apply's import gate.
+def ensure_import_can_start(request: Request) -> None:
+    """Raise 409 if a beets mutation or backfill currently blocks a new import.
+
+    Shared by the manual ``POST /import`` and the inbox
+    ``POST /acquisition/review-inbox`` so both refuse identically. The single-slot
+    check stays at the ``reg.start`` call site (RuntimeError -> 409).
+
+    Refuses while another in-process beets mutation holds the shared swap lock
+    (config Apply or duplicate resolve): beets' safety model is strictly serial —
+    never two threads in beets at once — and the importer spawns its own worker
+    thread that would otherwise race a resolve/Apply mutating the same Library +
+    SQLite. Also refuses while a library backfill (lyrics / artist-art /
+    reorganize) holds the slot. Best-effort `asyncio.Lock.locked()`, the same
+    single-user TOCTOU posture as config_editor.apply's import gate.
+    """
     lock = getattr(request.app.state, "beets_swap_lock", None)
     if lock is not None and lock.locked():
         raise HTTPException(
@@ -73,6 +74,15 @@ async def start_import(
             status_code=status.HTTP_409_CONFLICT,
             detail="A library backfill is in progress — import available when it finishes",
         )
+
+
+@router.post("/import", response_model=StartImportResponse, status_code=status.HTTP_202_ACCEPTED)
+async def start_import(
+    body: StartImportRequest,
+    request: Request,
+    reg: Annotated[ImportJobRegistry, Depends(get_registry)],
+) -> StartImportResponse:
+    ensure_import_can_start(request)
     try:
         job_id = reg.start(body.path, options=body.options)
     except RuntimeError:
