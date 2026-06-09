@@ -1068,6 +1068,81 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/acquisition/review-inbox": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Review Inbox
+         * @description Start an attended, move-mode import of the fixed slskd inbox dir.
+         *
+         *     One-click review of the set-aside backlog from the slskd panel: no path is
+         *     typed and the absolute inbox path never leaves the server. Strong matches
+         *     auto-apply (and move out of the inbox); uncertain ones park for review in the
+         *     normal candidate-review screen. An empty inbox is a no-op (``started=False``),
+         *     never an error — and the shared import-slot gate refuses (409) while another
+         *     beets mutation or backfill owns the slot.
+         */
+        post: operations["review_inbox_api_acquisition_review_inbox_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/acquisition/inbox/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Inbox Items
+         * @description The inbox backlog — top-level folders awaiting review, source-agnostic.
+         *
+         *     Read-only + never 500: a missing/empty inbox (or the lifespan-less test
+         *     client, which has no ``inbox_dir``) yields an empty listing.
+         */
+        get: operations["list_inbox_items_api_acquisition_inbox_items_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/acquisition/inbox/items/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Inbox Item
+         * @description Attended move-import of ONE inbox folder (the per-item Review action).
+         *
+         *     Takes the folder ``name`` (not a path) and re-roots it under the inbox, so a
+         *     client value cannot escape: ``contain(strict=True)`` rejects ``../``, absolute
+         *     paths, the inbox root itself, symlink escapes, and malformed names (404). The
+         *     shared import-slot gate refuses (409) while a mutation/backfill owns the slot.
+         */
+        post: operations["import_inbox_item_api_acquisition_inbox_items_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1100,6 +1175,11 @@ export interface components {
             failed: number;
             /** Error */
             error: string | null;
+            /**
+             * Inbox Pending
+             * @default 0
+             */
+            inbox_pending: number;
         };
         /**
          * ActiveImportStatus
@@ -1679,6 +1759,14 @@ export interface components {
             candidate_index?: number | null;
         };
         /**
+         * ImportInboxItemRequest
+         * @description Body of ``POST /api/acquisition/inbox/items/import`` — one folder by name.
+         */
+        ImportInboxItemRequest: {
+            /** Name */
+            name: string;
+        };
+        /**
          * ImportJobState
          * @description Response of ``GET /api/import/{job}``: phase + progress + the live feed.
          */
@@ -1747,6 +1835,43 @@ export interface components {
             needs_review: number;
             /** Skipped */
             skipped: number;
+        };
+        /**
+         * InboxItem
+         * @description One top-level inbox folder awaiting review (a backlog row).
+         *
+         *     ``name`` is the immediate inbox child dir (also the import target id).
+         *     ``outcome`` is best-effort: ``set_aside``/``failed`` iff a ledger entry at or
+         *     under this folder has that outcome, else ``None`` (a fresh drop). ``mtime`` is
+         *     a float (NEVER ``st_mtime_ns`` — a nanosecond int loses JSON precision).
+         */
+        InboxItem: {
+            /** Name */
+            name: string;
+            /** Mtime */
+            mtime: number;
+            /** Size */
+            size: number;
+            /** Track Count */
+            track_count: number;
+            /** Outcome */
+            outcome?: ("imported" | "set_aside" | "failed") | null;
+            /**
+             * Source
+             * @default slskd
+             */
+            source: string;
+        };
+        /**
+         * InboxListing
+         * @description The inbox backlog (``GET /api/acquisition/inbox/items``).
+         */
+        InboxListing: {
+            /**
+             * Items
+             * @default []
+             */
+            items: components["schemas"]["InboxItem"][];
         };
         /**
          * IncomingAlbum
@@ -2292,6 +2417,25 @@ export interface components {
             kept_album_id: number;
             /** Moved */
             moved: components["schemas"]["MovedAlbum"][];
+        };
+        /**
+         * ReviewInboxResponse
+         * @description Result of ``POST /api/acquisition/review-inbox`` (the slskd-panel review).
+         *
+         *     ``started`` is True iff an attended import of the inbox was kicked off, with
+         *     ``job_id`` the running job to navigate to. An empty inbox is a no-op
+         *     (``started=False, job_id=None``), never an error.
+         */
+        ReviewInboxResponse: {
+            /** Started */
+            started: boolean;
+            /** Job Id */
+            job_id?: string | null;
+            /**
+             * Pending
+             * @default 0
+             */
+            pending: number;
         };
         /**
          * SaveNamingRequest
@@ -4565,6 +4709,79 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AcquisitionQueueStatus"];
+                };
+            };
+        };
+    };
+    review_inbox_api_acquisition_review_inbox_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewInboxResponse"];
+                };
+            };
+        };
+    };
+    list_inbox_items_api_acquisition_inbox_items_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxListing"];
+                };
+            };
+        };
+    };
+    import_inbox_item_api_acquisition_inbox_items_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportInboxItemRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewInboxResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

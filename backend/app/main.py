@@ -130,6 +130,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.acquisition_queue = acquisition_queue
     app.state.inbox_dir = inbox_dir
+    app.state.acquisition_ledger = ledger  # the Review page lists + annotates the inbox backlog
     acquisition_queue.start()
 
     # Build the artist-image stack once: the disk cache + the persisted enabled

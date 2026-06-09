@@ -20,6 +20,7 @@ const IDLE_STATUS: AcquisitionQueueStatus = {
   set_aside: 0,
   failed: 0,
   error: null,
+  inbox_pending: 0,
 };
 
 /** Faster cadence while the queue is draining a download, so the activity line

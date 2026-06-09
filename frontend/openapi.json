@@ -2587,6 +2587,92 @@
           }
         }
       }
+    },
+    "/api/acquisition/review-inbox": {
+      "post": {
+        "tags": [
+          "acquisition"
+        ],
+        "summary": "Review Inbox",
+        "description": "Start an attended, move-mode import of the fixed slskd inbox dir.\n\nOne-click review of the set-aside backlog from the slskd panel: no path is\ntyped and the absolute inbox path never leaves the server. Strong matches\nauto-apply (and move out of the inbox); uncertain ones park for review in the\nnormal candidate-review screen. An empty inbox is a no-op (``started=False``),\nnever an error \u2014 and the shared import-slot gate refuses (409) while another\nbeets mutation or backfill owns the slot.",
+        "operationId": "review_inbox_api_acquisition_review_inbox_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewInboxResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/acquisition/inbox/items": {
+      "get": {
+        "tags": [
+          "acquisition"
+        ],
+        "summary": "List Inbox Items",
+        "description": "The inbox backlog \u2014 top-level folders awaiting review, source-agnostic.\n\nRead-only + never 500: a missing/empty inbox (or the lifespan-less test\nclient, which has no ``inbox_dir``) yields an empty listing.",
+        "operationId": "list_inbox_items_api_acquisition_inbox_items_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxListing"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/acquisition/inbox/items/import": {
+      "post": {
+        "tags": [
+          "acquisition"
+        ],
+        "summary": "Import Inbox Item",
+        "description": "Attended move-import of ONE inbox folder (the per-item Review action).\n\nTakes the folder ``name`` (not a path) and re-roots it under the inbox, so a\nclient value cannot escape: ``contain(strict=True)`` rejects ``../``, absolute\npaths, the inbox root itself, symlink escapes, and malformed names (404). The\nshared import-slot gate refuses (409) while a mutation/backfill owns the slot.",
+        "operationId": "import_inbox_item_api_acquisition_inbox_items_import_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportInboxItemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewInboxResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2638,6 +2724,11 @@
               }
             ],
             "title": "Error"
+          },
+          "inbox_pending": {
+            "type": "integer",
+            "title": "Inbox Pending",
+            "default": 0
           }
         },
         "type": "object",
@@ -4164,6 +4255,20 @@
         "title": "ImportChoice",
         "description": "A user's decision for one parked album, pushed back over the bridge."
       },
+      "ImportInboxItemRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "ImportInboxItemRequest",
+        "description": "Body of ``POST /api/acquisition/inbox/items/import`` \u2014 one folder by name."
+      },
       "ImportJobState": {
         "properties": {
           "job_id": {
@@ -4289,6 +4394,71 @@
         ],
         "title": "ImportProgress",
         "description": "Coarse progress counters derived from the drained outcomes."
+      },
+      "InboxItem": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "mtime": {
+            "type": "number",
+            "title": "Mtime"
+          },
+          "size": {
+            "type": "integer",
+            "title": "Size"
+          },
+          "track_count": {
+            "type": "integer",
+            "title": "Track Count"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "imported",
+                  "set_aside",
+                  "failed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": "slskd"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "mtime",
+          "size",
+          "track_count"
+        ],
+        "title": "InboxItem",
+        "description": "One top-level inbox folder awaiting review (a backlog row).\n\n``name`` is the immediate inbox child dir (also the import target id).\n``outcome`` is best-effort: ``set_aside``/``failed`` iff a ledger entry at or\nunder this folder has that outcome, else ``None`` (a fresh drop). ``mtime`` is\na float (NEVER ``st_mtime_ns`` \u2014 a nanosecond int loses JSON precision)."
+      },
+      "InboxListing": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InboxItem"
+            },
+            "type": "array",
+            "title": "Items",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "InboxListing",
+        "description": "The inbox backlog (``GET /api/acquisition/inbox/items``)."
       },
       "IncomingAlbum": {
         "properties": {
@@ -5743,6 +5913,36 @@
           "moved"
         ],
         "title": "ResolveResult"
+      },
+      "ReviewInboxResponse": {
+        "properties": {
+          "started": {
+            "type": "boolean",
+            "title": "Started"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "pending": {
+            "type": "integer",
+            "title": "Pending",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "started"
+        ],
+        "title": "ReviewInboxResponse",
+        "description": "Result of ``POST /api/acquisition/review-inbox`` (the slskd-panel review).\n\n``started`` is True iff an attended import of the inbox was kicked off, with\n``job_id`` the running job to navigate to. An empty inbox is a no-op\n(``started=False, job_id=None``), never an error."
       },
       "SaveNamingRequest": {
         "properties": {

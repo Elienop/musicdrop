@@ -14,6 +14,7 @@ import { ImportDuplicatePage } from "@/pages/import/ImportDuplicatePage";
 import { ImportPage } from "@/pages/import/ImportPage";
 import { PlaylistDetailPage } from "@/pages/playlists/PlaylistDetailPage";
 import { PlaylistsPage } from "@/pages/playlists/PlaylistsPage";
+import { ReviewPage } from "@/pages/review/ReviewPage";
 import { SearchPage } from "@/pages/search/SearchPage";
 import { SettingsPage } from "@/pages/settings/SettingsPage";
 
@@ -48,6 +49,7 @@ const router = createBrowserRouter([
       { path: "/artists/:artistName", element: <ArtistAlbumsPage /> },
       { path: "/albums/:albumId", element: <AlbumDetailPage /> },
       { path: "/search", element: <SearchPage /> },
+      { path: "/review", element: <ReviewPage /> },
       { path: "/import", element: <ImportPage /> },
       { path: "/import/albums/:index", element: <ImportCandidatePage /> },
       {

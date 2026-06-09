@@ -45,3 +45,48 @@ class AcquisitionQueueStatus(BaseModel):
     set_aside: int
     failed: int
     error: str | None
+    # How many folders are sitting in the inbox right now (a cheap scandir count,
+    # NOT the lifetime set_aside total) — feeds the nav Review badge.
+    inbox_pending: int = 0
+
+
+class InboxItem(BaseModel):
+    """One top-level inbox folder awaiting review (a backlog row).
+
+    ``name`` is the immediate inbox child dir (also the import target id).
+    ``outcome`` is best-effort: ``set_aside``/``failed`` iff a ledger entry at or
+    under this folder has that outcome, else ``None`` (a fresh drop). ``mtime`` is
+    a float (NEVER ``st_mtime_ns`` — a nanosecond int loses JSON precision).
+    """
+
+    name: str
+    mtime: float
+    size: int
+    track_count: int
+    outcome: LedgerOutcome | None = None
+    source: str = "slskd"
+
+
+class InboxListing(BaseModel):
+    """The inbox backlog (``GET /api/acquisition/inbox/items``)."""
+
+    items: list[InboxItem] = []
+
+
+class ImportInboxItemRequest(BaseModel):
+    """Body of ``POST /api/acquisition/inbox/items/import`` — one folder by name."""
+
+    name: str
+
+
+class ReviewInboxResponse(BaseModel):
+    """Result of ``POST /api/acquisition/review-inbox`` (the slskd-panel review).
+
+    ``started`` is True iff an attended import of the inbox was kicked off, with
+    ``job_id`` the running job to navigate to. An empty inbox is a no-op
+    (``started=False, job_id=None``), never an error.
+    """
+
+    started: bool
+    job_id: str | None = None
+    pending: int = 0

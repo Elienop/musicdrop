@@ -1,7 +1,7 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { beforeEach, describe, expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 
 import { SlskdPanel } from "@/components/settings/SlskdPanel";
 import { renderWithProviders } from "@/test/render";
@@ -9,7 +9,6 @@ import { server } from "@/test/msw-server";
 
 const SETTINGS = `${window.location.origin}/api/slskd/settings`;
 const TEST_URL = `${window.location.origin}/api/slskd/test`;
-const STATUS = `${window.location.origin}/api/acquisition/status`;
 
 function settings(overrides: Record<string, unknown> = {}) {
   return {
@@ -22,27 +21,10 @@ function settings(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function acquisitionStatus(overrides: Record<string, unknown> = {}) {
-  return {
-    phase: "idle",
-    queued: 0,
-    current: null,
-    processed: 0,
-    set_aside: 0,
-    failed: 0,
-    error: null,
-    ...overrides,
-  };
-}
-
 describe("SlskdPanel", () => {
-  // The panel polls the acquisition-status probe for the durable
-  // set-aside/failed surface; register an idle default so every test's panel
-  // mounts without an unhandled-request error (a per-test server.use can still
-  // override it for the activity-surface cases).
-  beforeEach(() => {
-    server.use(http.get(STATUS, () => HttpResponse.json(acquisitionStatus())));
-  });
+  // The panel is settings-only now (the set-aside/review surface moved to the
+  // Review page), so the only request it makes is GET /api/slskd/settings —
+  // each test registers it.
 
   test("renders a real h2 heading (not a CardTitle div)", async () => {
     server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
@@ -142,44 +124,11 @@ describe("SlskdPanel", () => {
     expect(screen.getByRole("button", { name: /copy/i })).toBeInTheDocument();
   });
 
-  test("surfaces the durable 'N set aside for review' signal from the queue status", async () => {
-    server.use(
-      http.get(SETTINGS, () => HttpResponse.json(settings())),
-      http.get(STATUS, () =>
-        HttpResponse.json(
-          acquisitionStatus({ processed: 3, set_aside: 2, failed: 0 }),
-        ),
-      ),
-    );
-    renderWithProviders(<SlskdPanel />);
-
-    expect(
-      await screen.findByText(/2 downloads set aside for review/i),
-    ).toBeInTheDocument();
-    // The lifetime tally separates imported from set-aside/failed.
-    expect(screen.getByText(/1 imported · 2 set aside · 0 failed/)).toBeInTheDocument();
-  });
-
-  test("shows the last drain error when the queue reports one", async () => {
-    server.use(
-      http.get(SETTINGS, () => HttpResponse.json(settings())),
-      http.get(STATUS, () =>
-        HttpResponse.json(
-          acquisitionStatus({ processed: 1, failed: 1, error: "disk full" }),
-        ),
-      ),
-    );
-    renderWithProviders(<SlskdPanel />);
-
-    expect(await screen.findByText(/last error: disk full/i)).toBeInTheDocument();
-  });
-
-  test("reads quiet when nothing has been imported yet", async () => {
+  test("points to the Review page for the set-aside backlog (no inline activity)", async () => {
     server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
     renderWithProviders(<SlskdPanel />);
 
-    expect(
-      await screen.findByText(/no completed downloads have been imported yet/i),
-    ).toBeInTheDocument();
+    const link = await screen.findByRole("link", { name: /review/i });
+    expect(link).toHaveAttribute("href", "/review");
   });
 });
