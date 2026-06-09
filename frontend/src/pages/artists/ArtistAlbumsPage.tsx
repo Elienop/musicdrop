@@ -102,7 +102,7 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
       aria-label={`Albums by ${displayName}`}
     >
       <div className="flex flex-col gap-6">
-        <BackLink to="/" label="Artists" />
+        <BackLink to="/artists" label="Artists" />
         {/* Poster + name row, mirroring the album-detail header. The poster is
             decorative — the adjacent <h2> already names the artist. */}
         <div className="flex flex-col gap-6 sm:flex-row sm:items-stretch">
@@ -298,7 +298,7 @@ function ArtistEmptyState({ artist }: { artist: string }) {
           Nothing in your library is filed under this artist.
         </p>
       </div>
-      <BackLink to="/" label="Artists" />
+      <BackLink to="/artists" label="Artists" />
     </div>
   );
 }

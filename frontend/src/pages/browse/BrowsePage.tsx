@@ -223,7 +223,13 @@ export function BrowsePage() {
                 >
                   {albums.map((album) => (
                     <li key={album.id}>
-                      <AlbumCard album={album} />
+                      <AlbumCard
+                        album={album}
+                        from={{
+                          label: "Browse",
+                          to: `/browse?${searchParams.toString()}`,
+                        }}
+                      />
                     </li>
                   ))}
                 </ul>

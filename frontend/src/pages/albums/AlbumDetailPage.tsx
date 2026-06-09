@@ -1,6 +1,6 @@
 import { AlertCircle, Image as ImageIcon, Loader2, Music, Pencil, ScrollText } from "lucide-react";
 import { Fragment, useEffect, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useLocation, useParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 
 import type { AlbumDetail, Track } from "@/api/useAlbum";
@@ -9,7 +9,7 @@ import { useStartAlbumLyricsFetch } from "@/api/useAlbumLyrics";
 import { useLyricsBackfillStatus, useStopLyricsBackfill } from "@/api/useLyricsBackfill";
 import { useAlbumMissing, type MissingReleaseTrack } from "@/api/useAlbumMissing";
 import { buildDiscGroups, type DiscGroup } from "@/pages/albums/missingTracks";
-import { BackLink } from "@/components/albums/album-grid";
+import { BackLink, type AlbumOrigin } from "@/components/albums/album-grid";
 import { AddToPlaylistMenu } from "@/components/playlists/AddToPlaylistMenu";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -37,6 +37,22 @@ function formatDuration(seconds: number | null): string {
   const mins = Math.floor(total / 60);
   const secs = total % 60;
   return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
+/** Read a contextual back origin off router `state` (`{ from: {label, to} }`),
+ * set by an AlbumCard when it knows where the album was opened from. */
+function albumOriginFromState(state: unknown): AlbumOrigin | undefined {
+  if (typeof state !== "object" || state === null) return undefined;
+  const from = (state as { from?: unknown }).from;
+  if (
+    typeof from === "object" &&
+    from !== null &&
+    typeof (from as AlbumOrigin).label === "string" &&
+    typeof (from as AlbumOrigin).to === "string"
+  ) {
+    return from as AlbumOrigin;
+  }
+  return undefined;
 }
 
 export function AlbumDetailPage() {
@@ -83,16 +99,23 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
   const [editingCover, setEditingCover] = useState(false);
   const [coverVersion, setCoverVersion] = useState(0);
 
+  const backOrigin = albumOriginFromState(useLocation().state);
+
   return (
     <article
       className="flex flex-col gap-8"
       aria-labelledby="album-detail-title"
     >
-      {/* Back walks UP the spine to the album's artist page. */}
-      <BackLink
-        to={`/artists/${encodeURIComponent(album.album_artist)}`}
-        label={album.album_artist}
-      />
+      {/* Up-link: back to where the album was opened from (Browse with its
+          filters, Search) when known, else UP the spine to the artist. */}
+      {backOrigin ? (
+        <BackLink to={backOrigin.to} label={backOrigin.label} />
+      ) : (
+        <BackLink
+          to={`/artists/${encodeURIComponent(album.album_artist)}`}
+          label={album.album_artist}
+        />
+      )}
 
       <header className="flex flex-col gap-6 sm:flex-row sm:items-stretch">
         <CoverImage album={album} version={coverVersion} />
@@ -443,7 +466,7 @@ function NotFoundState() {
       <Button variant="outline" size="sm" asChild>
         {/* No album data here, so the artist is unknown — fall back to the
             roster rather than guessing a parent. */}
-        <Link to="/">Back to artists</Link>
+        <Link to="/artists">Back to artists</Link>
       </Button>
     </div>
   );
@@ -536,7 +559,7 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
   return (
     <div className="flex flex-col gap-6">
       {/* Artist unknown on error — fall back to the roster. */}
-      <BackLink to="/" label="Artists" />
+      <BackLink to="/artists" label="Artists" />
       <div className="border-destructive/40 bg-destructive/5 flex flex-col items-center gap-3 rounded-xl border py-16 text-center">
         <AlertCircle className="text-destructive size-10" aria-hidden="true" />
         <div className="flex flex-col gap-1">

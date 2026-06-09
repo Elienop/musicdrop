@@ -125,7 +125,7 @@ describe("ArtistAlbumsPage", () => {
 
     await screen.findByText("OK Computer");
     const back = screen.getByRole("link", { name: /artists/i });
-    expect(back).toHaveAttribute("href", "/");
+    expect(back).toHaveAttribute("href", "/artists");
   });
 
   test("album cards link to the album detail page", async () => {
@@ -167,7 +167,7 @@ describe("ArtistAlbumsPage", () => {
     // The escape link goes back to the roster.
     const back = screen.getAllByRole("link", { name: /artists/i });
     expect(back.length).toBeGreaterThan(0);
-    expect(back[0]).toHaveAttribute("href", "/");
+    expect(back[0]).toHaveAttribute("href", "/artists");
   });
 
   test("distinguishes an out-of-range page from a genuinely empty artist", async () => {

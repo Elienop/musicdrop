@@ -69,13 +69,25 @@ function CoverImage({ album }: { album: Album }) {
   );
 }
 
+/** Where an album was opened from — carried as router state so the album page's
+ * "up" link can return there (e.g. back to Browse with its filters). */
+export type AlbumOrigin = { label: string; to: string };
+
 /** Whole-card link to an album's tracklist (`/albums/:id`). A real <a> so it's
  * keyboard- and screen-reader-navigable; the link's accessible name is the
- * card's text (title + artist + meta). */
-export function AlbumCard({ album }: { album: Album }) {
+ * card's text (title + artist + meta). `from` (optional) records where the card
+ * was clicked so the album page can offer a contextual back link. */
+export function AlbumCard({
+  album,
+  from,
+}: {
+  album: Album;
+  from?: AlbumOrigin;
+}) {
   return (
     <Link
       to={`/albums/${album.id}`}
+      state={from ? { from } : undefined}
       className="focus-visible:ring-ring block h-full rounded-xl focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
     >
       <Card className="hover:border-primary/50 h-full gap-3 overflow-hidden py-0 pb-4 transition-colors">

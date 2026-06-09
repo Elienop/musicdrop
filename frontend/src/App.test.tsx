@@ -88,7 +88,7 @@ describe("App", () => {
     expect(brand).toHaveAttribute("href", "/");
   });
 
-  test("has no Albums/Artists nav tabs (single spine)", async () => {
+  test("has an Artists nav link → /artists, and no flat Albums tab", async () => {
     server.use(
       http.get(HEALTH_URL, () =>
         HttpResponse.json({ status: "ok", version: "0.1.0" }),
@@ -98,11 +98,14 @@ describe("App", () => {
 
     renderShell();
 
-    expect(screen.queryByRole("link", { name: "Albums" })).not.toBeInTheDocument();
-    // No "Artists" *nav tab* — only the brand, the Import affordance, and
-    // (later) page content. The Primary nav holds Import alone, no section tabs.
+    // Browse-by-artist (the roster) now has its own nav entry → /artists.
+    expect(screen.getByRole("link", { name: "Artists" })).toHaveAttribute(
+      "href",
+      "/artists",
+    );
+    // Still no flat "Albums" tab — albums are reached via the spine / Browse.
     expect(
-      screen.queryByRole("link", { name: "Artists" }),
+      screen.queryByRole("link", { name: "Albums" }),
     ).not.toBeInTheDocument();
   });
 

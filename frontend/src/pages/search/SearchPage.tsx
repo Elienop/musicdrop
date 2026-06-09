@@ -112,7 +112,13 @@ export function SearchPage() {
           <ul className={GRID_CLASS}>
             {data.albums.map((album) => (
               <li key={album.id}>
-                <AlbumCard album={album} />
+                <AlbumCard
+                  album={album}
+                  from={{
+                    label: "Search",
+                    to: `/search?${searchParams.toString()}`,
+                  }}
+                />
               </li>
             ))}
           </ul>

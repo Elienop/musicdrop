@@ -4,8 +4,12 @@ import type { ReactElement } from "react";
 import { MemoryRouter, Route, Routes } from "react-router";
 
 export interface RenderOptions {
-  /** Initial URL the MemoryRouter starts at. Defaults to "/". */
-  route?: string;
+  /**
+   * Initial entry the MemoryRouter starts at. A string URL, or a location
+   * object `{ pathname, state }` when a test needs to seed router `state`
+   * (e.g. an album page's contextual back link). Defaults to "/".
+   */
+  route?: string | { pathname: string; state?: unknown };
   /**
    * Route pattern the `ui` is mounted under (e.g. "/albums/:albumId"). Needed
    * for pages that read `useParams`. Defaults to "*" so a plain component

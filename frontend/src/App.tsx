@@ -10,6 +10,7 @@ import {
   Search,
   Settings,
   SlidersHorizontal,
+  Users,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -229,6 +230,17 @@ export function App() {
               className="ml-auto flex shrink-0 items-center gap-4"
               aria-label="Primary"
             >
+              <Link
+                to="/artists"
+                aria-label="Artists"
+                aria-current={
+                  location.pathname.startsWith("/artists") ? "page" : undefined
+                }
+                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
+              >
+                <Users className="size-4" aria-hidden="true" />
+                <span className="hidden sm:inline">Artists</span>
+              </Link>
               <Link
                 to="/browse"
                 aria-label="Browse"

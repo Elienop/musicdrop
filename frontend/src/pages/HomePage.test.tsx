@@ -7,10 +7,9 @@ import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
 
 const STATS_URL = `${window.location.origin}/api/stats`;
-const ARTISTS_URL = `${window.location.origin}/api/artists`;
 
-describe("HomePage", () => {
-  test("renders the dashboard above the artists roster", async () => {
+describe("HomePage (Overview)", () => {
+  test("renders the library dashboard, not the artists roster", async () => {
     server.use(
       http.get(STATS_URL, () =>
         HttpResponse.json({
@@ -25,14 +24,15 @@ describe("HomePage", () => {
           size_is_estimate: true,
         }),
       ),
-      http.get(ARTISTS_URL, () =>
-        HttpResponse.json([{ name: "Radiohead", album_count: 9 }]),
-      ),
     );
     renderWithProviders(<HomePage />);
 
-    // dashboard stat (5 tracks) and roster (artist name) both present
+    // Dashboard stat present (track count)...
     expect(await screen.findByText("5")).toBeInTheDocument();
-    expect(await screen.findByText("Radiohead")).toBeInTheDocument();
+    // ...and the artists roster is NOT on the Overview — it lives at /artists,
+    // so there's no roster <h2>Artists</h2> heading here.
+    expect(
+      screen.queryByRole("heading", { name: "Artists" }),
+    ).not.toBeInTheDocument();
   });
 });

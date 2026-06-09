@@ -17,7 +17,7 @@ export function NotFoundPage() {
         </p>
       </div>
       <Button variant="outline" size="sm" asChild>
-        <Link to="/">Back to artists</Link>
+        <Link to="/artists">Back to artists</Link>
       </Button>
     </div>
   );

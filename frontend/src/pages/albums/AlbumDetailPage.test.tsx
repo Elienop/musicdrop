@@ -64,6 +64,26 @@ function renderDetail(albumId: number | string = 1) {
 }
 
 describe("AlbumDetailPage", () => {
+  test("back link returns to the origin (Browse) when opened from there", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+    renderWithProviders(<AlbumDetailPage />, {
+      route: {
+        pathname: "/albums/1",
+        state: { from: { label: "Browse", to: "/browse?genre=Rock" } },
+      },
+      path: "/albums/:albumId",
+    });
+    const back = await screen.findByRole("link", { name: "Browse" });
+    expect(back).toHaveAttribute("href", "/browse?genre=Rock");
+  });
+
+  test("back link falls back to the artist spine without an origin", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+    renderDetail(1);
+    const back = await screen.findByRole("link", { name: "Radiohead" });
+    expect(back).toHaveAttribute("href", "/artists/Radiohead");
+  });
+
   test("renders the album header from the API", async () => {
     server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
 
@@ -238,7 +258,7 @@ describe("AlbumDetailPage", () => {
     expect(await screen.findByText(/album not found/i)).toBeInTheDocument();
     // With no album data the artist is unknown, so back goes to the roster.
     const back = screen.getByRole("link", { name: /artists/i });
-    expect(back).toHaveAttribute("href", "/");
+    expect(back).toHaveAttribute("href", "/artists");
   });
 
   test("shows not-found for a non-numeric id without hitting the API", async () => {
@@ -376,6 +396,6 @@ describe("AlbumDetailPage", () => {
 
     await screen.findByText(/couldn.t load (this )?album/i);
     const back = screen.getByRole("link", { name: /artists/i });
-    expect(back).toHaveAttribute("href", "/");
+    expect(back).toHaveAttribute("href", "/artists");
   });
 });

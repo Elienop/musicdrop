@@ -1,12 +1,7 @@
 import { LibraryDashboard } from "@/components/dashboard/LibraryDashboard";
-import { ArtistsPage } from "@/pages/artists/ArtistsPage";
 
-/** The home (`/`): the library dashboard above the artists roster. */
+/** The home (`/`): the library Overview — stats + recently added. The artists
+ * roster lives at its own `/artists` route (reached via the Artists nav). */
 export function HomePage() {
-  return (
-    <div className="flex flex-col gap-10">
-      <LibraryDashboard />
-      <ArtistsPage />
-    </div>
-  );
+  return <LibraryDashboard />;
 }
