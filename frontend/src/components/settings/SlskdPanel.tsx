@@ -1,21 +1,10 @@
-import { useQueryClient } from "@tanstack/react-query";
-import {
-  AlertTriangle,
-  Check,
-  CheckCircle2,
-  Copy,
-  Inbox,
-  Loader2,
-} from "lucide-react";
+import { Check, CheckCircle2, Copy, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router";
+import { Link } from "react-router";
 
-import { useAcquisitionStatus } from "@/api/useAcquisitionStatus";
-import { useActiveImport } from "@/api/useActiveImport";
 import {
   type SlskdSettings,
   type SlskdSettingsUpdate,
-  useReviewInbox,
   useSaveSlskdSettings,
   useSlskdSettings,
   useTestSlskd,
@@ -300,7 +289,13 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
           </pre>
         </div>
 
-        <AcquisitionActivity />
+        <p className="text-muted-foreground border-t pt-4 text-sm">
+          Set-aside downloads and imports needing a decision appear in{" "}
+          <Link to="/review" className="text-foreground underline">
+            Review
+          </Link>
+          .
+        </p>
       </CardContent>
 
       <CardFooter className="flex flex-wrap items-center gap-3">
@@ -376,153 +371,6 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
         )}
       </CardFooter>
     </>
-  );
-}
-
-/** The basename of an inbox folder path, for a compact "currently importing"
- * line (the full host path is noisy and leaks the inbox layout). */
-function folderName(path: string): string {
-  const parts = path.split("/").filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : path;
-}
-
-/** The DURABLE outcome surface for unattended inbox imports.
- *
- * An inbox import is webhook-triggered in the background, so the transient
- * active-import banner on the import page almost always misses it. These
- * process-lifetime counters persist after the import finishes — so the
- * "N set aside for review" signal (the human-in-the-loop half of the feature)
- * is legible here regardless of whether the user ever saw the run. Polls via
- * {@link useAcquisitionStatus}; the probe never throws, so a backend hiccup
- * just shows the idle baseline. */
-function AcquisitionActivity() {
-  const { data } = useAcquisitionStatus();
-  const navigate = useNavigate();
-  const qc = useQueryClient();
-  const { data: active } = useActiveImport();
-  const review = useReviewInbox();
-  const [emptyNotice, setEmptyNotice] = useState(false);
-  const importActive = active?.active ?? false;
-  // The "inbox is empty" notice is a snapshot from the last click; once an
-  // import is running (a manual one, or the queue draining a fresh drop) it's
-  // stale, so drop it. Deliberately NOT keyed on the lifetime set_aside counter,
-  // which stays > 0 after the backlog has actually been cleared.
-  const queuePhase = data?.phase;
-  useEffect(() => {
-    if (importActive || queuePhase === "running") setEmptyNotice(false);
-  }, [importActive, queuePhase]);
-  if (!data) return null;
-
-  const startReview = () => {
-    setEmptyNotice(false);
-    review.mutate(undefined, {
-      onSuccess: (res) => {
-        if (res.started && res.job_id) {
-          navigate(`/import?job=${res.job_id}`);
-        } else {
-          setEmptyNotice(true);
-        }
-      },
-      // A 409 (an import started elsewhere since the last 30s active probe) means
-      // our gate is stale — refresh it so the button disables, matching the
-      // import Start screen's conflict handling.
-      onError: () => {
-        void qc.invalidateQueries({ queryKey: ["active-import"] });
-      },
-    });
-  };
-
-  const { phase, current, set_aside, failed, processed, error } = data;
-  const imported = Math.max(processed - set_aside - failed, 0);
-  const nothingYet = processed === 0 && phase === "idle" && !error;
-
-  return (
-    <section
-      aria-label="Acquisition activity"
-      className="flex flex-col gap-2 border-t pt-4"
-    >
-      <p className="text-sm font-medium">Acquisition activity</p>
-
-      {phase === "running" && (
-        <p
-          className="text-muted-foreground flex items-center gap-2 text-sm"
-          role="status"
-        >
-          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-          {current
-            ? `Importing ${folderName(current)}…`
-            : "Importing a completed download…"}
-        </p>
-      )}
-
-      {nothingYet ? (
-        <p className="text-muted-foreground text-sm">
-          No completed downloads have been imported yet.
-        </p>
-      ) : (
-        <p className="text-muted-foreground text-sm">
-          {imported} imported · {set_aside} set aside · {failed} failed
-        </p>
-      )}
-
-      {set_aside > 0 && (
-        <p className="text-warning flex items-start gap-2 text-sm">
-          <Inbox className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          <span>
-            {set_aside} {set_aside === 1 ? "download" : "downloads"} set aside
-            for review — left in the inbox for a manual import pass.
-          </span>
-        </p>
-      )}
-
-      {error && (
-        <p className="text-destructive flex items-start gap-2 text-sm">
-          <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          <span>Last error: {error}</span>
-        </p>
-      )}
-
-      <div className="flex flex-col gap-1 pt-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={importActive || review.isPending}
-            title={importActive ? "An import is already running" : undefined}
-            onClick={startReview}
-          >
-            {review.isPending ? (
-              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <Inbox className="size-4" aria-hidden="true" />
-            )}
-            {review.isPending ? "Starting…" : "Review inbox"}
-          </Button>
-          {/* Always-mounted polite live region: a region created together with
-              its text is read unreliably, so the empty result must update an
-              existing node (mirrors the footer status rail's pattern). */}
-          <span
-            role="status"
-            aria-live="polite"
-            className={emptyNotice ? "text-muted-foreground text-sm" : "sr-only"}
-          >
-            {emptyNotice ? "Inbox is empty — nothing to review." : ""}
-          </span>
-          {review.isError && (
-            <span className="text-destructive text-sm" role="alert">
-              Couldn’t start — try again in a moment.
-            </span>
-          )}
-        </div>
-        {importActive && (
-          <p className="text-muted-foreground text-xs">
-            An import is already running — wait for it to finish before reviewing
-            the inbox.
-          </p>
-        )}
-      </div>
-    </section>
   );
 }
 

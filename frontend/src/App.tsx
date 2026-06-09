@@ -4,6 +4,7 @@ import {
   CircleSlash,
   CopyCheck,
   FolderInput,
+  Inbox,
   ListMusic,
   Loader2,
   Search,
@@ -19,12 +20,43 @@ import {
 } from "react-router";
 
 import { client } from "@/api/client";
+import { useAcquisitionStatus } from "@/api/useAcquisitionStatus";
+import { useActiveImport } from "@/api/useActiveImport";
 import { ArtistArtBackfillBanner } from "@/components/ArtistArtBackfillBanner";
 import { LyricsBackfillBanner } from "@/components/LyricsBackfillBanner";
 import { ReorganizeBanner } from "@/components/ReorganizeBanner";
 import { ReorganizeNoticeProvider } from "@/components/reorganize/reorganizeNotice";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+
+/** The Review nav link with a count badge = items needing a decision now (the
+ * live parked import + the inbox backlog). Both numbers come from already-polled
+ * cheap probes, so the badge adds no new global request; it can transiently
+ * over-count by 1 while an inbox import is mid-apply (the parked item still sits
+ * in the inbox), which is fine for an at-a-glance badge. */
+function ReviewNavLink() {
+  const location = useLocation();
+  const { data: active } = useActiveImport();
+  const { data: status } = useAcquisitionStatus();
+  const count = (active?.needs_review_count ?? 0) + (status?.inbox_pending ?? 0);
+  return (
+    <Link
+      to="/review"
+      aria-label={count > 0 ? `Review (${count})` : "Review"}
+      aria-current={location.pathname.startsWith("/review") ? "page" : undefined}
+      className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
+    >
+      <Inbox className="size-4" aria-hidden="true" />
+      <span className="hidden sm:inline">Review</span>
+      {count > 0 && (
+        <Badge variant="secondary" className="px-1.5 py-0 text-xs">
+          {count}
+        </Badge>
+      )}
+    </Link>
+  );
+}
 
 /** Debounce (ms) before a keystroke is reflected into the URL / fired as a
  * query — long enough to avoid a request per character, short enough to feel
@@ -195,6 +227,7 @@ export function App() {
               className="ml-auto flex shrink-0 items-center gap-4"
               aria-label="Primary"
             >
+              <ReviewNavLink />
               <Link
                 to="/import"
                 aria-label="Import"
