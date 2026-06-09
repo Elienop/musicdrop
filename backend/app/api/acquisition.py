@@ -20,9 +20,18 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 
+from app.acquisition.inbox import contain
+from app.acquisition.ledger import AcquisitionLedger
 from app.api.import_ import ensure_import_can_start
 from app.import_jobs.registry import ImportJobRegistry, get_registry
-from app.models.acquisition import AcquisitionQueueStatus, ReviewInboxResponse
+from app.models.acquisition import (
+    AcquisitionQueueStatus,
+    ImportInboxItemRequest,
+    InboxItem,
+    InboxListing,
+    LedgerOutcome,
+    ReviewInboxResponse,
+)
 from app.models.import_models import ImportOptions
 
 router = APIRouter(tags=["acquisition"])
@@ -31,9 +40,16 @@ router = APIRouter(tags=["acquisition"])
 # it does not count toward "is there anything to review".
 _LEDGER_FILENAME = ".musicdrop-ledger.json"
 
+# Extensions we treat as audio when deciding whether an inbox folder holds music.
+_AUDIO_EXTS = {".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav", ".aac", ".wma", ".aiff"}
+
 
 @router.get("/acquisition/status", response_model=AcquisitionQueueStatus)
 async def get_acquisition_status(request: Request) -> AcquisitionQueueStatus:
+    inbox_dir = getattr(request.app.state, "inbox_dir", None)
+    inbox_pending = (
+        await run_in_threadpool(_count_pending, inbox_dir) if inbox_dir is not None else 0
+    )
     queue = getattr(request.app.state, "acquisition_queue", None)
     if queue is None:
         return AcquisitionQueueStatus(
@@ -44,8 +60,10 @@ async def get_acquisition_status(request: Request) -> AcquisitionQueueStatus:
             set_aside=0,
             failed=0,
             error=None,
+            inbox_pending=inbox_pending,
         )
     snapshot: AcquisitionQueueStatus = queue.status()
+    snapshot.inbox_pending = inbox_pending
     return snapshot
 
 
@@ -99,3 +117,105 @@ async def review_inbox(
             status_code=status.HTTP_409_CONFLICT, detail="An import is already running"
         ) from None
     return ReviewInboxResponse(started=True, job_id=job_id, pending=pending)
+
+
+def _count_audio(folder: Path) -> int:
+    """Audio files anywhere beneath ``folder`` (bounded walk; 0 on any OS error)."""
+    total = 0
+    try:
+        for _root, _dirs, files in os.walk(folder):
+            total += sum(1 for f in files if os.path.splitext(f)[1].lower() in _AUDIO_EXTS)
+    except OSError:
+        return total
+    return total
+
+
+def _list_inbox(inbox_dir: Path, ledger: AcquisitionLedger | None) -> list[InboxItem]:
+    """Top-level non-hidden inbox dirs holding audio, ledger-annotated (never filtered).
+
+    An item = one immediate child directory with >=1 audio file beneath it (empty
+    leftovers after a successful move-out are skipped). A set-aside item IS in the
+    ledger, so the ledger only ANNOTATES (``set_aside``/``failed``) — it never
+    removes a row. The ledger keys the (possibly deeper) album path the webhook
+    coalesced, so a row is annotated when a ledger entry sits at or under it.
+    """
+    items: list[InboxItem] = []
+    try:
+        entries = list(os.scandir(inbox_dir))
+    except OSError:
+        return items
+    ledger_rows = ledger.entries() if ledger is not None else []
+    for entry in entries:
+        if entry.name.startswith(".") or entry.name == _LEDGER_FILENAME or not entry.is_dir():
+            continue
+        tracks = _count_audio(Path(entry.path))
+        if tracks == 0:
+            continue
+        try:
+            st = entry.stat()
+        except OSError:
+            continue
+        folder = Path(entry.path).resolve()
+        outcome: LedgerOutcome | None = None
+        for row in ledger_rows:
+            if row.outcome not in ("set_aside", "failed"):
+                continue
+            row_path = Path(row.path).resolve()
+            if row_path == folder or folder in row_path.parents:
+                outcome = row.outcome
+                break
+        items.append(
+            InboxItem(
+                name=entry.name,
+                mtime=st.st_mtime,
+                size=st.st_size,
+                track_count=tracks,
+                outcome=outcome,
+            )
+        )
+    items.sort(key=lambda i: i.mtime, reverse=True)
+    return items
+
+
+@router.get("/acquisition/inbox/items", response_model=InboxListing)
+async def list_inbox_items(request: Request) -> InboxListing:
+    """The inbox backlog — top-level folders awaiting review, source-agnostic.
+
+    Read-only + never 500: a missing/empty inbox (or the lifespan-less test
+    client, which has no ``inbox_dir``) yields an empty listing.
+    """
+    inbox_dir = getattr(request.app.state, "inbox_dir", None)
+    if inbox_dir is None:
+        return InboxListing(items=[])
+    ledger: AcquisitionLedger | None = getattr(request.app.state, "acquisition_ledger", None)
+    items = await run_in_threadpool(_list_inbox, inbox_dir, ledger)
+    return InboxListing(items=items)
+
+
+@router.post("/acquisition/inbox/items/import", response_model=ReviewInboxResponse)
+async def import_inbox_item(
+    body: ImportInboxItemRequest,
+    request: Request,
+    reg: Annotated[ImportJobRegistry, Depends(get_registry)],
+) -> ReviewInboxResponse:
+    """Attended move-import of ONE inbox folder (the per-item Review action).
+
+    Takes the folder ``name`` (not a path) and re-roots it under the inbox, so a
+    client value cannot escape: ``contain(strict=True)`` rejects ``../``, absolute
+    paths, the inbox root itself, symlink escapes, and malformed names (404). The
+    shared import-slot gate refuses (409) while a mutation/backfill owns the slot.
+    """
+    ensure_import_can_start(request)
+    inbox_dir: Path | None = getattr(request.app.state, "inbox_dir", None)
+    if inbox_dir is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found")
+    contained = contain(str(inbox_dir / body.name), inbox_dir, strict=True)
+    if contained is None or not contained.is_dir():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found")
+    try:
+        job_id = reg.start(str(contained), options=ImportOptions(operation="move"), origin="inbox")
+    except RuntimeError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="An import is already running"
+        ) from None
+    return ReviewInboxResponse(started=True, job_id=job_id, pending=1)

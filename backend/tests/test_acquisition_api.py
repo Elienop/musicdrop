@@ -48,6 +48,7 @@ def test_acquisition_status_idle_via_lifespan(
         "set_aside": 0,
         "failed": 0,
         "error": None,
+        "inbox_pending": 0,
     }
 
 
