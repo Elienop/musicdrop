@@ -2587,6 +2587,28 @@
           }
         }
       }
+    },
+    "/api/acquisition/review-inbox": {
+      "post": {
+        "tags": [
+          "acquisition"
+        ],
+        "summary": "Review Inbox",
+        "description": "Start an attended, move-mode import of the fixed slskd inbox dir.\n\nOne-click review of the set-aside backlog from the slskd panel: no path is\ntyped and the absolute inbox path never leaves the server. Strong matches\nauto-apply (and move out of the inbox); uncertain ones park for review in the\nnormal candidate-review screen. An empty inbox is a no-op (``started=False``),\nnever an error \u2014 and the shared import-slot gate refuses (409) while another\nbeets mutation or backfill owns the slot.",
+        "operationId": "review_inbox_api_acquisition_review_inbox_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewInboxResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -5743,6 +5765,36 @@
           "moved"
         ],
         "title": "ResolveResult"
+      },
+      "ReviewInboxResponse": {
+        "properties": {
+          "started": {
+            "type": "boolean",
+            "title": "Started"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "pending": {
+            "type": "integer",
+            "title": "Pending",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "started"
+        ],
+        "title": "ReviewInboxResponse",
+        "description": "Result of ``POST /api/acquisition/review-inbox`` (the slskd-panel review).\n\n``started`` is True iff an attended import of the inbox was kicked off, with\n``job_id`` the running job to navigate to. An empty inbox is a no-op\n(``started=False, job_id=None``), never an error."
       },
       "SaveNamingRequest": {
         "properties": {

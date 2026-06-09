@@ -1068,6 +1068,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/acquisition/review-inbox": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Review Inbox
+         * @description Start an attended, move-mode import of the fixed slskd inbox dir.
+         *
+         *     One-click review of the set-aside backlog from the slskd panel: no path is
+         *     typed and the absolute inbox path never leaves the server. Strong matches
+         *     auto-apply (and move out of the inbox); uncertain ones park for review in the
+         *     normal candidate-review screen. An empty inbox is a no-op (``started=False``),
+         *     never an error — and the shared import-slot gate refuses (409) while another
+         *     beets mutation or backfill owns the slot.
+         */
+        post: operations["review_inbox_api_acquisition_review_inbox_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2292,6 +2319,25 @@ export interface components {
             kept_album_id: number;
             /** Moved */
             moved: components["schemas"]["MovedAlbum"][];
+        };
+        /**
+         * ReviewInboxResponse
+         * @description Result of ``POST /api/acquisition/review-inbox`` (the slskd-panel review).
+         *
+         *     ``started`` is True iff an attended import of the inbox was kicked off, with
+         *     ``job_id`` the running job to navigate to. An empty inbox is a no-op
+         *     (``started=False, job_id=None``), never an error.
+         */
+        ReviewInboxResponse: {
+            /** Started */
+            started: boolean;
+            /** Job Id */
+            job_id?: string | null;
+            /**
+             * Pending
+             * @default 0
+             */
+            pending: number;
         };
         /**
          * SaveNamingRequest
@@ -4565,6 +4611,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AcquisitionQueueStatus"];
+                };
+            };
+        };
+    };
+    review_inbox_api_acquisition_review_inbox_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewInboxResponse"];
                 };
             };
         };

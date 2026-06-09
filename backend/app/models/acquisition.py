@@ -45,3 +45,16 @@ class AcquisitionQueueStatus(BaseModel):
     set_aside: int
     failed: int
     error: str | None
+
+
+class ReviewInboxResponse(BaseModel):
+    """Result of ``POST /api/acquisition/review-inbox`` (the slskd-panel review).
+
+    ``started`` is True iff an attended import of the inbox was kicked off, with
+    ``job_id`` the running job to navigate to. An empty inbox is a no-op
+    (``started=False, job_id=None``), never an error.
+    """
+
+    started: bool
+    job_id: str | None = None
+    pending: int = 0

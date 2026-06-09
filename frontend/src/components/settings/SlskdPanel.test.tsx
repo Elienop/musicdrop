@@ -1,15 +1,29 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { SlskdPanel } from "@/components/settings/SlskdPanel";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
 
+// Spy on navigation while keeping the real MemoryRouter/Routes (the render
+// harness imports them from the same module) — only `useNavigate` is swapped.
+const { mockNavigate } = vi.hoisted(() => ({ mockNavigate: vi.fn() }));
+vi.mock("react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react-router")>()),
+  useNavigate: () => mockNavigate,
+}));
+
 const SETTINGS = `${window.location.origin}/api/slskd/settings`;
 const TEST_URL = `${window.location.origin}/api/slskd/test`;
 const STATUS = `${window.location.origin}/api/acquisition/status`;
+const ACTIVE = `${window.location.origin}/api/imports/active`;
+const REVIEW = `${window.location.origin}/api/acquisition/review-inbox`;
+
+function activeImport(overrides: Record<string, unknown> = {}) {
+  return { active: false, origin: "manual", needs_review_count: 0, ...overrides };
+}
 
 function settings(overrides: Record<string, unknown> = {}) {
   return {
@@ -41,7 +55,14 @@ describe("SlskdPanel", () => {
   // mounts without an unhandled-request error (a per-test server.use can still
   // override it for the activity-surface cases).
   beforeEach(() => {
-    server.use(http.get(STATUS, () => HttpResponse.json(acquisitionStatus())));
+    mockNavigate.mockClear();
+    // The panel polls the acquisition-status probe AND the import-active probe
+    // (the "Review inbox" button disables while an import runs). Register idle
+    // defaults for both so every panel mounts without an unhandled-request error.
+    server.use(
+      http.get(STATUS, () => HttpResponse.json(acquisitionStatus())),
+      http.get(ACTIVE, () => HttpResponse.json(activeImport())),
+    );
   });
 
   test("renders a real h2 heading (not a CardTitle div)", async () => {
@@ -181,5 +202,54 @@ describe("SlskdPanel", () => {
     expect(
       await screen.findByText(/no completed downloads have been imported yet/i),
     ).toBeInTheDocument();
+  });
+
+  test("Review inbox navigates into the started import job", async () => {
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings())),
+      http.post(REVIEW, () =>
+        HttpResponse.json({ started: true, job_id: "job-xyz", pending: 2 }),
+      ),
+    );
+    renderWithProviders(<SlskdPanel />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /review inbox/i }),
+    );
+
+    await waitFor(() =>
+      expect(mockNavigate).toHaveBeenCalledWith("/import?job=job-xyz"),
+    );
+  });
+
+  test("Review inbox shows an empty notice (and does not navigate) when nothing is queued", async () => {
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings())),
+      http.post(REVIEW, () =>
+        HttpResponse.json({ started: false, job_id: null, pending: 0 }),
+      ),
+    );
+    renderWithProviders(<SlskdPanel />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /review inbox/i }),
+    );
+
+    expect(
+      await screen.findByText(/inbox is empty — nothing to review/i),
+    ).toBeInTheDocument();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  test("Review inbox is disabled while an import is already running", async () => {
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings())),
+      http.get(ACTIVE, () => HttpResponse.json(activeImport({ active: true }))),
+    );
+    renderWithProviders(<SlskdPanel />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /review inbox/i })).toBeDisabled(),
+    );
   });
 });

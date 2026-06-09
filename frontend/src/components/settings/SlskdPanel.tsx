@@ -7,11 +7,14 @@ import {
   Loader2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router";
 
 import { useAcquisitionStatus } from "@/api/useAcquisitionStatus";
+import { useActiveImport } from "@/api/useActiveImport";
 import {
   type SlskdSettings,
   type SlskdSettingsUpdate,
+  useReviewInbox,
   useSaveSlskdSettings,
   useSlskdSettings,
   useTestSlskd,
@@ -393,7 +396,25 @@ function folderName(path: string): string {
  * just shows the idle baseline. */
 function AcquisitionActivity() {
   const { data } = useAcquisitionStatus();
+  const navigate = useNavigate();
+  const { data: active } = useActiveImport();
+  const review = useReviewInbox();
+  const [emptyNotice, setEmptyNotice] = useState(false);
   if (!data) return null;
+
+  const importActive = active?.active ?? false;
+  const startReview = () => {
+    setEmptyNotice(false);
+    review.mutate(undefined, {
+      onSuccess: (res) => {
+        if (res.started && res.job_id) {
+          navigate(`/import?job=${res.job_id}`);
+        } else {
+          setEmptyNotice(true);
+        }
+      },
+    });
+  };
 
   const { phase, current, set_aside, failed, processed, error } = data;
   const imported = Math.max(processed - set_aside - failed, 0);
@@ -444,6 +465,29 @@ function AcquisitionActivity() {
           <span>Last error: {error}</span>
         </p>
       )}
+
+      <div className="flex flex-wrap items-center gap-2 pt-1">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={importActive || review.isPending}
+          title={importActive ? "An import is already running" : undefined}
+          onClick={startReview}
+        >
+          {review.isPending ? "Starting…" : "Review inbox"}
+        </Button>
+        {emptyNotice && (
+          <span className="text-muted-foreground text-sm" role="status">
+            Inbox is empty — nothing to review.
+          </span>
+        )}
+        {review.isError && (
+          <span className="text-destructive text-sm" role="alert">
+            Couldn’t start — try again in a moment.
+          </span>
+        )}
+      </div>
     </section>
   );
 }
