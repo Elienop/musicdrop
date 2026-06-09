@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   Check,
@@ -397,12 +398,21 @@ function folderName(path: string): string {
 function AcquisitionActivity() {
   const { data } = useAcquisitionStatus();
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const { data: active } = useActiveImport();
   const review = useReviewInbox();
   const [emptyNotice, setEmptyNotice] = useState(false);
+  const importActive = active?.active ?? false;
+  // The "inbox is empty" notice is a snapshot from the last click; once an
+  // import is running (a manual one, or the queue draining a fresh drop) it's
+  // stale, so drop it. Deliberately NOT keyed on the lifetime set_aside counter,
+  // which stays > 0 after the backlog has actually been cleared.
+  const queuePhase = data?.phase;
+  useEffect(() => {
+    if (importActive || queuePhase === "running") setEmptyNotice(false);
+  }, [importActive, queuePhase]);
   if (!data) return null;
 
-  const importActive = active?.active ?? false;
   const startReview = () => {
     setEmptyNotice(false);
     review.mutate(undefined, {
@@ -412,6 +422,12 @@ function AcquisitionActivity() {
         } else {
           setEmptyNotice(true);
         }
+      },
+      // A 409 (an import started elsewhere since the last 30s active probe) means
+      // our gate is stale — refresh it so the button disables, matching the
+      // import Start screen's conflict handling.
+      onError: () => {
+        void qc.invalidateQueries({ queryKey: ["active-import"] });
       },
     });
   };
@@ -466,26 +482,44 @@ function AcquisitionActivity() {
         </p>
       )}
 
-      <div className="flex flex-wrap items-center gap-2 pt-1">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={importActive || review.isPending}
-          title={importActive ? "An import is already running" : undefined}
-          onClick={startReview}
-        >
-          {review.isPending ? "Starting…" : "Review inbox"}
-        </Button>
-        {emptyNotice && (
-          <span className="text-muted-foreground text-sm" role="status">
-            Inbox is empty — nothing to review.
+      <div className="flex flex-col gap-1 pt-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={importActive || review.isPending}
+            title={importActive ? "An import is already running" : undefined}
+            onClick={startReview}
+          >
+            {review.isPending ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Inbox className="size-4" aria-hidden="true" />
+            )}
+            {review.isPending ? "Starting…" : "Review inbox"}
+          </Button>
+          {/* Always-mounted polite live region: a region created together with
+              its text is read unreliably, so the empty result must update an
+              existing node (mirrors the footer status rail's pattern). */}
+          <span
+            role="status"
+            aria-live="polite"
+            className={emptyNotice ? "text-muted-foreground text-sm" : "sr-only"}
+          >
+            {emptyNotice ? "Inbox is empty — nothing to review." : ""}
           </span>
-        )}
-        {review.isError && (
-          <span className="text-destructive text-sm" role="alert">
-            Couldn’t start — try again in a moment.
-          </span>
+          {review.isError && (
+            <span className="text-destructive text-sm" role="alert">
+              Couldn’t start — try again in a moment.
+            </span>
+          )}
+        </div>
+        {importActive && (
+          <p className="text-muted-foreground text-xs">
+            An import is already running — wait for it to finish before reviewing
+            the inbox.
+          </p>
         )}
       </div>
     </section>
