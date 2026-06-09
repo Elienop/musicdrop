@@ -845,6 +845,140 @@
         }
       }
     },
+    "/api/browse/facets": {
+      "get": {
+        "tags": [
+          "browse"
+        ],
+        "summary": "Browse Facets Endpoint",
+        "operationId": "browse_facets_endpoint_api_browse_facets_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowseFacets"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/browse/albums": {
+      "get": {
+        "tags": [
+          "browse"
+        ],
+        "summary": "Browse Albums Endpoint",
+        "operationId": "browse_albums_endpoint_api_browse_albums_get",
+        "parameters": [
+          {
+            "name": "genre",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Genre"
+            }
+          },
+          {
+            "name": "decade",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Decade"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Format"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/search": {
       "get": {
         "tags": [
@@ -3527,6 +3661,39 @@
         ],
         "title": "Body_upload_artist_image_override_endpoint_api_artists_image_override_post"
       },
+      "BrowseFacets": {
+        "properties": {
+          "genres": {
+            "items": {
+              "$ref": "#/components/schemas/FacetValue"
+            },
+            "type": "array",
+            "title": "Genres"
+          },
+          "decades": {
+            "items": {
+              "$ref": "#/components/schemas/FacetValue"
+            },
+            "type": "array",
+            "title": "Decades"
+          },
+          "formats": {
+            "items": {
+              "$ref": "#/components/schemas/FacetValue"
+            },
+            "type": "array",
+            "title": "Formats"
+          }
+        },
+        "type": "object",
+        "required": [
+          "genres",
+          "decades",
+          "formats"
+        ],
+        "title": "BrowseFacets",
+        "description": "Available filter values for the Browse page."
+      },
       "Candidate": {
         "properties": {
           "confidence": {
@@ -4096,6 +4263,25 @@
         ],
         "title": "ExistingAlbum",
         "description": "A slim view of one in-library album that the incoming import duplicates.\n\nBuilt from a beets ``Album`` (the ``found_duplicates`` set). ``album_id`` is\nthe library id (so the FE can fetch its cover via ``/api/albums/{id}/cover``\nand so Replace can target it by stable id)."
+      },
+      "FacetValue": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Value"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "value",
+          "count"
+        ],
+        "title": "FacetValue",
+        "description": "One facet option + how many albums carry it (whole-library count)."
       },
       "GroupDecision": {
         "properties": {

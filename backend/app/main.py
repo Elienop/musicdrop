@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.acquisition import router as acquisition_router
 from app.api.albums import router as albums_router
 from app.api.artists import router as artists_router
+from app.api.browse import router as browse_router
 from app.api.config_ import router as config_router
 from app.api.duplicates import router as duplicates_router
 from app.api.health import router as health_router
@@ -198,6 +199,7 @@ app.add_middleware(
 app.include_router(health_router, prefix="/api")
 app.include_router(albums_router, prefix="/api")
 app.include_router(artists_router, prefix="/api")
+app.include_router(browse_router, prefix="/api")
 app.include_router(search_router, prefix="/api")
 app.include_router(import_router, prefix="/api")
 app.include_router(config_router, prefix="/api")
