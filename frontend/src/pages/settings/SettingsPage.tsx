@@ -334,7 +334,7 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="flex max-w-4xl flex-col gap-8">
+    <div className="flex flex-col gap-8">
       <section className="flex flex-col gap-4" aria-label="Beets configuration">
         <header className="flex flex-col gap-1">
           <h2 className="text-2xl font-semibold tracking-tight">
@@ -455,7 +455,7 @@ export function SettingsPage() {
 function Loader() {
   return (
     <section
-      className="flex max-w-4xl flex-col gap-6"
+      className="flex flex-col gap-6"
       aria-label="Beets configuration"
     >
       <div className="flex flex-col gap-1">
@@ -480,7 +480,7 @@ function ErrorBanner({ err }: { err: unknown }) {
   const message = err instanceof Error ? err.message : null;
   return (
     <section
-      className="flex max-w-4xl flex-col gap-6"
+      className="flex flex-col gap-6"
       aria-label="Beets configuration"
     >
       <div className="flex flex-col gap-1">

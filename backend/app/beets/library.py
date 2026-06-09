@@ -7,6 +7,7 @@ global config singletons, and version quirks stay isolated here.
 
 import os
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ from mediafile import MediaFile
 
 from app.models.album import Album, AlbumDetail, Track
 from app.models.artist import Artist
+from app.models.browse import BrowseFacets, FacetValue
 from app.models.search import SearchResults, SearchTrack
 
 # Allowlist of cover-art extensions we serve. `.svg` is deliberately excluded:
@@ -307,6 +309,118 @@ def list_albums(
     total = len(all_albums)
     page = all_albums[offset : offset + limit]
     return [_to_album(a) for a in page], total
+
+
+def _album_decade(year: int | None) -> str:
+    """A year bucketed to its decade label (``"2010s"``); ``None``/0 -> ``"Unknown"``."""
+    if not year:
+        return "Unknown"
+    return f"{(year // 10) * 10}s"
+
+
+def _album_format(items: list[Any]) -> str:
+    """The album's predominant item format (``"FLAC"``); no item format -> ``"Unknown"``.
+
+    ``format`` is a beets item field set at import from the file's MediaFile;
+    a mixed-format album takes its most common value (one value per album).
+    """
+    formats = [f for it in items if (f := _coerce_optional_str(it.get("format"))) is not None]
+    if not formats:
+        return "Unknown"
+    return Counter(formats).most_common(1)[0][0]
+
+
+def _album_facet_triple(album: BeetsAlbum, items: list[Any]) -> tuple[str, str, str]:
+    """One representative ``(genre, decade, format)`` per album — uniform across facets.
+
+    Reuses ``_album_genre`` (the same genre the Album model / AlbumCard show), so
+    Browse filtering and the album display never disagree.
+    """
+    genre = _album_genre(album, items) or "Unknown"
+    return genre, _album_decade(_coerce_year(album.year)), _album_format(items)
+
+
+def _facet_values_by_count(counter: Counter[str]) -> list[FacetValue]:
+    """Most albums first, then alphabetical; ``"Unknown"`` always sinks last."""
+
+    def key(item: tuple[str, int]) -> tuple[bool, int, str]:
+        value, count = item
+        return (value == "Unknown", -count, value.casefold())
+
+    return [FacetValue(value=v, count=c) for v, c in sorted(counter.items(), key=key)]
+
+
+def _facet_values_decades(counter: Counter[str]) -> list[FacetValue]:
+    """Newest decade first; ``"Unknown"`` last."""
+
+    def key(item: tuple[str, int]) -> tuple[bool, int]:
+        value, _count = item
+        start = int(value.rstrip("s")) if value != "Unknown" else 0
+        return (value == "Unknown", -start)
+
+    return [FacetValue(value=v, count=c) for v, c in sorted(counter.items(), key=key)]
+
+
+def browse_facets(lib: Library) -> BrowseFacets:
+    """Whole-library facet values + per-value album counts (genre · decade · format).
+
+    One scan: each album contributes exactly one value per facet, so the counts
+    within a facet sum to the album total. Absolute counts (not filter-aware) — a
+    drill-down refinement is deferred.
+    """
+    genres: Counter[str] = Counter()
+    decades: Counter[str] = Counter()
+    formats: Counter[str] = Counter()
+    for album in lib.albums():
+        genre, decade, fmt = _album_facet_triple(album, list(album.items()))
+        genres[genre] += 1
+        decades[decade] += 1
+        formats[fmt] += 1
+    return BrowseFacets(
+        genres=_facet_values_by_count(genres),
+        decades=_facet_values_decades(decades),
+        formats=_facet_values_by_count(formats),
+    )
+
+
+def browse_albums(
+    lib: Library,
+    *,
+    genres: list[str],
+    decades: list[str],
+    formats: list[str],
+    limit: int,
+    offset: int,
+) -> tuple[list[Album], int]:
+    """Albums matching the facet filters (OR within a facet, AND across), paginated.
+
+    An empty list for a facet imposes no constraint. Sort matches ``list_albums``
+    (albumartist, album, id) so pagination is deterministic.
+    """
+    if not genres and not decades and not formats:
+        # No filters = the whole library; reuse list_albums, which loads items
+        # only for the page slice (the filter loop below would scan every album).
+        return list_albums(lib, limit=limit, offset=offset)
+    gset, dset, fset = set(genres), set(decades), set(formats)
+    matched: list[BeetsAlbum] = []
+    for album in lib.albums():
+        genre, decade, fmt = _album_facet_triple(album, list(album.items()))
+        if gset and genre not in gset:
+            continue
+        if dset and decade not in dset:
+            continue
+        if fset and fmt not in fset:
+            continue
+        matched.append(album)
+    matched.sort(
+        key=lambda a: (
+            _coerce_str(a.albumartist).casefold(),
+            _coerce_str(a.album).casefold(),
+            int(a.id),
+        )
+    )
+    page = matched[offset : offset + limit]
+    return [_to_album(a) for a in page], len(matched)
 
 
 def _abs_path(lib: Library, stored: bytes) -> str:

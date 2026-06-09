@@ -317,6 +317,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/browse/facets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Browse Facets Endpoint */
+        get: operations["browse_facets_endpoint_api_browse_facets_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/browse/albums": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Browse Albums Endpoint */
+        get: operations["browse_albums_endpoint_api_browse_albums_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/search": {
         parameters: {
             query?: never;
@@ -1461,6 +1495,18 @@ export interface components {
             file: string;
         };
         /**
+         * BrowseFacets
+         * @description Available filter values for the Browse page.
+         */
+        BrowseFacets: {
+            /** Genres */
+            genres: components["schemas"]["FacetValue"][];
+            /** Decades */
+            decades: components["schemas"]["FacetValue"][];
+            /** Formats */
+            formats: components["schemas"]["FacetValue"][];
+        };
+        /**
          * Candidate
          * @description The full mapped payload for the top match of one album.
          *
@@ -1678,6 +1724,16 @@ export interface components {
             bitrate_kbps: number | null;
             /** Folder */
             folder: string;
+        };
+        /**
+         * FacetValue
+         * @description One facet option + how many albums carry it (whole-library count).
+         */
+        FacetValue: {
+            /** Value */
+            value: string;
+            /** Count */
+            count: number;
         };
         /**
          * GroupDecision
@@ -3376,6 +3432,61 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ArtistArtBackfillStatus"];
+                };
+            };
+        };
+    };
+    browse_facets_endpoint_api_browse_facets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrowseFacets"];
+                };
+            };
+        };
+    };
+    browse_albums_endpoint_api_browse_albums_get: {
+        parameters: {
+            query?: {
+                genre?: string[] | null;
+                decade?: string[] | null;
+                format?: string[] | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlbumPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

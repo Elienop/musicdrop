@@ -5,7 +5,7 @@ import { useArtistArtBackfillStatus } from "@/api/useArtistArt";
 /**
  * App-wide banner for the artist-art write job. Shown while a job is running
  * (live progress) and briefly on failure (so a backstage error isn't silent).
- * Hidden when idle/done/stopped. Mounted inside `main` (mx-auto max-w-7xl px-6),
+ * Hidden when idle/done/stopped. Mounted inside `main` (mx-auto max-w-8xl px-6),
  * so it's a plain full-width child — no own width or horizontal padding.
  */
 export function ArtistArtBackfillBanner() {

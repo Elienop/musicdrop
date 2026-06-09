@@ -61,6 +61,7 @@ module = [
     "tests.conftest",
     "tests.test_albums",
     "tests.test_artists",
+    "tests.test_browse",
     "tests.test_search",
     "tests.test_import_mapping",
     "tests.test_import_session",
