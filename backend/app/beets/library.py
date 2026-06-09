@@ -397,6 +397,10 @@ def browse_albums(
     An empty list for a facet imposes no constraint. Sort matches ``list_albums``
     (albumartist, album, id) so pagination is deterministic.
     """
+    if not genres and not decades and not formats:
+        # No filters = the whole library; reuse list_albums, which loads items
+        # only for the page slice (the filter loop below would scan every album).
+        return list_albums(lib, limit=limit, offset=offset)
     gset, dset, fset = set(genres), set(decades), set(formats)
     matched: list[BeetsAlbum] = []
     for album in lib.albums():

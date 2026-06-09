@@ -6,9 +6,15 @@ import {
   useBrowseAlbums,
   useBrowseFacets,
 } from "@/api/useBrowse";
-import { AlbumCard, GRID_CLASS } from "@/components/albums/album-grid";
-import { Badge } from "@/components/ui/badge";
+import {
+  AlbumCard,
+  AlbumsGridSkeleton,
+  ErrorState,
+  GRID_CLASS,
+} from "@/components/albums/album-grid";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 48;
 
@@ -23,10 +29,11 @@ type FacetParam = (typeof FACET_FIELDS)[number]["param"];
 /**
  * Browse — slice the whole library by genre · decade · format.
  *
- * A filter rail (checkbox groups + counts) beside the filtered album grid.
- * All state lives in the URL (`?genre=Rock&decade=2010s&format=FLAC&offset=48`),
- * so filters are bookmarkable and Back works. Filter logic is standard faceted:
- * OR within a facet, AND across facets — the backend does the matching.
+ * A filter rail (checkbox groups + counts) beside the filtered album grid. All
+ * state lives in the URL (`?genre=Rock&decade=2010s&format=FLAC&offset=48`), so
+ * filters are bookmarkable and Back works. Filter logic is standard faceted: OR
+ * within a facet, AND across facets — the backend does the matching. Counts are
+ * whole-library totals (not re-derived against the active selection).
  */
 export function BrowsePage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -61,11 +68,12 @@ export function BrowsePage() {
 
   const clearAll = () => setSearchParams(new URLSearchParams());
 
-  const setOffset = (value: number) => {
+  const goToOffset = (value: number) => {
     const next = new URLSearchParams(searchParams);
     if (value <= 0) next.delete("offset");
     else next.set("offset", String(value));
     setSearchParams(next);
+    window.scrollTo({ top: 0 });
   };
 
   const activeChips = FACET_FIELDS.flatMap(({ param }) =>
@@ -75,14 +83,18 @@ export function BrowsePage() {
   const albums = albumsQuery.data?.items ?? [];
   const total = albumsQuery.data?.total ?? 0;
   const hasFilters = activeChips.length > 0;
+  const isFetching = albumsQuery.isFetching;
 
   return (
     <section aria-label="Browse" className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
         <h2 className="text-2xl font-semibold tracking-tight">Browse</h2>
-        <p className="text-muted-foreground text-sm">
-          {total} {total === 1 ? "album" : "albums"}
-          {hasFilters ? " matching your filters" : " in your library"}.
+        <p aria-live="polite" className="text-muted-foreground min-h-5 text-sm">
+          {albumsQuery.isPending
+            ? "Loading…"
+            : `${total.toLocaleString()} ${total === 1 ? "album" : "albums"}${
+                hasFilters ? " matching your filters" : " in your library"
+              }.`}
         </p>
       </header>
 
@@ -95,11 +107,11 @@ export function BrowsePage() {
               variant="secondary"
               size="sm"
               className="h-7 gap-1 px-2"
+              aria-label={`Remove ${value} filter`}
               onClick={() => toggle(param, value)}
             >
               {value}
               <X className="size-3" aria-hidden="true" />
-              <span className="sr-only">Remove {value} filter</span>
             </Button>
           ))}
           <Button type="button" variant="ghost" size="sm" onClick={clearAll}>
@@ -109,17 +121,32 @@ export function BrowsePage() {
       )}
 
       <div className="flex flex-col gap-6 md:flex-row">
-        <aside className="shrink-0 md:w-56" aria-label="Filters">
-          <div className="flex flex-col gap-5">
-            {FACET_FIELDS.map(({ param, label }) => {
-              const values = facetGroups[param];
-              if (values.length === 0) return null;
-              return (
-                <fieldset key={param} className="flex flex-col gap-1.5">
-                  <legend className="mb-1 text-sm font-medium">{label}</legend>
-                  {values.map((fv) => {
-                    const checked = filters[param].includes(fv.value);
-                    return (
+        <aside
+          className="max-h-72 shrink-0 overflow-y-auto md:max-h-none md:w-56 md:overflow-visible"
+          aria-label="Filters"
+        >
+          {facetsQuery.isPending ? (
+            <FilterRailSkeleton />
+          ) : facetsQuery.isError ? (
+            <p className="text-muted-foreground text-sm">
+              Couldn’t load filters.{" "}
+              <button
+                type="button"
+                className="text-foreground underline"
+                onClick={() => void facetsQuery.refetch()}
+              >
+                Retry
+              </button>
+            </p>
+          ) : (
+            <div className="flex flex-col gap-5">
+              {FACET_FIELDS.map(({ param, label }) => {
+                const values = facetGroups[param];
+                if (values.length === 0) return null;
+                return (
+                  <fieldset key={param} className="flex flex-col gap-1.5">
+                    <legend className="mb-1 text-sm font-medium">{label}</legend>
+                    {values.map((fv) => (
                       <label
                         key={fv.value}
                         className="flex cursor-pointer items-center gap-2 text-sm"
@@ -127,7 +154,7 @@ export function BrowsePage() {
                         <input
                           type="checkbox"
                           className="accent-primary size-4"
-                          checked={checked}
+                          checked={filters[param].includes(fv.value)}
                           onChange={() => toggle(param, fv.value)}
                         />
                         <span className="flex-1 truncate">{fv.value}</span>
@@ -135,24 +162,49 @@ export function BrowsePage() {
                           {fv.count}
                         </span>
                       </label>
-                    );
-                  })}
-                </fieldset>
-              );
-            })}
-          </div>
+                    ))}
+                  </fieldset>
+                );
+              })}
+            </div>
+          )}
         </aside>
 
         <div className="min-w-0 flex-1">
-          {albums.length === 0 ? (
+          {albumsQuery.isError ? (
+            <ErrorState onRetry={() => void albumsQuery.refetch()} />
+          ) : albumsQuery.isPending ? (
+            <AlbumsGridSkeleton count={Math.min(PAGE_SIZE, 12)} />
+          ) : total === 0 ? (
             <p className="text-muted-foreground text-sm">
               {hasFilters
                 ? "No albums match these filters."
                 : "No albums in the library yet."}
             </p>
+          ) : albums.length === 0 ? (
+            // total > 0 but this page is empty → the offset is past the end.
+            <div className="flex flex-col items-start gap-3">
+              <p className="text-muted-foreground text-sm">
+                This page is empty — the filters changed under it.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => goToOffset(0)}
+              >
+                Back to first page
+              </Button>
+            </div>
           ) : (
             <>
-              <ul className={GRID_CLASS}>
+              <ul
+                className={cn(
+                  GRID_CLASS,
+                  isFetching && "pointer-events-none opacity-60",
+                )}
+                aria-busy={isFetching}
+              >
                 {albums.map((album) => (
                   <li key={album.id}>
                     <AlbumCard album={album} />
@@ -160,40 +212,55 @@ export function BrowsePage() {
                 ))}
               </ul>
               {total > PAGE_SIZE && (
-                <div className="mt-6 flex items-center justify-between gap-2">
+                <nav
+                  aria-label="Browse pagination"
+                  className="mt-6 flex items-center justify-between gap-2"
+                >
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    disabled={offset === 0}
-                    onClick={() => setOffset(offset - PAGE_SIZE)}
+                    disabled={offset === 0 || isFetching}
+                    onClick={() => goToOffset(offset - PAGE_SIZE)}
                   >
                     Previous
                   </Button>
                   <span className="text-muted-foreground text-sm tabular-nums">
-                    {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of {total}
+                    {(offset + 1).toLocaleString()}–
+                    {Math.min(offset + PAGE_SIZE, total).toLocaleString()} of{" "}
+                    {total.toLocaleString()}
                   </span>
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    disabled={offset + PAGE_SIZE >= total}
-                    onClick={() => setOffset(offset + PAGE_SIZE)}
+                    disabled={offset + PAGE_SIZE >= total || isFetching}
+                    onClick={() => goToOffset(offset + PAGE_SIZE)}
                   >
                     Next
                   </Button>
-                </div>
+                </nav>
               )}
             </>
           )}
         </div>
       </div>
-
-      {hasFilters && (
-        <Badge variant="outline" className="sr-only">
-          {activeChips.length} active filters
-        </Badge>
-      )}
     </section>
+  );
+}
+
+/** Placeholder facet rail while the facets load, so the rail doesn't pop in. */
+function FilterRailSkeleton() {
+  return (
+    <div className="flex flex-col gap-5" aria-hidden="true">
+      {FACET_FIELDS.map(({ param }) => (
+        <div key={param} className="flex flex-col gap-2">
+          <Skeleton className="h-4 w-16" />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-2/3" />
+        </div>
+      ))}
+    </div>
   );
 }

@@ -97,6 +97,27 @@ describe("BrowsePage", () => {
     ).toBeInTheDocument();
   });
 
+  test("shows an error state with retry when albums fail to load", async () => {
+    server.use(
+      http.get(ALBUMS, () => new HttpResponse(null, { status: 500 })),
+    );
+    renderWithProviders(<BrowsePage />, { route: "/browse" });
+    expect(await screen.findByText(/couldn.t load albums/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
+
+  test("offers a way back when the offset is past the end (total > 0, empty page)", async () => {
+    server.use(
+      http.get(ALBUMS, () =>
+        HttpResponse.json({ items: [], total: 60, limit: 48, offset: 480 }),
+      ),
+    );
+    renderWithProviders(<BrowsePage />, { route: "/browse?offset=480" });
+    expect(await screen.findByText(/this page is empty/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /back to first page/i }));
+    await waitFor(() => expect(lastQuery.get("offset")).toBeNull());
+  });
+
   test("paginates when the total exceeds a page", async () => {
     server.use(
       http.get(ALBUMS, ({ request }) => {
