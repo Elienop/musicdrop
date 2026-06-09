@@ -98,31 +98,9 @@ export function BrowsePage() {
         </p>
       </header>
 
-      {hasFilters && (
-        <div className="flex flex-wrap items-center gap-2">
-          {activeChips.map(({ param, value }) => (
-            <Button
-              key={`${param}:${value}`}
-              type="button"
-              variant="secondary"
-              size="sm"
-              className="h-7 gap-1 px-2"
-              aria-label={`Remove ${value} filter`}
-              onClick={() => toggle(param, value)}
-            >
-              {value}
-              <X className="size-3" aria-hidden="true" />
-            </Button>
-          ))}
-          <Button type="button" variant="ghost" size="sm" onClick={clearAll}>
-            Clear all
-          </Button>
-        </div>
-      )}
-
       <div className="flex flex-col gap-6 md:flex-row">
         <aside
-          className="max-h-72 shrink-0 overflow-y-auto md:max-h-none md:w-56 md:overflow-visible"
+          className="max-h-72 shrink-0 overflow-y-auto md:sticky md:top-6 md:max-h-[calc(100vh-3rem)] md:w-56 md:self-start"
           aria-label="Filters"
         >
           {facetsQuery.isPending ? (
@@ -145,7 +123,9 @@ export function BrowsePage() {
                 if (values.length === 0) return null;
                 return (
                   <fieldset key={param} className="flex flex-col gap-1.5">
-                    <legend className="mb-1 text-sm font-medium">{label}</legend>
+                    <legend className="mb-1 text-sm font-medium">
+                      {label}
+                    </legend>
                     {values.map((fv) => (
                       <label
                         key={fv.value}
@@ -170,79 +150,116 @@ export function BrowsePage() {
           )}
         </aside>
 
-        <div className="min-w-0 flex-1">
-          {albumsQuery.isError ? (
-            <ErrorState onRetry={() => void albumsQuery.refetch()} />
-          ) : albumsQuery.isPending ? (
-            <AlbumsGridSkeleton count={Math.min(PAGE_SIZE, 12)} />
-          ) : total === 0 ? (
-            <p className="text-muted-foreground text-sm">
-              {hasFilters
-                ? "No albums match these filters."
-                : "No albums in the library yet."}
-            </p>
-          ) : albums.length === 0 ? (
-            // total > 0 but this page is empty → the offset is past the end.
-            <div className="flex flex-col items-start gap-3">
-              <p className="text-muted-foreground text-sm">
-                This page is empty — the filters changed under it.
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => goToOffset(0)}
-              >
-                Back to first page
-              </Button>
-            </div>
-          ) : (
-            <>
-              <ul
-                className={cn(
-                  GRID_CLASS,
-                  isFetching && "pointer-events-none opacity-60",
-                )}
-                aria-busy={isFetching}
-              >
-                {albums.map((album) => (
-                  <li key={album.id}>
-                    <AlbumCard album={album} />
-                  </li>
+        <div className="flex min-w-0 flex-1 flex-col gap-4">
+          {/* Active-filter bar — always rendered with a reserved height, so
+              applying the FIRST filter fills it instead of inserting a new row
+              that shoves the grid down. The sticky rail to the left never moves. */}
+          <div className="flex min-h-8 flex-wrap items-center gap-2">
+            {hasFilters ? (
+              <>
+                {activeChips.map(({ param, value }) => (
+                  <Button
+                    key={`${param}:${value}`}
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="h-7 gap-1 px-2"
+                    aria-label={`Remove ${value} filter`}
+                    onClick={() => toggle(param, value)}
+                  >
+                    {value}
+                    <X className="size-3" aria-hidden="true" />
+                  </Button>
                 ))}
-              </ul>
-              {total > PAGE_SIZE && (
-                <nav
-                  aria-label="Browse pagination"
-                  className="mt-6 flex items-center justify-between gap-2"
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearAll}
                 >
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={offset === 0 || isFetching}
-                    onClick={() => goToOffset(offset - PAGE_SIZE)}
+                  Clear all
+                </Button>
+              </>
+            ) : (
+              <span className="text-muted-foreground text-sm">
+                Pick a filter to narrow your library.
+              </span>
+            )}
+          </div>
+          <div className="min-h-[60vh]">
+            {albumsQuery.isError ? (
+              <ErrorState onRetry={() => void albumsQuery.refetch()} />
+            ) : albumsQuery.isPending ? (
+              <AlbumsGridSkeleton count={Math.min(PAGE_SIZE, 12)} />
+            ) : total === 0 ? (
+              <p className="text-muted-foreground text-sm">
+                {hasFilters
+                  ? "No albums match these filters."
+                  : "No albums in the library yet."}
+              </p>
+            ) : albums.length === 0 ? (
+              // total > 0 but this page is empty → the offset is past the end.
+              <div className="flex flex-col items-start gap-3">
+                <p className="text-muted-foreground text-sm">
+                  This page is empty — the filters changed under it.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => goToOffset(0)}
+                >
+                  Back to first page
+                </Button>
+              </div>
+            ) : (
+              <>
+                <ul
+                  className={cn(
+                    GRID_CLASS,
+                    isFetching && "pointer-events-none opacity-60",
+                  )}
+                  aria-busy={isFetching}
+                >
+                  {albums.map((album) => (
+                    <li key={album.id}>
+                      <AlbumCard album={album} />
+                    </li>
+                  ))}
+                </ul>
+                {total > PAGE_SIZE && (
+                  <nav
+                    aria-label="Browse pagination"
+                    className="mt-6 flex items-center justify-between gap-2"
                   >
-                    Previous
-                  </Button>
-                  <span className="text-muted-foreground text-sm tabular-nums">
-                    {(offset + 1).toLocaleString()}–
-                    {Math.min(offset + PAGE_SIZE, total).toLocaleString()} of{" "}
-                    {total.toLocaleString()}
-                  </span>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={offset + PAGE_SIZE >= total || isFetching}
-                    onClick={() => goToOffset(offset + PAGE_SIZE)}
-                  >
-                    Next
-                  </Button>
-                </nav>
-              )}
-            </>
-          )}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={offset === 0 || isFetching}
+                      onClick={() => goToOffset(offset - PAGE_SIZE)}
+                    >
+                      Previous
+                    </Button>
+                    <span className="text-muted-foreground text-sm tabular-nums">
+                      {(offset + 1).toLocaleString()}–
+                      {Math.min(offset + PAGE_SIZE, total).toLocaleString()} of{" "}
+                      {total.toLocaleString()}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={offset + PAGE_SIZE >= total || isFetching}
+                      onClick={() => goToOffset(offset + PAGE_SIZE)}
+                    >
+                      Next
+                    </Button>
+                  </nav>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </div>
     </section>
