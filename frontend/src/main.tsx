@@ -8,6 +8,7 @@ import { HomePage } from "@/pages/HomePage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { AlbumDetailPage } from "@/pages/albums/AlbumDetailPage";
 import { ArtistAlbumsPage } from "@/pages/artists/ArtistAlbumsPage";
+import { BrowsePage } from "@/pages/browse/BrowsePage";
 import { DuplicatesPage } from "@/pages/duplicates/DuplicatesPage";
 import { ImportCandidatePage } from "@/pages/import/ImportCandidatePage";
 import { ImportDuplicatePage } from "@/pages/import/ImportDuplicatePage";
@@ -49,6 +50,7 @@ const router = createBrowserRouter([
       { path: "/artists/:artistName", element: <ArtistAlbumsPage /> },
       { path: "/albums/:albumId", element: <AlbumDetailPage /> },
       { path: "/search", element: <SearchPage /> },
+      { path: "/browse", element: <BrowsePage /> },
       { path: "/review", element: <ReviewPage /> },
       { path: "/import", element: <ImportPage /> },
       { path: "/import/albums/:index", element: <ImportCandidatePage /> },

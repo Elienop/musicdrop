@@ -9,6 +9,7 @@ import {
   Loader2,
   Search,
   Settings,
+  SlidersHorizontal,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -228,6 +229,17 @@ export function App() {
               className="ml-auto flex shrink-0 items-center gap-4"
               aria-label="Primary"
             >
+              <Link
+                to="/browse"
+                aria-label="Browse"
+                aria-current={
+                  location.pathname.startsWith("/browse") ? "page" : undefined
+                }
+                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
+              >
+                <SlidersHorizontal className="size-4" aria-hidden="true" />
+                <span className="hidden sm:inline">Browse</span>
+              </Link>
               <ReviewNavLink />
               <Link
                 to="/import"
