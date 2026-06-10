@@ -163,7 +163,9 @@ function lyricsRow(
   const id = `lyrics:${status.job_id ?? "job"}`;
   const label = status.album_id != null ? "Fetching lyrics" : "Lyrics backfill";
   const href =
-    status.album_id != null ? `/albums/${status.album_id}` : "/settings";
+    status.album_id != null
+      ? `/albums/${status.album_id}`
+      : "/settings/metadata";
   if (status.phase === "running") {
     return {
       id, kind: "lyrics", label, scope: status.scope_label, state: "running",
@@ -205,7 +207,7 @@ function artistArtRow(
       id, kind: "artist-art", label: "Writing artist art",
       scope: status.scope_label, state: "running",
       progress: { done: status.processed, total: status.total },
-      href: "/settings",
+      href: "/settings/metadata",
     };
   }
   if (status.phase === "failed") {
@@ -213,7 +215,7 @@ function artistArtRow(
       id, kind: "artist-art", label: "Writing artist art",
       scope: status.scope_label, state: "failed",
       countsText: status.error ?? undefined,
-      href: "/settings",
+      href: "/settings/metadata",
     };
   }
   if (status.phase === "done") {
@@ -225,7 +227,7 @@ function artistArtRow(
         [status.skipped, "skipped"],
         [status.failed, "failed"],
       ]),
-      href: "/settings",
+      href: "/settings/metadata",
     };
   }
   return null;
@@ -243,7 +245,7 @@ function reorganizeRow(
       id, kind: "reorganize", label: "Reorganize",
       scope: status.scope_label, state: "running",
       progress: { done: status.processed, total: status.total },
-      href: "/settings",
+      href: "/settings/beets",
     };
   }
   if (status.phase === "failed") {
@@ -251,7 +253,7 @@ function reorganizeRow(
       id, kind: "reorganize", label: "Reorganize",
       scope: status.scope_label, state: "failed",
       countsText: status.error ?? undefined,
-      href: "/settings",
+      href: "/settings/beets",
     };
   }
   if (status.phase === "done") {
@@ -263,7 +265,7 @@ function reorganizeRow(
         [status.skipped, "skipped"],
         [status.failed, "failed"],
       ]),
-      href: "/settings",
+      href: "/settings/beets",
     };
   }
   return null;

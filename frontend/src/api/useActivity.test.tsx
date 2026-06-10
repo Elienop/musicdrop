@@ -132,7 +132,7 @@ describe("useActivity", () => {
         scope: "library",
         state: "running",
         progress: { done: 3, total: 10 },
-        href: "/settings",
+        href: "/settings/metadata",
       },
     ]);
 
@@ -187,7 +187,7 @@ describe("useActivity", () => {
         scope: "library",
         state: "failed",
         countsText: "library locked",
-        href: "/settings",
+        href: "/settings/beets",
       },
     ]);
 

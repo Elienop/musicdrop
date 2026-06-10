@@ -1,5 +1,5 @@
 /**
- * SettingsPage flows for the L3 editor (T13).
+ * SettingsBeetsPage flows for the L3 editor (T13 → Phase-3 split).
  *
  * Covers the five-state machine (clean / dirty / saving / apply_pending /
  * applying) the page derives from React Query + a local `dirty` flag, the
@@ -9,15 +9,17 @@
  * `.cm-content` contenteditable rather than the obsolete read-only `<pre>`
  * the L1/L2 tests used.
  */
-import { screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { createMemoryRouter, Navigate, RouterProvider } from "react-router";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 
 import type { components } from "@/api/schema";
-import { SettingsPage } from "@/pages/settings/SettingsPage";
+import { SettingsBeetsPage } from "@/pages/settings/SettingsBeetsPage";
+import { SettingsLayout } from "@/pages/settings/SettingsLayout";
 import { server } from "@/test/msw-server";
-import { renderWithProviders } from "@/test/render";
 
 // CodeMirror calls `range.getClientRects()` from its rAF-driven measure pass,
 // but jsdom's `Range` doesn't implement it at all (jsdom #3032). Without a
@@ -70,6 +72,24 @@ const SAVE_URL = `${window.location.origin}/api/config/save`;
 const APPLY_URL = `${window.location.origin}/api/config/apply`;
 const VALIDATE_URL = `${window.location.origin}/api/config/validate`;
 const ACTIVE_IMPORT_URL = `${window.location.origin}/api/imports/active`;
+const REORGANIZE_STATUS_URL = `${window.location.origin}/api/reorganize/status`;
+
+/** Idle reorganize job — shape mirrors useReorganizeStatus's fallback. */
+function idleReorganizeStatus() {
+  return {
+    phase: "idle", job_id: null, scope: null, total: 0, processed: 0,
+    moved: 0, skipped: 0, failed: 0, current: null, error: null,
+    artist: null, album_id: null, scope_label: "library",
+  };
+}
+
+beforeEach(() => {
+  server.use(
+    http.get(REORGANIZE_STATUS_URL, () =>
+      HttpResponse.json(idleReorganizeStatus()),
+    ),
+  );
+});
 
 const SAMPLE_YAML =
   "directory: /music\nlibrary: library.db\nplugins:\n  - musicbrainz\n  - deezer\n";
@@ -124,10 +144,27 @@ async function findEditorContent(): Promise<HTMLElement> {
 }
 
 function renderPage() {
-  return renderWithProviders(<SettingsPage />, {
-    route: "/settings",
-    path: "/settings",
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
   });
+  const router = createMemoryRouter(
+    [
+      {
+        path: "/settings",
+        element: <SettingsLayout />,
+        children: [
+          { index: true, element: <Navigate to="/settings/beets" replace /> },
+          { path: "beets", element: <SettingsBeetsPage /> },
+        ],
+      },
+    ],
+    { initialEntries: ["/settings"] },
+  );
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
 }
 
 describe("SettingsPage", () => {
@@ -667,6 +704,36 @@ describe("SettingsPage", () => {
       ).not.toBeInTheDocument(),
     );
     expect(screen.queryByText(/unsaved changes/i)).not.toBeInTheDocument();
+  });
+
+  test("/settings lands on the beets section inside the settings layout", async () => {
+    defaultMocks();
+    renderPage();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Settings" }),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("link", { name: "Beets" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      ),
+    );
+    // Re-query inside waitFor: the Loader's interim h2 carries the same name
+    // and detaches when the snapshot lands, so a one-shot findBy can resolve
+    // with a node the data swap then removes.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { level: 2, name: "Beets configuration" }),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  test("the beets section hosts the Reorganize panel", async () => {
+    defaultMocks();
+    renderPage();
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "Reorganize library" }),
+    ).toBeInTheDocument();
   });
 });
 

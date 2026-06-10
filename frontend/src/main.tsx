@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { createBrowserRouter, RouterProvider } from "react-router";
+import { createBrowserRouter, Navigate, RouterProvider } from "react-router";
 
 import { App } from "@/App";
 import { HomePage } from "@/pages/HomePage";
@@ -18,7 +18,11 @@ import { PlaylistDetailPage } from "@/pages/playlists/PlaylistDetailPage";
 import { PlaylistsPage } from "@/pages/playlists/PlaylistsPage";
 import { ReviewPage } from "@/pages/review/ReviewPage";
 import { SearchPage } from "@/pages/search/SearchPage";
-import { SettingsPage } from "@/pages/settings/SettingsPage";
+import { SettingsBeetsPage } from "@/pages/settings/SettingsBeetsPage";
+import { SettingsIntegrationsPage } from "@/pages/settings/SettingsIntegrationsPage";
+import { SettingsLayout } from "@/pages/settings/SettingsLayout";
+import { SettingsMetadataPage } from "@/pages/settings/SettingsMetadataPage";
+import { SettingsNamingPage } from "@/pages/settings/SettingsNamingPage";
 
 import "@/styles.css";
 
@@ -36,7 +40,9 @@ const queryClient = new QueryClient({
 //
 // IA: the sidebar (shell/Sidebar NAV_SECTIONS) groups the sections —
 // Library (/ Overview dashboard, /artists roster, /browse facets),
-// Acquire (/review, /import), Manage (/playlists, /duplicates, /settings).
+// Acquire (/review, /import), Manage (/playlists, /duplicates, /settings/* —
+// beets · naming · metadata · integrations; /settings redirects to
+// /settings/beets).
 // Detail routes hang off the artist spine:
 //   /artists/:name  that artist's albums
 //   /albums/:id     album tracklist (back link is contextual — Artists,
@@ -60,7 +66,17 @@ const router = createBrowserRouter([
         path: "/import/albums/:index/duplicate",
         element: <ImportDuplicatePage />,
       },
-      { path: "/settings", element: <SettingsPage /> },
+      {
+        path: "/settings",
+        element: <SettingsLayout />,
+        children: [
+          { index: true, element: <Navigate to="/settings/beets" replace /> },
+          { path: "beets", element: <SettingsBeetsPage /> },
+          { path: "naming", element: <SettingsNamingPage /> },
+          { path: "metadata", element: <SettingsMetadataPage /> },
+          { path: "integrations", element: <SettingsIntegrationsPage /> },
+        ],
+      },
       { path: "/duplicates", element: <DuplicatesPage /> },
       { path: "/playlists", element: <PlaylistsPage /> },
       { path: "/playlists/:playlistId", element: <PlaylistDetailPage /> },
