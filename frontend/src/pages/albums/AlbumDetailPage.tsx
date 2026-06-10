@@ -82,6 +82,14 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
   const [editingCover, setEditingCover] = useState(false);
   const [coverVersion, setCoverVersion] = useState(0);
 
+  // One cover URL feeds BOTH hero layers (blurred backdrop + foreground
+  // CoverArt); ?v= cache-busts both after a cover install.
+  const coverSrc = `/api/albums/${album.id}/cover${coverVersion ? `?v=${coverVersion}` : ""}`;
+  // The raw backdrop <img> has no CoverArt fallback of its own — track failure
+  // here and swap to the tinted gradient. A new src (cover installed) retries.
+  const [backdropFailed, setBackdropFailed] = useState(false);
+  useEffect(() => setBackdropFailed(false), [coverSrc]);
+
   // Spec §4 disclosure pattern: opening an inline panel moves focus into it so
   // keyboard/SR users land on what just appeared. Closing leaves focus where
   // it already is — on the toggle button.
@@ -112,68 +120,92 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
         />
       )}
 
-      <header className="flex flex-col gap-6 sm:flex-row sm:items-stretch">
-        {/* Hero cover on the shared CoverArt (same dimensions — the blurred-art
-            hero itself is Phase 4). */}
-        <CoverArt
-          src={`/api/albums/${album.id}/cover${coverVersion ? `?v=${coverVersion}` : ""}`}
-          className="size-40 shrink-0 rounded-xl shadow-sm"
-        />
-        <div className="flex min-w-0 flex-col gap-2">
-          {/* THE page h1 — detail pages own their h1 directly (PageHeader's
-              shape doesn't fit the hero); tabIndex -1 keeps RouteAnnouncer's
-              focus contract. */}
-          <h1
-            id="album-detail-title"
-            tabIndex={-1}
-            className="text-3xl font-bold tracking-tight break-words"
-          >
-            {album.title}
-          </h1>
-          <p className="text-muted-foreground text-lg">{album.album_artist}</p>
-          <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-sm">
-            {album.year !== null && (
-              <Badge variant="secondary">{album.year}</Badge>
-            )}
-            <span>
-              {album.track_count} {album.track_count === 1 ? "track" : "tracks"}
-            </span>
-            {album.genre && (
-              <>
-                <span aria-hidden="true">&middot;</span>
-                <span>{album.genre}</span>
-              </>
-            )}
-          </div>
-          {/* Maintenance actions — a single row pushed to the bottom of the
-              column so it lines up with the bottom of the cover, mirroring the
-              artist page. */}
-          <div className="border-border mt-auto flex flex-wrap items-center gap-3 border-t pt-3">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setEditing((v) => !v)}
-              aria-label="Edit album"
-              aria-expanded={editing}
-              aria-controls="album-edit-panel"
+      <header className="relative overflow-hidden rounded-xl">
+        {/* LAYER 1 — decorative backdrop: the cover blurred behind the content,
+            hidden from assistive tech as a unit. The scrim keeps the foreground
+            text on surface-base by the time it reaches the bottom edge. */}
+        <div
+          data-slot="album-hero-backdrop"
+          aria-hidden="true"
+          className="absolute inset-0"
+        >
+          {backdropFailed ? (
+            <div className="from-primary/15 to-surface-base size-full bg-gradient-to-br" />
+          ) : (
+            <>
+              <img
+                src={coverSrc}
+                alt=""
+                onError={() => setBackdropFailed(true)}
+                className="size-full scale-110 object-cover opacity-40 blur-2xl"
+              />
+              <div className="via-surface-base/70 to-surface-base absolute inset-0 bg-gradient-to-b from-transparent" />
+            </>
+          )}
+        </div>
+        {/* LAYER 2 — the existing header content, structurally unchanged. */}
+        <div className="relative flex flex-col gap-6 p-6 sm:flex-row sm:items-stretch">
+          <CoverArt
+            src={coverSrc}
+            className="size-40 shrink-0 rounded-xl shadow-lg"
+          />
+          <div className="flex min-w-0 flex-col gap-2">
+            {/* THE page h1 — detail pages own their h1 directly (PageHeader's
+                shape doesn't fit the hero); tabIndex -1 keeps RouteAnnouncer's
+                focus contract. */}
+            <h1
+              id="album-detail-title"
+              tabIndex={-1}
+              className="text-3xl font-bold tracking-tight break-words"
             >
-              <EditIcon className="size-4" aria-hidden="true" /> Edit
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setEditingCover((v) => !v)}
-              aria-label="Edit cover"
-              aria-expanded={editingCover}
-              aria-controls="album-cover-panel"
-            >
-              <CoverIcon className="size-4" aria-hidden="true" /> Cover
-            </Button>
-            <ReorganizeControl scope={{ scope: "album", albumId: album.id }} />
-            <AddToPlaylistMenu
-              trackIds={album.tracks.map((t) => t.id)}
-              label="Add album to playlist"
-            />
+              {album.title}
+            </h1>
+            <p className="text-muted-foreground text-lg">{album.album_artist}</p>
+            <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-sm">
+              {album.year !== null && (
+                <Badge variant="secondary">{album.year}</Badge>
+              )}
+              <span>
+                {album.track_count} {album.track_count === 1 ? "track" : "tracks"}
+              </span>
+              {album.genre && (
+                <>
+                  <span aria-hidden="true">&middot;</span>
+                  <span>{album.genre}</span>
+                </>
+              )}
+            </div>
+            {/* Maintenance actions — a single row pushed to the bottom of the
+                column so it lines up with the bottom of the cover. border-white/10
+                (not border-border) so the hairline reads on the tinted backdrop
+                — legible over both the blurred art and the fallback gradient. */}
+            <div className="mt-auto flex flex-wrap items-center gap-3 border-t border-white/10 pt-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setEditing((v) => !v)}
+                aria-label="Edit album"
+                aria-expanded={editing}
+                aria-controls="album-edit-panel"
+              >
+                <EditIcon className="size-4" aria-hidden="true" /> Edit
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setEditingCover((v) => !v)}
+                aria-label="Edit cover"
+                aria-expanded={editingCover}
+                aria-controls="album-cover-panel"
+              >
+                <CoverIcon className="size-4" aria-hidden="true" /> Cover
+              </Button>
+              <ReorganizeControl scope={{ scope: "album", albumId: album.id }} />
+              <AddToPlaylistMenu
+                trackIds={album.tracks.map((t) => t.id)}
+                label="Add album to playlist"
+              />
+            </div>
           </div>
         </div>
       </header>
@@ -405,8 +437,8 @@ function DetailSkeleton() {
       <div className="flex flex-col gap-8">
         {/* Matches the BackLink button height. */}
         <Skeleton className="h-8 w-32" />
-        {/* sm:items-center + gap-2 mirror the loaded header to minimize CLS. */}
-        <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
+        {/* Mirrors the hero container (rounded-xl + p-6) to minimize CLS. */}
+        <div className="bg-surface-raised flex flex-col gap-6 rounded-xl p-6 sm:flex-row sm:items-center">
           <Skeleton className="size-40 shrink-0 rounded-xl" />
           <div className="flex flex-col gap-2">
             <Skeleton className="h-9 w-64" />

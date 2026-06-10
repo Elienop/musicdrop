@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, test } from "vitest";
@@ -465,5 +465,44 @@ describe("AlbumDetailPage", () => {
     await screen.findByText(/couldn.t load (this )?album/i);
     const alert = screen.getByRole("alert");
     expect(alert).toHaveAttribute("data-slot", "error-state");
+  });
+
+  test("header is a hero: blurred decorative cover backdrop behind the content", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+
+    renderDetail(1);
+    await screen.findByRole("heading", { name: "OK Computer" });
+
+    const header = document.querySelector("header");
+    expect(header).toHaveClass("relative", "overflow-hidden", "rounded-xl");
+
+    // Layer 1: the backdrop is hidden from assistive tech as a unit.
+    const backdrop = header!.querySelector('[data-slot="album-hero-backdrop"]');
+    expect(backdrop).not.toBeNull();
+    expect(backdrop).toHaveAttribute("aria-hidden", "true");
+    const backdropImg = backdrop!.querySelector("img");
+    expect(backdropImg).toHaveAttribute("src", "/api/albums/1/cover");
+    expect(backdropImg).toHaveClass("blur-2xl", "opacity-40", "object-cover");
+
+    // Both layers point at the same cover URL: blurred backdrop + foreground.
+    expect(
+      header!.querySelectorAll('img[src="/api/albums/1/cover"]'),
+    ).toHaveLength(2);
+  });
+
+  test("a failed backdrop load falls back to the tinted gradient", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+
+    renderDetail(1);
+    await screen.findByRole("heading", { name: "OK Computer" });
+
+    const backdrop = document.querySelector(
+      '[data-slot="album-hero-backdrop"]',
+    ) as HTMLElement;
+    fireEvent.error(backdrop.querySelector("img") as HTMLImageElement);
+
+    // No broken <img> lingers; the primary-tinted gradient takes its place.
+    expect(backdrop.querySelector("img")).toBeNull();
+    expect(backdrop.querySelector(".bg-gradient-to-br")).not.toBeNull();
   });
 });
