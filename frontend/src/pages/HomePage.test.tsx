@@ -9,7 +9,7 @@ import { server } from "@/test/msw-server";
 const STATS_URL = `${window.location.origin}/api/stats`;
 
 describe("HomePage (Overview)", () => {
-  test("renders the library dashboard, not the artists roster", async () => {
+  test("renders the Overview h1 and dashboard, not the artists roster", async () => {
     server.use(
       http.get(STATS_URL, () =>
         HttpResponse.json({
@@ -27,10 +27,14 @@ describe("HomePage (Overview)", () => {
     );
     renderWithProviders(<HomePage />);
 
-    // Dashboard stat present (track count)...
+    // THE route h1 — PageHeader renders it for RouteAnnouncer's focus contract.
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Overview" }),
+    ).toBeInTheDocument();
+    // Dashboard stat present (track count) — awaited: the h1 mounts
+    // synchronously, ahead of the async stats.
     expect(await screen.findByText("5")).toBeInTheDocument();
-    // ...and the artists roster is NOT on the Overview — it lives at /artists,
-    // so there's no roster <h2>Artists</h2> heading here.
+    // ...and the artists roster is NOT on the Overview — it lives at /artists.
     expect(
       screen.queryByRole("heading", { name: "Artists" }),
     ).not.toBeInTheDocument();

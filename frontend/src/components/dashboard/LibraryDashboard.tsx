@@ -1,70 +1,85 @@
 // frontend/src/components/dashboard/LibraryDashboard.tsx
-import {
-  AlertCircle,
-  Clock,
-  Disc3,
-  HardDrive,
-  Music,
-  Users,
-} from "lucide-react";
+import { Link } from "react-router";
 
+import type { LibraryStatsResponse } from "@/api/useStats";
 import { useStats } from "@/api/useStats";
 import { AlbumCard, GRID_CLASS } from "@/components/albums/album-grid";
-import { Card, CardContent } from "@/components/ui/card";
+import {
+  Albums,
+  Artists,
+  Duration,
+  MusicFallback,
+  Storage,
+  Track,
+} from "@/components/icons";
+import { EmptyState } from "@/components/system/EmptyState";
+import { ErrorState } from "@/components/system/ErrorState";
+import { PageBody, PageHeader } from "@/components/system/PageHeader";
+import { PageSkeleton } from "@/components/system/PageSkeleton";
+import { StatTile } from "@/components/system/StatTile";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatBytes, formatTotalDuration } from "@/lib/format";
 
+/** Origin recorded on every album card opened from the Overview (spec §1
+ * origin threading): the album page's back link returns here. */
+const OVERVIEW_ORIGIN = { label: "Overview", to: "/" } as const;
+
+/** Tile grid shared by the loaded StatTiles and their skeleton bones. */
+const TILE_GRID = "grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5";
+
 export function LibraryDashboard() {
-  const { data, isPending, isError } = useStats();
+  const { data, isPending, isError, refetch } = useStats();
 
-  if (isPending) {
-    return (
-      <section aria-label="Library stats" className="flex flex-col gap-4">
-        <p className="sr-only" role="status">
-          Loading library stats&hellip;
-        </p>
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-          {Array.from({ length: 5 }, (_, i) => (
-            <Skeleton key={i} className="h-24 rounded-xl" />
-          ))}
-        </div>
-      </section>
-    );
-  }
+  return (
+    <PageBody>
+      <PageHeader
+        title="Overview"
+        meta={
+          data !== undefined
+            ? `${data.stats.album_count.toLocaleString()} albums · ${data.stats.track_count.toLocaleString()} tracks`
+            : undefined
+        }
+      />
+      {isPending ? (
+        <PageSkeleton announce="Loading library stats…">
+          <div className={TILE_GRID}>
+            {/* h-22 = the hint-less StatTile's fixed content height (its
+                documented skeleton contract) — no shift when tiles land. */}
+            {Array.from({ length: 5 }, (_, i) => (
+              <Skeleton key={i} className="h-22 rounded-xl" />
+            ))}
+          </div>
+        </PageSkeleton>
+      ) : isError ? (
+        <ErrorState
+          message="Could not load library stats."
+          onRetry={() => void refetch()}
+        />
+      ) : (
+        <DashboardBody data={data} />
+      )}
+    </PageBody>
+  );
+}
 
-  if (isError || !data) {
-    return (
-      <section aria-label="Library stats">
-        <div
-          className="border-destructive/40 bg-destructive/5 flex items-center gap-3 rounded-xl border p-3 text-sm"
-          role="alert"
-        >
-          <AlertCircle
-            className="text-destructive size-5 shrink-0"
-            aria-hidden="true"
-          />
-          <span>Could not load library stats.</span>
-        </div>
-      </section>
-    );
-  }
-
+function DashboardBody({ data }: { data: LibraryStatsResponse }) {
   const { stats, recently_added, size_is_estimate } = data;
-  const cards = [
-    { icon: Music, label: "Tracks", value: stats.track_count.toLocaleString() },
-    { icon: Disc3, label: "Albums", value: stats.album_count.toLocaleString() },
+  const tiles = [
+    { icon: Track, label: "Tracks", value: stats.track_count.toLocaleString() },
+    { icon: Albums, label: "Albums", value: stats.album_count.toLocaleString() },
     {
-      icon: Users,
+      icon: Artists,
       label: "Artists",
       value: stats.artist_count.toLocaleString(),
     },
     {
-      icon: Clock,
+      icon: Duration,
       label: "Duration",
       value: formatTotalDuration(stats.total_seconds),
     },
     {
-      icon: HardDrive,
+      icon: Storage,
       label: "Size",
       value: `${size_is_estimate ? "~" : ""}${formatBytes(stats.total_bytes)}`,
     },
@@ -72,39 +87,41 @@ export function LibraryDashboard() {
 
   return (
     <section aria-label="Library stats" className="flex flex-col gap-6">
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-        {cards.map(({ icon: Icon, label, value }) => (
-          <Card key={label}>
-            <CardContent className="flex flex-col gap-1 p-4">
-              <span className="text-muted-foreground flex items-center gap-1.5 text-sm">
-                <Icon className="size-4" aria-hidden="true" />
-                {label}
-              </span>
-              <span className="text-2xl font-semibold tracking-tight tabular-nums">
-                {value}
-              </span>
-            </CardContent>
-          </Card>
+      <div className={TILE_GRID}>
+        {tiles.map((tile) => (
+          <StatTile
+            key={tile.label}
+            icon={tile.icon}
+            label={tile.label}
+            value={tile.value}
+          />
         ))}
       </div>
 
       {recently_added.length > 0 ? (
         <div className="flex flex-col gap-3">
-          <h2 className="text-2xl font-semibold tracking-tight">
-            Recently added
-          </h2>
+          {/* Section scale (spec §3): h2 text-base font-semibold under the h1. */}
+          <h2 className="text-base font-semibold">Recently added</h2>
           <ul className={GRID_CLASS}>
             {recently_added.map((album) => (
               <li key={album.id}>
-                <AlbumCard album={album} />
+                <AlbumCard album={album} from={OVERVIEW_ORIGIN} />
               </li>
             ))}
           </ul>
         </div>
       ) : (
-        <p className="text-muted-foreground text-sm">
-          Import some music to get started.
-        </p>
+        <EmptyState
+          bordered
+          icon={MusicFallback}
+          title="Your library is empty"
+          body="Import some music to get started."
+          action={
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/import">Add music from a folder</Link>
+            </Button>
+          }
+        />
       )}
     </section>
   );
