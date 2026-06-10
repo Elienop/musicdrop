@@ -34,6 +34,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useDeferredH1Focus } from "@/lib/useDeferredH1Focus";
 import { cn } from "@/lib/utils";
 
 // As-tracks (singleton import) is a silent no-op until Slice B builds real
@@ -64,6 +65,9 @@ export function ImportCandidatePage() {
     validIndex ? index : 0,
     enabled,
   );
+  // Cold-load focus repair (see useDeferredH1Focus). The !enabled and error
+  // notices render no h1, so the hook is a quiet no-op there.
+  useDeferredH1Focus(!isPending && !isError);
 
   if (!enabled) {
     return (

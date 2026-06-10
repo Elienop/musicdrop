@@ -8,6 +8,7 @@ import { useStartAlbumLyricsFetch } from "@/api/useAlbumLyrics";
 import { useLyricsBackfillStatus, useStopLyricsBackfill } from "@/api/useLyricsBackfill";
 import { useAlbumMissing, type MissingReleaseTrack } from "@/api/useAlbumMissing";
 import { formatDuration } from "@/lib/format";
+import { useDeferredH1Focus } from "@/lib/useDeferredH1Focus";
 import { buildDiscGroups, type DiscGroup } from "@/pages/albums/missingTracks";
 import { albumOriginFromState, BackLink } from "@/components/albums/album-grid";
 import {
@@ -48,6 +49,9 @@ export function AlbumDetailPage() {
   const { data, isPending, isError, error, refetch } = useAlbum(id, {
     enabled: validId,
   });
+  // Cold-load focus repair: the skeleton has no h1, so RouteAnnouncer no-ops
+  // on a first visit — focus the h1 once the loaded header has rendered.
+  useDeferredH1Focus(!isPending && !isError);
 
   if (!validId) {
     return <NotFoundState />;

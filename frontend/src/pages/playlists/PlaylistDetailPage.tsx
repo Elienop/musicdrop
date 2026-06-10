@@ -57,6 +57,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDuration } from "@/lib/format";
+import { useDeferredH1Focus } from "@/lib/useDeferredH1Focus";
 import { useFocusAfterMutation } from "@/lib/useFocusAfterMutation";
 
 /** What the row shows (and what we announce): a vanished beets item keeps its
@@ -158,6 +159,8 @@ export function PlaylistDetailPage() {
   const { playlistId } = useParams<{ playlistId: string }>();
   const id = playlistId ?? "";
   const { data, isPending, isError, refetch } = usePlaylist(id);
+  // Cold-load focus repair (see useDeferredH1Focus).
+  useDeferredH1Focus(!isPending && !isError);
 
   if (isPending) {
     return (

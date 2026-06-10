@@ -22,6 +22,7 @@ import { EmptyState } from "@/components/system/EmptyState";
 import { PageSkeleton } from "@/components/system/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useDeferredH1Focus } from "@/lib/useDeferredH1Focus";
 
 type IncomingAlbum = DuplicatePrompt["incoming"];
 type ExistingAlbum = DuplicatePrompt["existing"][number];
@@ -50,6 +51,8 @@ export function ImportDuplicatePage() {
     validIndex ? index : 0,
     enabled,
   );
+  // Cold-load focus repair (see useDeferredH1Focus).
+  useDeferredH1Focus(!isPending && !isError);
 
   if (!enabled) {
     return (

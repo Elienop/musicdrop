@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, test } from "vitest";
@@ -465,6 +465,21 @@ describe("AlbumDetailPage", () => {
     await screen.findByText(/couldn.t load (this )?album/i);
     const alert = screen.getByRole("alert");
     expect(alert).toHaveAttribute("data-slot", "error-state");
+  });
+
+  test("cold load: focus lands on the h1 once the album renders (deferred h1 focus)", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+
+    renderDetail(1);
+
+    // While the skeleton is up there is no h1 and nothing holds focus.
+    expect(document.body).toHaveFocus();
+
+    const h1 = await screen.findByRole("heading", {
+      level: 1,
+      name: "OK Computer",
+    });
+    await waitFor(() => expect(h1).toHaveFocus());
   });
 
   test("header is a hero: blurred decorative cover backdrop behind the content", async () => {
