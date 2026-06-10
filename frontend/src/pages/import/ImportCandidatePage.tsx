@@ -527,7 +527,7 @@ function ReviewActions({
           variant="outline"
           size="sm"
           disabled={submit.isPending}
-          title="Import with the current tags, without a MusicBrainz match"
+          aria-describedby="review-actions-hint"
           onClick={() => decide("asis")}
         >
           Use as-is
@@ -537,7 +537,7 @@ function ReviewActions({
             variant="outline"
             size="sm"
             disabled={submit.isPending}
-            title="Import each file as a standalone track, not grouped as an album"
+            aria-describedby="review-actions-hint"
             onClick={() => decide("astracks")}
           >
             As tracks
@@ -559,8 +559,11 @@ function ReviewActions({
           )}
         </Button>
       </div>
-      <p className="text-muted-foreground text-xs">
-        Use as-is keeps your current tags.
+      <p id="review-actions-hint" className="text-muted-foreground text-xs">
+        Use as-is imports with your current tags — no MusicBrainz match is
+        applied.
+        {AS_TRACKS_ENABLED &&
+          " As tracks imports each file as a standalone track, not grouped as an album."}
       </p>
     </div>
   );

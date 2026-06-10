@@ -170,19 +170,19 @@ describe("ImportCandidatePage", () => {
     expect(screen.getByText(/not applied/i)).toBeInTheDocument();
   });
 
-  test("the action buttons carry title hints + a helper line under the bar", async () => {
+  test("decision buttons carry no title tooltips — the hint is visible text via aria-describedby", async () => {
     server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
     renderAt();
 
+    const asIs = await screen.findByRole("button", { name: /use as-is/i });
+    // title= never surfaces on keyboard focus or on a disabled button.
+    expect(asIs).not.toHaveAttribute("title");
+    expect(asIs).toHaveAttribute("aria-describedby", "review-actions-hint");
+    expect(asIs).toHaveAccessibleDescription(/imports with your current tags/i);
+    // The hint is VISIBLE helper text under the action bar.
     expect(
-      await screen.findByRole("button", { name: /use as-is/i }),
-    ).toHaveAttribute(
-      "title",
-      "Import with the current tags, without a MusicBrainz match",
-    );
-    expect(
-      screen.getByText(/Use as-is keeps your current tags\./),
-    ).toBeInTheDocument();
+      screen.getByText(/no MusicBrainz match is applied/i),
+    ).toBeVisible();
   });
 
   test("does not offer the no-op As-tracks button, but keeps Use as-is", async () => {

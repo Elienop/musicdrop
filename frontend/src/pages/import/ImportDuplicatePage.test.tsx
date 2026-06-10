@@ -191,4 +191,24 @@ describe("ImportDuplicatePage", () => {
     const back = await screen.findByRole("link", { name: "Import" });
     expect(back).toHaveAttribute("href", "/import?job=job-1");
   });
+
+  test("decision buttons carry no title tooltips — one visible footnote describes all three", async () => {
+    server.use(http.get(DUPLICATE_URL, () => HttpResponse.json(PROMPT)));
+    renderDuplicateAt();
+
+    const keepBoth = await screen.findByRole("button", { name: /keep both/i });
+    const replace = screen.getByRole("button", { name: /replace old/i });
+    const merge = screen.getByRole("button", { name: /^merge/i });
+    for (const button of [keepBoth, replace, merge]) {
+      expect(button).not.toHaveAttribute("title");
+      expect(button).toHaveAttribute("aria-describedby", "duplicate-footnote");
+    }
+    expect(keepBoth).toHaveAccessibleDescription(
+      /keep both imports alongside the existing copy/i,
+    );
+    // The footnote is visible text, not a hover-only tooltip.
+    expect(
+      screen.getByText(/replace moves the old copy to trash/i),
+    ).toBeVisible();
+  });
 });

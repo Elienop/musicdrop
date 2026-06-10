@@ -194,7 +194,7 @@ function DuplicateScreen({
           variant="outline"
           size="sm"
           disabled={resolve.isPending}
-          title="Import alongside the existing copy"
+          aria-describedby="duplicate-footnote"
           onClick={() => decide("keep_both")}
         >
           <ActionIcon action="keep_both" pending={pending} icon={Duplicates} /> Keep both
@@ -204,7 +204,6 @@ function DuplicateScreen({
           size="sm"
           disabled={resolve.isPending}
           className="border-warning text-warning hover:bg-warning/10 hover:text-warning"
-          title="Import the new album; move the existing copy to Trash (reversible)"
           aria-describedby="duplicate-footnote"
           onClick={() => decide("replace")}
         >
@@ -214,7 +213,7 @@ function DuplicateScreen({
           className="ml-auto"
           size="sm"
           disabled={resolve.isPending}
-          title="Combine into one album, then review the merged result"
+          aria-describedby="duplicate-footnote"
           onClick={() => decide("merge")}
         >
           <ActionIcon action="merge" pending={pending} icon={MergeIcon} />
@@ -222,8 +221,9 @@ function DuplicateScreen({
         </Button>
       </div>
       <p id="duplicate-footnote" className="text-muted-foreground text-xs">
-        Replace moves the old copy to Trash (reversible) · Merge combines them,
-        then reappears as a normal review.
+        Keep both imports alongside the existing copy · Replace moves the old
+        copy to Trash (reversible) · Merge combines them, then reappears as a
+        normal review.
       </p>
     </div>
   );
