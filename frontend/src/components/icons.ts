@@ -29,6 +29,9 @@ export {
   CheckCircle as Online,
   // Domain
   MusicNotes as MusicFallback,
+  // Brand glyph for the sidebar rail — intentionally shares MusicNotes with
+  // MusicFallback (same precedent as Success/Online sharing CheckCircle).
+  MusicNotes as Brand,
   FileText as Lyrics,
   PencilSimple as Edit,
   ImageSquare as Cover,
