@@ -1,9 +1,9 @@
 import { Outlet } from "react-router";
-import { Toaster } from "sonner";
 
 import { useActivity } from "@/api/useActivity";
 import { ActivityButton } from "@/components/shell/ActivityPopover";
 import { useActivityToasts } from "@/components/shell/activityToasts";
+import { AppToaster } from "@/components/shell/AppToaster";
 import { AppSidebar } from "@/components/shell/Sidebar";
 import { AppTopbar, HealthStatus } from "@/components/shell/Topbar";
 import { RouteAnnouncer } from "@/components/system/RouteAnnouncer";
@@ -46,7 +46,7 @@ export function App() {
           <Outlet />
         </main>
       </div>
-      <Toaster theme="dark" position="top-right" />
+      <AppToaster />
     </div>
   );
 }
