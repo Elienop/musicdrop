@@ -1008,6 +1008,38 @@
               "default": 25,
               "title": "Limit"
             }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "artists",
+                    "albums",
+                    "tracks"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
+            }
           }
         ],
         "responses": {
@@ -1016,7 +1048,15 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SearchResults"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SearchResults"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TypedSearchPage"
+                    }
+                  ],
+                  "title": "Response Search Endpoint Api Search Get"
                 }
               }
             }
@@ -4402,6 +4442,17 @@
           },
           "status": {
             "$ref": "#/components/schemas/ImportAlbumStatus"
+          },
+          "album_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Id"
           }
         },
         "type": "object",
@@ -6744,6 +6795,64 @@
         ],
         "title": "TrackPathChange",
         "description": "A track whose file would relocate when move is enabled."
+      },
+      "TypedSearchPage": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "artists",
+              "albums",
+              "tracks"
+            ],
+            "title": "Type"
+          },
+          "artists": {
+            "items": {
+              "$ref": "#/components/schemas/Artist"
+            },
+            "type": "array",
+            "title": "Artists",
+            "default": []
+          },
+          "albums": {
+            "items": {
+              "$ref": "#/components/schemas/Album"
+            },
+            "type": "array",
+            "title": "Albums",
+            "default": []
+          },
+          "tracks": {
+            "items": {
+              "$ref": "#/components/schemas/SearchTrack"
+            },
+            "type": "array",
+            "title": "Tracks",
+            "default": []
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "TypedSearchPage",
+        "description": "One entity of the search, paged \u2014 the \"View all N\" page contract.\n\nReturned by GET /api/search when `type` is present. ONLY the section named\nby ``type`` is populated (the other two lists stay empty); ``total`` is\nthat entity's FULL match count, and ``limit``/``offset`` echo the request\nso the FE can page statelessly from URL state. Ordering matches the\nsectioned mode (same underlying queries), so \"View all\" page 1 lines up\nwith the section preview. ``SearchResults`` is deliberately untouched \u2014\nthe default (no-``type``) response stays byte-identical."
       },
       "UnmatchedItem": {
         "properties": {

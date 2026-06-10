@@ -7,12 +7,17 @@ import type { components } from "@/api/schema";
 export type SearchResults = components["schemas"]["SearchResults"];
 /** A single track hit; carries `album_id` (the playlist seam). */
 export type SearchTrack = components["schemas"]["SearchTrack"];
+/** One entity of the search, paged — `GET /api/search?type=…` ("View all"). */
+export type TypedSearchPage = components["schemas"]["TypedSearchPage"];
 
 async function fetchSearch(q: string): Promise<SearchResults> {
   const { data, error } = await client.GET("/api/search", {
     params: { query: { q } },
   });
-  if (error || !data) {
+  // `"type" in data` discriminates the typed (paged) shape, which a request
+  // WITHOUT the `type` param never returns — this narrows the generated
+  // union for tsc and is unreachable at runtime.
+  if (error || !data || "type" in data) {
     throw new Error("Search failed");
   }
   return data;
