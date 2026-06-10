@@ -22,7 +22,7 @@ from mediafile import MediaFile
 from app.models.album import Album, AlbumDetail, Track
 from app.models.artist import Artist
 from app.models.browse import BrowseFacets, FacetValue
-from app.models.search import SearchResults, SearchTrack
+from app.models.search import SearchEntity, SearchResults, SearchTrack, TypedSearchPage
 
 # Allowlist of cover-art extensions we serve. `.svg` is deliberately excluded:
 # serving user-controlled SVG (even via <img>) is an XSS footgun, not worth it.
@@ -283,6 +283,54 @@ def search(lib: Library, *, query: str, limit: int) -> SearchResults:
         artist_total=artist_total,
         album_total=album_total,
         track_total=track_total,
+    )
+
+
+def search_typed(
+    lib: Library, *, query: str, entity: SearchEntity, limit: int, offset: int
+) -> TypedSearchPage:
+    """One entity of the free-text search, paged — backs /api/search?type=…
+
+    Per-entity semantics are identical to ``search`` (beets' query parser for
+    tracks/albums with the same ParsingError guard; case-insensitive substring
+    over the derived roster for artists) and so is the ordering (beets' default
+    query sort / the name-sorted roster), so the typed "View all" page lines up
+    with the sectioned preview. ``total`` is the full match count BEFORE the
+    ``offset:offset+limit`` slice. A blank/whitespace query short-circuits to
+    an empty page with no beets call.
+    """
+    artists: list[Artist] = []
+    albums: list[Album] = []
+    tracks: list[SearchTrack] = []
+    total = 0
+    if query.strip():
+        if entity == "tracks":
+            try:
+                all_items = list(lib.items(query))
+            except ParsingError:
+                all_items = []
+            total = len(all_items)
+            tracks = [_to_search_track(item) for item in all_items[offset : offset + limit]]
+        elif entity == "albums":
+            try:
+                all_album_matches = list(lib.albums(query))
+            except ParsingError:
+                all_album_matches = []
+            total = len(all_album_matches)
+            albums = [_to_album(a) for a in all_album_matches[offset : offset + limit]]
+        else:
+            needle = query.casefold()
+            matches = [a for a in list_artists(lib) if needle in a.name.casefold()]
+            total = len(matches)
+            artists = matches[offset : offset + limit]
+    return TypedSearchPage(
+        type=entity,
+        artists=artists,
+        albums=albums,
+        tracks=tracks,
+        total=total,
+        limit=limit,
+        offset=offset,
     )
 
 
