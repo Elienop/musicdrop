@@ -1,10 +1,26 @@
 import { screen } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { HomePage } from "@/pages/HomePage";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
+
+// LibraryDashboard's Phase-4 glance reads the activity model; pin it idle
+// so this route test stays stats-only (MSW errors on unhandled requests).
+vi.mock("@/api/useActivity", () => ({
+  useActivity: () => ({ rows: [], runningCount: 0 }),
+  useActivityDismissals: () => ({
+    dismissed: new Set<string>(),
+    dismiss: () => {},
+  }),
+}));
+
+vi.mock("@/api/useActiveImport", () => ({
+  useActiveImport: () => ({
+    data: { active: false, origin: "manual", needs_review_count: 0 },
+  }),
+}));
 
 const STATS_URL = `${window.location.origin}/api/stats`;
 
