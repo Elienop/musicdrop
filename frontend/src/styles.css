@@ -158,9 +158,9 @@
 
 /* ── One focus dialect ──────────────────────────────────────────────────
  * shadcn Button's focus treatment (outline-none + 3px ring at ring/50),
- * liftable onto links/cards/controls as `className="focus-ring"`. Replaces
- * the hand-rolled `focus-visible:ring-2 ring-offset-2` variants as pages
- * migrate (Phase 3). */
+ * liftable onto links/cards/controls as `className="focus-ring"`. The
+ * hand-rolled per-component focus variants are gone (Phase 4 sweep) — this
+ * utility is the only dialect. */
 @utility focus-ring {
   @apply outline-none;
   &:focus-visible {
