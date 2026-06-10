@@ -21,6 +21,8 @@ export {
   GearSix as Settings,
   Pulse as Activity,
   MagnifyingGlass as Search,
+  // Shell chrome: the mobile-nav hamburger.
+  List as Menu,
   // Status
   CheckCircle as Success,
   Warning,
