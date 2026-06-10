@@ -104,9 +104,12 @@ describe("routing (artist spine)", () => {
   test("an unknown route renders the NotFound page, not the roster", async () => {
     renderAt("/does/not/exist");
     expect(await screen.findByText(/page not found/i)).toBeInTheDocument();
+    // The one escape points home to the Overview (spec §1 "one home").
+    const escape = screen.getByRole("link", { name: /back to overview/i });
+    expect(escape).toHaveAttribute("href", "/");
     // The roster heading must NOT be present.
     expect(
-      screen.queryByRole("heading", { level: 2, name: "Artists" }),
+      screen.queryByRole("heading", { name: "Artists" }),
     ).not.toBeInTheDocument();
   });
 });
