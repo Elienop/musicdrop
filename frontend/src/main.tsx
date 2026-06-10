@@ -30,16 +30,18 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
 });
 
-// `App` is the persistent shell (sidebar + topbar + <Outlet>); feature pages
-// render into it. Data router (`createBrowserRouter`) so future
+// `App` is the persistent shell (sidebar + topbar + <main><Outlet>); feature
+// pages render into it. Data router (`createBrowserRouter`) so future
 // loaders/blockers have the API available.
 //
-// IA (spec §1): `/` is the Overview dashboard; the artists roster lives at
-// /artists and drills down the artist spine:
-//   /artists           roster
-//    └ /artists/:name  that artist's albums
-//       └ /albums/:id  album tracklist (the back link follows the `from`
-//                      origin carried in router state — Browse/Search/spine)
+// IA: the sidebar (shell/Sidebar NAV_SECTIONS) groups the sections —
+// Library (/ Overview dashboard, /artists roster, /browse facets),
+// Acquire (/review, /import), Manage (/playlists, /duplicates, /settings).
+// Detail routes hang off the artist spine:
+//   /artists/:name  that artist's albums
+//   /albums/:id     album tracklist (back link is contextual — Artists,
+//                   Browse, or Search via router state)
+// /search is reached by typing in the topbar search; it has no sidebar item.
 // Unknown routes fall to a minimal NotFound, not a page.
 const router = createBrowserRouter([
   {

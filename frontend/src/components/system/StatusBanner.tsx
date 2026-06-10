@@ -26,9 +26,10 @@ const iconToneClass: Record<"neutral" | "warning" | "destructive", string> = {
 
 /**
  * The one banner recipe (spec §4 — generalizes the hand-copied banner
- * markup: ReorganizeBanner's box, AlbumEditPanel MoveNotice's --warning
- * tokens). Tones map to roles: neutral is ambient (`role="status"`);
- * warning and destructive demand attention (`role="alert"`).
+ * markup of the pre-Phase-2 app banners, since deleted, and AlbumEditPanel
+ * MoveNotice's --warning tokens). Tones map to roles: neutral is ambient
+ * (`role="status"`); warning and destructive demand attention
+ * (`role="alert"`).
  *
  * Layout margin belongs to the CALLER (the old banners hardcoded mb-6) —
  * the banner is just the box. `icon` is a concept icon from icons.ts;
