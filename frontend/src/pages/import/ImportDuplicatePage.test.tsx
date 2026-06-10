@@ -1,6 +1,8 @@
-import { screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { describe, expect, test } from "vitest";
 
 import type { DuplicatePrompt } from "@/api/useImport";
@@ -41,6 +43,28 @@ function renderDuplicateAt(route = "/import/albums/0/duplicate?job=job-1") {
     route,
     path: "/import/albums/:index/duplicate",
   });
+}
+
+/** Mounts the duplicate page with seeded router state plus a /review probe. */
+function renderWithOrigin(state?: unknown) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter
+        initialEntries={[
+          { pathname: "/import/albums/0/duplicate", search: "?job=job-1", state },
+        ]}
+      >
+        <Routes>
+          <Route
+            path="/import/albums/:index/duplicate"
+            element={<ImportDuplicatePage />}
+          />
+          <Route path="/review" element={<p>Review page probe</p>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
 }
 
 describe("ImportDuplicatePage", () => {
@@ -143,5 +167,28 @@ describe("ImportDuplicatePage", () => {
     renderDuplicateAt();
 
     expect(await screen.findByText(/isn.?t waiting/i)).toBeInTheDocument();
+  });
+
+  test("entered from Review: back link reads Review and post-skip returns there", async () => {
+    server.use(
+      http.get(DUPLICATE_URL, () => HttpResponse.json(PROMPT)),
+      http.post(DUPLICATE_URL, () => new HttpResponse(null, { status: 204 })),
+    );
+    const user = userEvent.setup();
+    renderWithOrigin({ from: { label: "Review", to: "/review" } });
+
+    const back = await screen.findByRole("link", { name: "Review" });
+    expect(back).toHaveAttribute("href", "/review");
+
+    await user.click(await screen.findByRole("button", { name: /skip new/i }));
+    expect(await screen.findByText("Review page probe")).toBeInTheDocument();
+  });
+
+  test("without an origin the back link falls back to the job's import feed", async () => {
+    server.use(http.get(DUPLICATE_URL, () => HttpResponse.json(PROMPT)));
+    renderWithOrigin(undefined);
+
+    const back = await screen.findByRole("link", { name: "Import" });
+    expect(back).toHaveAttribute("href", "/import?job=job-1");
   });
 });

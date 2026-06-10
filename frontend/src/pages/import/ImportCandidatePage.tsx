@@ -1,16 +1,5 @@
-import {
-  AlertCircle,
-  Check,
-  ChevronDown,
-  ExternalLink,
-  Loader2,
-  Minus,
-  Music,
-  Pencil,
-  Plus,
-} from "lucide-react";
 import { useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 
 import type { Candidate } from "@/api/useImport";
 import {
@@ -19,7 +8,20 @@ import {
   useImportCandidate,
   useSubmitChoice,
 } from "@/api/useImport";
-import { BackLink } from "@/components/albums/album-grid";
+import { albumOriginFromState, BackLink } from "@/components/albums/album-grid";
+import {
+  Add,
+  Edit as EditIcon,
+  Expand,
+  External,
+  Info,
+  Missing,
+  Spinner,
+  Success,
+} from "@/components/icons";
+import { CoverArt } from "@/components/system/CoverArt";
+import { EmptyState } from "@/components/system/EmptyState";
+import { PageSkeleton } from "@/components/system/PageSkeleton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -45,8 +47,15 @@ export function ImportCandidatePage() {
   const index = Number(indexParam);
   const validIndex = Number.isInteger(index) && index >= 0;
 
+  // Where this decision screen was entered from (Review threads
+  // {label:'Review', to:'/review'}; the import feed threads its run URL). A
+  // deep link with no state falls back to the job's feed.
+  const origin = albumOriginFromState(useLocation().state);
+  const backTo = origin?.to ?? (jobId ? `/import?job=${jobId}` : "/import");
+  const backLabel = origin?.label ?? "Import";
+
   // Without a job id (deep link lost the query) or a bad index, there's nothing
-  // to fetch — send the user back to the import feed.
+  // to fetch — send the user back.
   const enabled = Boolean(jobId) && validIndex;
   const { data, isPending, isError, refetch } = useImportCandidate(
     jobId ?? "",
@@ -56,11 +65,9 @@ export function ImportCandidatePage() {
     enabled,
   );
 
-  const backTo = jobId ? `/import?job=${jobId}` : "/import";
-
   if (!enabled) {
     return (
-      <Shell backTo={backTo}>
+      <Shell backTo={backTo} backLabel={backLabel}>
         <Notice
           title="Nothing to review"
           body="This review link is missing its import job. Go back to the import."
@@ -70,7 +77,7 @@ export function ImportCandidatePage() {
   }
   if (isPending) {
     return (
-      <Shell backTo={backTo}>
+      <Shell backTo={backTo} backLabel={backLabel}>
         <CandidateSkeleton />
       </Shell>
     );
@@ -79,10 +86,10 @@ export function ImportCandidatePage() {
     // A 404 here means the album is no longer parked (already decided / the
     // worker advanced). Treat it as "return to the feed", not a hard error.
     return (
-      <Shell backTo={backTo}>
+      <Shell backTo={backTo} backLabel={backLabel}>
         <Notice
           title="This album isn’t waiting for review"
-          body="It may already be decided. Head back to the import to see the feed."
+          body="It may already be decided. Head back to see what's pending."
           onRetry={() => void refetch()}
         />
       </Shell>
@@ -90,7 +97,7 @@ export function ImportCandidatePage() {
   }
 
   return (
-    <Shell backTo={backTo}>
+    <Shell backTo={backTo} backLabel={backLabel}>
       <ReviewScreen
         candidate={data}
         jobId={jobId as string}
@@ -101,11 +108,19 @@ export function ImportCandidatePage() {
   );
 }
 
-/** Page chrome: the up-link to the feed. */
-function Shell({ backTo, children }: { backTo: string; children: React.ReactNode }) {
+/** Page chrome: the up-link to wherever the user came from. */
+function Shell({
+  backTo,
+  backLabel,
+  children,
+}: {
+  backTo: string;
+  backLabel: string;
+  children: React.ReactNode;
+}) {
   return (
     <section className="flex flex-col gap-6" aria-label="Review album">
-      <BackLink to={backTo} label="Import" />
+      <BackLink to={backTo} label={backLabel} />
       {children}
     </section>
   );
@@ -162,9 +177,9 @@ function MatchHeader({ candidate }: { candidate: Candidate }) {
   return (
     <div className="flex flex-col gap-1">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <h2 className="text-2xl font-semibold tracking-tight">
+        <h1 tabIndex={-1} className="text-2xl font-bold tracking-tight">
           {after.artist ?? "Unknown artist"} — {after.album ?? "Unknown album"}
-        </h2>
+        </h1>
       </div>
       <p className="text-muted-foreground flex items-center gap-2 text-sm">
         <span className="text-foreground font-medium">
@@ -181,7 +196,7 @@ function MatchHeader({ candidate }: { candidate: Candidate }) {
             className="text-foreground inline-flex items-center gap-1 underline underline-offset-4"
           >
             view <span className="sr-only">(opens MusicBrainz in a new tab)</span>
-            <ExternalLink className="size-3" aria-hidden="true" />
+            <External className="size-3" aria-hidden="true" />
           </a>
         )}
       </p>
@@ -217,7 +232,7 @@ function CandidateSwitcher({
             </option>
           ))}
         </select>
-        <ChevronDown
+        <Expand
           className="text-muted-foreground pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2"
           aria-hidden="true"
         />
@@ -279,7 +294,7 @@ function AlbumPanel({
         {heading}
       </p>
       <div className="flex flex-col gap-1.5">
-        <Cover url={coverUrl} />
+        <CoverArt src={coverUrl} className="w-full rounded-lg" />
         {coverCaption && (
           <p className="text-muted-foreground text-xs">{coverCaption}</p>
         )}
@@ -319,30 +334,6 @@ function Field({
         </Badge>
       )}
     </div>
-  );
-}
-
-/** Serve-or-degrade cover (mirrors AlbumDetailPage.CoverImage). */
-function Cover({ url }: { url: string | null }) {
-  const [failed, setFailed] = useState(false);
-  if (url === null || failed) {
-    return (
-      <div
-        className="bg-muted flex aspect-square w-full items-center justify-center rounded-lg"
-        aria-hidden="true"
-      >
-        <Music className="text-muted-foreground size-10" />
-      </div>
-    );
-  }
-  return (
-    <img
-      src={url}
-      alt=""
-      loading="lazy"
-      onError={() => setFailed(true)}
-      className="bg-muted aspect-square w-full rounded-lg object-cover"
-    />
   );
 }
 
@@ -427,7 +418,7 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
                       {t.title_after ?? "—"}
                     </span>
                     {changed && (
-                      <Pencil className="text-muted-foreground size-3 shrink-0" aria-label="changed" />
+                      <EditIcon className="text-muted-foreground size-3 shrink-0" aria-label="changed" />
                     )}
                   </span>
                 </TableCell>
@@ -441,7 +432,7 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
               </TableCell>
               <TableCell className="text-muted-foreground">
                 <span className="inline-flex items-center gap-1">
-                  <Minus className="size-3" aria-hidden="true" /> missing
+                  <Missing className="size-3" aria-hidden="true" /> missing
                 </span>
               </TableCell>
               <TableCell className="text-muted-foreground">{m.title ?? "—"}</TableCell>
@@ -454,7 +445,7 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
               </TableCell>
               <TableCell>
                 <span className="inline-flex items-center gap-1">
-                  <Plus className="size-3" aria-hidden="true" /> {u.title ?? "—"}
+                  <Add className="size-3" aria-hidden="true" /> {u.title ?? "—"}
                 </span>
               </TableCell>
               <TableCell className="text-muted-foreground">not on release</TableCell>
@@ -549,11 +540,11 @@ function ReviewActions({
         >
           {submit.isPending ? (
             <>
-              <Loader2 className="animate-spin" aria-hidden="true" /> Applying…
+              <Spinner className="animate-spin" aria-hidden="true" /> Applying…
             </>
           ) : (
             <>
-              <Check aria-hidden="true" /> Apply
+              <Success aria-hidden="true" /> Apply
             </>
           )}
         </Button>
@@ -575,30 +566,26 @@ function Notice({
   onRetry?: () => void;
 }) {
   return (
-    <div className="border-border flex flex-col items-center gap-3 rounded-xl border border-dashed py-16 text-center">
-      <AlertCircle className="text-muted-foreground size-10" aria-hidden="true" />
-      <div className="flex flex-col gap-1">
-        <p className="font-medium">{title}</p>
-        <p className="text-muted-foreground text-sm">{body}</p>
-      </div>
-      {onRetry && (
-        <Button variant="outline" size="sm" onClick={onRetry}>
-          Try again
-        </Button>
-      )}
-    </div>
+    <EmptyState
+      bordered
+      icon={Info}
+      title={title}
+      body={body}
+      action={
+        onRetry && (
+          <Button variant="outline" size="sm" onClick={onRetry}>
+            Try again
+          </Button>
+        )
+      }
+    />
   );
 }
 
 function CandidateSkeleton() {
   return (
-    <>
-      {/* role="status" must sit OUTSIDE the aria-hidden skeleton, or screen
-          readers never hear the loading announcement (mirrors ImportPage). */}
-      <p className="sr-only" role="status">
-        Loading the proposed match…
-      </p>
-      <div className="flex flex-col gap-6" aria-hidden="true">
+    <PageSkeleton announce="Loading the proposed match…">
+      <div className="flex flex-col gap-6">
         <div className="flex flex-col gap-2">
           <Skeleton className="h-7 w-2/3" />
           <Skeleton className="h-4 w-1/2" />
@@ -608,6 +595,6 @@ function CandidateSkeleton() {
           <Skeleton className="h-64 rounded-xl" />
         </div>
       </div>
-    </>
+    </PageSkeleton>
   );
 }

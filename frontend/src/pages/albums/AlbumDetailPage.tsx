@@ -9,7 +9,7 @@ import { useLyricsBackfillStatus, useStopLyricsBackfill } from "@/api/useLyricsB
 import { useAlbumMissing, type MissingReleaseTrack } from "@/api/useAlbumMissing";
 import { formatDuration } from "@/lib/format";
 import { buildDiscGroups, type DiscGroup } from "@/pages/albums/missingTracks";
-import { BackLink, type AlbumOrigin } from "@/components/albums/album-grid";
+import { albumOriginFromState, BackLink } from "@/components/albums/album-grid";
 import {
   Cover as CoverIcon,
   Edit as EditIcon,
@@ -37,22 +37,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-
-/** Read a contextual back origin off router `state` (`{ from: {label, to} }`),
- * set by an AlbumCard when it knows where the album was opened from. */
-function albumOriginFromState(state: unknown): AlbumOrigin | undefined {
-  if (typeof state !== "object" || state === null) return undefined;
-  const from = (state as { from?: unknown }).from;
-  if (
-    typeof from === "object" &&
-    from !== null &&
-    typeof (from as AlbumOrigin).label === "string" &&
-    typeof (from as AlbumOrigin).to === "string"
-  ) {
-    return from as AlbumOrigin;
-  }
-  return undefined;
-}
 
 export function AlbumDetailPage() {
   const { albumId } = useParams<{ albumId: string }>();

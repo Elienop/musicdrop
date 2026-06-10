@@ -42,6 +42,24 @@ export function BackLink({ to, label }: { to: string; label: string }) {
  * "up" link can return there (e.g. back to Browse with its filters). */
 export type AlbumOrigin = { label: string; to: string };
 
+/** Read a contextual origin off router `state` (`{ from: {label, to} }`), set
+ * by whatever link opened the page (AlbumCard, Review/Import decision links).
+ * Returns undefined for absent/malformed state so deep links degrade to each
+ * page's default back target. */
+export function albumOriginFromState(state: unknown): AlbumOrigin | undefined {
+  if (typeof state !== "object" || state === null) return undefined;
+  const from = (state as { from?: unknown }).from;
+  if (
+    typeof from === "object" &&
+    from !== null &&
+    typeof (from as AlbumOrigin).label === "string" &&
+    typeof (from as AlbumOrigin).to === "string"
+  ) {
+    return from as AlbumOrigin;
+  }
+  return undefined;
+}
+
 /** Whole-card link to an album's tracklist (`/albums/:id`). A real <a> so it's
  * keyboard- and screen-reader-navigable; the link's accessible name is the
  * card's text (title + artist + meta). `from` (optional) records where the card
