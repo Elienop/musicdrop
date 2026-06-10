@@ -420,6 +420,25 @@ describe("ImportPage — live feed", () => {
       await screen.findByText("origin: Import /import?job=job-1"),
     ).toBeInTheDocument();
   });
+
+  test("a user-DECIDED row with an album_id links too — non-null id is the link condition", async () => {
+    // A Review-screen Apply sets status "decided"; the album_id follow-up
+    // does not touch status. The row must still link to the landed album.
+    const job = makeJob();
+    job.albums = [
+      {
+        ...job.albums[0]!,
+        status: "decided",
+        album: "In Rainbows",
+        album_id: 77,
+      },
+    ];
+    server.use(http.get(JOB_URL, () => HttpResponse.json(job)));
+    renderFeedWithProbes("/import?job=job-1");
+
+    const link = await screen.findByRole("link", { name: "In Rainbows" });
+    expect(link).toHaveAttribute("href", "/albums/77");
+  });
 });
 
 describe("ImportPage — terminal states", () => {

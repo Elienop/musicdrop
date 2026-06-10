@@ -386,10 +386,12 @@ function FeedRow({
   // Final fallback is non-empty: `album` may be null and `folder` may be ""/"/",
   // in which case folderName() returns "" — never show an empty title.
   const title = (album.album ?? folderName(album.folder)) || "Unknown album";
-  // Task 1's outcome plumbing: present for applied albums where beets returned
-  // the library id; absent/null otherwise — degrade to a plain row.
+  // Task 1's outcome plumbing: the id is only ever set once the album LANDED
+  // in the library — for auto-applied strong matches (status "applied") AND
+  // user-decided Applies (status "decided", id arrives via the follow-up).
+  // So a non-null id is the link condition; status alone under-links.
   const albumId = album.album_id ?? null;
-  const linked = album.status === "applied" && albumId !== null;
+  const linked = albumId !== null;
   const origin = importOrigin(jobId);
   return (
     // Highlight stays with the caller (AlbumRow contract).

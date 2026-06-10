@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 
 import { useAlbums } from "@/api/useAlbums";
@@ -53,6 +53,12 @@ export function ArtistAlbumsPage() {
 
   const [editingImage, setEditingImage] = useState(false);
   const [imageVersion, setImageVersion] = useState(0);
+  // Spec §4 disclosure pattern (the AlbumDetailPage idiom): opening the
+  // inline panel moves focus into it; closing leaves focus on the toggle.
+  const imagePanelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (editingImage) imagePanelRef.current?.focus();
+  }, [editingImage]);
   const imagesEnabled = useArtistImageSettings().data?.enabled ?? false;
   // The single write-to-library toggle drives BOTH fetch + write; when on, the
   // header gains a per-artist "Apply to library" action with marching progress.
@@ -121,6 +127,8 @@ export function ArtistAlbumsPage() {
                 size="sm"
                 onClick={() => setEditingImage((v) => !v)}
                 aria-label="Edit artist image"
+                aria-expanded={editingImage}
+                aria-controls="artist-image-panel"
               >
                 <Cover className="size-4" aria-hidden="true" /> Image
               </Button>
@@ -134,11 +142,18 @@ export function ArtistAlbumsPage() {
       </div>
 
       {editingImage && (
-        <ArtistImageEditPanel
-          name={displayName}
-          onSaved={() => setImageVersion((v) => v + 1)}
-          onClose={() => setEditingImage(false)}
-        />
+        <div
+          id="artist-image-panel"
+          ref={imagePanelRef}
+          tabIndex={-1}
+          className="outline-none"
+        >
+          <ArtistImageEditPanel
+            name={displayName}
+            onSaved={() => setImageVersion((v) => v + 1)}
+            onClose={() => setEditingImage(false)}
+          />
+        </div>
       )}
 
       {isPending ? (
