@@ -66,14 +66,14 @@ describe("routing (artist spine)", () => {
     renderAt("/");
     expect(await screen.findByText("Radiohead")).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { level: 2, name: "Artists" }),
+      screen.getByRole("heading", { level: 1, name: "Artists" }),
     ).toBeInTheDocument();
   });
 
   test("/artists/:name renders that artist's albums page", async () => {
     renderAt("/artists/Radiohead");
     expect(
-      await screen.findByRole("heading", { level: 2, name: "Radiohead" }),
+      await screen.findByRole("heading", { level: 1, name: "Radiohead" }),
     ).toBeInTheDocument();
   });
 
@@ -81,7 +81,7 @@ describe("routing (artist spine)", () => {
     renderAt("/artists");
     // Lands on the roster, not a dead-end empty parent.
     expect(
-      await screen.findByRole("heading", { level: 2, name: "Artists" }),
+      await screen.findByRole("heading", { level: 1, name: "Artists" }),
     ).toBeInTheDocument();
   });
 

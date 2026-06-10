@@ -35,7 +35,7 @@ function makePage(overrides: Partial<AlbumPage> = {}): AlbumPage {
       },
     ],
     total: 2,
-    limit: 50,
+    limit: 48,
     offset: 0,
     ...overrides,
   };
@@ -82,7 +82,7 @@ describe("ArtistAlbumsPage", () => {
     renderAt("Radiohead");
 
     expect(
-      await screen.findByRole("heading", { level: 2, name: "Radiohead" }),
+      await screen.findByRole("heading", { level: 1, name: "Radiohead" }),
     ).toBeInTheDocument();
   });
 
@@ -92,8 +92,8 @@ describe("ArtistAlbumsPage", () => {
     const { container } = renderAt("Radiohead");
 
     // Wait for the page to settle, then find the header poster. It's decorative
-    // (the <h2> names the artist), so it has no accessible name — query by src.
-    await screen.findByRole("heading", { level: 2, name: "Radiohead" });
+    // (the <h1> names the artist), so it has no accessible name — query by src.
+    await screen.findByRole("heading", { level: 1, name: "Radiohead" });
     // The header poster carries a cache-bust `&v=` suffix (image edit/version),
     // so match by the stable name-scoped prefix rather than the exact src.
     const poster = container.querySelector(
@@ -114,7 +114,7 @@ describe("ArtistAlbumsPage", () => {
 
     renderAt(encodeURIComponent("Sigur Rós"));
 
-    await screen.findByRole("heading", { level: 2, name: "Sigur Rós" });
+    await screen.findByRole("heading", { level: 1, name: "Sigur Rós" });
     expect(seenArtist).toBe("Sigur Rós");
   });
 
@@ -252,5 +252,43 @@ describe("ArtistAlbumsPage", () => {
     const live = count.closest("[aria-live]");
     expect(live).not.toBeNull();
     expect(live).toHaveAttribute("aria-live", "polite");
+  });
+
+  test("requests pages of 48 (the shared PAGE_SIZE)", async () => {
+    let seenLimit: string | null = null;
+    server.use(
+      http.get(ALBUMS_URL, ({ request }) => {
+        seenLimit = new URL(request.url).searchParams.get("limit");
+        return HttpResponse.json(makePage());
+      }),
+    );
+
+    renderAt("Radiohead");
+
+    await screen.findByText("OK Computer");
+    expect(seenLimit).toBe("48");
+  });
+
+  test("Next requests the next 48, scrolls plainly, and focuses the count line", async () => {
+    server.use(
+      http.get(ALBUMS_URL, ({ request }) => {
+        const offset = Number(
+          new URL(request.url).searchParams.get("offset") ?? "0",
+        );
+        return HttpResponse.json(makePage({ total: 60, offset }));
+      }),
+    );
+
+    renderAt("Radiohead");
+
+    await screen.findByText("OK Computer");
+    await userEvent.click(screen.getByRole("button", { name: /next/i }));
+
+    // The URL offset drove a refetch onto page 2 of 2 …
+    expect(await screen.findByText("Page 2 of 2")).toBeInTheDocument();
+    // … focus moved to the always-mounted count line (PageHeader meta) …
+    expect(screen.getByText("60 albums")).toHaveFocus();
+    // … and the scroll was plain — NO smooth behavior (post-change contract).
+    expect(window.scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 });
