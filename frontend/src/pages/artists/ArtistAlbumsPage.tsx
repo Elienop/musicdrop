@@ -59,10 +59,19 @@ export function ArtistAlbumsPage() {
   useEffect(() => {
     if (editingImage) imagePanelRef.current?.focus();
   }, [editingImage]);
-  const imagesEnabled = useArtistImageSettings().data?.enabled ?? false;
+  const imageSettings = useArtistImageSettings();
   // The single write-to-library toggle drives BOTH fetch + write; when on, the
   // header gains a per-artist "Apply to library" action with marching progress.
-  const writeEnabled = useArtistArtSettings().data?.enabled ?? false;
+  const artSettings = useArtistArtSettings();
+  const imagesEnabled = imageSettings.data?.enabled ?? false;
+  const writeEnabled = artSettings.data?.enabled ?? false;
+  // Backdrop short-circuit mirrors ArtistImage's rule: only skip the request
+  // when BOTH toggles are loaded-and-off (no pointless 404 round-trip); while
+  // either loads or is on, attempt it — a failure degrades to the gradient
+  // inside ArtistHeroBackdrop.
+  const backdropDisabled =
+    imageSettings.data?.enabled === false &&
+    artSettings.data?.enabled === false;
 
   const { data, isPending, isError, isFetching, refetch } = useAlbums({
     limit: PAGE_SIZE,
@@ -96,47 +105,59 @@ export function ArtistAlbumsPage() {
   return (
     <PageBody>
       <BackLink to="/artists" label="Artists" />
-      {/* Poster + name row. The poster is decorative — the h1 names the
-          artist. The blurred-art hero treatment is Phase 4. */}
-      <div className="flex flex-col gap-6 sm:flex-row sm:items-stretch">
-        <ArtistImage
+      {/* Art-forward hero (spec §5/§7): blurred-portrait backdrop behind the
+          existing poster + name + action row. Layer 1 is decorative
+          (aria-hidden); layer 2 is the pre-hero header content unchanged —
+          same h1, same buttons, same disclosure wiring. The BackLink above
+          and everything below (panel, grid) stay outside the container. */}
+      <div className="relative overflow-hidden rounded-xl">
+        <ArtistHeroBackdrop
           name={displayName}
-          decorative
           version={imageVersion}
-          className="size-40 shrink-0 rounded-xl shadow-sm"
-          monogramClassName="text-6xl"
+          disabled={backdropDisabled}
         />
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <PageHeader
-            title={displayName}
-            meta={
-              !isPending && !isError && total > 0 ? (
-                <span ref={countRef} tabIndex={-1}>
-                  {total.toLocaleString()} {total === 1 ? "album" : "albums"}
-                </span>
-              ) : undefined
-            }
+        <div className="relative flex flex-col gap-6 p-6 sm:flex-row sm:items-stretch">
+          <ArtistImage
+            name={displayName}
+            decorative
+            version={imageVersion}
+            className="size-40 shrink-0 rounded-xl shadow-lg"
+            monogramClassName="text-6xl"
           />
-          {/* Per-artist maintenance actions — a single button row pushed to
-              the bottom of the column so it lines up with the bottom of the
-              poster. Status/progress lives in the activity popover. */}
-          <div className="border-border mt-auto flex flex-wrap items-center gap-3 border-t pt-3">
-            {imagesEnabled && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setEditingImage((v) => !v)}
-                aria-label="Edit artist image"
-                aria-expanded={editingImage}
-                aria-controls="artist-image-panel"
-              >
-                <Cover className="size-4" aria-hidden="true" /> Image
-              </Button>
-            )}
-            {writeEnabled && <ArtistArtStatus displayName={displayName} />}
-            <ReorganizeControl
-              scope={{ scope: "artist", artist: displayName }}
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <PageHeader
+              title={displayName}
+              meta={
+                !isPending && !isError && total > 0 ? (
+                  <span ref={countRef} tabIndex={-1}>
+                    {total.toLocaleString()} {total === 1 ? "album" : "albums"}
+                  </span>
+                ) : undefined
+              }
             />
+            {/* Per-artist maintenance actions — a single button row pushed to
+                the bottom of the column so it lines up with the bottom of the
+                poster. Status/progress lives in the activity popover.
+                border-border is already white/10 in the dark theme, so the
+                separator stays legible on the tinted backdrop. */}
+            <div className="border-border mt-auto flex flex-wrap items-center gap-3 border-t pt-3">
+              {imagesEnabled && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditingImage((v) => !v)}
+                  aria-label="Edit artist image"
+                  aria-expanded={editingImage}
+                  aria-controls="artist-image-panel"
+                >
+                  <Cover className="size-4" aria-hidden="true" /> Image
+                </Button>
+              )}
+              {writeEnabled && <ArtistArtStatus displayName={displayName} />}
+              <ReorganizeControl
+                scope={{ scope: "artist", artist: displayName }}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -252,5 +273,46 @@ function ArtistArtStatus({ displayName }: { displayName: string }) {
         "Write artist art"
       )}
     </Button>
+  );
+}
+
+/** Layer 1 of the artist hero: the portrait as a blurred, scrimmed backdrop.
+ * Page-owned, NOT ArtistImage — that component's failed-state renders the
+ * initials monogram, which would be wrong as a backdrop. A plain <img> on
+ * the same versioned endpoint as the poster, with its own onError state:
+ * no portrait (404/decode failure) or feature loaded-and-off → the static
+ * violet-tinted gradient. Entirely aria-hidden; the h1 in layer 2 names
+ * the artist. */
+function ArtistHeroBackdrop({
+  name,
+  version,
+  disabled,
+}: {
+  name: string;
+  version: number;
+  disabled: boolean;
+}) {
+  const [failed, setFailed] = useState(false);
+  // A new version (override save) or artist may have a portrait now — retry.
+  useEffect(() => setFailed(false), [name, version]);
+
+  if (disabled || failed) {
+    return (
+      <div
+        aria-hidden="true"
+        className="from-primary/15 to-surface-base absolute inset-0 bg-gradient-to-br"
+      />
+    );
+  }
+  return (
+    <div aria-hidden="true" className="absolute inset-0">
+      <img
+        src={`/api/artists/image?name=${encodeURIComponent(name)}&v=${version}`}
+        alt=""
+        onError={() => setFailed(true)}
+        className="size-full scale-110 object-cover opacity-40 blur-2xl"
+      />
+      <div className="via-surface-base/70 to-surface-base absolute inset-0 bg-gradient-to-b from-transparent" />
+    </div>
   );
 }

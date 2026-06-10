@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, test } from "vitest";
@@ -91,15 +91,18 @@ describe("ArtistAlbumsPage", () => {
 
     const { container } = renderAt("Radiohead");
 
-    // Wait for the page to settle, then find the header poster. It's decorative
-    // (the <h1> names the artist), so it has no accessible name — query by src.
+    // Wait for the page to settle. TWO portrait imgs render now: the hero
+    // backdrop (inside the aria-hidden layer) first, then the foreground
+    // poster. The poster is decorative (the <h1> names the artist) — alt=""
+    // and NOT inside the hidden backdrop layer. Both carry the cache-bust
+    // `&v=` suffix, so match by the stable name-scoped prefix.
     await screen.findByRole("heading", { level: 1, name: "Radiohead" });
-    // The header poster carries a cache-bust `&v=` suffix (image edit/version),
-    // so match by the stable name-scoped prefix rather than the exact src.
-    const poster = container.querySelector(
+    const imgs = container.querySelectorAll(
       'img[src^="/api/artists/image?name=Radiohead"]',
     );
-    expect(poster).not.toBeNull();
+    expect(imgs).toHaveLength(2);
+    const poster = imgs[1]!;
+    expect(poster.closest('div[aria-hidden="true"]')).toBeNull();
     expect(poster).toHaveAttribute("alt", "");
   });
 
@@ -290,5 +293,55 @@ describe("ArtistAlbumsPage", () => {
     expect(screen.getByText("60 albums")).toHaveFocus();
     // … and the scroll was plain — NO smooth behavior (post-change contract).
     expect(window.scrollTo).toHaveBeenCalledWith({ top: 0 });
+  });
+
+  test("wraps the header in the art hero with an AT-hidden blurred backdrop", async () => {
+    server.use(http.get(ALBUMS_URL, () => HttpResponse.json(makePage())));
+
+    renderAt("Radiohead");
+    const heading = await screen.findByRole("heading", {
+      level: 1,
+      name: "Radiohead",
+    });
+
+    // The hero is a clipped, rounded container around the header content…
+    const hero = heading.closest("div.relative.overflow-hidden.rounded-xl");
+    expect(hero).not.toBeNull();
+    // …whose first layer is the blurred portrait, fully hidden from AT
+    // (aria-hidden wrapper + empty alt), on the same versioned endpoint as
+    // the poster.
+    const backdrop = hero!.querySelector('div[aria-hidden="true"] > img');
+    expect(backdrop).not.toBeNull();
+    expect(backdrop).toHaveClass("blur-2xl");
+    expect(backdrop).toHaveAttribute("alt", "");
+    expect(backdrop!.getAttribute("src")).toMatch(
+      /^\/api\/artists\/image\?name=Radiohead/,
+    );
+    // The BackLink stays OUTSIDE the hero (unchanged position).
+    const back = screen.getByRole("link", { name: /artists/i });
+    expect(back.closest("div.relative.overflow-hidden.rounded-xl")).toBeNull();
+  });
+
+  test("backdrop failure degrades to the gradient without touching the poster", async () => {
+    server.use(http.get(ALBUMS_URL, () => HttpResponse.json(makePage())));
+
+    const { container } = renderAt("Radiohead");
+    await screen.findByRole("heading", { level: 1, name: "Radiohead" });
+
+    const backdrop = container.querySelector('div[aria-hidden="true"] > img');
+    expect(backdrop).not.toBeNull();
+    fireEvent.error(backdrop!);
+
+    // Layer 1 is now the static gradient — the failed img unmounts…
+    expect(container.querySelector('div[aria-hidden="true"] > img')).toBeNull();
+    expect(
+      container.querySelector('div[aria-hidden="true"].bg-gradient-to-br'),
+    ).not.toBeNull();
+    // …while the LAYER-2 poster keeps its own img/monogram lifecycle.
+    expect(
+      container.querySelectorAll(
+        'img[src^="/api/artists/image?name=Radiohead"]',
+      ),
+    ).toHaveLength(1);
   });
 });
