@@ -7,7 +7,7 @@
 // deleted in the Task-8 shell swap — until then AppTopbar is simply not
 // mounted, so the app never renders two headers). Additions over the
 // originals: a global ⌘K/Ctrl+K shortcut focusing the search box (+ kbd
-// hint), and Phosphor concept icons in place of the lucide glyphs.
+// hint), and Phosphor concept icons in place of the original glyphs.
 
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
