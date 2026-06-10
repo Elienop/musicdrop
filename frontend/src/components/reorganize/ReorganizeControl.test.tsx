@@ -93,7 +93,7 @@ test("confirm starts the job", async () => {
   );
 });
 
-test("zero-move preview raises a banner notice — no inline message, no Done", async () => {
+test("zero-move preview shows an inline notice — no review, no Done button", async () => {
   vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
     if (path === "/api/reorganize/status")
       return { data: idle, response: { ok: true, status: 200 } } as never;
@@ -116,15 +116,34 @@ test("zero-move preview raises a banner notice — no inline message, no Done", 
   await userEvent.click(
     screen.getByRole("button", { name: /preview reorganize/i }),
   );
-  await waitFor(() =>
-    expect(client.GET).toHaveBeenCalledWith("/api/reorganize/preview", {
-      params: { query: {} },
-    }),
-  );
-  // The "nothing to reorganize" result is raised to the top banner notice, so it
-  // is NOT inline here and there is no Done button — the control stays idle.
-  expect(screen.queryByText(/nothing to reorganize/i)).toBeNull();
+  // The "nothing to reorganize" result is action-local now (the old top-banner
+  // notice channel is gone): an inline role="status" next to the buttons.
+  const note = await screen.findByRole("status");
+  expect(note).toHaveTextContent(/nothing to reorganize/i);
+  // Still no review plan and no Done button — the control stays idle.
   expect(screen.queryByRole("button", { name: /^done$/i })).toBeNull();
+  expect(
+    screen.getByRole("button", { name: /preview reorganize/i }),
+  ).toBeInTheDocument();
+});
+
+test("a failed preview shows an inline error next to the buttons", async () => {
+  vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
+    if (path === "/api/reorganize/status")
+      return { data: idle, response: { ok: true, status: 200 } } as never;
+    if (path === "/api/reorganize/preview")
+      return { data: undefined, response: { ok: false, status: 500 } } as never;
+    return { data: undefined, response: { ok: false, status: 404 } } as never;
+  });
+  wrap(<ReorganizeControl scope={{ scope: "library" }} />);
+  await userEvent.click(
+    screen.getByRole("button", { name: /preview reorganize/i }),
+  );
+  // usePreviewReorganize throws Error("Failed to build preview") on !ok.
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    /failed to build preview/i,
+  );
+  // The control stays idle — preview remains available for a retry.
   expect(
     screen.getByRole("button", { name: /preview reorganize/i }),
   ).toBeInTheDocument();

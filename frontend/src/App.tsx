@@ -27,7 +27,6 @@ import { useActiveImport } from "@/api/useActiveImport";
 import { ArtistArtBackfillBanner } from "@/components/ArtistArtBackfillBanner";
 import { LyricsBackfillBanner } from "@/components/LyricsBackfillBanner";
 import { ReorganizeBanner } from "@/components/ReorganizeBanner";
-import { ReorganizeNoticeProvider } from "@/components/reorganize/reorganizeNotice";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -213,8 +212,7 @@ export function HealthStatus() {
 export function App() {
   const location = useLocation();
   return (
-    <ReorganizeNoticeProvider>
-      <div className="bg-background text-foreground min-h-svh">
+    <div className="bg-background text-foreground min-h-svh">
         <header className="border-border bg-background/80 sticky top-0 z-10 border-b backdrop-blur">
           <div className="mx-auto flex max-w-8xl items-center gap-4 px-6 py-4">
             <h1 className="shrink-0 text-xl font-semibold tracking-tight">
@@ -313,7 +311,6 @@ export function App() {
           <ReorganizeBanner />
           <Outlet />
         </main>
-      </div>
-    </ReorganizeNoticeProvider>
+    </div>
   );
 }

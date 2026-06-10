@@ -1,12 +1,10 @@
 // frontend/src/components/ReorganizeBanner.tsx
-import { AlertCircle, Info, Loader2 } from "lucide-react";
+import { AlertCircle, Loader2 } from "lucide-react";
 
 import { useReorganizeStatus } from "@/api/useReorganize";
-import { useReorganizeNotice } from "@/components/reorganize/reorganizeNotice";
 
 export function ReorganizeBanner() {
   const { data } = useReorganizeStatus();
-  const { notice } = useReorganizeNotice();
 
   if (data?.phase === "running") {
     return (
@@ -38,21 +36,6 @@ export function ReorganizeBanner() {
         <span className="flex-1">
           Reorganize failed{data.error ? `: ${data.error}` : "."}
         </span>
-      </div>
-    );
-  }
-
-  if (notice) {
-    return (
-      <div
-        className="border-border bg-muted/50 mb-6 flex items-center gap-3 rounded-xl border p-3 text-sm"
-        role="status"
-      >
-        <Info
-          className="text-muted-foreground size-5 shrink-0"
-          aria-hidden="true"
-        />
-        <span className="flex-1">{notice}</span>
       </div>
     );
   }
