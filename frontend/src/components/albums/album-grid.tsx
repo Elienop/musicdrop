@@ -1,4 +1,3 @@
-import { AlertCircle } from "lucide-react";
 import { Link } from "react-router";
 
 import type { Album } from "@/api/useAlbums";
@@ -140,23 +139,5 @@ export function AlbumsGridSkeleton({ count }: { count: number }) {
         </li>
       ))}
     </ul>
-  );
-}
-
-/** Album-grid error state with a retry. */
-export function ErrorState({ onRetry }: { onRetry: () => void }) {
-  return (
-    <div className="border-destructive/40 bg-destructive/5 flex flex-col items-center gap-3 rounded-xl border py-16 text-center">
-      <AlertCircle className="text-destructive size-10" aria-hidden="true" />
-      <div className="flex flex-col gap-1">
-        <p className="font-medium">Couldn&rsquo;t load albums</p>
-        <p className="text-muted-foreground text-sm">
-          The library didn&rsquo;t respond. Check the backend and try again.
-        </p>
-      </div>
-      <Button variant="outline" size="sm" onClick={onRetry}>
-        Retry
-      </Button>
-    </div>
   );
 }
