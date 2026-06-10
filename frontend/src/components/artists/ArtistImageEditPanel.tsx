@@ -1,5 +1,6 @@
-import { AlertCircle, RotateCcw, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+
+import { Error as ErrorIcon, Reset, Upload } from "@/components/icons";
 
 import { useResetArtistImageOverride, useUploadArtistImageOverride } from "@/api/useArtistImage";
 import { Button } from "@/components/ui/button";
@@ -81,7 +82,7 @@ export function ArtistImageEditPanel({
             <Upload className="size-4" aria-hidden="true" /> Upload an image…
           </Button>
           <Button variant="secondary" onClick={onReset} disabled={reset.isPending}>
-            <RotateCcw className="size-4" aria-hidden="true" />
+            <Reset className="size-4" aria-hidden="true" />
             {reset.isPending ? "Resetting…" : "Reset to auto"}
           </Button>
           <Button variant="ghost" onClick={onClose}>
@@ -134,7 +135,7 @@ function Notice({ children }: { children: React.ReactNode }) {
       role="alert"
       className="border-destructive/40 bg-destructive/5 text-foreground flex items-start gap-2 rounded-md border p-3 text-sm"
     >
-      <AlertCircle className="text-destructive mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <ErrorIcon className="text-destructive mt-0.5 size-4 shrink-0" aria-hidden="true" />
       <span>{children}</span>
     </div>
   );
