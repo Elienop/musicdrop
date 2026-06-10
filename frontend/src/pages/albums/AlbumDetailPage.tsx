@@ -180,10 +180,11 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
               )}
             </div>
             {/* Maintenance actions — a single row pushed to the bottom of the
-                column so it lines up with the bottom of the cover. border-white/10
-                (not border-border) so the hairline reads on the tinted backdrop
-                — legible over both the blurred art and the fallback gradient. */}
-            <div className="mt-auto flex flex-wrap items-center gap-3 border-t border-white/10 pt-3">
+                column so it lines up with the bottom of the cover. border-border
+                is already white/10 in the dark theme, so the hairline stays
+                legible on the tinted backdrop (same token as the artist hero —
+                one dialect, retunes together). */}
+            <div className="border-border mt-auto flex flex-wrap items-center gap-3 border-t pt-3">
               <Button
                 variant="outline"
                 size="sm"

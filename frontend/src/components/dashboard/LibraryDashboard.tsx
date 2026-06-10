@@ -169,20 +169,28 @@ function AcquisitionGlance() {
         )}
       </div>
       {/* JobProgress rows carry their own px-4 — pull them back to the
-          section edge so their inset matches the p-4 frame. */}
+          section edge so their inset matches the p-4 frame. Failed rows sort
+          first so the 3-row cap can never hide the very thing the glance
+          exists to surface (useActivity's source order is fixed and a late
+          failed row would otherwise be cut when 4-5 rows coexist). */}
       <ul className="divide-border -mx-4 divide-y">
-        {rows.slice(0, 3).map((row) => (
-          <li key={row.id}>
-            <JobProgress
-              label={row.label}
-              scope={row.scope}
-              state={row.state}
-              progress={row.progress}
-              counts={row.countsText}
-              href={row.href}
-            />
-          </li>
-        ))}
+        {[
+          ...rows.filter((row) => row.state === "failed"),
+          ...rows.filter((row) => row.state !== "failed"),
+        ]
+          .slice(0, 3)
+          .map((row) => (
+            <li key={row.id}>
+              <JobProgress
+                label={row.label}
+                scope={row.scope}
+                state={row.state}
+                progress={row.progress}
+                counts={row.countsText}
+                href={row.href}
+              />
+            </li>
+          ))}
       </ul>
     </section>
   );

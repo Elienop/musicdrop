@@ -38,7 +38,7 @@ const SEARCH_DEBOUNCE_MS = 250;
  * updates use `replace` so each keystroke doesn't pile onto the history stack.
  * ⌘K / Ctrl+K focuses the box from anywhere.
  */
-export function HeaderSearch() {
+function HeaderSearch() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
