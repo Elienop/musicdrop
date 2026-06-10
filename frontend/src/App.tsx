@@ -2,9 +2,10 @@ import { Outlet } from "react-router";
 import { Toaster } from "sonner";
 
 import { useActivity } from "@/api/useActivity";
+import { ActivityButton } from "@/components/shell/ActivityPopover";
 import { useActivityToasts } from "@/components/shell/activityToasts";
 import { AppSidebar } from "@/components/shell/Sidebar";
-import { AppTopbar } from "@/components/shell/Topbar";
+import { AppTopbar, HealthStatus } from "@/components/shell/Topbar";
 import { RouteAnnouncer } from "@/components/system/RouteAnnouncer";
 
 /**
@@ -33,7 +34,10 @@ export function App() {
       <RouteAnnouncer />
       <AppSidebar />
       <div className="flex min-w-0 flex-1 flex-col">
-        <AppTopbar />
+        <AppTopbar>
+          <ActivityButton />
+          <HealthStatus />
+        </AppTopbar>
         <main
           id="main-content"
           tabIndex={-1}
