@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
@@ -13,6 +13,93 @@ import { server } from "@/test/msw-server";
 
 const HEALTH_URL = `${window.location.origin}/api/health`;
 const ARTISTS_URL = `${window.location.origin}/api/artists`;
+const SEARCH_URL = `${window.location.origin}/api/search`;
+const ACTIVE_IMPORT_URL = `${window.location.origin}/api/imports/active`;
+const ACQUISITION_URL = `${window.location.origin}/api/acquisition/status`;
+const REORGANIZE_URL = `${window.location.origin}/api/reorganize/status`;
+const LYRICS_URL = `${window.location.origin}/api/lyrics/backfill`;
+const ARTIST_ART_URL = `${window.location.origin}/api/artists/art/backfill`;
+
+/** Idle handlers for every probe the shell polls (health + the Review badge
+ * probe + the five activity sources), so shell tests are deterministic and
+ * quiet under MSW's onUnhandledRequest:"error". Spread these AFTER any
+ * per-test override — within one server.use() call, earlier handlers win. */
+function idleShellHandlers() {
+  return [
+    http.get(HEALTH_URL, () =>
+      HttpResponse.json({ status: "ok", version: "0.1.0" }),
+    ),
+    http.get(ARTISTS_URL, () => HttpResponse.json([])),
+    http.get(ACTIVE_IMPORT_URL, () =>
+      HttpResponse.json({
+        active: false,
+        origin: "manual",
+        needs_review_count: 0,
+      }),
+    ),
+    http.get(ACQUISITION_URL, () =>
+      HttpResponse.json({
+        phase: "idle",
+        queued: 0,
+        current: null,
+        processed: 0,
+        set_aside: 0,
+        failed: 0,
+        error: null,
+        inbox_pending: 0,
+      }),
+    ),
+    http.get(REORGANIZE_URL, () =>
+      HttpResponse.json({
+        phase: "idle",
+        job_id: null,
+        scope: null,
+        total: 0,
+        processed: 0,
+        moved: 0,
+        skipped: 0,
+        failed: 0,
+        current: null,
+        error: null,
+        artist: null,
+        album_id: null,
+        scope_label: "library",
+      }),
+    ),
+    http.get(LYRICS_URL, () =>
+      HttpResponse.json({
+        phase: "idle",
+        job_id: null,
+        total: 0,
+        processed: 0,
+        found: 0,
+        not_found: 0,
+        failed: 0,
+        skipped: 0,
+        current: null,
+        writes_enabled: false,
+        error: null,
+        album_id: null,
+        scope_label: "library",
+      }),
+    ),
+    http.get(ARTIST_ART_URL, () =>
+      HttpResponse.json({
+        phase: "idle",
+        job_id: null,
+        total: 0,
+        processed: 0,
+        written: 0,
+        skipped: 0,
+        failed: 0,
+        current: null,
+        error: null,
+        artist: null,
+        scope_label: "library",
+      }),
+    ),
+  ];
+}
 
 describe("HealthStatus", () => {
   test("conveys a reachable backend with a non-color text label", async () => {
@@ -31,7 +118,9 @@ describe("HealthStatus", () => {
   });
 
   test("conveys an unreachable backend with a non-color text label", async () => {
-    server.use(http.get(HEALTH_URL, () => new HttpResponse(null, { status: 500 })));
+    server.use(
+      http.get(HEALTH_URL, () => new HttpResponse(null, { status: 500 })),
+    );
 
     renderWithProviders(<HealthStatus />);
 
@@ -39,88 +128,145 @@ describe("HealthStatus", () => {
   });
 });
 
-/** Mount App shell with the roster in its <Outlet>, the way the router nests
- * them. */
-function renderShell() {
+/** Exposes the live router location so tests can assert URL changes. */
+function LocationProbe() {
+  const loc = useLocation();
+  return <div data-testid="location">{`${loc.pathname}${loc.search}`}</div>;
+}
+
+/** Mount the App shell the way the router nests it: roster at the index,
+ * stub elements for the routes the shell links to. */
+function renderShell(initialEntry = "/") {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/"]}>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route element={<App />}>
-            <Route path="*" element={<ArtistsPage />} />
+            <Route index element={<ArtistsPage />} />
+            <Route path="artists" element={<div>artists route</div>} />
+            <Route path="search" element={<div>search route</div>} />
+            <Route path="*" element={<div>other</div>} />
           </Route>
         </Routes>
+        <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
-describe("App", () => {
-  test("renders the shell brand and the roster home", async () => {
-    server.use(
-      http.get(HEALTH_URL, () =>
-        HttpResponse.json({ status: "ok", version: "0.1.0" }),
-      ),
-      http.get(ARTISTS_URL, () => HttpResponse.json([])),
-    );
-
-    renderShell();
-
-    expect(
-      screen.getByRole("link", { name: "MusicDrop" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("heading", { level: 1, name: "MusicDrop" }),
-    ).not.toBeInTheDocument();
-    expect(await screen.findByText(/no artists/i)).toBeInTheDocument();
-  });
-
-  test("the brand links to the roster home", async () => {
-    server.use(
-      http.get(HEALTH_URL, () =>
-        HttpResponse.json({ status: "ok", version: "0.1.0" }),
-      ),
-      http.get(ARTISTS_URL, () => HttpResponse.json([])),
-    );
-
+describe("App shell", () => {
+  test("the brand is a link to home, not a heading", async () => {
+    server.use(...idleShellHandlers());
     renderShell();
 
     const brand = screen.getByRole("link", { name: "MusicDrop" });
     expect(brand).toHaveAttribute("href", "/");
+    expect(
+      screen.queryByRole("heading", { level: 1, name: "MusicDrop" }),
+    ).not.toBeInTheDocument();
+    // The routed page renders through the shell's <main> Outlet.
+    expect(await screen.findByText(/no artists/i)).toBeInTheDocument();
   });
 
-  test("has an Artists nav link → /artists, and no flat Albums tab", async () => {
-    server.use(
-      http.get(HEALTH_URL, () =>
-        HttpResponse.json({ status: "ok", version: "0.1.0" }),
-      ),
-      http.get(ARTISTS_URL, () => HttpResponse.json([])),
-    );
-
+  test("sidebar nav: Overview/Artists/Browse + Review/Add from folder; no Albums, no dead slots", async () => {
+    server.use(...idleShellHandlers());
     renderShell();
 
-    // Browse-by-artist (the roster) now has its own nav entry → /artists.
+    expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute(
+      "href",
+      "/",
+    );
     expect(screen.getByRole("link", { name: "Artists" })).toHaveAttribute(
       "href",
       "/artists",
     );
+    expect(screen.getByRole("link", { name: "Browse" })).toHaveAttribute(
+      "href",
+      "/browse",
+    );
+    // Renamed label (route unchanged).
+    expect(
+      screen.getByRole("link", { name: /add from folder/i }),
+    ).toHaveAttribute("href", "/import");
     // Still no flat "Albums" tab — albums are reached via the spine / Browse.
     expect(
       screen.queryByRole("link", { name: "Albums" }),
     ).not.toBeInTheDocument();
+    // Find music / Downloads are designed slots, NOT rendered until they ship.
+    expect(
+      screen.queryByRole("link", { name: /find music/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /downloads/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("the skip link is the first focusable element and targets #main-content", async () => {
+    server.use(...idleShellHandlers());
+    renderShell();
+
+    await userEvent.tab();
+    const skip = screen.getByRole("link", { name: /skip to content/i });
+    expect(skip).toHaveFocus();
+    expect(skip).toHaveAttribute("href", "#main-content");
+
+    const main = screen.getByRole("main");
+    expect(main).toHaveAttribute("id", "main-content");
+    expect(main).toHaveAttribute("tabindex", "-1");
+  });
+
+  test("the active sidebar item carries aria-current AND the violet pill", async () => {
+    server.use(...idleShellHandlers());
+    renderShell("/");
+
+    const overview = screen.getByRole("link", { name: "Overview" });
+    expect(overview).toHaveAttribute("aria-current", "page");
+    // aria-current must be STYLED, not bare (spec §1): the violet pill class.
+    expect(overview.className).toContain("bg-primary/15");
+    expect(screen.getByRole("link", { name: "Artists" })).not.toHaveAttribute(
+      "aria-current",
+    );
+  });
+
+  test("the Review badge counts pending decisions ONLY — inbox backlog excluded", async () => {
+    server.use(
+      // Overrides FIRST (they win over the idle spread below).
+      http.get(ACTIVE_IMPORT_URL, () =>
+        HttpResponse.json({
+          active: true,
+          job_id: "job-1",
+          origin: "inbox",
+          needs_review_count: 2,
+        }),
+      ),
+      http.get(ACQUISITION_URL, () =>
+        HttpResponse.json({
+          phase: "idle",
+          queued: 0,
+          current: null,
+          processed: 0,
+          set_aside: 0,
+          failed: 0,
+          error: null,
+          inbox_pending: 5,
+        }),
+      ),
+      ...idleShellHandlers(),
+    );
+    renderShell();
+
+    const review = screen.getByRole("link", { name: /review/i });
+    expect(await within(review).findByText("2")).toBeInTheDocument();
+    // The OLD header badge summed needs_review_count + inbox_pending (=7).
+    expect(within(review).queryByText("7")).not.toBeInTheDocument();
+    expect(within(review).queryByText("5")).not.toBeInTheDocument();
   });
 
   test("has a labelled search box inside a search landmark", async () => {
-    server.use(
-      http.get(HEALTH_URL, () =>
-        HttpResponse.json({ status: "ok", version: "0.1.0" }),
-      ),
-      http.get(ARTISTS_URL, () => HttpResponse.json([])),
-    );
-
+    server.use(...idleShellHandlers());
     renderShell();
 
     const box = screen.getByRole("searchbox", { name: /search/i });
@@ -131,11 +277,7 @@ describe("App", () => {
 
   test("typing in the search box debounces before navigating to /search?q=", async () => {
     server.use(
-      http.get(HEALTH_URL, () =>
-        HttpResponse.json({ status: "ok", version: "0.1.0" }),
-      ),
-      http.get(ARTISTS_URL, () => HttpResponse.json([])),
-      http.get(`${window.location.origin}/api/search`, () =>
+      http.get(SEARCH_URL, () =>
         HttpResponse.json({
           artists: [],
           albums: [],
@@ -145,25 +287,9 @@ describe("App", () => {
           track_total: 0,
         }),
       ),
+      ...idleShellHandlers(),
     );
-
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-    render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={["/"]}>
-          <Routes>
-            <Route element={<App />}>
-              <Route index element={<ArtistsPage />} />
-              <Route path="search" element={<div>search route</div>} />
-              <Route path="*" element={<div>other</div>} />
-            </Route>
-          </Routes>
-          <LocationProbe />
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
+    renderShell();
 
     await userEvent.type(
       screen.getByRole("searchbox", { name: /search/i }),
@@ -186,10 +312,7 @@ describe("App", () => {
 
   test("re-syncs the box from the URL on external navigation (deep link)", async () => {
     server.use(
-      http.get(HEALTH_URL, () =>
-        HttpResponse.json({ status: "ok", version: "0.1.0" }),
-      ),
-      http.get(`${window.location.origin}/api/search`, () =>
+      http.get(SEARCH_URL, () =>
         HttpResponse.json({
           artists: [],
           albums: [],
@@ -199,33 +322,29 @@ describe("App", () => {
           track_total: 0,
         }),
       ),
+      ...idleShellHandlers(),
     );
-
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
     // Deep-link straight to /search?q=foo: the box should reflect "foo".
-    render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={["/search?q=foo"]}>
-          <Routes>
-            <Route element={<App />}>
-              <Route path="search" element={<div>search route</div>} />
-              <Route path="*" element={<div>other</div>} />
-            </Route>
-          </Routes>
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
+    renderShell("/search?q=foo");
 
     expect(screen.getByRole("searchbox", { name: /search/i })).toHaveValue(
       "foo",
     );
   });
-});
 
-/** Exposes the live router location so tests can assert URL changes. */
-function LocationProbe() {
-  const loc = useLocation();
-  return <div data-testid="location">{`${loc.pathname}${loc.search}`}</div>;
-}
+  test("navigation updates document.title via the shell-mounted RouteAnnouncer", async () => {
+    server.use(...idleShellHandlers());
+    renderShell();
+
+    await waitFor(() =>
+      expect(document.title).toBe("Overview — MusicDrop"),
+    );
+
+    await userEvent.click(screen.getByRole("link", { name: "Artists" }));
+
+    expect(await screen.findByText("artists route")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(document.title).toBe("Artists — MusicDrop"),
+    );
+  });
+});
