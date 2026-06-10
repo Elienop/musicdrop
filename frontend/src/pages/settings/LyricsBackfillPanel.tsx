@@ -45,7 +45,7 @@ export function LyricsBackfillPanel() {
       {libraryRunning && status.data ? (
         <div className="flex flex-col gap-2" role="status">
           <div className="flex items-center gap-3 text-sm">
-            <Spinner className="text-muted-foreground size-5 shrink-0 animate-spin" aria-hidden="true" />
+            <Spinner className="text-muted-foreground size-4 shrink-0 animate-spin" aria-hidden="true" />
             <span className="flex-1">
               Backfilling… {status.data.processed} / {status.data.total} · found{" "}
               {status.data.found} · none {status.data.not_found} · failed {status.data.failed}

@@ -438,7 +438,7 @@ function Loader() {
         className="text-muted-foreground flex items-center gap-2 text-sm"
         role="status"
       >
-        <Spinner className="size-3.5 animate-spin" aria-hidden="true" />
+        <Spinner className="size-4 animate-spin" aria-hidden="true" />
         Loading configuration&hellip;
       </p>
     </section>

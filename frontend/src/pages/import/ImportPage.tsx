@@ -304,7 +304,7 @@ function LiveFeed({ state, jobId }: { state: ImportJobState; jobId: string }) {
     <div className="flex flex-col gap-4">
       <p className="text-muted-foreground flex min-h-5 items-center gap-2 text-sm">
         {working && (
-          <Spinner className="size-3.5 animate-spin" aria-hidden="true" />
+          <Spinner className="size-4 animate-spin" aria-hidden="true" />
         )}
         {/* While scanning with nothing in the feed yet, the count line would
             read "0 albums imported" — say what's actually happening instead. */}
