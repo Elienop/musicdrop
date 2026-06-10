@@ -1,6 +1,8 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { ReviewPage } from "@/pages/review/ReviewPage";
@@ -50,6 +52,18 @@ function album(over: Record<string, unknown>) {
   };
 }
 
+/** Renders the AlbumOrigin router state a decision link arrives with. */
+function OriginProbe() {
+  const state = useLocation().state as
+    | { from?: { label: string; to: string } }
+    | null;
+  return (
+    <p>
+      origin: {state?.from ? `${state.from.label} ${state.from.to}` : "none"}
+    </p>
+  );
+}
+
 describe("ReviewPage", () => {
   beforeEach(() => {
     mockNavigate.mockClear();
@@ -59,7 +73,6 @@ describe("ReviewPage", () => {
       http.get(ACTIVE, () => HttpResponse.json(idleActive)),
       http.get(ITEMS, () => HttpResponse.json({ items: [] })),
       http.get(STATUS, () => HttpResponse.json(idleStatus)),
-      http.get(DUPES, () => HttpResponse.json(noDupes)),
       http.get(JOB, () =>
         HttpResponse.json({
           job_id: "j1",
@@ -200,15 +213,82 @@ describe("ReviewPage", () => {
     expect(screen.getByText(/last error: disk full/i)).toBeInTheDocument();
   });
 
-  test("links to the library duplicate finder with a count when available", async () => {
+  test("the duplicates pointer is a plain link — no library scan on mount", async () => {
+    let scans = 0;
     server.use(
-      http.get(DUPES, () =>
-        HttpResponse.json({ mode: "strict", group_count: 3, album_count: 6, groups: [] }),
+      http.get(DUPES, () => {
+        scans += 1;
+        return HttpResponse.json(noDupes);
+      }),
+    );
+    renderWithProviders(<ReviewPage />);
+
+    const link = await screen.findByRole("link", {
+      name: /find duplicate albums in your library/i,
+    });
+    expect(link).toHaveAttribute("href", "/duplicates");
+    // Page fully settled (empty state shown) and still zero scans fired.
+    await screen.findByText(/nothing to review/i);
+    expect(scans).toBe(0);
+  });
+
+  test("Importing now renders the current folder + queued count while the queue drains", async () => {
+    server.use(
+      http.get(STATUS, () =>
+        HttpResponse.json({
+          ...idleStatus,
+          phase: "running",
+          queued: 2,
+          current: "/inbox/Neat Album",
+        }),
       ),
     );
     renderWithProviders(<ReviewPage />);
 
-    const link = await screen.findByRole("link", { name: /3 duplicate clusters/i });
-    expect(link).toHaveAttribute("href", "/duplicates");
+    const section = await screen.findByRole("region", { name: /importing now/i });
+    expect(within(section).getByText(/Importing Neat Album/)).toBeInTheDocument();
+    expect(within(section).getByText(/2 queued/)).toBeInTheDocument();
+  });
+
+  test("Importing now is absent while the queue is idle", async () => {
+    renderWithProviders(<ReviewPage />);
+    await screen.findByText(/nothing to review/i);
+    expect(
+      screen.queryByRole("region", { name: /importing now/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("decision links thread the Review origin into the decision screens", async () => {
+    server.use(
+      http.get(ACTIVE, () =>
+        HttpResponse.json({ active: true, job_id: "j1", origin: "inbox", needs_review_count: 1 }),
+      ),
+      http.get(JOB, () =>
+        HttpResponse.json({
+          job_id: "j1",
+          phase: "reviewing",
+          progress: { applied: 0, needs_review: 1, skipped: 0 },
+          albums: [album({ index: 0, album: "Echoes", status: "needs_review" })],
+          summary: null,
+          error: null,
+          origin: "inbox",
+          set_aside: 1,
+        }),
+      ),
+    );
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={["/review"]}>
+          <Routes>
+            <Route path="/review" element={<ReviewPage />} />
+            <Route path="/import/albums/:index" element={<OriginProbe />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await userEvent.click(await screen.findByRole("link", { name: /^review$/i }));
+    expect(await screen.findByText("origin: Review /review")).toBeInTheDocument();
   });
 });

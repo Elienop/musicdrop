@@ -1,10 +1,11 @@
-import { AlertTriangle, Inbox } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 
-import { useAcquisitionStatus } from "@/api/useAcquisitionStatus";
+import {
+  useAcquisitionStatus,
+  type AcquisitionQueueStatus,
+} from "@/api/useAcquisitionStatus";
 import { useActiveImport } from "@/api/useActiveImport";
-import { useDuplicates } from "@/api/useDuplicates";
 import {
   RECOMMENDATION_LABEL,
   useImportJob,
@@ -16,18 +17,29 @@ import {
   type InboxItem,
 } from "@/api/useInbox";
 import { useReviewInbox } from "@/api/useSlskd";
+import type { AlbumOrigin } from "@/components/albums/album-grid";
+import { Spinner, Warning } from "@/components/icons";
+import { AlbumRow } from "@/components/system/AlbumRow";
+import { PageBody, PageHeader } from "@/components/system/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
+/** Router state threaded into the decision screens (spec §1 origin
+ * threading): their back link AND post-submit navigate() return here, not to
+ * the import feed. */
+const REVIEW_ORIGIN: { from: AlbumOrigin } = {
+  from: { label: "Review", to: "/review" },
+};
+
 /**
- * The Review page — the source-agnostic home for acquisition decisions.
+ * The Review page — the source-agnostic pipeline for acquisition decisions.
  *
- * Three buckets, all read-only aggregators over existing state plus the two
- * inbox actions: (1) the live decision a running import is parked on, (2) the
- * per-item inbox backlog, (3) the recent tally. The detail screens
- * (candidate-review / duplicate-resolve) are reused as-is — this page just
- * routes into them. A count + link surfaces the (separate, expensive) library
- * duplicate finder without absorbing it.
+ * Sections, top to bottom: (1) "Needs your decision" — the album(s) a running
+ * import is parked on, routing into the existing candidate/duplicate screens;
+ * (2) "Importing now" — the live acquisition-queue snapshot (current folder +
+ * queued count), only while non-idle; (3) "Waiting in the inbox" — the
+ * per-item set-aside backlog; (4) "Recently landed" — the durable tally. The
+ * library duplicate finder is a PLAIN link (no eager full-library scan).
  */
 export function ReviewPage() {
   const navigate = useNavigate();
@@ -38,9 +50,6 @@ export function ReviewPage() {
   const job = useImportJob(active?.active ? (active.job_id ?? undefined) : undefined);
   const inboxQuery = useInboxItems();
   const { data: status } = useAcquisitionStatus();
-  // The library finder is a full library scan (no cheap count) — fetched lazily
-  // and cached; the link renders immediately and the count fills in when ready.
-  const dupes = useDuplicates("strict");
 
   const decisions = (job.data?.albums ?? []).filter(
     (a) => a.status === "needs_review" || a.status === "needs_dup_resolution",
@@ -51,19 +60,25 @@ export function ReviewPage() {
   // state never flashes on first paint before the lists load.
   const settled = !activeQuery.isLoading && !inboxQuery.isLoading;
   const nothingPending = settled && decisions.length === 0 && items.length === 0;
+  const pendingCount = decisions.length + items.length;
 
   return (
-    <section aria-label="Review" className="flex max-w-3xl flex-col gap-8">
-      <header className="flex flex-col gap-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Review</h2>
-        <p className="text-muted-foreground text-sm">
-          Downloads and imports that need your decision — from every source, in
-          one place.
-        </p>
-      </header>
+    <PageBody variant="narrow">
+      <PageHeader
+        title="Review"
+        meta={settled ? `${pendingCount} awaiting a decision` : undefined}
+      />
+      <p className="text-muted-foreground text-sm">
+        Downloads and imports that need your decision — from every source, in
+        one place.
+      </p>
 
       {decisions.length > 0 && active?.job_id && (
         <DecisionSection albums={decisions} jobId={active.job_id} />
+      )}
+
+      {status && status.phase !== "idle" && (
+        <ImportingNowSection status={status} />
       )}
 
       <InboxSection
@@ -89,14 +104,24 @@ export function ReviewPage() {
         />
       )}
 
-      <DuplicatesLink count={dupes.data?.group_count} />
-    </section>
+      {/* A plain pointer to the (separate, expensive) library duplicate
+          finder — static copy, NO eager scan for a count (spec §1). */}
+      <p className="text-muted-foreground text-sm">
+        <Link
+          to="/duplicates"
+          className="text-foreground focus-ring rounded-sm underline"
+        >
+          Find duplicate albums in your library
+        </Link>
+      </p>
+    </PageBody>
   );
 }
 
 /** "Needs your decision" — the album a running import is parked on. Serial
  * import parks one at a time, but render whatever is pending. Routes to the
- * existing candidate-review or duplicate-resolve screen by status. */
+ * existing candidate-review or duplicate-resolve screen by status, threading
+ * the Review origin so both screens return here. */
 function DecisionSection({
   albums,
   jobId,
@@ -106,60 +131,74 @@ function DecisionSection({
 }) {
   return (
     <section aria-label="Needs your decision" className="flex flex-col gap-3">
-      <h3 className="text-sm font-medium">Needs your decision</h3>
-      <ul className="border-border divide-border divide-y rounded-xl border">
-        {albums.map((album) => (
-          <li key={album.index}>
-            <DecisionRow album={album} jobId={jobId} />
-          </li>
-        ))}
+      <h2 className="text-base font-semibold">Needs your decision</h2>
+      <ul className="border-border divide-border divide-y overflow-hidden rounded-xl border">
+        {albums.map((album) => {
+          const needsDup = album.status === "needs_dup_resolution";
+          const title =
+            (album.album ?? lastSegment(album.folder)) || "Unknown album";
+          const to = needsDup
+            ? `/import/albums/${album.index}/duplicate?job=${jobId}`
+            : `/import/albums/${album.index}?job=${jobId}`;
+          return (
+            <li key={album.index} className="bg-primary/5">
+              <AlbumRow
+                cover={null}
+                title={title}
+                subtitle={album.artist ?? "Unknown artist"}
+                meta={
+                  needsDup
+                    ? undefined
+                    : `${Math.round(album.confidence)}% · ${RECOMMENDATION_LABEL[album.recommendation]}`
+                }
+                badge={
+                  <Badge variant="default">
+                    {needsDup ? "Already in library" : "Needs review"}
+                  </Badge>
+                }
+                action={
+                  <Button size="sm" asChild>
+                    <Link to={to} state={REVIEW_ORIGIN}>
+                      {needsDup ? "Resolve" : "Review"}
+                    </Link>
+                  </Button>
+                }
+              />
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
 }
 
-function DecisionRow({
-  album,
-  jobId,
-}: {
-  album: ImportAlbumSummary;
-  jobId: string;
-}) {
-  const needsDup = album.status === "needs_dup_resolution";
-  const title = (album.album ?? lastSegment(album.folder)) || "Unknown album";
+/** "Importing now" — the so-far-unrendered live fields of the acquisition
+ * status probe: what the unattended drain is importing and how many drops
+ * wait behind it. Rendered only while the queue is non-idle. */
+function ImportingNowSection({ status }: { status: AcquisitionQueueStatus }) {
   return (
-    <div className="bg-primary/5 flex min-w-0 items-center gap-3 px-4 py-3">
-      <div className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate font-medium">{title}</span>
-        <span className="text-muted-foreground truncate text-sm">
-          {album.artist ?? "Unknown artist"}
-          <span aria-hidden="true"> · </span>
-          {needsDup
-            ? "Already in your library"
-            : `${Math.round(album.confidence)}% · ${RECOMMENDATION_LABEL[album.recommendation]}`}
+    <section aria-label="Importing now" className="flex flex-col gap-2">
+      <h2 className="text-base font-semibold">Importing now</h2>
+      <p
+        className="text-muted-foreground flex items-center gap-2 text-sm"
+        role="status"
+      >
+        <Spinner className="size-4 shrink-0 animate-spin" aria-hidden="true" />
+        <span>
+          {status.current !== null
+            ? `Importing ${lastSegment(status.current)}`
+            : "Waiting for the import slot"}
+          {` · ${status.queued} queued`}
         </span>
-      </div>
-      <Badge variant="default" className="shrink-0">
-        {needsDup ? "Duplicate" : "Needs review"}
-      </Badge>
-      <Button size="sm" asChild>
-        <Link
-          to={
-            needsDup
-              ? `/import/albums/${album.index}/duplicate?job=${jobId}`
-              : `/import/albums/${album.index}?job=${jobId}`
-          }
-        >
-          {needsDup ? "Resolve" : "Review"}
-        </Link>
-      </Button>
-    </div>
+      </p>
+    </section>
   );
 }
 
 /** "Waiting in the inbox" — the per-item set-aside backlog. Each row imports its
  * own folder; "Review all" imports the whole inbox. Both are disabled while an
- * import runs (the single slot is busy). */
+ * import runs (the single slot is busy) — the visible helper line below carries
+ * the reason (no disabled-button `title`, per the spec §4 rule). */
 function InboxSection({
   items,
   importActive,
@@ -173,9 +212,6 @@ function InboxSection({
   const reviewAll = useReviewInbox();
   const [noneLeft, setNoneLeft] = useState(false);
   const busy = importActive || reviewOne.isPending || reviewAll.isPending;
-  const disabledReason = importActive
-    ? "An import is already running"
-    : undefined;
 
   if (items.length === 0) return null;
 
@@ -196,49 +232,47 @@ function InboxSection({
   return (
     <section aria-label="Waiting in the inbox" className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-medium">Waiting in the inbox</h3>
+        <h2 className="text-base font-semibold">Waiting in the inbox</h2>
         <Button
           type="button"
           variant="outline"
           size="sm"
           disabled={busy}
-          title={disabledReason}
           onClick={() => start(() => reviewAll.mutate(undefined, mutateOpts))}
         >
           {reviewAll.isPending ? "Starting…" : "Review all"}
         </Button>
       </div>
-      <ul className="border-border divide-border divide-y rounded-xl border">
+      <ul className="border-border divide-border divide-y overflow-hidden rounded-xl border">
         {items.map((item) => {
-          const starting = reviewOne.isPending && reviewOne.variables === item.name;
+          const starting =
+            reviewOne.isPending && reviewOne.variables === item.name;
+          const outcomeTag =
+            item.outcome === "set_aside"
+              ? " · set aside"
+              : item.outcome === "failed"
+                ? " · import failed"
+                : "";
           return (
-            <li
-              key={item.name}
-              className="flex min-w-0 items-center gap-3 px-4 py-3"
-            >
-              <Inbox
-                className="text-muted-foreground size-4 shrink-0"
-                aria-hidden="true"
+            <li key={item.name}>
+              <AlbumRow
+                cover={null}
+                title={item.name}
+                subtitle={`${item.source}${outcomeTag}`}
+                meta={`${item.track_count} ${item.track_count === 1 ? "track" : "tracks"}`}
+                action={
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() =>
+                      start(() => reviewOne.mutate(item.name, mutateOpts))
+                    }
+                  >
+                    {starting ? "Starting…" : "Review"}
+                  </Button>
+                }
               />
-              <div className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate font-medium">{item.name}</span>
-                <span className="text-muted-foreground truncate text-sm">
-                  {item.source}
-                  {item.outcome === "set_aside" && " · set aside"}
-                  {item.outcome === "failed" && " · import failed"}
-                  <span aria-hidden="true"> · </span>
-                  {item.track_count} {item.track_count === 1 ? "track" : "tracks"}
-                </span>
-              </div>
-              <Button
-                type="button"
-                size="sm"
-                disabled={busy}
-                title={disabledReason}
-                onClick={() => start(() => reviewOne.mutate(item.name, mutateOpts))}
-              >
-                {starting ? "Starting…" : "Review"}
-              </Button>
             </li>
           );
         })}
@@ -268,7 +302,7 @@ function InboxSection({
   );
 }
 
-/** "Recent" — the durable lifetime tally + last drain error. */
+/** "Recently landed" — the durable lifetime tally + last drain error. */
 function RecentSection({
   imported,
   setAside,
@@ -283,8 +317,11 @@ function RecentSection({
   error: string | null;
 }) {
   return (
-    <section aria-label="Recent" className="flex flex-col gap-2 border-t pt-4">
-      <h3 className="text-sm font-medium">Recent</h3>
+    <section
+      aria-label="Recently landed"
+      className="flex flex-col gap-2 border-t pt-4"
+    >
+      <h2 className="text-base font-semibold">Recently landed</h2>
       {processed === 0 && !error ? (
         <p className="text-muted-foreground text-sm">
           No completed downloads have been imported yet.
@@ -296,7 +333,7 @@ function RecentSection({
       )}
       {error && (
         <p className="text-destructive flex items-start gap-2 text-sm">
-          <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <Warning className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
           <span>Last error: {error}</span>
         </p>
       )}
@@ -304,25 +341,8 @@ function RecentSection({
   );
 }
 
-/** A link to the (separate, expensive) library duplicate finder. The count is
- * lazy — the link always shows; the cluster count fills in when the scan
- * returns (or never, on error). The whole phrase is the link, so its accessible
- * name never collides with an import-time "Resolve" decision above. */
-function DuplicatesLink({ count }: { count: number | undefined }) {
-  const label =
-    count !== undefined && count > 0
-      ? `Resolve ${count} duplicate ${count === 1 ? "cluster" : "clusters"} in your library`
-      : "Find duplicate albums in your library";
-  return (
-    <p className="text-muted-foreground text-sm">
-      <Link to="/duplicates" className="text-foreground underline">
-        {label}
-      </Link>
-    </p>
-  );
-}
-
-/** Last path segment of a folder, for a row with no parsed album title. */
+/** Last path segment of a folder, for a row with no parsed album title and the
+ * importing-now line. */
 function lastSegment(folder: string): string {
   const parts = folder.split("/").filter(Boolean);
   return parts.length > 0 ? parts[parts.length - 1] : folder;
