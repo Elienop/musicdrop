@@ -6,7 +6,9 @@
 // Default weight is "regular"; active/selected states pass weight="fill".
 // The one spinner is Spinner (CircleNotch) + className "animate-spin".
 // `Success` and `Online` intentionally share CheckCircle (spec's map; online
-// status always pairs the icon with text, never color alone).
+// status always pairs the icon with text, never color alone), and
+// `CopyAction` (clipboard copy) shares Copy with the `Duplicates` nav concept
+// on the same precedent.
 export {
   // Navigation
   SquaresFour as Overview,
@@ -37,6 +39,13 @@ export {
   FileText as Lyrics,
   PencilSimple as Edit,
   ImageSquare as Cover,
+  MusicNote as Track,
+  VinylRecord as Albums,
+  Clock as Duration,
+  HardDrives as Storage,
+  Compass as NotFound,
+  ShieldCheck as Resolved,
+  Minus as Missing,
   // Actions
   Plus as Add,
   Trash as Remove,
@@ -45,6 +54,19 @@ export {
   CaretLeft as Back,
   CaretRight as Forward,
   CircleNotch as Spinner,
+  Check as Confirm,
+  Checks as Merge,
+  CaretDown as Expand,
+  Circle as RadioDot,
+  Copy as CopyAction,
+  ArrowSquareOut as External,
+  ListPlus as AddToPlaylist,
+  ArrowsClockwise as Refresh,
+  ArrowsLeftRight as Replace,
+  ArrowCounterClockwise as Reset,
+  UploadSimple as Upload,
+  ArrowUp as MoveUp,
+  ArrowDown as MoveDown,
 } from "@phosphor-icons/react";
 
 import type { Icon } from "@phosphor-icons/react";

@@ -36,6 +36,13 @@ const CONCEPTS = [
   "Lyrics",
   "Edit",
   "Cover",
+  "Albums",
+  "Track",
+  "Duration",
+  "Storage",
+  "NotFound",
+  "Resolved",
+  "Missing",
   // Actions
   "Add",
   "Remove",
@@ -44,6 +51,19 @@ const CONCEPTS = [
   "Back",
   "Forward",
   "Spinner",
+  "Confirm",
+  "Merge",
+  "Expand",
+  "RadioDot",
+  "CopyAction",
+  "External",
+  "AddToPlaylist",
+  "Refresh",
+  "Replace",
+  "Reset",
+  "Upload",
+  "MoveUp",
+  "MoveDown",
 ] as const satisfies readonly (keyof typeof icons)[];
 
 test.each(CONCEPTS)("%s renders an svg glyph", (name) => {
