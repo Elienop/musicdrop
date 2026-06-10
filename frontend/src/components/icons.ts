@@ -40,6 +40,7 @@ export {
   // Actions
   Plus as Add,
   Trash as Remove,
+  X as Close,
   Stop,
   CaretLeft as Back,
   CaretRight as Forward,

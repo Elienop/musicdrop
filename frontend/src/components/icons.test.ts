@@ -37,6 +37,7 @@ const CONCEPTS = [
   // Actions
   "Add",
   "Remove",
+  "Close",
   "Stop",
   "Back",
   "Forward",
