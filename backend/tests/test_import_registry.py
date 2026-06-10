@@ -334,3 +334,21 @@ def test_active_status_tolerates_slot_vanishing_during_drain(
     status = reg.active_status()
     assert status.active is False
     assert status.job_id is None
+
+
+def _applied_follow_up(index: int, album_id: int) -> AlbumOutcome:
+    """The follow-up outcome the session flushes once beets assigns the id."""
+    return _applied_outcome(index).model_copy(update={"album_id": album_id})
+
+
+def test_follow_up_outcome_attaches_album_id_without_new_row() -> None:
+    registry = ImportJobRegistry(
+        runner=FakeImportRunner(applied=[_applied_outcome(0), _applied_follow_up(0, 7)])
+    )
+    job_id = registry.start("/music/incoming")
+    _poll(lambda: registry.state(job_id).phase, lambda p: p is ImportPhase.done)
+    state = registry.state(job_id)
+    assert len(state.albums) == 1  # the follow-up updated the row, no second row
+    assert state.albums[0].status is ImportAlbumStatus.applied
+    assert state.albums[0].album_id == 7
+    assert state.progress.applied == 1  # counted once

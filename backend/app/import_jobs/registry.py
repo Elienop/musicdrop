@@ -247,6 +247,15 @@ class ImportJobRegistry:
                 # mis-reported as imported (and uncounted as set-aside). Mirrors
                 # the manual flow's park-duplicate status flip.
                 row.status = _OUTCOME_STATUS[outcome.status]
+            elif outcome.album_id is not None:
+                # A follow-up outcome carrying the library album id beets
+                # assigned at task.add (flushed by the session AFTER
+                # choose_match — see _flush_album_ids). Attach the id WITHOUT
+                # touching row.status: the row may have moved on (decided /
+                # duplicate-resolved) and the id is the only new fact. Follow-
+                # ups always carry status=applied, so the upgrade branch above
+                # can never match them.
+                row.outcome = row.outcome.model_copy(update={"album_id": outcome.album_id})
         while True:
             parked = job.bridge.get_parked(timeout=0)
             if parked is None:
@@ -443,6 +452,7 @@ class ImportJobRegistry:
                     recommendation=outcome.recommendation,
                     confidence=outcome.confidence,
                     status=row.status,
+                    album_id=outcome.album_id,
                 )
             )
         return rows

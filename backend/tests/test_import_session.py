@@ -88,6 +88,8 @@ def _make_session(bridge: ImportBridge) -> WebImportSession:
     session._album_index = 0
     # __init__ is skipped, so default the attended flag the hooks now read.
     session.unattended = False
+    # __init__ is skipped, so seed the album-id stash choose_match appends to.
+    session._await_album_id = []
     return session
 
 
@@ -717,3 +719,127 @@ def test_default_move_none_touches_nothing() -> None:
     run_import_worker(_ScopedMoveSession(), move=None)  # type: ignore[arg-type]  # minimal stand-in
     assert config["import"]["move"].get(bool) is False
     assert config["import"]["copy"].get(bool) is True
+
+
+class _AddedAlbum:
+    """Stand-in for the beets Album that task.add() attaches as task.album."""
+
+    def __init__(self, album_id: int) -> None:
+        self.id = album_id
+
+
+def test_next_choose_match_flushes_previous_applied_album_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Task 1: a strong match auto-applies; its outcome carries album_id=None
+    # (beets has not run task.add() yet at choose_match time).
+    match = _build_match(BeetsRec.strong)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task1 = _make_task(match, monkeypatch, BeetsRec.strong)
+    task1.choose_match(session)
+    first = bridge.drain_outcomes()
+    assert len(first) == 1
+    assert first[0].status is AlbumOutcomeStatus.applied
+    assert first[0].album_id is None
+
+    # beets' user_query stage then runs _apply_choice -> task.add(lib), which
+    # sets task.album; simulate that before the next task arrives (the
+    # sequential pipeline guarantees this ordering).
+    task1.album = _AddedAlbum(42)
+
+    # Task 2 entering choose_match flushes task 1's follow-up outcome.
+    task2 = _make_task(match, monkeypatch, BeetsRec.strong)
+    task2.choose_match(session)
+    outcomes = bridge.drain_outcomes()
+    follow_ups = [o for o in outcomes if o.album_id is not None]
+    assert len(follow_ups) == 1
+    assert follow_ups[0].album_id == 42
+    assert follow_ups[0].album_index == first[0].album_index
+    assert follow_ups[0].status is AlbumOutcomeStatus.applied
+
+
+def test_run_flushes_the_final_album_id_after_super_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The LAST task of an import has no "next choose_match" to flush it; the
+    # run() override flushes once beets' run returns.
+    from beets.importer.session import ImportSession
+
+    match = _build_match(BeetsRec.strong)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.strong)
+
+    def fake_super_run(self: ImportSession) -> None:
+        # The "pipeline": choose the task, then beets adds it to the library.
+        task.choose_match(self)
+        task.album = _AddedAlbum(7)
+
+    # Patch the PARENT run; WebImportSession.run's super().run() resolves to it.
+    monkeypatch.setattr(ImportSession, "run", fake_super_run)
+    session.run()
+
+    outcomes = bridge.drain_outcomes()
+    assert [o.album_id for o in outcomes] == [None, 7]
+    assert outcomes[1].status is AlbumOutcomeStatus.applied
+
+
+def test_decided_apply_also_gains_album_id_via_flush(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A parked album the user resolves with apply is added by beets too; its
+    # follow-up forces status=applied so the registry can never regress the
+    # row's decided status (the needs_review upgrade branch matches by status).
+    from beets.importer.session import ImportSession
+
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+
+    def fake_super_run(self: ImportSession) -> None:
+        task.choose_match(self)  # parks; unblocked by push_choice below
+        task.album = _AddedAlbum(9)
+
+    monkeypatch.setattr(ImportSession, "run", fake_super_run)
+
+    done = threading.Event()
+
+    def worker() -> None:
+        session.run()
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    parked = bridge.get_parked(timeout=2.0)
+    assert parked is not None
+    bridge.push_choice(parked.album_index, ImportChoice(action=ImportAction.apply))
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+
+    outcomes = bridge.drain_outcomes()
+    assert outcomes[0].status is AlbumOutcomeStatus.needs_review
+    assert outcomes[0].album_id is None
+    assert outcomes[1].album_id == 9
+    assert outcomes[1].status is AlbumOutcomeStatus.applied
+    assert outcomes[1].album_index == outcomes[0].album_index
+
+
+def test_flush_skips_tasks_beets_never_added(monkeypatch: pytest.MonkeyPatch) -> None:
+    from beets.importer.session import ImportSession
+
+    match = _build_match(BeetsRec.strong)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.strong)
+
+    def fake_super_run(self: ImportSession) -> None:
+        task.choose_match(self)  # applied at choose time, but never task.add()ed
+
+    monkeypatch.setattr(ImportSession, "run", fake_super_run)
+    session.run()
+
+    outcomes = bridge.drain_outcomes()
+    assert len(outcomes) == 1  # no follow-up without a library id
+    assert outcomes[0].album_id is None
