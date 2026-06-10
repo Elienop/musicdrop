@@ -105,8 +105,9 @@ export const NAV_ICONS: Record<NavConcept, AppIcon> = {
 };
 
 /** Exact match for "/", segment-prefix match for everything else (so
- * "/artists/Adele" lights Artists but "/artistsy" would not). */
-function itemIsActive(pathname: string, to: string): boolean {
+ * "/artists/Adele" lights Artists but "/artistsy" would not). Exported so
+ * MobileNav's drawer items resolve active state identically. */
+export function itemIsActive(pathname: string, to: string): boolean {
   if (to === "/") {
     return pathname === "/";
   }

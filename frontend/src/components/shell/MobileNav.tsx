@@ -4,19 +4,28 @@
 // Built on the ui/dialog primitives (the unified radix-ui package) with the
 // centered-dialog positioning overridden into a left-anchored, full-height
 // panel — cn()'s tailwind-merge lets the className below displace the base
-// top/left/translate/rounded/padding utilities. Same NAV_SECTIONS data as
-// AppSidebar, ≥44px (h-11) items, closes on navigation. Active-state pills
-// are a sidebar affordance only — the sheet closes on tap, so it never
-// represents "where you are".
+// top/left/translate/rounded/padding utilities. Same NAV_SECTIONS data and
+// itemIsActive resolution as AppSidebar, so the open drawer shows the same
+// violet active pill (+ fill-weight icon + aria-current) as the sidebar.
+// ≥44px (h-11) items, closes on navigation. The inherited DialogContent
+// close button is suppressed (sub-44px target); the drawer renders its own
+// size-11 close button in the header row instead — `size-11` not
+// `h-11 w-11`, because tailwind-merge only displaces the Button's `size-9`
+// within the same `size-*` class group.
 
 import { useState } from "react";
-import { Link } from "react-router";
+import { Link, useLocation } from "react-router";
 
-import { Menu } from "@/components/icons";
-import { NAV_ICONS, NAV_SECTIONS } from "@/components/shell/Sidebar";
+import { Close, Menu } from "@/components/icons";
+import {
+  itemIsActive,
+  NAV_ICONS,
+  NAV_SECTIONS,
+} from "@/components/shell/Sidebar";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogTitle,
   DialogTrigger,
@@ -25,6 +34,7 @@ import { cn } from "@/lib/utils";
 
 export function MobileNav() {
   const [open, setOpen] = useState(false);
+  const location = useLocation();
   const close = () => setOpen(false);
 
   return (
@@ -42,6 +52,7 @@ export function MobileNav() {
       <DialogContent
         // Radix warns without a description; the sr-only title is enough.
         aria-describedby={undefined}
+        showCloseButton={false}
         className={cn(
           // Re-anchor the centered dialog into a left, full-height sheet.
           "top-0 left-0 h-full w-72 max-w-none translate-x-0 translate-y-0 sm:max-w-none",
@@ -53,14 +64,27 @@ export function MobileNav() {
         )}
       >
         <DialogTitle className="sr-only">Navigation</DialogTitle>
-        {/* Brand: a link, not a heading — same contract as the sidebar. */}
-        <Link
-          to="/"
-          onClick={close}
-          className="focus-ring flex h-11 shrink-0 items-center rounded-md px-3 text-base font-semibold tracking-tight"
-        >
-          MusicDrop
-        </Link>
+        {/* Header row: brand (a link, not a heading — same contract as the
+            sidebar) + the drawer's own 44px close target. */}
+        <div className="flex shrink-0 items-center justify-between gap-2">
+          <Link
+            to="/"
+            onClick={close}
+            className="focus-ring flex h-11 items-center rounded-md px-3 text-base font-semibold tracking-tight"
+          >
+            MusicDrop
+          </Link>
+          <DialogClose asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-11"
+              aria-label="Close navigation"
+            >
+              <Close className="size-5" aria-hidden="true" />
+            </Button>
+          </DialogClose>
+        </div>
         <nav aria-label="Primary">
           {NAV_SECTIONS.map((section) => (
             <div key={section.label}>
@@ -70,14 +94,25 @@ export function MobileNav() {
               <ul className="flex flex-col gap-0.5">
                 {section.items.map((item) => {
                   const Icon = NAV_ICONS[item.concept];
+                  const active = itemIsActive(location.pathname, item.to);
                   return (
                     <li key={item.to}>
                       <Link
                         to={item.to}
                         onClick={close}
-                        className="focus-ring text-muted-foreground hover:bg-surface-hover hover:text-foreground flex h-11 items-center gap-3 rounded-md px-3 text-sm font-medium"
+                        aria-current={active ? "page" : undefined}
+                        className={cn(
+                          "focus-ring flex h-11 items-center gap-3 rounded-md px-3 text-sm font-medium",
+                          active
+                            ? "bg-primary/15 text-primary-light"
+                            : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
+                        )}
                       >
-                        <Icon className="size-5 shrink-0" aria-hidden="true" />
+                        <Icon
+                          weight={active ? "fill" : "regular"}
+                          className="size-5 shrink-0"
+                          aria-hidden="true"
+                        />
                         <span>{item.label}</span>
                       </Link>
                     </li>
