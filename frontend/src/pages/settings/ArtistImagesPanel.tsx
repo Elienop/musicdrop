@@ -1,6 +1,6 @@
-import { Loader2 } from "lucide-react";
-
 import { useArtistImageSettings, useSetArtistImageSettings } from "@/api/useArtistImage";
+import { Spinner } from "@/components/icons";
+import { SettingsSection } from "@/components/system/SettingsSection";
 import { Switch } from "@/components/ui/switch";
 
 /** Settings → Artist images: a persisted on/off toggle for the Deezer-backed
@@ -11,17 +11,10 @@ export function ArtistImagesPanel() {
   const enabled = settings.data?.enabled ?? false;
 
   return (
-    <section
-      aria-label="Artist images"
-      className="border-border flex flex-col gap-3 rounded-xl border p-4"
+    <SettingsSection
+      title="Artist images"
+      description="Fetch artist portraits from Deezer. When off, artists show their initials and no requests are made."
     >
-      <header className="flex flex-col gap-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Artist images</h2>
-        <p className="text-muted-foreground text-sm">
-          Fetch artist portraits from Deezer. When off, artists show their initials and no
-          requests are made.
-        </p>
-      </header>
       <div className="flex items-center gap-3">
         <Switch
           checked={enabled}
@@ -31,7 +24,7 @@ export function ArtistImagesPanel() {
         />
         <span className="text-sm">{enabled ? "On" : "Off"}</span>
         {setEnabled.isPending && (
-          <Loader2 className="text-muted-foreground size-4 animate-spin" aria-hidden="true" />
+          <Spinner className="text-muted-foreground size-4 animate-spin" aria-hidden="true" />
         )}
         {setEnabled.isError && (
           <span className="text-destructive text-sm" role="alert">
@@ -39,6 +32,6 @@ export function ArtistImagesPanel() {
           </span>
         )}
       </div>
-    </section>
+    </SettingsSection>
   );
 }
