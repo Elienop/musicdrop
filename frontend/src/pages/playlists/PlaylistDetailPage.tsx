@@ -51,18 +51,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-
-/** Format a duration in seconds as `m:ss`, en-dash for missing. Mirrors the
- * album/search tracklists. */
-function formatDuration(seconds: number | null): string {
-  if (seconds === null) {
-    return "–";
-  }
-  const total = Math.floor(seconds);
-  const mins = Math.floor(total / 60);
-  const secs = total % 60;
-  return `${mins}:${secs.toString().padStart(2, "0")}`;
-}
+import { formatDuration } from "@/lib/format";
 
 /** What the row shows (and what we announce): a vanished beets item keeps its
  * slot but reads as "(removed track)" when it has no title. */

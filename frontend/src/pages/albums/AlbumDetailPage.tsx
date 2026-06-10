@@ -8,6 +8,7 @@ import { AlbumNotFoundError, useAlbum } from "@/api/useAlbum";
 import { useStartAlbumLyricsFetch } from "@/api/useAlbumLyrics";
 import { useLyricsBackfillStatus, useStopLyricsBackfill } from "@/api/useLyricsBackfill";
 import { useAlbumMissing, type MissingReleaseTrack } from "@/api/useAlbumMissing";
+import { formatDuration } from "@/lib/format";
 import { buildDiscGroups, type DiscGroup } from "@/pages/albums/missingTracks";
 import { BackLink, type AlbumOrigin } from "@/components/albums/album-grid";
 import { AddToPlaylistMenu } from "@/components/playlists/AddToPlaylistMenu";
@@ -26,18 +27,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-
-/** Format a duration in seconds as `m:ss` (e.g. 284 -> "4:44", 5 -> "0:05").
- * Returns an en-dash for a missing duration so untimed rows still align. */
-function formatDuration(seconds: number | null): string {
-  if (seconds === null) {
-    return "–";
-  }
-  const total = Math.floor(seconds);
-  const mins = Math.floor(total / 60);
-  const secs = total % 60;
-  return `${mins}:${secs.toString().padStart(2, "0")}`;
-}
 
 /** Read a contextual back origin off router `state` (`{ from: {label, to} }`),
  * set by an AlbumCard when it knows where the album was opened from. */

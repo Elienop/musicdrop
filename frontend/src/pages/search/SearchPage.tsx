@@ -9,20 +9,8 @@ import { AddToPlaylistMenu } from "@/components/playlists/AddToPlaylistMenu";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { formatDuration } from "@/lib/format";
 import { cn } from "@/lib/utils";
-
-/** Format a duration in seconds as `m:ss` (e.g. 284 -> "4:44", 5 -> "0:05").
- * Returns an en-dash for a missing duration so untimed rows still align.
- * Mirrors the AlbumDetailPage tracklist formatting. */
-function formatDuration(seconds: number | null): string {
-  if (seconds === null) {
-    return "–";
-  }
-  const total = Math.floor(seconds);
-  const mins = Math.floor(total / 60);
-  const secs = total % 60;
-  return `${mins}:${secs.toString().padStart(2, "0")}`;
-}
 
 export function SearchPage() {
   const [searchParams] = useSearchParams();
