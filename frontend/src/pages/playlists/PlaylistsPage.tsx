@@ -1,9 +1,13 @@
-import { ListMusic, Plus } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { type Playlist, usePlaylists } from "@/api/usePlaylists";
+import { Add, Playlists } from "@/components/icons";
 import { CreatePlaylistDialog } from "@/components/playlists/CreatePlaylistDialog";
+import { EmptyState } from "@/components/system/EmptyState";
+import { ErrorState } from "@/components/system/ErrorState";
+import { PageHeader } from "@/components/system/PageHeader";
+import { PageSkeleton } from "@/components/system/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -15,23 +19,40 @@ export function PlaylistsPage() {
 
   return (
     <section className="flex flex-col gap-6" aria-label="Playlists">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-col gap-1">
-          <h2 className="text-2xl font-semibold tracking-tight">Playlists</h2>
-          <p className="text-muted-foreground text-sm">
-            {data
-              ? `${data.length} ${data.length === 1 ? "playlist" : "playlists"}`
-              : "Loading your playlists…"}
-          </p>
-        </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="size-4" aria-hidden="true" /> New playlist
-        </Button>
-      </header>
+      <PageHeader
+        title="Playlists"
+        meta={
+          data
+            ? `${data.length} ${data.length === 1 ? "playlist" : "playlists"}`
+            : undefined
+        }
+        actions={
+          <Button onClick={() => setCreateOpen(true)}>
+            <Add className="size-4" aria-hidden="true" /> New playlist
+          </Button>
+        }
+      />
 
-      {isPending && <ListSkeleton />}
-      {isError && <ErrorState onRetry={() => void refetch()} />}
-      {data && data.length === 0 && <EmptyState />}
+      {isPending && (
+        <PageSkeleton announce="Loading playlists…">
+          <ListSkeleton />
+        </PageSkeleton>
+      )}
+      {isError && (
+        <ErrorState
+          variant="inline"
+          message="Couldn’t load playlists."
+          onRetry={() => void refetch()}
+        />
+      )}
+      {data && data.length === 0 && (
+        <EmptyState
+          icon={Playlists}
+          title="No playlists yet"
+          body="Create one, then add tracks from any album or from search."
+          bordered
+        />
+      )}
       {data && data.length > 0 && (
         <ul className="flex flex-col gap-3">
           {data.map((playlist) => (
@@ -56,7 +77,7 @@ function PlaylistRow({ playlist }: { playlist: Playlist }) {
   return (
     <Link
       to={`/playlists/${playlist.id}`}
-      className="focus-visible:ring-ring block rounded-xl focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+      className="focus-ring block rounded-xl"
     >
       <Card className="hover:border-primary/50 gap-2 py-4 transition-colors">
         <CardHeader className="px-4">
@@ -72,9 +93,10 @@ function PlaylistRow({ playlist }: { playlist: Playlist }) {
   );
 }
 
+/** Bones only — PageSkeleton owns the aria-hidden + the loading announcement. */
 function ListSkeleton() {
   return (
-    <ul className="flex flex-col gap-3" aria-hidden="true">
+    <ul className="flex flex-col gap-3">
       {Array.from({ length: 4 }, (_, i) => (
         <li key={i}>
           <Card className="gap-2 py-4">
@@ -86,31 +108,5 @@ function ListSkeleton() {
         </li>
       ))}
     </ul>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="rounded-xl border border-dashed p-8 text-center" role="status">
-      <ListMusic className="text-muted-foreground mx-auto mb-2 size-8" aria-hidden="true" />
-      <p className="font-medium">No playlists yet</p>
-      <p className="text-muted-foreground text-sm">
-        Create one, then add tracks from any album or from search.
-      </p>
-    </div>
-  );
-}
-
-function ErrorState({ onRetry }: { onRetry: () => void }) {
-  return (
-    <div
-      className="border-destructive/40 bg-destructive/5 flex items-center justify-between gap-3 rounded-xl border p-4"
-      role="alert"
-    >
-      <p className="text-sm">Couldn&rsquo;t load playlists.</p>
-      <Button variant="outline" size="sm" onClick={onRetry}>
-        Retry
-      </Button>
-    </div>
   );
 }

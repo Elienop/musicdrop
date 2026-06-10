@@ -1,18 +1,6 @@
-import {
-  AlertCircle,
-  AlertTriangle,
-  ArrowDown,
-  ArrowUp,
-  Check,
-  Loader2,
-  Music,
-  Pencil,
-  RefreshCw,
-  Trash2,
-  X,
-} from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
+import { toast } from "sonner";
 
 import {
   type PlaylistDetail,
@@ -27,6 +15,23 @@ import {
 } from "@/api/usePlaylists";
 import { usePlexUsers } from "@/api/usePlex";
 import { BackLink } from "@/components/albums/album-grid";
+import {
+  Close,
+  Edit,
+  Error as ErrorIcon,
+  MoveDown,
+  MoveUp,
+  MusicFallback,
+  Remove,
+  Refresh,
+  Spinner,
+  Success,
+  Warning,
+} from "@/components/icons";
+import { EmptyState } from "@/components/system/EmptyState";
+import { ErrorState } from "@/components/system/ErrorState";
+import { PageSkeleton } from "@/components/system/PageSkeleton";
+import { StatusBanner } from "@/components/system/StatusBanner";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -52,6 +57,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDuration } from "@/lib/format";
+import { useFocusAfterMutation } from "@/lib/useFocusAfterMutation";
 
 /** What the row shows (and what we announce): a vanished beets item keeps its
  * slot but reads as "(removed track)" when it has no title. */
@@ -113,17 +119,17 @@ function adminSyncStatus(playlist: PlaylistDetail): SyncStatus {
   return syncStatus(playlist.plex?.admin, playlist, "Not synced to Plex");
 }
 
-/** Render a sync status with a leading lucide icon + semantic color. The text
+/** Render a sync status with a leading concept icon + semantic color. The text
  * label is always present (the color/icon are emphasis, not the only signal). */
 function StatusLine({ status }: { status: SyncStatus }) {
   const { label, tone } = status;
   const Icon =
     tone === "success"
-      ? Check
+      ? Success
       : tone === "warning"
-        ? AlertTriangle
+        ? Warning
         : tone === "destructive"
-          ? AlertCircle
+          ? ErrorIcon
           : null;
   const colorClass =
     tone === "success"
@@ -154,10 +160,22 @@ export function PlaylistDetailPage() {
   const { data, isPending, isError, refetch } = usePlaylist(id);
 
   if (isPending) {
-    return <DetailSkeleton />;
+    return (
+      <PageSkeleton announce="Loading playlist…">
+        <DetailSkeleton />
+      </PageSkeleton>
+    );
   }
   if (isError) {
-    return <ErrorState onRetry={() => void refetch()} />;
+    return (
+      <div className="flex flex-col gap-6">
+        <BackLink to="/playlists" label="Playlists" />
+        <ErrorState
+          message="Couldn’t load this playlist"
+          onRetry={() => void refetch()}
+        />
+      </div>
+    );
   }
   return <PlaylistDetailView playlist={data} />;
 }
@@ -194,42 +212,15 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     setTargetIds(new Set(playlist.target_plex_users));
   }, [playlist.target_plex_users]);
 
-  // Single polite live region for reorder/remove announcements.
+  // Single polite live region for reorder/remove announcements (kept alongside
+  // the sonner toasts — the toast layer is the sighted-user channel, this
+  // region is the assistive-tech one).
   const [statusMsg, setStatusMsg] = useState("");
 
-  // Focus restoration: a move reshuffles rows and a remove unmounts one, both of
-  // which drop keyboard focus to <body>. We record which control to refocus and
-  // apply it in a layout effect after the new order paints. Buttons are keyed by
-  // `${trackId}:up|down|remove` so the lookup survives reordering.
-  const buttonRefs = useRef(new Map<string, HTMLButtonElement | null>());
-  const emptyRef = useRef<HTMLParagraphElement | null>(null);
-  const pendingFocus = useRef<{ keys: string[]; empty?: boolean } | null>(null);
-
-  function setButtonRef(key: string, el: HTMLButtonElement | null) {
-    if (el) {
-      buttonRefs.current.set(key, el);
-    } else {
-      buttonRefs.current.delete(key);
-    }
-  }
-
-  useLayoutEffect(() => {
-    const req = pendingFocus.current;
-    if (!req) {
-      return;
-    }
-    pendingFocus.current = null;
-    for (const key of req.keys) {
-      const el = buttonRefs.current.get(key);
-      if (el && !el.disabled) {
-        el.focus();
-        return;
-      }
-    }
-    if (req.empty) {
-      emptyRef.current?.focus();
-    }
-  }, [tracks]);
+  // Focus restoration for the mutating tracklist — the shared hook generalizes
+  // the page's old pendingFocus engine. Controls register as
+  // `${trackId}:up|down|remove`; the empty state registers as "empty".
+  const { register, requestFocus } = useFocusAfterMutation();
 
   function saveName() {
     const next = draftName.trim();
@@ -274,32 +265,41 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     setTracks(next);
 
     const moved = next[target];
-    setStatusMsg(`Moved ${displayTitle(moved)} to position ${target + 1}`);
+    const message = `Moved ${displayTitle(moved)} to position ${target + 1}`;
+    setStatusMsg(message);
     const dirKey = dir === -1 ? "up" : "down";
     const altKey = dir === -1 ? "down" : "up";
-    pendingFocus.current = { keys: [`${moved.id}:${dirKey}`, `${moved.id}:${altKey}`] };
+    requestFocus(`${moved.id}:${dirKey}`, `${moved.id}:${altKey}`);
 
     reorder.mutate(
       next.map((t) => t.id),
-      { onError: () => setTracks(prev) },
+      {
+        onSuccess: () => toast.success(message),
+        onError: () => setTracks(prev),
+      },
     );
   }
 
-  /** Remove the track at `index`. On success announce it and move focus to a
-   * surviving sibling (the row that shifts up into its slot, else the previous
-   * row, else the empty-state heading) — the refetch unmounts the row and the
-   * layout effect applies the queued focus once the new order paints. */
+  /** Remove the track at `index`. On success announce + toast it and move
+   * focus to a surviving sibling (the row that shifts up into its slot, else
+   * the previous row, else the empty state). The local `setTracks` runs in the
+   * SAME handler as `requestFocus` so the commit the hook fulfils the request
+   * on already has the survivor list / empty state mounted (the refetch reseed
+   * lands later and is a no-op for focus). */
   function handleRemove(index: number) {
     const removed = tracks[index];
     const afterRemoval = tracks.filter((_, i) => i !== index);
     removeTrack.mutate(removed.id, {
       onSuccess: () => {
-        setStatusMsg(`Removed ${displayTitle(removed)}`);
+        const message = `Removed ${displayTitle(removed)}`;
+        setStatusMsg(message);
+        toast.success(message);
+        setTracks(afterRemoval);
         if (afterRemoval.length === 0) {
-          pendingFocus.current = { keys: [], empty: true };
+          requestFocus("empty");
         } else {
           const survivor = afterRemoval[Math.min(index, afterRemoval.length - 1)];
-          pendingFocus.current = { keys: [`${survivor.id}:remove`] };
+          requestFocus(`${survivor.id}:remove`);
         }
       },
     });
@@ -334,7 +334,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
                 disabled={rename.isPending}
                 aria-label="Save name"
               >
-                <Check className="size-4" aria-hidden="true" />
+                <Success className="size-4" aria-hidden="true" />
               </Button>
               <Button
                 size="icon-sm"
@@ -345,14 +345,21 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
                 }}
                 aria-label="Cancel rename"
               >
-                <X className="size-4" aria-hidden="true" />
+                <Close className="size-4" aria-hidden="true" />
               </Button>
             </div>
           ) : (
             <div className="flex items-center gap-2">
-              <h2 className="truncate text-2xl font-semibold tracking-tight" title={playlist.name}>
+              {/* THE page h1 (detail-page rule: dynamic titles render their own
+                  h1 at the page scale instead of PageHeader; tabIndex -1 keeps
+                  RouteAnnouncer's focus contract). */}
+              <h1
+                tabIndex={-1}
+                className="truncate text-2xl font-bold tracking-tight"
+                title={playlist.name}
+              >
                 {playlist.name}
-              </h2>
+              </h1>
               <Button
                 size="icon-sm"
                 variant="ghost"
@@ -362,11 +369,11 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
                 }}
                 aria-label="Edit name"
               >
-                <Pencil className="size-4" aria-hidden="true" />
+                <Edit className="size-4" aria-hidden="true" />
               </Button>
             </div>
           )}
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm tabular-nums">
             {tracks.length} {tracks.length === 1 ? "track" : "tracks"}
           </p>
         </div>
@@ -388,12 +395,12 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
           >
             {sync.isPending ? (
               <>
-                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                <Spinner className="size-4 animate-spin" aria-hidden="true" />
                 Syncing&hellip;
               </>
             ) : (
               <>
-                <RefreshCw className="size-4" aria-hidden="true" /> Sync to Plex
+                <Refresh className="size-4" aria-hidden="true" /> Sync to Plex
               </>
             )}
           </Button>
@@ -401,99 +408,101 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
           <AlertDialog>
             <AlertDialogTrigger asChild>
               <Button variant="outline" size="sm">
-                <Trash2 className="size-4" aria-hidden="true" /> Delete playlist
+                <Remove className="size-4" aria-hidden="true" /> Delete playlist
               </Button>
             </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete &ldquo;{playlist.name}&rdquo;?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This removes the playlist and its exported file. Your tracks stay in the
-                library.
-                {Object.keys(playlist.plex ?? {}).length > 0 ? (
-                  <>
-                    {" "}
-                    This also removes it from Plex ({Object.keys(playlist.plex).length} account
-                    {Object.keys(playlist.plex).length === 1 ? "" : "s"}).
-                  </>
-                ) : null}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            {remove.isError && (
-              <p className="text-destructive text-sm" role="alert">
-                Couldn&rsquo;t delete the playlist. Try again.
-              </p>
-            )}
-            <AlertDialogFooter>
-              <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                variant="destructive"
-                disabled={remove.isPending}
-                onClick={(e) => {
-                  // Keep the dialog mounted while the DELETE is in flight: it
-                  // would otherwise auto-close on click, hiding the pending state
-                  // and any error. We navigate away ourselves on success.
-                  e.preventDefault();
-                  remove.mutate(playlist.id, {
-                    onSuccess: () => navigate("/playlists"),
-                  });
-                }}
-              >
-                {remove.isPending ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                    Deleting&hellip;
-                  </>
-                ) : (
-                  "Delete"
-                )}
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete &ldquo;{playlist.name}&rdquo;?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This removes the playlist and its exported file. Your tracks stay in the
+                  library.
+                  {Object.keys(playlist.plex ?? {}).length > 0 ? (
+                    <>
+                      {" "}
+                      This also removes it from Plex ({Object.keys(playlist.plex).length} account
+                      {Object.keys(playlist.plex).length === 1 ? "" : "s"}).
+                    </>
+                  ) : null}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              {remove.isError && (
+                <p className="text-destructive text-sm" role="alert">
+                  Couldn&rsquo;t delete the playlist. Try again.
+                </p>
+              )}
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  variant="destructive"
+                  disabled={remove.isPending}
+                  onClick={(e) => {
+                    // Keep the dialog mounted while the DELETE is in flight: it
+                    // would otherwise auto-close on click, hiding the pending state
+                    // and any error. We navigate away ourselves on success.
+                    e.preventDefault();
+                    remove.mutate(playlist.id, {
+                      onSuccess: () => navigate("/playlists"),
+                    });
+                  }}
+                >
+                  {remove.isPending ? (
+                    <>
+                      <Spinner className="size-4 animate-spin" aria-hidden="true" />
+                      Deleting&hellip;
+                    </>
+                  ) : (
+                    "Delete"
+                  )}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
           </AlertDialog>
         </div>
       </header>
 
+      {/* Error stack — rename stays form-adjacent inline text; the list/sync
+          mutation failures ride StatusBanner (tone=destructive ⇒ role=alert). */}
       {rename.isError && (
         <p className="text-destructive text-sm" role="alert">
           Couldn&rsquo;t rename the playlist. Try again.
         </p>
       )}
       {reorder.isError && (
-        <p className="text-destructive text-sm" role="alert">
+        <StatusBanner tone="destructive" icon={ErrorIcon}>
           Couldn&rsquo;t save the new order. Try again.
-        </p>
+        </StatusBanner>
       )}
       {removeTrack.isError && (
-        <p className="text-destructive text-sm" role="alert">
+        <StatusBanner tone="destructive" icon={ErrorIcon}>
           Couldn&rsquo;t remove the track. Try again.
-        </p>
+        </StatusBanner>
       )}
       {sync.isError &&
         (isPlexNotConfigured(sync.error) ? (
-          <p className="text-destructive text-sm" role="alert">
+          <StatusBanner tone="destructive" icon={ErrorIcon}>
             Connect Plex in{" "}
-            <Link to="/settings" className="underline">
+            <Link to="/settings/integrations" className="focus-ring rounded-sm underline">
               Settings
             </Link>{" "}
             first.
-          </p>
+          </StatusBanner>
         ) : (
-          <p className="text-destructive text-sm" role="alert">
+          <StatusBanner tone="destructive" icon={ErrorIcon}>
             Couldn&rsquo;t sync to Plex. Try again.
-          </p>
+          </StatusBanner>
         ))}
       {setTargets.isError && (
-        <p className="text-destructive text-sm" role="alert">
+        <StatusBanner tone="destructive" icon={ErrorIcon}>
           Couldn&rsquo;t save the Plex targets. Try again.
-        </p>
+        </StatusBanner>
       )}
 
       <section
         className="flex flex-col gap-2 rounded-xl border p-4"
         aria-label="Plex sync"
       >
-        <h3 className="text-sm font-semibold">Plex sync</h3>
+        <h2 className="text-sm font-semibold">Plex sync</h2>
         <ul className="flex flex-col gap-2">
           {/* The owner always gets their own copy — shown first, no checkbox. */}
           <li className="flex items-center justify-between gap-3 text-sm">
@@ -504,20 +513,18 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
             isPlexNotConfigured(plexUsers.error) ? (
               <li className="text-muted-foreground text-sm">
                 Connect Plex in{" "}
-                <Link to="/settings" className="underline">
+                <Link to="/settings/integrations" className="focus-ring rounded-sm underline">
                   Settings
                 </Link>{" "}
                 to choose who gets this playlist.
               </li>
             ) : (
-              <li
-                className="text-muted-foreground flex items-center justify-between gap-3 text-sm"
-                role="alert"
-              >
-                Couldn&rsquo;t load Plex accounts.
-                <Button variant="outline" size="sm" onClick={() => void plexUsers.refetch()}>
-                  Retry
-                </Button>
+              <li>
+                <ErrorState
+                  variant="inline"
+                  message="Couldn’t load Plex accounts."
+                  onRetry={() => void plexUsers.refetch()}
+                />
               </li>
             )
           ) : (
@@ -548,7 +555,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
       </section>
 
       {tracks.length === 0 ? (
-        <EmptyTracks headingRef={emptyRef} />
+        <EmptyTracks register={register} />
       ) : (
         <Table>
           <TableHeader>
@@ -572,7 +579,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
                 onMoveUp={() => move(index, -1)}
                 onMoveDown={() => move(index, 1)}
                 onRemove={() => handleRemove(index)}
-                registerRef={setButtonRef}
+                registerRef={register}
               />
             ))}
           </TableBody>
@@ -649,7 +656,7 @@ function PlaylistTrackRow({
             disabled={isFirst}
             aria-label={`Move ${title} up`}
           >
-            <ArrowUp className="size-4" aria-hidden="true" />
+            <MoveUp className="size-4" aria-hidden="true" />
           </Button>
           <Button
             ref={(el) => registerRef(`${track.id}:down`, el)}
@@ -659,7 +666,7 @@ function PlaylistTrackRow({
             disabled={isLast}
             aria-label={`Move ${title} down`}
           >
-            <ArrowDown className="size-4" aria-hidden="true" />
+            <MoveDown className="size-4" aria-hidden="true" />
           </Button>
           <Button
             ref={(el) => registerRef(`${track.id}:remove`, el)}
@@ -668,7 +675,7 @@ function PlaylistTrackRow({
             onClick={onRemove}
             aria-label={`Remove ${title}`}
           >
-            <X className="size-4" aria-hidden="true" />
+            <Remove className="size-4" aria-hidden="true" />
           </Button>
         </div>
       </TableCell>
@@ -677,26 +684,33 @@ function PlaylistTrackRow({
 }
 
 function EmptyTracks({
-  headingRef,
+  register,
 }: {
-  headingRef?: React.Ref<HTMLParagraphElement>;
+  register: (key: string, el: HTMLElement | null) => void;
 }) {
   return (
-    <div className="rounded-xl border border-dashed p-8 text-center" role="status">
-      <Music className="text-muted-foreground mx-auto mb-2 size-8" aria-hidden="true" />
-      <p ref={headingRef} tabIndex={-1} className="font-medium outline-none">
-        No tracks yet
-      </p>
-      <p className="text-muted-foreground text-sm">
-        Add some from an album or search.
-      </p>
+    // The wrapper (not the inner copy) is the focus target the remove-last-
+    // track flow lands on — registered under the "empty" key so the shared
+    // focus hook reaches it like any row control.
+    <div
+      tabIndex={-1}
+      ref={(el) => register("empty", el)}
+      className="focus-ring rounded-xl"
+    >
+      <EmptyState
+        icon={MusicFallback}
+        title="No tracks yet"
+        body="Add some from an album or search."
+        bordered
+      />
     </div>
   );
 }
 
+/** Bones only — PageSkeleton owns the aria-hidden + the loading announcement. */
 function DetailSkeleton() {
   return (
-    <div className="flex flex-col gap-6" aria-hidden="true">
+    <div className="flex flex-col gap-6">
       <Skeleton className="h-8 w-32" />
       <Skeleton className="h-8 w-64" />
       <div className="flex flex-col gap-2">
@@ -707,26 +721,6 @@ function DetailSkeleton() {
             <Skeleton className="ml-auto h-5 w-12 shrink-0" />
           </div>
         ))}
-      </div>
-    </div>
-  );
-}
-
-function ErrorState({ onRetry }: { onRetry: () => void }) {
-  return (
-    <div className="flex flex-col gap-6">
-      <BackLink to="/playlists" label="Playlists" />
-      <div className="border-destructive/40 bg-destructive/5 flex flex-col items-center gap-3 rounded-xl border py-16 text-center">
-        <AlertCircle className="text-destructive size-10" aria-hidden="true" />
-        <div className="flex flex-col gap-1">
-          <p className="font-medium">Couldn&rsquo;t load this playlist</p>
-          <p className="text-muted-foreground text-sm">
-            The library didn&rsquo;t respond. Check the backend and try again.
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={onRetry}>
-          Retry
-        </Button>
       </div>
     </div>
   );
