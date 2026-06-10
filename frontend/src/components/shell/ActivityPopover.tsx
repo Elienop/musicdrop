@@ -6,6 +6,8 @@
 // chrome. Stop actions are deliberately absent in Phase 2: the stop
 // mutations stay on their settings panels until Phase 3, so JobProgress's
 // onStop simply isn't passed.
+import { useState } from "react";
+
 import { useActivity, useActivityDismissals } from "@/api/useActivity";
 import { Activity, Close } from "@/components/icons";
 import { JobProgress } from "@/components/system/JobProgress";
@@ -20,9 +22,13 @@ import { cn } from "@/lib/utils";
 export function ActivityButton() {
   const { rows, runningCount } = useActivity();
   const { dismiss } = useActivityDismissals();
+  // Controlled so a row's "View" deep link closes the popover as it
+  // navigates (same posture as the mobile drawer) — otherwise it lingers
+  // over the new page with keyboard focus trapped inside it.
+  const [open, setOpen] = useState(false);
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
           variant="ghost"
@@ -47,7 +53,16 @@ export function ActivityButton() {
           )}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-96">
+      <PopoverContent
+        align="end"
+        className="w-96"
+        onClickCapture={(event) => {
+          // A row's "View" link navigates — close alongside it.
+          if ((event.target as HTMLElement).closest("a") !== null) {
+            setOpen(false);
+          }
+        }}
+      >
         {rows.length === 0 ? (
           <p className="text-muted-foreground px-4 py-6 text-center text-sm">
             Nothing running.
@@ -70,7 +85,7 @@ export function ActivityButton() {
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    aria-label="Dismiss"
+                    aria-label={`Dismiss ${row.label}`}
                     className="mt-3 mr-2 shrink-0"
                     onClick={() => dismiss(row.id)}
                   >

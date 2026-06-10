@@ -95,8 +95,15 @@ describe("ActivityButton", () => {
     await userEvent.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByText("Reorganize");
 
-    const dismissButtons = screen.getAllByRole("button", { name: "Dismiss" });
+    // The accessible name carries the job label so multiple failed rows
+    // stay distinguishable to screen-reader users.
+    const dismissButtons = screen.getAllByRole("button", {
+      name: "Dismiss Reorganize",
+    });
     expect(dismissButtons).toHaveLength(1);
+    expect(
+      screen.queryByRole("button", { name: "Dismiss Lyrics backfill" }),
+    ).not.toBeInTheDocument();
 
     await userEvent.click(dismissButtons[0]!);
     expect(dismiss).toHaveBeenCalledWith("reorganize:r1");

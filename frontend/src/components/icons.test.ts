@@ -23,6 +23,7 @@ const CONCEPTS = [
   "Settings",
   "Activity",
   "Search",
+  "Menu",
   // Status
   "Success",
   "Warning",
@@ -30,6 +31,7 @@ const CONCEPTS = [
   "Info",
   "Online",
   // Domain
+  "Brand",
   "MusicFallback",
   "Lyrics",
   "Edit",

@@ -171,6 +171,23 @@ describe("App shell", () => {
     expect(await screen.findByText(/no artists/i)).toBeInTheDocument();
   });
 
+  test("the topbar slot mounts ActivityButton + HealthStatus, and the toast region exists", async () => {
+    // Pins the slot wiring that regressed once mid-build (commit 5a55a10):
+    // deleting <ActivityButton/>, <HealthStatus/>, or <AppToaster/> from
+    // App.tsx must fail a test, not just a walkthrough.
+    server.use(...idleShellHandlers());
+    renderShell();
+
+    expect(
+      screen.getByRole("button", { name: "Activity" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText(/online/i)).toBeInTheDocument();
+    // sonner's single live region (AppToaster) is mounted.
+    expect(
+      screen.getByRole("region", { name: /notifications/i }),
+    ).toBeInTheDocument();
+  });
+
   test("sidebar nav: Overview/Artists/Browse + Review/Add from folder; no Albums, no dead slots", async () => {
     server.use(...idleShellHandlers());
     renderShell();
