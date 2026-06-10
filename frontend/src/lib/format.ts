@@ -29,3 +29,16 @@ export function formatBytes(bytes: number): string {
   }
   return `${value.toFixed(1)} ${units[i]}`;
 }
+
+/** Track length as `m:ss` (e.g. 284 -> "4:44", 5 -> "0:05"). Returns an
+ * en-dash for a missing duration so untimed rows still align. Distinct from
+ * formatTotalDuration above: this is per-track, never rolls into hours. */
+export function formatDuration(seconds: number | null): string {
+  if (seconds === null) {
+    return "–";
+  }
+  const total = Math.floor(seconds);
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}

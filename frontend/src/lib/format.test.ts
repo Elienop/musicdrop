@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { formatBytes, formatTotalDuration } from "@/lib/format";
+import { formatBytes, formatDuration, formatTotalDuration } from "@/lib/format";
 
 describe("formatTotalDuration", () => {
   test("days for >= 1 day", () => {
@@ -29,5 +29,26 @@ describe("formatBytes", () => {
   });
   test("zero", () => {
     expect(formatBytes(0)).toBe("0 B");
+  });
+});
+
+describe("formatDuration", () => {
+  test("m:ss with zero-padded seconds", () => {
+    expect(formatDuration(284)).toBe("4:44");
+  });
+  test("pads sub-10-second durations", () => {
+    expect(formatDuration(5)).toBe("0:05");
+  });
+  test("floors fractional seconds", () => {
+    expect(formatDuration(59.9)).toBe("0:59");
+  });
+  test("minutes never roll into hours (long tracks)", () => {
+    expect(formatDuration(3725)).toBe("62:05");
+  });
+  test("zero", () => {
+    expect(formatDuration(0)).toBe("0:00");
+  });
+  test("en-dash for a missing duration", () => {
+    expect(formatDuration(null)).toBe("–");
   });
 });
