@@ -9,7 +9,9 @@ export interface SegmentedControlOption {
  * A small exclusive-choice control: plain aria-pressed buttons in a
  * labeled group (no roving tabindex — Tab moves between options, which is
  * correct for a short row of real <button>s). Active option uses the
- * accent (`bg-primary/15 text-primary`), never an inverted foreground.
+ * accent tint with `text-primary-light` — the spec's "active text on dark"
+ * violet; base `text-primary` (#8b5cf6) only reaches ~4.1:1 on the tinted
+ * surface, under WCAG AA. Never an inverted foreground.
  */
 function SegmentedControl({
   options,
@@ -38,7 +40,7 @@ function SegmentedControl({
           className={cn(
             "focus-ring rounded-sm px-3 py-1 font-medium transition-colors",
             value === option.value
-              ? "bg-primary/15 text-primary"
+              ? "bg-primary/15 text-primary-light"
               : "text-muted-foreground hover:text-foreground"
           )}
         >

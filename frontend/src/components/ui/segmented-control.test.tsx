@@ -42,7 +42,9 @@ describe("SegmentedControl", () => {
       name: "Fuzzy · artist + title",
     });
     expect(active).toHaveClass("bg-primary/15");
-    expect(active).toHaveClass("text-primary");
+    // The lighter active-on-dark violet (--primary-light): base text-primary
+    // only reaches ~4.1:1 on the tinted surface, under WCAG AA.
+    expect(active).toHaveClass("text-primary-light");
     expect(active).not.toHaveClass("bg-foreground");
     expect(
       screen.getByRole("button", { name: "Strict · MB-ID" }),
