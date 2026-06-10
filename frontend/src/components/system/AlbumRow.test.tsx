@@ -1,0 +1,64 @@
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+
+import { AlbumRow } from "@/components/system/AlbumRow";
+import { renderWithProviders } from "@/test/render";
+
+describe("AlbumRow", () => {
+  it("renders title, subtitle, meta, badge and action slots", () => {
+    render(
+      <AlbumRow
+        cover={null}
+        title="OK Computer"
+        subtitle="Radiohead"
+        meta={<span>92% · Strong</span>}
+        badge={<span>Needs review</span>}
+        action={<button type="button">Review</button>}
+      />,
+    );
+    expect(screen.getByText("OK Computer")).toBeInTheDocument();
+    expect(screen.getByText("Radiohead")).toBeInTheDocument();
+    expect(screen.getByText("92% · Strong")).toBeInTheDocument();
+    expect(screen.getByText("Needs review")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Review" }),
+    ).toBeInTheDocument();
+  });
+
+  it("truncates the title and subtitle", () => {
+    render(
+      <AlbumRow
+        cover={null}
+        title="A very long album title"
+        subtitle="An artist"
+      />,
+    );
+    expect(screen.getByText("A very long album title")).toHaveClass(
+      "truncate",
+    );
+    expect(screen.getByText("An artist")).toHaveClass("truncate");
+  });
+
+  it("renders the cover thumbnail from the given src", () => {
+    const { container } = render(
+      <AlbumRow cover="/api/albums/7/cover" title="OK Computer" />,
+    );
+    const img = container.querySelector("img");
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute("src")).toBe("/api/albums/7/cover");
+  });
+
+  it("wraps the title in a focus-ring link when href is given", () => {
+    renderWithProviders(
+      <AlbumRow cover={null} title="OK Computer" href="/albums/7" />,
+    );
+    const link = screen.getByRole("link", { name: "OK Computer" });
+    expect(link).toHaveAttribute("href", "/albums/7");
+    expect(link).toHaveClass("focus-ring");
+  });
+
+  it("renders plain text (no link) when href is omitted", () => {
+    render(<AlbumRow cover={null} title="OK Computer" />);
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+});
