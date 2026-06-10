@@ -25,8 +25,12 @@ export function PageHeader({
         <h1 tabIndex={-1} className="text-2xl font-bold tracking-tight">
           {title}
         </h1>
-        {/* min-h-5 keeps the line from collapsing/shifting when meta lands. */}
-        <p className="text-muted-foreground min-h-5 text-sm" aria-live="polite">
+        {/* min-h-5 keeps the line from collapsing/shifting when meta lands;
+            tabular-nums pins the meta dialect for counts (spec §3). */}
+        <p
+          className="text-muted-foreground min-h-5 text-sm tabular-nums"
+          aria-live="polite"
+        >
           {meta}
         </p>
       </div>
