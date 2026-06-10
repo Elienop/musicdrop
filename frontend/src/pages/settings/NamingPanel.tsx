@@ -1,6 +1,5 @@
 // frontend/src/pages/settings/NamingPanel.tsx
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useActiveImport } from "@/api/useActiveImport";
@@ -15,6 +14,9 @@ import {
   usePreviewNaming,
   useSaveNaming,
 } from "@/api/useNaming";
+import { Add, Error as ErrorIcon, Remove } from "@/components/icons";
+import { SettingsSection } from "@/components/system/SettingsSection";
+import { StatusBanner } from "@/components/system/StatusBanner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NAMING_FIELDS, NAMING_FUNCTIONS } from "@/pages/settings/namingFields";
@@ -52,20 +54,20 @@ export function NamingPanel() {
   const { data, isPending, isError } = useNaming();
   if (isPending) {
     return (
-      <Section>
+      <SettingsSection title="Naming">
         <p className="text-muted-foreground text-sm" role="status">
           Loading naming…
         </p>
-      </Section>
+      </SettingsSection>
     );
   }
   if (isError || !data) {
     return (
-      <Section>
+      <SettingsSection title="Naming">
         <p className="text-destructive text-sm" role="alert">
           Could not load naming config.
         </p>
-      </Section>
+      </SettingsSection>
     );
   }
   // Remount on a fresh snapshot (post-save/apply) so the editable state reseeds.
@@ -195,38 +197,31 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
   const saveError = save.isError && save.error?.status !== 409;
 
   return (
-    <Section>
-      <header className="flex flex-col gap-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Naming</h2>
-        <p className="text-muted-foreground text-sm">
-          Edit how files are named (beets{" "}
-          <code className="font-mono">paths</code> /{" "}
-          <code className="font-mono">replace</code>) with a live preview. New
-          names apply to imported files — use the{" "}
-          <span className="font-medium">Reorganize library</span> section to
-          rename existing files. Saving writes to the same config;{" "}
-          <span className="font-medium">Apply</span> to load it. Leave a field
-          blank to use beets&rsquo; built-in default.
-        </p>
-      </header>
+    <SettingsSection title="Naming">
+      <p className="text-muted-foreground text-sm">
+        Edit how files are named (beets{" "}
+        <code className="font-mono">paths</code> /{" "}
+        <code className="font-mono">replace</code>) with a live preview. New
+        names apply to imported files — use{" "}
+        <span className="font-medium">Reorganize library</span> (Settings →
+        Beets) to rename existing files. Saving writes to the same config;{" "}
+        <span className="font-medium">Apply</span> to load it. Leave a field
+        blank to use beets&rsquo; built-in default.
+      </p>
 
       {conflict && (
-        <div
-          className="border-destructive/40 bg-destructive/5 flex items-center gap-3 rounded-xl border p-3 text-sm"
-          role="alert"
+        <StatusBanner
+          tone="destructive"
+          icon={ErrorIcon}
+          action={
+            <Button size="sm" variant="outline" onClick={reloadFromDisk}>
+              Reload
+            </Button>
+          }
         >
-          <AlertCircle
-            className="text-destructive size-5 shrink-0"
-            aria-hidden="true"
-          />
-          <span className="flex-1">
-            Config changed on disk — your save was refused. Reload to load the
-            on-disk version (your unsaved edits here will be discarded).
-          </span>
-          <Button size="sm" variant="outline" onClick={reloadFromDisk}>
-            Reload
-          </Button>
-        </div>
+          Config changed on disk — your save was refused. Reload to load the
+          on-disk version (your unsaved edits here will be discarded).
+        </StatusBanner>
       )}
 
       <div className="flex flex-col gap-4">
@@ -282,7 +277,7 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
                   setCustom((rows) => rows.filter((r) => r.id !== row.id))
                 }
               >
-                <Trash2 className="size-4" aria-hidden="true" />
+                <Remove className="size-4" aria-hidden="true" />
               </Button>
             </div>
             <PathRow
@@ -314,7 +309,7 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
               ])
             }
           >
-            <Plus className="size-4" aria-hidden="true" /> Add rule
+            <Add className="size-4" aria-hidden="true" /> Add rule
           </Button>
         </div>
       </div>
@@ -328,26 +323,13 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
       />
 
       <div className="border-border mt-2 flex flex-wrap items-center gap-3 border-t pt-3">
-        <Button
-          onClick={handleSave}
-          disabled={save.isPending || hasReplaceErrors}
-          title={
-            hasReplaceErrors
-              ? "Fix the invalid replace pattern before saving"
-              : undefined
-          }
-        >
+        <Button onClick={handleSave} disabled={save.isPending || hasReplaceErrors}>
           {save.isPending ? "Saving…" : "Save naming"}
         </Button>
         <Button
           variant="outline"
           onClick={() => apply.mutate()}
           disabled={apply.isPending || importActive}
-          title={
-            importActive
-              ? "1 import running — Apply available when it finishes"
-              : undefined
-          }
         >
           {apply.isPending ? "Applying…" : "Apply"}
         </Button>
@@ -379,18 +361,7 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
           MusicDrop.
         </p>
       )}
-    </Section>
-  );
-}
-
-function Section({ children }: { children: React.ReactNode }) {
-  return (
-    <section
-      aria-label="Naming"
-      className="border-border flex flex-col gap-3 rounded-xl border p-4"
-    >
-      {children}
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -536,7 +507,7 @@ function ReplaceEditor({
                   setRows((rs) => rs.filter((r) => r.id !== row.id))
                 }
               >
-                <Trash2 className="size-4" aria-hidden="true" />
+                <Remove className="size-4" aria-hidden="true" />
               </Button>
             </div>
             {err && (
@@ -558,7 +529,7 @@ function ReplaceEditor({
             ])
           }
         >
-          <Plus className="size-4" aria-hidden="true" /> Add replacement
+          <Add className="size-4" aria-hidden="true" /> Add replacement
         </Button>
       </div>
     </div>

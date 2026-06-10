@@ -12,7 +12,6 @@ import {
   useStartReorganize,
   useStopReorganize,
 } from "@/api/useReorganize";
-import { useReorganizeNotice } from "@/components/reorganize/reorganizeNotice";
 import { Button } from "@/components/ui/button";
 
 function jobMatches(
@@ -69,14 +68,20 @@ function PlanView({ plan }: { plan: ReorganizePlan }) {
   );
 }
 
+/** Action-local feedback: an empty-preview result is informational
+ * (`role="status"`), a failed action is an error (`role="alert"`) — the
+ * inline-span idiom LyricsBackfillPanel uses, so the result lives next to the
+ * button that caused it instead of in app-wide chrome. */
+type ActionMessage = { kind: "info" | "error"; text: string };
+
 export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
   const queryClient = useQueryClient();
   const status = useReorganizeStatus();
   const preview = usePreviewReorganize();
   const start = useStartReorganize();
   const stop = useStopReorganize();
-  const { showNotice } = useReorganizeNotice();
   const [plan, setPlan] = useState<ReorganizePlan | null>(null);
+  const [message, setMessage] = useState<ActionMessage | null>(null);
 
   const job = status.data;
   const phase = job?.phase;
@@ -99,27 +104,27 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
     }
   }, [isThis, phase, scope.scope, queryClient]);
 
-  // A preview with moves opens the inline review; an empty preview raises a
-  // transient banner notice instead (no inline message, no Done button).
+  // A preview with moves opens the inline review; an empty preview shows an
+  // inline info note instead (no inline plan, no Done button).
   function onPreviewed(result: ReorganizePlan) {
     if (result.will_move === 0) {
-      showNotice(
-        "Nothing to reorganize — everything already matches your config.",
-      );
+      setMessage({
+        kind: "info",
+        text: "Nothing to reorganize — everything already matches your config.",
+      });
     } else {
       setPlan(result);
     }
   }
 
-  // Errors surface in the top banner too, so the action row stays one line.
+  // Errors surface inline next to the buttons too — running progress and the
+  // backstage failed state live in the topbar activity popover.
   function onActionError(e: unknown) {
-    showNotice((e as Error).message);
+    setMessage({ kind: "error", text: (e as Error).message });
   }
 
   return (
     <div className="flex flex-col items-start gap-2">
-      {/* Only the interactive preview (review) shows inline; running progress,
-          the empty-preview result, and errors all show in the app banner. */}
       {plan != null && <PlanView plan={plan} />}
       <div className="flex flex-wrap items-center gap-3">
         {runningThis ? (
@@ -136,12 +141,13 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
             variant="outline"
             size="sm"
             disabled={preview.isPending || otherRunning}
-            onClick={() =>
+            onClick={() => {
+              setMessage(null);
               preview.mutate(scope, {
                 onSuccess: onPreviewed,
                 onError: onActionError,
-              })
-            }
+              });
+            }}
           >
             {preview.isPending ? "Building preview…" : "Preview reorganize"}
           </Button>
@@ -150,12 +156,13 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
             <Button
               size="sm"
               disabled={start.isPending || otherRunning}
-              onClick={() =>
+              onClick={() => {
+                setMessage(null);
                 start.mutate(scope, {
                   onSuccess: () => setPlan(null),
                   onError: onActionError,
-                })
-              }
+                });
+              }}
             >
               {start.isPending
                 ? "Starting…"
@@ -170,6 +177,18 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
               Cancel
             </Button>
           </>
+        )}
+        {message != null && (
+          <span
+            role={message.kind === "error" ? "alert" : "status"}
+            className={
+              message.kind === "error"
+                ? "text-destructive text-sm"
+                : "text-muted-foreground text-sm"
+            }
+          >
+            {message.text}
+          </span>
         )}
       </div>
     </div>

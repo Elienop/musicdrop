@@ -213,6 +213,13 @@ class WebImportSession(ImportSession):
         # When True, uncertain matches + duplicates are set aside (SKIP), not
         # parked — the inbox auto-import path (no human in the loop).
         self.unattended = unattended
+        # (outcome, task) pairs awaiting the library album id beets assigns
+        # AFTER choose_match returns (task.add inside the user_query stage's
+        # _apply_choice). Flushed at the next choose_match entry + once after
+        # run(): config["threaded"]=False makes beets' pipeline sequential
+        # (pipeline.pull), so the previous task has fully finished at both
+        # points. Holds at most one task between flushes.
+        self._await_album_id: list[tuple[AlbumOutcome, ImportTask]] = []
 
     # ----- the four decision hooks -----
 
@@ -274,6 +281,9 @@ class WebImportSession(ImportSession):
         needs_review) so the API can show it in the live feed. Returns either an
         ``AlbumMatch`` (to apply) or an ``Action`` constant.
         """
+        # Flush the PREVIOUS task's library album id (its task.add has run by
+        # now — sequential pipeline) before this album claims the feed.
+        self._flush_album_ids()
         # This hook only fires for album tasks, so every candidate is an
         # AlbumMatch; typed as Any since beets' task.candidates is the wider
         # list[AlbumMatch | TrackMatch] union (singletons go through choose_item).
@@ -293,10 +303,11 @@ class WebImportSession(ImportSession):
 
         if rec == BeetsRec.strong and candidates:
             # Mirror beets' auto-apply of a strong recommendation.
-            self.bridge.note_outcome(
+            self._note_outcome_awaiting_album_id(
                 self._outcome(
                     index, task, recommendation, AlbumOutcomeStatus.applied, match=candidates[0]
-                )
+                ),
+                task,
             )
             return candidates[0]
 
@@ -326,8 +337,9 @@ class WebImportSession(ImportSession):
             has_current_art=has_current_art,
         )
         folder = self._task_folder(task)
-        self.bridge.note_outcome(
-            self._outcome(index, task, recommendation, AlbumOutcomeStatus.needs_review, match=top)
+        self._note_outcome_awaiting_album_id(
+            self._outcome(index, task, recommendation, AlbumOutcomeStatus.needs_review, match=top),
+            task,
         )
         if self.unattended:
             # Unattended: the needs_review outcome above records the set-aside;
@@ -340,6 +352,45 @@ class WebImportSession(ImportSession):
         return self._apply_choice(choice, candidates)
 
     # ----- helpers -----
+
+    def run(self) -> None:
+        """Run the import, then flush the final task's library album id.
+
+        beets' run() drives the whole sequential pipeline; the LAST task's
+        ``task.add`` happens inside it with no later choose_match to flush it,
+        so the follow-up is emitted here. Safe after an abort too: beets'
+        run() catches ImportAbortError internally, and an aborted task never
+        gained ``task.album``, so the flush drops it.
+        """
+        super().run()
+        self._flush_album_ids()
+
+    def _note_outcome_awaiting_album_id(self, outcome: AlbumOutcome, task: ImportTask) -> None:
+        """Emit a feed outcome AND stash the task for the album-id follow-up."""
+        self.bridge.note_outcome(outcome)
+        self._await_album_id.append((outcome, task))
+
+    def _flush_album_ids(self) -> None:
+        """Emit follow-up outcomes carrying the library album id, where added.
+
+        For every stashed (outcome, task) whose task beets actually added
+        (``task.add`` created ``task.album`` — it does not exist otherwise),
+        emit a copy of the outcome with ``album_id`` set and ``status`` forced
+        to ``applied``: by this point the album IS in the library regardless of
+        how it was chosen. Tasks that were skipped, aborted, merged away, or
+        re-pipelined as-tracks never gain ``task.album`` and are dropped.
+        """
+        pending, self._await_album_id = self._await_album_id, []
+        for outcome, task in pending:
+            album = getattr(task, "album", None)
+            album_id = getattr(album, "id", None)
+            if album_id is None:
+                continue
+            self.bridge.note_outcome(
+                outcome.model_copy(
+                    update={"album_id": int(album_id), "status": AlbumOutcomeStatus.applied}
+                )
+            )
 
     def _outcome(
         self,

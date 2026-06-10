@@ -1804,6 +1804,8 @@ export interface components {
             /** Confidence */
             confidence: number;
             status: components["schemas"]["ImportAlbumStatus"];
+            /** Album Id */
+            album_id?: number | null;
         };
         /**
          * ImportChoice
@@ -2718,6 +2720,46 @@ export interface components {
             new_path: string;
         };
         /**
+         * TypedSearchPage
+         * @description One entity of the search, paged — the "View all N" page contract.
+         *
+         *     Returned by GET /api/search when `type` is present. ONLY the section named
+         *     by ``type`` is populated (the other two lists stay empty); ``total`` is
+         *     that entity's FULL match count, and ``limit``/``offset`` echo the request
+         *     so the FE can page statelessly from URL state. Ordering matches the
+         *     sectioned mode (same underlying queries), so "View all" page 1 lines up
+         *     with the section preview. ``SearchResults`` is deliberately untouched —
+         *     the default (no-``type``) response stays byte-identical.
+         */
+        TypedSearchPage: {
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "artists" | "albums" | "tracks";
+            /**
+             * Artists
+             * @default []
+             */
+            artists: components["schemas"]["Artist"][];
+            /**
+             * Albums
+             * @default []
+             */
+            albums: components["schemas"]["Album"][];
+            /**
+             * Tracks
+             * @default []
+             */
+            tracks: components["schemas"]["SearchTrack"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /**
          * UnmatchedItem
          * @description A local file with no counterpart on the matched release.
          *
@@ -3496,6 +3538,8 @@ export interface operations {
             query?: {
                 q?: string;
                 limit?: number;
+                offset?: number;
+                type?: ("artists" | "albums" | "tracks") | null;
             };
             header?: never;
             path?: never;
@@ -3509,7 +3553,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SearchResults"];
+                    "application/json": components["schemas"]["SearchResults"] | components["schemas"]["TypedSearchPage"];
                 };
             };
             /** @description Validation Error */

@@ -176,6 +176,13 @@ class AlbumOutcome(BaseModel):
     recommendation: Recommendation
     confidence: float
     status: AlbumOutcomeStatus
+    # The beets library album id, attached by a FOLLOW-UP outcome (same
+    # album_index) once beets' task.add() has run — choose_match emits the
+    # original outcome BEFORE the album exists, so it is always None there.
+    # Follow-ups force status=applied: by then the album IS in the library,
+    # however it was chosen (strong auto-apply or a user apply/asis decision),
+    # and a non-applied follow-up status could regress a decided feed row.
+    album_id: int | None = None
 
 
 class ImportAction(StrEnum):

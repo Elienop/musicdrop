@@ -1,12 +1,6 @@
 import type { Diagnostic } from "@codemirror/lint";
 import { useQueryClient } from "@tanstack/react-query";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
-import {
-  AlertCircle,
-  CheckCircle2,
-  Loader2,
-  TriangleAlert,
-} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useActiveImport } from "@/api/useActiveImport";
@@ -19,14 +13,15 @@ import {
   useSaveConfig,
   useValidateConfig,
 } from "@/api/useBeetsConfig";
-import { PlexSettingsPanel } from "@/components/settings/PlexSettingsPanel";
-import { SlskdPanel } from "@/components/settings/SlskdPanel";
+import {
+  Error as ErrorIcon,
+  Spinner,
+  Success,
+  Warning,
+} from "@/components/icons";
+import { StatusBanner } from "@/components/system/StatusBanner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ArtistArtPanel } from "@/pages/settings/ArtistArtPanel";
-import { ArtistImagesPanel } from "@/pages/settings/ArtistImagesPanel";
-import { LyricsBackfillPanel } from "@/pages/settings/LyricsBackfillPanel";
-import { NamingPanel } from "@/pages/settings/NamingPanel";
 import { ReorganizeLibraryPanel } from "./ReorganizeLibraryPanel";
 import { SettingsConflict } from "@/pages/settings/SettingsConflict";
 import {
@@ -84,7 +79,7 @@ function parseConflictBody(err: unknown): ConflictState | null {
   };
 }
 
-export function SettingsPage() {
+export function SettingsBeetsPage() {
   const { data, isPending, isError, error } = useBeetsConfig();
   const save = useSaveConfig();
   const applyMutation = useApplyConfig();
@@ -337,15 +332,13 @@ export function SettingsPage() {
     <div className="flex flex-col gap-8">
       <section className="flex flex-col gap-4" aria-label="Beets configuration">
         <header className="flex flex-col gap-1">
-          <h2 className="text-2xl font-semibold tracking-tight">
-            Beets configuration
-          </h2>
+          <h2 className="text-base font-semibold">Beets configuration</h2>
           <p className="text-muted-foreground text-sm">
             Loaded from <code className="font-mono">{data.config_path}</code>
           </p>
         </header>
 
-        <StatusBanner
+        <ConfigStateBanner
           state={pageState}
           importActive={importActive}
           data={data}
@@ -370,18 +363,10 @@ export function SettingsPage() {
           >
             Edit
           </Button>
-          <Button
-            onClick={handleSave}
-            disabled={pageState !== "dirty" || lintErrors > 0}
-            title={
-              lintErrors > 0
-                ? `Fix ${lintErrors} validation error${lintErrors > 1 ? "s" : ""} before saving`
-                : undefined
-            }
-          >
+          <Button onClick={handleSave} disabled={pageState !== "dirty" || lintErrors > 0}>
             {pageState === "saving" ? (
               <>
-                <Loader2 className="animate-spin" aria-hidden="true" />
+                <Spinner className="animate-spin" aria-hidden="true" />
                 Saving&hellip;
               </>
             ) : (
@@ -396,8 +381,8 @@ export function SettingsPage() {
             </Button>
           )}
           {pageState === "dirty" && lintErrors > 0 && (
-            // Inline helper text so the disabled Save's reason isn't only
-            // discoverable via the (mouse-only) tooltip.
+            // Visible helper text — the disabled Save's reason (no title=
+            // tooltip; spec §4 disabled-reason rule).
             <p className="text-destructive text-sm">
               {lintErrors} validation error{lintErrors > 1 ? "s" : ""} —
               <span className="text-muted-foreground"> fix to save.</span>
@@ -406,15 +391,10 @@ export function SettingsPage() {
           <Button
             onClick={handleApply}
             disabled={pageState !== "apply_pending" || importActive}
-            title={
-              importActive
-                ? "1 import running — Apply available when it finishes"
-                : undefined
-            }
           >
             {pageState === "applying" ? (
               <>
-                <Loader2 className="animate-spin" aria-hidden="true" />
+                <Spinner className="animate-spin" aria-hidden="true" />
                 Applying&hellip;
               </>
             ) : (
@@ -422,8 +402,7 @@ export function SettingsPage() {
             )}
           </Button>
           {pageState === "apply_pending" && importActive && (
-            // Helper text under the disabled Apply, spelled out so a screen
-            // reader user gets the same hint the sighted tooltip carries.
+            // Visible helper text under the disabled Apply (same rule).
             <p className="text-muted-foreground text-sm">
               1 import running &mdash; Apply available when it finishes.
             </p>
@@ -439,13 +418,7 @@ export function SettingsPage() {
           />
         )}
       </section>
-      <LyricsBackfillPanel />
-      <ArtistImagesPanel />
-      <ArtistArtPanel />
       <ReorganizeLibraryPanel />
-      <NamingPanel />
-      <PlexSettingsPanel />
-      <SlskdPanel />
     </div>
   );
 }
@@ -459,15 +432,13 @@ function Loader() {
       aria-label="Beets configuration"
     >
       <div className="flex flex-col gap-1">
-        <h2 className="text-2xl font-semibold tracking-tight">
-          Beets configuration
-        </h2>
+        <h2 className="text-base font-semibold">Beets configuration</h2>
       </div>
       <p
         className="text-muted-foreground flex items-center gap-2 text-sm"
         role="status"
       >
-        <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+        <Spinner className="size-4 animate-spin" aria-hidden="true" />
         Loading configuration&hellip;
       </p>
     </section>
@@ -484,15 +455,13 @@ function ErrorBanner({ err }: { err: unknown }) {
       aria-label="Beets configuration"
     >
       <div className="flex flex-col gap-1">
-        <h2 className="text-2xl font-semibold tracking-tight">
-          Beets configuration
-        </h2>
+        <h2 className="text-base font-semibold">Beets configuration</h2>
       </div>
       <div
         className="border-destructive/40 bg-destructive/5 flex items-start gap-3 rounded-xl border p-4"
         role="alert"
       >
-        <AlertCircle
+        <ErrorIcon
           className="text-destructive mt-0.5 size-5 shrink-0"
           aria-hidden="true"
         />
@@ -506,8 +475,10 @@ function ErrorBanner({ err }: { err: unknown }) {
 }
 
 /** The single banner that mirrors the 5-state machine. Color + icon both carry
- * the state so it doesn't rely on color alone (a11y). */
-function StatusBanner({
+ * the state (a11y: never color alone). The apply_pending rail is the system
+ * StatusBanner (tone=warning — the old hardcoded yellow + dark variants are
+ * gone); dirty keeps its primary box, saving/applying share the neutral one. */
+function ConfigStateBanner({
   state,
   importActive,
   data,
@@ -528,7 +499,7 @@ function StatusBanner({
         )}
         role="status"
       >
-        <CheckCircle2
+        <Success
           className="text-primary mt-0.5 size-5 shrink-0"
           aria-hidden="true"
         />
@@ -539,45 +510,24 @@ function StatusBanner({
       </div>
     );
   }
-  if (state === "saving") {
+  if (state === "saving" || state === "applying") {
     return (
       <div
         className="border-border bg-muted/50 flex items-start gap-3 rounded-xl border p-3 text-sm"
         role="status"
       >
-        <Loader2
+        <Spinner
           className="text-muted-foreground mt-0.5 size-5 shrink-0 animate-spin"
           aria-hidden="true"
         />
-        <p>Saving configuration&hellip;</p>
+        <p>{state === "saving" ? "Saving configuration…" : "Reloading beets…"}</p>
       </div>
     );
   }
-  if (state === "applying") {
-    return (
-      <div
-        className="border-border bg-muted/50 flex items-start gap-3 rounded-xl border p-3 text-sm"
-        role="status"
-      >
-        <Loader2
-          className="text-muted-foreground mt-0.5 size-5 shrink-0 animate-spin"
-          aria-hidden="true"
-        />
-        <p>Reloading beets&hellip;</p>
-      </div>
-    );
-  }
-  // apply_pending — the same yellow rail the L1/L2 page used, but now the
-  // copy nudges Apply (the button below the editor) instead of "restart".
+  // apply_pending — same copy the tests pin; the system banner supplies the
+  // warning chrome + role="alert".
   return (
-    <div
-      className="flex items-start gap-3 rounded-xl border border-yellow-400/60 bg-yellow-50 p-4 text-sm text-yellow-900 dark:border-yellow-500/40 dark:bg-yellow-950/40 dark:text-yellow-100"
-      role="alert"
-    >
-      <TriangleAlert
-        className="mt-0.5 size-5 shrink-0 text-yellow-600 dark:text-yellow-400"
-        aria-hidden="true"
-      />
+    <StatusBanner tone="warning" icon={Warning}>
       <p>
         <strong>config.yaml is saved but not loaded yet</strong>
         {data.file_modified_at && (
@@ -587,7 +537,7 @@ function StatusBanner({
           ? " — Apply available once the running import finishes."
           : " — click Apply to load it into beets."}
       </p>
-    </div>
+    </StatusBanner>
   );
 }
 

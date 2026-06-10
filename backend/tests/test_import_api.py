@@ -416,3 +416,18 @@ def test_worker_crash_marks_failed_never_500() -> None:
     state = _poll(client, job_id, lambda s: s["phase"] == "failed")
     assert state["phase"] == "failed"
     assert state["error"] == "lookup exploded"
+
+
+def test_feed_row_carries_album_id_when_present() -> None:
+    follow_up = _api_applied(0).model_copy(update={"album_id": 7})
+    client = _client_with_fake(applied=[_api_applied(0), follow_up])
+    job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
+    state = _poll(client, job_id, lambda s: s["phase"] == "done")
+    assert state["albums"][0]["album_id"] == 7
+
+
+def test_feed_row_album_id_defaults_to_null() -> None:
+    client = _client_with_fake(applied=[_api_applied(0)])
+    job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
+    state = _poll(client, job_id, lambda s: s["phase"] == "done")
+    assert state["albums"][0]["album_id"] is None

@@ -1,4 +1,4 @@
-import { Loader2 } from "lucide-react";
+import { Spinner } from "@/components/icons";
 import { useState } from "react";
 
 import { type Playlist, useCreatePlaylist } from "@/api/usePlaylists";
@@ -89,7 +89,7 @@ export function CreatePlaylistDialog({
             <Button type="submit" disabled={create.isPending || trimmed.length === 0}>
               {create.isPending ? (
                 <>
-                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                  <Spinner className="size-4 animate-spin" aria-hidden="true" />
                   Creating&hellip;
                 </>
               ) : (

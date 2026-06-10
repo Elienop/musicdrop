@@ -1,7 +1,13 @@
+from typing import Literal
+
 from pydantic import BaseModel
 
 from app.models.album import Album
 from app.models.artist import Artist
+
+# The three searchable entity types — the wire values of /api/search's `type`
+# query param (typed "View all" mode).
+SearchEntity = Literal["artists", "albums", "tracks"]
 
 
 class SearchTrack(BaseModel):
@@ -24,3 +30,24 @@ class SearchResults(BaseModel):
     artist_total: int
     album_total: int
     track_total: int
+
+
+class TypedSearchPage(BaseModel):
+    """One entity of the search, paged — the "View all N" page contract.
+
+    Returned by GET /api/search when `type` is present. ONLY the section named
+    by ``type`` is populated (the other two lists stay empty); ``total`` is
+    that entity's FULL match count, and ``limit``/``offset`` echo the request
+    so the FE can page statelessly from URL state. Ordering matches the
+    sectioned mode (same underlying queries), so "View all" page 1 lines up
+    with the section preview. ``SearchResults`` is deliberately untouched —
+    the default (no-``type``) response stays byte-identical.
+    """
+
+    type: SearchEntity
+    artists: list[Artist] = []
+    albums: list[Album] = []
+    tracks: list[SearchTrack] = []
+    total: int
+    limit: int
+    offset: int

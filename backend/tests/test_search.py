@@ -132,3 +132,102 @@ def test_search_malformed_query_does_not_500(client: TestClient) -> None:
 def test_search_returns_search_results_model(temp_library: Library) -> None:
     results = search(temp_library, query="love", limit=25)
     assert isinstance(results, SearchResults)
+
+
+def test_typed_search_tracks_pages_with_total(client: TestClient) -> None:
+    # All three track titles match "o" (Love Me Do, Waterloo, Take On Me);
+    # limit=2 pages them and `total` reports the full match count.
+    page1_resp = client.get(
+        "/api/search", params={"q": "o", "type": "tracks", "limit": 2, "offset": 0}
+    )
+    assert page1_resp.status_code == 200
+    page1 = page1_resp.json()
+    assert page1["type"] == "tracks"
+    assert page1["total"] == 3
+    assert page1["limit"] == 2
+    assert page1["offset"] == 0
+    assert len(page1["tracks"]) == 2
+    assert page1["artists"] == []
+    assert page1["albums"] == []
+
+    page2 = client.get(
+        "/api/search", params={"q": "o", "type": "tracks", "limit": 2, "offset": 2}
+    ).json()
+    assert page2["total"] == 3
+    assert len(page2["tracks"]) == 1
+    titles1 = {t["title"] for t in page1["tracks"]}
+    titles2 = {t["title"] for t in page2["tracks"]}
+    # Stable ordering across requests: the pages are disjoint and exhaustive.
+    assert titles1.isdisjoint(titles2)
+    assert titles1 | titles2 == {"Love Me Do", "Waterloo", "Take On Me"}
+
+
+def test_typed_search_albums_returns_only_albums(client: TestClient) -> None:
+    resp = client.get("/api/search", params={"q": "love", "type": "albums"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["type"] == "albums"
+    assert [a["title"] for a in body["albums"]] == ["Lovesong"]
+    assert body["total"] == 1
+    assert body["artists"] == []
+    assert body["tracks"] == []
+    assert body["limit"] == 25  # defaults echoed
+    assert body["offset"] == 0
+
+
+def test_typed_search_artists_pages_the_roster(client: TestClient) -> None:
+    # Roster order is casefolded name: "a-ha" < "ABBA" ("-" sorts before "b");
+    # "Love" contains no "a". limit=1 offset=1 must return ONLY the second match.
+    resp = client.get("/api/search", params={"q": "a", "type": "artists", "limit": 1, "offset": 1})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["type"] == "artists"
+    assert body["total"] == 2
+    assert [a["name"] for a in body["artists"]] == ["ABBA"]
+
+
+def test_typed_search_blank_query_returns_empty_page(client: TestClient) -> None:
+    resp = client.get(
+        "/api/search", params={"q": "   ", "type": "tracks", "limit": 48, "offset": 96}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "type": "tracks",
+        "artists": [],
+        "albums": [],
+        "tracks": [],
+        "total": 0,
+        "limit": 48,
+        "offset": 96,
+    }
+
+
+def test_typed_search_malformed_query_does_not_500(client: TestClient) -> None:
+    # Same ParsingError guard as the sectioned mode: an unbalanced quote
+    # degrades to zero results, never a 500.
+    resp = client.get("/api/search", params={"q": '"', "type": "albums"})
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 0
+
+
+def test_typed_search_invalid_type_is_422(client: TestClient) -> None:
+    resp = client.get("/api/search", params={"q": "love", "type": "bogus"})
+    assert resp.status_code == 422
+
+
+def test_default_mode_shape_is_unchanged(client: TestClient) -> None:
+    # The Phase-3 pin: no `type` => today's sectioned response, byte-identical.
+    base = client.get("/api/search", params={"q": "love"})
+    assert base.status_code == 200
+    assert set(base.json().keys()) == {
+        "artists",
+        "albums",
+        "tracks",
+        "artist_total",
+        "album_total",
+        "track_total",
+    }
+    # `offset` without `type` is accepted-but-ignored (sectioned mode is not
+    # paged): the response bytes are identical.
+    with_offset = client.get("/api/search", params={"q": "love", "offset": 10})
+    assert with_offset.content == base.content

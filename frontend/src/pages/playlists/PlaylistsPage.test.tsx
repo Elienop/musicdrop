@@ -23,6 +23,14 @@ function playlist(over: Partial<Record<string, unknown>> = {}) {
 }
 
 describe("PlaylistsPage", () => {
+  test("renders the page h1 with the live count in the header meta", async () => {
+    server.use(http.get(URL, () => HttpResponse.json([playlist()])));
+    renderWithProviders(<PlaylistsPage />);
+    const h1 = screen.getByRole("heading", { level: 1, name: "Playlists" });
+    expect(h1).toHaveAttribute("tabindex", "-1");
+    expect(await screen.findByText("1 playlist")).toBeInTheDocument();
+  });
+
   test("renders the playlist list", async () => {
     server.use(http.get(URL, () => HttpResponse.json([playlist()])));
     renderWithProviders(<PlaylistsPage />);
@@ -34,6 +42,24 @@ describe("PlaylistsPage", () => {
     server.use(http.get(URL, () => HttpResponse.json([])));
     renderWithProviders(<PlaylistsPage />);
     expect(await screen.findByText(/no playlists yet/i)).toBeInTheDocument();
+    expect(screen.getByText("0 playlists")).toBeInTheDocument();
+  });
+
+  test("failed load shows the error state with a working Retry", async () => {
+    let calls = 0;
+    server.use(
+      http.get(URL, () => {
+        calls += 1;
+        return calls === 1
+          ? new HttpResponse(null, { status: 500 })
+          : HttpResponse.json([playlist()]);
+      }),
+    );
+    renderWithProviders(<PlaylistsPage />);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/couldn.t load playlists/i);
+    await userEvent.click(screen.getByRole("button", { name: /retry/i }));
+    expect(await screen.findByText("Late night")).toBeInTheDocument();
   });
 
   test("creates a playlist via the dialog", async () => {

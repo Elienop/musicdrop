@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, test } from "vitest";
@@ -64,6 +64,26 @@ function renderDetail(albumId: number | string = 1) {
 }
 
 describe("AlbumDetailPage", () => {
+  test("back link returns to the origin (Browse) when opened from there", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+    renderWithProviders(<AlbumDetailPage />, {
+      route: {
+        pathname: "/albums/1",
+        state: { from: { label: "Browse", to: "/browse?genre=Rock" } },
+      },
+      path: "/albums/:albumId",
+    });
+    const back = await screen.findByRole("link", { name: "Browse" });
+    expect(back).toHaveAttribute("href", "/browse?genre=Rock");
+  });
+
+  test("back link falls back to the artist spine without an origin", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+    renderDetail(1);
+    const back = await screen.findByRole("link", { name: "Radiohead" });
+    expect(back).toHaveAttribute("href", "/artists/Radiohead");
+  });
+
   test("renders the album header from the API", async () => {
     server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
 
@@ -238,7 +258,7 @@ describe("AlbumDetailPage", () => {
     expect(await screen.findByText(/album not found/i)).toBeInTheDocument();
     // With no album data the artist is unknown, so back goes to the roster.
     const back = screen.getByRole("link", { name: /artists/i });
-    expect(back).toHaveAttribute("href", "/");
+    expect(back).toHaveAttribute("href", "/artists");
   });
 
   test("shows not-found for a non-numeric id without hitting the API", async () => {
@@ -376,6 +396,128 @@ describe("AlbumDetailPage", () => {
 
     await screen.findByText(/couldn.t load (this )?album/i);
     const back = screen.getByRole("link", { name: /artists/i });
-    expect(back).toHaveAttribute("href", "/");
+    expect(back).toHaveAttribute("href", "/artists");
+  });
+
+  test("the album title is the page h1 with tabindex -1 (RouteAnnouncer focus contract)", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+
+    renderDetail(1);
+
+    const h1 = await screen.findByRole("heading", {
+      level: 1,
+      name: "OK Computer",
+    });
+    expect(h1).toHaveAttribute("tabindex", "-1");
+  });
+
+  test("Edit is a disclosure: aria-expanded + aria-controls + focus moves into the panel", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+
+    renderDetail(1);
+
+    const edit = await screen.findByRole("button", { name: "Edit album" });
+    expect(edit).toHaveAttribute("aria-expanded", "false");
+    expect(edit).toHaveAttribute("aria-controls", "album-edit-panel");
+
+    await userEvent.click(edit);
+
+    expect(edit).toHaveAttribute("aria-expanded", "true");
+    const panel = document.getElementById("album-edit-panel");
+    expect(panel).not.toBeNull();
+    // Opening the disclosure moves focus INTO what just appeared (spec §4).
+    expect(panel).toHaveFocus();
+  });
+
+  test("Cover is a disclosure with its own panel target", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+
+    renderDetail(1);
+
+    const cover = await screen.findByRole("button", { name: "Edit cover" });
+    expect(cover).toHaveAttribute("aria-expanded", "false");
+    expect(cover).toHaveAttribute("aria-controls", "album-cover-panel");
+
+    await userEvent.click(cover);
+
+    expect(cover).toHaveAttribute("aria-expanded", "true");
+    expect(document.getElementById("album-cover-panel")).toHaveFocus();
+  });
+
+  test("not-found renders on the shared EmptyState recipe", async () => {
+    server.use(
+      http.get(DETAIL_URL, () => new HttpResponse(null, { status: 404 })),
+    );
+
+    renderDetail(999);
+
+    await screen.findByText(/album not found/i);
+    expect(document.querySelector('[data-slot="empty-state"]')).not.toBeNull();
+  });
+
+  test("load error renders on the shared ErrorState recipe (role=alert)", async () => {
+    server.use(
+      http.get(DETAIL_URL, () => new HttpResponse(null, { status: 500 })),
+    );
+
+    renderDetail(1);
+
+    await screen.findByText(/couldn.t load (this )?album/i);
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveAttribute("data-slot", "error-state");
+  });
+
+  test("cold load: focus lands on the h1 once the album renders (deferred h1 focus)", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+
+    renderDetail(1);
+
+    // While the skeleton is up there is no h1 and nothing holds focus.
+    expect(document.body).toHaveFocus();
+
+    const h1 = await screen.findByRole("heading", {
+      level: 1,
+      name: "OK Computer",
+    });
+    await waitFor(() => expect(h1).toHaveFocus());
+  });
+
+  test("header is a hero: blurred decorative cover backdrop behind the content", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+
+    renderDetail(1);
+    await screen.findByRole("heading", { name: "OK Computer" });
+
+    const header = document.querySelector("header");
+    expect(header).toHaveClass("relative", "overflow-hidden", "rounded-xl");
+
+    // Layer 1: the backdrop is hidden from assistive tech as a unit.
+    const backdrop = header!.querySelector('[data-slot="album-hero-backdrop"]');
+    expect(backdrop).not.toBeNull();
+    expect(backdrop).toHaveAttribute("aria-hidden", "true");
+    const backdropImg = backdrop!.querySelector("img");
+    expect(backdropImg).toHaveAttribute("src", "/api/albums/1/cover");
+    expect(backdropImg).toHaveClass("blur-2xl", "opacity-40", "object-cover");
+
+    // Both layers point at the same cover URL: blurred backdrop + foreground.
+    expect(
+      header!.querySelectorAll('img[src="/api/albums/1/cover"]'),
+    ).toHaveLength(2);
+  });
+
+  test("a failed backdrop load falls back to the tinted gradient", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+
+    renderDetail(1);
+    await screen.findByRole("heading", { name: "OK Computer" });
+
+    const backdrop = document.querySelector(
+      '[data-slot="album-hero-backdrop"]',
+    ) as HTMLElement;
+    fireEvent.error(backdrop.querySelector("img") as HTMLImageElement);
+
+    // No broken <img> lingers; the primary-tinted gradient takes its place.
+    expect(backdrop.querySelector("img")).toBeNull();
+    expect(backdrop.querySelector(".bg-gradient-to-br")).not.toBeNull();
   });
 });

@@ -141,4 +141,30 @@ describe("ArtistsPage", () => {
 
     expect(await screen.findByText("Radiohead")).toBeInTheDocument();
   });
+
+  test("renders the Artists h1 with the roster count in the meta line", async () => {
+    server.use(http.get(ARTISTS_URL, () => HttpResponse.json(ROSTER)));
+
+    renderWithProviders(<ArtistsPage />);
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Artists" }),
+    ).toBeInTheDocument();
+    const count = await screen.findByText("3 artists");
+    expect(count.closest("[aria-live]")).toHaveAttribute(
+      "aria-live",
+      "polite",
+    );
+  });
+
+  test("the empty roster offers the import CTA", async () => {
+    server.use(http.get(ARTISTS_URL, () => HttpResponse.json([])));
+
+    renderWithProviders(<ArtistsPage />);
+
+    const cta = await screen.findByRole("link", {
+      name: /add music from a folder/i,
+    });
+    expect(cta).toHaveAttribute("href", "/import");
+  });
 });

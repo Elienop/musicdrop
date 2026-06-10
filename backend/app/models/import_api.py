@@ -101,6 +101,12 @@ class ImportAlbumSummary(BaseModel):
     recommendation: Recommendation
     confidence: float
     status: ImportAlbumStatus
+    # The library album id once the album landed in the library (attached by a
+    # follow-up outcome; see registry._drain_locked). Non-null => the album
+    # exists at /albums/{album_id} and the FE links the row there. None for
+    # skipped/set-aside rows — and transiently for landed rows (the id can
+    # trail its row by one poll; the first poll after done carries every id).
+    album_id: int | None = None
 
 
 class ImportJobState(BaseModel):

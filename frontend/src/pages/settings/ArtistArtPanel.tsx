@@ -1,5 +1,3 @@
-import { Loader2 } from "lucide-react";
-
 import {
   useArtistArtBackfillStatus,
   useArtistArtSettings,
@@ -7,6 +5,8 @@ import {
   useStartArtistArtBackfill,
   useStopArtistArtBackfill,
 } from "@/api/useArtistArt";
+import { Spinner } from "@/components/icons";
+import { SettingsSection } from "@/components/system/SettingsSection";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 
@@ -33,17 +33,10 @@ export function ArtistArtPanel() {
     (job.phase === "done" || job.phase === "stopped" || job.phase === "failed");
 
   return (
-    <section
-      aria-label="Artist art for Plex"
-      className="border-border flex flex-col gap-3 rounded-xl border p-4"
+    <SettingsSection
+      title="Artist art for Plex"
+      description="Write artist-poster and artist-background files into each artist folder so Plex shows artist art. When off, nothing is fetched or written."
     >
-      <header className="flex flex-col gap-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Artist art for Plex</h2>
-        <p className="text-muted-foreground text-sm">
-          Write artist-poster and artist-background files into each artist folder so Plex shows
-          artist art. When off, nothing is fetched or written.
-        </p>
-      </header>
 
       <div className="flex items-center gap-3">
         <Switch
@@ -54,7 +47,7 @@ export function ArtistArtPanel() {
         />
         <span className="text-sm">{enabled ? "On" : "Off"}</span>
         {setEnabled.isPending && (
-          <Loader2 className="text-muted-foreground size-4 animate-spin" aria-hidden="true" />
+          <Spinner className="text-muted-foreground size-4 animate-spin" aria-hidden="true" />
         )}
         {setEnabled.isError && (
           <span className="text-destructive text-sm" role="alert">
@@ -66,8 +59,8 @@ export function ArtistArtPanel() {
       {libraryRunning && job ? (
         <div className="flex flex-col gap-2" role="status">
           <div className="flex items-center gap-3 text-sm">
-            <Loader2
-              className="text-muted-foreground size-5 shrink-0 animate-spin"
+            <Spinner
+              className="text-muted-foreground size-4 shrink-0 animate-spin"
               aria-hidden="true"
             />
             <span className="flex-1">
@@ -89,19 +82,20 @@ export function ArtistArtPanel() {
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-3">
-          <Button
-            onClick={() => start.mutate()}
-            disabled={!enabled || start.isPending}
-            title={enabled ? undefined : "Turn on artist art for Plex first"}
-          >
+          <Button onClick={() => start.mutate()} disabled={!enabled || start.isPending}>
             {start.isPending ? (
               <>
-                <Loader2 className="size-4 animate-spin" aria-hidden="true" /> Starting…
+                <Spinner className="size-4 animate-spin" aria-hidden="true" /> Starting…
               </>
             ) : (
               "Write all to library"
             )}
           </Button>
+          {!enabled && (
+            <span className="text-muted-foreground text-sm">
+              Turn on artist art for Plex first.
+            </span>
+          )}
           <span className="text-muted-foreground text-sm">
             writes every artist&apos;s folder → Plex reads them
           </span>
@@ -127,6 +121,6 @@ export function ArtistArtPanel() {
           )}
         </div>
       )}
-    </section>
+    </SettingsSection>
   );
 }

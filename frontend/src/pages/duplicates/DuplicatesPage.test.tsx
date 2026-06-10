@@ -293,4 +293,59 @@ describe("DuplicatesPage", () => {
     expect(await screen.findByText(/nothing moved/i)).toBeInTheDocument();
     expect(screen.queryByText(/moved 0/i)).not.toBeInTheDocument();
   });
+
+  test("renders the page h1 + live count meta via PageHeader", async () => {
+    server.use(http.get(DUP_URL, () => HttpResponse.json(reportWithOneGroup())));
+    renderPage();
+
+    const h1 = await screen.findByRole("heading", { level: 1, name: "Duplicates" });
+    expect(h1).toHaveAttribute("tabindex", "-1");
+    expect(await screen.findByText("1 group · 2 albums")).toBeInTheDocument();
+  });
+
+  test("the mode control is the shared SegmentedControl (accent active, not inverted)", async () => {
+    server.use(http.get(DUP_URL, () => HttpResponse.json(reportWithOneGroup())));
+    renderPage();
+    await screen.findByText(/Matched on/i);
+
+    const strict = screen.getByRole("button", { name: /strict/i });
+    expect(strict).toHaveAttribute("aria-pressed", "true");
+    // The old ModeToggle's inverted bg-foreground active style is gone.
+    expect(strict).not.toHaveClass("bg-foreground");
+    expect(strict.closest('[data-slot="segmented-control"]')).not.toBeNull();
+  });
+
+  test("member rows render on AlbumRow with the cover thumb", async () => {
+    server.use(http.get(DUP_URL, () => HttpResponse.json(reportWithOneGroup())));
+    renderPage();
+    await screen.findByText(/Matched on/i);
+
+    // One cover per member, served from the album cover endpoint.
+    const covers = document.querySelectorAll('img[data-slot="cover-art"]');
+    expect(covers).toHaveLength(2);
+    expect(covers[0].getAttribute("src")).toBe("/api/albums/1/cover");
+    // The quality/meta line folded into the row.
+    expect(screen.getByText(/2007 · 10 tracks · FLAC · 900k/)).toBeInTheDocument();
+  });
+
+  test("a failed scan renders the shared inline ErrorState", async () => {
+    server.use(http.get(DUP_URL, () => new HttpResponse(null, { status: 500 })));
+    renderPage();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveAttribute("data-slot", "error-state");
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
+
+  test("the clean-library state renders the shared EmptyState", async () => {
+    server.use(
+      http.get(DUP_URL, () =>
+        HttpResponse.json({ mode: "strict", group_count: 0, album_count: 0, groups: [] }),
+      ),
+    );
+    renderPage();
+
+    await screen.findByText(/No duplicate albums found/i);
+    expect(document.querySelector('[data-slot="empty-state"]')).not.toBeNull();
+  });
 });

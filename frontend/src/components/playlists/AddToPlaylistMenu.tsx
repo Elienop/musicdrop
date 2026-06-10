@@ -1,7 +1,12 @@
-import { AlertCircle, Check, ListPlus, Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { useAddTracks, usePlaylists } from "@/api/usePlaylists";
+import {
+  Add,
+  AddToPlaylist,
+  Confirm,
+  Error as ErrorIcon,
+} from "@/components/icons";
 import { CreatePlaylistDialog } from "@/components/playlists/CreatePlaylistDialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -70,7 +75,11 @@ export function AddToPlaylistMenu({
         ? "Couldn't add — try again"
         : "";
   const TriggerIcon =
-    feedback === "added" ? Check : feedback === "error" ? AlertCircle : ListPlus;
+    feedback === "added"
+      ? Confirm
+      : feedback === "error"
+        ? ErrorIcon
+        : AddToPlaylist;
   const triggerIconClass =
     feedback === "added"
       ? "size-4 text-success"
@@ -98,7 +107,7 @@ export function AddToPlaylistMenu({
               setCreateOpen(true);
             }}
           >
-            <Plus className="size-4" aria-hidden="true" /> New playlist&hellip;
+            <Add className="size-4" aria-hidden="true" /> New playlist&hellip;
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

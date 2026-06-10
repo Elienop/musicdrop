@@ -1,6 +1,8 @@
-import { screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { beforeEach, describe, expect, test } from "vitest";
 
 import type { ImportJobState } from "@/api/useImport";
@@ -26,6 +28,7 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
         recommendation: "strong",
         confidence: 99,
         status: "applied",
+        album_id: 41,
       },
       {
         index: 1,
@@ -35,6 +38,7 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
         recommendation: "medium",
         confidence: 76,
         status: "needs_review",
+        album_id: null,
       },
     ],
     summary: null,
@@ -48,6 +52,37 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
 /** Render at a given URL so `useSearchParams` (the `?job=` seam) resolves. */
 function renderAt(route: string) {
   return renderWithProviders(<ImportPage />, { route, path: "/import" });
+}
+
+/** Renders the AlbumOrigin router state an outgoing feed link arrives with. */
+function OriginProbe() {
+  const state = useLocation().state as
+    | { from?: { label: string; to: string } }
+    | null;
+  return (
+    <p>
+      origin: {state?.from ? `${state.from.label} ${state.from.to}` : "none"}
+    </p>
+  );
+}
+
+/** ImportPage plus probe routes for every link that leaves the feed. */
+function renderFeedWithProbes(route: string) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[route]}>
+        <Routes>
+          <Route path="/import" element={<ImportPage />} />
+          <Route path="/import/albums/:index" element={<OriginProbe />} />
+          <Route path="/import/albums/:index/duplicate" element={<OriginProbe />} />
+          <Route path="/albums/:albumId" element={<OriginProbe />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
 }
 
 describe("ImportPage — entry", () => {
@@ -65,7 +100,7 @@ describe("ImportPage — entry", () => {
   test("shows the path input + Start when there is no active job", () => {
     renderAt("/import");
     expect(
-      screen.getByRole("heading", { name: "Import music" }),
+      screen.getByRole("heading", { level: 1, name: "Add from folder" }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Folder path")).toBeInTheDocument();
     expect(
@@ -101,9 +136,9 @@ describe("ImportPage — entry", () => {
     await user.type(screen.getByLabelText("Folder path"), "/music/incoming");
     await user.click(screen.getByRole("button", { name: /start import/i }));
 
-    // The job query now drives the page (heading switches to "Import").
+    // The job query now drives the page (the live feed's scanning cue shows).
     expect(
-      await screen.findByRole("heading", { name: "Import" }),
+      await screen.findByText(/scanning your folder/i),
     ).toBeInTheDocument();
     expect(seenBody).toEqual({ path: "/music/incoming" });
   });
@@ -238,7 +273,7 @@ describe("ImportPage — live feed", () => {
     expect(review).toHaveAttribute("href", "/import/albums/1?job=job-1");
   });
 
-  test("a needs_dup_resolution row shows a Duplicate badge + a Resolve link", async () => {
+  test("a needs_dup_resolution row shows an Already-in-library badge + a Resolve link", async () => {
     server.use(
       http.get(JOB_URL, () =>
         HttpResponse.json(
@@ -256,6 +291,7 @@ describe("ImportPage — live feed", () => {
                 recommendation: "strong",
                 confidence: 99,
                 status: "needs_dup_resolution",
+                album_id: null,
               },
             ],
           }),
@@ -265,7 +301,7 @@ describe("ImportPage — live feed", () => {
     renderAt("/import?job=job-1");
 
     // The badge label for the new status.
-    expect(await screen.findByText("Duplicate")).toBeInTheDocument();
+    expect(await screen.findByText("Already in library")).toBeInTheDocument();
     // The Resolve affordance routes to the dup page, carrying the job id across
     // the same `?job=` seam the Review link uses.
     const resolve = screen.getByRole("link", { name: /resolve/i });
@@ -290,6 +326,7 @@ describe("ImportPage — live feed", () => {
                 recommendation: "strong",
                 confidence: 99,
                 status: "needs_dup_resolution",
+                album_id: null,
               },
             ],
           }),
@@ -301,7 +338,7 @@ describe("ImportPage — live feed", () => {
     // The visible cue line flags the parked duplicate (derived client-side from
     // the feed rows — `progress` has no duplicate counter).
     expect(
-      await screen.findByText(/duplicate.* to resolve/i),
+      await screen.findByText(/1 already in library/),
     ).toBeInTheDocument();
   });
 
@@ -359,17 +396,82 @@ describe("ImportPage — live feed", () => {
     expect(status).toHaveAttribute("aria-live", "polite");
     expect(screen.getAllByRole("status")).toHaveLength(1);
   });
+
+  test("the feed Review link threads the Import origin to the decision screen", async () => {
+    server.use(http.get(JOB_URL, () => HttpResponse.json(makeJob())));
+    renderFeedWithProbes("/import?job=job-1");
+
+    await userEvent.click(
+      await screen.findByRole("link", { name: /^review$/i }),
+    );
+    expect(
+      await screen.findByText("origin: Import /import?job=job-1"),
+    ).toBeInTheDocument();
+  });
+
+  test("an applied row's album link carries the Import origin", async () => {
+    server.use(http.get(JOB_URL, () => HttpResponse.json(makeJob())));
+    renderFeedWithProbes("/import?job=job-1");
+
+    await userEvent.click(
+      await screen.findByRole("link", { name: "OK Computer" }),
+    );
+    expect(
+      await screen.findByText("origin: Import /import?job=job-1"),
+    ).toBeInTheDocument();
+  });
+
+  test("a user-DECIDED row with an album_id links too — non-null id is the link condition", async () => {
+    // A Review-screen Apply sets status "decided"; the album_id follow-up
+    // does not touch status. The row must still link to the landed album.
+    const job = makeJob();
+    job.albums = [
+      {
+        ...job.albums[0]!,
+        status: "decided",
+        album: "In Rainbows",
+        album_id: 77,
+      },
+    ];
+    server.use(http.get(JOB_URL, () => HttpResponse.json(job)));
+    renderFeedWithProbes("/import?job=job-1");
+
+    const link = await screen.findByRole("link", { name: "In Rainbows" });
+    expect(link).toHaveAttribute("href", "/albums/77");
+  });
 });
 
 describe("ImportPage — terminal states", () => {
-  test("done shows the imported/skipped outcome + a View-in-library link", async () => {
+  test("done links each applied album to its library page — no blanket view-in-library", async () => {
     server.use(
       http.get(JOB_URL, () =>
         HttpResponse.json(
           makeJob({
             phase: "done",
-            summary: "2 imported, 0 skipped",
-            progress: { applied: 2, needs_review: 0, skipped: 0 },
+            summary: "1 imported, 1 skipped",
+            progress: { applied: 1, needs_review: 0, skipped: 1 },
+            albums: [
+              {
+                index: 0,
+                folder: "/music/incoming/Radiohead - OK Computer",
+                artist: "Radiohead",
+                album: "OK Computer",
+                recommendation: "strong",
+                confidence: 99,
+                status: "applied",
+                album_id: 41,
+              },
+              {
+                index: 1,
+                folder: "/music/incoming/Unknown Album",
+                artist: "Radiohead",
+                album: "Kid A",
+                recommendation: "none",
+                confidence: 0,
+                status: "skipped",
+                album_id: null,
+              },
+            ],
           }),
         ),
       ),
@@ -377,12 +479,14 @@ describe("ImportPage — terminal states", () => {
     renderAt("/import?job=job-1");
 
     expect(await screen.findByText("Import finished")).toBeInTheDocument();
-    // The outcome is derived from progress (structured), counting auto-applied
-    // strong albums — not the raw summary string.
-    expect(screen.getByText(/2 albums imported/i)).toBeInTheDocument();
-    expect(screen.getByText(/0 skipped/i)).toBeInTheDocument();
-    const link = screen.getByRole("link", { name: /view in library/i });
-    expect(link).toHaveAttribute("href", "/");
+    expect(screen.getByText(/1 album imported · 1 skipped/)).toBeInTheDocument();
+    // The applied row links to its library page; the skipped row does not.
+    const albumLink = screen.getByRole("link", { name: "OK Computer" });
+    expect(albumLink).toHaveAttribute("href", "/albums/41");
+    expect(screen.queryByRole("link", { name: "Kid A" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /view in library/i }),
+    ).not.toBeInTheDocument();
   });
 
   test("failed shows the error message + a start-over link", async () => {

@@ -1,6 +1,8 @@
-import { screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { describe, expect, test } from "vitest";
 
 import type { Candidate } from "@/api/useImport";
@@ -81,6 +83,26 @@ function renderAt(route = "/import/albums/1?job=job-1") {
   });
 }
 
+/** Mounts the candidate page with seeded router state plus a /review probe so
+ * origin-driven back links AND post-submit navigation are observable. */
+function renderWithOrigin(state?: unknown) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter
+        initialEntries={[
+          { pathname: "/import/albums/1", search: "?job=job-1", state },
+        ]}
+      >
+        <Routes>
+          <Route path="/import/albums/:index" element={<ImportCandidatePage />} />
+          <Route path="/review" element={<p>Review page probe</p>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
 describe("ImportCandidatePage", () => {
   test("renders header, source, what-changes, before/after and the tracklist", async () => {
     server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
@@ -124,6 +146,16 @@ describe("ImportCandidatePage", () => {
     expect(screen.getByText("1 not on release")).toBeInTheDocument();
   });
 
+  test("a changed track row announces 'changed' as sr-only text, not a bare svg label", async () => {
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
+    renderAt();
+
+    const after = await screen.findByText("Paranoid Android");
+    const row = after.closest("tr") as HTMLElement;
+    // The marker icon is decorative; the state is real (visually hidden) text.
+    expect(within(row).getByText("changed")).toHaveClass("sr-only");
+  });
+
   test("labels the covers honestly — yours kept, release art is reference", async () => {
     server.use(
       http.get(CANDIDATE_URL, () =>
@@ -138,19 +170,19 @@ describe("ImportCandidatePage", () => {
     expect(screen.getByText(/not applied/i)).toBeInTheDocument();
   });
 
-  test("the action buttons carry title hints + a helper line under the bar", async () => {
+  test("decision buttons carry no title tooltips — the hint is visible text via aria-describedby", async () => {
     server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
     renderAt();
 
+    const asIs = await screen.findByRole("button", { name: /use as-is/i });
+    // title= never surfaces on keyboard focus or on a disabled button.
+    expect(asIs).not.toHaveAttribute("title");
+    expect(asIs).toHaveAttribute("aria-describedby", "review-actions-hint");
+    expect(asIs).toHaveAccessibleDescription(/imports with your current tags/i);
+    // The hint is VISIBLE helper text under the action bar.
     expect(
-      await screen.findByRole("button", { name: /use as-is/i }),
-    ).toHaveAttribute(
-      "title",
-      "Import with the current tags, without a MusicBrainz match",
-    );
-    expect(
-      screen.getByText(/Use as-is keeps your current tags\./),
-    ).toBeInTheDocument();
+      screen.getByText(/no MusicBrainz match is applied/i),
+    ).toBeVisible();
   });
 
   test("does not offer the no-op As-tracks button, but keeps Use as-is", async () => {
@@ -286,5 +318,44 @@ describe("ImportCandidatePage", () => {
       "href",
       "/import",
     );
+  });
+
+  test("entered from Review: the back link reads Review and points at /review", async () => {
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
+    renderWithOrigin({ from: { label: "Review", to: "/review" } });
+
+    const back = await screen.findByRole("link", { name: "Review" });
+    expect(back).toHaveAttribute("href", "/review");
+  });
+
+  test("post-apply navigation follows the Review origin", async () => {
+    server.use(
+      http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())),
+      http.post(CHOICE_URL, () => new HttpResponse(null, { status: 204 })),
+    );
+    const user = userEvent.setup();
+    renderWithOrigin({ from: { label: "Review", to: "/review" } });
+
+    await user.click(await screen.findByRole("button", { name: /^Apply/i }));
+    expect(await screen.findByText("Review page probe")).toBeInTheDocument();
+  });
+
+  test("without an origin the back link falls back to the job's import feed", async () => {
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
+    renderWithOrigin(undefined);
+
+    const back = await screen.findByRole("link", { name: "Import" });
+    expect(back).toHaveAttribute("href", "/import?job=job-1");
+  });
+
+  test("the match heading is the page h1 (RouteAnnouncer focus contract)", async () => {
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
+    renderAt();
+
+    const h1 = await screen.findByRole("heading", {
+      level: 1,
+      name: /Radiohead — OK Computer/i,
+    });
+    expect(h1).toHaveAttribute("tabindex", "-1");
   });
 });

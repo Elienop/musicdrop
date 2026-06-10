@@ -134,4 +134,54 @@ describe("BrowsePage", () => {
     await userEvent.click(await screen.findByRole("button", { name: /next/i }));
     await waitFor(() => expect(lastQuery.get("offset")).toBe("48"));
   });
+
+  test("renders the Browse h1 with the count meta line", async () => {
+    renderWithProviders(<BrowsePage />, { route: "/browse" });
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Browse" }),
+    ).toBeInTheDocument();
+    const count = await screen.findByText(/2 albums in your library\./);
+    expect(count.closest("[aria-live]")).toHaveAttribute(
+      "aria-live",
+      "polite",
+    );
+  });
+
+  test("page change scrolls plainly and focuses the count line", async () => {
+    server.use(
+      http.get(ALBUMS, ({ request }) => {
+        lastQuery = new URL(request.url).searchParams;
+        return HttpResponse.json({
+          items: [album(1, "First")],
+          total: 60,
+          limit: 48,
+          offset: Number(new URL(request.url).searchParams.get("offset")) || 0,
+        });
+      }),
+    );
+    renderWithProviders(<BrowsePage />, { route: "/browse" });
+
+    await userEvent.click(await screen.findByRole("button", { name: /next/i }));
+
+    await waitFor(() => expect(lastQuery.get("offset")).toBe("48"));
+    expect(screen.getByText(/60 albums in your library\./)).toHaveFocus();
+    expect(window.scrollTo).toHaveBeenCalledWith({ top: 0 });
+  });
+
+  test("the unfiltered empty library offers the import CTA", async () => {
+    server.use(
+      http.get(ALBUMS, () =>
+        HttpResponse.json({ items: [], total: 0, limit: 48, offset: 0 }),
+      ),
+    );
+    renderWithProviders(<BrowsePage />, { route: "/browse" });
+
+    expect(
+      await screen.findByText(/no albums in the library yet/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /add music from a folder/i }),
+    ).toHaveAttribute("href", "/import");
+  });
 });

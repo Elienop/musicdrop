@@ -1,16 +1,31 @@
 import { screen } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { HomePage } from "@/pages/HomePage";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
 
-const STATS_URL = `${window.location.origin}/api/stats`;
-const ARTISTS_URL = `${window.location.origin}/api/artists`;
+// LibraryDashboard's Phase-4 glance reads the activity model; pin it idle
+// so this route test stays stats-only (MSW errors on unhandled requests).
+vi.mock("@/api/useActivity", () => ({
+  useActivity: () => ({ rows: [], runningCount: 0 }),
+  useActivityDismissals: () => ({
+    dismissed: new Set<string>(),
+    dismiss: () => {},
+  }),
+}));
 
-describe("HomePage", () => {
-  test("renders the dashboard above the artists roster", async () => {
+vi.mock("@/api/useActiveImport", () => ({
+  useActiveImport: () => ({
+    data: { active: false, origin: "manual", needs_review_count: 0 },
+  }),
+}));
+
+const STATS_URL = `${window.location.origin}/api/stats`;
+
+describe("HomePage (Overview)", () => {
+  test("renders the Overview h1 and dashboard, not the artists roster", async () => {
     server.use(
       http.get(STATS_URL, () =>
         HttpResponse.json({
@@ -25,14 +40,19 @@ describe("HomePage", () => {
           size_is_estimate: true,
         }),
       ),
-      http.get(ARTISTS_URL, () =>
-        HttpResponse.json([{ name: "Radiohead", album_count: 9 }]),
-      ),
     );
     renderWithProviders(<HomePage />);
 
-    // dashboard stat (5 tracks) and roster (artist name) both present
+    // THE route h1 — PageHeader renders it for RouteAnnouncer's focus contract.
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Overview" }),
+    ).toBeInTheDocument();
+    // Dashboard stat present (track count) — awaited: the h1 mounts
+    // synchronously, ahead of the async stats.
     expect(await screen.findByText("5")).toBeInTheDocument();
-    expect(await screen.findByText("Radiohead")).toBeInTheDocument();
+    // ...and the artists roster is NOT on the Overview — it lives at /artists.
+    expect(
+      screen.queryByRole("heading", { name: "Artists" }),
+    ).not.toBeInTheDocument();
   });
 });

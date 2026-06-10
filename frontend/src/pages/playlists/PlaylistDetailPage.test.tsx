@@ -1,11 +1,21 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { delay, http, HttpResponse } from "msw";
-import { beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { PlaylistDetailPage } from "@/pages/playlists/PlaylistDetailPage";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
+
+// Cross-page/async outcomes toast (spec §2). Mocked module-wide: the page
+// imports `toast` from sonner; no Toaster is mounted in unit tests.
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
+}));
+
+import { toast } from "sonner";
+
+const toastSuccess = vi.mocked(toast.success);
 
 const ID = "a".repeat(32);
 const BASE = `${window.location.origin}/api/playlists/${ID}`;
@@ -33,6 +43,7 @@ describe("PlaylistDetailPage", () => {
   // "no users" so existing tests don't hit an unhandled request; tests that care
   // register their own /api/plex/users handler (which takes precedence).
   beforeEach(() => {
+    toastSuccess.mockClear();
     server.use(http.get(USERS, () => HttpResponse.json({ users: [] })));
   });
 
@@ -205,7 +216,10 @@ describe("PlaylistDetailPage", () => {
     await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(/connect plex in\s*settings\s*first/i);
-    expect(screen.getByRole("link", { name: /settings/i })).toHaveAttribute("href", "/settings");
+    expect(screen.getByRole("link", { name: /settings/i })).toHaveAttribute(
+      "href",
+      "/settings/integrations",
+    );
   });
 
   test("shows the target-user picker and saves a selection", async () => {
@@ -295,6 +309,10 @@ describe("PlaylistDetailPage", () => {
     expect(await screen.findByText(/choose who gets this playlist/i)).toBeInTheDocument();
     // The generic "couldn't load" copy is NOT shown for a 409.
     expect(screen.queryByText(/couldn.t load plex accounts/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /settings/i })).toHaveAttribute(
+      "href",
+      "/settings/integrations",
+    );
   });
 
   test("offers Retry in the picker when Plex accounts fail to load (non-409)", async () => {
@@ -392,5 +410,126 @@ describe("PlaylistDetailPage", () => {
     await screen.findByText("Alpha");
     await userEvent.click(screen.getByRole("button", { name: /delete playlist/i }));
     expect(screen.queryByText(/also removes it from Plex/i)).not.toBeInTheDocument();
+  });
+
+  // ——— Focus restoration (characterization: pins the pendingFocus engine the
+  // useFocusAfterMutation swap must preserve exactly) ———
+
+  test("removing a middle track focuses the surviving row's Remove button", async () => {
+    let removed = false;
+    const before = [track(1, "Alpha"), track(2, "Beta"), track(3, "Gamma")];
+    const after = [track(1, "Alpha"), track(3, "Gamma")];
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail(removed ? after : before))),
+      http.delete(`${BASE}/tracks/2`, () => {
+        removed = true;
+        return HttpResponse.json(detail(after));
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Beta");
+    await userEvent.click(screen.getByRole("button", { name: /remove beta/i }));
+    // Gamma slides up into Beta's slot — its Remove button takes focus.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /remove gamma/i })).toHaveFocus(),
+    );
+  });
+
+  test("removing the last remaining track moves focus to the empty state", async () => {
+    let removed = false;
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json(detail(removed ? [] : [track(1, "Alpha")])),
+      ),
+      http.delete(`${BASE}/tracks/1`, () => {
+        removed = true;
+        return HttpResponse.json(detail([]));
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /remove alpha/i }));
+    // Deliberately element-shape-agnostic (today a <p>, post-migration an
+    // EmptyState wrapper): whatever holds focus must carry the empty copy.
+    await waitFor(() => {
+      const active = document.activeElement as HTMLElement | null;
+      expect(active?.textContent ?? "").toContain("No tracks yet");
+    });
+  });
+
+  test("moving a track to the end keeps focus on its enabled reorder button", async () => {
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
+      http.put(`${BASE}/tracks`, () =>
+        HttpResponse.json(detail([track(2, "Beta"), track(1, "Alpha")])),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /move alpha down/i }));
+    // Alpha is now last: its "down" button is disabled, so focus falls to the
+    // sibling "up" button — never stranded on <body>.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /move alpha up/i })).toHaveFocus(),
+    );
+  });
+
+  // ——— Phase 3 redesign contract ———
+
+  test("renders the playlist name as the page h1 (focusable for RouteAnnouncer)", async () => {
+    server.use(http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha")]))));
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    const h1 = await screen.findByRole("heading", { level: 1, name: "Late night" });
+    expect(h1).toHaveAttribute("tabindex", "-1");
+  });
+
+  test("a successful reorder also fires a visible toast", async () => {
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
+      http.put(`${BASE}/tracks`, () =>
+        HttpResponse.json(detail([track(2, "Beta"), track(1, "Alpha")])),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /move alpha down/i }));
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith("Moved Alpha to position 2"),
+    );
+  });
+
+  test("a successful removal also fires a visible toast", async () => {
+    let removed = false;
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json(detail(removed ? [track(2, "Beta")] : [track(1, "Alpha"), track(2, "Beta")])),
+      ),
+      http.delete(`${BASE}/tracks/1`, () => {
+        removed = true;
+        return HttpResponse.json(detail([track(2, "Beta")]));
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /remove alpha/i }));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Removed Alpha"));
   });
 });

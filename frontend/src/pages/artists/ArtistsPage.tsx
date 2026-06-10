@@ -1,41 +1,52 @@
-import { AlertCircle, Users } from "lucide-react";
+import { Link } from "react-router";
 
 import { useArtists } from "@/api/useArtists";
 import { GRID_CLASS } from "@/components/albums/album-grid";
 import { ArtistCard } from "@/components/artists/ArtistCard";
+import { Artists } from "@/components/icons";
+import { EmptyState } from "@/components/system/EmptyState";
+import { ErrorState } from "@/components/system/ErrorState";
+import { PageBody, PageHeader } from "@/components/system/PageHeader";
+import { PageSkeleton } from "@/components/system/PageSkeleton";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function ArtistsPage() {
   const { data, isPending, isError, refetch } = useArtists();
 
   return (
-    <section className="flex flex-col gap-6" aria-label="Artists">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Artists</h2>
-        {/* Live region mounted unconditionally so assistive tech can observe it
-            before the count arrives; only the text toggles. */}
-        <p className="text-muted-foreground min-h-5 text-sm" aria-live="polite">
-          {!isPending && !isError && data.length > 0
+    <PageBody>
+      <PageHeader
+        title="Artists"
+        meta={
+          !isPending && !isError && data.length > 0
             ? `${data.length.toLocaleString()} ${
                 data.length === 1 ? "artist" : "artists"
               }`
-            : ""}
-        </p>
-      </div>
-
+            : undefined
+        }
+      />
       {isPending ? (
-        <>
-          <p className="sr-only" role="status">
-            Loading artists&hellip;
-          </p>
+        <PageSkeleton announce="Loading artists…">
           <ArtistsGridSkeleton count={12} />
-        </>
+        </PageSkeleton>
       ) : isError ? (
-        <ErrorState onRetry={() => void refetch()} />
+        <ErrorState
+          message="Couldn’t load artists. Check the backend and try again."
+          onRetry={() => void refetch()}
+        />
       ) : data.length === 0 ? (
-        <EmptyState />
+        <EmptyState
+          bordered
+          icon={Artists}
+          title="No artists yet"
+          body="Your beets library is empty. Import some music and it’ll show up here."
+          action={
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/import">Add music from a folder</Link>
+            </Button>
+          }
+        />
       ) : (
         <ul className={GRID_CLASS}>
           {data.map((artist) => (
@@ -45,61 +56,23 @@ export function ArtistsPage() {
           ))}
         </ul>
       )}
-    </section>
+    </PageBody>
   );
 }
 
 function ArtistsGridSkeleton({ count }: { count: number }) {
   return (
-    <ul className={GRID_CLASS} aria-hidden="true">
+    <ul className={GRID_CLASS}>
       {Array.from({ length: count }, (_, i) => (
         <li key={i}>
-          <Card className="h-full gap-3 overflow-hidden py-0 pb-4">
-            {/* Square portrait placeholder — matches the real card so the
-                image loading in doesn't shift the layout. */}
-            <Skeleton className="aspect-square w-full rounded-none" />
-            <CardHeader className="gap-2 px-4 pt-3">
-              {/* Mirrors CardTitle (name) + the "N albums" line. */}
-              <Skeleton className="h-5 w-3/4" />
-            </CardHeader>
-            <CardContent className="px-4">
-              <Skeleton className="h-4 w-16" />
-            </CardContent>
-          </Card>
+          {/* Mirrors the borderless ArtistCard: square portrait + two lines. */}
+          <Skeleton className="aspect-square w-full rounded-lg" />
+          <div className="mt-3 flex flex-col gap-1">
+            <Skeleton className="h-5 w-3/4" />
+            <Skeleton className="h-4 w-16" />
+          </div>
         </li>
       ))}
     </ul>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="border-border flex flex-col items-center gap-3 rounded-xl border border-dashed py-16 text-center">
-      <Users className="text-muted-foreground size-10" aria-hidden="true" />
-      <div className="flex flex-col gap-1">
-        <p className="font-medium">No artists yet</p>
-        <p className="text-muted-foreground text-sm">
-          Your beets library is empty. Import some music and it&rsquo;ll show
-          up here.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function ErrorState({ onRetry }: { onRetry: () => void }) {
-  return (
-    <div className="border-destructive/40 bg-destructive/5 flex flex-col items-center gap-3 rounded-xl border py-16 text-center">
-      <AlertCircle className="text-destructive size-10" aria-hidden="true" />
-      <div className="flex flex-col gap-1">
-        <p className="font-medium">Couldn&rsquo;t load artists</p>
-        <p className="text-muted-foreground text-sm">
-          The library didn&rsquo;t respond. Check the backend and try again.
-        </p>
-      </div>
-      <Button variant="outline" size="sm" onClick={onRetry}>
-        Retry
-      </Button>
-    </div>
   );
 }

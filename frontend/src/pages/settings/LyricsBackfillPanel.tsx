@@ -1,4 +1,3 @@
-import { Loader2 } from "lucide-react";
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -8,6 +7,8 @@ import {
   useStartLyricsBackfill,
   useStopLyricsBackfill,
 } from "@/api/useLyricsBackfill";
+import { Spinner } from "@/components/icons";
+import { SettingsSection } from "@/components/system/SettingsSection";
 import { Button } from "@/components/ui/button";
 
 /** Settings → Library maintenance: lyrics coverage + the library-wide backfill. */
@@ -32,24 +33,19 @@ export function LyricsBackfillPanel() {
   }, [phase, queryClient]);
 
   return (
-    <section
-      aria-label="Lyrics backfill"
-      className="border-border flex flex-col gap-3 rounded-xl border p-4"
+    <SettingsSection
+      title="Lyrics"
+      description={
+        coverage.data
+          ? `Coverage ${coverage.data.percent}% (${coverage.data.with_lyrics} of ${coverage.data.total} tracks)`
+          : undefined
+      }
     >
-      <header className="flex flex-col gap-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Lyrics</h2>
-        {coverage.data && (
-          <p className="text-muted-foreground text-sm">
-            Coverage {coverage.data.percent}% ({coverage.data.with_lyrics} of{" "}
-            {coverage.data.total} tracks)
-          </p>
-        )}
-      </header>
 
       {libraryRunning && status.data ? (
         <div className="flex flex-col gap-2" role="status">
           <div className="flex items-center gap-3 text-sm">
-            <Loader2 className="text-muted-foreground size-5 shrink-0 animate-spin" aria-hidden="true" />
+            <Spinner className="text-muted-foreground size-4 shrink-0 animate-spin" aria-hidden="true" />
             <span className="flex-1">
               Backfilling… {status.data.processed} / {status.data.total} · found{" "}
               {status.data.found} · none {status.data.not_found} · failed {status.data.failed}
@@ -67,7 +63,7 @@ export function LyricsBackfillPanel() {
           <Button onClick={() => start.mutate()} disabled={start.isPending || albumFetchRunning}>
             {start.isPending ? (
               <>
-                <Loader2 className="size-4 animate-spin" aria-hidden="true" /> Starting…
+                <Spinner className="size-4 animate-spin" aria-hidden="true" /> Starting…
               </>
             ) : (
               "Backfill missing lyrics"
@@ -100,6 +96,6 @@ export function LyricsBackfillPanel() {
           )}
         </div>
       )}
-    </section>
+    </SettingsSection>
   );
 }

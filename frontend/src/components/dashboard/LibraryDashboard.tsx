@@ -1,111 +1,220 @@
 // frontend/src/components/dashboard/LibraryDashboard.tsx
-import {
-  AlertCircle,
-  Clock,
-  Disc3,
-  HardDrive,
-  Music,
-  Users,
-} from "lucide-react";
+import { Link } from "react-router";
 
+import type { LibraryStatsResponse } from "@/api/useStats";
 import { useStats } from "@/api/useStats";
+import { useActiveImport } from "@/api/useActiveImport";
+import { useActivity } from "@/api/useActivity";
 import { AlbumCard, GRID_CLASS } from "@/components/albums/album-grid";
-import { Card, CardContent } from "@/components/ui/card";
+import {
+  Albums,
+  Artists,
+  Duration,
+  MusicFallback,
+  Review,
+  Storage,
+  Track,
+} from "@/components/icons";
+import { EmptyState } from "@/components/system/EmptyState";
+import { ErrorState } from "@/components/system/ErrorState";
+import { JobProgress } from "@/components/system/JobProgress";
+import { StatusBanner } from "@/components/system/StatusBanner";
+import { PageBody, PageHeader } from "@/components/system/PageHeader";
+import { PageSkeleton } from "@/components/system/PageSkeleton";
+import { StatTile } from "@/components/system/StatTile";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatBytes, formatTotalDuration } from "@/lib/format";
 
+/** Origin recorded on every album card opened from the Overview (spec §1
+ * origin threading): the album page's back link returns here. */
+const OVERVIEW_ORIGIN = { label: "Overview", to: "/" } as const;
+
+/** Tile grid shared by the loaded StatTiles and their skeleton bones. */
+const TILE_GRID = "grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5";
+
 export function LibraryDashboard() {
-  const { data, isPending, isError } = useStats();
+  const { data, isPending, isError, refetch } = useStats();
 
-  if (isPending) {
-    return (
-      <section aria-label="Library stats" className="flex flex-col gap-4">
-        <p className="sr-only" role="status">
-          Loading library stats&hellip;
-        </p>
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-          {Array.from({ length: 5 }, (_, i) => (
-            <Skeleton key={i} className="h-24 rounded-xl" />
-          ))}
-        </div>
-      </section>
-    );
-  }
+  return (
+    <PageBody>
+      <PageHeader
+        title="Overview"
+        meta={
+          data !== undefined
+            ? `${data.stats.album_count.toLocaleString()} albums · ${data.stats.track_count.toLocaleString()} tracks`
+            : undefined
+        }
+      />
+      {isPending ? (
+        <PageSkeleton announce="Loading library stats…">
+          <div className={TILE_GRID}>
+            {/* h-22 = the hint-less StatTile's fixed content height (its
+                documented skeleton contract) — no shift when tiles land. */}
+            {Array.from({ length: 5 }, (_, i) => (
+              <Skeleton key={i} className="h-22 rounded-xl" />
+            ))}
+          </div>
+        </PageSkeleton>
+      ) : isError ? (
+        <ErrorState
+          message="Could not load library stats."
+          onRetry={() => void refetch()}
+        />
+      ) : (
+        <DashboardBody data={data} />
+      )}
+    </PageBody>
+  );
+}
 
-  if (isError || !data) {
-    return (
-      <section aria-label="Library stats">
-        <div
-          className="border-destructive/40 bg-destructive/5 flex items-center gap-3 rounded-xl border p-3 text-sm"
-          role="alert"
-        >
-          <AlertCircle
-            className="text-destructive size-5 shrink-0"
-            aria-hidden="true"
-          />
-          <span>Could not load library stats.</span>
-        </div>
-      </section>
-    );
-  }
-
+function DashboardBody({ data }: { data: LibraryStatsResponse }) {
   const { stats, recently_added, size_is_estimate } = data;
-  const cards = [
-    { icon: Music, label: "Tracks", value: stats.track_count.toLocaleString() },
-    { icon: Disc3, label: "Albums", value: stats.album_count.toLocaleString() },
+  const tiles = [
+    { icon: Track, label: "Tracks", value: stats.track_count.toLocaleString() },
+    { icon: Albums, label: "Albums", value: stats.album_count.toLocaleString() },
     {
-      icon: Users,
+      icon: Artists,
       label: "Artists",
       value: stats.artist_count.toLocaleString(),
     },
     {
-      icon: Clock,
+      icon: Duration,
       label: "Duration",
       value: formatTotalDuration(stats.total_seconds),
     },
     {
-      icon: HardDrive,
+      icon: Storage,
       label: "Size",
       value: `${size_is_estimate ? "~" : ""}${formatBytes(stats.total_bytes)}`,
     },
   ];
 
   return (
-    <section aria-label="Library stats" className="flex flex-col gap-6">
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-        {cards.map(({ icon: Icon, label, value }) => (
-          <Card key={label}>
-            <CardContent className="flex flex-col gap-1 p-4">
-              <span className="text-muted-foreground flex items-center gap-1.5 text-sm">
-                <Icon className="size-4" aria-hidden="true" />
-                {label}
-              </span>
-              <span className="text-2xl font-semibold tracking-tight tabular-nums">
-                {value}
-              </span>
-            </CardContent>
-          </Card>
+    <>
+      {/* PageBody's gap-6 column now spaces these siblings (the old wrapper
+          section's internal gap-6, one level up). */}
+      <section aria-label="Library stats" className={TILE_GRID}>
+        {tiles.map((tile) => (
+          <StatTile
+            key={tile.label}
+            icon={tile.icon}
+            label={tile.label}
+            value={tile.value}
+          />
         ))}
-      </div>
+      </section>
+
+      <AcquisitionGlance />
+      <ReviewPendingBanner />
 
       {recently_added.length > 0 ? (
         <div className="flex flex-col gap-3">
-          <h2 className="text-2xl font-semibold tracking-tight">
-            Recently added
-          </h2>
+          {/* Section scale (spec §3): h2 text-base font-semibold under the h1. */}
+          <h2 className="text-base font-semibold">Recently added</h2>
           <ul className={GRID_CLASS}>
             {recently_added.map((album) => (
               <li key={album.id}>
-                <AlbumCard album={album} />
+                <AlbumCard album={album} from={OVERVIEW_ORIGIN} />
               </li>
             ))}
           </ul>
         </div>
       ) : (
-        <p className="text-muted-foreground text-sm">
-          Import some music to get started.
-        </p>
+        <EmptyState
+          bordered
+          icon={MusicFallback}
+          title="Your library is empty"
+          body="Import some music to get started."
+          action={
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/import">Add music from a folder</Link>
+            </Button>
+          }
+        />
       )}
+    </>
+  );
+}
+
+/** Phase-4 Overview glance (spec §7): a compact acquisition/jobs strip
+ * between the stat tiles and "Recently added", rendered ONLY while
+ * something is running or failed — an idle dashboard gets zero dead
+ * chrome. Reuses the activity read model + JobProgress verbatim and caps
+ * at three rows; the topbar popover stays the full surface. */
+function AcquisitionGlance() {
+  const { rows, runningCount } = useActivity();
+  const hasFailed = rows.some((row) => row.state === "failed");
+  if (runningCount === 0 && !hasFailed) {
+    return null;
+  }
+  // Import/acquisition activity means decisions may be queueing on the
+  // Review page; pure maintenance jobs (lyrics/art/reorganize) don't.
+  const hasReviewKind = rows.some(
+    (row) => row.kind === "import" || row.kind === "acquisition",
+  );
+  return (
+    <section
+      aria-labelledby="acquisition-glance"
+      className="rounded-xl border p-4"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <h2 id="acquisition-glance" className="text-base font-semibold">
+          Acquisition
+        </h2>
+        {hasReviewKind && (
+          <Button variant="ghost" size="sm" asChild>
+            <Link to="/review">View Review</Link>
+          </Button>
+        )}
+      </div>
+      {/* JobProgress rows carry their own px-4 — pull them back to the
+          section edge so their inset matches the p-4 frame. Failed rows sort
+          first so the 3-row cap can never hide the very thing the glance
+          exists to surface (useActivity's source order is fixed and a late
+          failed row would otherwise be cut when 4-5 rows coexist). */}
+      <ul className="divide-border -mx-4 divide-y">
+        {[
+          ...rows.filter((row) => row.state === "failed"),
+          ...rows.filter((row) => row.state !== "failed"),
+        ]
+          .slice(0, 3)
+          .map((row) => (
+            <li key={row.id}>
+              <JobProgress
+                label={row.label}
+                scope={row.scope}
+                state={row.state}
+                progress={row.progress}
+                counts={row.countsText}
+                href={row.href}
+              />
+            </li>
+          ))}
+      </ul>
     </section>
+  );
+}
+
+/** One-line pointer to pending import decisions — the durable counterpart
+ * to the transient glance above (set-aside items outlive the running job). */
+function ReviewPendingBanner() {
+  const needsReview = useActiveImport().data?.needs_review_count ?? 0;
+  if (needsReview === 0) {
+    return null;
+  }
+  return (
+    <StatusBanner
+      tone="neutral"
+      icon={Review}
+      action={
+        <Button variant="ghost" size="sm" asChild>
+          <Link to="/review">Review</Link>
+        </Button>
+      }
+    >
+      {needsReview.toLocaleString()}{" "}
+      {needsReview === 1 ? "decision" : "decisions"} awaiting review.
+    </StatusBanner>
   );
 }

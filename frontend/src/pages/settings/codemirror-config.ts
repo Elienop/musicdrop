@@ -1,7 +1,9 @@
 import { yaml } from "@codemirror/lang-yaml";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { lintGutter, linter, type Diagnostic } from "@codemirror/lint";
 import { Compartment, EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
+import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
 
 /**
@@ -63,6 +65,44 @@ export const shadcnTheme = EditorView.theme(
 );
 
 /**
+ * Token-driven syntax palette for the dark theme. basicSetup registers CM6's
+ * defaultHighlightStyle only as a FALLBACK, and that palette (navy keys, dark
+ * reds) is authored for light backgrounds — on the dark-only theme YAML keys
+ * were near-illegible (Phase 1 walkthrough catch). This non-fallback style
+ * wins wherever it matches, and it deliberately matches every tag lang-yaml
+ * emits so nothing falls through to the light-background defaults.
+ *
+ * Palette follows the design language: keys carry the accent
+ * (`--primary-light`, the active-text violet), comments are muted, everything
+ * else reads as plain foreground — neutral + one accent, even in code.
+ */
+export const shadcnHighlight = syntaxHighlighting(
+  HighlightStyle.define([
+    {
+      tag: [tags.propertyName, tags.definition(tags.propertyName)],
+      color: "var(--primary-light)",
+    },
+    { tag: [tags.comment, tags.lineComment], color: "var(--muted-foreground)", fontStyle: "italic" },
+    {
+      tag: [
+        tags.string,
+        tags.number,
+        tags.bool,
+        tags.null,
+        tags.keyword,
+        tags.atom,
+        tags.literal,
+        tags.content,
+        tags.punctuation,
+        tags.separator,
+        tags.meta,
+      ],
+      color: "var(--foreground)",
+    },
+  ]),
+);
+
+/**
  * The read-only triplet — kept named so both the initial factory config AND
  * the page-level "Cancel" handler (which dispatches the same triplet to
  * restore read-only after a discard) can share it.
@@ -117,6 +157,9 @@ export function buildExtensions(opts: {
   const extensions = [
     basicSetup,
     yaml(),
+    // Non-fallback highlight style — overrides basicSetup's light-background
+    // default palette with the dark token-driven one above.
+    shadcnHighlight,
     lintGutter(),
     // `delay: 500` — CM6's built-in debounce. The backend validate endpoint is
     // O(parse + Pydantic), so 500ms is plenty to coalesce keystrokes without

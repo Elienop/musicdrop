@@ -1,4 +1,3 @@
-import { Check, CheckCircle2, Copy, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
 
@@ -9,8 +8,9 @@ import {
   useSlskdSettings,
   useTestSlskd,
 } from "@/api/useSlskd";
+import { Spinner, Success } from "@/components/icons";
+import { SettingsSection } from "@/components/system/SettingsSection";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 
@@ -39,22 +39,18 @@ export function SlskdPanel() {
   if (settings.isPending) {
     return (
       <Panel>
-        <CardContent>
-          <p className="text-muted-foreground text-sm" role="status">
-            Loading slskd settings…
-          </p>
-        </CardContent>
+        <p className="text-muted-foreground text-sm" role="status">
+          Loading slskd settings…
+        </p>
       </Panel>
     );
   }
   if (settings.isError || !settings.data) {
     return (
       <Panel>
-        <CardContent>
-          <p className="text-destructive text-sm" role="alert">
-            Could not load slskd settings.
-          </p>
-        </CardContent>
+        <p className="text-destructive text-sm" role="alert">
+          Could not load slskd settings.
+        </p>
       </Panel>
     );
   }
@@ -162,7 +158,7 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
 
   return (
     <>
-      <CardContent className="flex flex-col gap-4">
+      <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-1">
           <label htmlFor="slskd-base-url" className="text-sm font-medium">
             Base URL
@@ -267,17 +263,7 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
               size="sm"
               onClick={handleCopy}
             >
-              {copied ? (
-                <>
-                  <Check className="size-4" aria-hidden="true" />
-                  Copied
-                </>
-              ) : (
-                <>
-                  <Copy className="size-4" aria-hidden="true" />
-                  Copy
-                </>
-              )}
+              {copied ? "Copied" : "Copy"}
             </Button>
           </div>
           <p className="text-muted-foreground text-xs">
@@ -296,13 +282,13 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
           </Link>
           .
         </p>
-      </CardContent>
+      </div>
 
-      <CardFooter className="flex flex-wrap items-center gap-3">
+      <div className="border-border flex flex-wrap items-center gap-3 border-t pt-4">
         <Button onClick={handleSave} disabled={save.isPending}>
           {save.isPending ? (
             <>
-              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              <Spinner className="size-4 animate-spin" aria-hidden="true" />
               Saving…
             </>
           ) : (
@@ -313,15 +299,10 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
           variant="outline"
           onClick={handleTest}
           disabled={test.isPending || dirty}
-          title={
-            dirty
-              ? "Save before testing — Test uses your saved settings"
-              : undefined
-          }
         >
           {test.isPending ? (
             <>
-              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              <Spinner className="size-4 animate-spin" aria-hidden="true" />
               Testing…
             </>
           ) : (
@@ -348,7 +329,7 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
         >
           {statusMsg ? (
             <>
-              <CheckCircle2 className="size-4" aria-hidden="true" />
+              <Success className="size-4" aria-hidden="true" />
               {statusMsg}
             </>
           ) : null}
@@ -369,34 +350,20 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
             Connection test failed. Check the URL and API key.
           </p>
         )}
-      </CardFooter>
+      </div>
     </>
   );
 }
 
-/** Section shell matching the sibling Settings panels: a real <h2> heading (so
- * it shows up in heading navigation, unlike a shadcn CardTitle div) over a Card
- * holding the form. */
+/** Section shell: SettingsSection provides the section-scale h2 + the bordered
+ * panel, so the old heading-over-Card sandwich collapses to one box. */
 function Panel({ children }: { children: React.ReactNode }) {
   return (
-    <section
-      aria-labelledby="slskd-settings-heading"
-      className="flex flex-col gap-4"
+    <SettingsSection
+      title="slskd"
+      description="Connect slskd so completed Soulseek downloads import themselves into the library. The API key and webhook secret are write-only — stored on the server and never shown again."
     >
-      <header className="flex flex-col gap-1">
-        <h2
-          id="slskd-settings-heading"
-          className="text-2xl font-semibold tracking-tight"
-        >
-          slskd
-        </h2>
-        <p className="text-muted-foreground text-sm">
-          Connect slskd so completed Soulseek downloads import themselves into
-          the library. The API key and webhook secret are write-only — stored on
-          the server and never shown again.
-        </p>
-      </header>
-      <Card>{children}</Card>
-    </section>
+      {children}
+    </SettingsSection>
   );
 }

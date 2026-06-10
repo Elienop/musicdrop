@@ -8,6 +8,7 @@ import { HomePage } from "@/pages/HomePage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { AlbumDetailPage } from "@/pages/albums/AlbumDetailPage";
 import { ArtistAlbumsPage } from "@/pages/artists/ArtistAlbumsPage";
+import { ArtistsPage } from "@/pages/artists/ArtistsPage";
 import { BrowsePage } from "@/pages/browse/BrowsePage";
 import { DuplicatesPage } from "@/pages/duplicates/DuplicatesPage";
 import { ImportCandidatePage } from "@/pages/import/ImportCandidatePage";
@@ -17,7 +18,11 @@ import { PlaylistDetailPage } from "@/pages/playlists/PlaylistDetailPage";
 import { PlaylistsPage } from "@/pages/playlists/PlaylistsPage";
 import { ReviewPage } from "@/pages/review/ReviewPage";
 import { SearchPage } from "@/pages/search/SearchPage";
-import { SettingsPage } from "@/pages/settings/SettingsPage";
+import { SettingsBeetsPage } from "@/pages/settings/SettingsBeetsPage";
+import { SettingsIntegrationsPage } from "@/pages/settings/SettingsIntegrationsPage";
+import { SettingsLayout } from "@/pages/settings/SettingsLayout";
+import { SettingsMetadataPage } from "@/pages/settings/SettingsMetadataPage";
+import { SettingsNamingPage } from "@/pages/settings/SettingsNamingPage";
 
 import "@/styles.css";
 
@@ -29,24 +34,27 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
 });
 
-// `App` is the persistent shell (header + <Outlet>); feature pages render into
-// it. Data router (`createBrowserRouter`) so future loaders/blockers have the
-// API available.
+// `App` is the persistent shell (sidebar + topbar + <main><Outlet>); feature
+// pages render into it. Data router (`createBrowserRouter`) so future
+// loaders/blockers have the API available.
 //
-// Single artist spine (the browse IA): the Artists roster is home, drilling
-// into an artist's albums, then into an album's tracklist. Back always walks
-// UP the hierarchy.
-//   /                  Artists roster (home)
-//    └ /artists/:name  that artist's albums
-//       └ /albums/:id  album tracklist
-// `/artists` (the bare parent) redirects to home so it isn't a dead end.
+// IA: the sidebar (shell/Sidebar NAV_SECTIONS) groups the sections —
+// Library (/ Overview dashboard, /artists roster, /browse facets),
+// Acquire (/review, /import), Manage (/playlists, /duplicates, /settings/* —
+// beets · naming · metadata · integrations; /settings redirects to
+// /settings/beets).
+// Detail routes hang off the artist spine:
+//   /artists/:name  that artist's albums
+//   /albums/:id     album tracklist (back link is contextual — Artists,
+//                   Browse, or Search via router state)
+// /search is reached by typing in the topbar search; it has no sidebar item.
 // Unknown routes fall to a minimal NotFound, not a page.
 const router = createBrowserRouter([
   {
     element: <App />,
     children: [
       { index: true, element: <HomePage /> },
-      { path: "/artists", element: <Navigate to="/" replace /> },
+      { path: "/artists", element: <ArtistsPage /> },
       { path: "/artists/:artistName", element: <ArtistAlbumsPage /> },
       { path: "/albums/:albumId", element: <AlbumDetailPage /> },
       { path: "/search", element: <SearchPage /> },
@@ -58,7 +66,17 @@ const router = createBrowserRouter([
         path: "/import/albums/:index/duplicate",
         element: <ImportDuplicatePage />,
       },
-      { path: "/settings", element: <SettingsPage /> },
+      {
+        path: "/settings",
+        element: <SettingsLayout />,
+        children: [
+          { index: true, element: <Navigate to="/settings/beets" replace /> },
+          { path: "beets", element: <SettingsBeetsPage /> },
+          { path: "naming", element: <SettingsNamingPage /> },
+          { path: "metadata", element: <SettingsMetadataPage /> },
+          { path: "integrations", element: <SettingsIntegrationsPage /> },
+        ],
+      },
       { path: "/duplicates", element: <DuplicatesPage /> },
       { path: "/playlists", element: <PlaylistsPage /> },
       { path: "/playlists/:playlistId", element: <PlaylistDetailPage /> },
