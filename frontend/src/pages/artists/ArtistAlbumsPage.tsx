@@ -240,8 +240,8 @@ export function ArtistAlbumsPage({ initialLimit = 50 }: ArtistAlbumsPageProps) {
 }
 
 /** The per-artist "Write artist art" action. Just the button — progress + the
- * failed state show in the app banner (ArtistArtBackfillBanner), so the action
- * row stays a single clean line. Disabled while any artist-art job runs. */
+ * failed state show in the topbar activity popover, so the action row stays a
+ * single clean line. Disabled while any artist-art job runs. */
 function ArtistArtStatus({ displayName }: { displayName: string }) {
   const status = useArtistArtBackfillStatus();
   const start = useStartArtistArtApply(displayName);

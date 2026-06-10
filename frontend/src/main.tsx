@@ -30,17 +30,16 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
 });
 
-// `App` is the persistent shell (header + <Outlet>); feature pages render into
-// it. Data router (`createBrowserRouter`) so future loaders/blockers have the
-// API available.
+// `App` is the persistent shell (sidebar + topbar + <Outlet>); feature pages
+// render into it. Data router (`createBrowserRouter`) so future
+// loaders/blockers have the API available.
 //
-// Single artist spine (the browse IA): the Artists roster is home, drilling
-// into an artist's albums, then into an album's tracklist. Back always walks
-// UP the hierarchy.
-//   /                  Artists roster (home)
+// IA (spec §1): `/` is the Overview dashboard; the artists roster lives at
+// /artists and drills down the artist spine:
+//   /artists           roster
 //    └ /artists/:name  that artist's albums
-//       └ /albums/:id  album tracklist
-// `/artists` (the bare parent) redirects to home so it isn't a dead end.
+//       └ /albums/:id  album tracklist (the back link follows the `from`
+//                      origin carried in router state — Browse/Search/spine)
 // Unknown routes fall to a minimal NotFound, not a page.
 const router = createBrowserRouter([
   {

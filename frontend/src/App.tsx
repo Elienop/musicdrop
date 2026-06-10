@@ -1,316 +1,48 @@
-import { useQuery } from "@tanstack/react-query";
-import {
-  CircleCheck,
-  CircleSlash,
-  CopyCheck,
-  FolderInput,
-  Inbox,
-  ListMusic,
-  Loader2,
-  Search,
-  Settings,
-  SlidersHorizontal,
-  Users,
-} from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import {
-  Link,
-  Outlet,
-  useLocation,
-  useNavigate,
-  useSearchParams,
-} from "react-router";
+import { Outlet } from "react-router";
+import { Toaster } from "sonner";
 
-import { client } from "@/api/client";
-import { useAcquisitionStatus } from "@/api/useAcquisitionStatus";
-import { useActiveImport } from "@/api/useActiveImport";
-import { ArtistArtBackfillBanner } from "@/components/ArtistArtBackfillBanner";
-import { LyricsBackfillBanner } from "@/components/LyricsBackfillBanner";
-import { ReorganizeBanner } from "@/components/ReorganizeBanner";
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
-
-/** The Review nav link with a count badge = items needing a decision now (the
- * live parked import + the inbox backlog). Both numbers reuse the existing
- * `useActiveImport` + `useAcquisitionStatus` probes (now polled app-wide from the
- * header, at their quiet 30s idle cadence) — two lightweight reads, no per-item
- * fetch. It can transiently over-count by 1 while an inbox import is mid-apply
- * (the parked item still sits in the inbox), which is fine for a glance badge. */
-function ReviewNavLink() {
-  const location = useLocation();
-  const { data: active } = useActiveImport();
-  const { data: status } = useAcquisitionStatus();
-  const count = (active?.needs_review_count ?? 0) + (status?.inbox_pending ?? 0);
-  return (
-    <Link
-      to="/review"
-      aria-label={count > 0 ? `Review (${count})` : "Review"}
-      aria-current={location.pathname.startsWith("/review") ? "page" : undefined}
-      className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
-    >
-      <Inbox className="size-4" aria-hidden="true" />
-      <span className="hidden sm:inline">Review</span>
-      {count > 0 && (
-        <Badge variant="secondary" className="px-1.5 py-0 text-xs">
-          {count}
-        </Badge>
-      )}
-    </Link>
-  );
-}
-
-/** Debounce (ms) before a keystroke is reflected into the URL / fired as a
- * query — long enough to avoid a request per character, short enough to feel
- * live. */
-const SEARCH_DEBOUNCE_MS = 250;
+import { useActivity } from "@/api/useActivity";
+import { useActivityToasts } from "@/components/shell/activityToasts";
+import { AppSidebar } from "@/components/shell/Sidebar";
+import { AppTopbar } from "@/components/shell/Topbar";
+import { RouteAnnouncer } from "@/components/system/RouteAnnouncer";
 
 /**
- * Global header search box. The query lives in the URL (`/search?q=`) so it's
- * bookmarkable and back works; this input is a debounced editor for it. Typing
- * from any page navigates to `/search`. While the user is on `/search`, URL
- * updates use `replace` so each keystroke doesn't pile onto the history stack.
- */
-function HeaderSearch() {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const [searchParams] = useSearchParams();
-  const onSearchPage = location.pathname === "/search";
-  const urlQuery = onSearchPage ? (searchParams.get("q") ?? "") : "";
-
-  // Local editor state, seeded from the URL — the URL is the OUTPUT of typing.
-  const [value, setValue] = useState(urlQuery);
-  const inputRef = useRef<HTMLInputElement>(null);
-  // Skip the very first debounce tick so merely mounting (e.g. landing on
-  // /search?q=foo) doesn't immediately re-navigate.
-  const mounted = useRef(false);
-
-  // Re-sync the box FROM the URL on external navigation (Back/forward, a
-  // deep-link), but ONLY when the user isn't editing — re-syncing while the box
-  // is focused would fight the user mid-type. The no-loop guard below keeps the
-  // two directions from ping-ponging.
-  useEffect(() => {
-    if (document.activeElement !== inputRef.current) {
-      setValue(urlQuery);
-    }
-  }, [urlQuery]);
-
-  useEffect(() => {
-    if (!mounted.current) {
-      mounted.current = true;
-      return;
-    }
-    const id = setTimeout(() => {
-      const next = value.trim();
-      // Only navigate when the term actually differs from what's in the URL,
-      // so syncing the box from the URL doesn't loop.
-      if (next === urlQuery.trim()) {
-        return;
-      }
-      navigate(`/search?q=${encodeURIComponent(next)}`, {
-        replace: onSearchPage,
-      });
-    }, SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(id);
-  }, [value, urlQuery, onSearchPage, navigate]);
-
-  return (
-    // `role="search"` landmark (an explicit role rather than the <search>
-    // element, which React/jsdom here don't map to the role).
-    <div role="search" className="relative max-w-md min-w-0 flex-1">
-      <Search
-        className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2"
-        aria-hidden="true"
-      />
-      <Input
-        ref={inputRef}
-        type="search"
-        aria-label="Search library"
-        // Short, fixed placeholder so it isn't crushed/ellipsised at ~360px
-        // (an attribute can't be swapped per-breakpoint via CSS); the leading
-        // icon + aria-label carry the affordance.
-        placeholder="Search…"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        className="min-w-0 pl-9"
-      />
-    </div>
-  );
-}
-
-async function fetchHealth() {
-  const { data, error } = await client.GET("/api/health");
-  if (error || !data) {
-    throw new Error("Health check failed");
-  }
-  return data;
-}
-
-/**
- * Compact backend health indicator in the header. Status is conveyed by THREE
- * carriers, not color alone (WCAG 1.4.1): a shape-distinct icon (check /
- * slashed-circle / spinner), a short visible text label, and the dot color.
- */
-export function HealthStatus() {
-  const { data, isPending, isError } = useQuery({
-    queryKey: ["health"],
-    queryFn: fetchHealth,
-  });
-
-  const reachable = !isError && !isPending;
-  const label = isPending ? "Checking" : reachable ? "Online" : "Offline";
-  const description = isPending
-    ? "Checking backend"
-    : reachable
-      ? `Backend online (v${data.version})`
-      : "Backend unreachable";
-
-  const Icon = isPending ? Loader2 : reachable ? CircleCheck : CircleSlash;
-
-  return (
-    <span
-      className="flex items-center gap-1.5 text-sm"
-      title={description}
-      aria-label={description}
-      role="status"
-    >
-      <Icon
-        aria-hidden="true"
-        className={cn(
-          "size-4",
-          isPending
-            ? "text-muted-foreground animate-spin"
-            : reachable
-              ? "text-success"
-              : "text-destructive",
-        )}
-      />
-      {/* Collapse to icon-only below sm to save header width; the wrapper's
-          title + aria-label still convey the full status. */}
-      <span
-        className={cn(
-          "hidden sm:inline",
-          isPending
-            ? "text-muted-foreground"
-            : reachable
-              ? "text-success"
-              : "text-destructive",
-        )}
-      >
-        {label}
-      </span>
-    </span>
-  );
-}
-
-/**
- * App shell: persistent header chrome wrapping the routed page via `<Outlet>`.
- * The browse hierarchy is a single artist spine (roster -> artist -> album), so
- * the header has no section tabs — just the brand (-> roster home) and the
- * health status. Future nav (Search, Playlists, Settings) lands here later.
+ * App shell (spec §2): persistent sidebar + topbar around the routed page.
+ *
+ * Layout: <AppSidebar> (nav sections; hidden below md — the topbar's
+ * hamburger drawer covers small screens) beside a column of <AppTopbar>
+ * (search · activity · health) over the scrolling <main>. Cross-page job
+ * state lives in the topbar activity popover (rows over the existing polling
+ * hooks) plus sonner toasts on running→done/failed transitions — the three
+ * stacked job banners are gone. RouteAnnouncer makes navigation non-silent
+ * (document.title + polite live region + h1 focus), and the skip link is the
+ * first focusable element on every page.
  */
 export function App() {
-  const location = useLocation();
+  const { rows } = useActivity();
+  useActivityToasts(rows);
   return (
-    <div className="bg-background text-foreground min-h-svh">
-        <header className="border-border bg-background/80 sticky top-0 z-10 border-b backdrop-blur">
-          <div className="mx-auto flex max-w-8xl items-center gap-4 px-6 py-4">
-            <h1 className="shrink-0 text-xl font-semibold tracking-tight">
-              <Link
-                to="/"
-                className="focus-visible:ring-ring rounded-sm focus-visible:ring-2 focus-visible:outline-none"
-              >
-                MusicDrop
-              </Link>
-            </h1>
-            <HeaderSearch />
-            <nav
-              className="ml-auto flex shrink-0 items-center gap-4"
-              aria-label="Primary"
-            >
-              <Link
-                to="/artists"
-                aria-label="Artists"
-                aria-current={
-                  location.pathname.startsWith("/artists") ? "page" : undefined
-                }
-                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
-              >
-                <Users className="size-4" aria-hidden="true" />
-                <span className="hidden sm:inline">Artists</span>
-              </Link>
-              <Link
-                to="/browse"
-                aria-label="Browse"
-                aria-current={
-                  location.pathname.startsWith("/browse") ? "page" : undefined
-                }
-                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
-              >
-                <SlidersHorizontal className="size-4" aria-hidden="true" />
-                <span className="hidden sm:inline">Browse</span>
-              </Link>
-              <ReviewNavLink />
-              <Link
-                to="/import"
-                aria-label="Import"
-                aria-current={
-                  location.pathname.startsWith("/import") ? "page" : undefined
-                }
-                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
-              >
-                <FolderInput className="size-4" aria-hidden="true" />
-                {/* Label hides below sm to preserve header width, like the health
-                  status; the Link's aria-label carries the name when icon-only. */}
-                <span className="hidden sm:inline">Import</span>
-              </Link>
-              <Link
-                to="/settings"
-                aria-label="Settings"
-                aria-current={
-                  location.pathname.startsWith("/settings") ? "page" : undefined
-                }
-                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
-              >
-                <Settings className="size-4" aria-hidden="true" />
-                <span className="hidden sm:inline">Settings</span>
-              </Link>
-              <Link
-                to="/playlists"
-                aria-label="Playlists"
-                aria-current={
-                  location.pathname.startsWith("/playlists") ? "page" : undefined
-                }
-                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
-              >
-                <ListMusic className="size-4" aria-hidden="true" />
-                <span className="hidden sm:inline">Playlists</span>
-              </Link>
-              <Link
-                to="/duplicates"
-                aria-label="Duplicates"
-                aria-current={
-                  location.pathname.startsWith("/duplicates")
-                    ? "page"
-                    : undefined
-                }
-                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
-              >
-                <CopyCheck className="size-4" aria-hidden="true" />
-                <span className="hidden sm:inline">Duplicates</span>
-              </Link>
-            </nav>
-            <div className="shrink-0">
-              <HealthStatus />
-            </div>
-          </div>
-        </header>
-        <main className="mx-auto max-w-8xl px-6 py-8">
-          <LyricsBackfillBanner />
-          <ArtistArtBackfillBanner />
-          <ReorganizeBanner />
+    <div className="bg-background text-foreground flex min-h-svh">
+      <a
+        href="#main-content"
+        className="focus-ring sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:border focus:border-border focus:bg-background focus:px-3 focus:py-2 focus:text-sm"
+      >
+        Skip to content
+      </a>
+      <RouteAnnouncer />
+      <AppSidebar />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <AppTopbar />
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="mx-auto w-full max-w-8xl flex-1 px-6 py-6 outline-none"
+        >
           <Outlet />
         </main>
+      </div>
+      <Toaster theme="dark" position="top-right" />
     </div>
   );
 }

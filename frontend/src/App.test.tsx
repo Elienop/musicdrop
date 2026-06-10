@@ -5,7 +5,8 @@ import { http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { describe, expect, test } from "vitest";
 
-import { App, HealthStatus } from "@/App";
+import { App } from "@/App";
+import { HealthStatus } from "@/components/shell/Topbar";
 import { ArtistsPage } from "@/pages/artists/ArtistsPage";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
@@ -58,7 +59,7 @@ function renderShell() {
 }
 
 describe("App", () => {
-  test("renders the MusicDrop header and the roster home", async () => {
+  test("renders the shell brand and the roster home", async () => {
     server.use(
       http.get(HEALTH_URL, () =>
         HttpResponse.json({ status: "ok", version: "0.1.0" }),
@@ -69,8 +70,11 @@ describe("App", () => {
     renderShell();
 
     expect(
-      screen.getByRole("heading", { level: 1, name: "MusicDrop" }),
+      screen.getByRole("link", { name: "MusicDrop" }),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { level: 1, name: "MusicDrop" }),
+    ).not.toBeInTheDocument();
     expect(await screen.findByText(/no artists/i)).toBeInTheDocument();
   });
 
