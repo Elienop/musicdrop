@@ -476,7 +476,7 @@ function ErrorBanner({ err }: { err: unknown }) {
 
 /** The single banner that mirrors the 5-state machine. Color + icon both carry
  * the state (a11y: never color alone). The apply_pending rail is the system
- * StatusBanner (tone=warning — the old hardcoded yellow + dark: variants are
+ * StatusBanner (tone=warning — the old hardcoded yellow + dark variants are
  * gone); dirty keeps its primary box, saving/applying share the neutral one. */
 function ConfigStateBanner({
   state,
