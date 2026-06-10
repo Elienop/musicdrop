@@ -1,5 +1,4 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, CircleCheck, FolderInput, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
@@ -13,6 +12,19 @@ import {
   useImportJob,
   useStartImport,
 } from "@/api/useImport";
+import type { AlbumOrigin } from "@/components/albums/album-grid";
+import {
+  AddFromFolder,
+  Error as ErrorIcon,
+  Info,
+  Spinner,
+  Success,
+} from "@/components/icons";
+import { AlbumRow } from "@/components/system/AlbumRow";
+import { EmptyState } from "@/components/system/EmptyState";
+import { ErrorState } from "@/components/system/ErrorState";
+import { PageBody, PageHeader } from "@/components/system/PageHeader";
+import { StatusBanner } from "@/components/system/StatusBanner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +32,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useThrottledValue } from "@/lib/useThrottledValue";
 import { cn } from "@/lib/utils";
 import { announceMessage } from "@/pages/import/importStatus";
+
+/** Origin threaded onto every link that leaves the feed (decision screens,
+ * applied-album links) so back links and post-submit navigation return to
+ * THIS run (spec §1). */
+function importOrigin(jobId: string): { from: AlbumOrigin } {
+  return { from: { label: "Import", to: `/import?job=${jobId}` } };
+}
 
 export function ImportPage() {
   const [searchParams] = useSearchParams();
@@ -84,52 +103,49 @@ function ImportEntry() {
   }
 
   return (
-    <section
-      className="flex max-w-2xl flex-col gap-6"
-      aria-label="Import music"
-    >
-      <div className="flex flex-col gap-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Import music</h2>
-        <p className="text-muted-foreground text-sm">
-          Point beets at a folder on the server. It scans, matches each album
-          against MusicBrainz, and imports what it finds.
-        </p>
-      </div>
+    <PageBody variant="narrow">
+      <PageHeader title="Add from folder" />
+      <p className="text-muted-foreground text-sm">
+        Add music from a folder on the server. beets scans it, matches each
+        album against MusicBrainz, and files what it finds into your library.
+      </p>
 
       {importActive && activeJobId && (
         // A running import the user navigated away from — one click back in.
         // Resuming just navigates to `?job=<id>`; the run page routes to the
-        // right phase view and pins any album awaiting a decision. Same neutral
-        // banner recipe as SettingsPage's status rail (rounded-xl / p-3 /
-        // bg-muted/50 + a spinner), with the action on the right. The text's id
-        // describes the disabled Start below (aria-describedby) so a keyboard/SR
-        // user gets the "why" + the recovery action without duplicate copy.
-        <div
-          className="border-border bg-muted/50 flex items-center gap-3 rounded-xl border p-3 text-sm"
-          role="status"
+        // right phase view and pins any album awaiting a decision. The text's
+        // id describes the disabled Start below (aria-describedby) so a
+        // keyboard/SR user gets the "why" + the recovery action without
+        // duplicate copy — and without a disabled-button title (spec §4 rule).
+        <StatusBanner
+          tone="neutral"
+          action={
+            <Button size="sm" asChild>
+              <Link to={`/import?job=${activeJobId}`}>Resume</Link>
+            </Button>
+          }
         >
-          <Loader2
-            className="text-muted-foreground size-5 shrink-0 animate-spin"
-            aria-hidden="true"
-          />
-          <p id="resume-import-hint" className="flex-1 font-medium">
-            {origin === "inbox"
-              ? needsReview > 0
-                ? "An inbox import is running" // the set-aside clause completes the sentence
-                : "An inbox import is running."
-              : "An import is already running."}
-            {origin === "inbox" && needsReview > 0 && (
-              <span className="text-muted-foreground font-normal">
-                {" — "}
-                {needsReview} album{needsReview === 1 ? "" : "s"} set aside for
-                review.
-              </span>
-            )}
+          <p id="resume-import-hint" className="flex items-center gap-3 font-medium">
+            <Spinner
+              className="text-muted-foreground size-5 shrink-0 animate-spin"
+              aria-hidden="true"
+            />
+            <span>
+              {origin === "inbox"
+                ? needsReview > 0
+                  ? "An inbox import is running" // the set-aside clause completes the sentence
+                  : "An inbox import is running."
+                : "An import is already running."}
+              {origin === "inbox" && needsReview > 0 && (
+                <span className="text-muted-foreground font-normal">
+                  {" — "}
+                  {needsReview} album{needsReview === 1 ? "" : "s"} set aside for
+                  review.
+                </span>
+              )}
+            </span>
           </p>
-          <Button size="sm" asChild>
-            <Link to={`/import?job=${activeJobId}`}>Resume</Link>
-          </Button>
-        </div>
+        </StatusBanner>
       )}
 
       <form className="flex flex-col gap-3" onSubmit={onSubmit}>
@@ -164,27 +180,22 @@ function ImportEntry() {
             type="submit"
             disabled={trimmed.length === 0 || start.isPending || importActive}
             aria-describedby={importActive ? "resume-import-hint" : undefined}
-            title={
-              importActive
-                ? "An import is already running — resume it or wait for it to finish"
-                : undefined
-            }
           >
             {start.isPending ? (
               <>
-                <Loader2 className="animate-spin" aria-hidden="true" />
+                <Spinner className="animate-spin" aria-hidden="true" />
                 Starting&hellip;
               </>
             ) : (
               <>
-                <FolderInput aria-hidden="true" />
+                <AddFromFolder aria-hidden="true" />
                 Start import
               </>
             )}
           </Button>
         </div>
       </form>
-    </section>
+    </PageBody>
   );
 }
 
@@ -263,18 +274,20 @@ function ImportRun({ jobId }: { jobId: string }) {
   );
 }
 
-/** Shared chrome for every run view: heading + a Start-over link. */
+/** Shared chrome for every run view: the page header + a Start-over action. */
 function ImportShell({ children }: { children: React.ReactNode }) {
   return (
-    <section className="flex flex-col gap-6" aria-label="Import progress">
-      <div className="flex items-center justify-between gap-4">
-        <h2 className="text-2xl font-semibold tracking-tight">Import</h2>
-        <Button variant="ghost" size="sm" asChild>
-          <Link to="/import">Start over</Link>
-        </Button>
-      </div>
+    <PageBody>
+      <PageHeader
+        title="Add from folder"
+        actions={
+          <Button variant="ghost" size="sm" asChild>
+            <Link to="/import">Start over</Link>
+          </Button>
+        }
+      />
       {children}
-    </section>
+    </PageBody>
   );
 }
 
@@ -291,7 +304,7 @@ function LiveFeed({ state, jobId }: { state: ImportJobState; jobId: string }) {
     <div className="flex flex-col gap-4">
       <p className="text-muted-foreground flex min-h-5 items-center gap-2 text-sm">
         {working && (
-          <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+          <Spinner className="size-3.5 animate-spin" aria-hidden="true" />
         )}
         {/* While scanning with nothing in the feed yet, the count line would
             read "0 albums imported" — say what's actually happening instead. */}
@@ -309,8 +322,9 @@ function LiveFeed({ state, jobId }: { state: ImportJobState; jobId: string }) {
               ` · ${state.progress.skipped} skipped`}
             {state.progress.needs_review > 0 &&
               ` · ${state.progress.needs_review} album${state.progress.needs_review === 1 ? "" : "s"} needs review`}
-            {needsDup > 0 &&
-              ` · ${needsDup} duplicate${needsDup === 1 ? "" : "s"} to resolve`}
+            {/* Import-time duplicates are named "already in library" so
+                "Duplicates" (the Manage page) names exactly one thing. */}
+            {needsDup > 0 && ` · ${needsDup} already in library`}
           </span>
         )}
       </p>
@@ -325,7 +339,7 @@ function LiveFeed({ state, jobId }: { state: ImportJobState; jobId: string }) {
 }
 
 /** The feed listing — shared by the live run and the done summary. Carries the
- * `jobId` so each row's Review link can hand it across the chunk-4 seam. */
+ * `jobId` so each row's links can thread the run origin. */
 function FeedList({
   albums,
   jobId,
@@ -346,7 +360,7 @@ function FeedList({
       a.index - b.index,
   );
   return (
-    <ul className="border-border divide-border divide-y rounded-xl border">
+    <ul className="border-border divide-border divide-y overflow-hidden rounded-xl border">
       {ordered.map((album) => (
         <li key={album.index}>
           <FeedRow album={album} jobId={jobId} />
@@ -356,10 +370,10 @@ function FeedList({
   );
 }
 
-/** One feed row. An `applied`/`skipped`/`decided` album is calm (a status
- * badge); the `needs_review` row is highlighted and offers Review (→ the seam),
- * and a `needs_dup_resolution` row is highlighted and offers Resolve (→ the dup
- * page). */
+/** One feed row on the shared AlbumRow. An `applied` album shows its library
+ * cover and its title links to `/albums/{id}` (when the worker reported the
+ * id); `skipped`/`decided` rows are calm; `needs_review` / parked-duplicate
+ * rows are highlighted and offer Review / Resolve, threading the run origin. */
 function FeedRow({
   album,
   jobId,
@@ -372,56 +386,63 @@ function FeedRow({
   // Final fallback is non-empty: `album` may be null and `folder` may be ""/"/",
   // in which case folderName() returns "" — never show an empty title.
   const title = (album.album ?? folderName(album.folder)) || "Unknown album";
+  // Task 1's outcome plumbing: present for applied albums where beets returned
+  // the library id; absent/null otherwise — degrade to a plain row.
+  const albumId = album.album_id ?? null;
+  const linked = album.status === "applied" && albumId !== null;
+  const origin = importOrigin(jobId);
   return (
-    <div
-      className={cn(
-        "flex min-w-0 items-center gap-3 px-4 py-3",
-        (needsReview || needsDup) && "bg-primary/5",
-      )}
-    >
-      <div className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate font-medium">{title}</span>
-        <span className="text-muted-foreground truncate text-sm">
-          {album.artist ?? "Unknown artist"}
-          <span aria-hidden="true"> · </span>
-          {/* `confidence` is already a 0–100 percentage from the backend
-              mapping (app/beets/import_mapping.py `_confidence` = round((1 -
-              dist) * 100, 1)), so rounding is correct — not a 0–1 fraction. */}
-          {Math.round(album.confidence)}% ·{" "}
-          {RECOMMENDATION_LABEL[album.recommendation]}
-        </span>
-      </div>
-      <StatusBadge status={album.status} />
-      {needsReview && (
-        <Button size="sm" asChild>
-          {/* Carry the job id across the chunk-4 seam (the candidate-review
-              hooks need it); consistent with the run page's `?job=` convention. */}
-          <Link to={`/import/albums/${album.index}?job=${jobId}`}>Review</Link>
-        </Button>
-      )}
-      {needsDup && (
-        <Button size="sm" asChild>
-          {/* A duplicate the auto-importer parked — route to the dup page to
-              resolve it, carrying the job id across the same `?job=` seam. */}
-          <Link to={`/import/albums/${album.index}/duplicate?job=${jobId}`}>
-            Resolve
-          </Link>
-        </Button>
-      )}
+    // Highlight stays with the caller (AlbumRow contract).
+    <div className={cn((needsReview || needsDup) && "bg-primary/5")}>
+      <AlbumRow
+        cover={albumId !== null ? `/api/albums/${albumId}/cover` : null}
+        title={title}
+        subtitle={album.artist ?? "Unknown artist"}
+        meta={
+          // `confidence` is already a 0–100 percentage from the backend
+          // mapping (app/beets/import_mapping.py `_confidence`), so rounding
+          // is correct — not a 0–1 fraction.
+          `${Math.round(album.confidence)}% · ${RECOMMENDATION_LABEL[album.recommendation]}`
+        }
+        badge={<StatusBadge status={album.status} />}
+        href={linked ? `/albums/${albumId}` : undefined}
+        hrefState={linked ? origin : undefined}
+        action={
+          needsReview ? (
+            <Button size="sm" asChild>
+              {/* Carry the job id (`?job=`) AND the origin state across the
+                  decision seam — the candidate page's back link + post-submit
+                  navigation use them. */}
+              <Link to={`/import/albums/${album.index}?job=${jobId}`} state={origin}>
+                Review
+              </Link>
+            </Button>
+          ) : needsDup ? (
+            <Button size="sm" asChild>
+              <Link
+                to={`/import/albums/${album.index}/duplicate?job=${jobId}`}
+                state={origin}
+              >
+                Resolve
+              </Link>
+            </Button>
+          ) : undefined
+        }
+      />
     </div>
   );
 }
 
 /** The status chip. Color + the text label both carry the state (not color
- * alone). `needs_review` reads "Needs review"; `needs_dup_resolution` reads
- * "Duplicate". */
+ * alone). `needs_dup_resolution` reads "Already in library" — matching the
+ * resolve screen's heading, so "Duplicates" names only the library finder. */
 function StatusBadge({ status }: { status: ImportAlbumSummary["status"] }) {
   const label: Record<ImportAlbumSummary["status"], string> = {
     applied: "Imported",
     decided: "Decided",
     skipped: "Skipped",
     needs_review: "Needs review",
-    needs_dup_resolution: "Duplicate",
+    needs_dup_resolution: "Already in library",
   };
   const variant =
     status === "needs_review" || status === "needs_dup_resolution"
@@ -443,27 +464,18 @@ function folderName(folder: string): string {
 }
 
 /** done: a legible outcome — imported/skipped counts (counting auto-applied
- * albums), where each landed (the feed list), and a way into the library. */
+ * albums) + the feed list, whose applied rows now link straight to their
+ * library pages (replaces the old blanket "View in library", spec §1). */
 function JobDone({ state, jobId }: { state: ImportJobState; jobId: string }) {
   const { applied, skipped } = state.progress;
   return (
     <div className="flex flex-col gap-4">
-      <div className="border-border flex flex-col items-center gap-3 rounded-xl border py-12 text-center">
-        <CircleCheck
-          className="text-muted-foreground size-10"
-          aria-hidden="true"
-        />
-        <div className="flex flex-col gap-1">
-          <p className="font-medium">Import finished</p>
-          <p className="text-muted-foreground text-sm">
-            {applied} {applied === 1 ? "album" : "albums"} imported
-            {` · ${skipped} skipped`}
-          </p>
-        </div>
-        <Button variant="outline" size="sm" asChild>
-          <Link to="/">View in library</Link>
-        </Button>
-      </div>
+      <EmptyState
+        bordered
+        icon={Success}
+        title="Import finished"
+        body={`${applied} ${applied === 1 ? "album" : "albums"} imported · ${skipped} skipped`}
+      />
       {state.albums.length > 0 && (
         <FeedList albums={state.albums} jobId={jobId} />
       )}
@@ -471,23 +483,24 @@ function JobDone({ state, jobId }: { state: ImportJobState; jobId: string }) {
   );
 }
 
-/** failed: the worker's error + a way to start over. */
+/** failed: the worker's error + a way to start over. An outcome notice on the
+ * EmptyState recipe (the recovery is a navigation, so ErrorState's mandatory
+ * Retry would mislead — there is nothing to re-run). */
 function JobFailed({ error }: { error: string | null }) {
   return (
-    <div className="border-destructive/40 bg-destructive/5 flex flex-col items-center gap-3 rounded-xl border py-16 text-center">
-      <AlertCircle className="text-destructive size-10" aria-hidden="true" />
-      <div className="flex flex-col gap-1">
-        <p className="font-medium">Import failed</p>
-        <p className="text-muted-foreground text-sm">
-          {error ?? "The import stopped unexpectedly."}
-        </p>
-      </div>
-      {/* The shell chrome already renders a ghost "Start over" -> /import; this
-          panel CTA uses a distinct label so the two aren't identical. */}
-      <Button variant="outline" size="sm" asChild>
-        <Link to="/import">Import another folder</Link>
-      </Button>
-    </div>
+    <EmptyState
+      bordered
+      icon={ErrorIcon}
+      title="Import failed"
+      body={error ?? "The import stopped unexpectedly."}
+      action={
+        // The shell chrome already renders a ghost "Start over" -> /import;
+        // this panel CTA uses a distinct label so the two aren't identical.
+        <Button variant="outline" size="sm" asChild>
+          <Link to="/import">Import another folder</Link>
+        </Button>
+      }
+    />
   );
 }
 
@@ -495,44 +508,34 @@ function JobFailed({ error }: { error: string | null }) {
  * load error: there's nothing to retry, so offer a fresh start instead. */
 function JobNotFound() {
   return (
-    <div className="border-border flex flex-col items-center gap-3 rounded-xl border py-16 text-center">
-      <AlertCircle
-        className="text-muted-foreground size-10"
-        aria-hidden="true"
-      />
-      <div className="flex flex-col gap-1">
-        <p className="font-medium">This import is no longer available</p>
-        <p className="text-muted-foreground text-sm">
-          It may have finished in another session, or the server restarted.
-          Start a new import to continue.
-        </p>
-      </div>
-      <Button variant="outline" size="sm" asChild>
-        <Link to="/import">Start a new import</Link>
-      </Button>
-    </div>
+    <EmptyState
+      bordered
+      icon={Info}
+      title="This import is no longer available"
+      body="It may have finished in another session, or the server restarted. Start a new import to continue."
+      action={
+        <Button variant="outline" size="sm" asChild>
+          <Link to="/import">Start a new import</Link>
+        </Button>
+      }
+    />
   );
 }
 
-/** Transient error fetching the job state (not the same as a failed import). */
+/** Transient error fetching the job state (not the same as a failed import) —
+ * the one genuinely retryable error, on the shared ErrorState. */
 function JobError({ onRetry }: { onRetry: () => void }) {
   return (
-    <div className="border-destructive/40 bg-destructive/5 flex flex-col items-center gap-3 rounded-xl border py-16 text-center">
-      <AlertCircle className="text-destructive size-10" aria-hidden="true" />
-      <div className="flex flex-col gap-1">
-        <p className="font-medium">Couldn&rsquo;t load the import</p>
-        <p className="text-muted-foreground text-sm">
-          The backend didn&rsquo;t respond. Try again.
-        </p>
-      </div>
-      <Button variant="outline" size="sm" onClick={onRetry}>
-        Retry
-      </Button>
-    </div>
+    <ErrorState
+      message="Couldn’t load the import. The backend didn’t respond — try again."
+      onRetry={onRetry}
+    />
   );
 }
 
-/** A few feed-row placeholders so scanning (empty feed) doesn't look broken. */
+/** A few feed-row placeholders so scanning (empty feed) doesn't look broken.
+ * NOT wrapped in PageSkeleton: this page has its own dedicated run announcer
+ * (one live region — adding PageSkeleton's role=status would double it). */
 function FeedSkeleton() {
   return (
     <div
@@ -541,6 +544,7 @@ function FeedSkeleton() {
     >
       {Array.from({ length: 3 }, (_, i) => (
         <div key={i} className="flex items-center gap-3 px-4 py-3">
+          <Skeleton className="size-10 shrink-0 rounded-md" />
           <div className="flex flex-1 flex-col gap-2">
             <Skeleton className="h-4 w-1/3" />
             <Skeleton className="h-3 w-1/2" />

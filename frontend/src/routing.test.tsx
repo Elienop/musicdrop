@@ -88,7 +88,7 @@ describe("routing (artist spine)", () => {
   test("/import renders the import entry page", async () => {
     renderAt("/import");
     expect(
-      await screen.findByRole("heading", { level: 2, name: "Import music" }),
+      await screen.findByRole("heading", { level: 1, name: "Add from folder" }),
     ).toBeInTheDocument();
   });
 

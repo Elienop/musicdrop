@@ -21,6 +21,7 @@ export function AlbumRow({
   badge,
   action,
   href,
+  hrefState,
 }: {
   cover: string | null;
   title: string;
@@ -29,6 +30,9 @@ export function AlbumRow({
   badge?: ReactNode;
   action?: ReactNode;
   href?: string;
+  /** Router state for `href` (e.g. an `{ from: AlbumOrigin }` payload) so list
+   * rows can thread navigation origin without a second link slot. */
+  hrefState?: unknown;
 }) {
   return (
     <div className="flex min-w-0 items-center gap-3 px-4 py-3">
@@ -41,6 +45,7 @@ export function AlbumRow({
             {href !== undefined ? (
               <Link
                 to={href}
+                state={hrefState}
                 className="focus-ring rounded-sm hover:underline"
               >
                 {title}

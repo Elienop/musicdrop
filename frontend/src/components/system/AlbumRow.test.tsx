@@ -1,4 +1,6 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { describe, expect, it } from "vitest";
 
 import { AlbumRow } from "@/components/system/AlbumRow";
@@ -60,5 +62,32 @@ describe("AlbumRow", () => {
   it("renders plain text (no link) when href is omitted", () => {
     render(<AlbumRow cover={null} title="OK Computer" />);
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("threads hrefState as router state through the title link", async () => {
+    function Probe() {
+      const state = useLocation().state as { from?: { label: string } } | null;
+      return <p>state: {state?.from?.label ?? "none"}</p>;
+    }
+    render(
+      <MemoryRouter initialEntries={["/list"]}>
+        <Routes>
+          <Route
+            path="/list"
+            element={
+              <AlbumRow
+                cover={null}
+                title="OK Computer"
+                href="/albums/7"
+                hrefState={{ from: { label: "Import", to: "/import?job=j1" } }}
+              />
+            }
+          />
+          <Route path="/albums/:albumId" element={<Probe />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await userEvent.click(screen.getByRole("link", { name: "OK Computer" }));
+    expect(screen.getByText("state: Import")).toBeInTheDocument();
   });
 });
