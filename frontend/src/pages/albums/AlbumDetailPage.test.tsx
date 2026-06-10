@@ -398,4 +398,72 @@ describe("AlbumDetailPage", () => {
     const back = screen.getByRole("link", { name: /artists/i });
     expect(back).toHaveAttribute("href", "/artists");
   });
+
+  test("the album title is the page h1 with tabindex -1 (RouteAnnouncer focus contract)", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+
+    renderDetail(1);
+
+    const h1 = await screen.findByRole("heading", {
+      level: 1,
+      name: "OK Computer",
+    });
+    expect(h1).toHaveAttribute("tabindex", "-1");
+  });
+
+  test("Edit is a disclosure: aria-expanded + aria-controls + focus moves into the panel", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+
+    renderDetail(1);
+
+    const edit = await screen.findByRole("button", { name: "Edit album" });
+    expect(edit).toHaveAttribute("aria-expanded", "false");
+    expect(edit).toHaveAttribute("aria-controls", "album-edit-panel");
+
+    await userEvent.click(edit);
+
+    expect(edit).toHaveAttribute("aria-expanded", "true");
+    const panel = document.getElementById("album-edit-panel");
+    expect(panel).not.toBeNull();
+    // Opening the disclosure moves focus INTO what just appeared (spec §4).
+    expect(panel).toHaveFocus();
+  });
+
+  test("Cover is a disclosure with its own panel target", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+
+    renderDetail(1);
+
+    const cover = await screen.findByRole("button", { name: "Edit cover" });
+    expect(cover).toHaveAttribute("aria-expanded", "false");
+    expect(cover).toHaveAttribute("aria-controls", "album-cover-panel");
+
+    await userEvent.click(cover);
+
+    expect(cover).toHaveAttribute("aria-expanded", "true");
+    expect(document.getElementById("album-cover-panel")).toHaveFocus();
+  });
+
+  test("not-found renders on the shared EmptyState recipe", async () => {
+    server.use(
+      http.get(DETAIL_URL, () => new HttpResponse(null, { status: 404 })),
+    );
+
+    renderDetail(999);
+
+    await screen.findByText(/album not found/i);
+    expect(document.querySelector('[data-slot="empty-state"]')).not.toBeNull();
+  });
+
+  test("load error renders on the shared ErrorState recipe (role=alert)", async () => {
+    server.use(
+      http.get(DETAIL_URL, () => new HttpResponse(null, { status: 500 })),
+    );
+
+    renderDetail(1);
+
+    await screen.findByText(/couldn.t load (this )?album/i);
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveAttribute("data-slot", "error-state");
+  });
 });

@@ -1,4 +1,4 @@
-import { AlertTriangle, Pencil } from "lucide-react";
+import { Edit as EditIcon, Warning } from "@/components/icons";
 import { useState } from "react";
 
 import { useApplyAlbumEdit, usePreviewAlbumEdit } from "@/api/useAlbumEdit";
@@ -258,7 +258,7 @@ function TrackDiffTable({ tracks }: { tracks: EditTrackChange[] }) {
                   <span className="truncate font-medium">
                     {[t.title_after, t.artist_after].filter(Boolean).join(" · ") || "—"}
                   </span>
-                  <Pencil className="text-muted-foreground size-3 shrink-0" aria-hidden="true" />
+                  <EditIcon className="text-muted-foreground size-3 shrink-0" aria-hidden="true" />
                 </span>
               </TableCell>
             </TableRow>
@@ -277,7 +277,7 @@ function MoveNotice({ count }: { count: number }) {
       role="alert"
       className="border-warning/50 bg-warning/10 text-foreground flex items-start gap-2 rounded-md border p-3 text-sm"
     >
-      <AlertTriangle className="text-warning mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <Warning className="text-warning mt-0.5 size-4 shrink-0" aria-hidden="true" />
       <span>
         {count} file{count === 1 ? "" : "s"} will be moved on disk to match the new tags —
         this relocates the files in your library.

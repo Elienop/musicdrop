@@ -1,5 +1,4 @@
-import { AlertCircle, Image as ImageIcon, Loader2, Music, Pencil, ScrollText } from "lucide-react";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -11,12 +10,23 @@ import { useAlbumMissing, type MissingReleaseTrack } from "@/api/useAlbumMissing
 import { formatDuration } from "@/lib/format";
 import { buildDiscGroups, type DiscGroup } from "@/pages/albums/missingTracks";
 import { BackLink, type AlbumOrigin } from "@/components/albums/album-grid";
+import {
+  Cover as CoverIcon,
+  Edit as EditIcon,
+  Lyrics as LyricsIcon,
+  MusicFallback,
+  Spinner,
+} from "@/components/icons";
 import { AddToPlaylistMenu } from "@/components/playlists/AddToPlaylistMenu";
+import { ReorganizeControl } from "@/components/reorganize/ReorganizeControl";
+import { CoverArt } from "@/components/system/CoverArt";
+import { EmptyState } from "@/components/system/EmptyState";
+import { ErrorState } from "@/components/system/ErrorState";
+import { PageSkeleton } from "@/components/system/PageSkeleton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ReorganizeControl } from "@/components/reorganize/ReorganizeControl";
 import { AlbumEditPanel } from "@/pages/albums/AlbumEditPanel";
 import { CoverEditPanel } from "@/pages/albums/CoverEditPanel";
 import {
@@ -67,7 +77,7 @@ export function AlbumDetailPage() {
     if (error instanceof AlbumNotFoundError) {
       return <NotFoundState />;
     }
-    return <ErrorState onRetry={() => void refetch()} />;
+    return <LoadErrorState onRetry={() => void refetch()} />;
   }
 
   return <AlbumDetailView album={data} />;
@@ -88,6 +98,18 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
   const [editingCover, setEditingCover] = useState(false);
   const [coverVersion, setCoverVersion] = useState(0);
 
+  // Spec §4 disclosure pattern: opening an inline panel moves focus into it so
+  // keyboard/SR users land on what just appeared. Closing leaves focus where
+  // it already is — on the toggle button.
+  const editPanelRef = useRef<HTMLDivElement>(null);
+  const coverPanelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (editing) editPanelRef.current?.focus();
+  }, [editing]);
+  useEffect(() => {
+    if (editingCover) coverPanelRef.current?.focus();
+  }, [editingCover]);
+
   const backOrigin = albumOriginFromState(useLocation().state);
 
   return (
@@ -107,14 +129,23 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
       )}
 
       <header className="flex flex-col gap-6 sm:flex-row sm:items-stretch">
-        <CoverImage album={album} version={coverVersion} />
+        {/* Hero cover on the shared CoverArt (same dimensions — the blurred-art
+            hero itself is Phase 4). */}
+        <CoverArt
+          src={`/api/albums/${album.id}/cover${coverVersion ? `?v=${coverVersion}` : ""}`}
+          className="size-40 shrink-0 rounded-xl shadow-sm"
+        />
         <div className="flex min-w-0 flex-col gap-2">
-          <h2
+          {/* THE page h1 — detail pages own their h1 directly (PageHeader's
+              shape doesn't fit the hero); tabIndex -1 keeps RouteAnnouncer's
+              focus contract. */}
+          <h1
             id="album-detail-title"
-            className="text-3xl font-semibold tracking-tight break-words"
+            tabIndex={-1}
+            className="text-3xl font-bold tracking-tight break-words"
           >
             {album.title}
-          </h2>
+          </h1>
           <p className="text-muted-foreground text-lg">{album.album_artist}</p>
           <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-sm">
             {album.year !== null && (
@@ -132,23 +163,27 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
           </div>
           {/* Maintenance actions — a single row pushed to the bottom of the
               column so it lines up with the bottom of the cover, mirroring the
-              artist page. Reorganize status shows in the top banner, not inline. */}
+              artist page. */}
           <div className="border-border mt-auto flex flex-wrap items-center gap-3 border-t pt-3">
             <Button
               variant="outline"
               size="sm"
               onClick={() => setEditing((v) => !v)}
               aria-label="Edit album"
+              aria-expanded={editing}
+              aria-controls="album-edit-panel"
             >
-              <Pencil className="size-4" /> Edit
+              <EditIcon className="size-4" aria-hidden="true" /> Edit
             </Button>
             <Button
               variant="outline"
               size="sm"
               onClick={() => setEditingCover((v) => !v)}
               aria-label="Edit cover"
+              aria-expanded={editingCover}
+              aria-controls="album-cover-panel"
             >
-              <ImageIcon className="size-4" /> Cover
+              <CoverIcon className="size-4" aria-hidden="true" /> Cover
             </Button>
             <ReorganizeControl scope={{ scope: "album", albumId: album.id }} />
             <AddToPlaylistMenu
@@ -160,15 +195,29 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
       </header>
 
       {editing && (
-        <AlbumEditPanel album={album} onClose={() => setEditing(false)} />
+        <div
+          id="album-edit-panel"
+          ref={editPanelRef}
+          tabIndex={-1}
+          className="outline-none"
+        >
+          <AlbumEditPanel album={album} onClose={() => setEditing(false)} />
+        </div>
       )}
 
       {editingCover && (
-        <CoverEditPanel
-          albumId={album.id}
-          onInstalled={() => setCoverVersion((v) => v + 1)}
-          onClose={() => setEditingCover(false)}
-        />
+        <div
+          id="album-cover-panel"
+          ref={coverPanelRef}
+          tabIndex={-1}
+          className="outline-none"
+        >
+          <CoverEditPanel
+            albumId={album.id}
+            onInstalled={() => setCoverVersion((v) => v + 1)}
+            onClose={() => setEditingCover(false)}
+          />
+        </div>
       )}
 
       <Separator />
@@ -261,7 +310,7 @@ function TrackRow({
       </TableCell>
       <TableCell className="text-center">
         {track.has_lyrics ? (
-          <ScrollText className="text-foreground inline size-4" aria-label="Has lyrics" />
+          <LyricsIcon className="text-foreground inline size-4" aria-label="Has lyrics" />
         ) : (
           <span className="text-muted-foreground" aria-label="No lyrics">
             –
@@ -282,8 +331,8 @@ function MissingTrackRow({ track }: { track: MissingReleaseTrack }) {
   // Convey "missing" through a subtle row tint + italic title + a labelled
   // badge — NOT row-level opacity, which would composite the title and the
   // already-muted #/duration cells below the WCAG AA 4.5:1 floor. Every cell
-  // keeps its colour at full alpha (muted-foreground already clears 4.5:1 in
-  // both themes), so the text stays legible while the row still reads as a gap.
+  // keeps its colour at full alpha (muted-foreground already clears 4.5:1), so
+  // the text stays legible while the row still reads as a gap.
   return (
     <TableRow className="bg-muted/40 hover:bg-muted/60">
       <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
@@ -366,98 +415,57 @@ function TracklistStatus({
   return null; // no_musicbrainz_id -> silent (query is usually disabled anyway)
 }
 
-/**
- * Larger header cover backed by `GET /api/albums/{id}/cover`. Mirrors the grid
- * card's fallback: a 404 or decode failure flips to a music-note placeholder of
- * the same dimensions so the header never shows a broken image.
- *
- * Decorative (`alt=""` / `aria-hidden`) — the adjacent `<h2>` already names the
- * album, so a descriptive alt would have screen readers announce the title
- * twice.
- */
-function CoverImage({
-  album,
-  version,
-}: {
-  album: AlbumDetail;
-  version: number;
-}) {
-  const [failed, setFailed] = useState(false);
-
-  if (failed) {
-    return (
-      <div
-        className="bg-muted flex size-40 shrink-0 items-center justify-center rounded-xl"
-        aria-hidden="true"
-      >
-        <Music className="text-muted-foreground size-12" />
-      </div>
-    );
-  }
-
-  return (
-    <img
-      src={`/api/albums/${album.id}/cover${version ? `?v=${version}` : ""}`}
-      alt=""
-      loading="lazy"
-      onError={() => setFailed(true)}
-      className="bg-muted size-40 shrink-0 rounded-xl object-cover shadow-sm"
-    />
-  );
-}
-
 function DetailSkeleton() {
   return (
-    <div className="flex flex-col gap-8" aria-hidden="true">
-      {/* Matches the BackLink button height. */}
-      <Skeleton className="h-8 w-32" />
-      {/* sm:items-center + gap-2 mirror the loaded header to minimize CLS. */}
-      <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
-        <Skeleton className="size-40 shrink-0 rounded-xl" />
-        <div className="flex flex-col gap-2">
-          <Skeleton className="h-9 w-64" />
-          <Skeleton className="h-6 w-40" />
-          <Skeleton className="h-5 w-48" />
-        </div>
-      </div>
-      <Separator />
-      <div className="flex flex-col gap-2">
-        {/* Table header row (#, Title, Length). */}
-        <div className="flex items-center gap-4 pb-2">
-          <Skeleton className="h-4 w-8 shrink-0" />
-          <Skeleton className="h-4 w-16" />
-          <Skeleton className="ml-auto h-4 w-12 shrink-0" />
-        </div>
-        {/* Track rows — taller to match the two-line-capable real rows. */}
-        {Array.from({ length: 8 }, (_, i) => (
-          <div key={i} className="flex items-center gap-4 py-1">
-            <Skeleton className="h-5 w-8 shrink-0" />
-            <Skeleton className="h-5 flex-1" />
-            <Skeleton className="ml-auto h-5 w-12 shrink-0" />
+    <PageSkeleton announce="Loading album…">
+      <div className="flex flex-col gap-8">
+        {/* Matches the BackLink button height. */}
+        <Skeleton className="h-8 w-32" />
+        {/* sm:items-center + gap-2 mirror the loaded header to minimize CLS. */}
+        <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
+          <Skeleton className="size-40 shrink-0 rounded-xl" />
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-9 w-64" />
+            <Skeleton className="h-6 w-40" />
+            <Skeleton className="h-5 w-48" />
           </div>
-        ))}
+        </div>
+        <Separator />
+        <div className="flex flex-col gap-2">
+          {/* Table header row (#, Title, Length). */}
+          <div className="flex items-center gap-4 pb-2">
+            <Skeleton className="h-4 w-8 shrink-0" />
+            <Skeleton className="h-4 w-16" />
+            <Skeleton className="ml-auto h-4 w-12 shrink-0" />
+          </div>
+          {/* Track rows — taller to match the two-line-capable real rows. */}
+          {Array.from({ length: 8 }, (_, i) => (
+            <div key={i} className="flex items-center gap-4 py-1">
+              <Skeleton className="h-5 w-8 shrink-0" />
+              <Skeleton className="h-5 flex-1" />
+              <Skeleton className="ml-auto h-5 w-12 shrink-0" />
+            </div>
+          ))}
+        </div>
       </div>
-    </div>
+    </PageSkeleton>
   );
 }
 
 function NotFoundState() {
   return (
-    <div className="flex flex-col items-center gap-4 py-16 text-center">
-      <Music className="text-muted-foreground size-10" aria-hidden="true" />
-      <div className="flex flex-col gap-1">
-        <p className="font-medium">Album not found</p>
-        <p className="text-muted-foreground text-sm">
-          This album doesn&rsquo;t exist in your library. It may have been
-          removed.
-        </p>
-      </div>
-      <Button variant="outline" size="sm" asChild>
-        {/* No album data here, so the artist is unknown — fall back to the
-            roster rather than guessing a parent. */}
-        <Link to="/artists">Back to artists</Link>
-      </Button>
-    </div>
+    <EmptyState
+      icon={MusicFallback}
+      title="Album not found"
+      body="This album doesn’t exist in your library. It may have been removed."
+      action={
+        <Button variant="outline" size="sm" asChild>
+          {/* No album data here, so the artist is unknown — fall back to the
+              roster rather than guessing a parent. */}
+          <Link to="/artists">Back to artists</Link>
+        </Button>
+      }
+    />
   );
 }
 
@@ -494,7 +502,7 @@ function LyricsStatus({
   if (runningThis && job) {
     return (
       <div className="flex flex-wrap items-center gap-3" role="status">
-        <Loader2 className="text-muted-foreground size-4 shrink-0 animate-spin" aria-hidden="true" />
+        <Spinner className="text-muted-foreground size-4 shrink-0 animate-spin" aria-hidden="true" />
         <span className="text-muted-foreground text-sm">
           Fetching lyrics… {job.processed} / {job.total} · found {job.found}
         </span>
@@ -519,7 +527,7 @@ function LyricsStatus({
         >
           {start.isPending ? (
             <>
-              <Loader2 className="size-4 animate-spin" aria-hidden="true" /> Starting…
+              <Spinner className="size-4 animate-spin" aria-hidden="true" /> Starting…
             </>
           ) : (
             `Fetch missing lyrics (${missing})`
@@ -544,23 +552,15 @@ function LyricsStatus({
   );
 }
 
-function ErrorState({ onRetry }: { onRetry: () => void }) {
+function LoadErrorState({ onRetry }: { onRetry: () => void }) {
   return (
     <div className="flex flex-col gap-6">
-      {/* Artist unknown on error — fall back to the roster. */}
+      {/* Artist unknown on error — the escape keeps the BackLink to the roster. */}
       <BackLink to="/artists" label="Artists" />
-      <div className="border-destructive/40 bg-destructive/5 flex flex-col items-center gap-3 rounded-xl border py-16 text-center">
-        <AlertCircle className="text-destructive size-10" aria-hidden="true" />
-        <div className="flex flex-col gap-1">
-          <p className="font-medium">Couldn&rsquo;t load this album</p>
-          <p className="text-muted-foreground text-sm">
-            The library didn&rsquo;t respond. Check the backend and try again.
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={onRetry}>
-          Retry
-        </Button>
-      </div>
+      <ErrorState
+        message="Couldn’t load this album. The library didn’t respond — check the backend and try again."
+        onRetry={onRetry}
+      />
     </div>
   );
 }

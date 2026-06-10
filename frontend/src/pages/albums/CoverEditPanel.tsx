@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, Info, Search, Upload } from "lucide-react";
+import { Error as ErrorIcon, Info, Search, Success, Upload } from "@/components/icons";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -179,7 +179,7 @@ function InstallOutcome({ result }: { result: CoverInstallResult }) {
         role="status"
         className="border-primary/30 bg-primary/5 text-foreground flex items-start gap-2 rounded-md border p-3"
       >
-        <CheckCircle2 className="text-primary mt-0.5 size-4 shrink-0" aria-hidden="true" />
+        <Success className="text-primary mt-0.5 size-4 shrink-0" aria-hidden="true" />
         <div className="flex flex-col gap-1">
           <span className="font-medium">Cover updated</span>
           {result.message && <span className="text-muted-foreground">{result.message}</span>}
@@ -203,7 +203,7 @@ function Notice({ children }: { children: React.ReactNode }) {
       role="alert"
       className="border-destructive/40 bg-destructive/5 text-foreground flex items-start gap-2 rounded-md border p-3 text-sm"
     >
-      <AlertCircle className="text-destructive mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <ErrorIcon className="text-destructive mt-0.5 size-4 shrink-0" aria-hidden="true" />
       <span>{children}</span>
     </div>
   );
