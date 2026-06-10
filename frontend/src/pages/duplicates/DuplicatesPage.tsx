@@ -1,5 +1,4 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Loader2, Music, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 
 import {
@@ -12,6 +11,11 @@ import {
   useResolveAllDuplicates,
   useResolveDuplicate,
 } from "@/api/useDuplicates";
+import { Resolved, Spinner } from "@/components/icons";
+import { AlbumRow } from "@/components/system/AlbumRow";
+import { EmptyState } from "@/components/system/EmptyState";
+import { ErrorState } from "@/components/system/ErrorState";
+import { PageBody, PageHeader } from "@/components/system/PageHeader";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,14 +28,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import { cn } from "@/lib/utils";
 
 /** A group's chosen keeper, clamped to current membership. A background refetch
@@ -91,47 +88,53 @@ export function DuplicatesPage() {
   const skipped = summary?.skipped_stale.length ?? 0;
 
   return (
-    <section className="flex flex-col gap-4" aria-label="Duplicate albums">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-col gap-1">
-          <h2 className="text-2xl font-semibold tracking-tight">Duplicate albums</h2>
-          <p className="text-muted-foreground text-sm">
-            {data
-              ? `${data.group_count} ${data.group_count === 1 ? "group" : "groups"} · ${data.album_count} albums`
-              : "Scanning your library…"}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          {showBulk && (
-            <Button
-              variant="destructive"
-              disabled={resolveAll.isPending}
-              onClick={() => setConfirmAllOpen(true)}
-            >
-              {resolveAll.isPending ? (
-                <>
-                  <Loader2 className="animate-spin" aria-hidden="true" />
-                  Resolving&hellip;
-                </>
-              ) : (
-                `Resolve all · ${moveCount} ${moveCount === 1 ? "copy" : "copies"}`
-              )}
-            </Button>
-          )}
-          <ModeToggle
-            mode={mode}
-            onChange={(m) => {
-              // Switching modes regroups the library — drop keeper overrides (a
-              // same keeper-id can recur with different membership across modes)
-              // and the stale summary so the bulk action can't carry a wrong
-              // choice over.
-              setMode(m);
-              setSelections({});
-              setSummary(null);
-            }}
-          />
-        </div>
-      </header>
+    <PageBody>
+      <PageHeader
+        title="Duplicates"
+        meta={
+          data
+            ? `${data.group_count} ${data.group_count === 1 ? "group" : "groups"} · ${data.album_count} albums`
+            : "Scanning your library…"
+        }
+        actions={
+          <>
+            {showBulk && (
+              <Button
+                variant="destructive"
+                disabled={resolveAll.isPending}
+                onClick={() => setConfirmAllOpen(true)}
+              >
+                {resolveAll.isPending ? (
+                  <>
+                    <Spinner className="animate-spin" aria-hidden="true" />
+                    Resolving&hellip;
+                  </>
+                ) : (
+                  `Resolve all · ${moveCount} ${moveCount === 1 ? "copy" : "copies"}`
+                )}
+              </Button>
+            )}
+            <SegmentedControl
+              aria-label="Match mode"
+              options={[
+                { value: "strict", label: "Strict · MB-ID" },
+                { value: "fuzzy", label: "Fuzzy · artist + title" },
+              ]}
+              value={mode}
+              onChange={(v) => {
+                // Switching modes regroups the library — drop keeper overrides
+                // (a same keeper-id can recur with different membership across
+                // modes) and the stale summary so the bulk action can't carry a
+                // wrong choice over.
+                const m: DuplicateMode = v === "fuzzy" ? "fuzzy" : "strict";
+                setMode(m);
+                setSelections({});
+                setSummary(null);
+              }}
+            />
+          </>
+        }
+      />
 
       {summary &&
         (summary.moved_count > 0 ? (
@@ -158,9 +161,27 @@ export function DuplicatesPage() {
         </p>
       )}
 
-      {isPending && <LoadingState />}
-      {isError && <ErrorState onRetry={() => void refetch()} />}
-      {data && groups.length === 0 && <EmptyState />}
+      {isPending && (
+        <p className="text-muted-foreground flex items-center gap-2 text-sm" role="status">
+          <Spinner className="size-3.5 animate-spin" aria-hidden="true" />
+          Scanning library for duplicates&hellip;
+        </p>
+      )}
+      {isError && (
+        <ErrorState
+          variant="inline"
+          message="Couldn't load duplicates."
+          onRetry={() => void refetch()}
+        />
+      )}
+      {data && groups.length === 0 && (
+        <EmptyState
+          bordered
+          icon={Resolved}
+          title="No duplicate albums found"
+          body="Your library is clean in this mode."
+        />
+      )}
       {data &&
         groups.map((group) => (
           <GroupCard
@@ -209,40 +230,7 @@ export function DuplicatesPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </section>
-  );
-}
-
-function ModeToggle({
-  mode,
-  onChange,
-}: {
-  mode: DuplicateMode;
-  onChange: (m: DuplicateMode) => void;
-}) {
-  return (
-    <div
-      className="inline-flex overflow-hidden rounded-lg border text-sm"
-      role="group"
-      aria-label="Match mode"
-    >
-      {(["strict", "fuzzy"] as const).map((m) => (
-        <button
-          key={m}
-          type="button"
-          onClick={() => onChange(m)}
-          aria-pressed={mode === m}
-          className={cn(
-            "px-3 py-1.5 font-medium transition-colors",
-            mode === m
-              ? "bg-foreground text-background"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {m === "strict" ? "Strict · MB-ID" : "Fuzzy · artist + title"}
-        </button>
-      ))}
-    </div>
+    </PageBody>
   );
 }
 
@@ -298,35 +286,19 @@ function GroupCard({
         Matched on <strong className="text-foreground">{group.match_reason}</strong> ·{" "}
         {group.members.length} copies
       </div>
-      {/* table-fixed so a very long album title can't widen the Album column
-          past the container (the cause of a whole-table horizontal scrollbar);
-          columns are sized by these header widths instead of by content, so the
-          title truncates within its column. Album/Folder split the remainder. */}
-      <Table className="table-fixed">
-        <TableHeader>
-          <TableRow>
-            <TableHead className="w-10">Keep</TableHead>
-            <TableHead className="w-[44%]">Album</TableHead>
-            <TableHead className="w-16">Year</TableHead>
-            <TableHead className="w-16">Tracks</TableHead>
-            <TableHead className="w-28">Quality</TableHead>
-            <TableHead>Folder</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {group.members.map((album) => (
-            <MemberRow
-              key={album.id}
-              album={album}
-              // Shared per-GROUP radio name so the copies form one radio group
-              // (single-select + arrow-key nav). Stable across re-render.
-              name={`keeper-${group.suggested_keeper_id}`}
-              checked={album.id === keeperId}
-              onChoose={() => onChoose(album.id)}
-            />
-          ))}
-        </TableBody>
-      </Table>
+      <ul className="divide-border divide-y">
+        {group.members.map((album) => (
+          <MemberRow
+            key={album.id}
+            album={album}
+            // Shared per-GROUP radio name so the copies form one radio group
+            // (single-select + arrow-key nav). Stable across re-render.
+            name={`keeper-${group.suggested_keeper_id}`}
+            checked={album.id === keeperId}
+            onChoose={() => onChoose(album.id)}
+          />
+        ))}
+      </ul>
 
       {opError && (
         <p className="text-destructive mt-2 text-sm" role="alert">
@@ -344,7 +316,7 @@ function GroupCard({
         >
           {resolve.isPending ? (
             <>
-              <Loader2 className="animate-spin" aria-hidden="true" />
+              <Spinner className="animate-spin" aria-hidden="true" />
               Resolving&hellip;
             </>
           ) : (
@@ -386,6 +358,12 @@ function GroupCard({
   );
 }
 
+/** One group member: a leading native keeper radio beside the shared AlbumRow
+ * (AlbumRow has no selection slot — the radio is a sibling cell in this row
+ * layout), with the folder path on its own full-width scroller line BELOW so
+ * the distinguishing aunique `[NN]` suffix at the END of the path stays
+ * reachable (an end-ellipsis would hide it; `title` still carries the whole
+ * path for hover). */
 function MemberRow({
   album,
   name,
@@ -397,112 +375,39 @@ function MemberRow({
   checked: boolean;
   onChoose: () => void;
 }) {
+  const quality = `${album.format ?? "—"}${album.bitrate_kbps ? ` · ${album.bitrate_kbps}k` : ""}`;
   return (
-    <TableRow className={cn(checked && "bg-primary/5")}>
-      <TableCell>
-        <input
-          type="radio"
-          name={name}
-          checked={checked}
-          onChange={onChoose}
-          aria-label={`Keep ${album.title} (${album.track_count} tracks)`}
+    <li className={cn("flex items-center gap-1", checked && "bg-primary/5")}>
+      <input
+        type="radio"
+        className="ml-2 shrink-0"
+        name={name}
+        checked={checked}
+        onChange={onChoose}
+        aria-label={`Keep ${album.title} (${album.track_count} tracks)`}
+      />
+      <div className="min-w-0 flex-1">
+        <AlbumRow
+          cover={`/api/albums/${album.id}/cover`}
+          title={album.title}
+          subtitle={album.album_artist}
+          meta={`${album.year ?? "—"} · ${album.track_count} tracks · ${quality}`}
+          badge={
+            album.is_suggested_keeper ? (
+              <Badge variant="secondary" className="shrink-0">
+                <Resolved className="mr-1 size-3" aria-hidden="true" />
+                most complete
+              </Badge>
+            ) : undefined
+          }
         />
-      </TableCell>
-      <TableCell>
-        <div className="flex items-center gap-2">
-          <Thumb album={album} />
-          <div className="min-w-0 flex-1">
-            {/* Title truncates; the badge sits OUTSIDE the truncating span
-                (shrink-0) so a long title can't clip "most complete". */}
-            <div className="flex items-center gap-2">
-              <span className="min-w-0 truncate font-medium" title={album.title}>
-                {album.title}
-              </span>
-              {album.is_suggested_keeper && (
-                <Badge variant="secondary" className="shrink-0">
-                  <ShieldCheck className="mr-1 size-3" aria-hidden="true" />
-                  most complete
-                </Badge>
-              )}
-            </div>
-            <div className="text-muted-foreground truncate text-xs">{album.album_artist}</div>
-          </div>
-        </div>
-      </TableCell>
-      <TableCell>{album.year ?? "—"}</TableCell>
-      <TableCell>{album.track_count}</TableCell>
-      <TableCell className="text-sm">
-        {album.format ?? "—"}
-        {album.bitrate_kbps ? ` · ${album.bitrate_kbps}k` : ""}
-      </TableCell>
-      <TableCell>
-        {/* Horizontally scrollable so the full path is reachable without
-            truncation — the distinguishing aunique `[NN]` suffix lives at the
-            END, which an end-ellipsis would hide. whitespace-nowrap keeps it on
-            one line; overflow-x-auto adds a scrollbar only when it overflows.
-            The title= still carries the whole path for a hover tooltip. No
-            max-width: under table-fixed the column is already bounded, so the
-            inner scroller fills it (a cap would strand a scrollbar mid-cell). */}
         <div
-          className="text-muted-foreground thin-scrollbar overflow-x-auto font-mono text-xs whitespace-nowrap"
+          className="text-muted-foreground thin-scrollbar overflow-x-auto px-4 pb-2 font-mono text-xs whitespace-nowrap"
           title={album.folder}
         >
           {album.folder}
         </div>
-      </TableCell>
-    </TableRow>
-  );
-}
-
-/** Small album cover thumbnail backed by GET /api/albums/{id}/cover, falling
- * back to a music-note placeholder on 404/decode error (same idiom as the
- * album grid's CoverImage). */
-function Thumb({ album }: { album: DuplicateAlbum }) {
-  const [failed, setFailed] = useState(false);
-  if (failed) {
-    return (
-      <div className="bg-muted flex size-9 items-center justify-center rounded" role="img" aria-label="No cover">
-        <Music className="text-muted-foreground size-4" aria-hidden="true" />
       </div>
-    );
-  }
-  return (
-    <img
-      src={`/api/albums/${album.id}/cover`}
-      alt=""
-      loading="lazy"
-      onError={() => setFailed(true)}
-      className="bg-muted size-9 rounded object-cover"
-    />
-  );
-}
-
-function LoadingState() {
-  return (
-    <p className="text-muted-foreground flex items-center gap-2 text-sm" role="status">
-      <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-      Scanning library for duplicates&hellip;
-    </p>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="rounded-xl border border-dashed p-8 text-center" role="status">
-      <ShieldCheck className="text-muted-foreground mx-auto mb-2 size-8" aria-hidden="true" />
-      <p className="font-medium">No duplicate albums found</p>
-      <p className="text-muted-foreground text-sm">Your library is clean in this mode.</p>
-    </div>
-  );
-}
-
-function ErrorState({ onRetry }: { onRetry: () => void }) {
-  return (
-    <div className="border-destructive/40 bg-destructive/5 flex items-center justify-between gap-3 rounded-xl border p-4" role="alert">
-      <p className="text-sm">Couldn't load duplicates.</p>
-      <Button variant="outline" size="sm" onClick={onRetry}>
-        Retry
-      </Button>
-    </div>
+    </li>
   );
 }
