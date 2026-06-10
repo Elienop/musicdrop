@@ -9,7 +9,6 @@ import { ErrorState } from "@/components/system/ErrorState";
 import { PageBody, PageHeader } from "@/components/system/PageHeader";
 import { PageSkeleton } from "@/components/system/PageSkeleton";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function ArtistsPage() {
@@ -66,18 +65,12 @@ function ArtistsGridSkeleton({ count }: { count: number }) {
     <ul className={GRID_CLASS}>
       {Array.from({ length: count }, (_, i) => (
         <li key={i}>
-          <Card className="h-full gap-3 overflow-hidden py-0 pb-4">
-            {/* Square portrait placeholder — matches the real card so the
-                image loading in doesn't shift the layout. */}
-            <Skeleton className="aspect-square w-full rounded-none" />
-            <CardHeader className="gap-2 px-4 pt-3">
-              {/* Mirrors CardTitle (name) + the "N albums" line. */}
-              <Skeleton className="h-5 w-3/4" />
-            </CardHeader>
-            <CardContent className="px-4">
-              <Skeleton className="h-4 w-16" />
-            </CardContent>
-          </Card>
+          {/* Mirrors the borderless ArtistCard: square portrait + two lines. */}
+          <Skeleton className="aspect-square w-full rounded-lg" />
+          <div className="mt-3 flex flex-col gap-1">
+            <Skeleton className="h-5 w-3/4" />
+            <Skeleton className="h-4 w-16" />
+          </div>
         </li>
       ))}
     </ul>

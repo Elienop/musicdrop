@@ -5,18 +5,13 @@ import { Back } from "@/components/icons";
 import { CoverArt } from "@/components/system/CoverArt";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
-/** Responsive album-cover grid columns, shared by every album-grid surface. */
+/** Responsive album-cover grid columns, shared by every album-grid surface.
+ * Borderless cards get breathing room between rows (gap-y-6) while columns
+ * stay tight (gap-x-4); column counts are unchanged. */
 export const GRID_CLASS =
-  "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5";
+  "grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5";
 
 /**
  * A hierarchical "back" affordance: ghost button + leading Back caret, used by
@@ -62,7 +57,13 @@ export function albumOriginFromState(state: unknown): AlbumOrigin | undefined {
 /** Whole-card link to an album's tracklist (`/albums/:id`). A real <a> so it's
  * keyboard- and screen-reader-navigable; the link's accessible name is the
  * card's text (title + artist + meta). `from` (optional) records where the card
- * was clicked so the album page can offer a contextual back link. */
+ * was clicked so the album page can offer a contextual back link.
+ *
+ * Borderless (Phase 4): the art IS the card — no Card chrome. ONE hover
+ * mechanism: the wrapper div owns the ring (ring-transparent →
+ * group-hover:ring-primary/50) AND the clipping (rounded-lg overflow-hidden);
+ * the image owns the scale. Focus is the shared focus-ring dialect on the
+ * link itself. */
 export function AlbumCard({
   album,
   from,
@@ -74,44 +75,42 @@ export function AlbumCard({
     <Link
       to={`/albums/${album.id}`}
       state={from ? { from } : undefined}
-      className="focus-visible:ring-ring block h-full rounded-xl focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+      className="focus-ring group block rounded-lg"
     >
-      <Card className="hover:border-primary/50 h-full gap-3 overflow-hidden py-0 pb-4 transition-colors">
+      <div className="group-hover:ring-primary/50 overflow-hidden rounded-lg ring-1 ring-transparent transition-shadow">
         <CoverArt
           src={`/api/albums/${album.id}/cover`}
           alt={`${album.title} cover`}
-          className="w-full rounded-t-xl"
+          className="w-full rounded-lg transition-transform motion-safe:group-hover:scale-[1.02]"
         />
-        <CardHeader className="px-4 pt-3">
-          <CardTitle className="truncate" title={album.title}>
-            {album.title}
-          </CardTitle>
-          <CardDescription className="truncate" title={album.album_artist}>
-            {album.album_artist}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-wrap items-center gap-2 px-4">
+      </div>
+      <div className="mt-3 flex flex-col gap-1">
+        <span className="block truncate text-sm font-medium" title={album.title}>
+          {album.title}
+        </span>
+        <span
+          className="text-muted-foreground block truncate text-sm"
+          title={album.album_artist}
+        >
+          {album.album_artist}
+        </span>
+        <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-sm">
           {album.year !== null && (
             <Badge variant="secondary">{album.year}</Badge>
           )}
-          <span className="text-muted-foreground text-sm">
+          <span>
             {album.track_count} {album.track_count === 1 ? "track" : "tracks"}
           </span>
           {album.genre && (
             <>
-              <span className="text-muted-foreground text-sm" aria-hidden="true">
-                &middot;
-              </span>
-              <span
-                className="text-muted-foreground min-w-0 truncate text-sm"
-                title={album.genre}
-              >
+              <span aria-hidden="true">&middot;</span>
+              <span className="min-w-0 truncate" title={album.genre}>
                 {album.genre}
               </span>
             </>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </Link>
   );
 }
@@ -121,21 +120,12 @@ export function AlbumsGridSkeleton({ count }: { count: number }) {
     <ul className={GRID_CLASS} aria-hidden="true">
       {Array.from({ length: count }, (_, i) => (
         <li key={i}>
-          <Card className="h-full gap-3 overflow-hidden py-0 pb-4">
-            {/* Square cover placeholder — matches the real card so the cover
-                loading in doesn't shift the layout. */}
-            <Skeleton className="aspect-square w-full rounded-none" />
-            <CardHeader className="gap-2 px-4 pt-3">
-              {/* Mirrors CardTitle (leading-none font height) + CardDescription. */}
-              <Skeleton className="h-5 w-3/4" />
-              <Skeleton className="h-4 w-1/2" />
-            </CardHeader>
-            <CardContent className="flex items-center gap-2 px-4">
-              {/* Year badge + "N tracks" — matches the real card's footer row. */}
-              <Skeleton className="h-5 w-14 rounded-md" />
-              <Skeleton className="h-4 w-16" />
-            </CardContent>
-          </Card>
+          {/* Mirrors the borderless card: square art + two text lines. */}
+          <Skeleton className="aspect-square w-full rounded-lg" />
+          <div className="mt-3 flex flex-col gap-1">
+            <Skeleton className="h-5 w-3/4" />
+            <Skeleton className="h-4 w-1/2" />
+          </div>
         </li>
       ))}
     </ul>
