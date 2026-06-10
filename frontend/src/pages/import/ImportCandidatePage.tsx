@@ -422,7 +422,13 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
                       {t.title_after ?? "—"}
                     </span>
                     {changed && (
-                      <EditIcon className="text-muted-foreground size-3 shrink-0" aria-label="changed" />
+                      <>
+                        <EditIcon
+                          className="text-muted-foreground size-3 shrink-0"
+                          aria-hidden="true"
+                        />
+                        <span className="sr-only">changed</span>
+                      </>
                     )}
                   </span>
                 </TableCell>

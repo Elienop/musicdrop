@@ -74,8 +74,11 @@ describe("AlbumDetailPage lyrics", () => {
     await renderPage();
     // one track has lyrics, one doesn't -> "1 of 2"
     expect(await screen.findByText(/1 of 2 tracks have lyrics/i)).toBeInTheDocument();
-    expect(screen.getByLabelText("Has lyrics")).toBeInTheDocument();
-    expect(screen.getByLabelText("No lyrics")).toBeInTheDocument();
+    // sr-only state text (the MissingTrackRow idiom): the cell carries real
+    // hidden text now, not an aria-label on a bare svg/span — so the query is
+    // getByText, not getByLabelText.
+    expect(screen.getByText("Has lyrics")).toBeInTheDocument();
+    expect(screen.getByText("No lyrics")).toBeInTheDocument();
   });
 
   it("fires the per-album fetch when the button is clicked", async () => {

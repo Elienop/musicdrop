@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes } from "react-router";
@@ -144,6 +144,16 @@ describe("ImportCandidatePage", () => {
     // one for the missing track, one for the unmatched file.
     expect(await screen.findByText("1 missing")).toBeInTheDocument();
     expect(screen.getByText("1 not on release")).toBeInTheDocument();
+  });
+
+  test("a changed track row announces 'changed' as sr-only text, not a bare svg label", async () => {
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
+    renderAt();
+
+    const after = await screen.findByText("Paranoid Android");
+    const row = after.closest("tr") as HTMLElement;
+    // The marker icon is decorative; the state is real (visually hidden) text.
+    expect(within(row).getByText("changed")).toHaveClass("sr-only");
   });
 
   test("labels the covers honestly — yours kept, release art is reference", async () => {

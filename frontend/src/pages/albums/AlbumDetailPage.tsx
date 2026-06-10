@@ -329,12 +329,23 @@ function TrackRow({
         {formatDuration(track.duration_seconds)}
       </TableCell>
       <TableCell className="text-center">
+        {/* sr-only state text (the MissingTrackRow idiom): aria-label on a
+            bare <svg>/<span> isn't reliably announced. */}
         {track.has_lyrics ? (
-          <LyricsIcon className="text-foreground inline size-4" aria-label="Has lyrics" />
+          <>
+            <LyricsIcon
+              className="text-foreground inline size-4"
+              aria-hidden="true"
+            />
+            <span className="sr-only">Has lyrics</span>
+          </>
         ) : (
-          <span className="text-muted-foreground" aria-label="No lyrics">
-            –
-          </span>
+          <>
+            <span className="text-muted-foreground" aria-hidden="true">
+              –
+            </span>
+            <span className="sr-only">No lyrics</span>
+          </>
         )}
       </TableCell>
       <TableCell className="text-center">
