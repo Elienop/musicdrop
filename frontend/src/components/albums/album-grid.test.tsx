@@ -27,65 +27,70 @@ describe("AlbumCard (borderless)", () => {
     expect(link).toHaveAttribute("href", "/albums/7");
     // Phase-3 focus dialect on the link itself; the old hand-rolled
     // ring-2/ring-offset-2 variant is gone.
-    expect(link).toHaveClass("focus-ring", "group", "block", "rounded-lg");
+    expect(link).toHaveClass("focus-ring", "rounded-lg");
     expect(link.className).not.toMatch(/focus-visible:ring-2/);
     // The bordered Card shell is dead — the art IS the card.
     expect(link.querySelector('[data-slot="card"]')).toBeNull();
   });
 
-  test("hover mechanism: ring + clipping on the wrapper, scale on the image", () => {
+  test("row anatomy: square thumb beside centered info, surface-tint hover", () => {
     renderWithProviders(<AlbumCard album={ALBUM} />);
 
     const img = screen.getByAltText("OK Computer cover");
-    expect(img).toHaveClass(
-      "transition-transform",
-      "motion-safe:group-hover:scale-[1.02]",
+    // Square thumb (Koito "Albums featuring" scale), never squashed.
+    expect(img).toHaveClass("size-32", "shrink-0", "rounded-lg");
+    // The whole link is the row: thumb + info vertically centered, hover is
+    // the ONE app hover dialect: the neutral surface fill.
+    const link = img.closest("a");
+    expect(link).toHaveClass(
+      "flex",
+      "items-center",
+      "hover:bg-surface-hover",
     );
-    expect(img.parentElement).toHaveClass(
-      "overflow-hidden",
-      "rounded-lg",
-      "ring-1",
-      "ring-transparent",
-      "group-hover:ring-primary/50",
-    );
+    expect(
+      document.querySelector('div[aria-hidden="true"].fade-bottom-to-base'),
+    ).toBeNull();
   });
 
-  test("meta renders below the art: title, artist, year badge, count, genre", () => {
+  test("info column: title, artist, one compact fact line", () => {
     renderWithProviders(<AlbumCard album={ALBUM} />);
 
     expect(screen.getByText("OK Computer")).toBeInTheDocument();
     expect(screen.getByText("Radiohead")).toBeInTheDocument();
-    expect(screen.getByText("1997")).toBeInTheDocument();
-    expect(screen.getByText("12 tracks")).toBeInTheDocument();
-    expect(screen.getByText("Alternative Rock")).toBeInTheDocument();
+    // Year · count · genre collapse to ONE compact truncating line (no
+    // badge chrome).
+    expect(
+      screen.getByText(
+        (_, el) =>
+          el?.tagName === "SPAN" &&
+          el.textContent === "1997 · 12 tracks · Alternative Rock",
+      ),
+    ).toBeInTheDocument();
   });
 });
 
 describe("GRID_CLASS", () => {
-  test("keeps every column breakpoint and widens row gaps", () => {
-    for (const cls of [
-      "grid-cols-1",
-      "sm:grid-cols-2",
-      "lg:grid-cols-3",
-      "xl:grid-cols-4",
-      "2xl:grid-cols-5",
-      "gap-x-4",
-      "gap-y-6",
-    ]) {
-      expect(GRID_CLASS).toContain(cls);
-    }
+  test("row-card grid: auto-fill columns at the derived minimum, no breakpoint counts", () => {
+    // Column count falls out of the space (auto-fill at --card-row-min);
+    // min(...,100%) guards narrow phones.
+    expect(GRID_CLASS).toContain(
+      "grid-cols-[repeat(auto-fill,minmax(min(var(--card-row-min),100%),1fr))]",
+    );
+    expect(GRID_CLASS).toContain("gap-x-6");
+    expect(GRID_CLASS).toContain("gap-y-3");
+    expect(GRID_CLASS).not.toMatch(/grid-cols-\d/);
   });
 });
 
 describe("AlbumsGridSkeleton (borderless)", () => {
-  test("mirrors the card anatomy: square art + two text lines, no Card chrome", () => {
+  test("mirrors the row-card anatomy: square thumb + text lines, no Card chrome", () => {
     const { container } = renderWithProviders(<AlbumsGridSkeleton count={3} />);
 
     const list = container.querySelector("ul");
     expect(list).toHaveAttribute("aria-hidden", "true");
     expect(container.querySelectorAll("li")).toHaveLength(3);
     expect(container.querySelector('[data-slot="card"]')).toBeNull();
-    // One square placeholder per item.
-    expect(container.querySelectorAll(".aspect-square")).toHaveLength(3);
+    // One square thumb placeholder per row.
+    expect(container.querySelectorAll(".size-32")).toHaveLength(3);
   });
 });

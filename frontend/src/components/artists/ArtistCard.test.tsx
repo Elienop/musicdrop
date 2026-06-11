@@ -16,26 +16,23 @@ describe("ArtistCard (borderless)", () => {
       "href",
       `/artists/${encodeURIComponent("Sigur Rós")}`,
     );
-    expect(link).toHaveClass("focus-ring", "group", "block", "rounded-lg");
+    expect(link).toHaveClass("focus-ring", "rounded-lg");
     expect(link.className).not.toMatch(/focus-visible:ring-2/);
     expect(link.querySelector('[data-slot="card"]')).toBeNull();
   });
 
-  test("hover mechanism: ring + clipping on the wrapper, scale on the portrait", () => {
+  test("row anatomy: square portrait beside centered info, surface-tint hover", () => {
     renderWithProviders(<ArtistCard artist={ARTIST} />);
 
     const img = screen.getByAltText("Sigur Rós portrait");
-    expect(img).toHaveClass(
-      "aspect-square",
-      "transition-transform",
-      "motion-safe:group-hover:scale-[1.02]",
-    );
-    expect(img.parentElement).toHaveClass(
-      "overflow-hidden",
-      "rounded-lg",
-      "ring-1",
-      "ring-transparent",
-      "group-hover:ring-primary/50",
+    // Square thumb (Koito "Albums featuring" scale), never squashed.
+    expect(img).toHaveClass("size-32", "shrink-0", "rounded-lg");
+    // The whole link is the row: thumb + info vertically centered, hover is
+    // the ONE app hover dialect: the neutral surface fill.
+    expect(img.closest("a")).toHaveClass(
+      "flex",
+      "items-center",
+      "hover:bg-surface-hover",
     );
   });
 
