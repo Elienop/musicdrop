@@ -80,13 +80,14 @@ describe("AppSidebar", () => {
     expect(screen.queryByRole("heading")).not.toBeInTheDocument();
   });
 
-  test("the current route's item gets aria-current and the violet pill", () => {
+  test("the current route's item gets aria-current and the violet TEXT (no pill)", () => {
     renderWithProviders(<AppSidebar />, { route: "/artists" });
 
     const active = screen.getByRole("link", { name: "Artists" });
     expect(active).toHaveAttribute("aria-current", "page");
     // aria-current must be visually styled, not just announced (spec §1).
-    expect(active).toHaveClass("bg-primary/15", "text-primary-light");
+    expect(active).toHaveClass("text-primary-light");
+    expect(active.className).not.toMatch(/bg-primary/);
     // ≥44px hit area (h-11).
     expect(active).toHaveClass("h-11");
     expect(screen.getByRole("link", { name: "Overview" })).not.toHaveAttribute(

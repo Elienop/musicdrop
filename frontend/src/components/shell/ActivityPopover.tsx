@@ -17,6 +17,11 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 export function ActivityButton() {
@@ -27,32 +32,46 @@ export function ActivityButton() {
   // over the new page with keyboard focus trapped inside it.
   const [open, setOpen] = useState(false);
 
+  // The icon-action dialect: tooltip text === aria-label, and the label
+  // carries the live count so hover/SR get the same information as the
+  // corner badge.
+  const label =
+    runningCount > 0 ? `Activity (${runningCount} running)` : "Activity";
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Activity"
-          className="focus-ring relative"
-        >
-          <Activity
-            aria-hidden="true"
-            className={cn(
-              "size-5",
-              runningCount > 0 && "motion-safe:animate-pulse",
-            )}
-          />
-          {runningCount > 0 && (
-            <span
-              aria-hidden="true"
-              className="bg-primary text-primary-foreground absolute top-0.5 right-0.5 flex size-4 items-center justify-center rounded-full text-[10px] font-semibold tabular-nums"
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-xl"
+              aria-label={label}
+              className="focus-ring text-muted-foreground hover:text-foreground relative"
             >
-              {runningCount}
-            </span>
-          )}
-        </Button>
-      </PopoverTrigger>
+              {/* Same scale as the detail-rail icon actions: 56px hit area,
+                  40px thin glyph. */}
+              <Activity
+                weight="thin"
+                aria-hidden="true"
+                className={cn(
+                  "size-10",
+                  runningCount > 0 && "motion-safe:animate-pulse",
+                )}
+              />
+              {runningCount > 0 && (
+                <span
+                  aria-hidden="true"
+                  className="bg-primary text-primary-foreground absolute top-1 right-1 flex size-4 items-center justify-center rounded-full text-[10px] font-semibold tabular-nums"
+                >
+                  {runningCount}
+                </span>
+              )}
+            </Button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{label}</TooltipContent>
+      </Tooltip>
       <PopoverContent
         align="end"
         className="w-96"

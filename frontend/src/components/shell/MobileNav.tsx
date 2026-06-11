@@ -30,6 +30,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { LogoWordmark } from "@/components/shell/Logo";
 import { cn } from "@/lib/utils";
 
 export function MobileNav() {
@@ -71,8 +72,10 @@ export function MobileNav() {
             to="/"
             onClick={close}
             className="focus-ring flex h-11 items-center rounded-md px-3 text-base font-semibold tracking-tight"
+            aria-label="MusicDrop"
+
           >
-            MusicDrop
+            <LogoWordmark className="h-6 w-auto" />
           </Link>
           <DialogClose asChild>
             <Button
@@ -102,14 +105,13 @@ export function MobileNav() {
                         onClick={close}
                         aria-current={active ? "page" : undefined}
                         className={cn(
-                          "focus-ring flex h-11 items-center gap-3 rounded-md px-3 text-sm font-medium",
+                          "focus-ring flex h-11 items-center gap-3 rounded-md px-3 text-sm font-normal",
                           active
-                            ? "bg-primary/15 text-primary-light"
+                            ? "text-primary-light"
                             : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
                         )}
                       >
                         <Icon
-                          weight={active ? "fill" : "regular"}
                           className="size-5 shrink-0"
                           aria-hidden="true"
                         />

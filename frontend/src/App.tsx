@@ -1,3 +1,4 @@
+import { IconContext } from "@phosphor-icons/react";
 import { Outlet } from "react-router";
 
 import { useActivity } from "@/api/useActivity";
@@ -5,7 +6,7 @@ import { ActivityButton } from "@/components/shell/ActivityPopover";
 import { useActivityToasts } from "@/components/shell/activityToasts";
 import { AppToaster } from "@/components/shell/AppToaster";
 import { AppSidebar } from "@/components/shell/Sidebar";
-import { AppTopbar, HealthStatus } from "@/components/shell/Topbar";
+import { AppTopbar } from "@/components/shell/Topbar";
 import { RouteAnnouncer } from "@/components/system/RouteAnnouncer";
 
 /**
@@ -24,6 +25,11 @@ export function App() {
   const { rows } = useActivity();
   useActivityToasts(rows);
   return (
+    // ONE icon weight app-wide: every Phosphor glyph without an explicit
+    // `weight` renders LIGHT (nav, status, buttons…). Deliberate overrides
+    // stay local: nav active = fill, detail-rail actions = thin (large
+    // glyphs), checkbox tick = bold (tiny control glyph needs the stroke).
+    <IconContext.Provider value={{ weight: "light" }}>
     <div className="bg-background text-foreground flex min-h-svh">
       <a
         href="#main-content"
@@ -36,7 +42,6 @@ export function App() {
       <div className="flex min-w-0 flex-1 flex-col">
         <AppTopbar>
           <ActivityButton />
-          <HealthStatus />
         </AppTopbar>
         <main
           id="main-content"
@@ -48,5 +53,6 @@ export function App() {
       </div>
       <AppToaster />
     </div>
+    </IconContext.Provider>
   );
 }

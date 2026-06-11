@@ -235,14 +235,14 @@ describe("App shell", () => {
     expect(main).toHaveAttribute("tabindex", "-1");
   });
 
-  test("the active sidebar item carries aria-current AND the violet pill", async () => {
+  test("the active sidebar item carries aria-current AND the violet text", async () => {
     server.use(...idleShellHandlers());
     renderShell("/");
 
     const overview = screen.getByRole("link", { name: "Overview" });
     expect(overview).toHaveAttribute("aria-current", "page");
-    // aria-current must be STYLED, not bare (spec §1): the violet pill class.
-    expect(overview.className).toContain("bg-primary/15");
+    // aria-current must be STYLED, not bare (spec §1): violet text.
+    expect(overview.className).toContain("text-primary-light");
     expect(screen.getByRole("link", { name: "Artists" })).not.toHaveAttribute(
       "aria-current",
     );
