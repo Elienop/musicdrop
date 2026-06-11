@@ -12,7 +12,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="MUSICDROP_", env_file=".env", extra="ignore")
 
     app_name: str = "MusicDrop"
-    version: str = "0.1.0"
+    # Shipped builds bake the release tag in via MUSICDROP_VERSION (Docker
+    # build-arg -> ENV); everything else (dev checkouts, tests) reads "dev".
+    version: str = "dev"
     # beets integration:
     # data/beets is the user-owned BEETSDIR (config.yaml + library.db live here).
     # All library/directory/plugins are read FROM data/beets/config.yaml at startup
