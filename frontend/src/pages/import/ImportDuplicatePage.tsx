@@ -147,7 +147,7 @@ function DuplicateScreen({
       <div className="flex flex-col gap-1">
         {/* THE page h1 — decision screens own their h1 directly (the Task-7
             detail-page idiom); tabIndex -1 keeps RouteAnnouncer's contract. */}
-        <h1 tabIndex={-1} className="text-2xl font-bold tracking-tight">
+        <h1 tabIndex={-1} className="font-display text-display font-semibold tracking-tight">
           Already in your library
         </h1>
         <p className="text-muted-foreground text-sm">

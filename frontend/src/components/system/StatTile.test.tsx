@@ -38,13 +38,20 @@ describe("StatTile", () => {
     );
   });
 
-  it("uses one dense padding (no Card/CardContent double-padding)", () => {
+  it("is cardless: big icon beside a value-over-label column, no Card chrome", () => {
     const { container } = render(
       <StatTile icon={MusicFallback} label="Tracks" value="4,212" />,
     );
-    expect(container.querySelector("[data-slot=card]")).toHaveClass("py-4");
-    expect(
-      container.querySelector("[data-slot=card-content]"),
-    ).toHaveClass("px-4");
+    expect(container.querySelector("[data-slot=card]")).toBeNull();
+    // Large muted icon on the left, spanning both text lines.
+    expect(container.querySelector("svg")).toHaveClass(
+      "size-14",
+      "shrink-0",
+      "text-muted-foreground",
+    );
+    // The value line sits ABOVE the label in the column.
+    const column = screen.getByText("4,212").parentElement;
+    expect(column?.firstChild).toHaveTextContent("4,212");
+    expect(screen.getByText("Tracks")).toHaveClass("text-muted-foreground");
   });
 });

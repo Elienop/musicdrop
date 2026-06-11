@@ -1,15 +1,14 @@
 import type { AppIcon } from "@/components/icons";
-import { Card, CardContent } from "@/components/ui/card";
 
 /**
- * One dashboard stat: muted icon+label line over a big tabular-nums value,
- * optional hint below. Owns exactly ONE dense padding (`py-4` Card /
- * `px-4` content) — replacing the LibraryDashboard recipe whose default
- * `py-6` Card fought a `p-4` CardContent.
+ * One dashboard stat — cardless (the Koito stat-line direction): a LARGE
+ * muted icon on the left spanning both text lines, then a column of the
+ * big tabular value over its muted label (+ optional hint). No border or
+ * surface — the stats read as typography on the page, not as boxes.
  *
- * Skeleton contract: the hint-less tile's content height is fixed at 88px
- * (16+16 padding, 20px label line, 4px gap, 32px value line) — a loading
- * placeholder should use `h-22` (5.5rem = 88px) to avoid layout shift.
+ * Skeleton contract: the row is 56px tall — the `size-14` icon is the
+ * tallest child (deliberately a touch taller than the two text lines, per
+ * design) — so loading placeholders use `h-14` to avoid layout shift.
  */
 export function StatTile({
   icon: Icon,
@@ -23,19 +22,20 @@ export function StatTile({
   hint?: string;
 }) {
   return (
-    <Card className="gap-0 py-4">
-      <CardContent className="flex flex-col gap-1 px-4">
-        <span className="text-muted-foreground flex items-center gap-1.5 text-sm">
-          <Icon className="size-4" aria-hidden="true" />
-          {label}
-        </span>
+    <div className="flex items-center gap-3">
+      <Icon
+        className="text-muted-foreground size-14 shrink-0"
+        aria-hidden="true"
+      />
+      <div className="flex min-w-0 flex-col">
         <span className="text-2xl font-semibold tracking-tight tabular-nums">
           {value}
         </span>
+        <span className="text-muted-foreground truncate text-sm">{label}</span>
         {hint !== undefined && (
           <span className="text-muted-foreground text-xs">{hint}</span>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
