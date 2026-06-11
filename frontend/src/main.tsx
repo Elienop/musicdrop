@@ -1,31 +1,100 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { StrictMode } from "react";
+import { lazy, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Navigate, RouterProvider } from "react-router";
 
 import { App } from "@/App";
 import { RouteErrorBoundary } from "@/components/system/RouteErrorBoundary";
-import { HomePage } from "@/pages/HomePage";
-import { NotFoundPage } from "@/pages/NotFoundPage";
-import { AlbumDetailPage } from "@/pages/albums/AlbumDetailPage";
-import { ArtistAlbumsPage } from "@/pages/artists/ArtistAlbumsPage";
-import { ArtistsPage } from "@/pages/artists/ArtistsPage";
-import { BrowsePage } from "@/pages/browse/BrowsePage";
-import { DuplicatesPage } from "@/pages/duplicates/DuplicatesPage";
-import { ImportCandidatePage } from "@/pages/import/ImportCandidatePage";
-import { ImportDuplicatePage } from "@/pages/import/ImportDuplicatePage";
-import { ImportPage } from "@/pages/import/ImportPage";
-import { PlaylistDetailPage } from "@/pages/playlists/PlaylistDetailPage";
-import { PlaylistsPage } from "@/pages/playlists/PlaylistsPage";
-import { ReviewPage } from "@/pages/review/ReviewPage";
-import { SearchPage } from "@/pages/search/SearchPage";
-import { SettingsBeetsPage } from "@/pages/settings/SettingsBeetsPage";
-import { SettingsIntegrationsPage } from "@/pages/settings/SettingsIntegrationsPage";
-import { SettingsLayout } from "@/pages/settings/SettingsLayout";
-import { SettingsMetadataPage } from "@/pages/settings/SettingsMetadataPage";
-import { SettingsNamingPage } from "@/pages/settings/SettingsNamingPage";
 
 import "@/styles.css";
+
+// Route-level code-splitting: every page is its own chunk, fetched on first
+// visit (App wraps the Outlet in <Suspense fallback={<RouteLoading/>}>). The
+// .then() shims re-shape our named exports into lazy()'s default-export
+// contract. A failed chunk load rejects into the route errorElement.
+const HomePage = lazy(() =>
+  import("@/pages/HomePage").then((m) => ({ default: m.HomePage })),
+);
+const NotFoundPage = lazy(() =>
+  import("@/pages/NotFoundPage").then((m) => ({ default: m.NotFoundPage })),
+);
+const AlbumDetailPage = lazy(() =>
+  import("@/pages/albums/AlbumDetailPage").then((m) => ({
+    default: m.AlbumDetailPage,
+  })),
+);
+const ArtistAlbumsPage = lazy(() =>
+  import("@/pages/artists/ArtistAlbumsPage").then((m) => ({
+    default: m.ArtistAlbumsPage,
+  })),
+);
+const ArtistsPage = lazy(() =>
+  import("@/pages/artists/ArtistsPage").then((m) => ({
+    default: m.ArtistsPage,
+  })),
+);
+const BrowsePage = lazy(() =>
+  import("@/pages/browse/BrowsePage").then((m) => ({ default: m.BrowsePage })),
+);
+const DuplicatesPage = lazy(() =>
+  import("@/pages/duplicates/DuplicatesPage").then((m) => ({
+    default: m.DuplicatesPage,
+  })),
+);
+const ImportCandidatePage = lazy(() =>
+  import("@/pages/import/ImportCandidatePage").then((m) => ({
+    default: m.ImportCandidatePage,
+  })),
+);
+const ImportDuplicatePage = lazy(() =>
+  import("@/pages/import/ImportDuplicatePage").then((m) => ({
+    default: m.ImportDuplicatePage,
+  })),
+);
+const ImportPage = lazy(() =>
+  import("@/pages/import/ImportPage").then((m) => ({ default: m.ImportPage })),
+);
+const PlaylistDetailPage = lazy(() =>
+  import("@/pages/playlists/PlaylistDetailPage").then((m) => ({
+    default: m.PlaylistDetailPage,
+  })),
+);
+const PlaylistsPage = lazy(() =>
+  import("@/pages/playlists/PlaylistsPage").then((m) => ({
+    default: m.PlaylistsPage,
+  })),
+);
+const ReviewPage = lazy(() =>
+  import("@/pages/review/ReviewPage").then((m) => ({ default: m.ReviewPage })),
+);
+const SearchPage = lazy(() =>
+  import("@/pages/search/SearchPage").then((m) => ({ default: m.SearchPage })),
+);
+const SettingsBeetsPage = lazy(() =>
+  import("@/pages/settings/SettingsBeetsPage").then((m) => ({
+    default: m.SettingsBeetsPage,
+  })),
+);
+const SettingsIntegrationsPage = lazy(() =>
+  import("@/pages/settings/SettingsIntegrationsPage").then((m) => ({
+    default: m.SettingsIntegrationsPage,
+  })),
+);
+const SettingsLayout = lazy(() =>
+  import("@/pages/settings/SettingsLayout").then((m) => ({
+    default: m.SettingsLayout,
+  })),
+);
+const SettingsMetadataPage = lazy(() =>
+  import("@/pages/settings/SettingsMetadataPage").then((m) => ({
+    default: m.SettingsMetadataPage,
+  })),
+);
+const SettingsNamingPage = lazy(() =>
+  import("@/pages/settings/SettingsNamingPage").then((m) => ({
+    default: m.SettingsNamingPage,
+  })),
+);
 
 // Cap retries so an outage surfaces the error state promptly instead of
 // hanging through TanStack's long default backoff; a short staleTime avoids

@@ -1,4 +1,5 @@
 import { IconContext } from "@phosphor-icons/react";
+import { Suspense } from "react";
 import { Outlet } from "react-router";
 
 import { useActivity } from "@/api/useActivity";
@@ -8,6 +9,7 @@ import { AppToaster } from "@/components/shell/AppToaster";
 import { AppSidebar } from "@/components/shell/Sidebar";
 import { AppTopbar } from "@/components/shell/Topbar";
 import { RouteAnnouncer } from "@/components/system/RouteAnnouncer";
+import { RouteLoading } from "@/components/system/RouteLoading";
 
 /**
  * App shell (spec §2): persistent sidebar + topbar around the routed page.
@@ -48,7 +50,11 @@ export function App() {
           tabIndex={-1}
           className="mx-auto w-full max-w-8xl flex-1 px-6 py-6 outline-none"
         >
-          <Outlet />
+          {/* Lazy route chunks resolve under the shell — the sidebar/topbar
+              never unmount while a page chunk loads. */}
+          <Suspense fallback={<RouteLoading />}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
       <AppToaster />
