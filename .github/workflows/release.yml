@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Serialize release runs so two near-simultaneous pushes to main can't push
+# image vX while the other creates git tag vX+1. cancel-in-progress is false
+# because cancelling mid-push could orphan a half-published image.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  # Identical gates to a PR — a release never ships with fewer checks.
+  gates:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: gates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 1. COMPUTE the next version only (dry run — no tag yet). Conventional
+      #    commits drive the bump: feat -> minor, fix/chore/etc -> patch.
+      #    Building before tagging closes the orphaned-tag hole: a failed
+      #    build/push leaves no tag, so the next push retries cleanly.
+      - name: Compute next version (dry run)
+        id: version
+        uses: mathieudutour/github-tag-action@a22cf08638b34d5badda920f9daf6e72c477b07b # v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: patch
+          tag_prefix: v
+          dry_run: true
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 2.+3. Build for amd64+arm64 and push with the computed tag.
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.new_tag }}
+          tags: |
+            ghcr.io/elienop/musicdrop:${{ steps.version.outputs.new_tag }}
+            ghcr.io/elienop/musicdrop:latest
+
+      # 4. Image is live -> NOW create the real git tag (recomputes to the
+      #    same value within this run).
+      - name: Create and push tag
+        id: tag
+        uses: mathieudutour/github-tag-action@a22cf08638b34d5badda920f9daf6e72c477b07b # v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: patch
+          tag_prefix: v
+
+      # 5. Release last, against the now-existing tag + live image.
+      - name: Create a release
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1.21.0
+        with:
+          name: ${{ steps.tag.outputs.new_tag }}
+          tag: ${{ steps.tag.outputs.new_tag }}
+          body: ${{ steps.version.outputs.changelog }}
+          generateReleaseNotes: true
