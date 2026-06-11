@@ -160,7 +160,7 @@ export function HealthStatus({ compact = false }: { compact?: boolean }) {
 
   return (
     <span
-      className="flex items-center gap-1.5 text-sm"
+      className="flex items-center gap-3 text-sm"
       title={description}
       aria-label={description}
       role="status"
@@ -168,7 +168,7 @@ export function HealthStatus({ compact = false }: { compact?: boolean }) {
       <Icon
         aria-hidden="true"
         className={cn(
-          "size-4",
+          "size-5",
           isPending
             ? "text-muted-foreground animate-spin"
             : reachable
