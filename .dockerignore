@@ -1,0 +1,17 @@
+.git
+.github
+docs
+data
+api.txt
+*.png
+.playwright-mcp
+backend/.venv
+backend/data
+backend/.pytest_cache
+backend/.mypy_cache
+backend/.ruff_cache
+frontend/node_modules
+frontend/dist
+frontend/coverage
+**/__pycache__
+**/.DS_Store
