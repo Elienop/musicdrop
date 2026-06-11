@@ -86,22 +86,21 @@ describe("ArtistAlbumsPage", () => {
     ).toBeInTheDocument();
   });
 
-  test("renders the artist poster in the header (decorative)", async () => {
+  test("renders the artist poster in the rail (decorative, single img)", async () => {
     server.use(http.get(ALBUMS_URL, () => HttpResponse.json(makePage())));
 
     const { container } = renderAt("Radiohead");
 
-    // Wait for the page to settle. TWO portrait imgs render now: the hero
-    // backdrop (inside the aria-hidden layer) first, then the foreground
-    // poster. The poster is decorative (the <h1> names the artist) — alt=""
-    // and NOT inside the hidden backdrop layer. Both carry the cache-bust
-    // `&v=` suffix, so match by the stable name-scoped prefix.
+    // Exactly ONE portrait img renders in the rail (the old hero's blurred
+    // backdrop layer is gone). The poster is decorative (the <h1> names the
+    // artist) — alt="" and NOT inside an aria-hidden wrapper. It carries the
+    // cache-bust `&v=` suffix, so match by the stable name-scoped prefix.
     await screen.findByRole("heading", { level: 1, name: "Radiohead" });
     const imgs = container.querySelectorAll(
       'img[src^="/api/artists/image?name=Radiohead"]',
     );
-    expect(imgs).toHaveLength(2);
-    const poster = imgs[1]!;
+    expect(imgs).toHaveLength(1);
+    const poster = imgs[0]!;
     expect(poster.closest('div[aria-hidden="true"]')).toBeNull();
     expect(poster).toHaveAttribute("alt", "");
   });
@@ -295,53 +294,47 @@ describe("ArtistAlbumsPage", () => {
     expect(window.scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 
-  test("wraps the header in the art hero with an AT-hidden blurred backdrop", async () => {
+  test("the rail fades the portrait through an AT-hidden eased overlay", async () => {
     server.use(http.get(ALBUMS_URL, () => HttpResponse.json(makePage())));
 
-    renderAt("Radiohead");
+    const { container } = renderAt("Radiohead");
     const heading = await screen.findByRole("heading", {
       level: 1,
       name: "Radiohead",
     });
 
-    // The hero is a clipped, rounded container around the header content…
-    const hero = heading.closest("div.relative.overflow-hidden.rounded-xl");
-    expect(hero).not.toBeNull();
-    // …whose first layer is the blurred portrait, fully hidden from AT
-    // (aria-hidden wrapper + empty alt), on the same versioned endpoint as
-    // the poster.
-    const backdrop = hero!.querySelector('div[aria-hidden="true"] > img');
-    expect(backdrop).not.toBeNull();
-    expect(backdrop).toHaveClass("blur-2xl");
-    expect(backdrop).toHaveAttribute("alt", "");
-    expect(backdrop!.getAttribute("src")).toMatch(
-      /^\/api\/artists\/image\?name=Radiohead/,
-    );
-    // The BackLink stays OUTSIDE the hero (unchanged position).
+    // The eased smoothstep fade (fade-bottom-to-base) is decorative-only.
+    expect(
+      container.querySelector('div[aria-hidden="true"].fade-bottom-to-base'),
+    ).not.toBeNull();
+    // The h1 lives in the text strip BELOW the portrait — on the page
+    // background, never inside a hidden layer.
+    expect(heading.closest('div[aria-hidden="true"]')).toBeNull();
+    // The BackLink stays OUTSIDE the artist rail (unchanged position).
     const back = screen.getByRole("link", { name: /artists/i });
-    expect(back.closest("div.relative.overflow-hidden.rounded-xl")).toBeNull();
+    expect(back.closest("aside")).toBeNull();
   });
 
-  test("backdrop failure degrades to the gradient without touching the poster", async () => {
+  test("poster failure degrades to the monogram; the fade overlay stays", async () => {
     server.use(http.get(ALBUMS_URL, () => HttpResponse.json(makePage())));
 
     const { container } = renderAt("Radiohead");
     await screen.findByRole("heading", { level: 1, name: "Radiohead" });
 
-    const backdrop = container.querySelector('div[aria-hidden="true"] > img');
-    expect(backdrop).not.toBeNull();
-    fireEvent.error(backdrop!);
+    const poster = container.querySelector(
+      'img[src^="/api/artists/image?name=Radiohead"]',
+    );
+    expect(poster).not.toBeNull();
+    fireEvent.error(poster!);
 
-    // Layer 1 is now the static gradient — the failed img unmounts…
-    expect(container.querySelector('div[aria-hidden="true"] > img')).toBeNull();
+    // ArtistImage swaps to the decorative initials monogram…
     expect(
-      container.querySelector('div[aria-hidden="true"].bg-gradient-to-br'),
+      container.querySelector('img[src^="/api/artists/image?name=Radiohead"]'),
+    ).toBeNull();
+    expect(screen.getByText("R")).toBeInTheDocument();
+    // …and the eased fade keeps rendering over it.
+    expect(
+      container.querySelector('div[aria-hidden="true"].fade-bottom-to-base'),
     ).not.toBeNull();
-    // …while the LAYER-2 poster keeps its own img/monogram lifecycle.
-    expect(
-      container.querySelectorAll(
-        'img[src^="/api/artists/image?name=Radiohead"]',
-      ),
-    ).toHaveLength(1);
   });
 });

@@ -20,16 +20,17 @@ export function ArtistCard({ artist }: { artist: Artist }) {
     // Drills into this artist's albums page (the next level of the spine).
     <Link
       to={`/artists/${encodeURIComponent(artist.name)}`}
-      className="focus-ring group block rounded-lg"
+      className="focus-ring hover:bg-surface-hover flex items-center gap-3 rounded-lg p-2 transition-colors"
     >
-      <div className="group-hover:ring-primary/50 overflow-hidden rounded-lg ring-1 ring-transparent transition-shadow">
-        <ArtistImage
-          name={displayName}
-          className="aspect-square w-full rounded-lg transition-transform motion-safe:group-hover:scale-[1.02]"
-        />
-      </div>
-      <div className="mt-3 flex flex-col gap-1">
-        <span className="block truncate text-sm font-medium" title={displayName}>
+      {/* Anatomy = Koito's "Albums featuring" row: square portrait with the
+          info beside it, vertically centered. Rows highlight with a surface
+          tint on hover. */}
+      <ArtistImage
+        name={displayName}
+        className="border-border size-32 shrink-0 rounded-lg border"
+      />
+      <div className="flex min-w-0 flex-col gap-1 text-left">
+        <span className="block truncate text-base" title={displayName}>
           {displayName}
         </span>
         <span className="text-muted-foreground text-sm">

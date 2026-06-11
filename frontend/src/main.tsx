@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Navigate, RouterProvider } from "react-router";
 
 import { App } from "@/App";
+import { RouteErrorBoundary } from "@/components/system/RouteErrorBoundary";
 import { HomePage } from "@/pages/HomePage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { AlbumDetailPage } from "@/pages/albums/AlbumDetailPage";
@@ -52,7 +53,14 @@ const queryClient = new QueryClient({
 const router = createBrowserRouter([
   {
     element: <App />,
+    // Shell-level fallback: only reached if the App shell ITSELF throws.
+    errorElement: <RouteErrorBoundary />,
     children: [
+      {
+        // Pathless boundary: a crashing PAGE renders the styled fallback in
+        // the layout's Outlet — sidebar/topbar stay alive and navigable.
+        errorElement: <RouteErrorBoundary />,
+        children: [
       { index: true, element: <HomePage /> },
       { path: "/artists", element: <ArtistsPage /> },
       { path: "/artists/:artistName", element: <ArtistAlbumsPage /> },
@@ -81,6 +89,8 @@ const router = createBrowserRouter([
       { path: "/playlists", element: <PlaylistsPage /> },
       { path: "/playlists/:playlistId", element: <PlaylistDetailPage /> },
       { path: "*", element: <NotFoundPage /> },
+        ],
+      },
     ],
   },
 ]);

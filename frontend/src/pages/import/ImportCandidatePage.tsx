@@ -181,7 +181,7 @@ function MatchHeader({ candidate }: { candidate: Candidate }) {
   return (
     <div className="flex flex-col gap-1">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <h1 tabIndex={-1} className="text-2xl font-bold tracking-tight">
+        <h1 tabIndex={-1} className="font-display text-display font-semibold tracking-tight">
           {after.artist ?? "Unknown artist"} — {after.album ?? "Unknown album"}
         </h1>
       </div>

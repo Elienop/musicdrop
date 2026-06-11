@@ -358,7 +358,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
                   RouteAnnouncer's focus contract). */}
               <h1
                 tabIndex={-1}
-                className="truncate text-2xl font-bold tracking-tight"
+                className="font-display text-display truncate font-semibold tracking-tight"
                 title={playlist.name}
               >
                 {playlist.name}

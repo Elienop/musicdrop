@@ -19,7 +19,6 @@ import {
   AddFromFolder,
   Artists,
   Back,
-  Brand,
   Browse,
   Duplicates,
   Forward,
@@ -30,6 +29,8 @@ import {
   type AppIcon,
 } from "@/components/icons";
 import { Badge } from "@/components/ui/badge";
+import { LogoMark, LogoWordmark } from "@/components/shell/Logo";
+import { HealthStatus } from "@/components/shell/Topbar";
 import { cn } from "@/lib/utils";
 
 /** Concept names a nav item can carry — keys into NAV_ICONS (one concept =
@@ -216,12 +217,11 @@ export function AppSidebar({ badges }: AppSidebarProps) {
           collapsed ? "justify-center px-0" : "px-3",
         )}
       >
-        <Brand
-          weight="fill"
-          className="text-primary-light size-5 shrink-0"
-          aria-hidden="true"
-        />
-        {!collapsed && <span>MusicDrop</span>}
+        {collapsed ? (
+          <LogoMark className="h-5 w-auto shrink-0" />
+          ) : (
+          <LogoWordmark className="h-6 w-auto shrink-0" />
+          )}
       </Link>
       <nav aria-label="Primary" className="flex-1 overflow-y-auto px-3 pb-4">
         {NAV_SECTIONS.map((section, index) => {
@@ -269,15 +269,14 @@ export function AppSidebar({ badges }: AppSidebarProps) {
                         title={collapsed ? item.label : undefined}
                         className={cn(
                           // h-11 = the ≥44px hit area, kept in the rail too.
-                          "focus-ring flex h-11 items-center gap-3 rounded-md px-3 text-sm font-medium",
+                          "focus-ring flex h-11 items-center gap-3 rounded-md px-3 text-sm font-normal",
                           active
-                            ? "bg-primary/15 text-primary-light"
+                            ? "text-primary-light"
                             : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
                           collapsed && "justify-center px-0",
                         )}
                       >
                         <Icon
-                          weight={active ? "fill" : "regular"}
                           className="size-5 shrink-0"
                           aria-hidden="true"
                         />
@@ -298,6 +297,18 @@ export function AppSidebar({ badges }: AppSidebarProps) {
           );
         })}
       </nav>
+      {/* Backend health sits at the bottom of the nav column, ABOVE the
+          footer separator (moved out of the topbar) — always visible but
+          out of the action area. Icon-only in the collapsed rail;
+          title/aria carry the full status. */}
+      <div
+        className={cn(
+          "flex h-9 shrink-0 items-center pb-2",
+          collapsed ? "justify-center" : "px-6",
+        )}
+      >
+        <HealthStatus compact={collapsed} />
+      </div>
       <div className="border-border border-t p-3">
         <button
           type="button"
@@ -305,7 +316,7 @@ export function AppSidebar({ badges }: AppSidebarProps) {
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           aria-expanded={!collapsed}
           className={cn(
-            "focus-ring text-muted-foreground hover:bg-surface-hover hover:text-foreground flex h-11 items-center gap-3 rounded-md text-sm font-medium",
+            "focus-ring text-muted-foreground hover:bg-surface-hover hover:text-foreground flex h-11 items-center gap-3 rounded-md text-sm font-normal",
             collapsed ? "w-full justify-center px-0" : "w-full px-3",
           )}
         >

@@ -92,18 +92,18 @@ afterEach(() => {
 });
 
 describe("ArtistAlbumsPage artist-art apply", () => {
-  it("shows the Write artist art button and starts the job when write is enabled", () => {
+  it("shows the Save art to library button and starts the job when write is enabled", () => {
     renderAt("ABBA");
-    const btn = screen.getByRole("button", { name: /write artist art/i });
+    const btn = screen.getByRole("button", { name: /save art to library/i });
     fireEvent.click(btn);
     expect(applyMutate).toHaveBeenCalledTimes(1);
   });
 
-  it("hides the Write artist art button when write is disabled", () => {
+  it("hides the Save art to library button when write is disabled", () => {
     writeSettings.enabled = false;
     renderAt("ABBA");
     expect(
-      screen.queryByRole("button", { name: /write artist art/i }),
+      screen.queryByRole("button", { name: /save art to library/i }),
     ).toBeNull();
   });
 
@@ -114,7 +114,7 @@ describe("ArtistAlbumsPage artist-art apply", () => {
     backfillStatus.total = 3;
     renderAt("ABBA");
     expect(
-      screen.getByRole("button", { name: /write artist art/i }),
+      screen.getByRole("button", { name: /save art to library/i }),
     ).toBeDisabled();
     // No inline progress — it must not duplicate the top app banner.
     expect(screen.queryByText(/1 \/ 3/)).toBeNull();
@@ -128,7 +128,7 @@ describe("ArtistAlbumsPage artist-art apply", () => {
     backfillStatus.written = 1;
     renderAt("ABBA");
     expect(
-      screen.getByRole("button", { name: /write artist art/i }),
+      screen.getByRole("button", { name: /save art to library/i }),
     ).toBeEnabled();
     // Result/tally now shows in the app banner, not inline.
     expect(screen.queryByText(/1 written/i)).toBeNull();

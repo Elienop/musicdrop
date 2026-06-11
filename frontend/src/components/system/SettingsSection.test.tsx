@@ -13,7 +13,7 @@ describe("SettingsSection", () => {
     // The demotion: settings panels are sections (text-base h2), not page
     // titles — the route's single h1 belongs to PageHeader.
     const h2 = screen.getByRole("heading", { level: 2, name: "Plex" });
-    expect(h2).toHaveClass("text-base", "font-semibold");
+    expect(h2).toHaveClass("font-display", "uppercase", "text-muted-foreground");
   });
 
   it("puts the heading INSIDE the bordered panel shell", () => {

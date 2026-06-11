@@ -1,4 +1,5 @@
 // frontend/src/components/dashboard/LibraryDashboard.tsx
+import { SectionLabel } from "@/components/system/SectionLabel";
 import { Link } from "react-router";
 
 import type { LibraryStatsResponse } from "@/api/useStats";
@@ -31,7 +32,8 @@ import { formatBytes, formatTotalDuration } from "@/lib/format";
 const OVERVIEW_ORIGIN = { label: "Overview", to: "/" } as const;
 
 /** Tile grid shared by the loaded StatTiles and their skeleton bones. */
-const TILE_GRID = "grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5";
+const TILE_GRID =
+  "grid grid-cols-2 gap-x-6 gap-y-8 py-6 sm:grid-cols-3 lg:grid-cols-5";
 
 export function LibraryDashboard() {
   const { data, isPending, isError, refetch } = useStats();
@@ -49,10 +51,10 @@ export function LibraryDashboard() {
       {isPending ? (
         <PageSkeleton announce="Loading library stats…">
           <div className={TILE_GRID}>
-            {/* h-22 = the hint-less StatTile's fixed content height (its
-                documented skeleton contract) — no shift when tiles land. */}
+            {/* h-14 = the cardless StatTile row height (its documented
+              skeleton contract) — no shift when stats land. */}
             {Array.from({ length: 5 }, (_, i) => (
-              <Skeleton key={i} className="h-22 rounded-xl" />
+              <Skeleton key={i} className="h-14 rounded-lg" />
             ))}
           </div>
         </PageSkeleton>
@@ -110,8 +112,8 @@ function DashboardBody({ data }: { data: LibraryStatsResponse }) {
 
       {recently_added.length > 0 ? (
         <div className="flex flex-col gap-3">
-          {/* Section scale (spec §3): h2 text-base font-semibold under the h1. */}
-          <h2 className="text-base font-semibold">Recently added</h2>
+          {/* One section-heading dialect app-wide: SectionLabel. */}
+          <SectionLabel>Recently added</SectionLabel>
           <ul className={GRID_CLASS}>
             {recently_added.map((album) => (
               <li key={album.id}>
@@ -159,9 +161,7 @@ function AcquisitionGlance() {
       className="rounded-xl border p-4"
     >
       <div className="flex items-center justify-between gap-2">
-        <h2 id="acquisition-glance" className="text-base font-semibold">
-          Acquisition
-        </h2>
+        <SectionLabel id="acquisition-glance">Acquisition</SectionLabel>
         {hasReviewKind && (
           <Button variant="ghost" size="sm" asChild>
             <Link to="/review">View Review</Link>

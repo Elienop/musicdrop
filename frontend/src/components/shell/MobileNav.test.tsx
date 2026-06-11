@@ -74,7 +74,7 @@ describe("MobileNav", () => {
     );
   });
 
-  test("the current route's item gets aria-current and the violet pill", async () => {
+  test("the current route's item gets aria-current and the violet TEXT (no pill)", async () => {
     const user = userEvent.setup();
     renderWithProviders(<MobileNav />, { route: "/artists" });
 
@@ -83,7 +83,8 @@ describe("MobileNav", () => {
     const active = await screen.findByRole("link", { name: "Artists" });
     expect(active).toHaveAttribute("aria-current", "page");
     // Same dialect as the sidebar pill — announced AND visually styled.
-    expect(active).toHaveClass("bg-primary/15", "text-primary-light");
+    expect(active).toHaveClass("text-primary-light");
+    expect(active.className).not.toMatch(/bg-primary/);
     expect(screen.getByRole("link", { name: "Browse" })).not.toHaveAttribute(
       "aria-current",
     );

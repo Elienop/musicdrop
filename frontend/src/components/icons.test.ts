@@ -61,6 +61,8 @@ const CONCEPTS = [
   "Refresh",
   "Replace",
   "Reset",
+  "SaveArt",
+  "Reorganize",
   "Upload",
   "MoveUp",
   "MoveDown",

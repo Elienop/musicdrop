@@ -1,5 +1,8 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+/* Display face (self-hosted variable font, wght 100-900) — used through the
+ * `font-display` token only; body text stays on the system sans stack. */
+@import "@fontsource-variable/league-spartan";
 
 /*
   Tailwind v4 dropped the default border color (now `currentcolor`). shadcn
@@ -94,6 +97,28 @@
   /* App-shell max width — one notch wider than Tailwind's 7xl (1280px). */
   --container-8xl: 90rem; /* 1440px */
 
+  /* ── Typography (the Koito-inspired hierarchy, 2026-06-11) ──
+   * Two-font system: `font-display` (League Spartan) for page titles +
+   * section labels; body stays on the default sans stack. Hierarchy comes
+   * from SIZE + the color ramp (foreground→muted), not from weight — body
+   * text is weight 400 everywhere it can be.
+   *
+   * `text-display` is FLUID: rem-based clamp() (≈30px floor → 44px ceiling)
+   * so it scales with the viewport and respects user font-size settings —
+   * never a hardcoded px size. Sized for the w-96 detail rail (Koito's 72px
+   * hero assumes a full-width header; ours must wrap 2-3-line names). */
+  --font-display: "League Spartan Variable", ui-sans-serif, system-ui, sans-serif;
+  --text-display: clamp(1.875rem, 1.25rem + 1.6vw, 2.75rem);
+  --text-display--line-height: 1.1;
+
+  /* Minimum width of one row-card column, DERIVED from the card anatomy so
+   * the text always gets ≥1.5× the thumb's width:
+   *   thumb 8rem (size-32) + gap 0.75rem (gap-3) + text 12rem (1.5 × thumb)
+   *   + horizontal padding 1rem (p-2 × 2) ≈ 22rem.
+   * The grid auto-fills columns of at least this width — column count falls
+   * out of the available space, no per-breakpoint counts. */
+  --card-row-min: 22rem;
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -185,4 +210,35 @@
   &::-webkit-scrollbar-track {
     background: transparent;
   }
+}
+
+/* Eased bottom fade for art that melts into the page (the artist rail).
+ * A plain two-stop linear-gradient has a visible "start line" (Mach bands:
+ * the eye amplifies the slope discontinuity where the fade begins). These
+ * stops sample a smoothstep curve instead — zero slope at both ends — so
+ * the dissolve has no detectable boundary. Spans the bottom 60% of the
+ * element; solid `--surface-base` (=== page background) at the bottom edge. */
+@utility fade-bottom-to-base {
+  /* Koito's exact smoothstep curve, running to the very edge (no solid
+   * hold) — gentlest possible dissolve, the least image covered. Safe
+   * edge-wise because the fading art sits inside the rails' bordered
+   * panels with SQUARE-clipped corners; the old 8% hold existed only for
+   * rounded-corner peek-through on standalone cards, which no longer fade. */
+  background-image: linear-gradient(
+    to top,
+    var(--surface-base) 0%,
+    color-mix(in srgb, var(--surface-base) 99.4%, transparent) 2.9%,
+    color-mix(in srgb, var(--surface-base) 97.4%, transparent) 6.2%,
+    color-mix(in srgb, var(--surface-base) 92.6%, transparent) 10.5%,
+    color-mix(in srgb, var(--surface-base) 84.4%, transparent) 15.5%,
+    color-mix(in srgb, var(--surface-base) 70.8%, transparent) 21.1%,
+    color-mix(in srgb, var(--surface-base) 57.8%, transparent) 27%,
+    color-mix(in srgb, var(--surface-base) 42.2%, transparent) 33%,
+    color-mix(in srgb, var(--surface-base) 29.2%, transparent) 38.9%,
+    color-mix(in srgb, var(--surface-base) 15.6%, transparent) 44.5%,
+    color-mix(in srgb, var(--surface-base) 7.4%, transparent) 49.5%,
+    color-mix(in srgb, var(--surface-base) 2.6%, transparent) 53.8%,
+    color-mix(in srgb, var(--surface-base) 0.6%, transparent) 57.1%,
+    transparent 60%
+  );
 }

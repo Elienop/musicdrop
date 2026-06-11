@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, test } from "vitest";
@@ -80,8 +80,13 @@ describe("AlbumDetailPage", () => {
   test("back link falls back to the artist spine without an origin", async () => {
     server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
     renderDetail(1);
-    const back = await screen.findByRole("link", { name: "Radiohead" });
-    expect(back).toHaveAttribute("href", "/artists/Radiohead");
+    // TWO artist-named links now: the back link AND the rail artist-name
+    // link (names navigate) — both walk UP the spine.
+    const links = await screen.findAllByRole("link", { name: "Radiohead" });
+    expect(links).toHaveLength(2);
+    for (const link of links) {
+      expect(link).toHaveAttribute("href", "/artists/Radiohead");
+    }
   });
 
   test("renders the album header from the API", async () => {
@@ -92,12 +97,9 @@ describe("AlbumDetailPage", () => {
     expect(
       await screen.findByRole("heading", { name: "OK Computer" }),
     ).toBeInTheDocument();
-    // "Radiohead" appears twice now (back link + header sub-line); the header
-    // sub-line is the <p>, distinct from the back <a>.
-    const artistLine = screen
-      .getAllByText("Radiohead")
-      .find((el) => el.tagName === "P");
-    expect(artistLine).toBeInTheDocument();
+    // "Radiohead" appears twice (back link + the rail artist-name link —
+    // names navigate, both up the spine).
+    expect(screen.getAllByRole("link", { name: "Radiohead" })).toHaveLength(2);
     expect(screen.getByText("1997")).toBeInTheDocument();
     // The header sub-line renders the bare count "3 tracks"; the lyrics-coverage
     // summary ("0 of 3 tracks have lyrics") also matches /3 tracks/, so scope to
@@ -365,9 +367,13 @@ describe("AlbumDetailPage", () => {
     renderDetail(1);
 
     await screen.findByRole("heading", { name: "OK Computer" });
-    // Back walks UP the spine: to this album's artist page.
-    const back = screen.getByRole("link", { name: /radiohead/i });
-    expect(back).toHaveAttribute("href", "/artists/Radiohead");
+    // Back walks UP the spine: to this album's artist page. The rail
+    // artist-name link matches too — both must point at the artist.
+    const links = screen.getAllByRole("link", { name: /radiohead/i });
+    expect(links).toHaveLength(2);
+    for (const link of links) {
+      expect(link).toHaveAttribute("href", "/artists/Radiohead");
+    }
   });
 
   test("encodes the artist name in the back link", async () => {
@@ -380,11 +386,15 @@ describe("AlbumDetailPage", () => {
     renderDetail(1);
 
     await screen.findByRole("heading", { name: "OK Computer" });
-    const back = screen.getByRole("link", { name: /sigur rós/i });
-    expect(back).toHaveAttribute(
-      "href",
-      `/artists/${encodeURIComponent("Sigur Rós")}`,
-    );
+    // Both artist-named links (back + rail name) must encode the name.
+    const links = screen.getAllByRole("link", { name: /sigur rós/i });
+    expect(links).toHaveLength(2);
+    for (const link of links) {
+      expect(link).toHaveAttribute(
+        "href",
+        `/artists/${encodeURIComponent("Sigur Rós")}`,
+      );
+    }
   });
 
   test("error-state back link falls back to the roster", async () => {
@@ -482,42 +492,25 @@ describe("AlbumDetailPage", () => {
     await waitFor(() => expect(h1).toHaveFocus());
   });
 
-  test("header is a hero: blurred decorative cover backdrop behind the content", async () => {
+  test("the rail shows ONE square cover dissolving through the eased fade", async () => {
     server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
 
     renderDetail(1);
-    await screen.findByRole("heading", { name: "OK Computer" });
+    const heading = await screen.findByRole("heading", { name: "OK Computer" });
 
-    const header = document.querySelector("header");
-    expect(header).toHaveClass("relative", "overflow-hidden", "rounded-xl");
-
-    // Layer 1: the backdrop is hidden from assistive tech as a unit.
-    const backdrop = header!.querySelector('[data-slot="album-hero-backdrop"]');
-    expect(backdrop).not.toBeNull();
-    expect(backdrop).toHaveAttribute("aria-hidden", "true");
-    const backdropImg = backdrop!.querySelector("img");
-    expect(backdropImg).toHaveAttribute("src", "/api/albums/1/cover");
-    expect(backdropImg).toHaveClass("blur-2xl", "opacity-40", "object-cover");
-
-    // Both layers point at the same cover URL: blurred backdrop + foreground.
+    // Exactly one cover img — the old hero's blurred backdrop layer is gone.
     expect(
-      header!.querySelectorAll('img[src="/api/albums/1/cover"]'),
-    ).toHaveLength(2);
-  });
+      document.querySelectorAll('img[src="/api/albums/1/cover"]'),
+    ).toHaveLength(1);
 
-  test("a failed backdrop load falls back to the tinted gradient", async () => {
-    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+    // The eased fade overlay (shared with the artist rail) is decorative-only.
+    expect(
+      document.querySelector('div[aria-hidden="true"].fade-bottom-to-base'),
+    ).not.toBeNull();
 
-    renderDetail(1);
-    await screen.findByRole("heading", { name: "OK Computer" });
-
-    const backdrop = document.querySelector(
-      '[data-slot="album-hero-backdrop"]',
-    ) as HTMLElement;
-    fireEvent.error(backdrop.querySelector("img") as HTMLImageElement);
-
-    // No broken <img> lingers; the primary-tinted gradient takes its place.
-    expect(backdrop.querySelector("img")).toBeNull();
-    expect(backdrop.querySelector(".bg-gradient-to-br")).not.toBeNull();
+    // The h1 lives in the text strip below the cover — never inside a hidden
+    // layer — and keeps the RouteAnnouncer focus contract.
+    expect(heading.closest('div[aria-hidden="true"]')).toBeNull();
+    expect(heading).toHaveAttribute("tabindex", "-1");
   });
 });

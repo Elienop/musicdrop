@@ -64,10 +64,10 @@ function ArtistsGridSkeleton({ count }: { count: number }) {
   return (
     <ul className={GRID_CLASS}>
       {Array.from({ length: count }, (_, i) => (
-        <li key={i}>
-          {/* Mirrors the borderless ArtistCard: square portrait + two lines. */}
-          <Skeleton className="aspect-square w-full rounded-lg" />
-          <div className="mt-3 flex flex-col gap-1">
+        <li key={i} className="flex items-center gap-3 p-2">
+          {/* Mirrors the row card: square portrait + text lines beside it. */}
+          <Skeleton className="size-32 shrink-0 rounded-lg" />
+          <div className="flex min-w-0 flex-1 flex-col gap-2">
             <Skeleton className="h-5 w-3/4" />
             <Skeleton className="h-4 w-16" />
           </div>

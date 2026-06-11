@@ -54,7 +54,7 @@ describe("ActivityButton", () => {
 
   it("shows no badge and no pulse when nothing is running", () => {
     renderWithProviders(<ActivityButton />);
-    const trigger = screen.getByRole("button", { name: "Activity" });
+    const trigger = screen.getByRole("button", { name: /^Activity/ });
     expect(trigger).toHaveTextContent("");
     expect(trigger.querySelector("svg")).not.toHaveClass(
       "motion-safe:animate-pulse",
@@ -64,7 +64,7 @@ describe("ActivityButton", () => {
   it("shows the running count badge and pulses the icon while jobs run", () => {
     rows = [runningLyrics, runningImport];
     renderWithProviders(<ActivityButton />);
-    const trigger = screen.getByRole("button", { name: "Activity" });
+    const trigger = screen.getByRole("button", { name: /^Activity/ });
     expect(within(trigger).getByText("2")).toBeInTheDocument();
     expect(trigger.querySelector("svg")).toHaveClass(
       "motion-safe:animate-pulse",
@@ -75,7 +75,7 @@ describe("ActivityButton", () => {
     rows = [runningLyrics, runningImport];
     renderWithProviders(<ActivityButton />);
 
-    await userEvent.click(screen.getByRole("button", { name: "Activity" }));
+    await userEvent.click(screen.getByRole("button", { name: /^Activity/ }));
 
     expect(await screen.findByText("Lyrics backfill")).toBeInTheDocument();
     expect(screen.getByText("3 / 10")).toBeInTheDocument();
@@ -92,7 +92,7 @@ describe("ActivityButton", () => {
     rows = [runningLyrics, failedReorganize];
     renderWithProviders(<ActivityButton />);
 
-    await userEvent.click(screen.getByRole("button", { name: "Activity" }));
+    await userEvent.click(screen.getByRole("button", { name: /^Activity/ }));
     await screen.findByText("Reorganize");
 
     // The accessible name carries the job label so multiple failed rows
@@ -112,7 +112,7 @@ describe("ActivityButton", () => {
   it("shows the empty state and the Soulseek footer hint", async () => {
     renderWithProviders(<ActivityButton />);
 
-    await userEvent.click(screen.getByRole("button", { name: "Activity" }));
+    await userEvent.click(screen.getByRole("button", { name: /^Activity/ }));
 
     expect(await screen.findByText("Nothing running.")).toBeInTheDocument();
     expect(

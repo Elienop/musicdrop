@@ -98,9 +98,9 @@ function HeaderSearch() {
   return (
     // `role="search"` landmark (an explicit role rather than the <search>
     // element, which React/jsdom here don't map to the role).
-    <div role="search" className="relative max-w-md min-w-0 flex-1">
+    <div role="search" className="relative max-w-lg min-w-0 flex-1">
       <Search
-        className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2"
+        className="text-muted-foreground pointer-events-none absolute top-1/2 left-3.5 size-5 -translate-y-1/2"
         aria-hidden="true"
       />
       <Input
@@ -113,13 +113,15 @@ function HeaderSearch() {
         placeholder="Search…"
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        className="min-w-0 pl-9 md:pr-12"
+        // Scaled up with the topbar (the 56px activity action): taller box,
+        // base text, roomier insets.
+        className="h-12 min-w-0 rounded-lg pl-11 text-base md:pr-14"
       />
       {/* Decorative shortcut hint; hidden below md where there's rarely a
           hardware keyboard (and where it would eat input width). */}
       <kbd
         aria-hidden="true"
-        className="border-border bg-surface-card text-muted-foreground pointer-events-none absolute top-1/2 right-2 hidden -translate-y-1/2 rounded border px-1.5 py-0.5 font-sans text-[10px] md:inline-block"
+        className="border-border bg-surface-card text-muted-foreground pointer-events-none absolute top-1/2 right-3 hidden -translate-y-1/2 rounded border px-1.5 py-0.5 font-sans text-[10px] md:inline-block"
       >
         ⌘K
       </kbd>
@@ -140,7 +142,7 @@ async function fetchHealth() {
  * not color alone (WCAG 1.4.1): a shape-distinct icon (check / x-circle /
  * spinner), a short visible text label, and the dot color.
  */
-export function HealthStatus() {
+export function HealthStatus({ compact = false }: { compact?: boolean }) {
   const { data, isPending, isError } = useQuery({
     queryKey: ["health"],
     queryFn: fetchHealth,
@@ -174,11 +176,11 @@ export function HealthStatus() {
               : "text-destructive",
         )}
       />
-      {/* Collapse to icon-only below sm to save header width; the wrapper's
-          title + aria-label still convey the full status. */}
+      {/* Icon-only when `compact` (the collapsed sidebar rail) or below sm;
+          the wrapper's title + aria-label still convey the full status. */}
       <span
         className={cn(
-          "hidden sm:inline",
+          compact ? "hidden" : "hidden sm:inline",
           isPending
             ? "text-muted-foreground"
             : reachable
