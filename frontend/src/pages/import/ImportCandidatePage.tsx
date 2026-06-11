@@ -22,6 +22,7 @@ import {
 import { CoverArt } from "@/components/system/CoverArt";
 import { EmptyState } from "@/components/system/EmptyState";
 import { PageSkeleton } from "@/components/system/PageSkeleton";
+import { SectionLabel } from "@/components/system/SectionLabel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -393,7 +394,7 @@ function WhatChanges({ candidate }: { candidate: Candidate }) {
 function TrackDiff({ candidate }: { candidate: Candidate }) {
   return (
     <section aria-label="Track changes" className="flex flex-col gap-3">
-      <h3 className="text-sm font-medium">Tracklist · {candidate.tracks.length}</h3>
+      <SectionLabel>Tracklist · {candidate.tracks.length}</SectionLabel>
       <Table>
         <TableHeader>
           <TableRow>

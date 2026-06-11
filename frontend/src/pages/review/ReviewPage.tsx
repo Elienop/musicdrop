@@ -21,6 +21,7 @@ import type { AlbumOrigin } from "@/components/albums/album-grid";
 import { Spinner, Warning } from "@/components/icons";
 import { AlbumRow } from "@/components/system/AlbumRow";
 import { PageBody, PageHeader } from "@/components/system/PageHeader";
+import { SectionLabel } from "@/components/system/SectionLabel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
@@ -131,7 +132,7 @@ function DecisionSection({
 }) {
   return (
     <section aria-label="Needs your decision" className="flex flex-col gap-3">
-      <h2 className="text-base font-semibold">Needs your decision</h2>
+      <SectionLabel>Needs your decision</SectionLabel>
       <ul className="border-border divide-border divide-y overflow-hidden rounded-xl border">
         {albums.map((album) => {
           const needsDup = album.status === "needs_dup_resolution";
@@ -178,7 +179,7 @@ function DecisionSection({
 function ImportingNowSection({ status }: { status: AcquisitionQueueStatus }) {
   return (
     <section aria-label="Importing now" className="flex flex-col gap-2">
-      <h2 className="text-base font-semibold">Importing now</h2>
+      <SectionLabel>Importing now</SectionLabel>
       <p
         className="text-muted-foreground flex items-center gap-2 text-sm"
         role="status"
@@ -232,7 +233,7 @@ function InboxSection({
   return (
     <section aria-label="Waiting in the inbox" className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-base font-semibold">Waiting in the inbox</h2>
+        <SectionLabel>Waiting in the inbox</SectionLabel>
         <Button
           type="button"
           variant="outline"
@@ -321,7 +322,7 @@ function RecentSection({
       aria-label="Recently landed"
       className="flex flex-col gap-2 border-t pt-4"
     >
-      <h2 className="text-base font-semibold">Recently landed</h2>
+      <SectionLabel>Recently landed</SectionLabel>
       {processed === 0 && !error ? (
         <p className="text-muted-foreground text-sm">
           No completed downloads have been imported yet.

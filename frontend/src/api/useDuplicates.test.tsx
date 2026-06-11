@@ -2,16 +2,33 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import type { ReactNode } from "react";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type { components } from "@/api/schema";
-import { useDuplicates, useResolveDuplicate } from "@/api/useDuplicates";
+import {
+  useDuplicates,
+  useResolveAllDuplicates,
+  useResolveDuplicate,
+} from "@/api/useDuplicates";
 import { server } from "@/test/msw-server";
 
 type DuplicatesReport = components["schemas"]["DuplicatesReport"];
 
 const DUP_URL = `${window.location.origin}/api/duplicates`;
 const RESOLVE_URL = `${window.location.origin}/api/duplicates/resolve`;
+const RESOLVE_ALL_URL = `${window.location.origin}/api/duplicates/resolve-all`;
+
+/** The query keys a resolve must refresh: the report itself plus every
+ * library surface that may have cached the trashed albums. */
+const RESOLVE_INVALIDATIONS = [
+  ["duplicates"],
+  ["album"],
+  ["albums"],
+  ["artists"],
+  ["browse"],
+  ["search"],
+  ["stats"],
+];
 
 function makeWrapper() {
   const queryClient = new QueryClient({
@@ -73,6 +90,21 @@ describe("useResolveDuplicate", () => {
     await waitFor(() => expect(result.current.q.data?.group_count).toBe(0));
   });
 
+  test("a resolve also refreshes the library surfaces (albums were trashed)", async () => {
+    server.use(
+      http.post(RESOLVE_URL, () =>
+        HttpResponse.json({ kept_album_id: 1, moved: [{ id: 2, album_artist: "A", title: "B", trash_path: "/t/B" }] }),
+      ),
+    );
+    const { queryClient, Wrapper } = makeWrapper();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+    const { result } = renderHook(() => useResolveDuplicate(), { wrapper: Wrapper });
+    result.current.mutate({ mode: "strict", keep_album_id: 1, remove_album_ids: [2] });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
+    expect(keys).toEqual(expect.arrayContaining(RESOLVE_INVALIDATIONS));
+  });
+
   test("throws a structured error carrying status on a 409", async () => {
     server.use(
       http.post(RESOLVE_URL, () => HttpResponse.json({ detail: "Import in progress" }, { status: 409 })),
@@ -83,5 +115,22 @@ describe("useResolveDuplicate", () => {
     await waitFor(() => expect(result.current.isError).toBe(true));
     const err = result.current.error as Error & { status?: number };
     expect(err.status).toBe(409);
+  });
+});
+
+describe("useResolveAllDuplicates", () => {
+  test("a batch resolve refreshes the report + the library surfaces", async () => {
+    server.use(
+      http.post(RESOLVE_ALL_URL, () =>
+        HttpResponse.json({ resolved: [], skipped_stale: [], group_count: 0, moved_count: 0 }),
+      ),
+    );
+    const { queryClient, Wrapper } = makeWrapper();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+    const { result } = renderHook(() => useResolveAllDuplicates(), { wrapper: Wrapper });
+    result.current.mutate({ mode: "strict", groups: [] });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
+    expect(keys).toEqual(expect.arrayContaining(RESOLVE_INVALIDATIONS));
   });
 });

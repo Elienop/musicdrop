@@ -31,6 +31,7 @@ import {
 import { EmptyState } from "@/components/system/EmptyState";
 import { ErrorState } from "@/components/system/ErrorState";
 import { PageSkeleton } from "@/components/system/PageSkeleton";
+import { SectionLabel } from "@/components/system/SectionLabel";
 import { StatusBanner } from "@/components/system/StatusBanner";
 import {
   AlertDialog,
@@ -505,7 +506,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
         className="flex flex-col gap-2 rounded-xl border p-4"
         aria-label="Plex sync"
       >
-        <h2 className="text-sm font-semibold">Plex sync</h2>
+        <SectionLabel>Plex sync</SectionLabel>
         <ul className="flex flex-col gap-2">
           {/* The owner always gets their own copy — shown first, no checkbox. */}
           <li className="flex items-center justify-between gap-3 text-sm">

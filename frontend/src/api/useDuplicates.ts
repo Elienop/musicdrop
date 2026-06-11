@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
 import type { components } from "@/api/schema";
@@ -31,6 +32,20 @@ function duplicatesOpError(message: string, status: number, body: unknown): Dupl
   return Object.assign(new Error(message), { status, body, name: "DuplicatesOpError" });
 }
 
+/** A resolve trashes loser albums out of the library, so beyond the
+ * ["duplicates", *] reports every cached library surface — album details,
+ * grids, roster, browse, search, stats — would keep serving the removed
+ * albums for the 30s staleTime window. Refresh them all. */
+function invalidateAfterResolve(queryClient: QueryClient): void {
+  void queryClient.invalidateQueries({ queryKey: ["duplicates"] });
+  void queryClient.invalidateQueries({ queryKey: ["album"] });
+  void queryClient.invalidateQueries({ queryKey: ["albums"] });
+  void queryClient.invalidateQueries({ queryKey: ["artists"] });
+  void queryClient.invalidateQueries({ queryKey: ["browse"] });
+  void queryClient.invalidateQueries({ queryKey: ["search"] });
+  void queryClient.invalidateQueries({ queryKey: ["stats"] });
+}
+
 async function fetchDuplicates(mode: DuplicateMode): Promise<DuplicatesReport> {
   const { data, error, response } = await client.GET("/api/duplicates", {
     params: { query: { mode } },
@@ -53,7 +68,8 @@ export function useDuplicates(mode: DuplicateMode) {
 }
 
 /** Resolve a group (move losers to Trash). Invalidates ALL ["duplicates", *]
- * reports so the resolved group disappears on the next render. Throws a
+ * reports so the resolved group disappears on the next render, plus the
+ * library surfaces that cached the trashed albums. Throws a
  * {@link DuplicatesOpError} on non-2xx so the page can branch on `.status`. */
 export function useResolveDuplicate() {
   const queryClient = useQueryClient();
@@ -68,14 +84,15 @@ export function useResolveDuplicate() {
       return data;
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["duplicates"] });
+      invalidateAfterResolve(queryClient);
     },
   });
 }
 
 /** Resolve EVERY marked group in one request (move losers to Trash). Invalidates
- * all ["duplicates", *] reports on success so resolved groups disappear. Throws
- * a {@link DuplicatesOpError} on non-2xx so the page can branch on `.status`. */
+ * all ["duplicates", *] reports on success so resolved groups disappear, plus
+ * the library surfaces that cached the trashed albums. Throws a
+ * {@link DuplicatesOpError} on non-2xx so the page can branch on `.status`. */
 export function useResolveAllDuplicates() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -89,7 +106,7 @@ export function useResolveAllDuplicates() {
       return data;
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["duplicates"] });
+      invalidateAfterResolve(queryClient);
     },
   });
 }

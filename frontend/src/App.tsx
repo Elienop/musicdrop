@@ -27,7 +27,7 @@ export function App() {
   return (
     // ONE icon weight app-wide: every Phosphor glyph without an explicit
     // `weight` renders LIGHT (nav, status, buttons…). Deliberate overrides
-    // stay local: nav active = fill, detail-rail actions = thin (large
+    // stay local: detail-rail actions = thin (large
     // glyphs), checkbox tick = bold (tiny control glyph needs the stroke).
     <IconContext.Provider value={{ weight: "light" }}>
     <div className="bg-background text-foreground flex min-h-svh">

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
+import { apiUrl, errorDetail } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 export type ArtistImageSettings = components["schemas"]["ArtistImageSettings"];
@@ -9,27 +10,8 @@ export type ArtistImageSettings = components["schemas"]["ArtistImageSettings"];
  * toggle and invalidating this one key re-evaluates every instance. */
 export const ARTIST_IMAGE_SETTINGS_KEY = ["artist-image", "settings"] as const;
 
-function apiUrl(path: string): string {
-  const origin = typeof window === "undefined" ? "" : window.location.origin;
-  return `${origin}${path}`;
-}
-
-async function errorDetail(res: Response): Promise<string> {
-  try {
-    const body: unknown = await res.json();
-    if (
-      body !== null &&
-      typeof body === "object" &&
-      "detail" in body &&
-      typeof (body as { detail: unknown }).detail === "string"
-    ) {
-      return (body as { detail: string }).detail;
-    }
-  } catch {
-    // Non-JSON body — fall through to the generic message.
-  }
-  return "Couldn’t update the artist image";
-}
+/** Fallback when an override request fails without a usable `detail` body. */
+const OVERRIDE_ERROR = "Couldn’t update the artist image";
 
 async function fetchSettings(): Promise<ArtistImageSettings> {
   const { data, error } = await client.GET("/api/artists/image/settings");
@@ -70,7 +52,7 @@ export function useUploadArtistImageOverride(name: string) {
       const form = new FormData();
       form.append("file", image, "artist-image");
       const res = await fetch(overrideUrl(name), { method: "POST", body: form });
-      if (!res.ok) throw new Error(await errorDetail(res));
+      if (!res.ok) throw new Error(await errorDetail(res, OVERRIDE_ERROR));
     },
   });
 }
@@ -80,7 +62,7 @@ export function useResetArtistImageOverride(name: string) {
   return useMutation<void, Error, void>({
     mutationFn: async () => {
       const res = await fetch(overrideUrl(name), { method: "DELETE" });
-      if (!res.ok) throw new Error(await errorDetail(res));
+      if (!res.ok) throw new Error(await errorDetail(res, OVERRIDE_ERROR));
     },
   });
 }

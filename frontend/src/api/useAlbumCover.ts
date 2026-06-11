@@ -1,31 +1,8 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { apiUrl, errorDetail } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 type CoverInstallResult = components["schemas"]["CoverInstallResult"];
-
-function apiUrl(path: string): string {
-  const origin = typeof window === "undefined" ? "" : window.location.origin;
-  return `${origin}${path}`;
-}
-
-/** Read FastAPI's `{ "detail": ... }` error body, falling back to a generic
- * message when the response has no usable detail. */
-async function errorDetail(res: Response): Promise<string> {
-  try {
-    const body: unknown = await res.json();
-    if (
-      body !== null &&
-      typeof body === "object" &&
-      "detail" in body &&
-      typeof (body as { detail: unknown }).detail === "string"
-    ) {
-      return (body as { detail: string }).detail;
-    }
-  } catch {
-    // Non-JSON body — fall through to the generic message.
-  }
-  return "Cover install failed";
-}
 
 export type FetchedCover =
   | { found: false }
@@ -56,7 +33,7 @@ export function useInstallAlbumCover(albumId: number) {
       form.append("file", image, "cover");
       const res = await fetch(apiUrl(`/api/albums/${albumId}/cover`), { method: "POST", body: form });
       if (res.status === 409) throw new Error("An import is running — try again when it finishes.");
-      if (!res.ok) throw new Error(await errorDetail(res));
+      if (!res.ok) throw new Error(await errorDetail(res, "Cover install failed"));
       return (await res.json()) as CoverInstallResult;
     },
     onSettled: () => {

@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { ImportJobState } from "@/api/useImport";
 import { ImportPage } from "@/pages/import/ImportPage";
@@ -487,6 +487,49 @@ describe("ImportPage — terminal states", () => {
     expect(
       screen.queryByRole("link", { name: /view in library/i }),
     ).not.toBeInTheDocument();
+  });
+
+  test("reaching done refreshes the cached library surfaces (albums landed)", async () => {
+    // Imported albums are in the library now — within the 30s staleTime the
+    // grids/roster/browse/search/stats would otherwise keep serving lists
+    // without them.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "done",
+            progress: { applied: 1, needs_review: 0, skipped: 0 },
+          }),
+        ),
+      ),
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/import?job=job-1"]}>
+          <Routes>
+            <Route path="/import" element={<ImportPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText("Import finished");
+    await waitFor(() => {
+      const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
+      expect(keys).toEqual(
+        expect.arrayContaining([
+          ["albums"],
+          ["artists"],
+          ["browse"],
+          ["search"],
+          ["stats"],
+        ]),
+      );
+    });
   });
 
   test("failed shows the error message + a start-over link", async () => {

@@ -1,3 +1,4 @@
+import { SectionLabel } from "@/components/system/SectionLabel";
 import { Edit as EditIcon, Warning } from "@/components/icons";
 import { useState } from "react";
 
@@ -235,7 +236,7 @@ function PreviewDiff({ preview }: { preview: AlbumEditPreview }) {
 function TrackDiffTable({ tracks }: { tracks: EditTrackChange[] }) {
   return (
     <div className="flex flex-col gap-2">
-      <h4 className="text-sm font-medium">Tracks · {tracks.length}</h4>
+      <SectionLabel>Tracks · {tracks.length}</SectionLabel>
       <Table>
         <TableHeader>
           <TableRow>

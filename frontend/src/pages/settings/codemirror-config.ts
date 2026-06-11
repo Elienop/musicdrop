@@ -8,20 +8,21 @@ import { basicSetup } from "codemirror";
 
 /**
  * Minimal shadcn-aligned CM6 theme. Pulls from the same CSS variables the rest
- * of the app uses (declared in `frontend/src/styles.css` :root + .dark), so the
- * editor inherits the project's tokens rather than hard-coding hex values.
+ * of the app uses (declared in `frontend/src/styles.css` :root), so the editor
+ * inherits the project's tokens rather than hard-coding hex values.
  *
  * `dark: true` flips CM6's own dark heuristics (caret color, selection alpha)
- * — that's safe here even in light mode because we override the visible bits
- * via CSS variables; the heuristic only matters for the few properties we
- * don't override.
+ * to match the app's dark-only theme; the heuristic only matters for the few
+ * properties we don't override via CSS variables.
  */
 export const shadcnTheme = EditorView.theme(
   {
     "&": {
       backgroundColor: "var(--background)",
       color: "var(--foreground)",
-      fontSize: "13px",
+      // rem, not px, so the editor tracks user font-size settings like the
+      // rest of the app (0.8125rem = 13px at the default root size).
+      fontSize: "0.8125rem",
       // The bordered container is rendered by the page; keep the editor flush
       // with it so the gutter dots don't overhang the rounded corners.
       border: "1px solid var(--border)",
