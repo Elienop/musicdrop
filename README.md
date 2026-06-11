@@ -9,7 +9,7 @@ MusicDrop is a from-scratch rebuild. It keeps the name, logo, and product vision
 - **See your library.** Browse artists, albums, and tracks; spot the gaps (what you have vs. don't); search, and view cover art, lyrics, and track info. The library as a visual surface, not a file explorer.
 - **A UI for beets.** beets' *toggles* (its config) and *actions* (`import`, `modify`, `fetchart`, `duplicates`, …) surfaced as real pages — do everything you'd do at the `beet` CLI, in the browser. The interactive import/match step gets a proper candidate-picker.
 - **Playlists.** Create, edit, and delete them easily. **Plex-compatible**, multi-user.
-- **Acquisition** *(planned).* Will integrate deemix / slskd to get music onto disk (beets has no acquisition layer), then hand files to beets to match and organize.
+- **Acquisition.** slskd downloads land in a watched inbox and flow through a unified **Review** page into the same beets import pipeline (deemix is a future adapter on the same seam).
 
 ## Architecture — the layers
 
@@ -17,7 +17,7 @@ beets owns the **engine and the library** (its `library.db` is the source of tru
 
 | Layer | Owner |
 |---|---|
-| Acquisition (deemix / slskd) — *planned* | MusicDrop |
+| Acquisition (slskd; deemix planned) | MusicDrop |
 | Match · enrich · organize · library | **beets** |
 | Decision (auto-accept policy + human review UI) | MusicDrop |
 | Presentation (browse · search · art / lyrics / info) | MusicDrop |
@@ -28,7 +28,7 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 ## Stack
 
 - **Backend** — Python ≥ 3.11, **FastAPI + Pydantic** on Uvicorn; **beets 2.11** runs in-process behind the typed adapter in `app/beets/`. HTTP via httpx, Plex via [python-plexapi](https://github.com/pkkid/python-plexapi), YAML config editing via ruamel.yaml. Packaged with **uv**; `mypy --strict`, **Ruff** (lint + format), and **pytest** enforced in CI.
-- **Frontend** — **React 19 + TypeScript**, built with **Vite**. UI is **shadcn/ui** (Radix primitives) + **Tailwind CSS 4** + lucide icons; server state via **TanStack Query**; routing via React Router. The API client is **openapi-fetch**, and the TypeScript API types are **generated** from the backend's OpenAPI schema — never hand-written. Tested with Vitest + Testing Library + MSW.
+- **Frontend** — **React 19 + TypeScript**, built with **Vite**. UI is **shadcn/ui** (Radix primitives) + **Tailwind CSS 4** + [Phosphor](https://phosphoricons.com/) icons, with **League Spartan** as the display face; server state via **TanStack Query**; routing via React Router. The API client is **openapi-fetch**, and the TypeScript API types are **generated** from the backend's OpenAPI schema — never hand-written. Tested with Vitest + Testing Library + MSW.
 
 ## Status
 
@@ -47,8 +47,17 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 - **Naming** — edit beets path/replace rules with a live preview. **Reorganize** — re-apply them to existing files.
 - **Library dashboard** — counts, duration, size, recently added.
 - **Playlists** — create / edit / delete; `.m3u8` export; Plex-compatible, multi-user sync (metadata-matched, with cascade-delete). Configure Plex under **Settings → Plex** (base URL + admin token + the music-library path *as Plex sees it*), or seed it from `MUSICDROP_PLEX_URL` / `MUSICDROP_PLEX_TOKEN` / `MUSICDROP_PLEX_LIBRARY_PATH`.
+- **Acquisition (slskd)** — completed slskd downloads land in a watched inbox (webhook-driven) and queue into the import pipeline; a unified **Review** page is the one home for import decisions and inbox backlog.
+- **Faceted Browse** — filter the library by genre · decade · format.
+- **Dark, art-forward UI** — violet-accented dark theme, dissolving detail rails, Koito-inspired row cards, a two-font type system (League Spartan display face), and the original MusicDrop logo re-colored onto the design tokens.
 
-**Planned** — acquisition (deemix / slskd), faceted search.
+**Planned** — deemix acquisition adapter, release packaging (Docker).
+
+## Screenshots
+
+| Overview | Artist | Album |
+|---|---|---|
+| ![Overview — library stats and recently added](docs/screenshots/overview.png) | ![Artist page — portrait rail and album rows](docs/screenshots/artist.png) | ![Album page — cover rail and tracklist](docs/screenshots/album.png) |
 
 ## Development
 
