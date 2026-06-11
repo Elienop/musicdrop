@@ -49,7 +49,11 @@ def _resolve_library() -> LibraryHandle:
     handle (the dir/file are created if missing). Sync helper: runs once at
     startup (cold path).
     """
-    return setup_beets(settings.beets_dir)
+    return setup_beets(
+        settings.beets_dir,
+        # static_dir doubles as the "running from the image" marker.
+        container_music_default=bool(settings.static_dir),
+    )
 
 
 def _build_artist_image_service(

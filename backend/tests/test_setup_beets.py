@@ -122,6 +122,26 @@ def test_fixture_resets_confuse_between_tests(tmp_path: Path) -> None:
         close_library(handle.lib)
 
 
+def test_starter_directory_default_dev(tmp_path: Path) -> None:
+    handle = setup_beets(str(tmp_path))
+    try:
+        text = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+        assert "directory: ../music" in text
+        assert "directory: /music\n" not in text
+    finally:
+        close_library(handle.lib)
+
+
+def test_starter_directory_default_container(tmp_path: Path) -> None:
+    handle = setup_beets(str(tmp_path), container_music_default=True)
+    try:
+        text = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+        assert "directory: /music" in text
+        assert "../music" not in text
+    finally:
+        close_library(handle.lib)
+
+
 def test_setup_fails_fast_on_invalid_yaml(tmp_path: Path) -> None:
     from confuse.exceptions import ConfigReadError
 
