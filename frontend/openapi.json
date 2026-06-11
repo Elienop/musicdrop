@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "MusicDrop",
-    "version": "0.1.0"
+    "version": "dev"
   },
   "paths": {
     "/api/health": {

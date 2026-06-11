@@ -51,10 +51,16 @@ def mount_static(app: FastAPI, static_dir: str) -> None:
         # /api is API territory — unmatched API paths must stay JSON 404s.
         if path == "api" or path.startswith("api/"):
             raise HTTPException(status_code=404)
-        candidate = (root / path).resolve()
+        try:
+            candidate = (root / path).resolve()
+        except (ValueError, OSError):
+            # Malformed path (embedded NUL etc.) — a 404, never a 500.
+            raise HTTPException(status_code=404) from None
         # Root-level build files (favicon.svg, robots.txt…) are served as
-        # themselves; resolve() containment rejects ../ traversal.
-        if path and candidate.is_file() and candidate.is_relative_to(root):
+        # themselves; resolve() containment rejects ../ traversal. index.html
+        # is deliberately EXCLUDED so its literal URL gets the same no-cache
+        # policy as / (a cached shell would point at vanished hashed chunks).
+        if path and path != "index.html" and candidate.is_file() and candidate.is_relative_to(root):
             return FileResponse(candidate)
         # Everything else is a client-side route: hand over index.html and
         # never let browsers cache it (it references hashed assets).

@@ -40,6 +40,15 @@ jobs:
           tag_prefix: v
           dry_run: true
 
+      # Re-running a partially-failed job after the tag step finds no new
+      # commits -> empty new_tag. Abort instead of pushing an invalid ref.
+      - name: Abort if no new version
+        run: |
+          test -n "${{ steps.version.outputs.new_tag }}" || {
+            echo "No new version computed (HEAD already tagged?) - nothing to release."
+            exit 1
+          }
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 

@@ -85,3 +85,16 @@ def test_real_app_has_no_spa_catchall_in_dev() -> None:
 
     paths = {getattr(r, "path", "") for r in real_app.routes}
     assert "/{path:path}" not in paths
+
+
+def test_null_byte_path_is_404_not_500(tmp_path: Path) -> None:
+    client = TestClient(_app(tmp_path))
+    resp = client.get("/foo%00bar")
+    assert resp.status_code == 404
+
+
+def test_literal_index_html_gets_no_cache(tmp_path: Path) -> None:
+    client = TestClient(_app(tmp_path))
+    resp = client.get("/index.html")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-cache"

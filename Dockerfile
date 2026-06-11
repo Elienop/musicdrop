@@ -32,6 +32,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     MUSICDROP_STATIC_DIR=/app/static \
     MUSICDROP_BEETS_DIR=/data/beets \
+    MUSICDROP_ARTIST_IMAGE_CACHE_DIR=/data/cache/artist-images \
     MUSICDROP_VERSION=${APP_VERSION}
 
 VOLUME /data

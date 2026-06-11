@@ -15,3 +15,8 @@ frontend/dist
 frontend/coverage
 **/__pycache__
 **/.DS_Store
+
+# Secrets must never enter the build context (gitignored but present
+# in local working trees).
+.env
+backend/.env
