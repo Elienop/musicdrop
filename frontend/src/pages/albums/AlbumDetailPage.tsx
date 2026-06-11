@@ -21,6 +21,8 @@ import {
 import { AddToPlaylistMenu } from "@/components/playlists/AddToPlaylistMenu";
 import { ReorganizeControl } from "@/components/reorganize/ReorganizeControl";
 import { CoverArt } from "@/components/system/CoverArt";
+import { IconAction } from "@/components/system/IconAction";
+import { SectionLabel } from "@/components/system/SectionLabel";
 import { EmptyState } from "@/components/system/EmptyState";
 import { ErrorState } from "@/components/system/ErrorState";
 import { PageSkeleton } from "@/components/system/PageSkeleton";
@@ -86,13 +88,8 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
   const [editingCover, setEditingCover] = useState(false);
   const [coverVersion, setCoverVersion] = useState(0);
 
-  // One cover URL feeds BOTH hero layers (blurred backdrop + foreground
-  // CoverArt); ?v= cache-busts both after a cover install.
+  // ?v= cache-busts the rail cover after a cover install.
   const coverSrc = `/api/albums/${album.id}/cover${coverVersion ? `?v=${coverVersion}` : ""}`;
-  // The raw backdrop <img> has no CoverArt fallback of its own — track failure
-  // here and swap to the tinted gradient. A new src (cover installed) retries.
-  const [backdropFailed, setBackdropFailed] = useState(false);
-  useEffect(() => setBackdropFailed(false), [coverSrc]);
 
   // Spec §4 disclosure pattern: opening an inline panel moves focus into it so
   // keyboard/SR users land on what just appeared. Closing leaves focus where
@@ -124,126 +121,132 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
         />
       )}
 
-      <header className="relative overflow-hidden rounded-xl">
-        {/* LAYER 1 — decorative backdrop: the cover blurred behind the content,
-            hidden from assistive tech as a unit. The scrim keeps the foreground
-            text on surface-base by the time it reaches the bottom edge. */}
-        <div
-          data-slot="album-hero-backdrop"
-          aria-hidden="true"
-          className="absolute inset-0"
-        >
-          {backdropFailed ? (
-            <div className="from-primary/15 to-surface-base size-full bg-gradient-to-br" />
-          ) : (
-            <>
-              <img
-                src={coverSrc}
-                alt=""
-                onError={() => setBackdropFailed(true)}
-                className="size-full scale-110 object-cover opacity-40 blur-2xl"
-              />
-              <div className="via-surface-base/70 to-surface-base absolute inset-0 bg-gradient-to-b from-transparent" />
-            </>
-          )}
-        </div>
-        {/* LAYER 2 — the existing header content, structurally unchanged. */}
-        <div className="relative flex flex-col gap-6 p-6 sm:flex-row sm:items-stretch">
-          <CoverArt
-            src={coverSrc}
-            className="size-40 shrink-0 rounded-xl shadow-lg"
-          />
-          <div className="flex min-w-0 flex-col gap-2">
-            {/* THE page h1 — detail pages own their h1 directly (PageHeader's
-                shape doesn't fit the hero); tabIndex -1 keeps RouteAnnouncer's
-                focus contract. */}
-            <h1
-              id="album-detail-title"
-              tabIndex={-1}
-              className="text-3xl font-bold tracking-tight break-words"
-            >
-              {album.title}
-            </h1>
-            <p className="text-muted-foreground text-lg">{album.album_artist}</p>
-            <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-sm">
-              {album.year !== null && (
-                <Badge variant="secondary">{album.year}</Badge>
-              )}
+      {/* Rail layout (the artist-page idiom): the left side is dedicated to
+          the cover — kept SQUARE and uncropped (covers are complete artworks,
+          unlike portraits), dissolving into the page through the shared eased
+          fade — with title/artist/meta and stacked actions below; the
+          tracklist fills the right column. */}
+      <div className="flex flex-col gap-8 lg:flex-row lg:items-start">
+        <aside className="w-96 shrink-0 max-lg:mx-auto lg:sticky lg:top-20">
+          {/* The rail is ONE bordered unit (Koito card treatment): the
+              hairline wraps cover + title + stats + divider + actions
+              together. The fade dissolves into the panel interior (page
+              color), so the melt survives inside the frame. */}
+          <div className="border-border overflow-hidden rounded-xl border pb-3">
+          <div className="relative">
+            <CoverArt
+              src={coverSrc}
+              className="aspect-square w-full"
+            />
+            <div
+              aria-hidden="true"
+              className="fade-bottom-to-base absolute inset-0"
+            />
+          </div>
+          {/* Text + actions anchor to the card's LEFT edge (consistent regardless
+              of how wide the name renders) with a small inset as a breather;
+              the separator/icon row left-aligns on the same edge. */}
+          <div className="flex flex-col px-4">
+          <div className="flex flex-col items-start gap-4 pt-4 pb-2 text-left">
+            <div className="flex flex-col items-start gap-1">
+              {/* THE page h1 — detail pages own their h1 directly (PageHeader's
+                  shape doesn't fit the rail); tabIndex -1 keeps RouteAnnouncer's
+                  focus contract. */}
+              <h1
+                id="album-detail-title"
+                tabIndex={-1}
+                className="font-display text-display font-semibold tracking-tight break-words"
+              >
+                {album.title}
+              </h1>
+              {/* The artist name navigates UP the spine — names are links.
+                  The BackLink above keeps origin threading (Browse/Search),
+                  which a name link can't replace. */}
+              <Link
+                to={`/artists/${encodeURIComponent(album.album_artist)}`}
+                className="focus-ring text-muted-foreground hover:text-foreground rounded-sm text-lg hover:underline"
+              >
+                {album.album_artist}
+              </Link>
+            </div>
+            {/* Koito-style stat stack: each fact on its own line, plain
+                text — no badge chrome. */}
+            <div className="text-muted-foreground flex flex-col gap-1 text-sm">
+              {album.year !== null && <span>{album.year}</span>}
               <span>
                 {album.track_count} {album.track_count === 1 ? "track" : "tracks"}
               </span>
-              {album.genre && (
-                <>
-                  <span aria-hidden="true">&middot;</span>
-                  <span>{album.genre}</span>
-                </>
-              )}
-            </div>
-            {/* Maintenance actions — a single row pushed to the bottom of the
-                column so it lines up with the bottom of the cover. border-border
-                is already white/10 in the dark theme, so the hairline stays
-                legible on the tinted backdrop (same token as the artist hero —
-                one dialect, retunes together). */}
-            <div className="border-border mt-auto flex flex-wrap items-center gap-3 border-t pt-3">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setEditing((v) => !v)}
-                aria-label="Edit album"
-                aria-expanded={editing}
-                aria-controls="album-edit-panel"
-              >
-                <EditIcon className="size-4" aria-hidden="true" /> Edit
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setEditingCover((v) => !v)}
-                aria-label="Edit cover"
-                aria-expanded={editingCover}
-                aria-controls="album-cover-panel"
-              >
-                <CoverIcon className="size-4" aria-hidden="true" /> Cover
-              </Button>
-              <ReorganizeControl scope={{ scope: "album", albumId: album.id }} />
-              <AddToPlaylistMenu
-                trackIds={album.tracks.map((t) => t.id)}
-                label="Add album to playlist"
-              />
+              {album.genre && <span>{album.genre}</span>}
             </div>
           </div>
-        </div>
-      </header>
+          {/* Maintenance actions — the Koito idiom: one centered row of large
+              icon actions, each named by tooltip + aria-label. Reorganize's
+              transient preview/confirm UI expands below the row, which is why
+              the row itself is rendered BY the control (railActions slot). */}
+          <div className="mt-2">
+            <ReorganizeControl
+              scope={{ scope: "album", albumId: album.id }}
+              variant="rail"
+              railActions={
+                <>
+                  <IconAction
+                    label="Edit album"
+                    onClick={() => setEditing((v) => !v)}
+                    aria-expanded={editing}
+                    aria-controls="album-edit-panel"
+                  >
+                    <EditIcon weight="thin" className="size-10" aria-hidden="true" />
+                  </IconAction>
+                  <IconAction
+                    label="Edit cover"
+                    onClick={() => setEditingCover((v) => !v)}
+                    aria-expanded={editingCover}
+                    aria-controls="album-cover-panel"
+                  >
+                    <CoverIcon weight="thin" className="size-10" aria-hidden="true" />
+                  </IconAction>
+                  <AddToPlaylistMenu
+                    trackIds={album.tracks.map((t) => t.id)}
+                    label="Add album to playlist"
+                    large
+                  />
+                </>
+              }
+            />
+          </div>
+          </div>
+          </div>
+        </aside>
 
-      {editing && (
-        <div
-          id="album-edit-panel"
-          ref={editPanelRef}
-          tabIndex={-1}
-          className="outline-none"
-        >
-          <AlbumEditPanel album={album} onClose={() => setEditing(false)} />
-        </div>
-      )}
+        <div className="flex min-w-0 flex-1 flex-col gap-6">
+          {editing && (
+            <div
+              id="album-edit-panel"
+              ref={editPanelRef}
+              tabIndex={-1}
+              className="outline-none"
+            >
+              <AlbumEditPanel album={album} onClose={() => setEditing(false)} />
+            </div>
+          )}
 
-      {editingCover && (
-        <div
-          id="album-cover-panel"
-          ref={coverPanelRef}
-          tabIndex={-1}
-          className="outline-none"
-        >
-          <CoverEditPanel
-            albumId={album.id}
-            onInstalled={() => setCoverVersion((v) => v + 1)}
-            onClose={() => setEditingCover(false)}
-          />
-        </div>
-      )}
+          {editingCover && (
+            <div
+              id="album-cover-panel"
+              ref={coverPanelRef}
+              tabIndex={-1}
+              className="outline-none"
+            >
+              <CoverEditPanel
+                albumId={album.id}
+                onInstalled={() => setCoverVersion((v) => v + 1)}
+                onClose={() => setEditingCover(false)}
+              />
+            </div>
+          )}
 
-      <Separator />
-
-      <section aria-label="Tracklist" className="flex flex-col gap-3">
+          <section aria-label="Tracklist" className="flex flex-col gap-3">
+            <SectionLabel>Tracks</SectionLabel>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <TracklistStatus query={missingQuery} report={report} />
           <LyricsStatus
@@ -296,7 +299,9 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
             </Fragment>
           ))}
         </Table>
-      </section>
+          </section>
+        </div>
+      </div>
     </article>
   );
 }
@@ -318,7 +323,7 @@ function TrackRow({
       </TableCell>
       <TableCell>
         <div className="flex min-w-0 flex-col">
-          <span className="truncate font-medium">{track.title}</span>
+          <span className="truncate">{track.title}</span>
           {showArtist && (
             <span className="text-muted-foreground truncate text-sm">
               {track.artist}
@@ -377,7 +382,7 @@ function MissingTrackRow({ track }: { track: MissingReleaseTrack }) {
               qualifier and an aria-labelled badge so the state announces as a
               distinct phrase, not a stray word beside the title. */}
           <span className="sr-only">Not in your library: </span>
-          <span className="text-muted-foreground truncate font-medium italic">
+          <span className="text-muted-foreground truncate italic">
             {track.title}
           </span>
           <Badge

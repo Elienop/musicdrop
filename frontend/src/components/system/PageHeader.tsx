@@ -22,7 +22,13 @@ export function PageHeader({
   return (
     <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
       <div className="flex min-w-0 flex-col gap-1">
-        <h1 tabIndex={-1} className="text-2xl font-bold tracking-tight">
+        {/* Display face + fluid `text-display` scale (clamp-based token) —
+            the Koito hierarchy: ONE big element per page, semibold not bold,
+            everything else stays small. */}
+        <h1
+          tabIndex={-1}
+          className="font-display text-display font-semibold tracking-tight"
+        >
           {title}
         </h1>
         {/* min-h-5 keeps the line from collapsing/shifting when meta lands;

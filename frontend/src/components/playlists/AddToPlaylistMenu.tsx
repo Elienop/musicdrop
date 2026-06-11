@@ -17,6 +17,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 /**
  * Self-contained "Add to playlist" affordance: a ghost icon button that opens a
@@ -29,9 +34,13 @@ import {
 export function AddToPlaylistMenu({
   trackIds,
   label,
+  large = false,
 }: {
   trackIds: number[];
   label?: string;
+  /** Larger trigger for the detail-page icon rows (icon-xl + size-10 glyph,
+   * muted at rest like IconAction); default stays the compact row size. */
+  large?: boolean;
 }) {
   const menuLabel = label ?? "Add to playlist";
   const [createOpen, setCreateOpen] = useState(false);
@@ -80,21 +89,40 @@ export function AddToPlaylistMenu({
       : feedback === "error"
         ? ErrorIcon
         : AddToPlaylist;
+  const iconSize = large ? "size-10" : "size-4";
   const triggerIconClass =
     feedback === "added"
-      ? "size-4 text-success"
+      ? `${iconSize} text-success`
       : feedback === "error"
-        ? "size-4 text-destructive"
-        : "size-4";
+        ? `${iconSize} text-destructive`
+        : iconSize;
 
   return (
     <>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon-sm" aria-label={menuLabel}>
-            <TriggerIcon className={triggerIconClass} aria-hidden="true" />
-          </Button>
-        </DropdownMenuTrigger>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size={large ? "icon-xl" : "icon-sm"}
+                aria-label={menuLabel}
+                className={
+                  large
+                    ? "text-muted-foreground hover:text-foreground"
+                    : undefined
+                }
+              >
+                <TriggerIcon
+                  weight={large ? "thin" : "regular"}
+                  className={triggerIconClass}
+                  aria-hidden="true"
+                />
+              </Button>
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent>{menuLabel}</TooltipContent>
+        </Tooltip>
         <DropdownMenuContent align="end" className="min-w-52">
           <DropdownMenuLabel>Add to playlist</DropdownMenuLabel>
           <DropdownMenuSeparator />

@@ -1,6 +1,6 @@
 // frontend/src/components/reorganize/ReorganizeControl.tsx
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import {
   type ReorganizeBackfillStatus,
@@ -12,6 +12,8 @@ import {
   useStartReorganize,
   useStopReorganize,
 } from "@/api/useReorganize";
+import { Reorganize, Spinner, Stop as StopIcon } from "@/components/icons";
+import { IconAction } from "@/components/system/IconAction";
 import { Button } from "@/components/ui/button";
 
 function jobMatches(
@@ -74,7 +76,20 @@ function PlanView({ plan }: { plan: ReorganizePlan }) {
  * button that caused it instead of in app-wide chrome. */
 type ActionMessage = { kind: "info" | "error"; text: string };
 
-export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
+export function ReorganizeControl({
+  scope,
+  variant = "inline",
+  railActions,
+}: {
+  scope: ReorganizeScope;
+  /** "rail" renders the Koito-style large icon trigger in a centered row —
+   * after the page's other IconActions, passed via `railActions` so the
+   * whole row lives in one flex container — with the transient
+   * preview/confirm UI expanding full-width below the row. "inline" keeps
+   * the original wrap row of text buttons (settings panel). */
+  variant?: "inline" | "rail";
+  railActions?: ReactNode;
+}) {
   const queryClient = useQueryClient();
   const status = useReorganizeStatus();
   const preview = usePreviewReorganize();
@@ -123,6 +138,90 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
     setMessage({ kind: "error", text: (e as Error).message });
   }
 
+  if (variant === "rail") {
+    return (
+      <div className="flex flex-col items-stretch gap-2">
+        {/* w-fit wrapper: the hairline above the actions stretches exactly
+            to the icon row's combined width, no further. Left-aligned — the
+            page centers the whole rail text+actions unit and everything
+            inside shares ONE left edge. */}
+        <div className="flex w-fit flex-col gap-2">
+          <div aria-hidden="true" className="border-border my-2 border-t" />
+          <div className="flex flex-wrap items-center justify-center gap-1">
+            {railActions}
+            {runningThis ? (
+              <IconAction
+                label="Stop reorganizing"
+                onClick={() => stop.mutate()}
+                disabled={stop.isPending}
+              >
+                <StopIcon weight="thin" className="size-10" aria-hidden="true" />
+              </IconAction>
+            ) : (
+              <IconAction
+                label="Reorganize files"
+                disabled={preview.isPending || otherRunning || plan != null}
+                onClick={() => {
+                  setMessage(null);
+                  preview.mutate(scope, {
+                    onSuccess: onPreviewed,
+                    onError: onActionError,
+                  });
+                }}
+              >
+                {preview.isPending ? (
+                  <Spinner weight="thin" className="size-10 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Reorganize weight="thin" className="size-10" aria-hidden="true" />
+                )}
+              </IconAction>
+            )}
+          </div>
+        </div>
+        {plan != null && (
+          <>
+            <PlanView plan={plan} />
+            <Button
+              size="sm"
+              disabled={start.isPending || otherRunning}
+              onClick={() => {
+                setMessage(null);
+                start.mutate(scope, {
+                  onSuccess: () => setPlan(null),
+                  onError: onActionError,
+                });
+              }}
+            >
+              {start.isPending
+                ? "Starting…"
+                : `Reorganize ${plan.will_move} item${plan.will_move === 1 ? "" : "s"}`}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setPlan(null)}
+              disabled={start.isPending}
+            >
+              Cancel
+            </Button>
+          </>
+        )}
+        {message != null && (
+          <span
+            role={message.kind === "error" ? "alert" : "status"}
+            className={
+              message.kind === "error"
+                ? "text-destructive text-center text-sm"
+                : "text-muted-foreground text-center text-sm"
+            }
+          >
+            {message.text}
+          </span>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col items-start gap-2">
       {plan != null && <PlanView plan={plan} />}
@@ -149,7 +248,7 @@ export function ReorganizeControl({ scope }: { scope: ReorganizeScope }) {
               });
             }}
           >
-            {preview.isPending ? "Building preview…" : "Preview reorganize"}
+            {preview.isPending ? "Building preview…" : "Reorganize files…"}
           </Button>
         ) : (
           <>

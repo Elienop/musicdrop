@@ -10,11 +10,12 @@ describe("PageHeader", () => {
     expect(h1).toHaveAttribute("tabindex", "-1");
   });
 
-  it("uses the page type scale on the h1", () => {
+  it("uses the display face + fluid display scale on the h1", () => {
     render(<PageHeader title="Artists" />);
     expect(screen.getByRole("heading", { level: 1 })).toHaveClass(
-      "text-2xl",
-      "font-bold",
+      "font-display",
+      "text-display",
+      "font-semibold",
     );
   });
 
