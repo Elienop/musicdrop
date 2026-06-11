@@ -1,0 +1,29 @@
+# Dependency update notices as pre-tested PRs. Every PR runs the full CI
+# gates (backend suite exercises REAL beets), so green checks = safe to
+# merge — and merging auto-releases via release.yml.
+version: 2
+updates:
+  # beets gets its OWN PR lane (never grouped): a beets update is the
+  # signal this config exists for.
+  - package-ecosystem: "uv"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+    groups:
+      backend-deps:
+        patterns: ["*"]
+        exclude-patterns: ["beets"]
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    groups:
+      frontend-deps:
+        patterns: ["*"]
+
+  # Keeps actions current (e.g. the Node 20 -> 24 checkout deprecation).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
