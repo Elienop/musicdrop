@@ -1,4 +1,11 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Repo root is the parent of the backend/ package dir (this file is
+# backend/app/config.py). Relative cache paths resolve under it so the
+# artist-image cache lands in the gitignored repo-root data/, not backend/data/.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -92,3 +99,11 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def resolve_artist_image_cache_dir() -> Path:
+    """Resolve the artist-image cache dir, anchoring relatives to the repo root."""
+    configured = Path(settings.artist_image_cache_dir)
+    if configured.is_absolute():
+        return configured
+    return _REPO_ROOT / configured

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 from beets.library import Library
 
 from app.models.lyrics import ItemLyricsOutcome, ItemLyricsStatus
+from tests.conftest import make_test_handle
 
 
 def test_backfill_status_model() -> None:
@@ -92,7 +94,7 @@ def test_registry_singleton_accessors() -> None:
     assert lyrics_backfill_active() is False
 
 
-def test_sweep_processes_all_items_and_finishes_done(edit_lib: Library) -> None:
+def test_sweep_processes_all_items_and_finishes_done(edit_lib: Library, tmp_path: Path) -> None:
     from app.lyrics_jobs.registry import LyricsBackfillRegistry
     from app.lyrics_jobs.runner import sweep
 
@@ -107,7 +109,7 @@ def test_sweep_processes_all_items_and_finishes_done(edit_lib: Library) -> None:
 
     sweep(
         reg,
-        edit_lib,
+        make_test_handle(edit_lib, tmp_path),
         delay=0.0,
         write=False,
         fetch_one=fake_fetch_one,
@@ -120,7 +122,7 @@ def test_sweep_processes_all_items_and_finishes_done(edit_lib: Library) -> None:
     assert len(seen) == 3
 
 
-def test_sweep_honours_stop(edit_lib: Library) -> None:
+def test_sweep_honours_stop(edit_lib: Library, tmp_path: Path) -> None:
     from app.lyrics_jobs.registry import LyricsBackfillRegistry
     from app.lyrics_jobs.runner import sweep
 
@@ -133,7 +135,7 @@ def test_sweep_honours_stop(edit_lib: Library) -> None:
 
     sweep(
         reg,
-        edit_lib,
+        make_test_handle(edit_lib, tmp_path),
         delay=0.0,
         write=False,
         fetch_one=fake_fetch_one,
@@ -144,7 +146,7 @@ def test_sweep_honours_stop(edit_lib: Library) -> None:
     assert s.processed == 1
 
 
-def test_sweep_failure_sets_failed_phase(edit_lib: Library) -> None:
+def test_sweep_failure_sets_failed_phase(edit_lib: Library, tmp_path: Path) -> None:
     from app.lyrics_jobs.registry import LyricsBackfillRegistry
     from app.lyrics_jobs.runner import sweep
 
@@ -154,7 +156,7 @@ def test_sweep_failure_sets_failed_phase(edit_lib: Library) -> None:
     def boom() -> Any:
         raise RuntimeError("kaboom")
 
-    sweep(reg, edit_lib, delay=0.0, write=False, make_plugin=boom)
+    sweep(reg, make_test_handle(edit_lib, tmp_path), delay=0.0, write=False, make_plugin=boom)
     s = reg.state()
     assert s.phase == "failed"
     assert "kaboom" in (s.error or "")
@@ -242,7 +244,7 @@ def test_registry_album_scope_in_state() -> None:
     assert s.album_id == 42 and s.scope_label == "Adele — 25"
 
 
-def test_sweep_album_scope_only_touches_that_album(edit_lib: Library) -> None:
+def test_sweep_album_scope_only_touches_that_album(edit_lib: Library, tmp_path: Path) -> None:
     from beets.library import Item
 
     from app.lyrics_jobs.registry import LyricsBackfillRegistry
@@ -265,7 +267,7 @@ def test_sweep_album_scope_only_touches_that_album(edit_lib: Library) -> None:
 
     sweep(
         reg,
-        edit_lib,
+        make_test_handle(edit_lib, tmp_path),
         delay=0.0,
         write=False,
         album_id=target_id,

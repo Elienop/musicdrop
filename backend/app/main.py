@@ -1,7 +1,6 @@
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
@@ -28,12 +27,7 @@ from app.artwork.service import ArtistImageService
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
-from app.config import settings
-
-# Repo root is the parent of the backend/ package dir (this file is
-# backend/app/main.py). Relative cache paths resolve under it so the
-# artist-image cache lands in the gitignored repo-root data/, not backend/data/.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+from app.config import resolve_artist_image_cache_dir, settings
 
 # Shutdown grace: after the inbox drain is stopped, poll the import slot for up
 # to TICKS * INTERVAL seconds (~5s) so an import already in flight gets a
@@ -55,14 +49,6 @@ def _resolve_library() -> LibraryHandle:
     startup (cold path).
     """
     return setup_beets(settings.beets_dir)
-
-
-def _resolve_cache_dir() -> Path:
-    """Resolve the artist-image cache dir, anchoring relatives to the repo root."""
-    configured = Path(settings.artist_image_cache_dir)
-    if configured.is_absolute():
-        return configured
-    return _REPO_ROOT / configured
 
 
 def _build_artist_image_service(
@@ -138,14 +124,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # toggle are shared on app.state so the override + settings endpoints reach
     # the SAME instances the service uses. The cache dir is created lazily on
     # first write, so no startup mkdir.
-    cache = ArtistImageCache(_resolve_cache_dir())
+    cache = ArtistImageCache(resolve_artist_image_cache_dir())
     toggle = ArtistImageToggle(
-        _resolve_cache_dir() / "_enabled.json", default=settings.artist_images_enabled
+        resolve_artist_image_cache_dir() / "_enabled.json", default=settings.artist_images_enabled
     )
     app.state.artist_image_cache = cache
     app.state.artist_image_toggle = toggle
     art_write_toggle = ArtistArtWriteToggle(
-        _resolve_cache_dir() / "_art_write_enabled.json",
+        resolve_artist_image_cache_dir() / "_art_write_enabled.json",
         default=settings.artist_art_write_enabled,
     )
     app.state.artist_art_write_toggle = art_write_toggle

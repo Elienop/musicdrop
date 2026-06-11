@@ -16,6 +16,7 @@ from typing import Any
 
 from beets.util import MoveOperation
 
+from app.beets.library import LibraryHandle
 from app.models.reorganize import (
     ReorganizeMove,
     ReorganizeOutcome,
@@ -86,6 +87,18 @@ def album_label(album: Any) -> str:
 def singleton_label(item: Any) -> str:
     artist = str(item.artist or item.albumartist or "").strip() or "Unknown"
     return f"{artist} — {item.title}"
+
+
+def album_scope_label(handle: LibraryHandle, album_id: int) -> str | None:
+    """``album_label`` for an album id, or ``None`` when the album is missing.
+
+    Typed lookup for the router's 404-or-start decision, so it never calls
+    ``lib.get_album`` itself (rule 3). Scalar reads; no path expansion needed.
+    """
+    album = handle.lib.get_album(album_id)
+    if album is None:
+        return None
+    return album_label(album)
 
 
 def _describe_album(lib: Any, album: Any) -> ReorganizeMove | None:

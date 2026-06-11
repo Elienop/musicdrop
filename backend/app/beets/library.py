@@ -8,6 +8,7 @@ global config singletons, and version quirks stay isolated here.
 import os
 import uuid
 from collections import Counter
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -77,6 +78,23 @@ def open_library(library_path: str, directory: str | None = None) -> Library:
 def close_library(lib: Library) -> None:
     """Close the beets library's underlying SQLite connection."""
     lib._close()
+
+
+def library_paths_context(handle: LibraryHandle) -> AbstractContextManager[Any]:
+    """Bind beets' path expansion to this library for the calling thread.
+
+    beets 2.11 stores DB paths relative to the library directory and re-expands
+    them through a ContextVar worker threads do not inherit; job runners bind
+    this around their whole sweep so reads AND file writes resolve real paths
+    off the main thread. The version quirk stays behind the adapter (rule 3).
+    """
+    ctx: AbstractContextManager[Any] = handle.lib.music_dir_context()
+    return ctx
+
+
+def album_exists(handle: LibraryHandle, album_id: int) -> bool:
+    """Whether ``album_id`` is in the library. A scalar read; no path expansion."""
+    return handle.lib.get_album(album_id) is not None
 
 
 def _coerce_str(value: object) -> str:

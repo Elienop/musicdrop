@@ -74,7 +74,7 @@ async def start_lyrics_backfill(
     # back to a default (the plan's intent — getattr default covers the absence).
     app_settings = getattr(app.state, "settings", None)
     delay = float(getattr(app_settings, "lyrics_backfill_delay_seconds", 0.2))
-    start_backfill(reg, handle.lib, delay=delay, write=write)
+    start_backfill(reg, handle, delay=delay, write=write)
     return reg.state()
 
 
