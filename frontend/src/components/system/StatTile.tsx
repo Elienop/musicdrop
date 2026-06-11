@@ -23,7 +23,10 @@ export function StatTile({
 }) {
   return (
     <div className="flex items-center gap-3">
+      {/* Thin like the detail-rail actions — large glyphs (here 56px, the
+          biggest in the app) take the thinner stroke. */}
       <Icon
+        weight="thin"
         className="text-muted-foreground size-14 shrink-0"
         aria-hidden="true"
       />
