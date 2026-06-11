@@ -80,19 +80,26 @@ describe("AppSidebar", () => {
     expect(screen.queryByRole("heading")).not.toBeInTheDocument();
   });
 
-  test("the current route's item gets aria-current and the violet TEXT (no pill)", () => {
+  test("the current route's item gets aria-current, violet text, and non-color cues", () => {
     renderWithProviders(<AppSidebar />, { route: "/artists" });
 
     const active = screen.getByRole("link", { name: "Artists" });
     expect(active).toHaveAttribute("aria-current", "page");
-    // aria-current must be visually styled, not just announced (spec §1).
+    // aria-current must be visually styled, not just announced (spec §1) —
+    // and not by hue alone (WCAG 1.4.1): weight + a left indicator bar.
     expect(active).toHaveClass("text-primary-light");
+    expect(active).toHaveClass("font-medium");
+    expect(
+      active.querySelector('span[aria-hidden="true"].bg-primary-light'),
+    ).not.toBeNull();
+    // Still no pill background on the link itself.
     expect(active.className).not.toMatch(/bg-primary/);
     // ≥44px hit area (h-11).
     expect(active).toHaveClass("h-11");
-    expect(screen.getByRole("link", { name: "Overview" })).not.toHaveAttribute(
-      "aria-current",
-    );
+    const inactive = screen.getByRole("link", { name: "Overview" });
+    expect(inactive).not.toHaveAttribute("aria-current");
+    expect(inactive).not.toHaveClass("font-medium");
+    expect(inactive.querySelector(".bg-primary-light")).toBeNull();
   });
 
   test("an album page lights its origin section, with no item current", () => {

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -92,16 +92,27 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
   const coverSrc = `/api/albums/${album.id}/cover${coverVersion ? `?v=${coverVersion}` : ""}`;
 
   // Spec §4 disclosure pattern: opening an inline panel moves focus into it so
-  // keyboard/SR users land on what just appeared. Closing leaves focus where
-  // it already is — on the toggle button.
+  // keyboard/SR users land on what just appeared. Closing from INSIDE the
+  // panel (Cancel/Done unmount the focused button) returns focus to the
+  // toggle; closing via the toggle leaves focus where it already is.
   const editPanelRef = useRef<HTMLDivElement>(null);
   const coverPanelRef = useRef<HTMLDivElement>(null);
+  const editToggleRef = useRef<HTMLButtonElement>(null);
+  const coverToggleRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (editing) editPanelRef.current?.focus();
   }, [editing]);
   useEffect(() => {
     if (editingCover) coverPanelRef.current?.focus();
   }, [editingCover]);
+  const closeEditPanel = () => {
+    setEditing(false);
+    editToggleRef.current?.focus();
+  };
+  const closeCoverPanel = () => {
+    setEditingCover(false);
+    coverToggleRef.current?.focus();
+  };
 
   const backOrigin = albumOriginFromState(useLocation().state);
 
@@ -190,6 +201,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
               railActions={
                 <>
                   <IconAction
+                    ref={editToggleRef}
                     label="Edit album"
                     onClick={() => setEditing((v) => !v)}
                     aria-expanded={editing}
@@ -198,6 +210,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
                     <EditIcon weight="thin" className="size-10" aria-hidden="true" />
                   </IconAction>
                   <IconAction
+                    ref={coverToggleRef}
                     label="Edit cover"
                     onClick={() => setEditingCover((v) => !v)}
                     aria-expanded={editingCover}
@@ -226,7 +239,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
               tabIndex={-1}
               className="outline-none"
             >
-              <AlbumEditPanel album={album} onClose={() => setEditing(false)} />
+              <AlbumEditPanel album={album} onClose={closeEditPanel} />
             </div>
           )}
 
@@ -240,7 +253,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
               <CoverEditPanel
                 albumId={album.id}
                 onInstalled={() => setCoverVersion((v) => v + 1)}
-                onClose={() => setEditingCover(false)}
+                onClose={closeCoverPanel}
               />
             </div>
           )}
@@ -268,35 +281,34 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
               </TableHead>
             </TableRow>
           </TableHeader>
+          {/* One <tbody> per disc, disc header INCLUDED: scope="rowgroup"
+              scopes the header to the rest of ITS row group, so the header
+              row must share the tbody with the tracks it introduces. */}
           {discs.map((group) => (
-            <Fragment key={group.disc}>
+            <TableBody key={group.disc}>
               {multiDisc && group.disc > 0 && (
-                <TableBody>
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead
-                      scope="rowgroup"
-                      colSpan={5}
-                      className="text-muted-foreground h-auto pt-6 text-xs font-medium tracking-wide uppercase"
-                    >
-                      Disc {group.disc}
-                    </TableHead>
-                  </TableRow>
-                </TableBody>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead
+                    scope="rowgroup"
+                    colSpan={5}
+                    className="text-muted-foreground h-auto pt-6 text-xs font-medium tracking-wide uppercase"
+                  >
+                    Disc {group.disc}
+                  </TableHead>
+                </TableRow>
               )}
-              <TableBody>
-                {group.rows.map((row) =>
-                  row.kind === "present" ? (
-                    <TrackRow
-                      key={`p-${row.track.id}`}
-                      track={row.track}
-                      albumArtist={album.album_artist}
-                    />
-                  ) : (
-                    <MissingTrackRow key={`m-${row.track.index}-${row.track.mb_trackid ?? ""}`} track={row.track} />
-                  ),
-                )}
-              </TableBody>
-            </Fragment>
+              {group.rows.map((row) =>
+                row.kind === "present" ? (
+                  <TrackRow
+                    key={`p-${row.track.id}`}
+                    track={row.track}
+                    albumArtist={album.album_artist}
+                  />
+                ) : (
+                  <MissingTrackRow key={`m-${row.track.index}-${row.track.mb_trackid ?? ""}`} track={row.track} />
+                ),
+              )}
+            </TableBody>
           ))}
         </Table>
           </section>
@@ -458,13 +470,14 @@ function DetailSkeleton() {
       <div className="flex flex-col gap-8">
         {/* Matches the BackLink button height. */}
         <Skeleton className="h-8 w-32" />
-        {/* Mirrors the hero container (rounded-xl + p-6) to minimize CLS. */}
-        <div className="bg-surface-raised flex flex-col gap-6 rounded-xl p-6 sm:flex-row sm:items-center">
-          <Skeleton className="size-40 shrink-0 rounded-xl" />
-          <div className="flex flex-col gap-2">
-            <Skeleton className="h-9 w-64" />
-            <Skeleton className="h-6 w-40" />
-            <Skeleton className="h-5 w-48" />
+        {/* Mirrors the rail panel (bordered, square cover + text below) to
+            minimize CLS against the loaded layout. */}
+        <div className="border-border w-96 max-w-full shrink-0 rounded-xl border pb-3 max-lg:mx-auto">
+          <Skeleton className="aspect-square w-full rounded-t-xl rounded-b-none" />
+          <div className="flex flex-col gap-2 px-4 pt-4">
+            <Skeleton className="h-9 w-48" />
+            <Skeleton className="h-6 w-32" />
+            <Skeleton className="h-5 w-40" />
           </div>
         </div>
         <Separator />

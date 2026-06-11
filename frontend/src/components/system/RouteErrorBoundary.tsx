@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { isRouteErrorResponse, Link, useRouteError } from "react-router";
 
 import { Warning } from "@/components/icons";
@@ -11,6 +12,13 @@ import { Button } from "@/components/ui/button";
  * crashes the sidebar/topbar stay alive and the fallback renders where the
  * page would have. The error detail stays visible (muted, small) so bug
  * reports from the self-hosting user still carry the message.
+ *
+ * Not silent for AT: EmptyState deliberately carries no live-region role, so
+ * the boundary owns the announcement — `role="alert"` on the message, plus an
+ * h1 (tabIndex -1, focused on mount). Without these, RouteAnnouncer announces
+ * the INTENDED page title on a crashing navigation (its `h1[tabindex="-1"]`
+ * focus query would otherwise no-op), and an in-page crash unmounts the
+ * focused element with no announcement at all.
  */
 export function RouteErrorBoundary() {
   const error = useRouteError();
@@ -20,8 +28,20 @@ export function RouteErrorBoundary() {
       ? error.message
       : "Unknown error";
 
+  // Move focus to the boundary's own h1 on mount so keyboard/SR users land on
+  // the error, not on <body> (in-page crash) or a stale target (navigation).
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
+
   return (
-    <div className="flex flex-col gap-4 py-10">
+    <div role="alert" className="flex flex-col gap-4 py-10">
+      {/* The visible title lives in EmptyState (a <p>); this sr-only h1
+          doubles it as the page heading + focus target. */}
+      <h1 ref={headingRef} tabIndex={-1} className="sr-only">
+        Something went wrong
+      </h1>
       <EmptyState
         bordered
         icon={Warning}

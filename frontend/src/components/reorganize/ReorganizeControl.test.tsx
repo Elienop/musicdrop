@@ -127,6 +127,46 @@ test("zero-move preview shows an inline notice — no review, no Done button", a
   ).toBeInTheDocument();
 });
 
+test("focus moves into the plan when it opens and back to the trigger on cancel", async () => {
+  wrap(<ReorganizeControl scope={{ scope: "library" }} />);
+  await userEvent.click(
+    screen.getByRole("button", { name: /reorganize files/i }),
+  );
+  const summary = await screen.findByText(/3 will move/i);
+
+  // The disclosure idiom: the plan container (tabIndex -1) takes focus when
+  // it appears, so keyboard users land on the confirm step.
+  expect(document.activeElement).not.toBe(document.body);
+  expect(document.activeElement?.contains(summary)).toBe(true);
+
+  // Cancel unmounts the focused button — focus returns to the trigger.
+  await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
+  expect(
+    screen.getByRole("button", { name: /reorganize files/i }),
+  ).toHaveFocus();
+});
+
+test("rail: the trigger stays focusable while the plan is open and swallows re-clicks", async () => {
+  wrap(<ReorganizeControl scope={{ scope: "library" }} variant="rail" />);
+  const trigger = screen.getByRole("button", { name: "Reorganize files" });
+  await userEvent.click(trigger);
+  await screen.findByText(/3 will move/i);
+
+  // Never `disabled` (that would strand keyboard focus on <body>) — the
+  // open state is conveyed via aria-disabled and the click is swallowed.
+  expect(trigger).toBeEnabled();
+  expect(trigger).toHaveAttribute("aria-disabled", "true");
+  // The spy's generic signature defeats vi.mocked's tuple inference — read
+  // the raw call list through a minimal structural cast instead.
+  const previewCalls = () =>
+    (
+      client.GET as unknown as { mock: { calls: [unknown][] } }
+    ).mock.calls.filter(([path]) => path === "/api/reorganize/preview").length;
+  const before = previewCalls();
+  await userEvent.click(trigger);
+  expect(previewCalls()).toBe(before);
+});
+
 test("a failed preview shows an inline error next to the buttons", async () => {
   vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
     if (path === "/api/reorganize/status")

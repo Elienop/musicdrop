@@ -56,11 +56,17 @@ export function ArtistAlbumsPage() {
   const [editingImage, setEditingImage] = useState(false);
   const [imageVersion, setImageVersion] = useState(0);
   // Spec §4 disclosure pattern (the AlbumDetailPage idiom): opening the
-  // inline panel moves focus into it; closing leaves focus on the toggle.
+  // inline panel moves focus into it; closing from INSIDE the panel (its
+  // Cancel/Done unmount the focused button) returns focus to the toggle.
   const imagePanelRef = useRef<HTMLDivElement>(null);
+  const imageToggleRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (editingImage) imagePanelRef.current?.focus();
   }, [editingImage]);
+  const closeImagePanel = () => {
+    setEditingImage(false);
+    imageToggleRef.current?.focus();
+  };
   const imageSettings = useArtistImageSettings();
   // The single write-to-library toggle drives BOTH fetch + write; when on, the
   // header gains a per-artist "Apply to library" action with marching progress.
@@ -168,6 +174,7 @@ export function ArtistAlbumsPage() {
                 <>
                   {imagesEnabled && (
                     <IconAction
+                      ref={imageToggleRef}
                       label="Edit artist image"
                       onClick={() => setEditingImage((v) => !v)}
                       aria-expanded={editingImage}
@@ -199,7 +206,7 @@ export function ArtistAlbumsPage() {
               <ArtistImageEditPanel
                 name={displayName}
                 onSaved={() => setImageVersion((v) => v + 1)}
-                onClose={() => setEditingImage(false)}
+                onClose={closeImagePanel}
               />
             </div>
           )}
@@ -279,19 +286,26 @@ export function ArtistAlbumsPage() {
 
 /** The per-artist "Save art to library" action (writes artist-poster /
  * artist-background files into the artist folder for Plex). Just the icon —
- * progress + the failed state show in the topbar activity popover. Disabled
- * while any artist-art job runs; the aria-label stays constant across the
- * spinner swap so the accessible name never flickers. */
+ * progress + the failed state show in the topbar activity popover. While any
+ * artist-art job runs the button stays FOCUSABLE (aria-disabled + swallowed
+ * re-clicks, the Pagination rule — `disabled` on activation would strand
+ * keyboard focus on <body> for the whole job); the aria-label stays constant
+ * across the spinner swap so the accessible name never flickers. */
 function ArtistArtStatus({ displayName }: { displayName: string }) {
   const status = useArtistArtBackfillStatus();
   const start = useStartArtistArtApply(displayName);
   const running = status.data?.phase === "running";
+  const busy = start.isPending || running;
 
   return (
     <IconAction
       label="Save art to library"
-      onClick={() => start.mutate()}
-      disabled={start.isPending || running}
+      aria-disabled={busy || undefined}
+      className="aria-disabled:opacity-50"
+      onClick={() => {
+        if (busy) return; // job in flight — keep focus, swallow the re-click
+        start.mutate();
+      }}
     >
       {start.isPending ? (
         <Spinner weight="thin" className="size-10 animate-spin" aria-hidden="true" />

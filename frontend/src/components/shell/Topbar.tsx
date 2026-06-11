@@ -176,11 +176,14 @@ export function HealthStatus({ compact = false }: { compact?: boolean }) {
               : "text-destructive",
         )}
       />
-      {/* Icon-only when `compact` (the collapsed sidebar rail) or below sm;
-          the wrapper's title + aria-label still convey the full status. */}
+      {/* Visually icon-only when `compact` (the collapsed sidebar rail) —
+          but sr-only, NOT hidden: live regions announce content changes, not
+          aria-label changes, so the role="status" wrapper must keep text for
+          an Online→Offline flip to announce. Below sm the label is simply
+          hidden; the wrapper's title + aria-label carry on-demand status. */}
       <span
         className={cn(
-          compact ? "hidden" : "hidden sm:inline",
+          compact ? "sr-only" : "hidden sm:inline",
           isPending
             ? "text-muted-foreground"
             : reachable

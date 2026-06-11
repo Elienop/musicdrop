@@ -115,4 +115,21 @@ describe("HealthStatus (Topbar copy)", () => {
 
     expect(await screen.findByText(/offline/i)).toBeInTheDocument();
   });
+
+  test("compact mode keeps the status text in the live region (sr-only, not hidden)", async () => {
+    server.use(
+      http.get(HEALTH_URL, () =>
+        HttpResponse.json({ status: "ok", version: "0.1.0" }),
+      ),
+    );
+
+    renderWithProviders(<HealthStatus compact />);
+
+    // Live regions announce content changes, not aria-label changes — the
+    // collapsed rail must keep an announceable text node, just visually hidden.
+    const label = await screen.findByText(/online/i);
+    expect(label).toHaveClass("sr-only");
+    expect(label.className).not.toMatch(/\bhidden\b/);
+    expect(screen.getByRole("status")).toContainElement(label);
+  });
 });

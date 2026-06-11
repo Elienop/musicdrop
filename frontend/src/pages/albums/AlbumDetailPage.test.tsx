@@ -241,6 +241,34 @@ describe("AlbumDetailPage", () => {
     expect(screen.getByText("Disc 2")).toBeInTheDocument();
   });
 
+  test("a disc header shares its tbody with the disc's tracks (honest rowgroup scope)", async () => {
+    server.use(
+      http.get(DETAIL_URL, () =>
+        HttpResponse.json(
+          makeDetail({
+            track_count: 3,
+            tracks: [
+              makeTrack({ id: 1, title: "One", track: 1, disc: 1 }),
+              makeTrack({ id: 2, title: "Two", track: 1, disc: 2 }),
+              makeTrack({ id: 3, title: "Three", track: 2, disc: 2 }),
+            ],
+          }),
+        ),
+      ),
+    );
+
+    renderDetail(1);
+
+    const disc2 = await screen.findByText("Disc 2");
+    // scope="rowgroup" scopes the header to the rest of ITS row group, so
+    // the header row must live in the SAME <tbody> as the tracks it labels.
+    expect(disc2.closest("th")).toHaveAttribute("scope", "rowgroup");
+    const tbody = disc2.closest("tbody") as HTMLElement;
+    expect(within(tbody).getByText("Two")).toBeInTheDocument();
+    expect(within(tbody).getByText("Three")).toBeInTheDocument();
+    expect(within(tbody).queryByText("One")).not.toBeInTheDocument();
+  });
+
   test("does not label discs for a single-disc album", async () => {
     server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
 
@@ -452,6 +480,36 @@ describe("AlbumDetailPage", () => {
 
     expect(cover).toHaveAttribute("aria-expanded", "true");
     expect(document.getElementById("album-cover-panel")).toHaveFocus();
+  });
+
+  test("closing the edit panel from inside (Cancel) returns focus to its toggle", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+
+    renderDetail(1);
+
+    const edit = await screen.findByRole("button", { name: "Edit album" });
+    await userEvent.click(edit);
+    expect(document.getElementById("album-edit-panel")).toHaveFocus();
+
+    // The in-panel Cancel unmounts the focused button — focus must return to
+    // the disclosure toggle instead of dropping to <body>.
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(document.getElementById("album-edit-panel")).toBeNull();
+    expect(edit).toHaveFocus();
+  });
+
+  test("closing the cover panel from inside (Cancel) returns focus to its toggle", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+
+    renderDetail(1);
+
+    const cover = await screen.findByRole("button", { name: "Edit cover" });
+    await userEvent.click(cover);
+    expect(document.getElementById("album-cover-panel")).toHaveFocus();
+
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(document.getElementById("album-cover-panel")).toBeNull();
+    expect(cover).toHaveFocus();
   });
 
   test("not-found renders on the shared EmptyState recipe", async () => {
