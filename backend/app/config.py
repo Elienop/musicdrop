@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     # by app/beets/setup.py; there are no separate MUSICDROP_BEETS_LIBRARY_* knobs.
     beets_dir: str = "data/beets"
 
+    # Built-frontend dir served by FastAPI in the Docker image (set there to
+    # /app/static). Empty in dev: the Vite dev server owns the frontend and
+    # this seam is a no-op. (env MUSICDROP_STATIC_DIR)
+    static_dir: str = ""
+
     # Library-wide lyrics backfill: a courtesy pause between LRCLib requests
     # (beets adds none; LRCLib is a free community API).
     # (env MUSICDROP_LYRICS_BACKFILL_DELAY_SECONDS)
