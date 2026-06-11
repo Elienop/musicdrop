@@ -1,4 +1,4 @@
-"""High-level slskd operations: the connection self-test.
+"""High-level slskd operations: the connection self-test + path remapping.
 
 The boundary that turns httpx (exception-throwing) into a typed
 ``SlskdConnection`` result. Makes HTTP requests ONLY through ``client.check``
@@ -8,6 +8,8 @@ The boundary that turns httpx (exception-throwing) into a typed
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import httpx
 
@@ -30,3 +32,15 @@ def test_connection(config: SlskdConfig) -> SlskdConnection:
     except httpx.HTTPError:
         # RequestError (connect/read/timeout) + any other transport-level error.
         return SlskdConnection(ok=False, error="Couldn't reach the slskd server.")
+
+
+def remap_to_inbox(local_dir: str, downloads_prefix: str, inbox_dir: Path) -> str:
+    """slskd's container path -> a host path rooted under ``inbox_dir``.
+
+    Strips the configured downloads prefix (slskd's namespace) and re-roots the
+    remainder under the inbox. Purely syntactic — ``contain`` remains the
+    authority that rejects a ``../`` escape after the remap, and ``lstrip('/')``
+    keeps the join from producing an absolute path that ignores the inbox root.
+    """
+    remainder = local_dir.removeprefix(downloads_prefix) if downloads_prefix else local_dir
+    return str(inbox_dir / remainder.lstrip("/"))
