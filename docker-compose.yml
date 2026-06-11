@@ -1,0 +1,21 @@
+# MusicDrop — example deployment. Copy, adjust paths, `docker compose up -d`.
+services:
+  musicdrop:
+    image: ghcr.io/elienop/musicdrop:latest
+    container_name: musicdrop
+    ports:
+      - "3030:3030"
+    environment:
+      # Match the owner of your music share so tag writes / reorganize land
+      # with the right ownership.
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      # Optional integrations (see README):
+      # - MUSICDROP_ARTIST_IMAGE_FANARTTV_API_KEY=...
+      # - MUSICDROP_INBOX_DIR=/inbox   # pair with the /inbox volume below
+    volumes:
+      - ./data:/data            # beets library.db + config.yaml + app state
+      - /path/to/music:/music   # your music library (beets `directory`)
+      # - /path/to/slskd/downloads:/inbox   # if using slskd acquisition
+    restart: unless-stopped

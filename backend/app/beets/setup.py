@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import sqlite3
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -25,7 +24,7 @@ from app.beets.library import LibraryHandle, close_library
 logger = logging.getLogger(__name__)
 
 
-def setup_beets(beets_dir: str) -> LibraryHandle:
+def setup_beets(beets_dir: str, *, container_music_default: bool = False) -> LibraryHandle:
     """Open a beets Library under ``beets_dir``, honoring its config.yaml.
 
     Do not reorder the body. Three constraints are load-bearing:
@@ -47,7 +46,12 @@ def setup_beets(beets_dir: str) -> LibraryHandle:
 
     if not cfg_path.exists():
         starter = Path(__file__).parent / "config.starter.yaml"
-        shutil.copy(starter, cfg_path)
+        text = starter.read_text(encoding="utf-8")
+        if container_music_default:
+            # In the Docker image the music share is mounted at /music; the
+            # dev-relative ../music default would point inside the volume.
+            text = text.replace("directory: ../music", "directory: /music", 1)
+        cfg_path.write_text(text, encoding="utf-8")
         logger.info("Copied starter config to %s", cfg_path)
 
     os.environ["BEETSDIR"] = str(beets_dir_path)

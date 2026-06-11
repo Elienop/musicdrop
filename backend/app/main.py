@@ -28,6 +28,7 @@ from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
 from app.config import resolve_artist_image_cache_dir, settings
+from app.static_files import mount_static
 
 # Shutdown grace: after the inbox drain is stopped, poll the import slot for up
 # to TICKS * INTERVAL seconds (~5s) so an import already in flight gets a
@@ -48,7 +49,11 @@ def _resolve_library() -> LibraryHandle:
     handle (the dir/file are created if missing). Sync helper: runs once at
     startup (cold path).
     """
-    return setup_beets(settings.beets_dir)
+    return setup_beets(
+        settings.beets_dir,
+        # static_dir doubles as the "running from the image" marker.
+        container_music_default=bool(settings.static_dir),
+    )
 
 
 def _build_artist_image_service(
@@ -197,3 +202,9 @@ app.include_router(playlists_router, prefix="/api")
 app.include_router(plex_router, prefix="/api")
 app.include_router(slskd_router, prefix="/api")
 app.include_router(acquisition_router, prefix="/api")
+
+# Production single-image mode: serve the built SPA. Registered after every
+# API router so the catch-all cannot shadow /api/*. Dev (static_dir unset)
+# skips this entirely.
+if settings.static_dir:
+    mount_static(app, settings.static_dir)

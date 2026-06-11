@@ -12,12 +12,19 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="MUSICDROP_", env_file=".env", extra="ignore")
 
     app_name: str = "MusicDrop"
-    version: str = "0.1.0"
+    # Shipped builds bake the release tag in via MUSICDROP_VERSION (Docker
+    # build-arg -> ENV); everything else (dev checkouts, tests) reads "dev".
+    version: str = "dev"
     # beets integration:
     # data/beets is the user-owned BEETSDIR (config.yaml + library.db live here).
     # All library/directory/plugins are read FROM data/beets/config.yaml at startup
     # by app/beets/setup.py; there are no separate MUSICDROP_BEETS_LIBRARY_* knobs.
     beets_dir: str = "data/beets"
+
+    # Built-frontend dir served by FastAPI in the Docker image (set there to
+    # /app/static). Empty in dev: the Vite dev server owns the frontend and
+    # this seam is a no-op. (env MUSICDROP_STATIC_DIR)
+    static_dir: str = ""
 
     # Library-wide lyrics backfill: a courtesy pause between LRCLib requests
     # (beets adds none; LRCLib is a free community API).

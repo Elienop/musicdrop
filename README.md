@@ -51,13 +51,37 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 - **Faceted Browse** — filter the library by genre · decade · format.
 - **Dark, art-forward UI** — violet-accented dark theme, dissolving detail rails, Koito-inspired row cards, a two-font type system (League Spartan display face), and the original MusicDrop logo re-colored onto the design tokens.
 
-**Planned** — deemix acquisition adapter, release packaging (Docker).
+**Planned** — deemix acquisition adapter.
 
 ## Screenshots
 
 | Overview | Artist | Album |
 |---|---|---|
 | ![Overview — library stats and recently added](docs/screenshots/overview.png) | ![Artist page — portrait rail and album rows](docs/screenshots/artist.png) | ![Album page — cover rail and tracklist](docs/screenshots/album.png) |
+
+## Install (Docker)
+
+MusicDrop ships as a single container: `ghcr.io/elienop/musicdrop` (amd64 + arm64), FastAPI serving both the API and the UI on port **3030**.
+
+```yaml
+services:
+  musicdrop:
+    image: ghcr.io/elienop/musicdrop:latest
+    ports:
+      - "3030:3030"
+    environment:
+      - PUID=1000   # match the owner of your music share
+      - PGID=1000   # (tag writes / reorganize keep that ownership)
+      - TZ=Etc/UTC
+    volumes:
+      - ./data:/data            # beets library.db + config.yaml + app state
+      - /path/to/music:/music   # your music library
+    restart: unless-stopped
+```
+
+`docker compose up -d`, then open `http://<host>:3030`. First boot writes a starter beets config to `data/beets/config.yaml` with `directory: /music`; edit it under **Settings → beets** (plugins, import behavior) — MusicDrop reads it like the beets CLI would. Optional integrations (slskd webhook, Plex, fanart.tv/Spotify artist images) are configured under Settings or via `MUSICDROP_*` env vars; for slskd, mount its downloads dir (e.g. `/inbox`) and set `MUSICDROP_INBOX_DIR=/inbox`.
+
+Releases are automatic: every merged PR publishes a new image tag (`vX.Y.Z`, plus `latest`) with generated notes on the [Releases page](https://github.com/Elienop/musicdrop/releases).
 
 ## Development
 

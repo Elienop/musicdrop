@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
+    branches-ignore: [main]   # main is gated by release.yml calling this workflow
   pull_request:
+  workflow_call:
 
 jobs:
   backend:
@@ -61,3 +63,12 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image (no push)
+        run: docker build -t musicdrop:ci .
