@@ -5,21 +5,21 @@ description = "A self-hosted web UI for beets — browse your music library, run
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",
+    "uvicorn[standard]>=0.49.0",
     "pydantic-settings>=2.5",
     "beets==2.11.*",
-    "beautifulsoup4>=4.12",
+    "beautifulsoup4>=4.15.0",
     "langdetect>=1.0.9",
     "httpx>=0.28.1",
     "ruamel.yaml>=0.15.93",
-    "python-multipart>=0.0.30",
+    "python-multipart>=0.0.32",
     "plexapi>=4.15,<5",
 ]
 
 [project.optional-dependencies]
 dev = [
     "mypy>=1.11",
-    "ruff>=0.6",
+    "ruff>=0.15.17",
     "pytest>=8.3",
     "respx>=0.23.1",
 ]
