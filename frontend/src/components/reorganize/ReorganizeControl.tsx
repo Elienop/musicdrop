@@ -1,6 +1,6 @@
 // frontend/src/components/reorganize/ReorganizeControl.tsx
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
   type ReorganizeBackfillStatus,
@@ -98,6 +98,22 @@ export function ReorganizeControl({
   const [plan, setPlan] = useState<ReorganizePlan | null>(null);
   const [message, setMessage] = useState<ActionMessage | null>(null);
 
+  // Spec §4 disclosure idiom (the album-edit-panel pattern): the plan opening
+  // moves focus INTO it; closing (Cancel or a started job) returns focus to
+  // the trigger. Without this keyboard focus drops to <body> both ways — the
+  // plan renders unfocused, and Cancel/confirm unmount the button just pressed.
+  const planRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const planWasOpen = useRef(false);
+  useEffect(() => {
+    if (plan != null && !planWasOpen.current) {
+      planRef.current?.focus();
+    } else if (plan == null && planWasOpen.current) {
+      triggerRef.current?.focus();
+    }
+    planWasOpen.current = plan != null;
+  }, [plan]);
+
   const job = status.data;
   const phase = job?.phase;
   const isThis = jobMatches(job, scope);
@@ -138,6 +154,31 @@ export function ReorganizeControl({
     setMessage({ kind: "error", text: (e as Error).message });
   }
 
+  // Triggers are never `disabled` while they hold focus (the Pagination rule:
+  // disabling mid-flight strands keyboard focus on <body>) — busy/open states
+  // are conveyed via aria-disabled and the click is swallowed instead.
+  const previewBlocked = preview.isPending || otherRunning || plan != null;
+  const onTriggerPreview = () => {
+    if (previewBlocked) return; // busy/open — keep focus, swallow the re-click
+    setMessage(null);
+    preview.mutate(scope, {
+      onSuccess: onPreviewed,
+      onError: onActionError,
+    });
+  };
+  const onConfirmStart = () => {
+    if (start.isPending || otherRunning) return; // in flight — swallow
+    setMessage(null);
+    start.mutate(scope, {
+      onSuccess: () => setPlan(null),
+      onError: onActionError,
+    });
+  };
+  const onStop = () => {
+    if (stop.isPending) return; // in flight — swallow
+    stop.mutate();
+  };
+
   if (variant === "rail") {
     return (
       <div className="flex flex-col items-stretch gap-2">
@@ -151,23 +192,21 @@ export function ReorganizeControl({
             {railActions}
             {runningThis ? (
               <IconAction
+                ref={triggerRef}
                 label="Stop reorganizing"
-                onClick={() => stop.mutate()}
-                disabled={stop.isPending}
+                aria-disabled={stop.isPending || undefined}
+                className="aria-disabled:opacity-50"
+                onClick={onStop}
               >
                 <StopIcon weight="thin" className="size-10" aria-hidden="true" />
               </IconAction>
             ) : (
               <IconAction
+                ref={triggerRef}
                 label="Reorganize files"
-                disabled={preview.isPending || otherRunning || plan != null}
-                onClick={() => {
-                  setMessage(null);
-                  preview.mutate(scope, {
-                    onSuccess: onPreviewed,
-                    onError: onActionError,
-                  });
-                }}
+                aria-disabled={previewBlocked || undefined}
+                className="aria-disabled:opacity-50"
+                onClick={onTriggerPreview}
               >
                 {preview.isPending ? (
                   <Spinner weight="thin" className="size-10 animate-spin" aria-hidden="true" />
@@ -180,17 +219,14 @@ export function ReorganizeControl({
         </div>
         {plan != null && (
           <>
-            <PlanView plan={plan} />
+            <div ref={planRef} tabIndex={-1} className="outline-none">
+              <PlanView plan={plan} />
+            </div>
             <Button
               size="sm"
-              disabled={start.isPending || otherRunning}
-              onClick={() => {
-                setMessage(null);
-                start.mutate(scope, {
-                  onSuccess: () => setPlan(null),
-                  onError: onActionError,
-                });
-              }}
+              aria-disabled={start.isPending || otherRunning || undefined}
+              className="aria-disabled:opacity-50"
+              onClick={onConfirmStart}
             >
               {start.isPending
                 ? "Starting…"
@@ -224,29 +260,31 @@ export function ReorganizeControl({
 
   return (
     <div className="flex flex-col items-start gap-2">
-      {plan != null && <PlanView plan={plan} />}
+      {plan != null && (
+        <div ref={planRef} tabIndex={-1} className="outline-none">
+          <PlanView plan={plan} />
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-3">
         {runningThis ? (
           <Button
+            ref={triggerRef}
             variant="outline"
             size="sm"
-            onClick={() => stop.mutate()}
-            disabled={stop.isPending}
+            aria-disabled={stop.isPending || undefined}
+            className="aria-disabled:opacity-50"
+            onClick={onStop}
           >
             Stop
           </Button>
         ) : plan == null ? (
           <Button
+            ref={triggerRef}
             variant="outline"
             size="sm"
-            disabled={preview.isPending || otherRunning}
-            onClick={() => {
-              setMessage(null);
-              preview.mutate(scope, {
-                onSuccess: onPreviewed,
-                onError: onActionError,
-              });
-            }}
+            aria-disabled={previewBlocked || undefined}
+            className="aria-disabled:opacity-50"
+            onClick={onTriggerPreview}
           >
             {preview.isPending ? "Building preview…" : "Reorganize files…"}
           </Button>
@@ -254,14 +292,9 @@ export function ReorganizeControl({
           <>
             <Button
               size="sm"
-              disabled={start.isPending || otherRunning}
-              onClick={() => {
-                setMessage(null);
-                start.mutate(scope, {
-                  onSuccess: () => setPlan(null),
-                  onError: onActionError,
-                });
-              }}
+              aria-disabled={start.isPending || otherRunning || undefined}
+              className="aria-disabled:opacity-50"
+              onClick={onConfirmStart}
             >
               {start.isPending
                 ? "Starting…"

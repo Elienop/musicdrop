@@ -3,12 +3,13 @@
 // The icon concept module (spec §3): pages import CONCEPTS, not glyphs —
 // one concept = one Phosphor icon, so swapping a glyph is a one-line change
 // here and no two pages drift onto different icons for the same idea.
-// Default weight is "regular"; active/selected states pass weight="fill".
+// Default weight is "light", set ONCE by the app-wide IconContext (App.tsx) —
+// glyphs don't pass `weight` themselves. The only sanctioned local overrides:
+// detail-rail actions = thin (large size-10 glyphs), checkbox tick = bold
+// (tiny control glyph needs the stroke).
 // The one spinner is Spinner (CircleNotch) + className "animate-spin".
 // `Success` and `Online` intentionally share CheckCircle (spec's map; online
-// status always pairs the icon with text, never color alone), and
-// `CopyAction` (clipboard copy) shares Copy with the `Duplicates` nav concept
-// on the same precedent.
+// status always pairs the icon with text, never color alone).
 export {
   // Navigation
   SquaresFour as Overview,
@@ -33,9 +34,6 @@ export {
   CheckCircle as Online,
   // Domain
   MusicNotes as MusicFallback,
-  // Brand glyph for the sidebar rail — intentionally shares MusicNotes with
-  // MusicFallback (same precedent as Success/Online sharing CheckCircle).
-  MusicNotes as Brand,
   FileText as Lyrics,
   PencilSimple as Edit,
   ImageSquare as Cover,
@@ -57,8 +55,6 @@ export {
   Check as Confirm,
   Checks as Merge,
   CaretDown as Expand,
-  Circle as RadioDot,
-  Copy as CopyAction,
   ArrowSquareOut as External,
   MusicNotesPlus as AddToPlaylist,
   ArrowsClockwise as Refresh,

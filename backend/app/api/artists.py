@@ -15,6 +15,7 @@ from app.artwork.service import ArtistImageService
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
 from app.beets import library as beets_library
 from app.beets.library import LibraryHandle, list_artists
+from app.config import resolve_artist_image_cache_dir
 from app.config import settings as _module_settings
 from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import lyrics_backfill_active
@@ -151,7 +152,7 @@ def _gate_library_busy(app: object) -> None:
             st.HTTP_409_CONFLICT,
             "A library operation is in progress — try again when it finishes",
         )
-    lock = getattr(app.state, "beets_swap_lock", None)  # type: ignore[attr-defined]
+    lock = getattr(app.state, "beets_swap_lock", None)  # type: ignore[attr-defined]  # app is duck-typed (object) so tests can pass a stub
     if lock is not None and lock.locked():
         raise HTTPException(
             st.HTTP_409_CONFLICT,
@@ -238,14 +239,14 @@ def _start(
     force: bool,
     artist: str | None,
 ) -> None:
-    from app.main import _resolve_cache_dir  # local import: same cache dir the service uses
-
-    app_settings = getattr(app.state, "settings", None) or _module_settings  # type: ignore[attr-defined]
+    app_settings = getattr(app.state, "settings", None) or _module_settings  # type: ignore[attr-defined]  # app is duck-typed (object) so tests can pass a stub
     delay = float(getattr(app_settings, "lyrics_backfill_delay_seconds", 0.2))
     start_art_backfill(
         reg,
         lib,
-        cache_dir=_resolve_cache_dir(),
+        # The same cache dir the lifespan-built service uses, so the sweep sees
+        # the manual overrides + cached positives.
+        cache_dir=resolve_artist_image_cache_dir(),
         settings=app_settings,
         delay=delay,
         force=force,

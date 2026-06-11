@@ -37,6 +37,15 @@ export function useApplyAlbumEdit(albumId: number) {
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["album", albumId] });
+      // An edit can change title/artist/year/genre — refresh every library
+      // surface that renders album data, not just the detail page (with the
+      // global 30s staleTime, a stale list would otherwise re-serve the old
+      // values without a background refetch).
+      void queryClient.invalidateQueries({ queryKey: ["albums"] });
+      void queryClient.invalidateQueries({ queryKey: ["artists"] });
+      void queryClient.invalidateQueries({ queryKey: ["browse"] });
+      void queryClient.invalidateQueries({ queryKey: ["search"] });
+      void queryClient.invalidateQueries({ queryKey: ["stats"] });
     },
   });
 }

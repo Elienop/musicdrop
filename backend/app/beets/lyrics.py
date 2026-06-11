@@ -14,6 +14,7 @@ store plain lyrics into ``item.lyrics`` + flex fields and write the file tag
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import beets
@@ -22,6 +23,7 @@ from beets.library import Library
 from beets.util.lyrics import Lyrics
 from beetsplug._utils.requests import HTTPNotFoundError
 
+from app.beets.library import LibraryHandle
 from app.models.lyrics import (
     ItemLyricsOutcome,
     ItemLyricsStatus,
@@ -46,8 +48,12 @@ def writes_enabled() -> bool:
     return bool(should_write(None))
 
 
-def _make_lyrics_plugin() -> Any:
-    """Throwaway LyricsPlugin with the import stage disabled (auto=False)."""
+def make_lyrics_plugin() -> Any:
+    """Throwaway LyricsPlugin with the import stage disabled (auto=False).
+
+    Returned as an opaque object: callers (the backfill runner) only ferry it
+    back into ``fetch_item_lyrics``, never call beets on it themselves.
+    """
     beets.config["lyrics"].set({"auto": False})  # overlay before construct
     from beetsplug.lyrics import LyricsPlugin
 
@@ -113,6 +119,38 @@ def fetch_item_lyrics(plugin: Any, item: Any, *, force: bool, write: bool) -> It
     return ItemLyricsOutcome(item_id=item_id, status=status, source=None, written=False)
 
 
+@dataclass
+class LyricsSweepUnit:
+    """One backfill unit: the live beets item (opaque) plus its display label."""
+
+    item: Any  # the beets Item itself — fetch_item_lyrics mutates + stores it
+    label: str
+
+
+def _item_label(item: Any) -> str:
+    artist = str(item.albumartist or item.artist or "").strip() or "Unknown"
+    return f"{artist} — {item.album} — {item.title}"
+
+
+def collect_lyrics_units(
+    handle: LibraryHandle, album_id: int | None = None
+) -> list[LyricsSweepUnit]:
+    """Snapshot the items a lyrics sweep will visit (album-scoped or whole library).
+
+    An unknown ``album_id`` yields an empty list, so the runner finishes "done"
+    at zero items — same posture as a direct beets lookup. Bound to
+    ``music_dir_context`` like every adapter op (cheap insurance; scalar reads).
+    """
+    lib = handle.lib
+    with lib.music_dir_context():
+        if album_id is not None:
+            album = lib.get_album(album_id)
+            items = list(album.items()) if album is not None else []
+        else:
+            items = list(lib.items())
+    return [LyricsSweepUnit(item=item, label=_item_label(item)) for item in items]
+
+
 def _album_scope_label(lib: Library, album_id: int) -> str:
     """'artist — album' for the banner/label, or raise AlbumNotFoundError (404)."""
     with lib.music_dir_context():
@@ -174,7 +212,7 @@ async def start_album_lyrics_op(request_obj: Any, album_id: int) -> LyricsBackfi
         ) from None
     app_settings = getattr(app.state, "settings", None)
     delay = float(getattr(app_settings, "lyrics_backfill_delay_seconds", 0.2))
-    start_backfill(reg, handle.lib, delay=delay, write=write, album_id=album_id)
+    start_backfill(reg, handle, delay=delay, write=write, album_id=album_id)
     return reg.state()
 
 

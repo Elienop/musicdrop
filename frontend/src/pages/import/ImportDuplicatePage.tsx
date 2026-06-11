@@ -276,7 +276,7 @@ function Panel({
         id={headingId}
         className={
           accent
-            ? "text-primary text-xs font-medium tracking-wide uppercase"
+            ? "text-primary-light text-xs font-medium tracking-wide uppercase"
             : "text-muted-foreground text-xs font-medium tracking-wide uppercase"
         }
       >

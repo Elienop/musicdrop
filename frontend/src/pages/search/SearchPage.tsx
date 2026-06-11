@@ -421,7 +421,7 @@ function TrackRow({ track, from }: { track: SearchTrack; from: AlbumOrigin }) {
           <Link
             to={`/albums/${track.album_id}`}
             state={{ from }}
-            className="hover:text-primary focus-ring w-fit max-w-full truncate rounded-sm font-medium"
+            className="focus-ring w-fit max-w-full truncate rounded-sm font-medium hover:underline"
           >
             {track.title}
           </Link>

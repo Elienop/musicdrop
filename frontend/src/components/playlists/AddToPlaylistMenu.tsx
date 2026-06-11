@@ -114,7 +114,9 @@ export function AddToPlaylistMenu({
                 }
               >
                 <TriggerIcon
-                  weight={large ? "thin" : "regular"}
+                  // Rail-size trigger gets the sanctioned thin weight; the
+                  // compact one inherits the app-wide light default.
+                  weight={large ? "thin" : undefined}
                   className={triggerIconClass}
                   aria-hidden="true"
                 />

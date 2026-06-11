@@ -4,8 +4,8 @@
 // Active state is SECTION-membership driven, not raw path-prefix — routes
 // reachable from several places (/albums/*, /search) light the section
 // recorded in their router-state origin, defaulting to Library. The item
-// pill (violet bg + fill-weight icon + aria-current) only lights when the
-// pathname matches the item's own route.
+// treatment (violet text + font-medium + left indicator bar + aria-current)
+// only lights when the pathname matches the item's own route.
 //
 // Self-contained: useLocation for active state, localStorage
 // ("md.sidebar.collapsed") for the 64px icon-rail collapse. Mounted by App
@@ -269,13 +269,24 @@ export function AppSidebar({ badges }: AppSidebarProps) {
                         title={collapsed ? item.label : undefined}
                         className={cn(
                           // h-11 = the ≥44px hit area, kept in the rail too.
-                          "focus-ring flex h-11 items-center gap-3 rounded-md px-3 text-sm font-normal",
+                          // `relative` anchors the active indicator bar.
+                          "focus-ring relative flex h-11 items-center gap-3 rounded-md px-3 text-sm",
                           active
-                            ? "text-primary-light"
-                            : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
+                            ? "text-primary-light font-medium"
+                            : "text-muted-foreground font-normal hover:bg-surface-hover hover:text-foreground",
                           collapsed && "justify-center px-0",
                         )}
                       >
+                        {/* Non-color active cues (WCAG 1.4.1): font-medium +
+                            this small violet bar on the item's left edge —
+                            it survives the collapsed rail, where the violet
+                            text alone is just a recolored icon. */}
+                        {active && (
+                          <span
+                            aria-hidden="true"
+                            className="bg-primary-light absolute top-1/2 left-0 h-5 w-[3px] -translate-y-1/2 rounded-full"
+                          />
+                        )}
                         <Icon
                           className="size-5 shrink-0"
                           aria-hidden="true"

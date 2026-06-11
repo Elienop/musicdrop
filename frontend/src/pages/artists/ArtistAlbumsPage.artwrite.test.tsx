@@ -107,29 +107,34 @@ describe("ArtistAlbumsPage artist-art apply", () => {
     ).toBeNull();
   });
 
-  it("disables the button while this artist's job runs (progress is in the app banner)", () => {
+  it("keeps the button focusable but inert while a job runs (focus is never stranded)", () => {
     backfillStatus.phase = "running";
     backfillStatus.artist = "ABBA";
     backfillStatus.processed = 1;
     backfillStatus.total = 3;
     renderAt("ABBA");
-    expect(
-      screen.getByRole("button", { name: /save art to library/i }),
-    ).toBeDisabled();
+    const btn = screen.getByRole("button", { name: /save art to library/i });
+    // aria-disabled, NOT disabled — disabling the focused button on
+    // activation would drop keyboard focus to <body> for the whole job.
+    expect(btn).toBeEnabled();
+    expect(btn).toHaveAttribute("aria-disabled", "true");
+    // Re-clicks while running are swallowed.
+    fireEvent.click(btn);
+    expect(applyMutate).not.toHaveBeenCalled();
     // No inline progress — it must not duplicate the top app banner.
     expect(screen.queryByText(/1 \/ 3/)).toBeNull();
   });
 
-  it("re-enables the button after the job finishes (no inline tally)", () => {
+  it("re-arms the button after the job finishes (no inline tally)", () => {
     backfillStatus.phase = "done";
     backfillStatus.artist = "ABBA";
     backfillStatus.processed = 1;
     backfillStatus.total = 1;
     backfillStatus.written = 1;
     renderAt("ABBA");
-    expect(
-      screen.getByRole("button", { name: /save art to library/i }),
-    ).toBeEnabled();
+    const btn = screen.getByRole("button", { name: /save art to library/i });
+    expect(btn).toBeEnabled();
+    expect(btn).not.toHaveAttribute("aria-disabled");
     // Result/tally now shows in the app banner, not inline.
     expect(screen.queryByText(/1 written/i)).toBeNull();
   });

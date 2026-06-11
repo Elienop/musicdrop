@@ -31,7 +31,6 @@ const CONCEPTS = [
   "Info",
   "Online",
   // Domain
-  "Brand",
   "MusicFallback",
   "Lyrics",
   "Edit",
@@ -54,8 +53,6 @@ const CONCEPTS = [
   "Confirm",
   "Merge",
   "Expand",
-  "RadioDot",
-  "CopyAction",
   "External",
   "AddToPlaylist",
   "Refresh",

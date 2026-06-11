@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -24,6 +25,7 @@ from app.artwork.service import ArtistImageService
 from app.artwork.source import TransientSourceError
 from app.beets.artist_art import write_artist_art
 from app.beets.library import get_artist_mbid, list_artists
+from app.config import Settings
 from app.models.artist_art import ArtistArtOutcome
 
 
@@ -47,10 +49,10 @@ async def _default_fetch_one(
 
 async def sweep_async(
     reg: ArtistArtBackfillRegistry,
-    lib: Any,
+    lib: Any,  # opaque beets Library — only ever passed through to adapter functions
     *,
-    cache_dir: Any,
-    settings: Any,
+    cache_dir: Path,
+    settings: Settings,
     delay: float,
     force: bool,
     artist: str | None = None,
@@ -115,10 +117,10 @@ async def _run_loop(
 
 def start_backfill(
     reg: ArtistArtBackfillRegistry,
-    lib: Any,
+    lib: Any,  # opaque beets Library — only ever passed through to adapter functions
     *,
-    cache_dir: Any,
-    settings: Any,
+    cache_dir: Path,
+    settings: Settings,
     delay: float,
     force: bool,
     artist: str | None = None,

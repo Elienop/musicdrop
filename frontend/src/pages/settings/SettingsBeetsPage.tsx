@@ -19,6 +19,7 @@ import {
   Success,
   Warning,
 } from "@/components/icons";
+import { SectionLabel } from "@/components/system/SectionLabel";
 import { StatusBanner } from "@/components/system/StatusBanner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -332,7 +333,7 @@ export function SettingsBeetsPage() {
     <div className="flex flex-col gap-8">
       <section className="flex flex-col gap-4" aria-label="Beets configuration">
         <header className="flex flex-col gap-1">
-          <h2 className="text-base font-semibold">Beets configuration</h2>
+          <SectionLabel>Beets configuration</SectionLabel>
           <p className="text-muted-foreground text-sm">
             Loaded from <code className="font-mono">{data.config_path}</code>
           </p>
@@ -432,7 +433,7 @@ function Loader() {
       aria-label="Beets configuration"
     >
       <div className="flex flex-col gap-1">
-        <h2 className="text-base font-semibold">Beets configuration</h2>
+        <SectionLabel>Beets configuration</SectionLabel>
       </div>
       <p
         className="text-muted-foreground flex items-center gap-2 text-sm"
@@ -455,7 +456,7 @@ function ErrorBanner({ err }: { err: unknown }) {
       aria-label="Beets configuration"
     >
       <div className="flex flex-col gap-1">
-        <h2 className="text-base font-semibold">Beets configuration</h2>
+        <SectionLabel>Beets configuration</SectionLabel>
       </div>
       <div
         className="border-destructive/40 bg-destructive/5 flex items-start gap-3 rounded-xl border p-4"
@@ -500,7 +501,7 @@ function ConfigStateBanner({
         role="status"
       >
         <Success
-          className="text-primary mt-0.5 size-5 shrink-0"
+          className="text-primary-light mt-0.5 size-5 shrink-0"
           aria-hidden="true"
         />
         <p>

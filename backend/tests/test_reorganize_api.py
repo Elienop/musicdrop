@@ -50,7 +50,7 @@ def _fake_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     import app.api.reorganize as reorganize_api
 
-    def fake_start_backfill(reg: object, lib: object, **kwargs: object) -> None:
+    def fake_start_backfill(reg: object, handle: object, **kwargs: object) -> None:
         reg.set_total(0)  # type: ignore[attr-defined]  # fake reg is the real registry
         reg.finish("done")  # type: ignore[attr-defined]
 

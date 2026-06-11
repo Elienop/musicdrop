@@ -79,7 +79,7 @@ function PlaylistRow({ playlist }: { playlist: Playlist }) {
       to={`/playlists/${playlist.id}`}
       className="focus-ring block rounded-xl"
     >
-      <Card className="hover:border-primary/50 gap-2 py-4 transition-colors">
+      <Card className="hover:bg-surface-hover gap-2 py-4 transition-colors">
         <CardHeader className="px-4">
           <CardTitle className="truncate" title={playlist.name}>
             {playlist.name}

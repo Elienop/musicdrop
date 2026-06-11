@@ -91,18 +91,6 @@ async def test_slskd(
     return await run_in_threadpool(service.test_connection, store.get())
 
 
-def _remap_to_inbox(local_dir: str, downloads_prefix: str, inbox_dir: Path) -> str:
-    """slskd's container path -> a host path rooted under ``inbox_dir``.
-
-    Strips the configured downloads prefix (slskd's namespace) and re-roots the
-    remainder under the inbox. Purely syntactic — ``contain`` remains the
-    authority that rejects a ``../`` escape after the remap, and ``lstrip('/')``
-    keeps the join from producing an absolute path that ignores the inbox root.
-    """
-    remainder = local_dir.removeprefix(downloads_prefix) if downloads_prefix else local_dir
-    return str(inbox_dir / remainder.lstrip("/"))
-
-
 @router.post("/slskd/webhook", response_model=WebhookAck)
 async def slskd_webhook(
     event: SlskdWebhookEvent,
@@ -125,7 +113,7 @@ async def slskd_webhook(
         return WebhookAck(status="ignored")
 
     inbox_dir: Path = request.app.state.inbox_dir
-    remapped = _remap_to_inbox(event.localDirectoryName, config.downloads_prefix, inbox_dir)
+    remapped = service.remap_to_inbox(event.localDirectoryName, config.downloads_prefix, inbox_dir)
     # ``strict=True`` also rejects an EMPTY remainder (localDirectoryName ==
     # downloads_prefix, or "/" under the default empty prefix) that remaps to the
     # inbox ROOT — a whole-inbox MOVE would sweep in unrelated/still-downloading

@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement, type ReactNode } from "react";
-import { usePreviewAlbumEdit } from "@/api/useAlbumEdit";
+import { useApplyAlbumEdit, usePreviewAlbumEdit } from "@/api/useAlbumEdit";
 import { client } from "@/api/client";
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -45,5 +45,41 @@ describe("usePreviewAlbumEdit", () => {
     const { result } = renderHook(() => usePreviewAlbumEdit(7), { wrapper });
     result.current.mutate({ album: { title: "B" }, tracks: [] });
     await waitFor(() => expect(result.current.isError).toBe(true));
+  });
+});
+
+describe("useApplyAlbumEdit", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("invalidates the album detail AND every library surface on apply", async () => {
+    // Title/artist/year/genre render on the grids/roster/browse/search/stats
+    // too — invalidating only the detail would re-serve stale lists for the
+    // 30s staleTime window.
+    vi.spyOn(client, "POST").mockResolvedValue({
+      data: { album: { id: 7 }, items: [], write_failures: 0, move_failures: 0 },
+      error: undefined,
+      response: { ok: true, status: 200 },
+    } as never);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const applyWrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: qc }, children);
+
+    const { result } = renderHook(() => useApplyAlbumEdit(7), { wrapper: applyWrapper });
+    result.current.mutate({ album: { title: "B" }, tracks: [] });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        ["album", 7],
+        ["albums"],
+        ["artists"],
+        ["browse"],
+        ["search"],
+        ["stats"],
+      ]),
+    );
   });
 });

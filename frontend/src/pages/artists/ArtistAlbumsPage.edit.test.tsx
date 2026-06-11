@@ -91,4 +91,16 @@ describe("ArtistAlbumsPage artist-image edit", () => {
       screen.queryByRole("button", { name: /edit artist image/i }),
     ).toBeNull();
   });
+
+  it("closing the panel from inside (Cancel) returns focus to the toggle", () => {
+    renderAt("ABBA");
+    const btn = screen.getByRole("button", { name: /edit artist image/i });
+    fireEvent.click(btn);
+    expect(screen.getByText(/upload a custom portrait/i)).toBeInTheDocument();
+    // The in-panel Cancel unmounts the focused button — focus must come back
+    // to the disclosure toggle instead of dropping to <body>.
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    expect(screen.queryByText(/upload a custom portrait/i)).toBeNull();
+    expect(btn).toHaveFocus();
+  });
 });

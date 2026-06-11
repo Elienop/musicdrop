@@ -6,7 +6,8 @@
 // panel — cn()'s tailwind-merge lets the className below displace the base
 // top/left/translate/rounded/padding utilities. Same NAV_SECTIONS data and
 // itemIsActive resolution as AppSidebar, so the open drawer shows the same
-// violet active pill (+ fill-weight icon + aria-current) as the sidebar.
+// active treatment (violet text + font-medium + indicator bar + aria-current)
+// as the sidebar.
 // ≥44px (h-11) items, closes on navigation. The inherited DialogContent
 // close button is suppressed (sub-44px target); the drawer renders its own
 // size-11 close button in the header row instead — `size-11` not
@@ -105,12 +106,21 @@ export function MobileNav() {
                         onClick={close}
                         aria-current={active ? "page" : undefined}
                         className={cn(
-                          "focus-ring flex h-11 items-center gap-3 rounded-md px-3 text-sm font-normal",
+                          // `relative` anchors the active indicator bar.
+                          "focus-ring relative flex h-11 items-center gap-3 rounded-md px-3 text-sm",
                           active
-                            ? "text-primary-light"
-                            : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
+                            ? "text-primary-light font-medium"
+                            : "text-muted-foreground font-normal hover:bg-surface-hover hover:text-foreground",
                         )}
                       >
+                        {/* Non-color active cues (WCAG 1.4.1) — same dialect
+                            as the sidebar: font-medium + the violet bar. */}
+                        {active && (
+                          <span
+                            aria-hidden="true"
+                            className="bg-primary-light absolute top-1/2 left-0 h-5 w-[3px] -translate-y-1/2 rounded-full"
+                          />
+                        )}
                         <Icon
                           className="size-5 shrink-0"
                           aria-hidden="true"

@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
 import { useActiveImport } from "@/api/useActiveImport";
@@ -203,6 +203,23 @@ function ImportEntry() {
 function ImportRun({ jobId }: { jobId: string }) {
   const { data, isPending, isError, error, refetch } = useImportJob(jobId);
   const notFound = error instanceof ImportJobNotFoundError;
+  const queryClient = useQueryClient();
+
+  // Imported albums landed in the library — once the run reaches a terminal
+  // phase, refresh the cached library surfaces (grids, roster, browse, search,
+  // stats) so they show the new albums within the 30s staleTime window.
+  // "failed" counts too: albums apply sequentially, so a failed run may have
+  // landed some before the error.
+  const phase = data?.phase;
+  useEffect(() => {
+    if (phase !== undefined && isTerminalPhase(phase)) {
+      void queryClient.invalidateQueries({ queryKey: ["albums"] });
+      void queryClient.invalidateQueries({ queryKey: ["artists"] });
+      void queryClient.invalidateQueries({ queryKey: ["browse"] });
+      void queryClient.invalidateQueries({ queryKey: ["search"] });
+      void queryClient.invalidateQueries({ queryKey: ["stats"] });
+    }
+  }, [phase, queryClient]);
   // Mounted in every branch (incl. loading) so a screen reader has a stable
   // announcer; throttled so a fast scan's 1s poll doesn't spam it. Terminal
   // states announce immediately (bypass the throttle): the import won't change

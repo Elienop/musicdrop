@@ -74,7 +74,7 @@ describe("MobileNav", () => {
     );
   });
 
-  test("the current route's item gets aria-current and the violet TEXT (no pill)", async () => {
+  test("the current route's item gets aria-current, violet text, and non-color cues", async () => {
     const user = userEvent.setup();
     renderWithProviders(<MobileNav />, { route: "/artists" });
 
@@ -82,12 +82,18 @@ describe("MobileNav", () => {
 
     const active = await screen.findByRole("link", { name: "Artists" });
     expect(active).toHaveAttribute("aria-current", "page");
-    // Same dialect as the sidebar pill — announced AND visually styled.
+    // Same dialect as the sidebar — announced AND visually styled, with
+    // non-color cues (WCAG 1.4.1): weight + the left indicator bar.
     expect(active).toHaveClass("text-primary-light");
+    expect(active).toHaveClass("font-medium");
+    expect(
+      active.querySelector('span[aria-hidden="true"].bg-primary-light'),
+    ).not.toBeNull();
     expect(active.className).not.toMatch(/bg-primary/);
-    expect(screen.getByRole("link", { name: "Browse" })).not.toHaveAttribute(
-      "aria-current",
-    );
+    const inactive = screen.getByRole("link", { name: "Browse" });
+    expect(inactive).not.toHaveAttribute("aria-current");
+    expect(inactive).not.toHaveClass("font-medium");
+    expect(inactive.querySelector(".bg-primary-light")).toBeNull();
   });
 
   test("renders its own 44px close button instead of the inherited one", async () => {

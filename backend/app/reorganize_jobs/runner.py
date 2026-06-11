@@ -8,8 +8,8 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
 
+from app.beets.library import LibraryHandle, library_paths_context
 from app.beets.reorganize import collect_units, reorganize_album, reorganize_singleton
 from app.models.reorganize import ReorganizeOutcome, ReorganizeScope
 from app.reorganize_jobs.registry import ReorganizeRegistry
@@ -17,7 +17,7 @@ from app.reorganize_jobs.registry import ReorganizeRegistry
 
 def sweep(
     reg: ReorganizeRegistry,
-    lib: Any,
+    handle: LibraryHandle,
     *,
     scope: ReorganizeScope,
     artist: str | None = None,
@@ -28,14 +28,16 @@ def sweep(
 ) -> None:
     """Run the scoped sweep to completion. Never raises."""
     try:
-        with lib.music_dir_context():
-            albums, singletons = collect_units(lib, scope=scope, artist=artist, album_id=album_id)
+        with library_paths_context(handle):
+            albums, singletons = collect_units(
+                handle.lib, scope=scope, artist=artist, album_id=album_id
+            )
             reg.set_total(len(albums) + len(singletons))
             for album in albums:
                 if reg.should_stop():
                     reg.finish("stopped")
                     return
-                outcome = reorg_album(lib, album)
+                outcome = reorg_album(handle.lib, album)
                 reg.record(outcome)
                 reg.set_current(outcome.label)
                 if delay:
@@ -44,7 +46,7 @@ def sweep(
                 if reg.should_stop():
                     reg.finish("stopped")
                     return
-                outcome = reorg_singleton(lib, item)
+                outcome = reorg_singleton(handle.lib, item)
                 reg.record(outcome)
                 reg.set_current(outcome.label)
                 if delay:
@@ -56,7 +58,7 @@ def sweep(
 
 def start_backfill(
     reg: ReorganizeRegistry,
-    lib: Any,
+    handle: LibraryHandle,
     *,
     scope: ReorganizeScope,
     artist: str | None = None,
@@ -65,7 +67,9 @@ def start_backfill(
 ) -> None:
     """Spawn the scoped sweep on a daemon thread (non-blocking)."""
     threading.Thread(
-        target=lambda: sweep(reg, lib, scope=scope, artist=artist, album_id=album_id, delay=delay),
+        target=lambda: sweep(
+            reg, handle, scope=scope, artist=artist, album_id=album_id, delay=delay
+        ),
         name="musicdrop-reorganize",
         daemon=True,
     ).start()

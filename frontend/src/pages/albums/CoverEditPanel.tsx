@@ -179,7 +179,7 @@ function InstallOutcome({ result }: { result: CoverInstallResult }) {
         role="status"
         className="border-primary/30 bg-primary/5 text-foreground flex items-start gap-2 rounded-md border p-3"
       >
-        <Success className="text-primary mt-0.5 size-4 shrink-0" aria-hidden="true" />
+        <Success className="text-primary-light mt-0.5 size-4 shrink-0" aria-hidden="true" />
         <div className="flex flex-col gap-1">
           <span className="font-medium">Cover updated</span>
           {result.message && <span className="text-muted-foreground">{result.message}</span>}

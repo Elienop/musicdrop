@@ -37,7 +37,7 @@ def test_album_fetch_starts_scoped_job(
 
     def fake_start_backfill(
         reg: LyricsBackfillRegistry,
-        lib: object,
+        handle: object,
         *,
         delay: float,
         write: bool,
@@ -95,7 +95,7 @@ def test_backfill_start_status_stop(
     # Make the worker thread deterministic: a no-op sweep that just finishes.
     import app.api.lyrics as lyrics_api
 
-    def fake_start_backfill(reg: object, lib: object, *, delay: float, write: bool) -> None:
+    def fake_start_backfill(reg: object, handle: object, *, delay: float, write: bool) -> None:
         reg.set_total(0)  # type: ignore[attr-defined]  # fake reg is the real registry
         reg.finish("done")  # type: ignore[attr-defined]
 

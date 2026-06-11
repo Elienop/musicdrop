@@ -1,8 +1,11 @@
 # tests/test_artist_art_runner.py
+from pathlib import Path
+
 import pytest
 
 from app.artist_art_jobs.registry import ArtistArtBackfillRegistry
 from app.artist_art_jobs.runner import sweep_async
+from app.config import settings
 from app.models.artist_art import ArtistArtOutcome
 
 
@@ -23,8 +26,8 @@ async def test_sweep_records_and_finishes() -> None:
     await sweep_async(
         reg,
         _Lib(),
-        cache_dir="/tmp/x",
-        settings=None,
+        cache_dir=Path("/tmp/x"),
+        settings=settings,
         delay=0,
         force=True,
         names=["A", "B"],
@@ -47,8 +50,8 @@ async def test_sweep_honors_stop() -> None:
     await sweep_async(
         reg,
         _Lib(),
-        cache_dir="/tmp/x",
-        settings=None,
+        cache_dir=Path("/tmp/x"),
+        settings=settings,
         delay=0,
         force=False,
         names=["A", "B", "C"],

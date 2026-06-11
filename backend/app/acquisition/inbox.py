@@ -1,4 +1,4 @@
-"""Inbox-dir resolution + the path-containment security boundary.
+"""Inbox-dir resolution, the path-containment security boundary + inbox scanning.
 
 ``resolve_inbox_dir`` mirrors ``app.beets.trash.resolve_trash_dir`` exactly: an
 empty setting defaults under the handle's already-absolute ``beets_dir`` (which
@@ -10,20 +10,34 @@ Chunk 4) routes a folder through before it can reach the importer. It
 resolves to the inbox root itself or has the inbox root among its parents. Because
 ``Path.resolve()`` follows symlinks, a symlink planted under the inbox that points
 outside is rejected too — the resolved target is no longer under the inbox.
+
+``count_pending`` / ``list_inbox`` hold the ONE "what counts as an inbox item"
+definition (a top-level non-hidden, non-symlinked dir holding audio) shared by
+the nav badge, the Review listing, and the one-click review start.
 """
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
+from app.acquisition.ledger import AcquisitionLedger
 from app.beets.library import LibraryHandle
 from app.config import Settings
+from app.models.acquisition import InboxItem, LedgerOutcome
 
 # A leaf folder slskd fires a separate completion for: "CD1", "Disc 2",
 # "disk_3", "CD-04". A multi-disc album fragments into one event per disc, so we
 # walk up to the shared album parent and enqueue it once.
 _DISC_DIR_RE = re.compile(r"(?i)^(cd|disc|disk)[\s_-]*\d+$")
+
+# The ledger file the queue persists under the inbox — never an album folder, so
+# it does not count toward "is there anything to review".
+LEDGER_FILENAME = ".musicdrop-ledger.json"
+
+# Extensions we treat as audio when deciding whether an inbox folder holds music.
+AUDIO_EXTS = {".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav", ".aac", ".wma", ".aiff"}
 
 
 def resolve_inbox_dir(settings: Settings, handle: LibraryHandle) -> Path:
@@ -94,3 +108,113 @@ def coalesce_album_root(folder: Path, inbox_dir: Path) -> Path:
     except OSError:
         return folder
     return parent if disc_siblings >= 2 else folder
+
+
+def has_audio(folder: Path) -> bool:
+    """True as soon as one audio file is found beneath ``folder`` (early-exit).
+
+    ``os.walk``'s ``followlinks`` default is False, so a symlinked subdir (or a
+    symlink loop) inside a real inbox folder is never descended into.
+    """
+    try:
+        for _root, _dirs, files in os.walk(folder):
+            if any(os.path.splitext(f)[1].lower() in AUDIO_EXTS for f in files):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def audio_stats(folder: Path) -> tuple[int, int]:
+    """``(track_count, total_bytes)`` of audio files beneath ``folder``."""
+    count = 0
+    size = 0
+    try:
+        for root, _dirs, files in os.walk(folder):
+            for name in files:
+                if os.path.splitext(name)[1].lower() not in AUDIO_EXTS:
+                    continue
+                count += 1
+                try:
+                    size += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    pass
+    except OSError:
+        return count, size
+    return count, size
+
+
+def count_pending(inbox_dir: Path) -> int:
+    """Count top-level inbox folders holding audio — the SAME item definition the
+    Review listing uses, so the nav badge can't show a phantom count from a loose
+    non-audio file, an empty leftover dir, or a symlink. Skips hidden entries, the
+    ledger file, and symlinked entries (parity with the import path's symlink
+    guard). 0 on any OS error.
+    """
+    try:
+        entries = list(os.scandir(inbox_dir))
+    except OSError:
+        return 0
+    count = 0
+    for entry in entries:
+        if entry.name.startswith(".") or entry.name == LEDGER_FILENAME:
+            continue
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        if has_audio(Path(entry.path)):
+            count += 1
+    return count
+
+
+def list_inbox(inbox_dir: Path, ledger: AcquisitionLedger | None) -> list[InboxItem]:
+    """Top-level non-hidden inbox dirs holding audio, ledger-annotated (never filtered).
+
+    An item = one immediate child directory with >=1 audio file beneath it (empty
+    leftovers after a successful move-out are skipped). A set-aside item IS in the
+    ledger, so the ledger only ANNOTATES (``set_aside``/``failed``) — it never
+    removes a row. The ledger keys the (possibly deeper) album path the webhook
+    coalesced, so a row is annotated when a ledger entry sits at or under it.
+    """
+    items: list[InboxItem] = []
+    try:
+        entries = list(os.scandir(inbox_dir))
+    except OSError:
+        return items
+    ledger_rows = ledger.entries() if ledger is not None else []
+    for entry in entries:
+        if entry.name.startswith(".") or entry.name == LEDGER_FILENAME:
+            continue
+        # Skip symlinked entries: the import path's contain() rejects symlink
+        # escapes, so the listing must not follow one out of the inbox either.
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        tracks, size = audio_stats(Path(entry.path))
+        if tracks == 0:
+            continue
+        try:
+            st = entry.stat()
+        except OSError:
+            continue
+        folder = Path(entry.path).resolve()
+        outcome: LedgerOutcome | None = None
+        for row in ledger_rows:
+            if row.outcome not in ("set_aside", "failed"):
+                continue
+            try:
+                row_path = Path(row.path).resolve()
+            except (OSError, ValueError):
+                continue  # a corrupt/NUL on-disk ledger path never 500s the list
+            if row_path == folder or folder in row_path.parents:
+                outcome = row.outcome
+                break
+        items.append(
+            InboxItem(
+                name=entry.name,
+                mtime=st.st_mtime,
+                size=size,
+                track_count=tracks,
+                outcome=outcome,
+            )
+        )
+    items.sort(key=lambda i: i.mtime, reverse=True)
+    return items
