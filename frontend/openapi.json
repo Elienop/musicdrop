@@ -3225,7 +3225,8 @@
             "enum": [
               "manual",
               "inbox",
-              "sweep"
+              "sweep",
+              "bank_apply"
             ],
             "title": "Origin",
             "default": "manual"
@@ -4124,6 +4125,17 @@
             ],
             "title": "Error"
           },
+          "album_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Id"
+          },
           "banked_at": {
             "type": "string",
             "format": "date-time",
@@ -4262,6 +4274,17 @@
               }
             ],
             "title": "Error"
+          },
+          "album_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Id"
           },
           "banked_at": {
             "type": "string",
@@ -4560,6 +4583,17 @@
               }
             ],
             "title": "Disambiguation"
+          },
+          "release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Id"
           }
         },
         "type": "object",
@@ -4570,7 +4604,7 @@
           "disambiguation"
         ],
         "title": "CandidateOption",
-        "description": "A ranked alternative release from ``task.candidates``.\n\nThe switcher in the review screen lists these; ``index`` is the position in\nthe beets candidate list and is what a choice references."
+        "description": "A ranked alternative release from ``task.candidates``.\n\nThe switcher in the review screen lists these; ``index`` is the position in\nthe beets candidate list and is what a choice references. ``release_id`` is\nthe metadata backend's id for the release (``AlbumInfo.album_id`` \u2014 an\nMBID for MusicBrainz, the deezer id for Deezer): the bank's apply runner\npins ``import.search_ids`` to it so the apply imports exactly the release\nthe user chose. None for sources without an id (the apply then falls back\nto an unpinned lookup's top candidate)."
       },
       "CoverInstallResult": {
         "properties": {
@@ -5240,7 +5274,8 @@
             "enum": [
               "manual",
               "inbox",
-              "sweep"
+              "sweep",
+              "bank_apply"
             ],
             "title": "Origin",
             "default": "manual"

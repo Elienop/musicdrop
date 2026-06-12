@@ -1339,7 +1339,7 @@ export interface components {
              * @default manual
              * @enum {string}
              */
-            origin: "manual" | "inbox" | "sweep";
+            origin: "manual" | "inbox" | "sweep" | "bank_apply";
             /**
              * Needs Review Count
              * @default 0
@@ -1633,6 +1633,8 @@ export interface components {
             decided?: components["schemas"]["BankDecision"] | null;
             /** Error */
             error?: string | null;
+            /** Album Id */
+            album_id?: number | null;
             /**
              * Banked At
              * Format: date-time
@@ -1677,6 +1679,8 @@ export interface components {
             status: "needs_review" | "queued" | "applying" | "done" | "failed" | "ignored" | "stale";
             /** Error */
             error?: string | null;
+            /** Album Id */
+            album_id?: number | null;
             /**
              * Banked At
              * Format: date-time
@@ -1778,7 +1782,12 @@ export interface components {
          * @description A ranked alternative release from ``task.candidates``.
          *
          *     The switcher in the review screen lists these; ``index`` is the position in
-         *     the beets candidate list and is what a choice references.
+         *     the beets candidate list and is what a choice references. ``release_id`` is
+         *     the metadata backend's id for the release (``AlbumInfo.album_id`` — an
+         *     MBID for MusicBrainz, the deezer id for Deezer): the bank's apply runner
+         *     pins ``import.search_ids`` to it so the apply imports exactly the release
+         *     the user chose. None for sources without an id (the apply then falls back
+         *     to an unpinned lookup's top candidate).
          */
         CandidateOption: {
             /** Index */
@@ -1789,6 +1798,8 @@ export interface components {
             data_source: string | null;
             /** Disambiguation */
             disambiguation: string | null;
+            /** Release Id */
+            release_id?: string | null;
         };
         /**
          * CoverInstallResult
@@ -2078,7 +2089,7 @@ export interface components {
              * @default manual
              * @enum {string}
              */
-            origin: "manual" | "inbox" | "sweep";
+            origin: "manual" | "inbox" | "sweep" | "bank_apply";
             /** Set Aside */
             set_aside: number;
             sweep?: components["schemas"]["SweepStatus"] | null;
