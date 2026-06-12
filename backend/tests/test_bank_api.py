@@ -78,3 +78,39 @@ def test_bulk_ignore(client: TestClient, bank_dir: Path) -> None:
     response = client.post("/api/bank/bulk-ignore", json={"ids": [first, second, "x"]})
     assert response.status_code == 200
     assert response.json() == {"ignored": 2}
+
+
+def test_decision_pokes_apply_runner_when_wired(client: TestClient, bank_dir: Path) -> None:
+    from app.main import app
+
+    class _Recorder:
+        def __init__(self) -> None:
+            self.poked = 0
+
+        def poke(self) -> None:
+            self.poked += 1
+
+    recorder = _Recorder()
+    app.state.bank_apply_runner = recorder
+    try:
+        queued_id = _seed(bank_dir)
+        response = client.post(f"/api/bank/{queued_id}/decision", json={"action": "asis"})
+        assert response.status_code == 200
+        assert response.json()["status"] == "queued"
+        assert recorder.poked == 1
+        # ignore resolves in the store - nothing for the runner to do.
+        ignored_id = _seed(bank_dir, folder="/library/A/C")
+        response = client.post(f"/api/bank/{ignored_id}/decision", json={"action": "ignore"})
+        assert response.status_code == 200
+        assert recorder.poked == 1
+    finally:
+        del app.state.bank_apply_runner
+
+
+def test_decision_without_runner_still_works(client: TestClient, bank_dir: Path) -> None:
+    # The lifespan-less client fixture has no runner on app.state: the poke is
+    # best-effort and the decision endpoint must not care.
+    item_id = _seed(bank_dir)
+    response = client.post(f"/api/bank/{item_id}/decision", json={"action": "asis"})
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"

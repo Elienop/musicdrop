@@ -134,6 +134,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # revert to needs_review with a note (never blind-requeued).
     reconcile_interrupted(get_bank_dir())
 
+    # The bank apply runner drains decided (queued) rows through the SAME
+    # single import slot, deferring on the same gate union the acquisition
+    # queue consumes. Started AFTER reconciliation so a crashed mid-apply row
+    # is back in needs_review before the first drain pass; queued rows from
+    # before the restart drain immediately - no decision re-post needed.
+    from app.bank.apply_runner import BankApplyRunner
+
+    bank_apply_runner = BankApplyRunner(
+        bank_dir=get_bank_dir(),
+        import_registry=import_registry,
+        swap_lock=app.state.beets_swap_lock,
+    )
+    app.state.bank_apply_runner = bank_apply_runner
+    bank_apply_runner.start()
+
     # Build the artist-image stack once: the disk cache + the persisted enabled
     # toggle are shared on app.state so the override + settings endpoints reach
     # the SAME instances the service uses. The cache dir is created lazily on
@@ -178,6 +193,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # it: the same best-effort posture a manual import running at shutdown
         # already has — we never hard-kill the worker.
         acquisition_queue.stop()
+        bank_apply_runner.stop()
         for _ in range(_SHUTDOWN_IMPORT_DRAIN_TICKS):
             if not import_registry.has_active_job():
                 break

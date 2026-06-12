@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 
 from app.bank import store
@@ -59,13 +59,21 @@ async def get_bank_item(item_id: str) -> BankItem:
 
 
 @router.post("/bank/{item_id}/decision", response_model=BankItem)
-async def decide_bank_item(item_id: str, decision: BankDecision) -> BankItem:
+async def decide_bank_item(item_id: str, decision: BankDecision, request: Request) -> BankItem:
     try:
         item = await run_in_threadpool(store.decide_item, get_bank_dir(), item_id, decision)
     except store.InvalidTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     if item is None:
         raise HTTPException(status_code=404, detail="Bank item not found")
+    if item.status == "queued":
+        # Best-effort wake of the apply runner so the apply starts promptly;
+        # its periodic poll is the correctness mechanism (same getattr posture
+        # as the acquisition router - the lifespan-less test client has no
+        # runner on app.state and must not care).
+        runner = getattr(request.app.state, "bank_apply_runner", None)
+        if runner is not None:
+            runner.poke()
     return item
 
 
