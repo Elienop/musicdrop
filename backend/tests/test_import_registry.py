@@ -363,6 +363,8 @@ def test_start_validate_failure_takes_no_slot() -> None:
         reg.start("/library/Artist", options=ImportOptions(operation="copy"))
     # The failed validation must not have consumed the single slot:
     assert reg.active_status().active is False
+    # The runner was never run for the refused start (validate fail-fasts).
+    assert runner.received_options is None
     # And a subsequent valid start succeeds.
     runner.validate_error = None
     job_id = reg.start("/downloads/Artist")

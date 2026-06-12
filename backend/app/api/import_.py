@@ -14,6 +14,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
 
 from app.import_jobs.registry import ImportJobRegistry, get_registry
+from app.import_jobs.runner import InLibraryCopyError
 from app.models.import_api import (
     ActiveImportStatus,
     ImportJobState,
@@ -85,6 +86,9 @@ async def start_import(
     ensure_import_can_start(request)
     try:
         job_id = reg.start(body.path, options=body.options)
+    except InLibraryCopyError as exc:
+        # Guard refusal (validated before any slot was taken): actionable 422.
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     except RuntimeError:
         # An import is already running (single-slot policy).
         raise HTTPException(

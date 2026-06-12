@@ -77,6 +77,8 @@ class BeetsImportRunner:
         self._trash_dir = trash_dir
 
     def validate(self, path: str, options: ImportOptions | None = None) -> None:
+        # Only explicit copy is a user-facing error here; default/None are
+        # silently corrected to move by the worker guard (run_import_worker).
         if options is not None and options.operation == "copy":
             # getattr (not attribute access) because self._lib is typed ``object``;
             # direct access would trip mypy attr-defined. noqa: B009 for the same reason.
