@@ -37,6 +37,71 @@ def test_schema_accepts_starter_shape(tmp_path: Path) -> None:
     assert schema.plugins == ["musicbrainz", "deezer"]
 
 
+def test_schema_accepts_existing_dir_with_readonly_parent(tmp_path: Path) -> None:
+    """The Docker norm: the library is a volume mounted at the root (/library),
+    whose parent (/) is never writable by the app user. An existing writable
+    directory must validate on its own merits, not its parent's."""
+    parent = tmp_path / "root"
+    music = parent / "library"
+    music.mkdir(parents=True)
+    parent.chmod(0o555)
+    try:
+        data = {
+            "directory": str(music),
+            "library": str(tmp_path / "library.db"),
+        }
+        schema = KnownKeysSchema.model_validate(data)
+        assert schema.directory == music
+    finally:
+        parent.chmod(0o755)
+
+
+def test_schema_rejects_unwritable_existing_dir(tmp_path: Path) -> None:
+    music = tmp_path / "music"
+    music.mkdir()
+    music.chmod(0o555)
+    try:
+        data = {
+            "directory": str(music),
+            "library": str(tmp_path / "library.db"),
+        }
+        with pytest.raises(ValidationError) as excinfo:
+            KnownKeysSchema.model_validate(data)
+        assert any(err["loc"] == ("directory",) for err in excinfo.value.errors())
+    finally:
+        music.chmod(0o755)
+
+
+def test_schema_rejects_missing_dir_under_readonly_parent(tmp_path: Path) -> None:
+    """When the directory doesn't exist yet, the parent must be writable so
+    beets can create it — the original rule, still enforced."""
+    parent = tmp_path / "root"
+    parent.mkdir()
+    parent.chmod(0o555)
+    try:
+        data = {
+            "directory": str(parent / "newdir"),
+            "library": str(tmp_path / "library.db"),
+        }
+        with pytest.raises(ValidationError) as excinfo:
+            KnownKeysSchema.model_validate(data)
+        assert any(err["loc"] == ("directory",) for err in excinfo.value.errors())
+    finally:
+        parent.chmod(0o755)
+
+
+def test_schema_rejects_file_at_directory_path(tmp_path: Path) -> None:
+    not_a_dir = tmp_path / "music"
+    not_a_dir.write_text("oops")
+    data = {
+        "directory": str(not_a_dir),
+        "library": str(tmp_path / "library.db"),
+    }
+    with pytest.raises(ValidationError) as excinfo:
+        KnownKeysSchema.model_validate(data)
+    assert any(err["loc"] == ("directory",) for err in excinfo.value.errors())
+
+
 def test_schema_rejects_invalid_bool(tmp_path: Path) -> None:
     music = tmp_path / "music"
     music.mkdir()
