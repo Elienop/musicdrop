@@ -1026,3 +1026,60 @@ def test_already_imported_counts_known_skips() -> None:
     assert session.already_imported(b"/top", [b"/music/done"]) is True
     assert session.already_imported(b"/top", [b"/music/new"]) is False
     assert bridge.known_skips() == 1
+
+
+class _SweepConfigSession:
+    """Minimal session recording the sweep-relevant config seen during run()."""
+
+    lib = None
+    paths: ClassVar[list[bytes]] = []
+    _replace_album_ids: ClassVar[set[int]] = set()
+    _trash_dir = None
+
+    def __init__(self) -> None:
+        self.seen: dict[str, Any] = {}
+
+    def run(self) -> None:
+        self.seen = {
+            "incremental": config["import"]["incremental"].get(bool),
+            "resume": config["import"]["resume"].get(),
+            "singletons": config["import"]["singletons"].get(bool),
+        }
+
+
+def test_sweep_forces_incremental_no_resume_no_singletons() -> None:
+    config["import"]["incremental"] = False
+    config["import"]["resume"] = "ask"  # beets' default
+    config["import"]["singletons"] = True  # hostile user config
+    s = _SweepConfigSession()
+    run_import_worker(s, sweep=True)  # type: ignore[arg-type]  # minimal stand-in
+    assert s.seen == {"incremental": True, "resume": False, "singletons": False}
+    # Snapshot/restore: the globals are back to their pre-run values.
+    assert config["import"]["incremental"].get(bool) is False
+    assert config["import"]["resume"].get() == "ask"
+    assert config["import"]["singletons"].get(bool) is True
+
+
+def test_non_sweep_leaves_incremental_config_alone() -> None:
+    config["import"]["incremental"] = True  # the user's own incremental setup
+    config["import"]["resume"] = "ask"
+    s = _SweepConfigSession()
+    run_import_worker(s)  # type: ignore[arg-type]  # minimal stand-in
+    assert s.seen["incremental"] is True  # untouched
+    assert s.seen["resume"] == "ask"  # untouched
+
+
+def test_sweep_config_restores_on_raise() -> None:
+    config["import"]["incremental"] = False
+    config["import"]["resume"] = "ask"
+    config["import"]["singletons"] = False
+
+    class _Boom(_SweepConfigSession):
+        def run(self) -> None:
+            raise RuntimeError("x")
+
+    with pytest.raises(RuntimeError):
+        run_import_worker(_Boom(), sweep=True)  # type: ignore[arg-type]  # minimal stand-in
+    assert config["import"]["incremental"].get(bool) is False
+    assert config["import"]["resume"].get() == "ask"
+    assert config["import"]["singletons"].get(bool) is False

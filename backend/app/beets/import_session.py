@@ -659,7 +659,9 @@ class WebImportSession(ImportSession):
         return ""
 
 
-def run_import_worker(session: WebImportSession, *, move: bool | None = None) -> None:
+def run_import_worker(
+    session: WebImportSession, *, move: bool | None = None, sweep: bool = False
+) -> None:
     """Run one import session serially on the calling (worker) thread.
 
     Forces single-threaded execution and ``import.duplicate_action: ask`` (so the
@@ -678,6 +680,20 @@ def run_import_worker(session: WebImportSession, *, move: bool | None = None) ->
     In-library sources are always forced to move-mode (explicit copy raises
     ``InLibraryCopyError``): beets' no-duplicate guarantee is DB-based and does
     not protect files the DB doesn't know yet.
+
+    ``sweep`` scopes the banking sweep's beets flags to this one run (same
+    snapshot/restore discipline as move/copy): ``incremental`` on — beets'
+    taghistory then skips every folder a previous sweep finished OR banked
+    (SKIPped tasks are recorded too: ``incremental_skip_later`` stays at
+    beets' default ``no``, so the bank is the sole re-entry path for banked
+    folders. ``resume`` off EXPLICITLY — beets' incremental/resume exclusion
+    in ``set_config`` is dead code in 2.11 (``want_resume`` reads the global
+    ``config["resume"]``, not the excluded copy), so without this every task
+    writes resume progress and an aborted sweep re-enters the resume path on
+    the next run. ``singletons`` off — a ``singletons: yes`` user config
+    would route every file through choose_item -> SKIP and history-mark it
+    done WITHOUT a bank row (silent loss); album-shaped tasks are the only
+    thing the bank can review.
     """
     config["threaded"] = False
     config["import"]["duplicate_action"] = "ask"
@@ -695,14 +711,24 @@ def run_import_worker(session: WebImportSession, *, move: bool | None = None) ->
         move = True
     orig_move = config["import"]["move"].get(bool)
     orig_copy = config["import"]["copy"].get(bool)
+    orig_incremental = config["import"]["incremental"].get(bool)
+    orig_resume = config["import"]["resume"].get()  # bool OR "ask" - restore verbatim
+    orig_singletons = config["import"]["singletons"].get(bool)
     if move is not None:
         config["import"]["move"] = move
         config["import"]["copy"] = not move
+    if sweep:
+        config["import"]["incremental"] = True
+        config["import"]["resume"] = False
+        config["import"]["singletons"] = False
     try:
         session.run()
     finally:
         config["import"]["move"] = orig_move
         config["import"]["copy"] = orig_copy
+        config["import"]["incremental"] = orig_incremental
+        config["import"]["resume"] = orig_resume
+        config["import"]["singletons"] = orig_singletons
     _trash_replaced_albums(session)
 
 
