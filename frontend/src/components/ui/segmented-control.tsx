@@ -29,7 +29,7 @@ function SegmentedControl({
       data-slot="segmented-control"
       role="group"
       aria-label={ariaLabel}
-      className="bg-muted/50 inline-flex items-center gap-0.5 rounded-md border p-0.5 text-sm"
+      className="bg-muted/50 inline-flex w-fit items-center gap-0.5 rounded-md border p-0.5 text-sm"
     >
       {options.map((option) => (
         <button
