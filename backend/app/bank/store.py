@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app.models.bank import (
+    BankDecision,
     BankItem,
     BankItemSummary,
     BankReason,
@@ -129,3 +130,159 @@ def count_items(bank_dir: Path, *, status: BankStatus | None = None) -> int:
     if status is not None:
         items = [item for item in items if item.status == status]
     return len(items)
+
+
+class InvalidTransitionError(RuntimeError):
+    """A decision/delete that the row's current status forbids (API -> 409)."""
+
+
+# Statuses a new decision may leave from: fresh rows, failed applies (retry),
+# and stale rows (the user re-decides after a re-scan; chunk 4 sets stale).
+_DECIDABLE: frozenset[str] = frozenset({"needs_review", "failed", "stale"})
+
+
+def decide_item(bank_dir: Path, item_id: str, decision: BankDecision) -> BankItem | None:
+    with _LOCK:
+        item = get_item(bank_dir, item_id)
+        if item is None:
+            return None
+        if item.status not in _DECIDABLE:
+            raise InvalidTransitionError(
+                f"row is {item.status}; decisions need one of {sorted(_DECIDABLE)}"
+            )
+        item.decided = decision
+        item.decided_at = _now()
+        item.error = None
+        if decision.action == "ignore":
+            item.status = "ignored"
+            item.resolved_at = _now()
+        else:
+            item.status = "queued"
+        _write(bank_dir, item)
+        return item
+
+
+def set_status(
+    bank_dir: Path, item_id: str, status: BankStatus, *, error: str | None = None
+) -> BankItem | None:
+    """Bookkeeping transition (chunk 4's apply runner + reconciliation use it)."""
+    with _LOCK:
+        item = get_item(bank_dir, item_id)
+        if item is None:
+            return None
+        item.status = status
+        item.error = error
+        if status in ("done", "failed", "ignored"):
+            item.resolved_at = _now()
+        _write(bank_dir, item)
+        return item
+
+
+def delete_item(bank_dir: Path, item_id: str) -> bool:
+    with _LOCK:
+        item = get_item(bank_dir, item_id)
+        if item is None:
+            return False
+        if item.status == "applying":
+            raise InvalidTransitionError("row is applying; wait for the apply to finish")
+        try:
+            _row_path(bank_dir, item_id).unlink()
+            return True
+        except FileNotFoundError:
+            return False
+
+
+def bulk_ignore(bank_dir: Path, ids: list[str]) -> int:
+    """Ignore every listed row still in ``needs_review``; skip the rest."""
+    flipped = 0
+    for item_id in ids:
+        with _LOCK:
+            item = get_item(bank_dir, item_id)
+            if item is None or item.status != "needs_review":
+                continue
+            item.status = "ignored"
+            item.resolved_at = _now()
+            _write(bank_dir, item)
+            flipped += 1
+    return flipped
+
+
+def upsert_by_folder(
+    bank_dir: Path,
+    *,
+    folder: str,
+    source: BankSource,
+    reason: BankReason,
+    fingerprint: str,
+    artist: str | None = None,
+    album: str | None = None,
+    recommendation: str | None = None,
+    confidence: float | None = None,
+    parked: ParkedAlbum | None = None,
+    duplicate: DuplicatePrompt | None = None,
+) -> BankItem:
+    """Bank a folder, deduplicating on (folder): same fingerprint refreshes
+    ``banked_at``; a changed fingerprint replaces the payload and resets the
+    row to ``needs_review`` (the spec's dedupe rule — a re-banked folder is a
+    fresh decision)."""
+    with _LOCK:
+        existing = next((i for i in _all_items(bank_dir) if i.folder == folder), None)
+        if existing is None:
+            pass  # fall through to create below (outside the lock reuse)
+        elif existing.fingerprint == fingerprint:
+            existing.banked_at = _now()
+            _write(bank_dir, existing)
+            return existing
+        else:
+            replaced = existing.model_copy(
+                update={
+                    "source": source,
+                    "reason": reason,
+                    "artist": artist,
+                    "album": album,
+                    "recommendation": recommendation,
+                    "confidence": confidence,
+                    "parked": parked,
+                    "duplicate": duplicate,
+                    "fingerprint": fingerprint,
+                    "status": "needs_review",
+                    "decided": None,
+                    "error": None,
+                    "banked_at": _now(),
+                    "decided_at": None,
+                    "resolved_at": None,
+                }
+            )
+            _write(bank_dir, replaced)
+            return replaced
+    return create_item(
+        bank_dir,
+        folder=folder,
+        source=source,
+        reason=reason,
+        fingerprint=fingerprint,
+        artist=artist,
+        album=album,
+        recommendation=recommendation,
+        confidence=confidence,
+        parked=parked,
+        duplicate=duplicate,
+    )
+
+
+def reconcile_interrupted(bank_dir: Path) -> int:
+    """Startup pass: rows stuck in ``applying`` (process died mid-apply) revert
+    to ``needs_review`` with a note. Never blind-requeues (spec §5/§8)."""
+    flipped = 0
+    for item in _all_items(bank_dir):
+        if item.status != "applying":
+            continue
+        with _LOCK:
+            fresh = get_item(bank_dir, item.id)
+            if fresh is None or fresh.status != "applying":
+                continue
+            fresh.status = "needs_review"
+            fresh.error = "apply interrupted by a restart - decide again"
+            _write(bank_dir, fresh)
+            flipped += 1
+    return flipped
