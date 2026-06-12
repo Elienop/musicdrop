@@ -155,13 +155,14 @@ class ImportJobRegistry:
         ``origin`` (manual/inbox) is recorded on the job and surfaced on the job
         state + the active probe.
         """
+        runner = self._resolve_runner()
+        runner.validate(path, options)
         with self._lock:
             if self._job is not None and self._job.phase in _ACTIVE_PHASES:
                 raise RuntimeError("an import is already running")
             job = ImportJob(id=uuid.uuid4().hex, bridge=ImportBridge(), origin=origin)
             self._job = job
 
-        runner = self._resolve_runner()
         runner.run(
             path,
             job.bridge,

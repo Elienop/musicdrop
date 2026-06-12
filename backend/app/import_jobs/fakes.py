@@ -46,6 +46,15 @@ class FakeImportRunner:
         # The ImportOptions forwarded by the registry's start(), recorded so the
         # plumbing tests can assert start -> runner.run threading (None = manual).
         self.received_options: ImportOptions | None = None
+        # Guard seam: tests set validate_error to make start() refuse like the
+        # real runner; validate_calls records the (path, options) it saw.
+        self.validate_error: Exception | None = None
+        self.validate_calls: list[tuple[str, ImportOptions | None]] = []
+
+    def validate(self, path: str, options: ImportOptions | None = None) -> None:
+        self.validate_calls.append((path, options))
+        if self.validate_error is not None:
+            raise self.validate_error
 
     def run(
         self,
