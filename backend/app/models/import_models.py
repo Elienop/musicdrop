@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-ImportOrigin = Literal["manual", "inbox"]
+ImportOrigin = Literal["manual", "inbox", "sweep"]
 
 
 class ImportOptions(BaseModel):
@@ -19,11 +19,19 @@ class ImportOptions(BaseModel):
     ``operation`` ``"default"`` falls through to the user's beets config (the
     manual-import default). ``"move"``/``"copy"`` force that operation for this
     import only. ``unattended`` ``True`` is the inbox path: no human review —
-    uncertain/duplicate albums are set aside rather than parked.
+    uncertain/duplicate albums are set aside rather than parked. ``sweep``
+    ``True`` is the banking sweep: an unattended, beets-incremental run that
+    BANKS every set-aside album (with its candidate payload) instead of just
+    skipping it, recorded as ``origin="sweep"``. A sweep is unattended by
+    definition — the session enforces ``unattended or sweep`` — so
+    ``{"sweep": true}`` alone is a complete sweep request. The sweep forces no
+    file operation: ``operation`` behaves exactly as for a manual import (the
+    in-library guard still force-corrects in-library sources to move).
     """
 
     operation: Literal["default", "move", "copy"] = "default"
     unattended: bool = False
+    sweep: bool = False
 
 
 class Recommendation(StrEnum):

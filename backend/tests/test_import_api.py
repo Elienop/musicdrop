@@ -154,6 +154,53 @@ def test_job_state_exposes_origin_and_set_aside() -> None:
     assert state.set_aside == 2  # needs_review + needs_dup_resolution
 
 
+def test_import_options_sweep_defaults_false_and_parses() -> None:
+    from app.models.import_models import ImportOptions
+
+    assert ImportOptions().sweep is False
+    req = StartImportRequest.model_validate({"path": "/library", "options": {"sweep": True}})
+    assert req.options is not None
+    assert req.options.sweep is True
+    assert req.options.unattended is False  # the session ORs sweep in; no contract mutation
+
+
+def test_sweep_status_defaults() -> None:
+    from app.models.import_api import SweepStatus
+
+    s = SweepStatus()
+    assert (s.processed, s.auto_applied, s.banked, s.skipped_known) == (0, 0, 0, 0)
+    assert s.current_folder is None
+    assert s.paused is False
+
+
+def test_job_state_sweep_block_round_trips() -> None:
+    from app.models.import_api import SweepStatus
+
+    state = ImportJobState(
+        job_id="s1",
+        phase=ImportPhase.done,
+        progress=ImportProgress(applied=0, needs_review=0, skipped=0),
+        albums=[],
+        summary=None,
+        error=None,
+        origin="sweep",
+        set_aside=0,
+        sweep=SweepStatus(processed=3, auto_applied=2, banked=1, current_folder="/library/x"),
+    )
+    dumped = state.model_dump(mode="json")
+    assert dumped["origin"] == "sweep"
+    assert dumped["sweep"]["processed"] == 3
+    assert dumped["sweep"]["paused"] is False
+    # Non-sweep jobs default the block to None (existing constructors unchanged).
+    assert (
+        ImportJobState.model_validate({**dumped, "origin": "manual", "sweep": None}).sweep is None
+    )
+
+
+def test_active_status_sweep_block_defaults_none() -> None:
+    assert ActiveImportStatus(active=False).sweep is None
+
+
 def test_start_import_blank_path_is_422() -> None:
     # An all-whitespace path fails validation (strip + min_length=1) -> 422.
     resp = TestClient(app).post("/api/import", json={"path": "   "})
@@ -308,6 +355,7 @@ def test_active_probe_false_when_no_job() -> None:
         "job_id": None,
         "origin": "manual",
         "needs_review_count": 0,
+        "sweep": None,
     }
 
 

@@ -109,6 +109,28 @@ class ImportAlbumSummary(BaseModel):
     album_id: int | None = None
 
 
+class SweepStatus(BaseModel):
+    """Live counters for a sweep-origin import job.
+
+    Sweep jobs do not build the per-album feed (a whole-library sweep would
+    accumulate thousands of rows); these monotone counters are the entire
+    progress surface. ``auto_applied`` counts albums beets actually added (the
+    follow-up outcome carrying the library album id), so it can trail
+    ``processed`` by one album while the sweep runs and is exact once done.
+    ``banked`` counts every set-aside the sweep persisted: uncertain matches,
+    no-match folders, and duplicate prompts. ``skipped_known`` counts folders
+    beets' incremental history skipped before tagging (done or banked by an
+    earlier sweep).
+    """
+
+    processed: int = 0
+    auto_applied: int = 0
+    banked: int = 0
+    skipped_known: int = 0
+    current_folder: str | None = None
+    paused: bool = False
+
+
 class ImportJobState(BaseModel):
     """Response of ``GET /api/import/{job}``: phase + progress + the live feed."""
 
@@ -127,6 +149,9 @@ class ImportJobState(BaseModel):
     # + needs_dup_resolution (a library duplicate). For an unattended import this
     # is everything that did not auto-apply.
     set_aside: int
+    # Sweep-origin jobs surface counters instead of the per-album feed (their
+    # ``albums`` list stays empty by design). None for manual/inbox jobs.
+    sweep: SweepStatus | None = None
 
 
 class ActiveImportStatus(BaseModel):
@@ -155,3 +180,6 @@ class ActiveImportStatus(BaseModel):
     # How many albums the active import has set aside (needs_review +
     # needs_dup_resolution) — the FE inbox cue's "N set aside for review".
     needs_review_count: int = 0
+    # The active sweep's counters (None when the active job is not a sweep, or
+    # idle) — the FE sweep banner reads this off the existing probe.
+    sweep: SweepStatus | None = None
