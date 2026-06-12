@@ -104,6 +104,14 @@ class ImportBridge:
         self._dup_replies: dict[int, queue.Queue[DuplicateDecision]] = {}
         self._lock = threading.Lock()
         self._pending = 0
+        # Sweep pause flag: set by the registry's request_pause (consumer
+        # side), read by the session at the top of every decision hook (worker
+        # side). It lives on the bridge because the bridge is the one object
+        # both sides already share - the registry never holds the session.
+        self._pause = threading.Event()
+        # Folders beets' task factory skipped as already imported (incremental
+        # history). Monotone; the sweep counters read it, others ignore it.
+        self._known_skips = 0
 
     # ----- worker side -----
 
@@ -204,6 +212,22 @@ class ImportBridge:
         with self._lock:
             return self._pending
 
+    def request_pause(self) -> None:
+        """Ask the worker to abort cleanly at its next decision hook."""
+        self._pause.set()
+
+    def pause_requested(self) -> bool:
+        return self._pause.is_set()
+
+    def note_known_skip(self) -> None:
+        """Count one folder beets skipped as already imported (worker side)."""
+        with self._lock:
+            self._known_skips += 1
+
+    def known_skips(self) -> int:
+        with self._lock:
+            return self._known_skips
+
 
 class WebImportSession(ImportSession):
     """An ImportSession driven by the web UI instead of a terminal prompt."""
@@ -212,6 +236,9 @@ class WebImportSession(ImportSession):
     # Unattended (inbox) imports auto-apply strong matches and set the rest aside
     # (SKIP, never park) so the worker never blocks on a human decision.
     unattended: bool
+    # Sweep mode: unattended + bank-emitting. The runner builds sweep sessions
+    # with the bank dir; attended/inbox sessions carry sweep=False, bank_dir=None.
+    sweep: bool
 
     def __init__(
         self,
@@ -223,6 +250,8 @@ class WebImportSession(ImportSession):
         trash_dir: Path | None = None,
         *,
         unattended: bool = False,
+        sweep: bool = False,
+        bank_dir: Path | None = None,
     ) -> None:
         super().__init__(lib, loghandler, paths, query)
         self.bridge = bridge
@@ -234,8 +263,13 @@ class WebImportSession(ImportSession):
         # Existing duplicate album ids recorded by Replace, trashed AFTER run().
         self._replace_album_ids: set[int] = set()
         # When True, uncertain matches + duplicates are set aside (SKIP), not
-        # parked — the inbox auto-import path (no human in the loop).
-        self.unattended = unattended
+        # parked. A sweep is unattended by definition, so the flag ORs in - a
+        # caller can never construct a parked (blocking) sweep.
+        self.unattended = unattended or sweep
+        # Sweep mode additionally BANKS each set-aside (chunk 3); bank_dir is
+        # where the rows go (threaded from the runner, mirroring trash_dir).
+        self.sweep = sweep
+        self._bank_dir = bank_dir
         # (outcome, task) pairs awaiting the library album id beets assigns
         # AFTER choose_match returns (task.add inside the user_query stage's
         # _apply_choice). Flushed at the next choose_match entry + once after
@@ -250,8 +284,38 @@ class WebImportSession(ImportSession):
         # Chunk 1 exposes nothing fancy: never resume interactively.
         return False
 
+    def _check_pause(self) -> None:
+        """Abort cleanly when a pause was requested (sweep pause).
+
+        Raises beets' own ``ImportAbortError`` - the exact native abort the
+        abort choice already uses: beets' ``run()`` catches it and stops the
+        pipeline at this album boundary. The aborted task was never chosen, so
+        it is not finalized into incremental history and the next sweep picks
+        it up again; any pending album-id follow-up still flushes because our
+        ``run()`` override flushes after beets swallows the abort.
+        """
+        if self.bridge.pause_requested():
+            raise ImportAbortError
+
+    def already_imported(self, toppath: Any, paths: Any) -> bool:
+        """Count folders beets skips as already imported (sweep counters).
+
+        beets' task factory consults this per prospective album folder BEFORE
+        any session hook fires, so history-skipped folders never reach the
+        outcome stream - this override is the only seam that sees them. The
+        count rides the bridge; non-sweep consumers simply never read it.
+        """
+        known = bool(super().already_imported(toppath, paths))
+        if known:
+            self.bridge.note_known_skip()
+        return known
+
     def choose_item(self, task: ImportTask) -> Action:
-        # Singletons are out of scope for chunk 1; skip them.
+        # Singletons stay out of scope (the whole web flow is album-shaped,
+        # the chunk-1 decision); the sweep worker additionally forces
+        # import.singletons off (Task 4) so a singletons:yes user config can
+        # never funnel files here and history-mark them done without banking.
+        self._check_pause()
         return Action.SKIP
 
     def resolve_duplicate(self, task: ImportTask, found_duplicates: Any) -> None:
@@ -263,6 +327,7 @@ class WebImportSession(ImportSession):
         choose_match) so the duplicate prompt flips that one row, then block the
         serial worker until a decision arrives over the bridge.
         """
+        self._check_pause()
         index = getattr(task, "md_album_index", None)
         if index is None:
             # Defensive: resolve_duplicate should always follow choose_match.
@@ -304,6 +369,8 @@ class WebImportSession(ImportSession):
         needs_review) so the API can show it in the live feed. Returns either an
         ``AlbumMatch`` (to apply) or an ``Action`` constant.
         """
+        # Pause lands here first: abort BEFORE this album claims a feed index.
+        self._check_pause()
         # Flush the PREVIOUS task's library album id (its task.add has run by
         # now — sequential pipeline) before this album claims the feed.
         self._flush_album_ids()

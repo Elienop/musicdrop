@@ -96,6 +96,9 @@ def _make_session(bridge: ImportBridge) -> WebImportSession:
     session._album_index = 0
     # __init__ is skipped, so default the attended flag the hooks now read.
     session.unattended = False
+    # __init__ is skipped, so default the sweep flag + bank dir the hooks read.
+    session.sweep = False
+    session._bank_dir = None
     # __init__ is skipped, so seed the album-id stash choose_match appends to.
     session._await_album_id = []
     # __init__ is skipped, so the in-library guard's session.paths read has a
@@ -947,3 +950,79 @@ def test_worker_leaves_outside_source_untouched(
     run_import_worker(session, move=None)
     # Outside the library: move=None falls through to the user's config.
     assert seen == {"move": False}
+
+
+def test_bridge_pause_event_round_trips() -> None:
+    bridge = ImportBridge()
+    assert bridge.pause_requested() is False
+    bridge.request_pause()
+    assert bridge.pause_requested() is True
+    bridge.request_pause()  # idempotent
+    assert bridge.pause_requested() is True
+
+
+def test_bridge_known_skip_counter() -> None:
+    bridge = ImportBridge()
+    assert bridge.known_skips() == 0
+    bridge.note_known_skip()
+    bridge.note_known_skip()
+    assert bridge.known_skips() == 2
+
+
+def test_sweep_session_construction_implies_unattended(tmp_path: Path) -> None:
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    session = WebImportSession(
+        lib,
+        None,
+        [os.fsencode(str(tmp_path / "in"))],
+        None,
+        ImportBridge(),
+        None,
+        unattended=False,
+        sweep=True,
+        bank_dir=tmp_path / "bank",
+    )
+    # A sweep is unattended by definition - the constructor ORs the flag in.
+    assert session.unattended is True
+    assert session.sweep is True
+    assert session._bank_dir == tmp_path / "bank"
+
+
+def test_default_construction_is_not_sweep(tmp_path: Path) -> None:
+    session = _guard_session(tmp_path, tmp_path / "downloads" / "incoming")
+    assert session.sweep is False
+    assert session._bank_dir is None
+    assert session.unattended is False
+
+
+def test_pause_aborts_at_top_of_each_hook(monkeypatch: pytest.MonkeyPatch) -> None:
+    from beets.importer.session import ImportAbortError
+
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    bridge.request_pause()
+    # The pause is checked FIRST in every decision hook, so each raises beets'
+    # native clean abort without parking, banking, or emitting anything.
+    with pytest.raises(ImportAbortError):
+        session.choose_match(task)
+    with pytest.raises(ImportAbortError):
+        session.choose_item(task)
+    with pytest.raises(ImportAbortError):
+        session.resolve_duplicate(task, [])
+    assert bridge.pending_count() == 0
+    assert bridge.drain_outcomes() == []
+
+
+def test_already_imported_counts_known_skips() -> None:
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    # __init__ is skipped: provide what beets' already_imported reads. A plain
+    # bool stands in for the iconfig view (truthiness is all it uses).
+    session.config = {"incremental": True}
+    session._is_resuming = {}
+    session._history_dirs = {(b"/music/done",)}
+    assert session.already_imported(b"/top", [b"/music/done"]) is True
+    assert session.already_imported(b"/top", [b"/music/new"]) is False
+    assert bridge.known_skips() == 1
