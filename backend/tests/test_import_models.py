@@ -178,4 +178,4 @@ def test_import_origin_values() -> None:
 
     from app.models.import_models import ImportOrigin
 
-    assert set(get_args(ImportOrigin)) == {"manual", "inbox", "sweep"}
+    assert set(get_args(ImportOrigin)) == {"manual", "inbox", "sweep", "bank_apply"}

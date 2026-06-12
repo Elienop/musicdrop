@@ -15,6 +15,7 @@ import threading
 from collections.abc import Callable
 
 from app.beets.import_session import ImportBridge
+from app.models.bank import BankApplyDirective
 from app.models.import_models import (
     AlbumOutcome,
     AlbumOutcomeStatus,
@@ -46,6 +47,9 @@ class FakeImportRunner:
         # The ImportOptions forwarded by the registry's start(), recorded so the
         # plumbing tests can assert start -> runner.run threading (None = manual).
         self.received_options: ImportOptions | None = None
+        # The BankApplyDirective forwarded by the registry's start() (None =
+        # not an apply run), recorded for the threading tests.
+        self.received_directive: BankApplyDirective | None = None
         # Guard seam: tests set validate_error to make start() refuse like the
         # real runner; validate_calls records the (path, options) it saw.
         self.validate_error: Exception | None = None
@@ -63,8 +67,10 @@ class FakeImportRunner:
         on_finish: Callable[[], None],
         on_error: Callable[[str], None],
         options: ImportOptions | None = None,
+        directive: BankApplyDirective | None = None,
     ) -> None:
         self.received_options = options
+        self.received_directive = directive
 
         def target() -> None:
             if self._fail_with is not None:

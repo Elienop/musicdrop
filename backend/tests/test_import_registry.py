@@ -534,3 +534,38 @@ def test_attach_library_threads_bank_dir_to_resolved_runner(
     reg.attach_library(lib, Path("/t"), bank_dir=Path("/b"))
     reg._resolve_runner()
     assert captured == {"lib": lib, "trash_dir": Path("/t"), "bank_dir": Path("/b")}
+
+
+def test_start_forwards_directive_and_bank_apply_origin() -> None:
+    from app.models.bank import BankApplyDirective
+
+    fake = FakeImportRunner(applied=[_applied_outcome(0)])
+    reg = ImportJobRegistry(runner=fake)
+    directive = BankApplyDirective(action="apply", search_id="rel-1")
+    job_id = reg.start("/library/Radiohead/OK Computer", origin="bank_apply", directive=directive)
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.done)
+    assert fake.received_directive == directive
+    state = reg.state(job_id)
+    assert state.origin == "bank_apply"
+    assert state.sweep is None  # an apply is a feed job, never a counter job
+
+
+def test_start_defaults_directive_none() -> None:
+    fake = FakeImportRunner(applied=[_applied_outcome(0)])
+    reg = ImportJobRegistry(runner=fake)
+    job_id = reg.start("/music/incoming")
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.done)
+    assert fake.received_directive is None
+    assert reg.state(job_id).origin == "manual"
+
+
+def test_request_pause_refuses_bank_apply_job() -> None:
+    # A stale sweep-pause can never reach an apply (fresh bridge per job), and
+    # a live pause request against a bank_apply job is refused outright.
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="apply-job", bridge=ImportBridge(), origin="bank_apply")
+    with pytest.raises(RuntimeError):
+        reg.request_pause("apply-job")

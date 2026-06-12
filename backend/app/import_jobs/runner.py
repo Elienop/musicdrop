@@ -27,6 +27,7 @@ from app.beets.import_session import (
 from app.beets.import_session import (
     InLibraryCopyError as InLibraryCopyError,
 )
+from app.models.bank import BankApplyDirective
 from app.models.import_models import ImportOptions
 
 
@@ -39,7 +40,8 @@ class ImportRunner(Protocol):
     return) so the API start endpoint returns immediately.
 
     ``options`` carries per-import overrides (operation move/copy, unattended);
-    ``None`` is today's manual default.
+    ``None`` is today's manual default. ``directive`` carries a bank apply
+    run's translated decision; None for every other origin.
     """
 
     def run(
@@ -49,6 +51,7 @@ class ImportRunner(Protocol):
         on_finish: Callable[[], None],
         on_error: Callable[[str], None],
         options: ImportOptions | None = None,
+        directive: BankApplyDirective | None = None,
     ) -> None: ...
 
     def validate(self, path: str, options: ImportOptions | None = None) -> None:
@@ -102,6 +105,7 @@ class BeetsImportRunner:
         on_finish: Callable[[], None],
         on_error: Callable[[str], None],
         options: ImportOptions | None = None,
+        directive: BankApplyDirective | None = None,
     ) -> None:
         # "default" / None falls through to the user's beets config (manual
         # default); "move"/"copy" force that operation for this run only,
@@ -127,11 +131,12 @@ class BeetsImportRunner:
             unattended=unattended,
             sweep=sweep,
             bank_dir=self._bank_dir if sweep else None,
+            directive=directive,
         )
 
         def target() -> None:
             try:
-                run_import_worker(session, move=move, sweep=sweep)
+                run_import_worker(session, move=move, sweep=sweep, directive=directive)
             # Broad by design: any worker crash must become a failed job, never
             # an unhandled thread exception (which the API could not surface).
             except Exception as exc:

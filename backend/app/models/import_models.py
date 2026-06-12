@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-ImportOrigin = Literal["manual", "inbox", "sweep"]
+ImportOrigin = Literal["manual", "inbox", "sweep", "bank_apply"]
 
 
 class ImportOptions(BaseModel):

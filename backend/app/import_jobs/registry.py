@@ -19,6 +19,7 @@ from pathlib import Path
 from app.beets.import_mapping import embedded_art
 from app.beets.import_session import ImportBridge
 from app.import_jobs.runner import BeetsImportRunner, ImportRunner
+from app.models.bank import BankApplyDirective
 from app.models.import_api import (
     ActiveImportStatus,
     ImportAlbumStatus,
@@ -160,13 +161,16 @@ class ImportJobRegistry:
         *,
         options: ImportOptions | None = None,
         origin: ImportOrigin = "manual",
+        directive: BankApplyDirective | None = None,
     ) -> str:
         """Start an import; raise RuntimeError if one is already active.
 
         ``options`` threads per-import overrides (operation move/copy,
-        unattended) to the runner; ``None`` is today's manual default.
-        ``origin`` (manual/inbox) is recorded on the job and surfaced on the job
-        state + the active probe.
+        unattended, sweep) to the runner; ``None`` is today's manual default.
+        ``origin`` (manual/inbox/sweep/bank_apply) is recorded on the job and
+        surfaced on the job state + the active probe. ``directive`` is the
+        bank apply runner's translated decision, threaded to the session so
+        the one-folder run answers every hook from it (None everywhere else).
         """
         runner = self._resolve_runner()
         runner.validate(path, options)
@@ -192,6 +196,7 @@ class ImportJobRegistry:
             on_finish=lambda: self._on_finish(job.id),
             on_error=lambda message: self._on_error(job.id, message),
             options=options,
+            directive=directive,
         )
         return job.id
 
