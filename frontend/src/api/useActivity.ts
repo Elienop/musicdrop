@@ -119,6 +119,22 @@ function importRow(status: ActiveImportStatus | undefined): ActivityRow | null {
   if (status.origin === "inbox") {
     return null;
   }
+  if (status.origin === "sweep") {
+    // The sweep's whole point is bulk: surface its counters, not the generic
+    // import label. The row stays "running" (the probe has no terminal phase)
+    // and vanishes when the sweep ends — same posture as the manual row.
+    return {
+      id: `import:${status.job_id ?? "active"}`,
+      kind: "import",
+      label: "Sweep & bank",
+      scope: status.sweep?.current_folder ?? undefined,
+      state: "running",
+      countsText: status.sweep
+        ? `${status.sweep.processed} processed · ${status.sweep.banked} banked`
+        : undefined,
+      href: status.job_id != null ? `/import?job=${status.job_id}` : "/import",
+    };
+  }
   // NOTE: the probe has NO terminal phase (active just flips false), so the
   // import row is always "running" and simply disappears when the job ends.
   return {

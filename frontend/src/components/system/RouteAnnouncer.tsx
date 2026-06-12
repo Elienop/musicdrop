@@ -18,6 +18,7 @@ const EXACT_TITLES = new Map<string, string>([
  * (album/playlist/import index) keep the static section title; pages with the
  * data loaded can refine `document.title` later. */
 const PREFIX_TITLES: readonly (readonly [string, string])[] = [
+  ["/review/bank/", "Review decision"],
   ["/import/albums/", "Import decision"],
   ["/import/", "Add from folder"],
   ["/albums/", "Album"],

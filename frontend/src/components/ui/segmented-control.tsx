@@ -29,7 +29,7 @@ function SegmentedControl({
       data-slot="segmented-control"
       role="group"
       aria-label={ariaLabel}
-      className="bg-background inline-flex items-center gap-0.5 rounded-md border p-0.5 text-sm"
+      className="bg-muted/50 inline-flex w-fit items-center gap-0.5 rounded-md border p-0.5 text-sm"
     >
       {options.map((option) => (
         <button
@@ -40,7 +40,7 @@ function SegmentedControl({
           className={cn(
             "focus-ring rounded-sm px-3 py-1 font-medium transition-colors",
             value === option.value
-              ? "bg-primary/15 text-primary-light"
+              ? "bg-primary/15 text-primary-light shadow-xs"
               : "text-muted-foreground hover:text-foreground"
           )}
         >

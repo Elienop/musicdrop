@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.acquisition import router as acquisition_router
 from app.api.albums import router as albums_router
 from app.api.artists import router as artists_router
+from app.api.bank import get_bank_dir
+from app.api.bank import router as bank_router
 from app.api.browse import router as browse_router
 from app.api.config_ import router as config_router
 from app.api.duplicates import router as duplicates_router
@@ -25,6 +27,7 @@ from app.artwork.cache import ArtistImageCache
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
+from app.bank.store import reconcile_interrupted
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
 from app.config import resolve_artist_image_cache_dir, settings
@@ -100,7 +103,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # it the raw lib (not the snapshot handle). The Trash dir is where the
     # duplicate-on-import Replace action moves the old copies (same reversible
     # Trash the /duplicates page uses).
-    import_registry.attach_library(handle.lib, resolve_trash_dir(settings, handle))
+    import_registry.attach_library(
+        handle.lib, resolve_trash_dir(settings, handle), bank_dir=get_bank_dir()
+    )
 
     # The acquisition seam drives completed inbox drops through the SAME single
     # import slot (Option A) — constructed AFTER attach_library so it shares that
@@ -124,6 +129,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.inbox_dir = inbox_dir
     app.state.acquisition_ledger = ledger  # the Review page lists + annotates the inbox backlog
     acquisition_queue.start()
+
+    # Bank reconciliation: rows stuck in "applying" from a mid-apply crash
+    # revert to needs_review with a note (never blind-requeued).
+    reconcile_interrupted(get_bank_dir())
+
+    # The bank apply runner drains decided (queued) rows through the SAME
+    # single import slot, deferring on the same gate union the acquisition
+    # queue consumes. Started AFTER reconciliation so a crashed mid-apply row
+    # is back in needs_review before the first drain pass; queued rows from
+    # before the restart drain immediately - no decision re-post needed.
+    from app.bank.apply_runner import BankApplyRunner
+
+    bank_apply_runner = BankApplyRunner(
+        bank_dir=get_bank_dir(),
+        import_registry=import_registry,
+        swap_lock=app.state.beets_swap_lock,
+    )
+    app.state.bank_apply_runner = bank_apply_runner
+    bank_apply_runner.start()
 
     # Build the artist-image stack once: the disk cache + the persisted enabled
     # toggle are shared on app.state so the override + settings endpoints reach
@@ -169,6 +193,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # it: the same best-effort posture a manual import running at shutdown
         # already has — we never hard-kill the worker.
         acquisition_queue.stop()
+        bank_apply_runner.stop()
         for _ in range(_SHUTDOWN_IMPORT_DRAIN_TICKS):
             if not import_registry.has_active_job():
                 break
@@ -202,6 +227,7 @@ app.include_router(playlists_router, prefix="/api")
 app.include_router(plex_router, prefix="/api")
 app.include_router(slskd_router, prefix="/api")
 app.include_router(acquisition_router, prefix="/api")
+app.include_router(bank_router, prefix="/api")
 
 # Production single-image mode: serve the built SPA. Registered after every
 # API router so the catch-all cannot shadow /api/*. Dev (static_dir unset)

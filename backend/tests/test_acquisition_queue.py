@@ -21,6 +21,7 @@ from app.acquisition.ledger import AcquisitionLedger
 from app.acquisition.queue import AcquisitionQueue
 from app.import_jobs.fakes import FakeImportRunner
 from app.import_jobs.registry import ImportJobRegistry
+from app.models.bank import BankApplyDirective
 from app.models.import_models import ImportOptions, ImportOrigin
 
 T = TypeVar("T")
@@ -74,9 +75,10 @@ def test_queue_drains_to_registry_with_move_unattended_inbox(tmp_path: Path) -> 
         *,
         options: ImportOptions | None = None,
         origin: ImportOrigin = "manual",
+        directive: BankApplyDirective | None = None,
     ) -> str:
         calls.append((path, options, origin))
-        return real_start(path, options=options, origin=origin)
+        return real_start(path, options=options, origin=origin, directive=directive)
 
     reg.start = spy_start  # type: ignore[method-assign]  # test spy delegates to the real start
 

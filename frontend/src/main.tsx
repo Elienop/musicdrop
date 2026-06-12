@@ -33,6 +33,11 @@ const ArtistsPage = lazy(() =>
     default: m.ArtistsPage,
   })),
 );
+const BankReviewPage = lazy(() =>
+  import("@/pages/review/BankReviewPage").then((m) => ({
+    default: m.BankReviewPage,
+  })),
+);
 const BrowsePage = lazy(() =>
   import("@/pages/browse/BrowsePage").then((m) => ({ default: m.BrowsePage })),
 );
@@ -137,6 +142,7 @@ const router = createBrowserRouter([
       { path: "/search", element: <SearchPage /> },
       { path: "/browse", element: <BrowsePage /> },
       { path: "/review", element: <ReviewPage /> },
+      { path: "/review/bank/:itemId", element: <BankReviewPage /> },
       { path: "/import", element: <ImportPage /> },
       { path: "/import/albums/:index", element: <ImportCandidatePage /> },
       {

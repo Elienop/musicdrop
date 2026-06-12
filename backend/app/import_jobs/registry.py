@@ -19,6 +19,7 @@ from pathlib import Path
 from app.beets.import_mapping import embedded_art
 from app.beets.import_session import ImportBridge
 from app.import_jobs.runner import BeetsImportRunner, ImportRunner
+from app.models.bank import BankApplyDirective
 from app.models.import_api import (
     ActiveImportStatus,
     ImportAlbumStatus,
@@ -26,6 +27,7 @@ from app.models.import_api import (
     ImportJobState,
     ImportPhase,
     ImportProgress,
+    SweepStatus,
 )
 from app.models.import_models import (
     AlbumOutcome,
@@ -96,6 +98,10 @@ class ImportJob:
     # Where this import came from: "manual" (the web Start flow) or "inbox" (the
     # unattended acquisition seam). Surfaced on the job state + the active probe.
     origin: ImportOrigin = "manual"
+    # Sweep-origin jobs count instead of accumulating feed rows: a whole-library
+    # sweep would otherwise hold thousands of _FeedAlbum dicts. None for
+    # manual/inbox jobs (their feed is untouched).
+    sweep: SweepStatus | None = None
 
 
 class ImportJobRegistry:
@@ -107,20 +113,28 @@ class ImportJobRegistry:
         self._runner = runner
         self._lib: object | None = None
         self._trash_dir: Path | None = None
+        self._bank_dir: Path | None = None
         self._job: ImportJob | None = None
         self._lock = threading.Lock()
 
     # ----- wiring -----
 
-    def attach_library(self, lib: object | None, trash_dir: Path | None = None) -> None:
-        """Provide the beets Library + Trash dir the production runner builds from."""
+    def attach_library(
+        self,
+        lib: object | None,
+        trash_dir: Path | None = None,
+        bank_dir: Path | None = None,
+    ) -> None:
+        """Provide the beets Library + Trash dir + bank dir the production
+        runner builds from (bank_dir feeds sweep-mode sessions)."""
         self._lib = lib
         self._trash_dir = trash_dir
+        self._bank_dir = bank_dir
 
     def _resolve_runner(self) -> ImportRunner:
         if self._runner is not None:
             return self._runner
-        return BeetsImportRunner(self._lib, self._trash_dir)
+        return BeetsImportRunner(self._lib, self._trash_dir, self._bank_dir)
 
     # ----- lifecycle -----
 
@@ -147,20 +161,33 @@ class ImportJobRegistry:
         *,
         options: ImportOptions | None = None,
         origin: ImportOrigin = "manual",
+        directive: BankApplyDirective | None = None,
     ) -> str:
         """Start an import; raise RuntimeError if one is already active.
 
         ``options`` threads per-import overrides (operation move/copy,
-        unattended) to the runner; ``None`` is today's manual default.
-        ``origin`` (manual/inbox) is recorded on the job and surfaced on the job
-        state + the active probe.
+        unattended, sweep) to the runner; ``None`` is today's manual default.
+        ``origin`` (manual/inbox/sweep/bank_apply) is recorded on the job and
+        surfaced on the job state + the active probe. ``directive`` is the
+        bank apply runner's translated decision, threaded to the session so
+        the one-folder run answers every hook from it (None everywhere else).
         """
         runner = self._resolve_runner()
         runner.validate(path, options)
+        # options.sweep is the single source of truth for the sweep origin:
+        # callers never pass origin="sweep" themselves, and the inbox/manual
+        # call sites stay untouched.
+        if options is not None and options.sweep:
+            origin = "sweep"
         with self._lock:
             if self._job is not None and self._job.phase in _ACTIVE_PHASES:
                 raise RuntimeError("an import is already running")
-            job = ImportJob(id=uuid.uuid4().hex, bridge=ImportBridge(), origin=origin)
+            job = ImportJob(
+                id=uuid.uuid4().hex,
+                bridge=ImportBridge(),
+                origin=origin,
+                sweep=SweepStatus() if origin == "sweep" else None,
+            )
             self._job = job
 
         runner.run(
@@ -169,6 +196,7 @@ class ImportJobRegistry:
             on_finish=lambda: self._on_finish(job.id),
             on_error=lambda message: self._on_error(job.id, message),
             options=options,
+            directive=directive,
         )
         return job.id
 
@@ -211,6 +239,16 @@ class ImportJobRegistry:
 
     @staticmethod
     def _summarize(job: ImportJob) -> str:
+        if job.sweep is not None:
+            sweep = job.sweep
+            summary = (
+                f"swept {sweep.processed}, auto-applied {sweep.auto_applied}, banked {sweep.banked}"
+            )
+            if sweep.skipped_known:
+                summary += f", skipped {sweep.skipped_known} already imported"
+            if sweep.paused:
+                summary += " - paused"
+            return summary
         imported = sum(1 for a in job.albums.values() if ImportJobRegistry._is_imported(a))
         skipped = sum(1 for a in job.albums.values() if ImportJobRegistry._is_skipped(a))
         return f"{imported} imported, {skipped} skipped"
@@ -228,6 +266,9 @@ class ImportJobRegistry:
 
         Caller holds ``self._lock``. Both bridge calls are non-blocking.
         """
+        if job.sweep is not None:
+            self._drain_sweep_locked(job)
+            return
         for outcome in job.bridge.drain_outcomes():
             row = job.albums.get(outcome.album_index)
             if row is None:
@@ -280,6 +321,43 @@ class ImportJobRegistry:
                 # Flip the (applied/decided) row to the duplicate-pending state so
                 # the feed + UI route to the duplicate decision panel.
                 row.status = ImportAlbumStatus.needs_dup_resolution
+
+    def _drain_sweep_locked(self, job: ImportJob) -> None:
+        """Counter drain for sweep jobs (caller holds ``self._lock``).
+
+        No ``_FeedAlbum`` rows are ever created, so job state stays O(1) for a
+        10k-folder sweep. Mapping (every increment is monotone — a duplicate
+        rescinding an auto-apply adds to ``banked`` instead of decrementing):
+
+        * follow-up outcome (``album_id`` set) -> ``auto_applied`` — the only
+          truthful "landed in the library" signal; an auto-apply that later hit
+          a duplicate and was banked+SKIPped never gets one.
+        * ``needs_dup_resolution``           -> ``banked`` (its index was
+          already counted as processed by its earlier applied outcome).
+        * any other (initial) outcome        -> ``processed`` (+ ``banked``
+          for ``needs_review``/``skipped`` — the sweep banks both) and
+          refreshes ``current_folder``.
+
+        ``skipped_known`` mirrors the bridge's monotone already-imported
+        counter (folders beets' task factory skipped before tagging).
+        """
+        sweep = job.sweep
+        if sweep is None:  # pragma: no cover - callers gate on job.sweep
+            return
+        for outcome in job.bridge.drain_outcomes():
+            if outcome.album_id is not None:
+                sweep.auto_applied += 1
+            elif outcome.status is AlbumOutcomeStatus.needs_dup_resolution:
+                sweep.banked += 1
+            else:
+                sweep.processed += 1
+                sweep.current_folder = outcome.folder
+                if outcome.status in (
+                    AlbumOutcomeStatus.needs_review,
+                    AlbumOutcomeStatus.skipped,
+                ):
+                    sweep.banked += 1
+        sweep.skipped_known = job.bridge.known_skips()
 
     def drain(self, job_id: str) -> list[ImportAlbumSummary]:
         """Drain the bridge and return the current feed rows (non-blocking)."""
@@ -370,6 +448,26 @@ class ImportJobRegistry:
                 row.status = ImportAlbumStatus.decided
                 row.duplicate_action = decision.action
 
+    def request_pause(self, job_id: str) -> None:
+        """Ask the active sweep to abort cleanly at its next album boundary.
+
+        Sets the bridge pause event the session checks at the top of every
+        decision hook (-> beets' native ImportAbortError -> run() unwinds ->
+        on_finish -> phase done, slot freed). KeyError for an unknown job
+        (API: 404); RuntimeError when the job is not a sweep or no longer
+        active (API: 409). Pausing an already-pausing active sweep is a no-op.
+        """
+        with self._lock:
+            job = self._job
+            if job is None or job.id != job_id:
+                raise KeyError(job_id)
+            if job.origin != "sweep" or job.sweep is None:
+                raise RuntimeError("only a sweep import can be paused")
+            if job.phase not in _ACTIVE_PHASES:
+                raise RuntimeError("the sweep is no longer running")
+            job.sweep.paused = True
+            job.bridge.request_pause()
+
     def state(self, job_id: str) -> ImportJobState:
         """Drain, then return the full job state for the GET endpoint."""
         self.drain(job_id)
@@ -392,6 +490,7 @@ class ImportJobRegistry:
                 error=job.error,
                 origin=job.origin,
                 set_aside=set_aside,
+                sweep=job.sweep.model_copy() if job.sweep is not None else None,
             )
 
     def active_status(self) -> ActiveImportStatus:
@@ -428,6 +527,7 @@ class ImportJobRegistry:
                 job_id=job.id,
                 origin=job.origin,
                 needs_review_count=set_aside,
+                sweep=job.sweep.model_copy() if job.sweep is not None else None,
             )
 
     # ----- helpers -----

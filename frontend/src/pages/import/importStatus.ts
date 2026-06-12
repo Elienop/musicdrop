@@ -17,6 +17,14 @@ export function announceMessage(args: {
   if (isError) return "The import could not be loaded.";
   if (isPending || !data) return "Loading the import.";
   if (data.phase === "failed") return "The import failed.";
+  if (data.origin === "sweep" && data.sweep) {
+    const s = data.sweep;
+    const counts = `Processed ${s.processed}, imported ${s.auto_applied}, banked ${s.banked}.`;
+    if (data.phase === "done") {
+      return s.paused ? `Sweep paused. ${counts}` : `Sweep complete. ${counts}`;
+    }
+    return `Sweeping. ${counts}`;
+  }
   if (data.phase === "done") {
     const { applied, skipped } = data.progress;
     return `Import complete. Imported ${applied}, skipped ${skipped}.`;

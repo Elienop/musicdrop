@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-ImportOrigin = Literal["manual", "inbox"]
+ImportOrigin = Literal["manual", "inbox", "sweep", "bank_apply"]
 
 
 class ImportOptions(BaseModel):
@@ -19,11 +19,19 @@ class ImportOptions(BaseModel):
     ``operation`` ``"default"`` falls through to the user's beets config (the
     manual-import default). ``"move"``/``"copy"`` force that operation for this
     import only. ``unattended`` ``True`` is the inbox path: no human review —
-    uncertain/duplicate albums are set aside rather than parked.
+    uncertain/duplicate albums are set aside rather than parked. ``sweep``
+    ``True`` is the banking sweep: an unattended, beets-incremental run that
+    BANKS every set-aside album (with its candidate payload) instead of just
+    skipping it, recorded as ``origin="sweep"``. A sweep is unattended by
+    definition — the session enforces ``unattended or sweep`` — so
+    ``{"sweep": true}`` alone is a complete sweep request. The sweep forces no
+    file operation: ``operation`` behaves exactly as for a manual import (the
+    in-library guard still force-corrects in-library sources to move).
     """
 
     operation: Literal["default", "move", "copy"] = "default"
     unattended: bool = False
+    sweep: bool = False
 
 
 class Recommendation(StrEnum):
@@ -96,13 +104,19 @@ class CandidateOption(BaseModel):
     """A ranked alternative release from ``task.candidates``.
 
     The switcher in the review screen lists these; ``index`` is the position in
-    the beets candidate list and is what a choice references.
+    the beets candidate list and is what a choice references. ``release_id`` is
+    the metadata backend's id for the release (``AlbumInfo.album_id`` — an
+    MBID for MusicBrainz, the deezer id for Deezer): the bank's apply runner
+    pins ``import.search_ids`` to it so the apply imports exactly the release
+    the user chose. None for sources without an id (the apply then falls back
+    to an unpinned lookup's top candidate).
     """
 
     index: int
     confidence: float
     data_source: str | None
     disambiguation: str | None
+    release_id: str | None = None
 
 
 class Candidate(BaseModel):

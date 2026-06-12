@@ -1,0 +1,51 @@
+"""The fingerprint must be stable across runs and sensitive to content changes."""
+
+import os
+from pathlib import Path
+
+import pytest
+
+from app.bank.fingerprint import folder_fingerprint
+
+
+def _make_album(folder: Path) -> None:
+    folder.mkdir(parents=True)
+    (folder / "01 - one.mp3").write_bytes(b"aaaa")
+    (folder / "02 - two.mp3").write_bytes(b"bbbbbb")
+    (folder / "cover.jpg").write_bytes(b"img")
+
+
+def test_fingerprint_stable(tmp_path: Path) -> None:
+    _make_album(tmp_path / "Album")
+    first = folder_fingerprint(tmp_path / "Album")
+    second = folder_fingerprint(tmp_path / "Album")
+    assert first == second
+    assert len(first) == 64  # sha256 hex
+
+
+def test_fingerprint_changes_on_added_file(tmp_path: Path) -> None:
+    _make_album(tmp_path / "Album")
+    before = folder_fingerprint(tmp_path / "Album")
+    (tmp_path / "Album" / "03 - three.mp3").write_bytes(b"cc")
+    assert folder_fingerprint(tmp_path / "Album") != before
+
+
+def test_fingerprint_changes_on_size_change(tmp_path: Path) -> None:
+    _make_album(tmp_path / "Album")
+    before = folder_fingerprint(tmp_path / "Album")
+    (tmp_path / "Album" / "01 - one.mp3").write_bytes(b"aaaa-grown")
+    assert folder_fingerprint(tmp_path / "Album") != before
+
+
+def test_fingerprint_changes_on_mtime_change(tmp_path: Path) -> None:
+    _make_album(tmp_path / "Album")
+    before = folder_fingerprint(tmp_path / "Album")
+    target = tmp_path / "Album" / "02 - two.mp3"
+    stat = target.stat()
+    os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert folder_fingerprint(tmp_path / "Album") != before
+
+
+def test_fingerprint_missing_folder_raises(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        folder_fingerprint(tmp_path / "gone")

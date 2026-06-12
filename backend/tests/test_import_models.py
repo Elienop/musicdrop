@@ -170,7 +170,7 @@ def test_import_options_round_trips() -> None:
     from app.models.import_models import ImportOptions
 
     o = ImportOptions.model_validate({"operation": "move", "unattended": True})
-    assert o.model_dump() == {"operation": "move", "unattended": True}
+    assert o.model_dump() == {"operation": "move", "unattended": True, "sweep": False}
 
 
 def test_import_origin_values() -> None:
@@ -178,4 +178,4 @@ def test_import_origin_values() -> None:
 
     from app.models.import_models import ImportOrigin
 
-    assert set(get_args(ImportOrigin)) == {"manual", "inbox"}
+    assert set(get_args(ImportOrigin)) == {"manual", "inbox", "sweep", "bank_apply"}

@@ -8,24 +8,16 @@ import {
   useResolveImportDuplicate,
 } from "@/api/useImport";
 import { albumOriginFromState, BackLink } from "@/components/albums/album-grid";
+import { Info } from "@/components/icons";
 import {
-  Close,
-  Duplicates,
-  Info,
-  Merge as MergeIcon,
-  Replace as ReplaceIcon,
-  Spinner,
-  type AppIcon,
-} from "@/components/icons";
-import { CoverArt } from "@/components/system/CoverArt";
+  DuplicateActions,
+  DuplicateComparison,
+} from "@/components/import/DuplicateReview";
 import { EmptyState } from "@/components/system/EmptyState";
 import { PageSkeleton } from "@/components/system/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDeferredH1Focus } from "@/lib/useDeferredH1Focus";
-
-type IncomingAlbum = DuplicatePrompt["incoming"];
-type ExistingAlbum = DuplicatePrompt["existing"][number];
 
 export function ImportDuplicatePage() {
   const { index: indexParam } = useParams<{ index: string }>();
@@ -138,165 +130,21 @@ function DuplicateScreen({
     );
   }
 
-  const incomingCover = prompt.incoming.has_current_art
-    ? importCoverUrl(jobId, index)
-    : null;
-
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1">
-        {/* THE page h1 — decision screens own their h1 directly (the Task-7
-            detail-page idiom); tabIndex -1 keeps RouteAnnouncer's contract. */}
-        <h1 tabIndex={-1} className="font-display text-display font-semibold tracking-tight">
-          Already in your library
-        </h1>
-        <p className="text-muted-foreground text-sm">
-          This album matches one you already have. Choose what to do before
-          importing.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Panel
-          id="incoming"
-          heading="Importing (new)"
-          accent
-          album={prompt.incoming}
-          coverUrl={incomingCover}
-        />
-        {prompt.existing.map((album) => (
-          <Panel
-            key={album.album_id}
-            id={`existing-${album.album_id}`}
-            heading="Already in library"
-            album={album}
-            coverUrl={`/api/albums/${album.album_id}/cover`}
-          />
-        ))}
-      </div>
-
+      <DuplicateComparison
+        prompt={prompt}
+        incomingCoverUrl={
+          prompt.incoming.has_current_art ? importCoverUrl(jobId, index) : null
+        }
+      />
       {resolve.isError && (
         <p className="text-destructive text-sm" role="alert">
           Couldn&rsquo;t submit that — try again.
         </p>
       )}
-
-      <div className="bg-background/80 sticky bottom-0 z-10 -mx-2 flex flex-wrap items-center gap-2 border-t px-2 py-3 backdrop-blur">
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={resolve.isPending}
-          onClick={() => decide("skip_new")}
-        >
-          <ActionIcon action="skip_new" pending={pending} icon={Close} /> Skip new
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={resolve.isPending}
-          aria-describedby="duplicate-footnote"
-          onClick={() => decide("keep_both")}
-        >
-          <ActionIcon action="keep_both" pending={pending} icon={Duplicates} /> Keep both
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={resolve.isPending}
-          className="border-warning text-warning hover:bg-warning/10 hover:text-warning"
-          aria-describedby="duplicate-footnote"
-          onClick={() => decide("replace")}
-        >
-          <ActionIcon action="replace" pending={pending} icon={ReplaceIcon} /> Replace old
-        </Button>
-        <Button
-          className="ml-auto"
-          size="sm"
-          disabled={resolve.isPending}
-          aria-describedby="duplicate-footnote"
-          onClick={() => decide("merge")}
-        >
-          <ActionIcon action="merge" pending={pending} icon={MergeIcon} />
-          Merge
-        </Button>
-      </div>
-      <p id="duplicate-footnote" className="text-muted-foreground text-xs">
-        Keep both imports alongside the existing copy · Replace moves the old
-        copy to Trash (reversible) · Merge combines them, then reappears as a
-        normal review.
-      </p>
+      <DuplicateActions pending={pending} busy={resolve.isPending} onDecide={decide} />
     </div>
-  );
-}
-
-/** The clicked button shows a spinner in place of its own icon while the
- * resolution is in flight, so progress reads on the button the user pressed
- * (not only on Merge). `pending` is the action currently being submitted. */
-function ActionIcon({
-  action,
-  pending,
-  icon: Icon,
-}: {
-  action: DuplicateAction;
-  pending: DuplicateAction | null;
-  icon: AppIcon;
-}) {
-  if (pending === action) {
-    return <Spinner className="animate-spin" aria-hidden="true" />;
-  }
-  return <Icon aria-hidden="true" />;
-}
-
-function Panel({
-  id,
-  heading,
-  album,
-  coverUrl,
-  accent = false,
-}: {
-  id: string;
-  heading: string;
-  album: IncomingAlbum | ExistingAlbum;
-  coverUrl: string | null;
-  accent?: boolean;
-}) {
-  const headingId = `panel-heading-${id}`;
-  const meta = [
-    album.year?.toString() ?? null,
-    `${album.track_count} ${album.track_count === 1 ? "track" : "tracks"}`,
-    album.format,
-    album.bitrate_kbps ? `${album.bitrate_kbps} kbps` : null,
-  ].filter((b): b is string => Boolean(b));
-  return (
-    <section
-      aria-labelledby={headingId}
-      className="border-border flex flex-col gap-3 rounded-xl border p-4"
-    >
-      <p
-        id={headingId}
-        className={
-          accent
-            ? "text-primary-light text-xs font-medium tracking-wide uppercase"
-            : "text-muted-foreground text-xs font-medium tracking-wide uppercase"
-        }
-      >
-        {heading}
-      </p>
-      <CoverArt src={coverUrl} className="w-full rounded-lg" />
-      <div className="flex flex-col gap-0.5">
-        <p className="truncate font-medium">{album.album ?? "Unknown album"}</p>
-        <p className="text-muted-foreground truncate text-sm">
-          {album.album_artist ?? "Unknown artist"}
-        </p>
-        <p className="text-muted-foreground text-sm">{meta.join(" · ")}</p>
-        <p
-          className="text-muted-foreground truncate font-mono text-xs"
-          title={album.folder}
-        >
-          {album.folder}
-        </p>
-      </div>
-    </section>
   );
 }
 

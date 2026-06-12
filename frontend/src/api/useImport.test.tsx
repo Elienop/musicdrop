@@ -7,9 +7,11 @@ import { describe, expect, test } from "vitest";
 import {
   ImportConflictError,
   ImportJobNotFoundError,
+  ImportStartRejectedError,
   useDuplicatePrompt,
   useImportCandidate,
   useImportJob,
+  usePauseSweep,
   useResolveImportDuplicate,
   useStartImport,
   useSubmitChoice,
@@ -62,6 +64,90 @@ describe("useStartImport", () => {
 
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error).toBeInstanceOf(ImportConflictError);
+  });
+});
+
+describe("startImport 422 surfacing", () => {
+  test("a string-detail 422 (the in-library guard) throws ImportStartRejectedError with that text", async () => {
+    server.use(
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json(
+          { detail: "In-library sources must move; copy would duplicate files" },
+          { status: 422 },
+        ),
+      ),
+    );
+
+    const { result } = renderHook(() => useStartImport(), {
+      wrapper: wrapper(),
+    });
+    result.current.mutate({ path: "/library" });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).toBeInstanceOf(ImportStartRejectedError);
+    expect(result.current.error).toMatchObject({
+      name: "ImportStartRejectedError",
+      message: expect.stringMatching(/must move/) as string,
+    });
+  });
+
+  test("an array-detail 422 (FastAPI validation) still throws with a human message", async () => {
+    server.use(
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json(
+          { detail: [{ loc: ["body", "path"], msg: "Field required", type: "missing" }] },
+          { status: 422 },
+        ),
+      ),
+    );
+
+    const { result } = renderHook(() => useStartImport(), {
+      wrapper: wrapper(),
+    });
+    result.current.mutate({ path: "" });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).toMatchObject({
+      name: "ImportStartRejectedError",
+      message: "Field required",
+    });
+  });
+});
+
+const PAUSE_URL = `${window.location.origin}/api/import/j1/pause`;
+
+describe("usePauseSweep", () => {
+  test("posts the pause and resolves on 204", async () => {
+    let hits = 0;
+    server.use(
+      http.post(PAUSE_URL, () => {
+        hits += 1;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+
+    const { result } = renderHook(() => usePauseSweep("j1"), {
+      wrapper: wrapper(),
+    });
+    result.current.mutate();
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(hits).toBe(1);
+  });
+
+  test("409/404 (sweep already over) resolve quietly — the refetch shows done", async () => {
+    server.use(
+      http.post(PAUSE_URL, () =>
+        HttpResponse.json({ detail: "only a sweep import can be paused" }, { status: 409 }),
+      ),
+    );
+
+    const { result } = renderHook(() => usePauseSweep("j1"), {
+      wrapper: wrapper(),
+    });
+    result.current.mutate();
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
   });
 });
 

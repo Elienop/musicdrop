@@ -500,6 +500,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/import/{job_id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pause Import
+         * @description Ask the active sweep to stop at its next album boundary.
+         *
+         *     The session aborts via beets' native clean abort at its next decision
+         *     hook: the current album finishes its decision point, the session unwinds,
+         *     the job ends ``phase=done`` with a summary noting the pause, and the
+         *     import slot frees. Resume = start a new sweep of the same root (beets'
+         *     incremental history skips everything already done or banked). 404 for an
+         *     unknown job; 409 when the job is not a sweep or is no longer active;
+         *     repeating a pause on a still-active sweep is idempotent (204).
+         */
+        post: operations["pause_import_api_import__job_id__pause_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/config": {
         parameters: {
             query?: never;
@@ -1177,6 +1205,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/bank": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Bank */
+        get: operations["list_bank_api_bank_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/bank/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Bank Item */
+        get: operations["get_bank_item_api_bank__item_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Bank Item */
+        delete: operations["delete_bank_item_api_bank__item_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/bank/{item_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decide Bank Item */
+        post: operations["decide_bank_item_api_bank__item_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/bank/bulk-ignore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Bulk Ignore Bank */
+        post: operations["bulk_ignore_bank_api_bank_bulk_ignore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1242,12 +1339,13 @@ export interface components {
              * @default manual
              * @enum {string}
              */
-            origin: "manual" | "inbox";
+            origin: "manual" | "inbox" | "sweep" | "bank_apply";
             /**
              * Needs Review Count
              * @default 0
              */
             needs_review_count: number;
+            sweep?: components["schemas"]["SweepStatus"] | null;
         };
         /** Album */
         Album: {
@@ -1463,6 +1561,146 @@ export interface components {
             /** Enabled */
             enabled: boolean;
         };
+        /** BankBulkIgnoreRequest */
+        BankBulkIgnoreRequest: {
+            /** Ids */
+            ids: string[];
+        };
+        /**
+         * BankBulkIgnoreResponse
+         * @description How many rows actually flipped (non-``needs_review`` ids are skipped).
+         */
+        BankBulkIgnoreResponse: {
+            /** Ignored */
+            ignored: number;
+        };
+        /**
+         * BankDecision
+         * @description The user's verdict on a banked row.
+         *
+         *     Mirrors the live review dialect (``ImportChoice``): ``apply`` selects a
+         *     ranked option by ``candidate_index`` (None = the top candidate);
+         *     ``duplicate`` needs the ``duplicate_action``; the rest stand alone. Fields
+         *     foreign to the chosen action — known or unknown — are rejected here so an
+         *     impossible decision can never be persisted or queued.
+         */
+        BankDecision: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "apply" | "asis" | "astracks" | "duplicate" | "ignore";
+            /** Candidate Index */
+            candidate_index?: number | null;
+            duplicate_action?: components["schemas"]["DuplicateAction"] | null;
+        };
+        /**
+         * BankItem
+         * @description One banked album — the full row, candidate payloads included.
+         */
+        BankItem: {
+            /** Id */
+            id: string;
+            /** Folder */
+            folder: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "sweep" | "inbox" | "manual";
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "needs_review" | "needs_dup_resolution" | "no_match";
+            /** Artist */
+            artist?: string | null;
+            /** Album */
+            album?: string | null;
+            /** Recommendation */
+            recommendation?: string | null;
+            /** Confidence */
+            confidence?: number | null;
+            parked?: components["schemas"]["ParkedAlbum"] | null;
+            duplicate?: components["schemas"]["DuplicatePrompt"] | null;
+            /** Fingerprint */
+            fingerprint: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "needs_review" | "queued" | "applying" | "done" | "failed" | "ignored" | "stale";
+            decided?: components["schemas"]["BankDecision"] | null;
+            /** Error */
+            error?: string | null;
+            /** Album Id */
+            album_id?: number | null;
+            /**
+             * Banked At
+             * Format: date-time
+             */
+            banked_at: string;
+            /** Decided At */
+            decided_at?: string | null;
+            /** Resolved At */
+            resolved_at?: string | null;
+        };
+        /**
+         * BankItemSummary
+         * @description List-row projection: everything except the heavy payloads.
+         */
+        BankItemSummary: {
+            /** Id */
+            id: string;
+            /** Folder */
+            folder: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "sweep" | "inbox" | "manual";
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "needs_review" | "needs_dup_resolution" | "no_match";
+            /** Artist */
+            artist?: string | null;
+            /** Album */
+            album?: string | null;
+            /** Recommendation */
+            recommendation?: string | null;
+            /** Confidence */
+            confidence?: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "needs_review" | "queued" | "applying" | "done" | "failed" | "ignored" | "stale";
+            /** Error */
+            error?: string | null;
+            /** Album Id */
+            album_id?: number | null;
+            /**
+             * Banked At
+             * Format: date-time
+             */
+            banked_at: string;
+        };
+        /**
+         * BankListResponse
+         * @description ``GET /api/bank`` page: summaries + total for pagination.
+         */
+        BankListResponse: {
+            /** Items */
+            items: components["schemas"]["BankItemSummary"][];
+            /** Total */
+            total: number;
+            /** Offset */
+            offset: number;
+            /** Limit */
+            limit: number;
+        };
         /**
          * BeetsConfigSnapshot
          * @description Read-only snapshot of beets' effective config + file freshness.
@@ -1544,7 +1782,12 @@ export interface components {
          * @description A ranked alternative release from ``task.candidates``.
          *
          *     The switcher in the review screen lists these; ``index`` is the position in
-         *     the beets candidate list and is what a choice references.
+         *     the beets candidate list and is what a choice references. ``release_id`` is
+         *     the metadata backend's id for the release (``AlbumInfo.album_id`` — an
+         *     MBID for MusicBrainz, the deezer id for Deezer): the bank's apply runner
+         *     pins ``import.search_ids`` to it so the apply imports exactly the release
+         *     the user chose. None for sources without an id (the apply then falls back
+         *     to an unpinned lookup's top candidate).
          */
         CandidateOption: {
             /** Index */
@@ -1555,6 +1798,8 @@ export interface components {
             data_source: string | null;
             /** Disambiguation */
             disambiguation: string | null;
+            /** Release Id */
+            release_id?: string | null;
         };
         /**
          * CoverInstallResult
@@ -1844,9 +2089,10 @@ export interface components {
              * @default manual
              * @enum {string}
              */
-            origin: "manual" | "inbox";
+            origin: "manual" | "inbox" | "sweep" | "bank_apply";
             /** Set Aside */
             set_aside: number;
+            sweep?: components["schemas"]["SweepStatus"] | null;
         };
         /**
          * ImportOptions
@@ -1855,7 +2101,14 @@ export interface components {
          *     ``operation`` ``"default"`` falls through to the user's beets config (the
          *     manual-import default). ``"move"``/``"copy"`` force that operation for this
          *     import only. ``unattended`` ``True`` is the inbox path: no human review —
-         *     uncertain/duplicate albums are set aside rather than parked.
+         *     uncertain/duplicate albums are set aside rather than parked. ``sweep``
+         *     ``True`` is the banking sweep: an unattended, beets-incremental run that
+         *     BANKS every set-aside album (with its candidate payload) instead of just
+         *     skipping it, recorded as ``origin="sweep"``. A sweep is unattended by
+         *     definition — the session enforces ``unattended or sweep`` — so
+         *     ``{"sweep": true}`` alone is a complete sweep request. The sweep forces no
+         *     file operation: ``operation`` behaves exactly as for a manual import (the
+         *     in-library guard still force-corrects in-library sources to move).
          */
         ImportOptions: {
             /**
@@ -1869,6 +2122,11 @@ export interface components {
              * @default false
              */
             unattended: boolean;
+            /**
+             * Sweep
+             * @default false
+             */
+            sweep: boolean;
         };
         /**
          * ImportPhase
@@ -2137,6 +2395,19 @@ export interface components {
             query: string;
             /** Template */
             template: string;
+        };
+        /**
+         * ParkedAlbum
+         * @description An album whose match is uncertain and is waiting for a user decision.
+         *
+         *     Pushed onto the import bridge's out-queue; ``album_index`` keys the reply.
+         */
+        ParkedAlbum: {
+            /** Album Index */
+            album_index: number;
+            /** Folder */
+            folder: string;
+            candidate: components["schemas"]["Candidate"];
         };
         /**
          * Playlist
@@ -2648,6 +2919,49 @@ export interface components {
         StartImportResponse: {
             /** Job Id */
             job_id: string;
+        };
+        /**
+         * SweepStatus
+         * @description Live counters for a sweep-origin import job.
+         *
+         *     Sweep jobs do not build the per-album feed (a whole-library sweep would
+         *     accumulate thousands of rows); these monotone counters are the entire
+         *     progress surface. ``auto_applied`` counts albums beets actually added (the
+         *     follow-up outcome carrying the library album id), so it can trail
+         *     ``processed`` by one album while the sweep runs and is exact once done.
+         *     ``banked`` counts every set-aside the sweep persisted: uncertain matches,
+         *     no-match folders, and duplicate prompts. ``skipped_known`` counts folders
+         *     beets' incremental history skipped before tagging (done or banked by an
+         *     earlier sweep).
+         */
+        SweepStatus: {
+            /**
+             * Processed
+             * @default 0
+             */
+            processed: number;
+            /**
+             * Auto Applied
+             * @default 0
+             */
+            auto_applied: number;
+            /**
+             * Banked
+             * @default 0
+             */
+            banked: number;
+            /**
+             * Skipped Known
+             * @default 0
+             */
+            skipped_known: number;
+            /** Current Folder */
+            current_folder?: string | null;
+            /**
+             * Paused
+             * @default false
+             */
+            paused: boolean;
         };
         /** Track */
         Track: {
@@ -3815,6 +4129,35 @@ export interface operations {
             };
         };
     };
+    pause_import_api_import__job_id__pause_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_config_api_config_get: {
         parameters: {
             query?: never;
@@ -4928,6 +5271,168 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewInboxResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_bank_api_bank_get: {
+        parameters: {
+            query?: {
+                status?: ("needs_review" | "queued" | "applying" | "done" | "failed" | "ignored" | "stale") | null;
+                view?: "all" | "active";
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BankListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_bank_item_api_bank__item_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BankItem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_bank_item_api_bank__item_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_bank_item_api_bank__item_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BankDecision"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BankItem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bulk_ignore_bank_api_bank_bulk_ignore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BankBulkIgnoreRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BankBulkIgnoreResponse"];
                 };
             };
             /** @description Validation Error */

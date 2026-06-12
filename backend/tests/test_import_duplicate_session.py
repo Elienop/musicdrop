@@ -69,6 +69,12 @@ def _session(bridge: ImportBridge, *, trash_dir: Path | None = None) -> WebImpor
     session._replace_album_ids = set()
     # __init__ is skipped, so default the attended flag resolve_duplicate reads.
     session.unattended = False
+    # __init__ is skipped, so default the sweep flag + bank dir the unattended
+    # branch reads (sweep banking lives in chunk 3; these tests stay non-sweep).
+    session.sweep = False
+    session._bank_dir = None
+    # __init__ is skipped, so default the apply directive the hooks now read.
+    session._directive = None
     return session
 
 

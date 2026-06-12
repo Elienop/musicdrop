@@ -22,6 +22,7 @@ from pathlib import Path
 
 from app.acquisition.inbox import contain
 from app.acquisition.ledger import AcquisitionLedger
+from app.import_jobs.gates import import_gate_clear
 from app.import_jobs.registry import ImportJobRegistry
 from app.models.acquisition import AcquisitionQueueStatus, LedgerOutcome
 from app.models.import_api import ImportPhase
@@ -181,19 +182,7 @@ class AcquisitionQueue:
 
     def _gate_clear(self) -> bool:
         """The existing job-mutex gate, consumed (never extended) by the queue."""
-        if self._import_registry.has_active_job():
-            return False
-        if self._swap_lock is not None and self._swap_lock.locked():
-            return False
-        # Lazy imports (like api/import_.py) so the predicates' modules can never
-        # form an import cycle with the acquisition package.
-        from app.artist_art_jobs.registry import artist_art_backfill_active
-        from app.lyrics_jobs.registry import lyrics_backfill_active
-        from app.reorganize_jobs.registry import reorganize_backfill_active
-
-        if lyrics_backfill_active() or artist_art_backfill_active() or reorganize_backfill_active():
-            return False
-        return True
+        return import_gate_clear(self._import_registry, self._swap_lock)
 
     def _wait_for_import(self, job_id: str) -> tuple[LedgerOutcome, str | None] | None:
         """Wait until the import releases the slot, then classify it. ``None`` on stop."""

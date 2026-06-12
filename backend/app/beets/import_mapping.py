@@ -181,6 +181,7 @@ def map_candidate_options(
                 confidence=_confidence(match.distance),
                 data_source=_opt_str(match.info.data_source),
                 disambiguation=_opt_str(match.disambig_string),
+                release_id=_opt_str(getattr(match.info, "album_id", None)),
             )
         )
     return options

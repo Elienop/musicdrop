@@ -13,6 +13,10 @@ import { server } from "@/test/msw-server";
 const IMPORT_URL = `${window.location.origin}/api/import`;
 const JOB_URL = `${window.location.origin}/api/import/job-1`;
 const ACTIVE_URL = `${window.location.origin}/api/imports/active`;
+// The sweep tests start/poll a distinct job id so the two run views can't
+// shadow each other's handlers.
+const SWEEP_JOB_URL = `${window.location.origin}/api/import/s1`;
+const SWEEP_PAUSE_URL = `${window.location.origin}/api/import/s1/pause`;
 
 function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
@@ -45,6 +49,30 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
     error: null,
     origin: "manual",
     set_aside: 0,
+    ...overrides,
+  };
+}
+
+/** A sweep-origin job: no per-album feed by design — the sweep block carries
+ * the whole progress story. Mirrors makeJob for the banking run view. */
+function sweepJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
+  return {
+    job_id: "s1",
+    phase: "scanning",
+    progress: { applied: 0, needs_review: 0, skipped: 0 },
+    albums: [],
+    summary: null,
+    error: null,
+    origin: "sweep",
+    set_aside: 0,
+    sweep: {
+      processed: 0,
+      auto_applied: 0,
+      banked: 0,
+      skipped_known: 0,
+      current_folder: null,
+      paused: false,
+    },
     ...overrides,
   };
 }
@@ -583,5 +611,178 @@ describe("ImportPage — terminal states", () => {
     expect(
       screen.queryByRole("button", { name: /retry/i }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("ImportPage — sweep & bank", () => {
+  beforeEach(() => {
+    // Entry-screen tests poll the active-import probe; default to idle.
+    server.use(
+      http.get(ACTIVE_URL, () =>
+        HttpResponse.json({ active: false, job_id: null }),
+      ),
+    );
+  });
+
+  test("Sweep & bank posts options.sweep and navigates into the job", async () => {
+    let body: unknown = null;
+    server.use(
+      http.post(IMPORT_URL, async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({ job_id: "s1" }, { status: 202 });
+      }),
+      // the run view it lands on:
+      http.get(SWEEP_JOB_URL, () => HttpResponse.json(sweepJob())),
+    );
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    await user.click(
+      await screen.findByRole("button", { name: /sweep & bank/i }),
+    );
+    await user.type(screen.getByLabelText("Folder path"), "/library");
+    await user.click(screen.getByRole("button", { name: /start sweep/i }));
+
+    await waitFor(() =>
+      expect(body).toEqual({
+        path: "/library",
+        options: { operation: "default", unattended: false, sweep: true },
+      }),
+    );
+  });
+
+  test("Review now (the default) posts no options — unchanged contract", async () => {
+    let body: unknown = null;
+    server.use(
+      http.post(IMPORT_URL, async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({ job_id: "job-1" }, { status: 202 });
+      }),
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "scanning",
+            progress: { applied: 0, needs_review: 0, skipped: 0 },
+            albums: [],
+          }),
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    await user.type(screen.getByLabelText("Folder path"), "/in");
+    await user.click(screen.getByRole("button", { name: /start import/i }));
+
+    await waitFor(() => expect(body).toEqual({ path: "/in" }));
+  });
+
+  test("a 422 string detail from the start guard is shown verbatim", async () => {
+    server.use(
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json(
+          { detail: "In-library sources must move; copy would duplicate files" },
+          { status: 422 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    await user.type(screen.getByLabelText("Folder path"), "/library");
+    await user.click(screen.getByRole("button", { name: /start import/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/must move/);
+  });
+
+  test("a sweep-origin job renders the sweep run view: counters + pause", async () => {
+    let paused = false;
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            sweep: {
+              processed: 12,
+              auto_applied: 8,
+              banked: 4,
+              skipped_known: 2,
+              current_folder: "/library/Adele/21",
+              paused: false,
+            },
+          }),
+        ),
+      ),
+      http.post(SWEEP_PAUSE_URL, () => {
+        paused = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("/import?job=s1");
+
+    expect(await screen.findByText("Processed")).toBeInTheDocument();
+    expect(screen.getByText("12")).toBeInTheDocument();
+    expect(screen.getByText("Banked")).toBeInTheDocument();
+    expect(screen.getByText(/sweeping 21/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /pause sweep/i }));
+    await waitFor(() => expect(paused).toBe(true));
+  });
+
+  test("a finished sweep summarizes and links to Review; paused names the pause", async () => {
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            phase: "done",
+            summary: "Swept 30 albums - paused",
+            sweep: {
+              processed: 30,
+              auto_applied: 20,
+              banked: 10,
+              skipped_known: 0,
+              current_folder: null,
+              paused: true,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    // Exact match: the sr-only announcer also says "Sweep paused. …" — the
+    // default whole-text match singles out the visible EmptyState title.
+    expect(await screen.findByText("Sweep paused")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /review banked albums/i }),
+    ).toHaveAttribute("href", "/review");
+  });
+
+  test("the resume banner names a running sweep", async () => {
+    server.use(
+      http.get(ACTIVE_URL, () =>
+        HttpResponse.json({
+          active: true,
+          job_id: "s1",
+          origin: "sweep",
+          needs_review_count: 0,
+          sweep: {
+            processed: 3,
+            auto_applied: 2,
+            banked: 1,
+            skipped_known: 0,
+            current_folder: null,
+            paused: false,
+          },
+        }),
+      ),
+    );
+    renderAt("/import");
+
+    expect(await screen.findByText(/a sweep is running/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /resume/i })).toHaveAttribute(
+      "href",
+      "/import?job=s1",
+    );
   });
 });
