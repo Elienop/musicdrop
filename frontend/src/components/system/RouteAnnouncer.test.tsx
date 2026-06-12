@@ -16,6 +16,7 @@ describe("titleForPathname", () => {
     expect(titleForPathname("/browse")).toBe("Browse");
     expect(titleForPathname("/review")).toBe("Review");
     expect(titleForPathname("/import")).toBe("Add from folder");
+    expect(titleForPathname("/review/bank/abc123")).toBe("Review decision");
     expect(titleForPathname("/settings")).toBe("Settings");
     expect(titleForPathname("/duplicates")).toBe("Duplicates");
     expect(titleForPathname("/playlists")).toBe("Playlists");
