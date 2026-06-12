@@ -107,7 +107,7 @@ export function ReviewPage() {
   const pendingCount = decisions.length + items.length + bankPendingTotal;
 
   return (
-    <PageBody variant="narrow">
+    <PageBody>
       <PageHeader
         title="Review"
         meta={settled ? `${pendingCount} awaiting a decision` : undefined}

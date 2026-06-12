@@ -124,7 +124,7 @@ function ImportEntry() {
   }
 
   return (
-    <PageBody variant="narrow">
+    <PageBody>
       <PageHeader title="Add from folder" />
       <p className="text-muted-foreground text-sm">
         Add music from a folder on the server. beets scans it, matches each
