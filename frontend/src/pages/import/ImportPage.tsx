@@ -7,16 +7,22 @@ import type { ImportAlbumSummary, ImportJobState } from "@/api/useImport";
 import {
   ImportConflictError,
   ImportJobNotFoundError,
+  ImportStartRejectedError,
   RECOMMENDATION_LABEL,
   isTerminalPhase,
   useImportJob,
+  usePauseSweep,
   useStartImport,
 } from "@/api/useImport";
 import type { AlbumOrigin } from "@/components/albums/album-grid";
 import {
   AddFromFolder,
+  Albums,
   Error as ErrorIcon,
   Info,
+  Pause,
+  Resolved,
+  Review as ReviewIcon,
   Spinner,
   Success,
 } from "@/components/icons";
@@ -24,10 +30,12 @@ import { AlbumRow } from "@/components/system/AlbumRow";
 import { EmptyState } from "@/components/system/EmptyState";
 import { ErrorState } from "@/components/system/ErrorState";
 import { PageBody, PageHeader } from "@/components/system/PageHeader";
+import { StatTile } from "@/components/system/StatTile";
 import { StatusBanner } from "@/components/system/StatusBanner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useThrottledValue } from "@/lib/useThrottledValue";
 import { cn } from "@/lib/utils";
@@ -59,6 +67,7 @@ export function ImportPage() {
 function ImportEntry() {
   const [, setSearchParams] = useSearchParams();
   const [path, setPath] = useState("");
+  const [mode, setMode] = useState<"review" | "sweep">("review");
   const start = useStartImport();
   const queryClient = useQueryClient();
   const active = useActiveImport();
@@ -76,8 +85,12 @@ function ImportEntry() {
 
   const trimmed = path.trim();
   const conflict = start.error instanceof ImportConflictError;
-  // A non-conflict error is a generic start failure.
-  const genericError = start.isError && !conflict;
+  // A 422 carries the backend guard's reason verbatim (e.g. the in-library
+  // copy-mode refusal) — surfaced as its own alert below.
+  const rejected =
+    start.error instanceof ImportStartRejectedError ? start.error.message : null;
+  // A non-conflict, non-rejected error is a generic start failure.
+  const genericError = start.isError && !conflict && rejected === null;
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -85,7 +98,15 @@ function ImportEntry() {
       return; // Button is disabled too; guard the Enter key.
     }
     start.mutate(
-      { path: trimmed },
+      mode === "sweep"
+        ? {
+            path: trimmed,
+            // All three fields: the generated ImportOptions marks defaulted
+            // fields required. {sweep: true} alone is a complete sweep request
+            // server-side (the session enforces `unattended or sweep`).
+            options: { operation: "default", unattended: false, sweep: true },
+          }
+        : { path: trimmed },
       {
         onSuccess: (data) => {
           setSearchParams({ job: data.job_id });
@@ -131,11 +152,13 @@ function ImportEntry() {
               aria-hidden="true"
             />
             <span>
-              {origin === "inbox"
-                ? needsReview > 0
-                  ? "An inbox import is running" // the set-aside clause completes the sentence
-                  : "An inbox import is running."
-                : "An import is already running."}
+              {origin === "sweep"
+                ? "A sweep is running — uncertain albums are being banked for review."
+                : origin === "inbox"
+                  ? needsReview > 0
+                    ? "An inbox import is running" // the set-aside clause completes the sentence
+                    : "An inbox import is running."
+                  : "An import is already running."}
               {origin === "inbox" && needsReview > 0 && (
                 <span className="text-muted-foreground font-normal">
                   {" — "}
@@ -149,6 +172,23 @@ function ImportEntry() {
       )}
 
       <form className="flex flex-col gap-3" onSubmit={onSubmit}>
+        <div className="flex flex-col gap-1.5">
+          <SegmentedControl
+            aria-label="Import mode"
+            value={mode}
+            onChange={(v) => setMode(v === "sweep" ? "sweep" : "review")}
+            options={[
+              { value: "review", label: "Review now" },
+              { value: "sweep", label: "Sweep & bank" },
+            ]}
+          />
+          <p className="text-muted-foreground text-xs">
+            {mode === "sweep"
+              ? "Unattended: strong matches import automatically; everything else is banked for review on the Review page. Re-running a sweep skips what's already handled."
+              : "Interactive: each uncertain album waits for your decision before the import continues."}
+          </p>
+        </div>
+
         <label className="flex flex-col gap-2">
           <span className="text-sm font-medium">Folder path</span>
           <Input
@@ -157,7 +197,7 @@ function ImportEntry() {
             onChange={(e) => setPath(e.target.value)}
             placeholder="/music/incoming"
             aria-label="Folder path"
-            aria-invalid={genericError || conflict}
+            aria-invalid={genericError || conflict || rejected !== null}
           />
         </label>
 
@@ -166,6 +206,11 @@ function ImportEntry() {
             {activeJobId
               ? "An import is already running — use Resume above."
               : "Couldn't start — a library operation is in progress. Try again in a moment."}
+          </p>
+        )}
+        {rejected !== null && (
+          <p className="text-destructive text-sm" role="alert">
+            {rejected}
           </p>
         )}
         {genericError && (
@@ -189,7 +234,7 @@ function ImportEntry() {
             ) : (
               <>
                 <AddFromFolder aria-hidden="true" />
-                Start import
+                {mode === "sweep" ? "Start sweep" : "Start import"}
               </>
             )}
           </Button>
@@ -273,6 +318,17 @@ function ImportRun({ jobId }: { jobId: string }) {
     );
   }
 
+  // Sweep jobs have no per-album feed (state.albums stays empty by design) —
+  // LiveFeed/JobDone would render eternal skeletons / "0 albums imported".
+  if (data.origin === "sweep") {
+    return (
+      <ImportShell>
+        {announcer}
+        <SweepRun state={data} jobId={jobId} />
+      </ImportShell>
+    );
+  }
+
   if (data.phase === "done") {
     return (
       <ImportShell>
@@ -350,6 +406,85 @@ function LiveFeed({ state, jobId }: { state: ImportJobState; jobId: string }) {
         <FeedSkeleton />
       ) : (
         <FeedList albums={state.albums} jobId={jobId} />
+      )}
+    </div>
+  );
+}
+
+/** The sweep's whole progress surface: counters (StatTile, the cardless
+ * stats dialect), the current folder, Pause, and the Review hand-off. Rides
+ * the existing 1s job poll. A paused sweep finishes its current album, then
+ * the job goes done with a "- paused" summary and `sweep.paused` stays true. */
+function SweepRun({ state, jobId }: { state: ImportJobState; jobId: string }) {
+  const pause = usePauseSweep(jobId);
+  const sweep = state.sweep;
+  if (sweep == null) {
+    // Defensive only: the backend always sets the block on sweep jobs.
+    return <LiveFeed state={state} jobId={jobId} />;
+  }
+  const done = state.phase === "done";
+  return (
+    <div className="flex flex-col gap-6">
+      {done ? (
+        <EmptyState
+          bordered
+          icon={Success}
+          title={sweep.paused ? "Sweep paused" : "Sweep finished"}
+          body={
+            state.summary ??
+            `${sweep.processed} processed · ${sweep.auto_applied} imported · ${sweep.banked} banked`
+          }
+          action={
+            <Button size="sm" asChild>
+              <Link to="/review">Review banked albums</Link>
+            </Button>
+          }
+        />
+      ) : (
+        <p className="text-muted-foreground flex min-h-5 items-center gap-2 text-sm">
+          <Spinner className="size-4 animate-spin" aria-hidden="true" />
+          <span>
+            {sweep.paused
+              ? "Pausing — finishing the current album…"
+              : sweep.current_folder
+                ? `Sweeping ${folderName(sweep.current_folder)}…`
+                : "Sweeping your folder…"}
+          </span>
+        </p>
+      )}
+
+      <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
+        <StatTile icon={Albums} label="Processed" value={String(sweep.processed)} />
+        <StatTile icon={Success} label="Imported" value={String(sweep.auto_applied)} />
+        <StatTile icon={ReviewIcon} label="Banked" value={String(sweep.banked)} />
+        <StatTile icon={Resolved} label="Already known" value={String(sweep.skipped_known)} />
+      </div>
+
+      {!done && (
+        <div className="flex flex-col gap-1.5">
+          {pause.isError && (
+            <p className="text-destructive text-sm" role="alert">
+              Couldn&rsquo;t pause — try again.
+            </p>
+          )}
+          <div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={pause.isPending || sweep.paused}
+              onClick={() => pause.mutate()}
+            >
+              <Pause aria-hidden="true" />
+              {sweep.paused ? "Pausing…" : "Pause sweep"}
+            </Button>
+          </div>
+          <p className="text-muted-foreground text-xs">
+            Banked albums show up on the Review page as the sweep finds them —
+            you can start deciding right away. Resume later by sweeping the
+            same folder again.
+          </p>
+        </div>
       )}
     </div>
   );
