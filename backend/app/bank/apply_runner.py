@@ -159,9 +159,12 @@ class BankApplyRunner:
     def _apply_one(self, item: BankItem) -> None:
         if not self._wait_for_gate():
             return  # shutting down; the row stays queued
-        claimed = bank_store.set_status(self._bank_dir, item.id, "applying")
+        # CAS claim: only a still-queued row may flip to applying. A row
+        # deleted OR re-banked (reset to needs_review, decided=None) between
+        # the pick and the claim returns None - skip it; the drain moves on.
+        claimed = bank_store.set_status(self._bank_dir, item.id, "applying", expected="queued")
         if claimed is None:
-            return  # deleted between the pick and the claim - nothing to do
+            return
         try:
             current = folder_fingerprint(Path(claimed.folder))
         except FileNotFoundError:

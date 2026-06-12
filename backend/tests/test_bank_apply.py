@@ -5,6 +5,7 @@ Follows the acquisition-queue suite's posture: tiny poll intervals, ALWAYS
 ``directive_for`` is pure and tested directly with constructed models.
 """
 
+import asyncio
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -17,6 +18,7 @@ from app.bank import store
 from app.bank.apply_runner import BankApplyRunner, directive_for
 from app.bank.fingerprint import folder_fingerprint
 from app.import_jobs.fakes import FakeImportRunner
+from app.import_jobs.gates import import_gate_clear
 from app.import_jobs.registry import ImportJobRegistry
 from app.models.bank import BankApplyDirective, BankDecision, BankItem, BankReason
 from app.models.import_models import (
@@ -638,6 +640,55 @@ def test_slot_toctou_requeues_and_retries(tmp_path: Path) -> None:
         )
         assert item is not None
         assert calls["n"] == 2  # reverted to queued, backed off, retried
+    finally:
+        runner.stop()
+
+
+def test_claim_race_skips_rebanked_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The history-loss race: between the FIFO pick and the queued->applying
+    # claim, the folder is re-banked (upsert resets the row to needs_review,
+    # decided=None). The CAS claim must refuse - a blind overwrite would
+    # persist applying+decided=None, a row the BankItem validator rejects on
+    # every later read (silent permanent loss) - and the drain must move on
+    # to the next queued row, never crash.
+    fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.applied, album_id=9)])
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    folder_a = _folder(tmp_path, "A")
+    folder_b = _folder(tmp_path, "B")
+    raced_id = _seed_queued(bank, folder_a)  # decided first: the FIFO head
+    other_id = _seed_queued(bank, folder_b)
+
+    raced = {"done": False}
+
+    def racing_gate(import_registry: ImportJobRegistry, swap_lock: asyncio.Lock | None) -> bool:
+        # Fires between next_queued (the pick) and the claim: re-bank row A
+        # exactly like a sweep upsert would (changed fingerprint -> reset).
+        if not raced["done"]:
+            raced["done"] = True
+            store.upsert_by_folder(
+                bank,
+                folder=str(folder_a),
+                source="sweep",
+                reason="no_match",
+                fingerprint="0" * 64,
+            )
+        return import_gate_clear(import_registry, swap_lock)
+
+    monkeypatch.setattr("app.bank.apply_runner.import_gate_clear", racing_gate)
+
+    runner = _make_runner(bank, reg)
+    runner.start()
+    try:
+        done = _poll(
+            lambda: store.get_item(bank, other_id),
+            lambda i: i is not None and i.status == "done",
+        )
+        assert done is not None and done.status == "done"  # the drain continued
+        raced_row = store.get_item(bank, raced_id)
+        assert raced_row is not None  # still readable - the row was never lost
+        assert raced_row.status == "needs_review"  # the re-bank reset survived
+        assert raced_row.decided is None
     finally:
         runner.stop()
 

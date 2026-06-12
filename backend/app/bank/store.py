@@ -169,16 +169,23 @@ def set_status(
     *,
     error: str | None = None,
     album_id: int | None = None,
+    expected: BankStatus | None = None,
 ) -> BankItem | None:
     """Bookkeeping transition (chunk 4's apply runner + reconciliation use it).
 
     ``album_id`` is only ever supplied with ``done`` (the apply landed an
     album); None leaves the field untouched so failure paths never erase a
-    previously recorded id.
+    previously recorded id. ``expected`` makes the write a compare-and-set:
+    when given and the row's current status differs, return None WITHOUT
+    writing — the apply runner's queued->applying claim uses it so a row
+    re-banked under a stale reference (reset to needs_review, decided=None)
+    is never blind-overwritten into a validator-rejected state (row loss).
     """
     with _LOCK:
         item = get_item(bank_dir, item_id)
         if item is None:
+            return None
+        if expected is not None and item.status != expected:
             return None
         item.status = status
         item.error = error

@@ -224,6 +224,34 @@ def test_set_status_without_album_id_leaves_it_alone(tmp_path: Path) -> None:
     assert failed.error == "boom"
 
 
+def test_set_status_cas_mismatch_returns_none_unchanged(tmp_path: Path) -> None:
+    # The history-loss race: a queued row is re-banked (reset to needs_review,
+    # decided=None) and a stale runner reference then tries to claim it. With
+    # expected given and the status changed underneath, set_status must refuse
+    # WITHOUT writing - a blind overwrite would persist applying+decided=None,
+    # which the BankItem validator rejects on every later read (row loss).
+    bank = _bank(tmp_path)
+    item_id = _create(tmp_path)  # needs_review, not queued
+    claimed = store.set_status(bank, item_id, "applying", expected="queued")
+    assert claimed is None
+    unchanged = store.get_item(bank, item_id)
+    assert unchanged is not None
+    assert unchanged.status == "needs_review"
+    assert unchanged.error is None
+    assert unchanged.resolved_at is None
+
+
+def test_set_status_cas_match_transitions(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    item_id = _create(tmp_path)
+    store.decide_item(bank, item_id, BankDecision(action="asis"))
+    claimed = store.set_status(bank, item_id, "applying", expected="queued")
+    assert claimed is not None
+    assert claimed.status == "applying"
+    persisted = store.get_item(bank, item_id)
+    assert persisted is not None and persisted.status == "applying"
+
+
 def test_summary_carries_album_id(tmp_path: Path) -> None:
     bank = _bank(tmp_path)
     item_id = _create(tmp_path)
