@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.import_jobs.fakes import FakeImportRunner
 from app.import_jobs.registry import reset_registry
+from app.import_jobs.runner import InLibraryCopyError
 from app.main import app
 from app.models.import_api import (
     ActiveImportStatus,
@@ -181,6 +182,21 @@ def test_start_import_409_while_library_op_holds_swap_lock() -> None:
             app.state.beets_swap_lock = prior
     assert resp.status_code == 409
     assert "library operation" in resp.json()["detail"].lower()
+
+
+def test_start_import_in_library_copy_is_422() -> None:
+    runner = FakeImportRunner()
+    runner.validate_error = InLibraryCopyError(
+        "This folder is inside your music library; a copy-import would "
+        "duplicate its files. Choose move instead."
+    )
+    reset_registry(runner=runner)
+    response = TestClient(app).post(
+        "/api/import",
+        json={"path": "/library/Artist", "options": {"operation": "copy"}},
+    )
+    assert response.status_code == 422
+    assert "inside your music library" in response.json()["detail"]
 
 
 def test_get_unknown_job_is_404() -> None:

@@ -5,7 +5,7 @@ import pytest
 from beets.library import Library
 
 from app.beets.import_session import ImportBridge, WebImportSession
-from app.import_jobs.runner import BeetsImportRunner
+from app.import_jobs.runner import BeetsImportRunner, InLibraryCopyError
 from app.models.import_models import ImportOptions
 
 
@@ -185,3 +185,27 @@ def test_runner_forwards_unattended_to_session(
     )
     assert finished.wait(timeout=2.0)
     assert captured["unattended"] is expected_unattended
+
+
+def test_validate_refuses_in_library_copy(tmp_path: Path) -> None:
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    runner = BeetsImportRunner(lib)
+    with pytest.raises(InLibraryCopyError):
+        runner.validate(str(tmp_path / "music" / "incoming"), ImportOptions(operation="copy"))
+
+
+@pytest.mark.parametrize(
+    ("path_suffix", "options"),
+    [
+        ("music/incoming", ImportOptions(operation="move")),  # in-library move: fine
+        ("music/incoming", ImportOptions(operation="default")),  # worker will force move
+        ("music/incoming", None),  # manual default
+        ("downloads/incoming", ImportOptions(operation="copy")),  # outside: copy fine
+    ],
+)
+def test_validate_passes_safe_combinations(
+    tmp_path: Path, path_suffix: str, options: ImportOptions | None
+) -> None:
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    runner = BeetsImportRunner(lib)
+    runner.validate(str(tmp_path / path_suffix), options)  # must not raise

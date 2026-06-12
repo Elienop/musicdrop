@@ -2,6 +2,7 @@ import threading
 
 import pytest
 
+from app.beets.import_session import InLibraryCopyError
 from app.import_jobs.fakes import FakeImportRunner
 from app.import_jobs.registry import ImportJobRegistry
 from app.models.import_api import ImportAlbumStatus, ImportPhase
@@ -352,3 +353,27 @@ def test_follow_up_outcome_attaches_album_id_without_new_row() -> None:
     assert state.albums[0].status is ImportAlbumStatus.applied
     assert state.albums[0].album_id == 7
     assert state.progress.applied == 1  # counted once
+
+
+def test_start_validate_failure_takes_no_slot() -> None:
+    runner = FakeImportRunner()
+    runner.validate_error = InLibraryCopyError("refused")
+    reg = ImportJobRegistry(runner=runner)
+    with pytest.raises(InLibraryCopyError):
+        reg.start("/library/Artist", options=ImportOptions(operation="copy"))
+    # The failed validation must not have consumed the single slot:
+    assert reg.active_status().active is False
+    # The runner was never run for the refused start (validate fail-fasts).
+    assert runner.received_options is None
+    # And a subsequent valid start succeeds.
+    runner.validate_error = None
+    job_id = reg.start("/downloads/Artist")
+    assert job_id
+
+
+def test_start_passes_path_and_options_to_validate() -> None:
+    runner = FakeImportRunner()
+    reg = ImportJobRegistry(runner=runner)
+    opts = ImportOptions(operation="move")
+    reg.start("/downloads/Artist", options=opts)
+    assert runner.validate_calls == [("/downloads/Artist", opts)]

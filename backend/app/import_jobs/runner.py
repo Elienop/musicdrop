@@ -18,7 +18,15 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
-from app.beets.import_session import ImportBridge, WebImportSession, run_import_worker
+from app.beets.import_session import (
+    ImportBridge,
+    WebImportSession,
+    is_in_library_source,
+    run_import_worker,
+)
+from app.beets.import_session import (
+    InLibraryCopyError as InLibraryCopyError,
+)
 from app.models.import_models import ImportOptions
 
 
@@ -43,6 +51,16 @@ class ImportRunner(Protocol):
         options: ImportOptions | None = None,
     ) -> None: ...
 
+    def validate(self, path: str, options: ImportOptions | None = None) -> None:
+        """Refuse an invalid (path, options) combination by raising.
+
+        Called synchronously on the API thread BEFORE the registry allocates
+        the single job slot, so a refusal becomes a clean 4xx — never a failed
+        job or a stuck slot. Raises ``InLibraryCopyError`` for copy-mode
+        imports of sources inside the library directory.
+        """
+        ...
+
 
 class BeetsImportRunner:
     """Production runner: a real WebImportSession on a daemon thread.
@@ -57,6 +75,19 @@ class BeetsImportRunner:
     def __init__(self, lib: object, trash_dir: Path | None = None) -> None:
         self._lib = lib
         self._trash_dir = trash_dir
+
+    def validate(self, path: str, options: ImportOptions | None = None) -> None:
+        # Only explicit copy is a user-facing error here; default/None are
+        # silently corrected to move by the worker guard (run_import_worker).
+        if options is not None and options.operation == "copy":
+            # getattr (not attribute access) because self._lib is typed ``object``;
+            # direct access would trip mypy attr-defined. noqa: B009 for the same reason.
+            directory: bytes = getattr(self._lib, "directory")  # noqa: B009
+            if is_in_library_source(directory, path):
+                raise InLibraryCopyError(
+                    "This folder is inside your music library; a copy-import "
+                    "would duplicate its files. Choose move instead."
+                )
 
     def run(
         self,
