@@ -77,6 +77,8 @@ def _sweep_session(bridge: ImportBridge, bank_dir: Path) -> WebImportSession:
     session.unattended = True
     session.sweep = True
     session._bank_dir = bank_dir
+    # __init__ is skipped, so default the apply directive the hooks now read.
+    session._directive = None
     session._await_album_id = []
     session.paths = []
     return session

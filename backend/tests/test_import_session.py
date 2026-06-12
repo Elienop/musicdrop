@@ -99,6 +99,8 @@ def _make_session(bridge: ImportBridge) -> WebImportSession:
     # __init__ is skipped, so default the sweep flag + bank dir the hooks read.
     session.sweep = False
     session._bank_dir = None
+    # __init__ is skipped, so default the apply directive the hooks now read.
+    session._directive = None
     # __init__ is skipped, so seed the album-id stash choose_match appends to.
     session._await_album_id = []
     # __init__ is skipped, so the in-library guard's session.paths read has a
@@ -1083,3 +1085,193 @@ def test_sweep_config_restores_on_raise() -> None:
     assert config["import"]["incremental"].get(bool) is False
     assert config["import"]["resume"].get() == "ask"
     assert config["import"]["singletons"].get(bool) is False
+
+
+def test_directive_session_construction_implies_unattended(tmp_path: Path) -> None:
+    from app.models.bank import BankApplyDirective
+
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    session = WebImportSession(
+        lib,
+        None,
+        [os.fsencode(str(tmp_path / "in"))],
+        None,
+        ImportBridge(),
+        None,
+        directive=BankApplyDirective(action="asis"),
+    )
+    # An apply run is unattended by definition: a directive session can never
+    # park (block on a human) even if a code path missed the directive branch.
+    assert session.unattended is True
+    assert session.sweep is False
+    assert session._directive is not None
+
+
+def test_directive_apply_selects_top_candidate_without_parking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.models.bank import BankApplyDirective
+
+    # rec is MEDIUM: the as-built policy would park (attended) or SKIP
+    # (unattended); the directive must override both and apply.
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    session.unattended = True
+    session._directive = BankApplyDirective(action="apply", search_id="rel-1")
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+
+    task.choose_match(session)
+
+    assert task.choice_flag is Action.APPLY
+    assert task.match is match
+    assert bridge.pending_count() == 0  # never parked
+    outcomes = bridge.drain_outcomes()
+    assert [o.status for o in outcomes] == [AlbumOutcomeStatus.applied]
+
+
+def test_directive_apply_gains_album_id_follow_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The applied outcome is stashed for the album-id follow-up exactly like a
+    # strong auto-apply, so the bank row can learn its library album id.
+    from app.models.bank import BankApplyDirective
+
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    session.unattended = True
+    session._directive = BankApplyDirective(action="apply", search_id="rel-1")
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    task.choose_match(session)
+    task.album = _AddedAlbum(13)  # beets' task.add ran (sequential pipeline)
+    session._flush_album_ids()
+    follow_ups = [o for o in bridge.drain_outcomes() if o.album_id is not None]
+    assert [o.album_id for o in follow_ups] == [13]
+
+
+def test_directive_asis_and_astracks(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.models.bank import BankApplyDirective
+
+    match = _build_match(BeetsRec.medium)
+    session = _make_session(ImportBridge())
+    session.unattended = True
+    session._directive = BankApplyDirective(action="asis")
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    assert session.choose_match(task) is Action.ASIS
+
+    session2 = _make_session(ImportBridge())
+    session2.unattended = True
+    session2._directive = BankApplyDirective(action="astracks")
+    task2 = _make_task(match, monkeypatch, BeetsRec.medium)
+    assert session2.choose_match(task2) is Action.TRACKS
+    # TRACKS re-pipelines singletons through choose_item (beets routes
+    # SingletonImportTask.choose_match -> session.choose_item): each imports
+    # as-is. The chunk-1 SKIP would silently import nothing.
+    assert session2.choose_item(task2) is Action.ASIS
+    # Any other directive keeps the chunk-1 posture.
+    assert session.choose_item(task) is Action.SKIP
+
+
+def test_directive_apply_with_no_candidates_skips(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A pinned id no plugin resolves yields zero candidates (tag_album with
+    # search_ids does NO text fallback): emit skipped + SKIP; the apply runner
+    # turns that into a retryable failed row.
+    from app.models.bank import BankApplyDirective
+
+    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
+        return ("Artist", "Album", Proposal([], BeetsRec.none))
+
+    monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    session.unattended = True
+    session._directive = BankApplyDirective(action="apply", search_id="bad-id")
+    task = ImportTask(
+        toppath=None,
+        paths=[b"/music/album"],
+        items=[Item(artist="Artist", album="Album", title="X", track=1, length=10.0)],
+    )
+    task.lookup_candidates([])
+    assert session.choose_match(task) is Action.SKIP
+    outcomes = bridge.drain_outcomes()
+    assert [o.status for o in outcomes] == [AlbumOutcomeStatus.skipped]
+
+
+def _directive_dup_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[WebImportSession, ImportTask, Any]:
+    """A directive-mode session + APPLY-chosen task + one real library duplicate."""
+    from beets.library import Library as BeetsLibrary
+
+    match = _build_match(BeetsRec.strong)
+    session = _make_session(ImportBridge())
+    session.unattended = True
+    session._replace_album_ids = set()
+    lib = BeetsLibrary(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    session.lib = lib
+    dup_item = Item(
+        albumartist="Radiohead",
+        album="OK Computer",
+        title="Airbag",
+        track=1,
+        length=234.0,
+        path=os.fsencode(str(tmp_path / "music" / "ok.mp3")),
+    )
+    existing_album = lib.add_album([dup_item])
+    task = _make_task(match, monkeypatch, BeetsRec.strong)
+    return session, task, existing_album
+
+
+def test_directive_duplicate_actions_map_like_attended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.models.bank import BankApplyDirective
+    from app.models.import_models import DuplicateAction
+
+    # skip_new
+    session, task, existing = _directive_dup_setup(tmp_path, monkeypatch)
+    session._directive = BankApplyDirective(
+        action="duplicate", duplicate_action=DuplicateAction.skip_new
+    )
+    session.resolve_duplicate(task, [existing])
+    assert task.choice_flag is Action.SKIP
+
+    # merge
+    session2, task2, existing2 = _directive_dup_setup(tmp_path, monkeypatch)
+    session2._directive = BankApplyDirective(
+        action="duplicate", duplicate_action=DuplicateAction.merge
+    )
+    session2.resolve_duplicate(task2, [existing2])
+    assert task2.should_merge_duplicates is True
+
+    # replace records the ids for the post-run Trash pass (never hard-delete)
+    session3, task3, existing3 = _directive_dup_setup(tmp_path, monkeypatch)
+    session3._directive = BankApplyDirective(
+        action="duplicate", duplicate_action=DuplicateAction.replace
+    )
+    session3.resolve_duplicate(task3, [existing3])
+    assert session3._replace_album_ids == {int(existing3.id)}
+
+    # keep_both leaves the choice intact (no-op)
+    session4, task4, existing4 = _directive_dup_setup(tmp_path, monkeypatch)
+    session4._directive = BankApplyDirective(
+        action="duplicate", duplicate_action=DuplicateAction.keep_both
+    )
+    session4.resolve_duplicate(task4, [existing4])
+    assert task4.choice_flag is None
+    assert task4.should_merge_duplicates is False
+
+
+def test_directive_without_dup_action_skips_unanticipated_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An apply/asis/astracks row that turns out to duplicate a library album:
+    # never auto-resolve - SKIP, emit the dup outcome (the runner reads it off
+    # the feed and fails the row with re-decide guidance).
+    from app.models.bank import BankApplyDirective
+
+    session, task, existing = _directive_dup_setup(tmp_path, monkeypatch)
+    session._directive = BankApplyDirective(action="apply", search_id="rel-1")
+    session.resolve_duplicate(task, [existing])
+    assert task.choice_flag is Action.SKIP
+    outcomes = session.bridge.drain_outcomes()
+    assert any(o.status is AlbumOutcomeStatus.needs_dup_resolution for o in outcomes)

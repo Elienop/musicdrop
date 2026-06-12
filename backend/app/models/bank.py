@@ -58,6 +58,35 @@ class BankDecision(BaseModel):
         return self
 
 
+# The subset of decision actions an apply run can execute ("ignore" resolves
+# in the store and never reaches the runner).
+BankApplyAction = Literal["apply", "asis", "astracks", "duplicate"]
+
+
+class BankApplyDirective(BaseModel):
+    """A queued decision translated for the import engine (internal, NOT API).
+
+    Threaded ``registry.start -> ImportRunner.run -> WebImportSession`` so the
+    one-folder apply run answers every beets hook from the banked decision:
+
+    * ``apply``     — ``search_id`` pins beets ``import.search_ids`` to the
+      chosen release; the session selects the pinned lookup's top candidate.
+      ``search_id`` None (a duplicate row, or a row banked before release ids
+      were recorded) falls back to an unpinned lookup's top candidate —
+      documented caveat: that re-runs the match instead of replaying the exact
+      banked option.
+    * ``asis`` / ``astracks`` — direct ``Action.ASIS`` / ``Action.TRACKS``
+      (astracks singletons then import as-is via ``choose_item``).
+    * ``duplicate`` — ``resolve_duplicate`` auto-answers ``duplicate_action``.
+
+    Never referenced by an endpoint, so it stays out of the OpenAPI schema.
+    """
+
+    action: BankApplyAction
+    search_id: str | None = None
+    duplicate_action: DuplicateAction | None = None
+
+
 class BankItem(BaseModel):
     """One banked album — the full row, candidate payloads included."""
 

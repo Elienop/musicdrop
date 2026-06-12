@@ -73,6 +73,8 @@ def _session(bridge: ImportBridge, *, trash_dir: Path | None = None) -> WebImpor
     # branch reads (sweep banking lives in chunk 3; these tests stay non-sweep).
     session.sweep = False
     session._bank_dir = None
+    # __init__ is skipped, so default the apply directive the hooks now read.
+    session._directive = None
     return session
 
 

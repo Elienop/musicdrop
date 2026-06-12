@@ -33,7 +33,7 @@ from app.beets.import_mapping import (
     map_candidate_options,
 )
 from app.beets.trash import album_folder, album_format_bitrate, trash_album
-from app.models.bank import BankReason
+from app.models.bank import BankApplyDirective, BankReason
 from app.models.import_models import (
     AlbumOutcome,
     AlbumOutcomeStatus,
@@ -242,6 +242,10 @@ class WebImportSession(ImportSession):
     # Sweep mode: unattended + bank-emitting. The runner builds sweep sessions
     # with the bank dir; attended/inbox sessions carry sweep=False, bank_dir=None.
     sweep: bool
+    # Apply mode (chunk 4): when set, every decision hook answers from the
+    # banked decision instead of policy. Mutually exclusive with sweep (the
+    # apply runner never sets options.sweep); implies unattended.
+    _directive: BankApplyDirective | None
 
     def __init__(
         self,
@@ -255,6 +259,7 @@ class WebImportSession(ImportSession):
         unattended: bool = False,
         sweep: bool = False,
         bank_dir: Path | None = None,
+        directive: BankApplyDirective | None = None,
     ) -> None:
         super().__init__(lib, loghandler, paths, query)
         self.bridge = bridge
@@ -266,13 +271,15 @@ class WebImportSession(ImportSession):
         # Existing duplicate album ids recorded by Replace, trashed AFTER run().
         self._replace_album_ids: set[int] = set()
         # When True, uncertain matches + duplicates are set aside (SKIP), not
-        # parked. A sweep is unattended by definition, so the flag ORs in - a
-        # caller can never construct a parked (blocking) sweep.
-        self.unattended = unattended or sweep
+        # parked. A sweep is unattended by definition, and so is an apply run
+        # (the directive IS the decision) - the flags OR in, so a caller can
+        # never construct a parked (blocking) sweep or apply.
+        self.unattended = unattended or sweep or directive is not None
         # Sweep mode additionally BANKS each set-aside (chunk 3); bank_dir is
         # where the rows go (threaded from the runner, mirroring trash_dir).
         self.sweep = sweep
         self._bank_dir = bank_dir
+        self._directive = directive
         # (outcome, task) pairs awaiting the library album id beets assigns
         # AFTER choose_match returns (task.add inside the user_query stage's
         # _apply_choice). Flushed at the next choose_match entry + once after
@@ -315,10 +322,17 @@ class WebImportSession(ImportSession):
 
     def choose_item(self, task: ImportTask) -> Action:
         # Singletons stay out of scope (the whole web flow is album-shaped,
-        # the chunk-1 decision); the sweep worker additionally forces
-        # import.singletons off (Task 4) so a singletons:yes user config can
+        # the chunk-1 decision) with ONE exception: a banked astracks apply.
+        # Its TRACKS choice re-pipelines each file as a SingletonImportTask
+        # whose choose_match routes HERE (beets tasks.py:758-760), so ASIS is
+        # what actually imports the tracks - the chunk-1 SKIP would silently
+        # import nothing. Every other mode (attended, inbox, sweep, non-
+        # astracks directives) keeps SKIP; the sweep worker additionally
+        # forces import.singletons off so a singletons:yes user config can
         # never funnel files here and history-mark them done without banking.
         self._check_pause()
+        if self._directive is not None and self._directive.action == "astracks":
+            return Action.ASIS
         return Action.SKIP
 
     def resolve_duplicate(self, task: ImportTask, found_duplicates: Any) -> None:
@@ -347,6 +361,28 @@ class WebImportSession(ImportSession):
         existing = [self._to_existing_album(album) for album in found_duplicates]
         prompt = DuplicatePrompt(album_index=index, incoming=incoming, existing=existing)
         self.bridge.note_outcome(self._dup_outcome(index, task))
+        if self._directive is not None:
+            dup_action = self._directive.duplicate_action
+            if dup_action is None:
+                # An apply/asis/astracks row that turns out to duplicate a
+                # library album: never auto-pick a destructive resolution.
+                # SKIP; the dup outcome above flips the feed row, and the
+                # apply runner fails the bank row with re-decide guidance.
+                task.set_choice(Action.SKIP)
+                return None
+            if dup_action is DuplicateAction.skip_new:
+                task.set_choice(Action.SKIP)
+            elif dup_action is DuplicateAction.merge:
+                # Loop-safe: the merged task carries the duplicate's paths, so
+                # beets' find_duplicates excludes the old album next time
+                # (tasks.py:391-422) and record_replaced absorbs its rows.
+                task.should_merge_duplicates = True
+            elif dup_action is DuplicateAction.replace:
+                # Reversible Trash after run(), by id - never beets' hard
+                # delete (mirrors the attended Replace path).
+                self._replace_album_ids.update(int(a.id) for a in found_duplicates)
+            # keep_both: leave the choice intact (no-op, now explicit + chosen).
+            return None
         if self.unattended:
             if self.sweep:
                 # Bank the prompt the attended flow would park: the user
@@ -404,6 +440,10 @@ class WebImportSession(ImportSession):
         setattr(task, "md_album_index", index)  # noqa: B010
         rec = task.rec if task.rec is not None else BeetsRec.none
         recommendation = _REC_MAP.get(rec, Recommendation.none)
+
+        if self._directive is not None:
+            # Apply mode: the banked decision, not policy, decides this album.
+            return self._directive_choice(self._directive, task, index, recommendation, candidates)
 
         if rec == BeetsRec.strong and candidates:
             # Mirror beets' auto-apply of a strong recommendation.
@@ -473,6 +513,49 @@ class WebImportSession(ImportSession):
             art_source=art_source,
         )
         return self._apply_choice(choice, candidates)
+
+    def _directive_choice(
+        self,
+        directive: BankApplyDirective,
+        task: ImportTask,
+        index: int,
+        recommendation: Recommendation,
+        candidates: list[Any],
+    ) -> Any:
+        """Answer choose_match from the banked decision (apply mode).
+
+        ``asis``/``astracks`` need no candidates. ``apply`` and ``duplicate``
+        take the lookup's top candidate: with ``search_ids`` pinned (worker)
+        the lookup returned exactly the chosen release; unpinned (no stored
+        release id - duplicate rows, legacy rows) it is the fresh top match.
+        Zero candidates (an id nothing resolved, or network trouble) emits a
+        skipped outcome and SKIPs - the apply runner fails the row retryably.
+        ASIS and APPLY outcomes ride the album-id follow-up stash so the bank
+        row can learn the landed album id; TRACKS lands singletons (no album
+        entity), so its outcome is emitted without a follow-up.
+        """
+        if directive.action == "asis":
+            self._note_outcome_awaiting_album_id(
+                self._outcome(index, task, recommendation, AlbumOutcomeStatus.applied), task
+            )
+            return Action.ASIS
+        if directive.action == "astracks":
+            self.bridge.note_outcome(
+                self._outcome(index, task, recommendation, AlbumOutcomeStatus.applied)
+            )
+            return Action.TRACKS
+        if not candidates:
+            self.bridge.note_outcome(
+                self._outcome(index, task, recommendation, AlbumOutcomeStatus.skipped)
+            )
+            return Action.SKIP
+        self._note_outcome_awaiting_album_id(
+            self._outcome(
+                index, task, recommendation, AlbumOutcomeStatus.applied, match=candidates[0]
+            ),
+            task,
+        )
+        return candidates[0]
 
     # ----- helpers -----
 
