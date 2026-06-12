@@ -5,7 +5,7 @@ import pytest
 from app.beets.import_session import InLibraryCopyError
 from app.import_jobs.fakes import FakeImportRunner
 from app.import_jobs.registry import ImportJobRegistry
-from app.models.import_api import ImportAlbumStatus, ImportPhase
+from app.models.import_api import ImportAlbumStatus, ImportPhase, SweepStatus
 from app.models.import_models import (
     AlbumChange,
     AlbumOutcome,
@@ -377,3 +377,138 @@ def test_start_passes_path_and_options_to_validate() -> None:
     opts = ImportOptions(operation="move")
     reg.start("/downloads/Artist", options=opts)
     assert runner.validate_calls == [("/downloads/Artist", opts)]
+
+
+def _sweep_outcome(
+    index: int, status: AlbumOutcomeStatus, album_id: int | None = None
+) -> AlbumOutcome:
+    return AlbumOutcome(
+        album_index=index,
+        folder=f"/library/album{index}",
+        artist="A",
+        album="B",
+        recommendation=Recommendation.medium,
+        confidence=50.0,
+        status=status,
+        album_id=album_id,
+    )
+
+
+def _install_sweep_job(reg: ImportJobRegistry, job_id: str = "sweep-job"):  # type: ignore[no-untyped-def]  # test-local helper returns the white-box ImportJob
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    job = ImportJob(id=job_id, bridge=ImportBridge(), origin="sweep", sweep=SweepStatus())
+    reg._job = job  # white-box: install in the single slot (established pattern)
+    return job
+
+
+def test_sweep_options_set_origin_and_sweep_block() -> None:
+    fake = FakeImportRunner(applied=[])
+    reg = ImportJobRegistry(runner=fake)
+    job_id = reg.start("/library", options=ImportOptions(sweep=True))
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.done)
+    state = reg.state(job_id)
+    assert state.origin == "sweep"
+    assert state.sweep is not None
+    assert state.summary == "swept 0, auto-applied 0, banked 0"
+
+
+def test_manual_job_has_no_sweep_block() -> None:
+    fake = FakeImportRunner(applied=[_applied_outcome(0)])
+    reg = ImportJobRegistry(runner=fake)
+    job_id = reg.start("/music/incoming")
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.done)
+    state = reg.state(job_id)
+    assert state.origin == "manual"
+    assert state.sweep is None
+
+
+def test_sweep_drain_updates_counters_not_feed_rows() -> None:
+    reg = ImportJobRegistry()
+    job = _install_sweep_job(reg)
+    job.bridge.note_outcome(_sweep_outcome(0, AlbumOutcomeStatus.applied))  # strong auto
+    job.bridge.note_outcome(_sweep_outcome(1, AlbumOutcomeStatus.needs_review))  # banked
+    job.bridge.note_outcome(_sweep_outcome(2, AlbumOutcomeStatus.skipped))  # banked no_match
+    job.bridge.note_outcome(_sweep_outcome(0, AlbumOutcomeStatus.applied, album_id=42))  # follow-up
+    job.bridge.note_outcome(_sweep_outcome(3, AlbumOutcomeStatus.applied))  # strong auto...
+    job.bridge.note_outcome(
+        _sweep_outcome(3, AlbumOutcomeStatus.needs_dup_resolution)
+    )  # ...rescinded into the bank as a duplicate
+
+    state = reg.state("sweep-job")
+    assert state.sweep is not None
+    assert state.sweep.processed == 4  # one per initial outcome (indexes 0-3)
+    assert state.sweep.auto_applied == 1  # ONLY the follow-up (album 0 landed)
+    assert state.sweep.banked == 3  # uncertain + no_match + duplicate
+    assert state.sweep.current_folder == "/library/album3"
+    assert state.albums == []  # counters, never the O(n) feed
+    assert job.albums == {}  # nothing accumulated on the job either
+
+
+def test_sweep_skipped_known_tracks_bridge_counter() -> None:
+    reg = ImportJobRegistry()
+    job = _install_sweep_job(reg)
+    job.bridge.note_known_skip()
+    job.bridge.note_known_skip()
+    state = reg.state("sweep-job")
+    assert state.sweep is not None
+    assert state.sweep.skipped_known == 2
+
+
+def test_request_pause_flags_sweep_job_and_is_idempotent() -> None:
+    reg = ImportJobRegistry()
+    job = _install_sweep_job(reg)
+    reg.request_pause("sweep-job")
+    assert job.bridge.pause_requested() is True
+    assert job.sweep is not None and job.sweep.paused is True
+    reg.request_pause("sweep-job")  # second pause while active: no raise
+
+
+def test_request_pause_unknown_job_raises_keyerror() -> None:
+    reg = ImportJobRegistry()
+    with pytest.raises(KeyError):
+        reg.request_pause("nope")
+
+
+def test_request_pause_non_sweep_raises_runtimeerror() -> None:
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="manual-job", bridge=ImportBridge())
+    with pytest.raises(RuntimeError):
+        reg.request_pause("manual-job")
+
+
+def test_request_pause_finished_sweep_raises_runtimeerror() -> None:
+    reg = ImportJobRegistry()
+    job = _install_sweep_job(reg)
+    job.phase = ImportPhase.done
+    with pytest.raises(RuntimeError):
+        reg.request_pause("sweep-job")
+
+
+def test_sweep_summary_reports_counters_and_pause() -> None:
+    reg = ImportJobRegistry()
+    job = _install_sweep_job(reg)
+    job.bridge.note_outcome(_sweep_outcome(0, AlbumOutcomeStatus.applied))
+    job.bridge.note_outcome(_sweep_outcome(0, AlbumOutcomeStatus.applied, album_id=7))
+    job.bridge.note_outcome(_sweep_outcome(1, AlbumOutcomeStatus.needs_review))
+    job.bridge.note_known_skip()
+    reg.request_pause("sweep-job")
+    reg._on_finish("sweep-job")
+    state = reg.state("sweep-job")
+    assert state.phase is ImportPhase.done
+    assert state.summary == (
+        "swept 2, auto-applied 1, banked 1, skipped 1 already imported - paused"
+    )
+
+
+def test_active_status_carries_sweep_block() -> None:
+    reg = ImportJobRegistry()
+    _install_sweep_job(reg)  # phase defaults to scanning (active)
+    status = reg.active_status()
+    assert status.active is True
+    assert status.origin == "sweep"
+    assert status.sweep is not None
