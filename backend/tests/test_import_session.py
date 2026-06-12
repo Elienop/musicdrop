@@ -1275,3 +1275,78 @@ def test_directive_without_dup_action_skips_unanticipated_duplicate(
     assert task.choice_flag is Action.SKIP
     outcomes = session.bridge.drain_outcomes()
     assert any(o.status is AlbumOutcomeStatus.needs_dup_resolution for o in outcomes)
+
+
+class _ApplyConfigSession(_SweepConfigSession):
+    """Records the apply-relevant config (sweep trio + search_ids) during run()."""
+
+    def run(self) -> None:
+        self.seen = {
+            "incremental": config["import"]["incremental"].get(bool),
+            "resume": config["import"]["resume"].get(),
+            "singletons": config["import"]["singletons"].get(bool),
+            "search_ids": config["import"]["search_ids"].get(),
+        }
+
+
+def test_apply_directive_forces_nonincremental_and_pins_search_ids() -> None:
+    from app.models.bank import BankApplyDirective
+
+    # Hostile ambient config: the user's own incremental sweep setup. Banked
+    # folders are in taghistory (the sweep SKIP-recorded them), so without an
+    # explicit incremental=False the apply would silently skip its own folder.
+    config["import"]["incremental"] = True
+    config["import"]["resume"] = "ask"
+    config["import"]["singletons"] = True
+    config["import"]["search_ids"] = []
+    s = _ApplyConfigSession()
+    run_import_worker(
+        s,  # type: ignore[arg-type]  # minimal stand-in
+        directive=BankApplyDirective(action="apply", search_id="rel-123"),
+    )
+    assert s.seen == {
+        "incremental": False,
+        "resume": False,
+        "singletons": False,
+        "search_ids": ["rel-123"],
+    }
+    # Snapshot/restore: the globals are back to their pre-run values.
+    assert config["import"]["incremental"].get(bool) is True
+    assert config["import"]["resume"].get() == "ask"
+    assert config["import"]["singletons"].get(bool) is True
+    assert config["import"]["search_ids"].get() == []
+
+
+def test_apply_directive_without_release_id_leaves_lookup_unpinned() -> None:
+    from app.models.bank import BankApplyDirective
+
+    config["import"]["search_ids"] = []
+    s = _ApplyConfigSession()
+    run_import_worker(s, directive=BankApplyDirective(action="asis"))  # type: ignore[arg-type]
+    assert s.seen["search_ids"] == []  # unpinned: asis/dup/legacy rows
+    assert s.seen["incremental"] is False  # the non-incremental forcing still applies
+
+
+def test_apply_directive_restores_search_ids_on_raise() -> None:
+    from app.models.bank import BankApplyDirective
+
+    config["import"]["search_ids"] = ["user-pin"]
+
+    class _Boom(_ApplyConfigSession):
+        def run(self) -> None:
+            raise RuntimeError("x")
+
+    with pytest.raises(RuntimeError):
+        run_import_worker(
+            _Boom(),  # type: ignore[arg-type]  # minimal stand-in
+            directive=BankApplyDirective(action="apply", search_id="rel-1"),
+        )
+    assert config["import"]["search_ids"].get() == ["user-pin"]
+
+
+def test_non_directive_run_never_touches_search_ids() -> None:
+    config["import"]["search_ids"] = ["user-pin"]
+    s = _ApplyConfigSession()
+    run_import_worker(s)  # type: ignore[arg-type]  # minimal stand-in
+    assert s.seen["search_ids"] == ["user-pin"]  # manual/inbox/sweep: untouched
+    assert config["import"]["search_ids"].get() == ["user-pin"]

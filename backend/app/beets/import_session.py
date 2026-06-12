@@ -743,7 +743,11 @@ class WebImportSession(ImportSession):
 
 
 def run_import_worker(
-    session: WebImportSession, *, move: bool | None = None, sweep: bool = False
+    session: WebImportSession,
+    *,
+    move: bool | None = None,
+    sweep: bool = False,
+    directive: BankApplyDirective | None = None,
 ) -> None:
     """Run one import session serially on the calling (worker) thread.
 
@@ -777,6 +781,21 @@ def run_import_worker(
     would route every file through choose_item -> SKIP and history-mark it
     done WITHOUT a bank row (silent loss); album-shaped tasks are the only
     thing the bank can review.
+
+    ``directive`` scopes a bank apply run's beets flags (same snapshot/restore
+    discipline): ``incremental`` off EXPLICITLY — the sweep recorded every
+    banked folder in taghistory (SKIPped tasks included) and the user's own
+    config may say ``incremental: yes``, so without this beets' task factory
+    skips the banked folder before any hook fires and the apply silently does
+    nothing; ``resume``/``singletons`` off for the sweep's reasons (astracks
+    singletons arrive deliberately via the TRACKS re-pipeline, not the
+    singletons flag); ``search_ids`` pinned to the chosen release id for an
+    ``apply`` directive (consumed by beets' lookup_candidates stage ->
+    ``tag_album(search_ids=...)``: candidates come ONLY from that id) and
+    cleared otherwise so a stale user pin can never hijack the run. The
+    ``search_ids`` snapshot/restore is unconditional so a directive pin never
+    leaks into the next manual import. ``sweep`` and ``directive`` are never
+    both set (the runner builds one or the other).
     """
     config["threaded"] = False
     config["import"]["duplicate_action"] = "ask"
@@ -797,6 +816,7 @@ def run_import_worker(
     orig_incremental = config["import"]["incremental"].get(bool)
     orig_resume = config["import"]["resume"].get()  # bool OR "ask" - restore verbatim
     orig_singletons = config["import"]["singletons"].get(bool)
+    orig_search_ids = config["import"]["search_ids"].get()  # restore verbatim
     if move is not None:
         config["import"]["move"] = move
         config["import"]["copy"] = not move
@@ -804,6 +824,11 @@ def run_import_worker(
         config["import"]["incremental"] = True
         config["import"]["resume"] = False
         config["import"]["singletons"] = False
+    if directive is not None:
+        config["import"]["incremental"] = False
+        config["import"]["resume"] = False
+        config["import"]["singletons"] = False
+        config["import"]["search_ids"] = [directive.search_id] if directive.search_id else []
     try:
         session.run()
     finally:
@@ -812,6 +837,7 @@ def run_import_worker(
         config["import"]["incremental"] = orig_incremental
         config["import"]["resume"] = orig_resume
         config["import"]["singletons"] = orig_singletons
+        config["import"]["search_ids"] = orig_search_ids
     _trash_replaced_albums(session)
 
 
