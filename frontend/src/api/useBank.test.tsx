@@ -18,6 +18,7 @@ import {
   useBankList,
   useBulkIgnoreBank,
   useDeleteBankItem,
+  useIgnoreBankItem,
 } from "@/api/useBank";
 import { server } from "@/test/msw-server";
 
@@ -154,6 +155,38 @@ describe("useBankDecision", () => {
     result.current.mutate({ action: "ignore", candidate_index: 2 });
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error?.message).toMatch(/candidate_index only applies to apply/);
+  });
+});
+
+describe("useIgnoreBankItem", () => {
+  test("posts {action: ignore} to the row supplied at call time", async () => {
+    let seenId: string | null = null;
+    let body: unknown = null;
+    server.use(
+      http.post(DECISION, async ({ request, params }) => {
+        seenId = String(params.itemId);
+        body = await request.json();
+        return HttpResponse.json({ ...summary, status: "ignored", parked: null, duplicate: null, decided: { action: "ignore", candidate_index: null, duplicate_action: null }, fingerprint: "f", decided_at: "2026-06-12T09:00:00Z", resolved_at: "2026-06-12T09:00:00Z", reason: "no_match", recommendation: null, confidence: null });
+      }),
+    );
+    const { result } = renderHook(() => useIgnoreBankItem(), { wrapper: wrapper() });
+    result.current.mutate("b1");
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(seenId).toBe("b1");
+    expect(body).toEqual({ action: "ignore" });
+  });
+
+  test("a 409 surfaces as BankConflictError (the list-row toast path)", async () => {
+    server.use(
+      http.post(DECISION, () =>
+        HttpResponse.json({ detail: "row is queued; decisions need one of [...]" }, { status: 409 }),
+      ),
+    );
+    const { result } = renderHook(() => useIgnoreBankItem(), { wrapper: wrapper() });
+    result.current.mutate("b1");
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).toBeInstanceOf(BankConflictError);
+    expect(result.current.error?.message).toMatch(/row is queued/);
   });
 });
 

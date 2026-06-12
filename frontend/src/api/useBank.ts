@@ -147,6 +147,18 @@ export function useBankDecision(itemId: string) {
   });
 }
 
+/** List-row ignore: the same decision POST, id supplied per call (the
+ * Review page's backlog renders many rows under one mutation). */
+export function useIgnoreBankItem() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (itemId: string) => decideBankItem(itemId, { action: "ignore" }),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["bank"] });
+    },
+  });
+}
+
 async function deleteBankItem(itemId: string): Promise<void> {
   const { error, response } = await client.DELETE("/api/bank/{item_id}", {
     params: { path: { item_id: itemId } },

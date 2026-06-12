@@ -17,6 +17,11 @@ vi.mock("react-router", async (importOriginal) => ({
   useNavigate: () => mockNavigate,
 }));
 
+// The bank section's 409s surface through sonner (the activityToasts dialect).
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+import { toast } from "sonner";
+const toastError = vi.mocked(toast.error);
+
 const O = window.location.origin;
 const ACTIVE = `${O}/api/imports/active`;
 const JOB = `${O}/api/import/:jobId`;
@@ -25,6 +30,7 @@ const STATUS = `${O}/api/acquisition/status`;
 const DUPES = `${O}/api/duplicates`;
 const IMPORT_ITEM = `${O}/api/acquisition/inbox/items/import`;
 const REVIEW_ALL = `${O}/api/acquisition/review-inbox`;
+const BANK = `${O}/api/bank`;
 
 const idleActive = { active: false, origin: "manual", needs_review_count: 0 };
 const idleStatus = {
@@ -67,12 +73,14 @@ function OriginProbe() {
 describe("ReviewPage", () => {
   beforeEach(() => {
     mockNavigate.mockClear();
+    toastError.mockClear();
     // Idle defaults for every probe the page polls, so each test only overrides
     // what it asserts (the MSW server errors on an unhandled request).
     server.use(
       http.get(ACTIVE, () => HttpResponse.json(idleActive)),
       http.get(ITEMS, () => HttpResponse.json({ items: [] })),
       http.get(STATUS, () => HttpResponse.json(idleStatus)),
+      http.get(BANK, () => HttpResponse.json({ items: [], total: 0, offset: 0, limit: 48 })),
       http.get(JOB, () =>
         HttpResponse.json({
           job_id: "j1",
@@ -290,5 +298,183 @@ describe("ReviewPage", () => {
 
     await userEvent.click(await screen.findByRole("link", { name: /^review$/i }));
     expect(await screen.findByText("origin: Review /review")).toBeInTheDocument();
+  });
+
+  const bankRow = (over: Record<string, unknown> = {}) => ({
+    id: "b1",
+    folder: "/inbox/Album X",
+    source: "sweep",
+    reason: "needs_review",
+    artist: "Artist",
+    album: "Album X",
+    recommendation: "medium",
+    confidence: 71.2,
+    status: "needs_review",
+    error: null,
+    album_id: null,
+    banked_at: "2026-06-12T08:00:00Z",
+    ...over,
+  });
+
+  test("bank rows render guess, reason chip, confidence and an Open link", async () => {
+    server.use(
+      http.get(BANK, () =>
+        HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    expect(within(section).getByText("Album X")).toBeInTheDocument();
+    expect(within(section).getByText(/uncertain match/i)).toBeInTheDocument();
+    expect(within(section).getByText(/71%/)).toBeInTheDocument();
+    expect(within(section).getByRole("link", { name: /open/i })).toHaveAttribute(
+      "href",
+      "/review/bank/b1",
+    );
+  });
+
+  test("the bank section paginates — Next requests the next offset", async () => {
+    const offsets: string[] = [];
+    server.use(
+      http.get(BANK, ({ request }) => {
+        const url = new URL(request.url);
+        offsets.push(url.searchParams.get("offset") ?? "0");
+        return HttpResponse.json({
+          items: [bankRow()],
+          total: 60,
+          offset: Number(url.searchParams.get("offset") ?? "0"),
+          limit: 48,
+        });
+      }),
+    );
+    renderWithProviders(<ReviewPage />);
+    await screen.findByRole("region", { name: /waiting for review/i });
+    await userEvent.click(screen.getByRole("button", { name: /next/i }));
+    await waitFor(() => expect(offsets).toContain("48"));
+  });
+
+  test("the status filter narrows the list query", async () => {
+    const statuses: Array<string | null> = [];
+    server.use(
+      http.get(BANK, ({ request }) => {
+        statuses.push(new URL(request.url).searchParams.get("status"));
+        return HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 });
+      }),
+    );
+    renderWithProviders(<ReviewPage />);
+    await screen.findByRole("region", { name: /waiting for review/i });
+    await userEvent.selectOptions(screen.getByLabelText(/filter by status/i), "failed");
+    await waitFor(() => expect(statuses).toContain("failed"));
+  });
+
+  test("row Ignore posts the decision; a 409 raises the conflict toast", async () => {
+    let body: unknown = null;
+    server.use(
+      http.get(BANK, () => HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 })),
+      http.post(`${O}/api/bank/:itemId/decision`, async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({ detail: "row is queued; decisions need one of [...]" }, { status: 409 });
+      }),
+    );
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    await userEvent.click(within(section).getByRole("button", { name: /ignore album x/i }));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/row is queued/)));
+    expect(body).toEqual({ action: "ignore" });
+  });
+
+  test("bulk-ignore posts the selected ids", async () => {
+    let body: unknown = null;
+    server.use(
+      http.get(BANK, () =>
+        HttpResponse.json({
+          items: [bankRow(), bankRow({ id: "b2", album: "Album Y" })],
+          total: 2, offset: 0, limit: 48,
+        }),
+      ),
+      http.post(`${O}/api/bank/bulk-ignore`, async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({ ignored: 2 });
+      }),
+    );
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    await userEvent.click(within(section).getByRole("checkbox", { name: /select album x/i }));
+    await userEvent.click(within(section).getByRole("checkbox", { name: /select album y/i }));
+    await userEvent.click(within(section).getByRole("button", { name: /ignore selected \(2\)/i }));
+    await waitFor(() => expect(body).toEqual({ ids: ["b1", "b2"] }));
+  });
+
+  test("Remove confirms, then deletes the row", async () => {
+    let deleted = false;
+    server.use(
+      http.get(BANK, () => HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 })),
+      http.delete(`${O}/api/bank/:itemId`, () => {
+        deleted = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    await userEvent.click(within(section).getByRole("button", { name: /remove album x/i }));
+    // AlertDialog confirm step — removing forfeits the banked candidates.
+    await userEvent.click(await screen.findByRole("button", { name: /^remove$/i }));
+    await waitFor(() => expect(deleted).toBe(true));
+  });
+
+  test("bank actions stay ENABLED while an import runs (store writes need no slot)", async () => {
+    server.use(
+      http.get(ACTIVE, () =>
+        HttpResponse.json({ active: true, job_id: "j1", origin: "manual", needs_review_count: 0 }),
+      ),
+      http.get(BANK, () => HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 })),
+    );
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    expect(within(section).getByRole("button", { name: /ignore album x/i })).toBeEnabled();
+  });
+
+  test("the sweep banner shows counters and Pause posts the endpoint", async () => {
+    let paused = false;
+    server.use(
+      http.get(ACTIVE, () =>
+        HttpResponse.json({
+          active: true, job_id: "s1", origin: "sweep", needs_review_count: 0,
+          sweep: { processed: 412, auto_applied: 268, banked: 144, skipped_known: 9, current_folder: "/library/Adele/21", paused: false },
+        }),
+      ),
+      http.post(`${O}/api/import/s1/pause`, () => {
+        paused = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderWithProviders(<ReviewPage />);
+    // Other ambient role="status" regions exist (the empty state) — anchor on
+    // the banner's counter text, then assert on its enclosing status region.
+    await screen.findByText(/412 processed/);
+    const banner = screen
+      .getAllByRole("status")
+      .find((el) => (el.textContent ?? "").includes("412 processed"));
+    expect(banner).toBeDefined();
+    expect(banner).toHaveTextContent(/412 processed/);
+    expect(banner).toHaveTextContent(/144 banked/);
+    expect(banner).toHaveTextContent(/Now: 21/); // current folder's last segment
+    await userEvent.click(screen.getByRole("button", { name: /pause/i }));
+    await waitFor(() => expect(paused).toBe(true));
+  });
+
+  test("the header meta counts bank rows awaiting review", async () => {
+    server.use(
+      http.get(BANK, ({ request }) => {
+        const status = new URL(request.url).searchParams.get("status");
+        return HttpResponse.json(
+          status === "needs_review"
+            ? { items: [bankRow()], total: 3, offset: 0, limit: 1 }
+            : { items: [bankRow()], total: 5, offset: 0, limit: 48 },
+        );
+      }),
+    );
+    renderWithProviders(<ReviewPage />);
+    expect(await screen.findByText(/3 awaiting a decision/i)).toBeInTheDocument();
   });
 });
