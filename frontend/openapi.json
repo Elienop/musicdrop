@@ -1441,6 +1441,42 @@
         }
       }
     },
+    "/api/import/{job_id}/pause": {
+      "post": {
+        "tags": [
+          "import"
+        ],
+        "summary": "Pause Import",
+        "description": "Ask the active sweep to stop at its next album boundary.\n\nThe session aborts via beets' native clean abort at its next decision\nhook: the current album finishes its decision point, the session unwinds,\nthe job ends ``phase=done`` with a summary noting the pause, and the\nimport slot frees. Resume = start a new sweep of the same root (beets'\nincremental history skips everything already done or banked). 404 for an\nunknown job; 409 when the job is not a sweep or is no longer active;\nrepeating a pause on a still-active sweep is idempotent (204).",
+        "operationId": "pause_import_api_import__job_id__pause_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/config": {
       "get": {
         "tags": [
@@ -3188,7 +3224,8 @@
             "type": "string",
             "enum": [
               "manual",
-              "inbox"
+              "inbox",
+              "sweep"
             ],
             "title": "Origin",
             "default": "manual"
@@ -3197,6 +3234,16 @@
             "type": "integer",
             "title": "Needs Review Count",
             "default": 0
+          },
+          "sweep": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SweepStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -5192,7 +5239,8 @@
             "type": "string",
             "enum": [
               "manual",
-              "inbox"
+              "inbox",
+              "sweep"
             ],
             "title": "Origin",
             "default": "manual"
@@ -5200,6 +5248,16 @@
           "set_aside": {
             "type": "integer",
             "title": "Set Aside"
+          },
+          "sweep": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SweepStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -5231,11 +5289,16 @@
             "type": "boolean",
             "title": "Unattended",
             "default": false
+          },
+          "sweep": {
+            "type": "boolean",
+            "title": "Sweep",
+            "default": false
           }
         },
         "type": "object",
         "title": "ImportOptions",
-        "description": "Per-import overrides (replaces the reserved ``dict[str, str]``).\n\n``operation`` ``\"default\"`` falls through to the user's beets config (the\nmanual-import default). ``\"move\"``/``\"copy\"`` force that operation for this\nimport only. ``unattended`` ``True`` is the inbox path: no human review \u2014\nuncertain/duplicate albums are set aside rather than parked."
+        "description": "Per-import overrides (replaces the reserved ``dict[str, str]``).\n\n``operation`` ``\"default\"`` falls through to the user's beets config (the\nmanual-import default). ``\"move\"``/``\"copy\"`` force that operation for this\nimport only. ``unattended`` ``True`` is the inbox path: no human review \u2014\nuncertain/duplicate albums are set aside rather than parked. ``sweep``\n``True`` is the banking sweep: an unattended, beets-incremental run that\nBANKS every set-aside album (with its candidate payload) instead of just\nskipping it, recorded as ``origin=\"sweep\"``. A sweep is unattended by\ndefinition \u2014 the session enforces ``unattended or sweep`` \u2014 so\n``{\"sweep\": true}`` alone is a complete sweep request. The sweep forces no\nfile operation: ``operation`` behaves exactly as for a manual import (the\nin-library guard still force-corrects in-library sources to move)."
       },
       "ImportPhase": {
         "type": "string",
@@ -7229,6 +7292,49 @@
         ],
         "title": "StartImportResponse",
         "description": "Response of a successful ``POST /api/import``: the new job's id."
+      },
+      "SweepStatus": {
+        "properties": {
+          "processed": {
+            "type": "integer",
+            "title": "Processed",
+            "default": 0
+          },
+          "auto_applied": {
+            "type": "integer",
+            "title": "Auto Applied",
+            "default": 0
+          },
+          "banked": {
+            "type": "integer",
+            "title": "Banked",
+            "default": 0
+          },
+          "skipped_known": {
+            "type": "integer",
+            "title": "Skipped Known",
+            "default": 0
+          },
+          "current_folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Folder"
+          },
+          "paused": {
+            "type": "boolean",
+            "title": "Paused",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "SweepStatus",
+        "description": "Live counters for a sweep-origin import job.\n\nSweep jobs do not build the per-album feed (a whole-library sweep would\naccumulate thousands of rows); these monotone counters are the entire\nprogress surface. ``auto_applied`` counts albums beets actually added (the\nfollow-up outcome carrying the library album id), so it can trail\n``processed`` by one album while the sweep runs and is exact once done.\n``banked`` counts every set-aside the sweep persisted: uncertain matches,\nno-match folders, and duplicate prompts. ``skipped_known`` counts folders\nbeets' incremental history skipped before tagging (done or banked by an\nearlier sweep)."
       },
       "Track": {
         "properties": {
