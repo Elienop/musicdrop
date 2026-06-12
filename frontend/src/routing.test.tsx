@@ -17,6 +17,7 @@ import { ImportDuplicatePage } from "@/pages/import/ImportDuplicatePage";
 import { ImportPage } from "@/pages/import/ImportPage";
 import { PlaylistDetailPage } from "@/pages/playlists/PlaylistDetailPage";
 import { PlaylistsPage } from "@/pages/playlists/PlaylistsPage";
+import { BankReviewPage } from "@/pages/review/BankReviewPage";
 import { ReviewPage } from "@/pages/review/ReviewPage";
 import { SearchPage } from "@/pages/search/SearchPage";
 import { SettingsBeetsPage } from "@/pages/settings/SettingsBeetsPage";
@@ -56,6 +57,7 @@ const routes = [
       { path: "/search", element: <SearchPage /> },
       { path: "/browse", element: <BrowsePage /> },
       { path: "/review", element: <ReviewPage /> },
+      { path: "/review/bank/:itemId", element: <BankReviewPage /> },
       { path: "/import", element: <ImportPage /> },
       { path: "/import/albums/:index", element: <ImportCandidatePage /> },
       {
