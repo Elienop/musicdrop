@@ -72,9 +72,15 @@ class BeetsImportRunner:
     into ``on_error`` and a normal return (incl. abort) into ``on_finish``.
     """
 
-    def __init__(self, lib: object, trash_dir: Path | None = None) -> None:
+    def __init__(
+        self, lib: object, trash_dir: Path | None = None, bank_dir: Path | None = None
+    ) -> None:
         self._lib = lib
         self._trash_dir = trash_dir
+        # Where sweep runs write bank rows (<beets_dir>/bank by default),
+        # threaded session-ward exactly like trash_dir. Non-sweep runs never
+        # receive it (the session's _bank_row would no-op anyway).
+        self._bank_dir = bank_dir
 
     def validate(self, path: str, options: ImportOptions | None = None) -> None:
         # Only explicit copy is a user-facing error here; default/None are
@@ -107,7 +113,10 @@ class BeetsImportRunner:
         )
         # Unattended (inbox) imports set uncertain/duplicate albums aside instead
         # of parking for a human; None options = today's attended manual default.
+        # A sweep is unattended by definition (the session ORs the flag in) and
+        # additionally banks each set-aside, so it gets the bank dir.
         unattended = options.unattended if options is not None else False
+        sweep = options.sweep if options is not None else False
         session = WebImportSession(
             self._lib,
             None,  # loghandler -> beets installs a NullHandler
@@ -116,11 +125,13 @@ class BeetsImportRunner:
             bridge,
             self._trash_dir,
             unattended=unattended,
+            sweep=sweep,
+            bank_dir=self._bank_dir if sweep else None,
         )
 
         def target() -> None:
             try:
-                run_import_worker(session, move=move)
+                run_import_worker(session, move=move, sweep=sweep)
             # Broad by design: any worker crash must become a failed job, never
             # an unhandled thread exception (which the API could not surface).
             except Exception as exc:

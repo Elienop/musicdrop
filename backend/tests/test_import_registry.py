@@ -1,4 +1,5 @@
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -512,3 +513,24 @@ def test_active_status_carries_sweep_block() -> None:
     assert status.active is True
     assert status.origin == "sweep"
     assert status.sweep is not None
+
+
+def test_attach_library_threads_bank_dir_to_resolved_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.import_jobs.registry as registry_mod
+
+    captured: dict[str, object] = {}
+
+    class _FakeRunner:
+        def __init__(self, lib: object, trash_dir: object = None, bank_dir: object = None) -> None:
+            captured["lib"] = lib
+            captured["trash_dir"] = trash_dir
+            captured["bank_dir"] = bank_dir
+
+    monkeypatch.setattr(registry_mod, "BeetsImportRunner", _FakeRunner)
+    reg = ImportJobRegistry()
+    lib = object()
+    reg.attach_library(lib, Path("/t"), bank_dir=Path("/b"))
+    reg._resolve_runner()
+    assert captured == {"lib": lib, "trash_dir": Path("/t"), "bank_dir": Path("/b")}

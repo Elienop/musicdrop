@@ -103,7 +103,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # it the raw lib (not the snapshot handle). The Trash dir is where the
     # duplicate-on-import Replace action moves the old copies (same reversible
     # Trash the /duplicates page uses).
-    import_registry.attach_library(handle.lib, resolve_trash_dir(settings, handle))
+    import_registry.attach_library(
+        handle.lib, resolve_trash_dir(settings, handle), bank_dir=get_bank_dir()
+    )
 
     # The acquisition seam drives completed inbox drops through the SAME single
     # import slot (Option A) — constructed AFTER attach_library so it shares that

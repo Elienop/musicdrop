@@ -90,7 +90,7 @@ def test_runner_passes_trash_dir_to_session(monkeypatch: pytest.MonkeyPatch) -> 
             captured["trash_dir"] = args[5]
 
     monkeypatch.setattr(runner_mod, "WebImportSession", _FakeSession)
-    monkeypatch.setattr(runner_mod, "run_import_worker", lambda s: None)
+    monkeypatch.setattr(runner_mod, "run_import_worker", lambda s, *, move=None, sweep=False: None)
 
     BeetsImportRunner(lib=object(), trash_dir=Path("/tmp/t")).run(
         "/music", ImportBridge(), on_finish=lambda: None, on_error=lambda m: None
@@ -130,7 +130,7 @@ def test_runner_translates_options_operation_to_move(
         def __init__(self, *args: object, **kwargs: object) -> None:
             pass
 
-    def _capture_worker(session: object, *, move: bool | None = None) -> None:
+    def _capture_worker(session: object, *, move: bool | None = None, sweep: bool = False) -> None:
         captured["move"] = move
 
     monkeypatch.setattr(runner_mod, "WebImportSession", _FakeSession)
@@ -173,7 +173,7 @@ def test_runner_forwards_unattended_to_session(
             captured["unattended"] = kwargs.get("unattended")
 
     monkeypatch.setattr(runner_mod, "WebImportSession", _FakeSession)
-    monkeypatch.setattr(runner_mod, "run_import_worker", lambda s, *, move=None: None)
+    monkeypatch.setattr(runner_mod, "run_import_worker", lambda s, *, move=None, sweep=False: None)
 
     finished = threading.Event()
     BeetsImportRunner(lib=object()).run(
@@ -185,6 +185,50 @@ def test_runner_forwards_unattended_to_session(
     )
     assert finished.wait(timeout=2.0)
     assert captured["unattended"] is expected_unattended
+
+
+@pytest.mark.parametrize(
+    ("options", "expected_sweep", "expected_bank"),
+    [
+        (ImportOptions(sweep=True), True, Path("/tmp/bank")),
+        # Inbox: unattended but NOT banking - bank_dir must stay None.
+        (ImportOptions(unattended=True), False, None),
+        (None, False, None),
+    ],
+)
+def test_runner_forwards_sweep_and_bank_dir(
+    options: ImportOptions | None,
+    expected_sweep: bool,
+    expected_bank: Path | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.import_jobs.runner as runner_mod
+
+    captured: dict[str, object] = {}
+
+    class _FakeSession:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured["sweep"] = kwargs.get("sweep")
+            captured["bank_dir"] = kwargs.get("bank_dir")
+
+    def _capture_worker(session: object, *, move: bool | None = None, sweep: bool = False) -> None:
+        captured["worker_sweep"] = sweep
+
+    monkeypatch.setattr(runner_mod, "WebImportSession", _FakeSession)
+    monkeypatch.setattr(runner_mod, "run_import_worker", _capture_worker)
+
+    finished = threading.Event()
+    BeetsImportRunner(lib=object(), bank_dir=Path("/tmp/bank")).run(
+        "/music",
+        ImportBridge(),
+        on_finish=finished.set,
+        on_error=lambda _message: None,
+        options=options,
+    )
+    assert finished.wait(timeout=2.0)
+    assert captured["sweep"] is expected_sweep
+    assert captured["bank_dir"] == expected_bank
+    assert captured["worker_sweep"] is expected_sweep
 
 
 def test_validate_refuses_in_library_copy(tmp_path: Path) -> None:
