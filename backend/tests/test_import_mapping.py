@@ -123,6 +123,24 @@ def test_map_options_from_candidate_list() -> None:
     assert isinstance(options[0].disambiguation, str) or options[0].disambiguation is None
 
 
+def test_candidate_options_carry_release_id() -> None:
+    from app.beets.import_mapping import map_candidate_options
+
+    options = map_candidate_options([_perfect_match(), _diff_match()])
+    # AlbumInfo.album_id ("a1" in both fixtures) is the metadata-backend id
+    # beets' search_ids lookup consumes; every ranked option carries its own.
+    assert [o.release_id for o in options] == ["a1", "a1"]
+
+
+def test_candidate_option_release_id_defaults_none() -> None:
+    from app.models.import_models import CandidateOption
+
+    # Additive + defaulted: every existing constructor keeps compiling, and
+    # rows banked before this field simply read None (the unpinned fallback).
+    option = CandidateOption(index=0, confidence=50.0, data_source=None, disambiguation=None)
+    assert option.release_id is None
+
+
 def _unmatched_match() -> AlbumMatch:
     # 3 local files but only 2 release tracks => the surplus junk file is
     # unmatched (extra_items), 0 missing. Verified against beets 2.11.0.

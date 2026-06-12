@@ -104,13 +104,19 @@ class CandidateOption(BaseModel):
     """A ranked alternative release from ``task.candidates``.
 
     The switcher in the review screen lists these; ``index`` is the position in
-    the beets candidate list and is what a choice references.
+    the beets candidate list and is what a choice references. ``release_id`` is
+    the metadata backend's id for the release (``AlbumInfo.album_id`` — an
+    MBID for MusicBrainz, the deezer id for Deezer): the bank's apply runner
+    pins ``import.search_ids`` to it so the apply imports exactly the release
+    the user chose. None for sources without an id (the apply then falls back
+    to an unpinned lookup's top candidate).
     """
 
     index: int
     confidence: float
     data_source: str | None
     disambiguation: str | None
+    release_id: str | None = None
 
 
 class Candidate(BaseModel):
