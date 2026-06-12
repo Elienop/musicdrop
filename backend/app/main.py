@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.acquisition import router as acquisition_router
 from app.api.albums import router as albums_router
 from app.api.artists import router as artists_router
+from app.api.bank import get_bank_dir
+from app.api.bank import router as bank_router
 from app.api.browse import router as browse_router
 from app.api.config_ import router as config_router
 from app.api.duplicates import router as duplicates_router
@@ -25,6 +27,7 @@ from app.artwork.cache import ArtistImageCache
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
+from app.bank.store import reconcile_interrupted
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
 from app.config import resolve_artist_image_cache_dir, settings
@@ -125,6 +128,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.acquisition_ledger = ledger  # the Review page lists + annotates the inbox backlog
     acquisition_queue.start()
 
+    # Bank reconciliation: rows stuck in "applying" from a mid-apply crash
+    # revert to needs_review with a note (never blind-requeued).
+    reconcile_interrupted(get_bank_dir())
+
     # Build the artist-image stack once: the disk cache + the persisted enabled
     # toggle are shared on app.state so the override + settings endpoints reach
     # the SAME instances the service uses. The cache dir is created lazily on
@@ -202,6 +209,7 @@ app.include_router(playlists_router, prefix="/api")
 app.include_router(plex_router, prefix="/api")
 app.include_router(slskd_router, prefix="/api")
 app.include_router(acquisition_router, prefix="/api")
+app.include_router(bank_router, prefix="/api")
 
 # Production single-image mode: serve the built SPA. Registered after every
 # API router so the catch-all cannot shadow /api/*. Dev (static_dir unset)
