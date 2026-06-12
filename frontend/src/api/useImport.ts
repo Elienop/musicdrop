@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
+import { detailMessage } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 /** Job state + live feed as returned by `GET /api/import/{job_id}` (generated). */
@@ -29,6 +30,8 @@ export type DuplicatePrompt = components["schemas"]["DuplicatePrompt"];
 export type DuplicateDecision = components["schemas"]["DuplicateDecision"];
 /** beets' four duplicate actions (generated; mirrors the backend enum). */
 export type DuplicateAction = components["schemas"]["DuplicateAction"];
+/** Live sweep counters on a sweep-origin job/probe (generated contract). */
+export type SweepStatus = components["schemas"]["SweepStatus"];
 
 /** Humanized labels for beets' recommendation levels (shared by the feed +
  * the review screen). Keeps the raw enum ("strong"/"none") out of the UI. */
@@ -55,6 +58,17 @@ export class ImportConflictError extends Error {
   }
 }
 
+/** Thrown when a start is rejected with a 422 (e.g. the in-library guard
+ * refusing copy-mode). Carries the backend's reason. The detail body is read
+ * through detailMessage: our guards send `{detail: string}` while the OpenAPI
+ * schema declares the array shape — both must surface (carry-forward). */
+export class ImportStartRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ImportStartRejectedError";
+  }
+}
+
 /** Thrown when the polled job id is unknown or expired (backend 404). Lets the
  * run page show a dedicated "no longer available" notice and STOP polling,
  * rather than hammering the 404 every second. */
@@ -71,6 +85,11 @@ async function startImport(
   const { data, error, response } = await client.POST("/api/import", { body });
   if (response.status === 409) {
     throw new ImportConflictError();
+  }
+  if (response.status === 422) {
+    throw new ImportStartRejectedError(
+      detailMessage(error) ?? "The import was rejected — check the path and options.",
+    );
   }
   if (error || !data) {
     throw new Error("Failed to start import");
@@ -305,6 +324,38 @@ export function useResolveImportDuplicate(jobId: string) {
       void queryClient.invalidateQueries({
         queryKey: ["import", "job", jobId],
       });
+    },
+  });
+}
+
+async function pauseImport(jobId: string): Promise<void> {
+  const { error, response } = await client.POST("/api/import/{job_id}/pause", {
+    params: { path: { job_id: jobId } },
+  });
+  // 404 (job gone) / 409 (not a sweep any more / already finished) both mean
+  // "there is nothing left to pause" — the refetch below shows the real state.
+  // A repeat pause on a still-active sweep is an idempotent 204 server-side.
+  if (response.status === 404 || response.status === 409) {
+    return;
+  }
+  if (error || !response.ok) {
+    throw new Error("Failed to pause the sweep");
+  }
+}
+
+/**
+ * Ask the active sweep to stop at its next album boundary
+ * (`POST /api/import/{job}/pause`). On settle, refresh the job state AND the
+ * active probe so every sweep surface (run page, Review banner, activity row)
+ * flips to "pausing"/done together.
+ */
+export function usePauseSweep(jobId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => pauseImport(jobId),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["import", "job", jobId] });
+      void queryClient.invalidateQueries({ queryKey: ["active-import"] });
     },
   });
 }

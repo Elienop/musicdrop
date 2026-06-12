@@ -49,6 +49,7 @@ export {
   Trash as Remove,
   X as Close,
   Stop,
+  Pause,
   CaretLeft as Back,
   CaretRight as Forward,
   CircleNotch as Spinner,

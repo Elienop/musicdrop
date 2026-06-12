@@ -97,6 +97,30 @@ describe("useActivity", () => {
     expect(result.current.activity.runningCount).toBe(1);
   });
 
+  it("a sweep-origin import renders the sweep row with counters", () => {
+    importData = {
+      active: true,
+      job_id: "s1",
+      origin: "sweep",
+      needs_review_count: 0,
+      sweep: {
+        processed: 412,
+        auto_applied: 268,
+        banked: 144,
+        skipped_known: 9,
+        current_folder: "/library/Adele",
+        paused: false,
+      },
+    };
+    const { result } = renderActivity();
+    const row = result.current.activity.rows.find((r) => r.kind === "import");
+    expect(row?.label).toBe("Sweep & bank");
+    expect(row?.scope).toBe("/library/Adele");
+    expect(row?.state).toBe("running");
+    expect(row?.countsText).toBe("412 processed · 144 banked");
+    expect(row?.href).toBe("/import?job=s1");
+  });
+
   it("suppresses the import row for inbox-origin imports — the acquisition row owns it", () => {
     importData = {
       active: true, job_id: "j2", origin: "inbox", needs_review_count: 0,

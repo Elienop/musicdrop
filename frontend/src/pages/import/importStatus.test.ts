@@ -17,6 +17,30 @@ function job(overrides: Partial<ImportJobState> = {}): ImportJobState {
   };
 }
 
+/** A sweep-origin job: no feed rows (sweeps never build `albums`), zeroed
+ * progress — the `sweep` counters are the entire progress surface. */
+function sweepState(overrides: Partial<ImportJobState> = {}): ImportJobState {
+  return {
+    job_id: "s",
+    phase: "scanning",
+    progress: { applied: 0, needs_review: 0, skipped: 0 },
+    albums: [],
+    summary: null,
+    error: null,
+    origin: "sweep",
+    set_aside: 0,
+    sweep: {
+      processed: 0,
+      auto_applied: 0,
+      banked: 0,
+      skipped_known: 0,
+      current_folder: null,
+      paused: false,
+    },
+    ...overrides,
+  };
+}
+
 describe("announceMessage", () => {
   test("loading / not-found / error / failed read distinctly", () => {
     expect(
@@ -110,5 +134,53 @@ describe("announceMessage", () => {
         }),
       }),
     ).toMatch(/import complete.*imported 3.*skipped 1/i);
+  });
+
+  test("sweep jobs announce counters, not the feed", () => {
+    const data = sweepState({
+      phase: "scanning",
+      sweep: {
+        processed: 12,
+        auto_applied: 8,
+        banked: 4,
+        skipped_known: 0,
+        current_folder: "/in/x",
+        paused: false,
+      },
+    });
+    expect(
+      announceMessage({ isPending: false, isError: false, notFound: false, data }),
+    ).toBe("Sweeping. Processed 12, imported 8, banked 4.");
+  });
+
+  test("a finished sweep announces complete vs paused", () => {
+    const done = sweepState({
+      phase: "done",
+      sweep: {
+        processed: 30,
+        auto_applied: 20,
+        banked: 10,
+        skipped_known: 0,
+        current_folder: null,
+        paused: false,
+      },
+    });
+    expect(
+      announceMessage({ isPending: false, isError: false, notFound: false, data: done }),
+    ).toBe("Sweep complete. Processed 30, imported 20, banked 10.");
+    const paused = sweepState({
+      phase: "done",
+      sweep: {
+        processed: 5,
+        auto_applied: 3,
+        banked: 2,
+        skipped_known: 0,
+        current_folder: null,
+        paused: true,
+      },
+    });
+    expect(
+      announceMessage({ isPending: false, isError: false, notFound: false, data: paused }),
+    ).toBe("Sweep paused. Processed 5, imported 3, banked 2.");
   });
 });
