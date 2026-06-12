@@ -1177,6 +1177,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/bank": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Bank */
+        get: operations["list_bank_api_bank_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/bank/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Bank Item */
+        get: operations["get_bank_item_api_bank__item_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Bank Item */
+        delete: operations["delete_bank_item_api_bank__item_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/bank/{item_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decide Bank Item */
+        post: operations["decide_bank_item_api_bank__item_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/bank/bulk-ignore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Bulk Ignore Bank */
+        post: operations["bulk_ignore_bank_api_bank_bulk_ignore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1462,6 +1531,142 @@ export interface components {
         ArtistImageSettings: {
             /** Enabled */
             enabled: boolean;
+        };
+        /** BankBulkIgnoreRequest */
+        BankBulkIgnoreRequest: {
+            /** Ids */
+            ids: string[];
+        };
+        /**
+         * BankBulkIgnoreResponse
+         * @description How many rows actually flipped (non-``needs_review`` ids are skipped).
+         */
+        BankBulkIgnoreResponse: {
+            /** Ignored */
+            ignored: number;
+        };
+        /**
+         * BankDecision
+         * @description The user's verdict on a banked row.
+         *
+         *     Mirrors the live review dialect (``ImportChoice``): ``apply`` selects a
+         *     ranked option by ``candidate_index`` (None = the top candidate);
+         *     ``duplicate`` needs the ``duplicate_action``; the rest stand alone. Fields
+         *     foreign to the chosen action — known or unknown — are rejected here so an
+         *     impossible decision can never be persisted or queued.
+         */
+        BankDecision: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "apply" | "asis" | "astracks" | "duplicate" | "ignore";
+            /** Candidate Index */
+            candidate_index?: number | null;
+            duplicate_action?: components["schemas"]["DuplicateAction"] | null;
+        };
+        /**
+         * BankItem
+         * @description One banked album — the full row, candidate payloads included.
+         */
+        BankItem: {
+            /** Id */
+            id: string;
+            /** Folder */
+            folder: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "sweep" | "inbox" | "manual";
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "needs_review" | "needs_dup_resolution" | "no_match";
+            /** Artist */
+            artist?: string | null;
+            /** Album */
+            album?: string | null;
+            /** Recommendation */
+            recommendation?: string | null;
+            /** Confidence */
+            confidence?: number | null;
+            parked?: components["schemas"]["ParkedAlbum"] | null;
+            duplicate?: components["schemas"]["DuplicatePrompt"] | null;
+            /** Fingerprint */
+            fingerprint: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "needs_review" | "queued" | "applying" | "done" | "failed" | "ignored" | "stale";
+            decided?: components["schemas"]["BankDecision"] | null;
+            /** Error */
+            error?: string | null;
+            /**
+             * Banked At
+             * Format: date-time
+             */
+            banked_at: string;
+            /** Decided At */
+            decided_at?: string | null;
+            /** Resolved At */
+            resolved_at?: string | null;
+        };
+        /**
+         * BankItemSummary
+         * @description List-row projection: everything except the heavy payloads.
+         */
+        BankItemSummary: {
+            /** Id */
+            id: string;
+            /** Folder */
+            folder: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "sweep" | "inbox" | "manual";
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "needs_review" | "needs_dup_resolution" | "no_match";
+            /** Artist */
+            artist?: string | null;
+            /** Album */
+            album?: string | null;
+            /** Recommendation */
+            recommendation?: string | null;
+            /** Confidence */
+            confidence?: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "needs_review" | "queued" | "applying" | "done" | "failed" | "ignored" | "stale";
+            /** Error */
+            error?: string | null;
+            /**
+             * Banked At
+             * Format: date-time
+             */
+            banked_at: string;
+        };
+        /**
+         * BankListResponse
+         * @description ``GET /api/bank`` page: summaries + total for pagination.
+         */
+        BankListResponse: {
+            /** Items */
+            items: components["schemas"]["BankItemSummary"][];
+            /** Total */
+            total: number;
+            /** Offset */
+            offset: number;
+            /** Limit */
+            limit: number;
         };
         /**
          * BeetsConfigSnapshot
@@ -2137,6 +2342,19 @@ export interface components {
             query: string;
             /** Template */
             template: string;
+        };
+        /**
+         * ParkedAlbum
+         * @description An album whose match is uncertain and is waiting for a user decision.
+         *
+         *     Pushed onto the import bridge's out-queue; ``album_index`` keys the reply.
+         */
+        ParkedAlbum: {
+            /** Album Index */
+            album_index: number;
+            /** Folder */
+            folder: string;
+            candidate: components["schemas"]["Candidate"];
         };
         /**
          * Playlist
@@ -4928,6 +5146,167 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewInboxResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_bank_api_bank_get: {
+        parameters: {
+            query?: {
+                status?: ("needs_review" | "queued" | "applying" | "done" | "failed" | "ignored" | "stale") | null;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BankListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_bank_item_api_bank__item_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BankItem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_bank_item_api_bank__item_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_bank_item_api_bank__item_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BankDecision"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BankItem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bulk_ignore_bank_api_bank_bulk_ignore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BankBulkIgnoreRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BankBulkIgnoreResponse"];
                 };
             };
             /** @description Validation Error */
