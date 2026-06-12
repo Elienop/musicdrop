@@ -172,7 +172,8 @@ function ImportEntry() {
       )}
 
       <form className="flex flex-col gap-3" onSubmit={onSubmit}>
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-2">
+          <span className="text-sm font-medium">Import mode</span>
           <SegmentedControl
             aria-label="Import mode"
             value={mode}
