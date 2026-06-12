@@ -469,6 +469,100 @@ def test_apply_without_album_id_fails_honestly(tmp_path: Path) -> None:
         runner.stop()
 
 
+def test_duplicate_decision_without_dup_evidence_fails(tmp_path: Path) -> None:
+    # A transient lookup failure: the re-lookup returned zero candidates, the
+    # session SKIPped (skipped outcome, no dup prompt ever surfaced), the job
+    # still finished phase=done. NOTHING was imported and the duplicate
+    # resolution never ran - the row must fail retryably, never claim done.
+    fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.skipped)])
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    folder = _folder(tmp_path)
+    item = store.create_item(
+        bank,
+        folder=str(folder),
+        source="sweep",
+        reason="needs_dup_resolution",
+        fingerprint=folder_fingerprint(folder),
+        duplicate=_dup_prompt(),
+    )
+    store.decide_item(
+        bank, item.id, BankDecision(action="duplicate", duplicate_action=DuplicateAction.skip_new)
+    )
+
+    runner = _make_runner(bank, reg)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, item.id),
+            lambda i: i is not None and i.status == "failed",
+        )
+        assert got is not None and got.status == "failed"
+        assert got.error is not None and "imported nothing" in got.error
+    finally:
+        runner.stop()
+    # Retryable: a failed row accepts a fresh duplicate decision.
+    requeued = store.decide_item(
+        bank, item.id, BankDecision(action="duplicate", duplicate_action=DuplicateAction.skip_new)
+    )
+    assert requeued is not None and requeued.status == "queued"
+
+
+def test_duplicate_decision_done_when_album_landed_without_prompt(tmp_path: Path) -> None:
+    # The library copy vanished between banking and apply: no dup prompt
+    # surfaces, the album just imports. The landed album id IS positive
+    # evidence - done, carrying the id.
+    fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.applied, album_id=33)])
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    folder = _folder(tmp_path)
+    item = store.create_item(
+        bank,
+        folder=str(folder),
+        source="sweep",
+        reason="needs_dup_resolution",
+        fingerprint=folder_fingerprint(folder),
+        duplicate=_dup_prompt(),
+    )
+    store.decide_item(
+        bank, item.id, BankDecision(action="duplicate", duplicate_action=DuplicateAction.keep_both)
+    )
+
+    runner = _make_runner(bank, reg)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, item.id),
+            lambda i: i is not None and i.status == "done",
+        )
+        assert got is not None and got.status == "done"
+        assert got.album_id == 33
+    finally:
+        runner.stop()
+
+
+def test_astracks_without_applied_outcome_fails(tmp_path: Path) -> None:
+    # The astracks re-lookup hit network trouble: the session emitted a
+    # skipped outcome and the job finished done with zero applied outcomes.
+    # No singleton ever imported - failed with re-decide guidance, not done.
+    fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.skipped)])
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    item_id = _seed_queued(bank, _folder(tmp_path), BankDecision(action="astracks"))
+
+    runner = _make_runner(bank, reg)
+    runner.start()
+    try:
+        item = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status == "failed",
+        )
+        assert item is not None and item.status == "failed"
+        assert item.error is not None and "imported nothing" in item.error
+    finally:
+        runner.stop()
+
+
 def test_astracks_done_without_album_id(tmp_path: Path) -> None:
     # Singleton imports create no album entity: done with album_id None.
     fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.applied)])

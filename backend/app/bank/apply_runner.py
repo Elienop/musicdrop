@@ -44,6 +44,9 @@ _UNCONFIRMED_ERROR = (
     "the apply result could not be confirmed (the import slot was replaced) - "
     "check the library before re-deciding"
 )
+_NOTHING_IMPORTED_ERROR = (
+    "the apply imported nothing (the lookup may have failed transiently) - decide again"
+)
 
 
 def directive_for(item: BankItem) -> BankApplyDirective:
@@ -223,25 +226,38 @@ class BankApplyRunner:
     ) -> tuple[BankStatus, str | None, int | None]:
         """Map the finished apply job onto the row's terminal status.
 
-        Decision-aware: a ``duplicate`` decision EXPECTS the dup outcome on
-        the feed (its resolution was auto-answered) -> done; any other
-        decision that surfaced a duplicate was SKIPped by the session ->
-        failed with re-decide guidance. ``astracks`` lands singletons (no
-        album entity) -> done with album_id None; ``apply``/``asis`` without
-        a landed album id failed (a pinned id that resolved nothing, an
-        unreadable folder) - never claim done for nothing.
+        Decision-aware, and ``done`` always needs POSITIVE evidence (a
+        transient lookup failure makes the session SKIP while the job still
+        finishes phase=done - phase alone proves nothing landed):
+
+        * ``duplicate`` -> done only when the dup outcome is on the feed (its
+          resolution was auto-answered) OR an album id landed (the library
+          copy vanished, so the album just imported); a clean SKIP run failed.
+        * any other decision that surfaced a duplicate was SKIPped by the
+          session -> failed with re-decide guidance.
+        * ``astracks`` lands singletons (no album entity) -> done with
+          album_id None, but only when its applied outcome reached the feed.
+        * ``apply``/``asis`` without a landed album id failed (a pinned id
+          that resolved nothing, an unreadable folder).
         """
         if state.phase is ImportPhase.failed:
             return "failed", state.error or "import failed", None
         album_id = next((a.album_id for a in state.albums if a.album_id is not None), None)
         decision = item.decided
         action = decision.action if decision is not None else "apply"
+        dup_resolution_ran = any(
+            a.status is ImportAlbumStatus.needs_dup_resolution for a in state.albums
+        )
         if action == "duplicate":
-            return "done", None, album_id
-        if any(a.status is ImportAlbumStatus.needs_dup_resolution for a in state.albums):
+            if dup_resolution_ran or album_id is not None:
+                return "done", None, album_id
+            return "failed", _NOTHING_IMPORTED_ERROR, None
+        if dup_resolution_ran:
             return "failed", _DUP_BLOCKED_ERROR, None
         if action == "astracks":
-            return "done", None, album_id
+            if any(a.status is ImportAlbumStatus.applied for a in state.albums):
+                return "done", None, album_id
+            return "failed", _NOTHING_IMPORTED_ERROR, None
         if album_id is None:
             return "failed", _NO_ALBUM_ERROR, None
         return "done", None, album_id
