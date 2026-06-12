@@ -75,6 +75,10 @@ class BankItem(BaseModel):
     status: BankStatus
     decided: BankDecision | None = None
     error: str | None = None
+    # The library album id the apply landed (set with status done when the
+    # import's outcome carried one; None for skip_new dup resolutions and
+    # astracks applies, which create no album entity).
+    album_id: int | None = None
     # datetimes validate for real and still serialize as ISO 8601 JSON strings
     # (the config_api.py precedent).
     banked_at: datetime
@@ -111,6 +115,7 @@ class BankItemSummary(BaseModel):
     confidence: float | None = None
     status: BankStatus
     error: str | None = None
+    album_id: int | None = None
     banked_at: datetime
 
 

@@ -163,15 +163,27 @@ def decide_item(bank_dir: Path, item_id: str, decision: BankDecision) -> BankIte
 
 
 def set_status(
-    bank_dir: Path, item_id: str, status: BankStatus, *, error: str | None = None
+    bank_dir: Path,
+    item_id: str,
+    status: BankStatus,
+    *,
+    error: str | None = None,
+    album_id: int | None = None,
 ) -> BankItem | None:
-    """Bookkeeping transition (chunk 4's apply runner + reconciliation use it)."""
+    """Bookkeeping transition (chunk 4's apply runner + reconciliation use it).
+
+    ``album_id`` is only ever supplied with ``done`` (the apply landed an
+    album); None leaves the field untouched so failure paths never erase a
+    previously recorded id.
+    """
     with _LOCK:
         item = get_item(bank_dir, item_id)
         if item is None:
             return None
         item.status = status
         item.error = error
+        if album_id is not None:
+            item.album_id = album_id
         if status in ("done", "failed", "ignored"):
             item.resolved_at = _now()
         _write(bank_dir, item)
@@ -286,3 +298,17 @@ def reconcile_interrupted(bank_dir: Path) -> int:
             _write(bank_dir, fresh)
             flipped += 1
     return flipped
+
+
+def next_queued(bank_dir: Path) -> BankItem | None:
+    """The apply runner's FIFO head: the oldest-decided ``queued`` row.
+
+    Ordered by ``decided_at`` (the spec's apply order — decision time, not
+    banking time), id as the tie-break. ``decided_at`` is always set on a
+    queued row (decide_item stamps it); ``banked_at`` is a defensive fallback
+    for a hand-edited row file.
+    """
+    queued = [item for item in _all_items(bank_dir) if item.status == "queued"]
+    if not queued:
+        return None
+    return min(queued, key=lambda item: (item.decided_at or item.banked_at, item.id))

@@ -1,6 +1,7 @@
 """Bank store tests — pure filesystem, no beets, payloads kept None
 (ParkedAlbum construction is exercised by its own model/mapping tests)."""
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -165,6 +166,71 @@ def test_upsert_replaces_changed_fingerprint(tmp_path: Path) -> None:
     assert replaced.fingerprint == "f2"
     assert replaced.source == "inbox" and replaced.artist == "New"
     assert replaced.decided is None and replaced.resolved_at is None
+
+
+def test_next_queued_is_fifo_by_decided_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bank = _bank(tmp_path)
+    first_banked = _create(tmp_path, folder="/x/A")
+    second_banked = _create(tmp_path, folder="/x/B")
+    # Decide them in REVERSE wall-clock order to prove the FIFO key is
+    # decided_at (the spec's apply order), not banked_at (the review order).
+    times = iter(
+        [
+            datetime(2026, 6, 12, 12, 0, 1, tzinfo=UTC),  # first_banked decided LATER
+            datetime(2026, 6, 12, 12, 0, 0, tzinfo=UTC),  # second_banked decided EARLIER
+        ]
+    )
+    monkeypatch.setattr(store, "_now", lambda: next(times))
+    store.decide_item(bank, first_banked, BankDecision(action="asis"))
+    store.decide_item(bank, second_banked, BankDecision(action="asis"))
+    head = store.next_queued(bank)
+    assert head is not None
+    assert head.id == second_banked
+
+
+def test_next_queued_ignores_everything_but_queued(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    _create(tmp_path, folder="/x/A")  # needs_review
+    ignored = _create(tmp_path, folder="/x/B")
+    store.decide_item(bank, ignored, BankDecision(action="ignore"))
+    assert store.next_queued(bank) is None
+    queued = _create(tmp_path, folder="/x/C")
+    store.decide_item(bank, queued, BankDecision(action="asis"))
+    head = store.next_queued(bank)
+    assert head is not None and head.id == queued
+    store.set_status(bank, queued, "applying")
+    assert store.next_queued(bank) is None  # applying rows are claimed, not queued
+
+
+def test_set_status_done_records_album_id(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    item_id = _create(tmp_path)
+    store.decide_item(bank, item_id, BankDecision(action="asis"))
+    store.set_status(bank, item_id, "applying")
+    done = store.set_status(bank, item_id, "done", album_id=42)
+    assert done is not None
+    assert done.album_id == 42
+    assert done.resolved_at is not None
+    assert done.error is None
+
+
+def test_set_status_without_album_id_leaves_it_alone(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    item_id = _create(tmp_path)
+    store.decide_item(bank, item_id, BankDecision(action="asis"))
+    failed = store.set_status(bank, item_id, "failed", error="boom")
+    assert failed is not None
+    assert failed.album_id is None
+    assert failed.error == "boom"
+
+
+def test_summary_carries_album_id(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    item_id = _create(tmp_path)
+    store.decide_item(bank, item_id, BankDecision(action="asis"))
+    store.set_status(bank, item_id, "done", album_id=7)
+    [summary] = store.list_items(bank, offset=0, limit=10)
+    assert summary.album_id == 7
 
 
 def test_reconcile_interrupted_applying(tmp_path: Path) -> None:
