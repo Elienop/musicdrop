@@ -200,3 +200,27 @@ async def post_import_duplicate_decision(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="A decision was already submitted"
         ) from None
+
+
+@router.post("/import/{job_id}/pause", status_code=status.HTTP_204_NO_CONTENT)
+async def pause_import(
+    job_id: str, reg: Annotated[ImportJobRegistry, Depends(get_registry)]
+) -> None:
+    """Ask the active sweep to stop at its next album boundary.
+
+    The session aborts via beets' native clean abort at its next decision
+    hook: the current album finishes its decision point, the session unwinds,
+    the job ends ``phase=done`` with a summary noting the pause, and the
+    import slot frees. Resume = start a new sweep of the same root (beets'
+    incremental history skips everything already done or banked). 404 for an
+    unknown job; 409 when the job is not a sweep or is no longer active;
+    repeating a pause on a still-active sweep is idempotent (204).
+    """
+    try:
+        reg.request_pause(job_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Import job not found"
+        ) from None
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None

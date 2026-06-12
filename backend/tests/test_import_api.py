@@ -495,3 +495,64 @@ def test_feed_row_album_id_defaults_to_null() -> None:
     job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
     state = _poll(client, job_id, lambda s: s["phase"] == "done")
     assert state["albums"][0]["album_id"] is None
+
+
+def test_pause_unknown_job_is_404() -> None:
+    reset_registry(runner=FakeImportRunner())
+    resp = TestClient(app).post("/api/import/does-not-exist/pause")
+    assert resp.status_code == 404
+
+
+def test_pause_non_sweep_job_is_409() -> None:
+    client = _client_with_fake(parked=[_api_parked(0, Recommendation.medium)])
+    job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
+    resp = client.post(f"/api/import/{job_id}/pause")
+    assert resp.status_code == 409
+    assert "sweep" in resp.json()["detail"].lower()
+
+
+def test_pause_finished_sweep_is_409() -> None:
+    reset_registry(runner=FakeImportRunner())  # nothing canned: finishes at once
+    client = TestClient(app)
+    job_id = client.post(
+        "/api/import", json={"path": "/library", "options": {"sweep": True}}
+    ).json()["job_id"]
+    _poll(client, job_id, lambda s: s["phase"] == "done")
+    assert client.post(f"/api/import/{job_id}/pause").status_code == 409
+
+
+def test_sweep_start_pause_and_summary_flow() -> None:
+    # The fake parks its album, which keeps the worker blocked - a stable
+    # window to observe the active sweep, pause it, then release the worker
+    # through the existing choice endpoint (sweep jobs have no feed rows, but
+    # the bridge reply slot is real).
+    runner = FakeImportRunner(parked=[_api_parked(0, Recommendation.medium)])
+    reset_registry(runner=runner)
+    client = TestClient(app)
+
+    resp = client.post("/api/import", json={"path": "/library", "options": {"sweep": True}})
+    assert resp.status_code == 202
+    job_id = resp.json()["job_id"]
+    assert runner.received_options is not None
+    assert runner.received_options.sweep is True
+
+    state = _poll(client, job_id, lambda s: (s.get("sweep") or {}).get("banked", 0) >= 1)
+    assert state["origin"] == "sweep"
+    assert state["albums"] == []  # counters, never the O(n) feed
+    assert state["sweep"]["processed"] == 1
+
+    probe = client.get("/api/imports/active").json()
+    assert probe["active"] is True
+    assert probe["origin"] == "sweep"
+    assert probe["sweep"] is not None
+
+    pause = client.post(f"/api/import/{job_id}/pause")
+    assert pause.status_code == 204
+    assert client.get(f"/api/import/{job_id}").json()["sweep"]["paused"] is True
+    # Idempotent while the sweep is still active.
+    assert client.post(f"/api/import/{job_id}/pause").status_code == 204
+
+    release = client.post(f"/api/import/{job_id}/albums/0/choice", json={"action": "skip"})
+    assert release.status_code == 204
+    state = _poll(client, job_id, lambda s: s["phase"] == "done")
+    assert "paused" in (state["summary"] or "")
