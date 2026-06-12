@@ -28,3 +28,28 @@ export async function errorDetail(res: Response, fallback: string): Promise<stri
   }
   return fallback;
 }
+
+/** Best human message from a FastAPI error body, tolerating BOTH shapes:
+ * our guards' `{detail: string}` and the auto-declared HTTPValidationError
+ * `{detail: [{msg, ...}, ...]}` (422 caveat — the OpenAPI schema promises the
+ * array, the runtime sometimes sends the string). Null when neither matches —
+ * callers fall back to their own copy. */
+export function detailMessage(body: unknown): string | null {
+  if (body === null || typeof body !== "object" || !("detail" in body)) {
+    return null;
+  }
+  const detail = (body as { detail: unknown }).detail;
+  if (typeof detail === "string") {
+    return detail;
+  }
+  if (Array.isArray(detail) && detail.length > 0) {
+    const first: unknown = detail[0];
+    if (first !== null && typeof first === "object" && "msg" in first) {
+      const msg = (first as { msg: unknown }).msg;
+      if (typeof msg === "string") {
+        return msg;
+      }
+    }
+  }
+  return null;
+}
