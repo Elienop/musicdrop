@@ -535,9 +535,25 @@ def run_import_worker(session: WebImportSession, *, move: bool | None = None) ->
     move/copy values are snapshotted and restored in a ``finally`` so an inbox
     move never leaks into the next manual import. ``None`` touches nothing — the
     manual-import default falls through to the user's beets config untouched.
+
+    In-library sources are always forced to move-mode (explicit copy raises
+    ``InLibraryCopyError``): beets' no-duplicate guarantee is DB-based and does
+    not protect files the DB doesn't know yet.
     """
     config["threaded"] = False
     config["import"]["duplicate_action"] = "ask"
+    # In-library sources MUST move (same-dataset rename; samefile no-op):
+    # with a fresh DB, copy-mode would duplicate any file whose computed
+    # destination differs from its current path. Explicit copy is refused;
+    # default/None and move pass through forced to move.
+    sources = [os.fsdecode(p) for p in session.paths]
+    if any(is_in_library_source(session.lib.directory, src) for src in sources):
+        if move is False:
+            raise InLibraryCopyError(
+                "Refusing to copy-import a folder inside the music library: "
+                "copy-mode would duplicate the files. Use move instead."
+            )
+        move = True
     orig_move = config["import"]["move"].get(bool)
     orig_copy = config["import"]["copy"].get(bool)
     if move is not None:

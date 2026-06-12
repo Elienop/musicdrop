@@ -13,13 +13,15 @@ from beets.autotag.hooks import AlbumInfo, AlbumMatch, TrackInfo
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
 from beets.importer.tasks import Action, ImportTask
-from beets.library import Item
+from beets.library import Item, Library
 
 from app.beets.import_mapping import embedded_art
 from app.beets.import_session import (
     ImportBridge,
+    InLibraryCopyError,
     WebImportSession,
     is_in_library_source,
+    run_import_worker,
 )
 from app.models.import_models import (
     AlbumOutcome,
@@ -96,6 +98,9 @@ def _make_session(bridge: ImportBridge) -> WebImportSession:
     session.unattended = False
     # __init__ is skipped, so seed the album-id stash choose_match appends to.
     session._await_album_id = []
+    # __init__ is skipped, so the in-library guard's session.paths read has a
+    # value; empty means the guard no-ops (these tests drive run() directly).
+    session.paths = []
     return session
 
 
@@ -323,6 +328,8 @@ def test_run_import_worker_forces_single_threaded_and_runs(
         # The post-run trash pass reads these off the session; trash_dir=None
         # makes it return early before touching lib/get_album.
         lib = None
+        # The in-library guard reads session.paths; empty -> guard no-ops.
+        paths: ClassVar[list[bytes]] = []
         _replace_album_ids: ClassVar[set[int]] = set()
         _trash_dir = None
 
@@ -617,6 +624,7 @@ def test_run_import_worker_forces_duplicate_action_ask() -> None:
 
     class FakeSession:
         lib = None
+        paths: ClassVar[list[bytes]] = []
         _replace_album_ids: ClassVar[set[int]] = set()
         _trash_dir = None
 
@@ -664,6 +672,7 @@ def test_run_import_worker_trashes_replace_ids_after_run(monkeypatch: pytest.Mon
 
     class FakeSession:
         lib = _Lib()
+        paths: ClassVar[list[bytes]] = []
         _replace_album_ids: ClassVar[set[int]] = {11, 22}
         _trash_dir = Path("/tmp/trash")
 
@@ -679,6 +688,7 @@ class _ScopedMoveSession:
     """Minimal session that records config['import']['move'] seen during run()."""
 
     lib = None
+    paths: ClassVar[list[bytes]] = []
     _replace_album_ids: ClassVar[set[int]] = set()
     _trash_dir = None
 
@@ -875,3 +885,65 @@ def test_is_in_library_source_relative_source(
     (tmp_path / "library").mkdir()
     assert is_in_library_source(lib_dir, "library") is True
     assert is_in_library_source(lib_dir, "elsewhere") is False
+
+
+def _guard_session(tmp_path: Path, source: Path) -> WebImportSession:
+    """A real session over a real empty library, for guard tests."""
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    source.mkdir(parents=True, exist_ok=True)
+    return WebImportSession(
+        lib,
+        None,
+        [os.fsencode(str(source))],
+        None,
+        ImportBridge(),
+        None,
+    )
+
+
+def test_worker_forces_move_for_in_library_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, bool] = {}
+
+    def fake_run(self: WebImportSession) -> None:
+        seen["move"] = config["import"]["move"].get(bool)
+        seen["copy"] = config["import"]["copy"].get(bool)
+
+    monkeypatch.setattr(WebImportSession, "run", fake_run)
+    # Source INSIDE the library; caller passes move=None (user config default,
+    # which for the starter config is copy: yes) -> worker must force move.
+    session = _guard_session(tmp_path, tmp_path / "music" / "incoming")
+    config["import"]["move"] = False
+    config["import"]["copy"] = True
+    run_import_worker(session, move=None)
+    assert seen == {"move": True, "copy": False}
+    # Snapshot/restore still holds: globals are back to the pre-run values.
+    assert config["import"]["move"].get(bool) is False
+    assert config["import"]["copy"].get(bool) is True
+
+
+def test_worker_refuses_explicit_copy_for_in_library_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(WebImportSession, "run", lambda self: None)
+    session = _guard_session(tmp_path, tmp_path / "music" / "incoming")
+    with pytest.raises(InLibraryCopyError):
+        run_import_worker(session, move=False)
+
+
+def test_worker_leaves_outside_source_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, bool] = {}
+
+    def fake_run(self: WebImportSession) -> None:
+        seen["move"] = config["import"]["move"].get(bool)
+
+    monkeypatch.setattr(WebImportSession, "run", fake_run)
+    session = _guard_session(tmp_path, tmp_path / "downloads" / "incoming")
+    config["import"]["move"] = False
+    config["import"]["copy"] = True
+    run_import_worker(session, move=None)
+    # Outside the library: move=None falls through to the user's config.
+    assert seen == {"move": False}
