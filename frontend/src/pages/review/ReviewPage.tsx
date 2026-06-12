@@ -30,8 +30,9 @@ import {
 } from "@/api/useInbox";
 import { useReviewInbox } from "@/api/useSlskd";
 import type { AlbumOrigin } from "@/components/albums/album-grid";
-import { Pause, Remove, Spinner, Warning } from "@/components/icons";
+import { Albums, Pause, Remove, Spinner, Warning } from "@/components/icons";
 import { AlbumRow } from "@/components/system/AlbumRow";
+import { EmptyState } from "@/components/system/EmptyState";
 import { PageBody, PageHeader } from "@/components/system/PageHeader";
 import { Pagination, PAGE_SIZE } from "@/components/system/Pagination";
 import { SectionLabel } from "@/components/system/SectionLabel";
@@ -74,9 +75,17 @@ export function ReviewPage() {
   const navigate = useNavigate();
   const activeQuery = useActiveImport();
   const active = activeQuery.data;
-  // Only fetch the job when an import is actually running (the hook is disabled
-  // on an undefined id), so the page is a cheap aggregator when idle.
-  const job = useImportJob(active?.active ? (active.job_id ?? undefined) : undefined);
+  // Only fetch the job when an attended import is actually running (the hook is
+  // disabled on an undefined id), so the page is a cheap aggregator when idle.
+  // Sweep-origin jobs are excluded: a sweep banks decisions instead of parking
+  // them, so its `albums` feed stays empty by design — the 1s job poll would
+  // spend a whole multi-hour sweep computing decisions=[]. The sweep banner
+  // deliberately rides the active probe's 5s cadence instead.
+  const job = useImportJob(
+    active?.active && active.origin !== "sweep"
+      ? (active.job_id ?? undefined)
+      : undefined,
+  );
   const inboxQuery = useInboxItems();
   const { data: status } = useAcquisitionStatus();
   // Bank backlog count — a limit-1 probe so the header meta + empty state
@@ -397,11 +406,18 @@ function SweepBanner({ jobId, sweep }: { jobId: string; sweep: SweepStatus }) {
             type="button"
             variant="outline"
             size="sm"
-            disabled={pause.isPending || sweep.paused}
-            onClick={() => pause.mutate()}
+            aria-disabled={pause.isPending || sweep.paused}
+            onClick={() => {
+              // In flight or already requested → swallow the re-click instead
+              // of disabling (a mid-flight disable strands keyboard focus on
+              // <body> — the Pagination posture). Pause is an idempotent 204
+              // server-side, so a slipped repeat is harmless anyway.
+              if (pause.isPending || sweep.paused) return;
+              pause.mutate();
+            }}
           >
             <Pause aria-hidden="true" />
-            {sweep.paused ? "Pausing…" : "Pause"}
+            {pause.isPending || sweep.paused ? "Pausing…" : "Pause"}
           </Button>
           <Button variant="ghost" size="sm" asChild>
             <Link to={`/import?job=${jobId}`}>View</Link>
@@ -487,6 +503,14 @@ function BankSection() {
     return null;
   }
 
+  // The selection pruned to rows still on screen: a row ignored via its own
+  // button (or settled away by the 30s poll) keeps its id in `selected` until
+  // the refetch lands — counting only visible ids keeps the bulk button's
+  // count honest and the POST free of already-settled ids.
+  const visibleSelected = data.items
+    .filter((row) => selected.has(row.id))
+    .map((row) => row.id);
+
   const setParams = (next: { status: BankStatus | undefined; offset: number }) => {
     setSelected(new Set());
     setSearchParams((params) => {
@@ -525,9 +549,9 @@ function BankSection() {
             type="button"
             variant="outline"
             size="sm"
-            disabled={selected.size === 0 || bulkIgnore.isPending}
+            disabled={visibleSelected.length === 0 || bulkIgnore.isPending}
             onClick={() =>
-              bulkIgnore.mutate([...selected], {
+              bulkIgnore.mutate(visibleSelected, {
                 onSuccess: (res) => {
                   setSelected(new Set());
                   toast.success(`Ignored ${res.ignored} row${res.ignored === 1 ? "" : "s"}.`);
@@ -536,33 +560,56 @@ function BankSection() {
               })
             }
           >
-            Ignore selected ({selected.size})
+            Ignore selected ({visibleSelected.length})
           </Button>
-          <label className="flex items-center gap-2">
-            <span className="sr-only">Filter by status</span>
-            <select
-              aria-label="Filter by status"
-              value={status ?? ""}
-              onChange={(e) =>
-                setParams({
-                  status: isBankStatus(e.target.value) ? e.target.value : undefined,
-                  offset: 0,
-                })
-              }
-              className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-8 appearance-none rounded-md border px-2 pr-7 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
-            >
-              {BANK_FILTERS.map((f) => (
-                <option key={f.value} value={f.value}>
-                  {f.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          {/* aria-label names the control (no room for a visible label in the
+              toolbar row) — one accessible name, no redundant sr-only twin. */}
+          <select
+            aria-label="Filter by status"
+            value={status ?? ""}
+            onChange={(e) =>
+              setParams({
+                status: isBankStatus(e.target.value) ? e.target.value : undefined,
+                offset: 0,
+              })
+            }
+            className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-8 appearance-none rounded-md border px-2 pr-7 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
+          >
+            {BANK_FILTERS.map((f) => (
+              <option key={f.value} value={f.value}>
+                {f.label}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 
       {data.items.length === 0 ? (
-        <p className="text-muted-foreground text-sm">No rows match this filter.</p>
+        offset > 0 ? (
+          // The page is empty but the offset is past the end — the backlog
+          // shrank under a stale `bank_offset` (e.g. the last page's rows were
+          // bulk-ignored). The Pagination control hides once total fits one
+          // page, so this branch IS the way back (the BrowsePage recipe).
+          <EmptyState
+            bordered
+            icon={Albums}
+            title="This page is empty — the backlog changed under it."
+            action={
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setParams({ status, offset: 0 })}
+              >
+                Back to first page
+              </Button>
+            }
+          />
+        ) : (
+          // At offset 0 an empty page can only mean an active filter matched
+          // nothing (empty + unfiltered hides the whole section above).
+          <p className="text-muted-foreground text-sm">No rows match this filter.</p>
+        )
       ) : (
         <ul className="border-border divide-border divide-y overflow-hidden rounded-xl border">
           {data.items.map((row) => (

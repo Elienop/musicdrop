@@ -353,6 +353,66 @@ describe("ReviewPage", () => {
     await waitFor(() => expect(offsets).toContain("48"));
   });
 
+  test("an out-of-range bank_offset offers Back to first page, not a dead end", async () => {
+    // The backlog shrank to under a page (rows ignored/applied away) while the
+    // URL still says bank_offset=48 — the refetched page is empty and the
+    // Pagination control hides, so the empty state must carry the way back.
+    server.use(
+      http.get(BANK, ({ request }) => {
+        const url = new URL(request.url);
+        const offset = Number(url.searchParams.get("offset") ?? "0");
+        return HttpResponse.json(
+          offset >= 48
+            ? { items: [], total: 1, offset, limit: 48 }
+            : { items: [bankRow()], total: 1, offset, limit: 48 },
+        );
+      }),
+    );
+    renderWithProviders(<ReviewPage />, { route: "/review?bank_offset=48" });
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    expect(within(section).getByText(/this page is empty/i)).toBeInTheDocument();
+    expect(
+      within(section).queryByText(/no rows match this filter/i),
+    ).not.toBeInTheDocument();
+    await userEvent.click(
+      within(section).getByRole("button", { name: /back to first page/i }),
+    );
+    expect(await within(section).findByText("Album X")).toBeInTheDocument();
+  });
+
+  test("a row ignored via its own button is pruned from the bulk-selection count", async () => {
+    let ignored = false;
+    server.use(
+      http.get(BANK, () =>
+        HttpResponse.json(
+          ignored
+            ? { items: [bankRow({ id: "b2", album: "Album Y" })], total: 1, offset: 0, limit: 48 }
+            : {
+                items: [bankRow(), bankRow({ id: "b2", album: "Album Y" })],
+                total: 2, offset: 0, limit: 48,
+              },
+        ),
+      ),
+      http.post(`${O}/api/bank/:itemId/decision`, () => {
+        ignored = true;
+        return HttpResponse.json(bankRow({ status: "ignored" }));
+      }),
+    );
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    await userEvent.click(within(section).getByRole("checkbox", { name: /select album x/i }));
+    await userEvent.click(within(section).getByRole("checkbox", { name: /select album y/i }));
+    expect(
+      within(section).getByRole("button", { name: /ignore selected \(2\)/i }),
+    ).toBeInTheDocument();
+    // Row-level ignore settles b1 and the refetch drops it — the bulk count
+    // must follow (no over-count, no already-settled id left to POST).
+    await userEvent.click(within(section).getByRole("button", { name: /ignore album x/i }));
+    expect(
+      await within(section).findByRole("button", { name: /ignore selected \(1\)/i }),
+    ).toBeInTheDocument();
+  });
+
   test("the status filter narrows the list query", async () => {
     const statuses: Array<string | null> = [];
     server.use(
@@ -367,10 +427,16 @@ describe("ReviewPage", () => {
     await waitFor(() => expect(statuses).toContain("failed"));
   });
 
-  test("row Ignore posts the decision; a 409 raises the conflict toast", async () => {
+  test("row Ignore posts the decision; a 409 raises the conflict toast AND refetches the list", async () => {
     let body: unknown = null;
+    let listGets = 0;
     server.use(
-      http.get(BANK, () => HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 })),
+      http.get(BANK, ({ request }) => {
+        // Count only the section's page-sized list query (the header's limit-1
+        // probe shares the endpoint).
+        if (new URL(request.url).searchParams.get("limit") === "48") listGets += 1;
+        return HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 });
+      }),
       http.post(`${O}/api/bank/:itemId/decision`, async ({ request }) => {
         body = await request.json();
         return HttpResponse.json({ detail: "row is queued; decisions need one of [...]" }, { status: 409 });
@@ -378,9 +444,13 @@ describe("ReviewPage", () => {
     );
     renderWithProviders(<ReviewPage />);
     const section = await screen.findByRole("region", { name: /waiting for review/i });
+    const getsBeforeIgnore = listGets;
     await userEvent.click(within(section).getByRole("button", { name: /ignore album x/i }));
     await waitFor(() => expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/row is queued/)));
     expect(body).toEqual({ action: "ignore" });
+    // The user-visible recovery: a 409 means the row changed state elsewhere,
+    // so the stale list must refetch itself (the hooks' onSettled invalidation).
+    await waitFor(() => expect(listGets).toBeGreaterThan(getsBeforeIgnore));
   });
 
   test("bulk-ignore posts the selected ids", async () => {
@@ -461,6 +531,39 @@ describe("ReviewPage", () => {
     expect(banner).toHaveTextContent(/Now: 21/); // current folder's last segment
     await userEvent.click(screen.getByRole("button", { name: /pause/i }));
     await waitFor(() => expect(paused).toBe(true));
+  });
+
+  test("a sweep never engages the 1s job poll — the banner rides the active probe", async () => {
+    // A sweep's `albums` feed stays empty by design (decisions are banked),
+    // so polling full job state every second for the whole sweep would only
+    // ever compute decisions=[]. The job query must stay disabled.
+    let jobGets = 0;
+    server.use(
+      http.get(ACTIVE, () =>
+        HttpResponse.json({
+          active: true, job_id: "s1", origin: "sweep", needs_review_count: 0,
+          sweep: { processed: 7, auto_applied: 5, banked: 2, skipped_known: 0, current_folder: null, paused: false },
+        }),
+      ),
+      http.get(JOB, () => {
+        jobGets += 1;
+        return HttpResponse.json({
+          job_id: "s1",
+          phase: "scanning",
+          progress: { applied: 5, needs_review: 0, skipped: 0 },
+          albums: [],
+          summary: null,
+          error: null,
+          origin: "sweep",
+          set_aside: 0,
+        });
+      }),
+    );
+    renderWithProviders(<ReviewPage />);
+    await screen.findByText(/7 processed/);
+    // Give a would-be job fetch a beat to reach MSW before asserting silence.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(jobGets).toBe(0);
   });
 
   test("the header meta counts bank rows awaiting review", async () => {
