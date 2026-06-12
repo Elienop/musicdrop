@@ -30,12 +30,25 @@ export class BankConflictError extends Error {
 
 /** Quiet backlog cadence — the list changes when a sweep banks a row or an
  * apply resolves one; mutations invalidate immediately, the poll just keeps a
- * left-open tab honest (the `useInboxItems` posture). */
+ * left-open tab honest (the `useInboxItems` posture). While any visible row is
+ * queued/applying the list drops to the fast row cadence so the apply runner's
+ * progress is seen live, not 30s late. */
 const BANK_LIST_POLL_MS = 30_000;
 
 /** Row poll while the apply runner owns it (queued/applying) — between the
  * run page's 1s job poll and the active probe's 5s. */
 const BANK_ROW_POLL_MS = 2_000;
+
+/** Fast cadence while the apply runner owns any visible row, lazy otherwise.
+ * Exported for tests. */
+export function bankListPollMs(
+  items: readonly { status: string }[] | undefined,
+): number {
+  const inFlight = (items ?? []).some(
+    (item) => item.status === "queued" || item.status === "applying",
+  );
+  return inFlight ? BANK_ROW_POLL_MS : BANK_LIST_POLL_MS;
+}
 
 export interface BankListParams {
   status?: BankStatus;
@@ -46,7 +59,9 @@ export interface BankListParams {
   limit: number;
 }
 
-async function fetchBankList(params: BankListParams): Promise<BankListResponse> {
+async function fetchBankList(
+  params: BankListParams,
+): Promise<BankListResponse> {
   const { data, error, response } = await client.GET("/api/bank", {
     params: {
       query: {
@@ -78,7 +93,7 @@ export function useBankList(params: BankListParams) {
     ],
     queryFn: () => fetchBankList(params),
     placeholderData: (prev) => prev,
-    refetchInterval: BANK_LIST_POLL_MS,
+    refetchInterval: (query) => bankListPollMs(query.state.data?.items),
   });
 }
 
@@ -115,16 +130,24 @@ export function useBankItem(itemId: string | undefined) {
         return false;
       }
       const status = query.state.data?.status;
-      return status === "queued" || status === "applying" ? BANK_ROW_POLL_MS : false;
+      return status === "queued" || status === "applying"
+        ? BANK_ROW_POLL_MS
+        : false;
     },
   });
 }
 
-async function decideBankItem(itemId: string, decision: BankDecision): Promise<BankItem> {
-  const { data, error, response } = await client.POST("/api/bank/{item_id}/decision", {
-    params: { path: { item_id: itemId } },
-    body: decision,
-  });
+async function decideBankItem(
+  itemId: string,
+  decision: BankDecision,
+): Promise<BankItem> {
+  const { data, error, response } = await client.POST(
+    "/api/bank/{item_id}/decision",
+    {
+      params: { path: { item_id: itemId } },
+      body: decision,
+    },
+  );
   // 409 = invalid transition (e.g. the row went queued in another tab). The
   // backend's detail is a STRING here; 422 (shape validation) is the ARRAY —
   // detailMessage tolerates both (the dual-shape carry-forward).
@@ -163,7 +186,8 @@ export function useBankDecision(itemId: string) {
 export function useIgnoreBankItem() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (itemId: string) => decideBankItem(itemId, { action: "ignore" }),
+    mutationFn: (itemId: string) =>
+      decideBankItem(itemId, { action: "ignore" }),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["bank"] });
     },

@@ -13,6 +13,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   BankConflictError,
+  bankListPollMs,
   useBankDecision,
   useBankItem,
   useBankList,
@@ -66,7 +67,12 @@ describe("useBankList", () => {
         seenStatus = params.get("status");
         seenOffset = params.get("offset");
         seenLimit = params.get("limit");
-        return HttpResponse.json({ items: [summary], total: 1, offset: 48, limit: 48 });
+        return HttpResponse.json({
+          items: [summary],
+          total: 1,
+          offset: 48,
+          limit: 48,
+        });
       }),
     );
     const { result } = renderHook(
@@ -124,14 +130,29 @@ describe("useBankItem", () => {
   test("fetches the full row; disabled without an id", async () => {
     server.use(
       http.get(ITEM, () =>
-        HttpResponse.json({ ...summary, parked: null, duplicate: null, decided: null, fingerprint: "f", decided_at: null, resolved_at: null, reason: "no_match", recommendation: null, confidence: null }),
+        HttpResponse.json({
+          ...summary,
+          parked: null,
+          duplicate: null,
+          decided: null,
+          fingerprint: "f",
+          decided_at: null,
+          resolved_at: null,
+          reason: "no_match",
+          recommendation: null,
+          confidence: null,
+        }),
       ),
     );
-    const { result } = renderHook(() => useBankItem("b1"), { wrapper: wrapper() });
+    const { result } = renderHook(() => useBankItem("b1"), {
+      wrapper: wrapper(),
+    });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data?.id).toBe("b1");
 
-    const disabled = renderHook(() => useBankItem(undefined), { wrapper: wrapper() });
+    const disabled = renderHook(() => useBankItem(undefined), {
+      wrapper: wrapper(),
+    });
     expect(disabled.result.current.fetchStatus).toBe("idle");
   });
 });
@@ -142,10 +163,28 @@ describe("useBankDecision", () => {
     server.use(
       http.post(DECISION, async ({ request }) => {
         body = await request.json();
-        return HttpResponse.json({ ...summary, status: "queued", parked: null, duplicate: null, decided: { action: "asis", candidate_index: null, duplicate_action: null }, fingerprint: "f", decided_at: "2026-06-12T09:00:00Z", resolved_at: null, reason: "no_match", recommendation: null, confidence: null });
+        return HttpResponse.json({
+          ...summary,
+          status: "queued",
+          parked: null,
+          duplicate: null,
+          decided: {
+            action: "asis",
+            candidate_index: null,
+            duplicate_action: null,
+          },
+          fingerprint: "f",
+          decided_at: "2026-06-12T09:00:00Z",
+          resolved_at: null,
+          reason: "no_match",
+          recommendation: null,
+          confidence: null,
+        });
       }),
     );
-    const { result } = renderHook(() => useBankDecision("b1"), { wrapper: wrapper() });
+    const { result } = renderHook(() => useBankDecision("b1"), {
+      wrapper: wrapper(),
+    });
     result.current.mutate({ action: "asis" });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(body).toEqual({ action: "asis" });
@@ -155,10 +194,18 @@ describe("useBankDecision", () => {
   test("a 409 surfaces as BankConflictError carrying the string detail", async () => {
     server.use(
       http.post(DECISION, () =>
-        HttpResponse.json({ detail: "row is queued; decisions need one of ['failed', 'needs_review', 'stale']" }, { status: 409 }),
+        HttpResponse.json(
+          {
+            detail:
+              "row is queued; decisions need one of ['failed', 'needs_review', 'stale']",
+          },
+          { status: 409 },
+        ),
       ),
     );
-    const { result } = renderHook(() => useBankDecision("b1"), { wrapper: wrapper() });
+    const { result } = renderHook(() => useBankDecision("b1"), {
+      wrapper: wrapper(),
+    });
     result.current.mutate({ action: "ignore" });
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error).toBeInstanceOf(BankConflictError);
@@ -170,15 +217,27 @@ describe("useBankDecision", () => {
     server.use(
       http.post(DECISION, () =>
         HttpResponse.json(
-          { detail: [{ loc: ["body", "candidate_index"], msg: "candidate_index only applies to apply", type: "value_error" }] },
+          {
+            detail: [
+              {
+                loc: ["body", "candidate_index"],
+                msg: "candidate_index only applies to apply",
+                type: "value_error",
+              },
+            ],
+          },
           { status: 422 },
         ),
       ),
     );
-    const { result } = renderHook(() => useBankDecision("b1"), { wrapper: wrapper() });
+    const { result } = renderHook(() => useBankDecision("b1"), {
+      wrapper: wrapper(),
+    });
     result.current.mutate({ action: "ignore", candidate_index: 2 });
     await waitFor(() => expect(result.current.isError).toBe(true));
-    expect(result.current.error?.message).toMatch(/candidate_index only applies to apply/);
+    expect(result.current.error?.message).toMatch(
+      /candidate_index only applies to apply/,
+    );
   });
 });
 
@@ -190,10 +249,28 @@ describe("useIgnoreBankItem", () => {
       http.post(DECISION, async ({ request, params }) => {
         seenId = String(params.itemId);
         body = await request.json();
-        return HttpResponse.json({ ...summary, status: "ignored", parked: null, duplicate: null, decided: { action: "ignore", candidate_index: null, duplicate_action: null }, fingerprint: "f", decided_at: "2026-06-12T09:00:00Z", resolved_at: "2026-06-12T09:00:00Z", reason: "no_match", recommendation: null, confidence: null });
+        return HttpResponse.json({
+          ...summary,
+          status: "ignored",
+          parked: null,
+          duplicate: null,
+          decided: {
+            action: "ignore",
+            candidate_index: null,
+            duplicate_action: null,
+          },
+          fingerprint: "f",
+          decided_at: "2026-06-12T09:00:00Z",
+          resolved_at: "2026-06-12T09:00:00Z",
+          reason: "no_match",
+          recommendation: null,
+          confidence: null,
+        });
       }),
     );
-    const { result } = renderHook(() => useIgnoreBankItem(), { wrapper: wrapper() });
+    const { result } = renderHook(() => useIgnoreBankItem(), {
+      wrapper: wrapper(),
+    });
     result.current.mutate("b1");
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(seenId).toBe("b1");
@@ -203,10 +280,15 @@ describe("useIgnoreBankItem", () => {
   test("a 409 surfaces as BankConflictError (the list-row toast path)", async () => {
     server.use(
       http.post(DECISION, () =>
-        HttpResponse.json({ detail: "row is queued; decisions need one of [...]" }, { status: 409 }),
+        HttpResponse.json(
+          { detail: "row is queued; decisions need one of [...]" },
+          { status: 409 },
+        ),
       ),
     );
-    const { result } = renderHook(() => useIgnoreBankItem(), { wrapper: wrapper() });
+    const { result } = renderHook(() => useIgnoreBankItem(), {
+      wrapper: wrapper(),
+    });
     result.current.mutate("b1");
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error).toBeInstanceOf(BankConflictError);
@@ -216,12 +298,18 @@ describe("useIgnoreBankItem", () => {
 
 describe("useDeleteBankItem", () => {
   test("204 resolves; 404 resolves quietly (already gone is the goal state)", async () => {
-    server.use(http.delete(ITEM, () => new HttpResponse(null, { status: 204 })));
+    server.use(
+      http.delete(ITEM, () => new HttpResponse(null, { status: 204 })),
+    );
     const ok = renderHook(() => useDeleteBankItem(), { wrapper: wrapper() });
     ok.result.current.mutate("b1");
     await waitFor(() => expect(ok.result.current.isSuccess).toBe(true));
 
-    server.use(http.delete(ITEM, () => HttpResponse.json({ detail: "Bank item not found" }, { status: 404 })));
+    server.use(
+      http.delete(ITEM, () =>
+        HttpResponse.json({ detail: "Bank item not found" }, { status: 404 }),
+      ),
+    );
     const gone = renderHook(() => useDeleteBankItem(), { wrapper: wrapper() });
     gone.result.current.mutate("b1");
     await waitFor(() => expect(gone.result.current.isSuccess).toBe(true));
@@ -230,10 +318,15 @@ describe("useDeleteBankItem", () => {
   test("409 (row applying) surfaces as BankConflictError", async () => {
     server.use(
       http.delete(ITEM, () =>
-        HttpResponse.json({ detail: "row is applying; wait for the apply to finish" }, { status: 409 }),
+        HttpResponse.json(
+          { detail: "row is applying; wait for the apply to finish" },
+          { status: 409 },
+        ),
       ),
     );
-    const { result } = renderHook(() => useDeleteBankItem(), { wrapper: wrapper() });
+    const { result } = renderHook(() => useDeleteBankItem(), {
+      wrapper: wrapper(),
+    });
     result.current.mutate("b1");
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error).toBeInstanceOf(BankConflictError);
@@ -249,10 +342,23 @@ describe("useBulkIgnoreBank", () => {
         return HttpResponse.json({ ignored: 2 });
       }),
     );
-    const { result } = renderHook(() => useBulkIgnoreBank(), { wrapper: wrapper() });
+    const { result } = renderHook(() => useBulkIgnoreBank(), {
+      wrapper: wrapper(),
+    });
     result.current.mutate(["b1", "b2"]);
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(body).toEqual({ ids: ["b1", "b2"] });
     expect(result.current.data?.ignored).toBe(2);
+  });
+});
+
+describe("bankListPollMs", () => {
+  test("polls fast while a row is queued or applying, lazy otherwise", () => {
+    expect(bankListPollMs(undefined)).toBe(30_000);
+    expect(bankListPollMs([{ status: "needs_review" }])).toBe(30_000);
+    expect(bankListPollMs([{ status: "done" }, { status: "queued" }])).toBe(
+      2_000,
+    );
+    expect(bankListPollMs([{ status: "applying" }])).toBe(2_000);
   });
 });
