@@ -1,6 +1,8 @@
 import logging
+import os
 import threading
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, ClassVar
 
 import beets.importer.tasks as beets_tasks
@@ -14,7 +16,11 @@ from beets.importer.tasks import Action, ImportTask
 from beets.library import Item
 
 from app.beets.import_mapping import embedded_art
-from app.beets.import_session import ImportBridge, WebImportSession
+from app.beets.import_session import (
+    ImportBridge,
+    WebImportSession,
+    is_in_library_source,
+)
 from app.models.import_models import (
     AlbumOutcome,
     AlbumOutcomeStatus,
@@ -843,3 +849,29 @@ def test_flush_skips_tasks_beets_never_added(monkeypatch: pytest.MonkeyPatch) ->
     outcomes = bridge.drain_outcomes()
     assert len(outcomes) == 1  # no follow-up without a library id
     assert outcomes[0].album_id is None
+
+
+def test_is_in_library_source_inside(tmp_path: Path) -> None:
+    lib_dir = os.fsencode(str(tmp_path / "library"))
+    (tmp_path / "library" / "Artist" / "Album").mkdir(parents=True)
+    assert is_in_library_source(lib_dir, str(tmp_path / "library" / "Artist" / "Album")) is True
+    # The library root itself counts as inside.
+    assert is_in_library_source(lib_dir, str(tmp_path / "library")) is True
+
+
+def test_is_in_library_source_outside(tmp_path: Path) -> None:
+    lib_dir = os.fsencode(str(tmp_path / "library"))
+    assert is_in_library_source(lib_dir, str(tmp_path / "downloads" / "Artist")) is False
+    # Prefix sibling: /library-other is NOT inside /library (string-prefix bug guard).
+    assert is_in_library_source(lib_dir, str(tmp_path / "library-other")) is False
+
+
+def test_is_in_library_source_relative_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A relative source resolves against the cwd, mirroring what beets does.
+    monkeypatch.chdir(tmp_path)
+    lib_dir = os.fsencode(str(tmp_path / "library"))
+    (tmp_path / "library").mkdir()
+    assert is_in_library_source(lib_dir, "library") is True
+    assert is_in_library_source(lib_dir, "elsewhere") is False

@@ -49,6 +49,29 @@ if TYPE_CHECKING:
     from beets.importer.tasks import ImportTask
 
 
+class InLibraryCopyError(ValueError):
+    """Copy-mode import of a source inside the library directory (refused).
+
+    beets' "won't duplicate in-library files" guarantee is DB-based, not
+    filesystem-based: with files the DB doesn't know yet, copy-mode duplicates
+    every file whose computed destination differs from its current path and
+    strands the original as an unregistered orphan. The API maps this to a 422;
+    the worker raises it as defense-in-depth.
+    """
+
+
+def is_in_library_source(library_dir: bytes, source: str) -> bool:
+    """True when ``source`` resolves inside the beets library directory.
+
+    Pure path math (no beets calls): ``library_dir`` is ``lib.directory`` as
+    beets stores it (bytes). Both sides are absolutized so a cwd-relative
+    source behaves exactly as beets would treat it.
+    """
+    lib_root = Path(os.path.abspath(os.fsdecode(library_dir)))
+    src = Path(os.path.abspath(source))
+    return src == lib_root or src.is_relative_to(lib_root)
+
+
 # beets IntEnum -> our string enum (only the album-level levels are needed).
 _REC_MAP = {
     BeetsRec.none: Recommendation.none,
