@@ -22,6 +22,8 @@ from beets.autotag.match import Recommendation as BeetsRec
 from beets.importer.session import ImportAbortError, ImportSession
 from beets.importer.tasks import Action
 
+from app.bank import store as bank_store
+from app.bank.fingerprint import folder_fingerprint
 from app.beets.import_mapping import (
     _confidence,
     _opt_int,
@@ -31,6 +33,7 @@ from app.beets.import_mapping import (
     map_candidate_options,
 )
 from app.beets.trash import album_folder, album_format_bitrate, trash_album
+from app.models.bank import BankReason
 from app.models.import_models import (
     AlbumOutcome,
     AlbumOutcomeStatus,
@@ -325,7 +328,9 @@ class WebImportSession(ImportSession):
         forced in run_import_worker) for any APPLY/ASIS/RETAG task that has
         library duplicates. We reuse the album's feed index (stashed by
         choose_match) so the duplicate prompt flips that one row, then block the
-        serial worker until a decision arrives over the bridge.
+        serial worker until a decision arrives over the bridge. In sweep mode
+        the prompt is banked (reason needs_dup_resolution) and the new album
+        SKIPped instead — the library copy stays, the decision moves to the bank.
         """
         self._check_pause()
         index = getattr(task, "md_album_index", None)
@@ -340,16 +345,25 @@ class WebImportSession(ImportSession):
         art_source = self._first_item_art_source(list(task.items or []))
         incoming = self._to_incoming_album(task)
         existing = [self._to_existing_album(album) for album in found_duplicates]
+        prompt = DuplicatePrompt(album_index=index, incoming=incoming, existing=existing)
         self.bridge.note_outcome(self._dup_outcome(index, task))
         if self.unattended:
+            if self.sweep:
+                # Bank the prompt the attended flow would park: the user
+                # resolves skip/keep/replace/merge later from the Review page.
+                rec = task.rec if task.rec is not None else BeetsRec.none
+                self._bank_row(
+                    task,
+                    reason="needs_dup_resolution",
+                    recommendation=_REC_MAP.get(rec, Recommendation.none),
+                    confidence=_confidence(task.match.distance) if task.match is not None else 0.0,
+                    duplicate=prompt,
+                )
             # Unattended: the outcome above records the set-aside; SKIP the new
             # album (keeps the library copy) without parking + blocking.
             task.set_choice(Action.SKIP)
             return None
-        decision = self.bridge.park_duplicate(
-            DuplicatePrompt(album_index=index, incoming=incoming, existing=existing),
-            art_source=art_source,
-        )
+        decision = self.bridge.park_duplicate(prompt, art_source=art_source)
         if decision.action is DuplicateAction.skip_new:
             task.set_choice(Action.SKIP)
         elif decision.action is DuplicateAction.merge:
@@ -406,6 +420,14 @@ class WebImportSession(ImportSession):
             self.bridge.note_outcome(
                 self._outcome(index, task, recommendation, AlbumOutcomeStatus.skipped)
             )
+            if self.sweep:
+                # Bank the folder as no_match: zero candidates, so the banked
+                # decisions are as-is / as-tracks / ignore (parked stays None —
+                # the BankItem validator only requires a payload for
+                # needs_review rows).
+                self._bank_row(
+                    task, reason="no_match", recommendation=recommendation, confidence=0.0
+                )
             return Action.SKIP
 
         # Park: map the top match + ranked alternatives, emit needs_review, push,
@@ -434,6 +456,17 @@ class WebImportSession(ImportSession):
         if self.unattended:
             # Unattended: the needs_review outcome above records the set-aside;
             # SKIP instead of parking so the worker never blocks on a decision.
+            if self.sweep:
+                # The sweep banks what the inbox merely skips: the exact
+                # ParkedAlbum the attended park would push, persisted instead.
+                # The lookups were already paid for - this only serializes them.
+                self._bank_row(
+                    task,
+                    reason="needs_review",
+                    recommendation=recommendation,
+                    confidence=_confidence(top.distance),
+                    parked=ParkedAlbum(album_index=index, folder=folder, candidate=candidate),
+                )
             return Action.SKIP
         choice = self.bridge.park(
             ParkedAlbum(album_index=index, folder=folder, candidate=candidate),
@@ -481,6 +514,45 @@ class WebImportSession(ImportSession):
                     update={"album_id": int(album_id), "status": AlbumOutcomeStatus.applied}
                 )
             )
+
+    def _bank_row(
+        self,
+        task: ImportTask,
+        *,
+        reason: BankReason,
+        recommendation: Recommendation,
+        confidence: float,
+        parked: ParkedAlbum | None = None,
+        duplicate: DuplicatePrompt | None = None,
+    ) -> None:
+        """Write (or dedupe-refresh) the bank row for this task's folder.
+
+        Called on the worker thread right before the caller SKIPs; the bank
+        store's module lock + atomic per-row writes were designed for exactly
+        this writer (the API thread reads/mutates rows concurrently). Failures
+        PROPAGATE: a sweep that cannot persist its bank becomes a failed job
+        (worker on_error), never a silent sweep-on that loses rows.
+        """
+        if self._bank_dir is None:
+            return  # not a sweep session (defensive; the runner always wires it)
+        folder = self._task_folder(task)
+        if not folder:
+            # No folder identity (pathless task): nothing the apply runner
+            # could ever re-import - the outcome already recorded the skip.
+            return
+        bank_store.upsert_by_folder(
+            self._bank_dir,
+            folder=folder,
+            source="sweep",
+            reason=reason,
+            fingerprint=folder_fingerprint(Path(folder)),
+            artist=_opt_str(task.cur_artist),
+            album=_opt_str(task.cur_album),
+            recommendation=recommendation.value,
+            confidence=confidence,
+            parked=parked,
+            duplicate=duplicate,
+        )
 
     def _outcome(
         self,
