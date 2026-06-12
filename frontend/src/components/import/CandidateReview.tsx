@@ -188,21 +188,23 @@ function AlbumPanel({
       <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
         {heading}
       </p>
-      <div className="flex flex-col gap-1.5">
-        <CoverArt src={coverUrl} className="w-full rounded-lg" />
-        {coverCaption && (
-          <p className="text-muted-foreground text-xs">{coverCaption}</p>
-        )}
-      </div>
-      <div className="flex flex-col gap-0.5">
-        <Field label="Album" value={change.album} changed={changed.has("album")} />
-        <Field label="Artist" value={change.artist} changed={changed.has("artist")} />
-        <Field
-          label="Year"
-          value={change.year?.toString() ?? null}
-          changed={changed.has("year")}
-        />
-        <Field label="Label" value={change.label} changed={changed.has("label")} />
+      <div className="flex gap-4">
+        <div className="flex w-48 shrink-0 flex-col gap-1.5">
+          <CoverArt src={coverUrl} className="w-full rounded-lg" />
+          {coverCaption && (
+            <p className="text-muted-foreground text-xs">{coverCaption}</p>
+          )}
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5 self-center">
+          <Field label="Album" value={change.album} changed={changed.has("album")} />
+          <Field label="Artist" value={change.artist} changed={changed.has("artist")} />
+          <Field
+            label="Year"
+            value={change.year?.toString() ?? null}
+            changed={changed.has("year")}
+          />
+          <Field label="Label" value={change.label} changed={changed.has("label")} />
+        </div>
       </div>
     </div>
   );
