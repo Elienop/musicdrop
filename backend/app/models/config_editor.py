@@ -37,19 +37,31 @@ def loc_to_dot_sep(loc: tuple[str | int, ...]) -> str:
     return path
 
 
-def _writable_parent(p: Path) -> Path:
+def _writable_path(p: Path) -> Path:
     """``AfterValidator`` for ``WritablePath``.
 
     Per Pydantic v2 docs (Validators), ``AfterValidator`` runs after Pydantic
     has coerced the value to ``Path`` — so ``p`` is already a ``Path`` here.
+
+    An existing directory passes on its own writability: the Docker norm is a
+    volume mounted at the root (e.g. ``/library``), whose parent ``/`` is never
+    writable by the app user. The parent check applies only when the directory
+    doesn't exist yet and beets would have to create it.
     """
-    parent = p.expanduser().resolve().parent
+    resolved = p.expanduser().resolve()
+    if resolved.exists():
+        if not resolved.is_dir():
+            raise ValueError(f"{resolved} is not a directory")
+        if not os.access(resolved, os.W_OK):
+            raise ValueError(f"directory {resolved} is not writable")
+        return p
+    parent = resolved.parent
     if not parent.exists() or not os.access(parent, os.W_OK):
         raise ValueError(f"parent directory {parent} is not writable")
     return p
 
 
-WritablePath = Annotated[Path, AfterValidator(_writable_parent)]
+WritablePath = Annotated[Path, AfterValidator(_writable_path)]
 
 
 PluginName = Literal[
