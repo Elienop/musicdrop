@@ -6,9 +6,10 @@ carry the SAME candidate payloads the live review screen consumes
 no beets imports here, no new beets mapping (rule 3 untouched).
 """
 
+from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from app.models.import_models import DuplicateAction, DuplicatePrompt, ParkedAlbum
 
@@ -20,27 +21,40 @@ BankReason = Literal["needs_review", "needs_dup_resolution", "no_match"]
 # folder changed since banking (fingerprint mismatch at apply time).
 BankStatus = Literal["needs_review", "queued", "applying", "done", "failed", "ignored", "stale"]
 
-BankDecisionAction = Literal["apply", "asis", "tracks", "duplicate", "ignore"]
+# Same spellings as the live review's ImportAction where the action is the
+# same user gesture ("asis"/"astracks"); "ignore" is bank-only (keep the row,
+# don't import) and "duplicate" resolves a banked DuplicatePrompt.
+BankDecisionAction = Literal["apply", "asis", "astracks", "duplicate", "ignore"]
 
 
 class BankDecision(BaseModel):
     """The user's verdict on a banked row.
 
-    ``apply`` needs the chosen ``candidate_id``; ``duplicate`` needs the
-    ``duplicate_action``; the rest stand alone. Enforced here so an impossible
-    decision can never be persisted or queued.
+    Mirrors the live review dialect (``ImportChoice``): ``apply`` selects a
+    ranked option by ``candidate_index`` (None = the top candidate);
+    ``duplicate`` needs the ``duplicate_action``; the rest stand alone. Fields
+    foreign to the chosen action — known or unknown — are rejected here so an
+    impossible decision can never be persisted or queued.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     action: BankDecisionAction
-    candidate_id: str | None = None
+    # Index into the banked Candidate.options; only meaningful when action ==
+    # "apply". None means "apply the top candidate" (the apply runner resolves
+    # None -> 0), exactly like ImportChoice.candidate_index.
+    candidate_index: int | None = None
     duplicate_action: DuplicateAction | None = None
 
     @model_validator(mode="after")
-    def _required_fields_by_action(self) -> "BankDecision":
-        if self.action == "apply" and not self.candidate_id:
-            raise ValueError("an apply decision requires candidate_id")
-        if self.action == "duplicate" and self.duplicate_action is None:
-            raise ValueError("a duplicate decision requires duplicate_action")
+    def _fields_match_action(self) -> "BankDecision":
+        if self.action != "apply" and self.candidate_index is not None:
+            raise ValueError("candidate_index is only valid on an apply decision")
+        if self.action == "duplicate":
+            if self.duplicate_action is None:
+                raise ValueError("a duplicate decision requires duplicate_action")
+        elif self.duplicate_action is not None:
+            raise ValueError("duplicate_action is only valid on a duplicate decision")
         return self
 
 
@@ -61,9 +75,27 @@ class BankItem(BaseModel):
     status: BankStatus
     decided: BankDecision | None = None
     error: str | None = None
-    banked_at: str  # ISO 8601 (UTC), string for a stable JSON contract
-    decided_at: str | None = None
-    resolved_at: str | None = None
+    # datetimes validate for real and still serialize as ISO 8601 JSON strings
+    # (the config_api.py precedent).
+    banked_at: datetime
+    decided_at: datetime | None = None
+    resolved_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _payloads_match_reason_and_status(self) -> "BankItem":
+        """Reject rows the UI or apply runner could do nothing with.
+
+        Deliberately minimal: only the payload/decision presence the next
+        screen depends on. Softer bookkeeping coherence (failed <-> error,
+        decided <-> decided_at, ignored/stale history) stays the store's job.
+        """
+        if self.reason == "needs_review" and self.parked is None:
+            raise ValueError("a needs_review row requires its parked payload")
+        if self.reason == "needs_dup_resolution" and self.duplicate is None:
+            raise ValueError("a needs_dup_resolution row requires its duplicate prompt")
+        if self.status in ("queued", "applying", "done") and self.decided is None:
+            raise ValueError(f"a {self.status} row requires the decision that got it there")
+        return self
 
 
 class BankItemSummary(BaseModel):
@@ -79,7 +111,7 @@ class BankItemSummary(BaseModel):
     confidence: float | None = None
     status: BankStatus
     error: str | None = None
-    banked_at: str
+    banked_at: datetime
 
 
 class BankListResponse(BaseModel):
