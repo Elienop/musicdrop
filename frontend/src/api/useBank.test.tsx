@@ -80,11 +80,14 @@ describe("useBankList", () => {
     expect(seenLimit).toBe("48");
   });
 
-  test("omits the status param when unfiltered", async () => {
+  test("omits the status and view params when unfiltered", async () => {
     let seenHasStatus: boolean | null = null;
+    let seenHasView: boolean | null = null;
     server.use(
       http.get(LIST, ({ request }) => {
-        seenHasStatus = new URL(request.url).searchParams.has("status");
+        const params = new URL(request.url).searchParams;
+        seenHasStatus = params.has("status");
+        seenHasView = params.has("view");
         return HttpResponse.json({ items: [], total: 0, offset: 0, limit: 48 });
       }),
     );
@@ -92,6 +95,27 @@ describe("useBankList", () => {
       wrapper: wrapper(),
     });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(seenHasStatus).toBe(false);
+    expect(seenHasView).toBe(false);
+  });
+
+  test("passes the view through (the needs-attention default)", async () => {
+    let seenView: string | null = null;
+    let seenHasStatus: boolean | null = null;
+    server.use(
+      http.get(LIST, ({ request }) => {
+        const params = new URL(request.url).searchParams;
+        seenView = params.get("view");
+        seenHasStatus = params.has("status");
+        return HttpResponse.json({ items: [], total: 0, offset: 0, limit: 48 });
+      }),
+    );
+    const { result } = renderHook(
+      () => useBankList({ view: "active", offset: 0, limit: 48 }),
+      { wrapper: wrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(seenView).toBe("active");
     expect(seenHasStatus).toBe(false);
   });
 });

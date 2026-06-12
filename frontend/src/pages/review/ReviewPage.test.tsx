@@ -413,18 +413,79 @@ describe("ReviewPage", () => {
     ).toBeInTheDocument();
   });
 
-  test("the status filter narrows the list query", async () => {
-    const statuses: Array<string | null> = [];
+  test("the status filter narrows the list query — status only, no view", async () => {
+    const queries: Array<{ status: string | null; view: string | null }> = [];
     server.use(
       http.get(BANK, ({ request }) => {
-        statuses.push(new URL(request.url).searchParams.get("status"));
+        const params = new URL(request.url).searchParams;
+        if (params.get("limit") === "48") {
+          queries.push({ status: params.get("status"), view: params.get("view") });
+        }
         return HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 });
       }),
     );
     renderWithProviders(<ReviewPage />);
     await screen.findByRole("region", { name: /waiting for review/i });
     await userEvent.selectOptions(screen.getByLabelText(/filter by status/i), "failed");
-    await waitFor(() => expect(statuses).toContain("failed"));
+    await waitFor(() =>
+      expect(queries).toContainEqual({ status: "failed", view: null }),
+    );
+  });
+
+  test("the bank section defaults to the needs-attention view", async () => {
+    const queries: Array<{ status: string | null; view: string | null }> = [];
+    server.use(
+      http.get(BANK, ({ request }) => {
+        const params = new URL(request.url).searchParams;
+        // Only the section's page-sized query (the header probe shares the URL).
+        if (params.get("limit") === "48") {
+          queries.push({ status: params.get("status"), view: params.get("view") });
+        }
+        return HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 });
+      }),
+    );
+    renderWithProviders(<ReviewPage />);
+    await screen.findByRole("region", { name: /waiting for review/i });
+    expect(queries[0]).toEqual({ status: null, view: "active" });
+    // The default option is selected — resolved rows are out of the default view.
+    expect(screen.getByLabelText(/filter by status/i)).toHaveValue("");
+    expect(
+      screen.getByRole("option", { name: /needs attention/i, selected: true }),
+    ).toBeInTheDocument();
+  });
+
+  test("selecting All fetches every status — neither status nor active view", async () => {
+    const queries: Array<{ status: string | null; view: string | null }> = [];
+    server.use(
+      http.get(BANK, ({ request }) => {
+        const params = new URL(request.url).searchParams;
+        if (params.get("limit") === "48") {
+          queries.push({ status: params.get("status"), view: params.get("view") });
+        }
+        return HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 });
+      }),
+    );
+    renderWithProviders(<ReviewPage />);
+    await screen.findByRole("region", { name: /waiting for review/i });
+    await userEvent.selectOptions(screen.getByLabelText(/filter by status/i), "all");
+    await waitFor(() => expect(queries).toContainEqual({ status: null, view: null }));
+  });
+
+  test("bank_status=all in the URL restores the All view", async () => {
+    const queries: Array<{ status: string | null; view: string | null }> = [];
+    server.use(
+      http.get(BANK, ({ request }) => {
+        const params = new URL(request.url).searchParams;
+        if (params.get("limit") === "48") {
+          queries.push({ status: params.get("status"), view: params.get("view") });
+        }
+        return HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 });
+      }),
+    );
+    renderWithProviders(<ReviewPage />, { route: "/review?bank_status=all" });
+    await screen.findByRole("region", { name: /waiting for review/i });
+    expect(queries[0]).toEqual({ status: null, view: null });
+    expect(screen.getByLabelText(/filter by status/i)).toHaveValue("all");
   });
 
   test("row Ignore posts the decision; a 409 raises the conflict toast AND refetches the list", async () => {

@@ -27,6 +27,12 @@ from app.playlists.atomic import write_atomic_text
 
 _VALID_ID = re.compile(r"\A[0-9a-f]{32}\Z")
 
+# The Review page's default "needs attention" view: in-flight rows stay
+# visible, resolved rows (done/ignored) don't.
+ACTIVE_STATUSES: frozenset[str] = frozenset(
+    {"needs_review", "queued", "applying", "failed", "stale"}
+)
+
 # One lock for all mutations: the sweep worker (chunk 3) and the API thread
 # both write; per-row files keep contention negligible.
 _LOCK = threading.Lock()
@@ -109,12 +115,15 @@ def list_items(
     bank_dir: Path,
     *,
     status: BankStatus | None = None,
+    active_only: bool = False,
     offset: int = 0,
     limit: int = 50,
 ) -> list[BankItemSummary]:
     items = _all_items(bank_dir)
     if status is not None:
         items = [item for item in items if item.status == status]
+    elif active_only:
+        items = [item for item in items if item.status in ACTIVE_STATUSES]
     page = items[offset : offset + limit]
     summaries: list[BankItemSummary] = []
     for item in page:
@@ -125,10 +134,17 @@ def list_items(
     return summaries
 
 
-def count_items(bank_dir: Path, *, status: BankStatus | None = None) -> int:
+def count_items(
+    bank_dir: Path,
+    *,
+    status: BankStatus | None = None,
+    active_only: bool = False,
+) -> int:
     items = _all_items(bank_dir)
     if status is not None:
         items = [item for item in items if item.status == status]
+    elif active_only:
+        items = [item for item in items if item.status in ACTIVE_STATUSES]
     return len(items)
 
 

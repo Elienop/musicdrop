@@ -54,6 +54,44 @@ def test_list_paginates_and_filters(tmp_path: Path) -> None:
     assert store.count_items(_bank(tmp_path), status="needs_review") == 5
 
 
+def test_list_active_only_excludes_resolved_rows(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    pending = _create(tmp_path, folder="/library/A/pending")
+    queued = _create(tmp_path, folder="/library/A/queued")
+    store.decide_item(bank, queued, BankDecision(action="asis"))
+    applying = _create(tmp_path, folder="/library/A/applying")
+    store.decide_item(bank, applying, BankDecision(action="asis"))
+    store.set_status(bank, applying, "applying")
+    failed = _create(tmp_path, folder="/library/A/failed")
+    store.set_status(bank, failed, "failed", error="boom")
+    stale = _create(tmp_path, folder="/library/A/stale")
+    store.set_status(bank, stale, "stale")
+    done = _create(tmp_path, folder="/library/A/done")
+    store.decide_item(bank, done, BankDecision(action="asis"))
+    store.set_status(bank, done, "applying")
+    store.set_status(bank, done, "done", album_id=1)
+    ignored = _create(tmp_path, folder="/library/A/ignored")
+    store.decide_item(bank, ignored, BankDecision(action="ignore"))
+
+    active = store.list_items(bank, active_only=True, offset=0, limit=50)
+    assert {i.id for i in active} == {pending, queued, applying, failed, stale}
+    assert store.count_items(bank, active_only=True) == 5
+    # The default stays everything — active_only is strictly opt-in.
+    assert store.count_items(bank) == 7
+
+
+def test_status_filter_wins_over_active_only(tmp_path: Path) -> None:
+    # The router never sends both, but the store keeps status precedence
+    # anyway: a specific filter must return its rows even when resolved.
+    bank = _bank(tmp_path)
+    _create(tmp_path, folder="/library/A/pending")
+    ignored = _create(tmp_path, folder="/library/A/ignored")
+    store.decide_item(bank, ignored, BankDecision(action="ignore"))
+    rows = store.list_items(bank, status="ignored", active_only=True, offset=0, limit=50)
+    assert [i.id for i in rows] == [ignored]
+    assert store.count_items(bank, status="ignored", active_only=True) == 1
+
+
 def test_list_skips_corrupt_rows(tmp_path: Path) -> None:
     _create(tmp_path)
     (_bank(tmp_path) / "garbage.json").write_text("{not json", encoding="utf-8")

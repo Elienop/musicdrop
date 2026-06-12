@@ -39,6 +39,9 @@ const BANK_ROW_POLL_MS = 2_000;
 
 export interface BankListParams {
   status?: BankStatus;
+  /** `active` narrows an unfiltered list to the needs-attention statuses
+   * (the Review page's default); absent/`all` keeps every row. */
+  view?: "all" | "active";
   offset: number;
   limit: number;
 }
@@ -49,6 +52,7 @@ async function fetchBankList(params: BankListParams): Promise<BankListResponse> 
       query: {
         // undefined omits the param (unfiltered); the API treats absent as All.
         status: params.status,
+        view: params.view,
         offset: params.offset,
         limit: params.limit,
       },
@@ -64,7 +68,14 @@ async function fetchBankList(params: BankListParams): Promise<BankListResponse> 
  * while the next loads (the `useAlbums`/`useBrowse` pagination dialect). */
 export function useBankList(params: BankListParams) {
   return useQuery({
-    queryKey: ["bank", "list", params.status ?? "all", params.offset, params.limit],
+    queryKey: [
+      "bank",
+      "list",
+      params.status ?? "all",
+      params.view ?? "all",
+      params.offset,
+      params.limit,
+    ],
     queryFn: () => fetchBankList(params),
     placeholderData: (prev) => prev,
     refetchInterval: BANK_LIST_POLL_MS,

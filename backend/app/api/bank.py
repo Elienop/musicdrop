@@ -9,7 +9,7 @@ whole dir, and the event loop never blocks on disk.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
@@ -39,14 +39,22 @@ def get_bank_dir() -> Path:
 @router.get("/bank", response_model=BankListResponse)
 async def list_bank(
     status_filter: Annotated[BankStatus | None, Query(alias="status")] = None,
+    view: Annotated[Literal["all", "active"], Query()] = "all",
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> BankListResponse:
     bank_dir = get_bank_dir()
+    # A specific status wins; ``view=active`` only narrows the unfiltered list
+    # to the Review page's needs-attention statuses (the FE never sends both).
+    active_only = status_filter is None and view == "active"
     items = await run_in_threadpool(
-        lambda: store.list_items(bank_dir, status=status_filter, offset=offset, limit=limit)
+        lambda: store.list_items(
+            bank_dir, status=status_filter, active_only=active_only, offset=offset, limit=limit
+        )
     )
-    total = await run_in_threadpool(lambda: store.count_items(bank_dir, status=status_filter))
+    total = await run_in_threadpool(
+        lambda: store.count_items(bank_dir, status=status_filter, active_only=active_only)
+    )
     return BankListResponse(items=items, total=total, offset=offset, limit=limit)
 
 

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.bank import store
 from app.config import settings
+from app.models.bank import BankDecision
 
 
 @pytest.fixture()
@@ -36,6 +37,41 @@ def test_list_and_detail(client: TestClient, bank_dir: Path) -> None:
     detail = client.get(f"/api/bank/{item_id}")
     assert detail.status_code == 200
     assert detail.json()["parked"] is None
+
+
+def test_list_view_active_excludes_resolved_rows(client: TestClient, bank_dir: Path) -> None:
+    pending = _seed(bank_dir)
+    done = _seed(bank_dir, folder="/library/A/C")
+    store.decide_item(bank_dir, done, BankDecision(action="asis"))
+    store.set_status(bank_dir, done, "applying")
+    store.set_status(bank_dir, done, "done", album_id=1)
+    ignored = _seed(bank_dir, folder="/library/A/D")
+    store.decide_item(bank_dir, ignored, BankDecision(action="ignore"))
+
+    listing = client.get("/api/bank", params={"view": "active"}).json()
+    assert listing["total"] == 1
+    assert [row["id"] for row in listing["items"]] == [pending]
+
+
+def test_list_status_filter_beats_view_active(client: TestClient, bank_dir: Path) -> None:
+    _seed(bank_dir)
+    ignored = _seed(bank_dir, folder="/library/A/C")
+    store.decide_item(bank_dir, ignored, BankDecision(action="ignore"))
+    listing = client.get("/api/bank", params={"view": "active", "status": "ignored"}).json()
+    assert listing["total"] == 1
+    assert [row["id"] for row in listing["items"]] == [ignored]
+
+
+def test_list_default_view_stays_all(client: TestClient, bank_dir: Path) -> None:
+    _seed(bank_dir)
+    ignored = _seed(bank_dir, folder="/library/A/C")
+    store.decide_item(bank_dir, ignored, BankDecision(action="ignore"))
+    listing = client.get("/api/bank").json()
+    assert listing["total"] == 2
+
+
+def test_list_rejects_unknown_view(client: TestClient, bank_dir: Path) -> None:
+    assert client.get("/api/bank", params={"view": "resolved"}).status_code == 422
 
 
 def test_detail_404(client: TestClient, bank_dir: Path) -> None:

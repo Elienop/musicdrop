@@ -5288,6 +5288,7 @@ export interface operations {
         parameters: {
             query?: {
                 status?: ("needs_review" | "queued" | "applying" | "done" | "failed" | "ignored" | "stale") | null;
+                view?: "all" | "active";
                 offset?: number;
                 limit?: number;
             };

@@ -446,8 +446,13 @@ function SweepBanner({ jobId, sweep }: { jobId: string; sweep: SweepStatus }) {
   );
 }
 
-const BANK_FILTERS: { value: "" | BankStatus; label: string }[] = [
-  { value: "", label: "All" },
+/** The dropdown's value space: `""` = the needs-attention default (clean
+ * URL), `"all"` = every status, otherwise one specific status. */
+type BankFilter = "" | "all" | BankStatus;
+
+const BANK_FILTERS: { value: BankFilter; label: string }[] = [
+  { value: "", label: "Needs attention" },
+  { value: "all", label: "All" },
   { value: "needs_review", label: "Needs review" },
   { value: "queued", label: "Queued" },
   { value: "applying", label: "Applying" },
@@ -474,32 +479,49 @@ const BANK_REASON_LABEL: Record<BankItemSummary["reason"], string> = {
 };
 
 function isBankStatus(value: string | null): value is BankStatus {
-  return value !== null && BANK_FILTERS.some((f) => f.value === value && f.value !== "");
+  return (
+    value !== null &&
+    BANK_FILTERS.some((f) => f.value === value && f.value !== "" && f.value !== "all")
+  );
+}
+
+/** Narrows a select value back into the filter space (no cast — the option
+ * values all come from BANK_FILTERS). Unknown values fall to the default. */
+function toBankFilter(value: string | null): BankFilter {
+  return BANK_FILTERS.find((f) => f.value === value)?.value ?? "";
 }
 
 /**
  * "Waiting for review" — the durable bank backlog (spec §7), paginated from
- * day one. Default filter is All so a row just decided shows back up as
- * Queued; filter + offset live in the URL (`bank_status`/`bank_offset`) so
- * returning from a row restores the page. Every action here is a bank store
- * write — NEVER gated on the import slot (only the stale re-scan inside the
- * row page needs the slot). The section hides entirely while the bank is
+ * day one. Default filter is "Needs attention" (`view=active`) so resolved
+ * rows don't clutter the backlog while in-flight ones (a row just decided
+ * shows back up as Queued) stay visible; All and the specific statuses remain
+ * in the dropdown. Filter + offset live in the URL (`bank_status`/
+ * `bank_offset`, default = clean URL, All = `bank_status=all`) so returning
+ * from a row restores the page. Every action here is a bank store write —
+ * NEVER gated on the import slot (only the stale re-scan inside the row page
+ * needs the slot). The section hides entirely while the default view is
  * empty and unfiltered.
  */
 function BankSection() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const statusParam = searchParams.get("bank_status");
-  const status = isBankStatus(statusParam) ? statusParam : undefined;
+  const filter = toBankFilter(searchParams.get("bank_status"));
+  const status = isBankStatus(filter) ? filter : undefined;
   const offset = Math.max(0, Number(searchParams.get("bank_offset") ?? "0") || 0);
 
-  const listQuery = useBankList({ status, offset, limit: PAGE_SIZE });
+  const listQuery = useBankList({
+    status,
+    view: filter === "" ? "active" : undefined,
+    offset,
+    limit: PAGE_SIZE,
+  });
   const ignore = useIgnoreBankItem();
   const bulkIgnore = useBulkIgnoreBank();
   const remove = useDeleteBankItem();
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const data = listQuery.data;
-  if (!data || (data.total === 0 && status === undefined && offset === 0)) {
+  if (!data || (data.total === 0 && filter === "" && offset === 0)) {
     return null;
   }
 
@@ -511,12 +533,12 @@ function BankSection() {
     .filter((row) => selected.has(row.id))
     .map((row) => row.id);
 
-  const setParams = (next: { status: BankStatus | undefined; offset: number }) => {
+  const setParams = (next: { filter: BankFilter; offset: number }) => {
     setSelected(new Set());
     setSearchParams((params) => {
       const copy = new URLSearchParams(params);
-      if (next.status === undefined) copy.delete("bank_status");
-      else copy.set("bank_status", next.status);
+      if (next.filter === "") copy.delete("bank_status");
+      else copy.set("bank_status", next.filter);
       if (next.offset === 0) copy.delete("bank_offset");
       else copy.set("bank_offset", String(next.offset));
       return copy;
@@ -566,13 +588,8 @@ function BankSection() {
               toolbar row) — one accessible name, no redundant sr-only twin. */}
           <select
             aria-label="Filter by status"
-            value={status ?? ""}
-            onChange={(e) =>
-              setParams({
-                status: isBankStatus(e.target.value) ? e.target.value : undefined,
-                offset: 0,
-              })
-            }
+            value={filter}
+            onChange={(e) => setParams({ filter: toBankFilter(e.target.value), offset: 0 })}
             className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-8 appearance-none rounded-md border px-2 pr-7 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
           >
             {BANK_FILTERS.map((f) => (
@@ -599,7 +616,7 @@ function BankSection() {
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => setParams({ status, offset: 0 })}
+                onClick={() => setParams({ filter, offset: 0 })}
               >
                 Back to first page
               </Button>
@@ -632,7 +649,7 @@ function BankSection() {
           offset={offset}
           limit={PAGE_SIZE}
           busy={listQuery.isPlaceholderData}
-          onOffsetChange={(next) => setParams({ status, offset: next })}
+          onOffsetChange={(next) => setParams({ filter, offset: next })}
         />
       )}
     </section>
