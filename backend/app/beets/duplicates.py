@@ -12,11 +12,13 @@ from the library — exactly ``beet dup --move <trash> --remove`` for albums.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Any
 
-from beets.library import Library
+from beets import config
+from beets.library import Album, Library
 from fastapi import HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
@@ -48,6 +50,7 @@ from app.models.duplicates import (
     ResolveResult,
     SkippedGroup,
 )
+from app.models.import_models import ExistingAlbum
 from app.reorganize_jobs.registry import reorganize_backfill_active
 
 _PAREN_RE = re.compile(r"[\(\[].*?[\)\]]")
@@ -136,6 +139,69 @@ def find_duplicate_albums(lib: Library, *, mode: DuplicateMode) -> DuplicatesRep
         album_count=sum(len(g.members) for g in groups),
         groups=groups,
     )
+
+
+def _to_existing_album(lib: Library, album: Any) -> ExistingAlbum:
+    """Map one in-library beets Album to the slim ExistingAlbum view.
+
+    Mirrors ``WebImportSession._to_existing_album``, lifted to the adapter so the
+    bank-collision check and the live import share one mapping. ``lib`` is read
+    only when the album has items, so an item-less album resolves to "".
+    """
+    items = list(album.items())
+    fmt, bitrate_kbps = album_format_bitrate(items)
+    year = album.get("year")
+    return ExistingAlbum(
+        album_id=int(album.id),
+        album_artist=_coerce_optional_str(album.albumartist),
+        album=_coerce_optional_str(album.album),
+        year=int(year) if year else None,
+        track_count=len(items),
+        format=fmt,
+        bitrate_kbps=bitrate_kbps,
+        folder=album_folder(lib, items) if items else "",
+    )
+
+
+def find_import_duplicates(
+    lib: Library,
+    *,
+    albumartist: str | None,
+    album: str | None,
+    year: int | None = None,
+    mb_albumid: str | None = None,
+    exclude_under: str | None = None,
+) -> list[ExistingAlbum]:
+    """Library albums that the matched release would duplicate.
+
+    Faithful to beets' ``AlbumImportTask.find_duplicates`` (importer/tasks.py:391):
+    builds a transient Album from the *matched release's* metadata, queries the
+    library with beets' own ``duplicates_query`` over the configured
+    ``import.duplicate_keys.album`` (default ``albumartist album``), and drops
+    any existing album whose files all live under ``exclude_under`` (a re-import
+    of the same folder is not a collision; tasks.py:410-420). Read-only.
+    """
+    if not albumartist:
+        return []  # mirrors beets' as-is/no-artist guard
+    info: dict[str, Any] = {"albumartist": albumartist, "album": album}
+    if year is not None:
+        info["year"] = year
+    if mb_albumid:
+        info["mb_albumid"] = mb_albumid
+    tmp_album = Album(lib, **info)
+    keys: list[str] = config["import"]["duplicate_keys"]["album"].as_str_seq()
+    dup_query = tmp_album.duplicates_query(keys)
+    excl = os.path.abspath(exclude_under) if exclude_under else None
+    out: list[ExistingAlbum] = []
+    with lib.music_dir_context():
+        for album_obj in lib.albums(dup_query):
+            if excl is not None:
+                items = list(album_obj.items())
+                paths = [os.path.abspath(os.fsdecode(i.path)) for i in items if i.path]
+                if paths and all(p == excl or p.startswith(excl + os.sep) for p in paths):
+                    continue
+            out.append(_to_existing_album(lib, album_obj))
+    return out
 
 
 class StaleGroupError(Exception):
