@@ -73,15 +73,16 @@ export const shadcnTheme = EditorView.theme(
  * wins wherever it matches, and it deliberately matches every tag lang-yaml
  * emits so nothing falls through to the light-background defaults.
  *
- * Palette follows the design language: keys carry the accent
- * (`--primary-light`, the active-text violet), comments are muted, everything
- * else reads as plain foreground — neutral + one accent, even in code.
+ * Palette is fully neutral — everything reads as plain foreground, comments
+ * muted, no accent in the editor. The style still exists to override
+ * basicSetup's light-background default palette (navy keys, dark reds), which
+ * is near-illegible on the dark theme, with the app's tokens.
  */
 export const shadcnHighlight = syntaxHighlighting(
   HighlightStyle.define([
     {
       tag: [tags.propertyName, tags.definition(tags.propertyName)],
-      color: "var(--primary-light)",
+      color: "var(--foreground)",
     },
     { tag: [tags.comment, tags.lineComment], color: "var(--muted-foreground)", fontStyle: "italic" },
     {
