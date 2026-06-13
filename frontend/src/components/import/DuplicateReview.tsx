@@ -81,10 +81,14 @@ export function DuplicateActions({
   return (
     <>
       <div className="bg-background/80 sticky bottom-0 z-10 -mx-2 flex flex-wrap items-center gap-2 border-t px-2 py-3 backdrop-blur">
+        {/* None of the four is the preferred choice — they sit as one neutral
+            peer row. Replace old keeps only its amber caution tint (it trashes
+            the old copy: a safety signal, not a preference). */}
         <Button
-          variant="ghost"
+          variant="outline"
           size="sm"
           disabled={busy}
+          aria-describedby="duplicate-footnote"
           onClick={() => onDecide("skip_new")}
         >
           <ActionIcon action="skip_new" pending={pending} icon={Close} /> Skip new
@@ -109,7 +113,7 @@ export function DuplicateActions({
           <ActionIcon action="replace" pending={pending} icon={ReplaceIcon} /> Replace old
         </Button>
         <Button
-          className="ml-auto"
+          variant="outline"
           size="sm"
           disabled={busy}
           aria-describedby="duplicate-footnote"
