@@ -64,15 +64,47 @@ class InLibraryCopyError(ValueError):
 
 
 def is_in_library_source(library_dir: bytes, source: str) -> bool:
-    """True when ``source`` resolves inside the beets library directory.
+    """True when ``source`` is *physically* inside the beets library directory.
 
-    Pure path math (no beets calls): ``library_dir`` is ``lib.directory`` as
-    beets stores it (bytes). Both sides are absolutized so a cwd-relative
-    source behaves exactly as beets would treat it.
+    ``library_dir`` is ``lib.directory`` as beets stores it (bytes). Two checks,
+    both filesystem-aware (no beets calls):
+
+    1. **realpath prefix.** Both sides are resolved with ``os.path.realpath``
+       (not just ``abspath``) before the lexical prefix test, so a *symlink
+       alias* to the library dir collapses to the same canonical path. This is
+       the TrueNAS case where ``directory: /library`` is a symlink onto the real
+       dataset and a swept folder reaches the same files through a different
+       string: ``abspath`` left the two strings distinct and the guard missed
+       it; ``realpath`` makes them equal and the prefix check fires.
+
+    2. **samefile fallback.** ``realpath`` does NOT collapse bind mounts — two
+       distinct bind paths onto one directory keep distinct realpaths — so a
+       second, stronger check follows: walk the source's ancestor chain and
+       return True if any ancestor is the *same physical directory* as the
+       resolved library root (``os.path.samefile`` — identical st_dev/st_ino).
+       Every filesystem probe is guarded with ``try/except OSError`` so a
+       vanished or again-unreadable path can never raise; forcing move on any
+       same-dataset source is always the safe direction (a copy there would
+       duplicate the files).
     """
-    lib_root = Path(os.path.abspath(os.fsdecode(library_dir)))
-    src = Path(os.path.abspath(source))
-    return src == lib_root or src.is_relative_to(lib_root)
+    lib_root = Path(os.path.realpath(os.fsdecode(library_dir)))
+    src = Path(os.path.realpath(source))
+    if src == lib_root or src.is_relative_to(lib_root):
+        return True
+    # Bind-mount / dataset-alias fallback: realpath keeps distinct strings for
+    # two bind paths onto one dir, but samefile sees through to st_dev/st_ino.
+    try:
+        if not lib_root.exists():
+            return False
+    except OSError:
+        return False
+    for ancestor in [src, *src.parents]:
+        try:
+            if ancestor.samefile(lib_root):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 # beets IntEnum -> our string enum (only the album-level levels are needed).

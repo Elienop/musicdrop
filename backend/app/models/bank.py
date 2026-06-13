@@ -174,6 +174,16 @@ class BankBulkIgnoreResponse(BaseModel):
     ignored: int
 
 
+class BankBulkDeleteRequest(BaseModel):
+    ids: list[str]
+
+
+class BankBulkDeleteResponse(BaseModel):
+    """How many rows were actually removed (``applying``/missing ids skipped)."""
+
+    deleted: int
+
+
 class BankDuplicatesResponse(BaseModel):
     """``GET /api/bank/{id}/duplicates``: library albums the selected
     candidate would collide with (empty = no collision, import is clean)."""

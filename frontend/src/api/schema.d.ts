@@ -1295,6 +1295,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/bank/bulk-delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Bulk Delete Bank */
+        post: operations["bulk_delete_bank_api_bank_bulk_delete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1581,6 +1598,19 @@ export interface components {
         ArtistImageSettings: {
             /** Enabled */
             enabled: boolean;
+        };
+        /** BankBulkDeleteRequest */
+        BankBulkDeleteRequest: {
+            /** Ids */
+            ids: string[];
+        };
+        /**
+         * BankBulkDeleteResponse
+         * @description How many rows were actually removed (``applying``/missing ids skipped).
+         */
+        BankBulkDeleteResponse: {
+            /** Deleted */
+            deleted: number;
         };
         /** BankBulkIgnoreRequest */
         BankBulkIgnoreRequest: {
@@ -5504,6 +5534,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BankBulkIgnoreResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bulk_delete_bank_api_bank_bulk_delete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BankBulkDeleteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BankBulkDeleteResponse"];
                 };
             };
             /** @description Validation Error */

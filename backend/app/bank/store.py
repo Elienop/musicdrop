@@ -242,6 +242,23 @@ def bulk_ignore(bank_dir: Path, ids: list[str]) -> int:
     return flipped
 
 
+def bulk_delete(bank_dir: Path, ids: list[str]) -> int:
+    """Delete every listed deletable row; return how many were actually removed.
+
+    Reuses ``delete_item``'s rules (id validation, file unlink) but never lets
+    one bad id abort the batch: an ``applying`` row (``delete_item`` raises
+    ``InvalidTransitionError``) and a missing id (returns False) are skipped.
+    """
+    deleted = 0
+    for item_id in ids:
+        try:
+            if delete_item(bank_dir, item_id):
+                deleted += 1
+        except InvalidTransitionError:
+            continue  # an applying row can't be deleted - skip, don't abort
+    return deleted
+
+
 def upsert_by_folder(
     bank_dir: Path,
     *,

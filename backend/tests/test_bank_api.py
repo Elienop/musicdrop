@@ -116,6 +116,22 @@ def test_bulk_ignore(client: TestClient, bank_dir: Path) -> None:
     assert response.json() == {"ignored": 2}
 
 
+def test_bulk_delete(client: TestClient, bank_dir: Path) -> None:
+    first = _seed(bank_dir)
+    second = _seed(bank_dir, folder="/library/A/C")
+    # An applying row is skipped, not deleted (it carries its decision).
+    applying = _seed(bank_dir, folder="/library/A/D")
+    store.decide_item(bank_dir, applying, BankDecision(action="asis"))
+    store.set_status(bank_dir, applying, "applying")
+    response = client.post("/api/bank/bulk-delete", json={"ids": [first, second, applying, "x"]})
+    assert response.status_code == 200
+    assert response.json() == {"deleted": 2}
+    assert store.get_item(bank_dir, first) is None
+    assert store.get_item(bank_dir, second) is None
+    survivor = store.get_item(bank_dir, applying)
+    assert survivor is not None and survivor.status == "applying"
+
+
 def test_decision_pokes_apply_runner_when_wired(client: TestClient, bank_dir: Path) -> None:
     from app.main import app
 

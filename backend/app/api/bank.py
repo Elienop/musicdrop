@@ -19,6 +19,8 @@ from app.beets.duplicates import find_import_duplicates
 from app.beets.library import LibraryHandle
 from app.config import settings
 from app.models.bank import (
+    BankBulkDeleteRequest,
+    BankBulkDeleteResponse,
     BankBulkIgnoreRequest,
     BankBulkIgnoreResponse,
     BankDecision,
@@ -143,3 +145,9 @@ async def delete_bank_item(item_id: str) -> Response:
 async def bulk_ignore_bank(body: BankBulkIgnoreRequest) -> BankBulkIgnoreResponse:
     ignored = await run_in_threadpool(store.bulk_ignore, get_bank_dir(), body.ids)
     return BankBulkIgnoreResponse(ignored=ignored)
+
+
+@router.post("/bank/bulk-delete", response_model=BankBulkDeleteResponse)
+async def bulk_delete_bank(body: BankBulkDeleteRequest) -> BankBulkDeleteResponse:
+    deleted = await run_in_threadpool(store.bulk_delete, get_bank_dir(), body.ids)
+    return BankBulkDeleteResponse(deleted=deleted)

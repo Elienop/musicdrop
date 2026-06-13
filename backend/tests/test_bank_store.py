@@ -157,6 +157,35 @@ def test_bulk_ignore_skips_non_pending(tmp_path: Path) -> None:
     assert refreshed is not None and refreshed.status == "ignored"
 
 
+def test_bulk_delete_removes_deletable_skips_applying_and_missing(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    needs_review = _create(tmp_path, folder="/library/A/needs_review")
+    failed = _create(tmp_path, folder="/library/A/failed")
+    store.set_status(bank, failed, "failed", error="boom")
+    done = _create(tmp_path, folder="/library/A/done")
+    store.decide_item(bank, done, BankDecision(action="asis"))
+    store.set_status(bank, done, "applying")
+    store.set_status(bank, done, "done", album_id=1)
+    ignored = _create(tmp_path, folder="/library/A/ignored")
+    store.decide_item(bank, ignored, BankDecision(action="ignore"))
+    stale = _create(tmp_path, folder="/library/A/stale")
+    store.set_status(bank, stale, "stale")
+    # An applying row carries the decision that got it there (model invariant).
+    applying = _create(tmp_path, folder="/library/A/applying")
+    store.decide_item(bank, applying, BankDecision(action="asis"))
+    store.set_status(bank, applying, "applying")
+
+    count = store.bulk_delete(
+        bank,
+        [needs_review, failed, done, ignored, stale, applying, "missing-id"],
+    )
+    assert count == 5  # every deletable row; applying + missing-id skipped
+    for gone in (needs_review, failed, done, ignored, stale):
+        assert store.get_item(bank, gone) is None
+    survivor = store.get_item(bank, applying)
+    assert survivor is not None and survivor.status == "applying"
+
+
 def test_upsert_refreshes_same_fingerprint(tmp_path: Path) -> None:
     first = store.upsert_by_folder(
         _bank(tmp_path),

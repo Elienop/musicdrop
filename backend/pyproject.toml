@@ -67,6 +67,7 @@ module = [
     "tests.test_import_session",
     "tests.test_import_sweep",
     "tests.test_import_runner",
+    "tests.test_inlibrary_apply_move_repro",
     "tests.test_import_setup",
     "tests.test_setup_beets",
     "tests.test_config_snapshot",

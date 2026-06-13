@@ -892,6 +892,45 @@ def test_is_in_library_source_relative_source(
     assert is_in_library_source(lib_dir, "elsewhere") is False
 
 
+def test_is_in_library_source_symlink_alias(tmp_path: Path) -> None:
+    # TrueNAS analogue: lib.directory is a symlink onto the real dataset, so a
+    # source under the real dir reaches the same files through a different
+    # string. realpath collapses the alias, so the guard still recognizes it.
+    real_music = tmp_path / "real_music"
+    (real_music / "Artist" / "Album").mkdir(parents=True)
+    alias = tmp_path / "library"
+    alias.symlink_to(real_music)
+    lib_dir = os.fsencode(str(alias))
+    # Source reached through the REAL path (what beets walks); lib via the alias.
+    assert is_in_library_source(lib_dir, str(real_music / "Artist" / "Album")) is True
+    # And the symmetric case: lib via the real path, source through the alias.
+    lib_dir_real = os.fsencode(str(real_music))
+    assert is_in_library_source(lib_dir_real, str(alias / "Artist" / "Album")) is True
+
+
+def test_is_in_library_source_samefile_bind_analogue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Bind mounts keep DISTINCT realpaths for two paths onto one dir, so the
+    # realpath prefix check alone would miss them. We can't create a real bind
+    # mount hermetically (needs root), so neutralize realpath (identity) to force
+    # the lexical prefix check to fail, leaving the samefile fallback as the sole
+    # decider. A symlink supplies the shared st_dev/st_ino the fallback detects.
+    monkeypatch.setattr(os.path, "realpath", os.path.abspath)
+    real_music = tmp_path / "real_music"
+    (real_music / "Artist" / "Album").mkdir(parents=True)
+    alias = tmp_path / "library"
+    alias.symlink_to(real_music)
+    lib_dir = os.fsencode(str(alias))
+    # realpath is now identity: lexically /tmp/.../real_music/... is NOT under
+    # /tmp/.../library, so only samefile (real_music IS library's target) catches it.
+    assert is_in_library_source(lib_dir, str(real_music / "Artist" / "Album")) is True
+    # A genuinely outside source still resolves to False through the fallback.
+    outside = tmp_path / "downloads" / "Artist"
+    outside.mkdir(parents=True)
+    assert is_in_library_source(lib_dir, str(outside)) is False
+
+
 def _guard_session(tmp_path: Path, source: Path) -> WebImportSession:
     """A real session over a real empty library, for guard tests."""
     lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))

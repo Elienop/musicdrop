@@ -10,6 +10,7 @@ import { useActiveImport } from "@/api/useActiveImport";
 import {
   BankConflictError,
   useBankList,
+  useBulkDeleteBank,
   useBulkIgnoreBank,
   useDeleteBankItem,
   useIgnoreBankItem,
@@ -518,6 +519,7 @@ function BankSection() {
   });
   const ignore = useIgnoreBankItem();
   const bulkIgnore = useBulkIgnoreBank();
+  const bulkDelete = useBulkDeleteBank();
   const remove = useDeleteBankItem();
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
@@ -526,6 +528,13 @@ function BankSection() {
     return null;
   }
 
+  // Every on-screen row that can be acted on: only an `applying` row is
+  // un-selectable (it can't be ignored or deleted). These ids drive both the
+  // select-all toggle and its tri-state.
+  const selectableIds = data.items
+    .filter((row) => row.status !== "applying")
+    .map((row) => row.id);
+
   // The selection pruned to rows still on screen: a row ignored via its own
   // button (or settled away by the 30s poll) keeps its id in `selected` until
   // the refetch lands — counting only visible ids keeps the bulk button's
@@ -533,6 +542,25 @@ function BankSection() {
   const visibleSelected = data.items
     .filter((row) => selected.has(row.id))
     .map((row) => row.id);
+
+  // "Ignore" only flips needs_review rows server-side, so its label + payload
+  // count ONLY those — the wider checkboxes also select failed/done/stale/etc
+  // (which Delete handles), and counting them would over-promise the ignore.
+  const ignorableSelected = data.items
+    .filter((row) => selected.has(row.id) && row.status === "needs_review")
+    .map((row) => row.id);
+
+  // Tri-state for the header checkbox: all eligible rows ticked, some, or none.
+  const allSelected =
+    selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
+  const headerChecked: boolean | "indeterminate" = allSelected
+    ? true
+    : visibleSelected.length > 0
+      ? "indeterminate"
+      : false;
+  const toggleAll = (checked: boolean) => {
+    setSelected(checked ? new Set(selectableIds) : new Set());
+  };
 
   const setParams = (next: { filter: BankFilter; offset: number }) => {
     setSelected(new Set());
@@ -567,14 +595,26 @@ function BankSection() {
     <section aria-label="Waiting for review" className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <SectionLabel>Waiting for review · {data.total}</SectionLabel>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="bank-select-all"
+              checked={headerChecked}
+              onCheckedChange={(checked) => toggleAll(checked === true)}
+              disabled={selectableIds.length === 0}
+              aria-label="Select all"
+            />
+            <label htmlFor="bank-select-all" className="text-sm font-medium">
+              Select all
+            </label>
+          </div>
           <Button
             type="button"
             variant="outline"
             size="sm"
-            disabled={visibleSelected.length === 0 || bulkIgnore.isPending}
+            disabled={ignorableSelected.length === 0 || bulkIgnore.isPending}
             onClick={() =>
-              bulkIgnore.mutate(visibleSelected, {
+              bulkIgnore.mutate(ignorableSelected, {
                 onSuccess: (res) => {
                   setSelected(new Set());
                   toast.success(`Ignored ${res.ignored} row${res.ignored === 1 ? "" : "s"}.`);
@@ -583,8 +623,50 @@ function BankSection() {
               })
             }
           >
-            Ignore selected ({visibleSelected.length})
+            Ignore selected ({ignorableSelected.length})
           </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={visibleSelected.length === 0 || bulkDelete.isPending}
+              >
+                Delete selected ({visibleSelected.length})
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>
+                  Remove {visibleSelected.length} row
+                  {visibleSelected.length === 1 ? "" : "s"}?
+                </AlertDialogTitle>
+                <AlertDialogDescription>
+                  The files stay on disk, but the banked candidates are
+                  forfeited — a re-sweep will NOT pick these folders up again.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() =>
+                    bulkDelete.mutate(visibleSelected, {
+                      onSuccess: (res) => {
+                        setSelected(new Set());
+                        toast.success(
+                          `Removed ${res.deleted} row${res.deleted === 1 ? "" : "s"}.`,
+                        );
+                      },
+                      onError: conflictToast,
+                    })
+                  }
+                >
+                  Remove
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
           {/* aria-label names the control (no room for a visible label in the
               toolbar row) — one accessible name, no redundant sr-only twin. */}
           <select
@@ -657,7 +739,8 @@ function BankSection() {
   );
 }
 
-/** One backlog row: [checkbox (needs_review only)] AlbumRow + Open/Ignore/Remove.
+/** One backlog row: [checkbox (every row except applying)] AlbumRow +
+ * Open/Ignore/Remove.
  * The status chip names the lifecycle for settled rows; needs_review rows
  * show the REASON instead (what kind of decision awaits). Failed rows carry
  * their error in the meta line. */
@@ -684,7 +767,7 @@ function BankRow({
   ].filter((b): b is string => Boolean(b));
   return (
     <li className="flex items-center gap-0">
-      {row.status === "needs_review" ? (
+      {row.status !== "applying" ? (
         <Checkbox
           className="ml-4"
           checked={selected}
