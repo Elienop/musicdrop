@@ -8,6 +8,7 @@ The endpoint surfaces it for a banked candidate row.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -66,6 +67,76 @@ def test_no_albumartist_skips_like_beets(beets_library: LibraryHandle) -> None:
         )
         == []
     )
+
+
+# ----- exclude_under: a re-import of the same folder is not its own collision -----
+
+
+def _add_album_with_paths(lib: Library, *, artist: str, album: str, base: Path, n: int) -> int:
+    """Add an album whose item files live under ``base`` (real, absolute paths).
+
+    ``find_import_duplicates``'s same-folder exclusion reads ``item.path``; the
+    bare ``_add_album`` helper leaves it empty, so the exclude branch never runs.
+    ``base`` is deliberately outside the library's music dir so beets stores the
+    paths absolute (no relative re-expansion to reason about).
+    """
+    base.mkdir(parents=True, exist_ok=True)
+    items: list[Item] = []
+    for i in range(n):
+        it = Item(album=album, albumartist=artist, title=f"t{i}", mb_albumid="")
+        it.path = os.fsencode(str(base / f"t{i}.mp3"))
+        items.append(it)
+    al = lib.add_album(items)
+    al.store()
+    return int(al.id)
+
+
+def test_exclude_under_drops_a_reimport_of_the_same_folder(
+    beets_library: LibraryHandle, tmp_path: Path
+) -> None:
+    lib = beets_library.lib
+    base = tmp_path / "src" / "Album"
+    _add_album_with_paths(lib, artist="Air", album="Moon Safari", base=base, n=10)
+    # exclude_under == the album's own folder -> every file is under it -> dropped
+    # (covers the `continue`; a folder is never a duplicate of itself).
+    assert (
+        find_import_duplicates(lib, albumartist="Air", album="Moon Safari", exclude_under=str(base))
+        == []
+    )
+
+
+def test_exclude_under_unrelated_dir_keeps_the_album(
+    beets_library: LibraryHandle, tmp_path: Path
+) -> None:
+    lib = beets_library.lib
+    base = tmp_path / "src" / "Album"
+    aid = _add_album_with_paths(lib, artist="Air", album="Moon Safari", base=base, n=10)
+    found = find_import_duplicates(
+        lib,
+        albumartist="Air",
+        album="Moon Safari",
+        exclude_under=str(tmp_path / "somewhere" / "else"),
+    )
+    assert [e.album_id for e in found] == [aid]
+
+
+def test_exclude_under_sibling_string_prefix_keeps_the_album(
+    beets_library: LibraryHandle, tmp_path: Path
+) -> None:
+    # Files under ".../Album"; exclude_under ".../Alb" shares a STRING prefix but
+    # is not a path-boundary ancestor. The `+ os.sep` boundary must keep the
+    # album (drop `+ os.sep` and this album would be wrongly excluded).
+    lib = beets_library.lib
+    parent = tmp_path / "src"
+    base = parent / "Album"
+    aid = _add_album_with_paths(lib, artist="Air", album="Moon Safari", base=base, n=10)
+    found = find_import_duplicates(
+        lib,
+        albumartist="Air",
+        album="Moon Safari",
+        exclude_under=str(parent / "Alb"),
+    )
+    assert [e.album_id for e in found] == [aid]
 
 
 # ----- endpoint (uses the lifespan-less client wired to a real library) -----
