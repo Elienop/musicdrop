@@ -49,8 +49,24 @@ const candidate = {
   missing: [],
   unmatched: [],
   options: [
-    { index: 0, confidence: 71.2, data_source: "MusicBrainz", disambiguation: null, release_id: "mb-1" },
-    { index: 1, confidence: 64.0, data_source: "MusicBrainz", disambiguation: "remaster", release_id: "mb-2" },
+    // options[0] mirrors the candidate's top diff (selected=0 renders identically).
+    {
+      index: 0, confidence: 71.2, data_source: "MusicBrainz", disambiguation: null, release_id: "mb-1",
+      album_artist: "Boards of Canada", album: "Music Has the Right to Children", year: 1998,
+      album_after: { artist: "Boards of Canada", album: "Music Has the Right to Children", year: 1998, label: "Warp", media: "CD", country: "GB" },
+      changed_fields: ["album"],
+      tracks: [{ index: 1, title_before: "01 wildlife", title_after: "Wildlife Analysis", track_before: 1, track_after: 1, status: "changed" }],
+      missing: [], unmatched: [], cover_after_url: null, data_url: null,
+    },
+    // options[1] carries a DISTINCT per-release diff so a switch re-renders.
+    {
+      index: 1, confidence: 64.0, data_source: "MusicBrainz", disambiguation: "remaster", release_id: "mb-2",
+      album_artist: "Boards of Canada", album: "Music Has the Right to Children (Remaster)", year: 2004,
+      album_after: { artist: "Boards of Canada", album: "Music Has the Right to Children (Remaster)", year: 2004, label: "Warp", media: "CD", country: "GB" },
+      changed_fields: ["album", "year"],
+      tracks: [{ index: 1, title_before: "01 wildlife", title_after: "Wildlife Analysis (Remaster)", track_before: 1, track_after: 1, status: "changed" }],
+      missing: [], unmatched: [], cover_after_url: null, data_url: null,
+    },
   ],
 };
 
@@ -128,6 +144,10 @@ describe("BankReviewPage", () => {
     renderRow();
     await screen.findByRole("heading", { name: /Music Has the Right/ });
     await userEvent.selectOptions(screen.getByLabelText("Candidate release"), "1");
+    // The preview re-renders for the selected release (the Remaster diff).
+    expect(
+      await screen.findByText("Music Has the Right to Children (Remaster)"),
+    ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /apply/i }));
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/review"));
     expect(body).toEqual({ action: "apply", candidate_index: 1 });

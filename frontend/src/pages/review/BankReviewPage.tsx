@@ -276,11 +276,6 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
               Checking your library…
             </p>
           )}
-          {selected !== 0 && (
-            <p className="text-muted-foreground text-sm" role="status">
-              Showing the top match — Apply will queue the selected release.
-            </p>
-          )}
           <DecisionError error={decide.error} />
           <div className="flex flex-wrap items-center gap-2">
             <Button

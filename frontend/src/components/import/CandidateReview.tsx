@@ -24,13 +24,17 @@ import { cn } from "@/lib/utils";
 /**
  * The presentational candidate-review body — everything between the back
  * link and the actions bar: match header (owns the page h1), candidate
- * switcher, before/after panels, change chips, track diff. Pure render over
- * a `Candidate`: the LIVE page feeds it from the job endpoints and a
- * job-scoped current-art URL; the BANK page feeds it from a banked
- * `ParkedAlbum.candidate` with `nowCoverUrl={null}` (the live art endpoint
- * died with the sweep job; banked rows keep only the metadata payload —
- * `cover_after_url` is an absolute Cover Art Archive URL and still renders).
- * Actions stay caller-owned: the two pages submit to different APIs.
+ * switcher, before/after panels, change chips, track diff. Renders over a
+ * `Candidate`, but the switcher re-renders the WHOLE preview for the SELECTED
+ * release: `resolveSelected` merges the chosen option's own per-release diff
+ * over the candidate, so header %, the after panel, change chips, and the
+ * tracklist all reflect what Apply will import — not just the top match. The
+ * LIVE page feeds it from the job endpoints and a job-scoped current-art URL;
+ * the BANK page feeds it from a banked `ParkedAlbum.candidate` with
+ * `nowCoverUrl={null}` (the live art endpoint died with the sweep job; banked
+ * rows keep only the metadata payload — `cover_after_url` is an absolute Cover
+ * Art Archive URL and still renders). Actions stay caller-owned: the two pages
+ * submit to different APIs.
  */
 export function CandidateReview({
   candidate,
@@ -43,9 +47,19 @@ export function CandidateReview({
   selected: number;
   onSelect: (index: number) => void;
 }) {
+  // The release the preview should reflect: the selected option's own diff
+  // merged over the candidate (or the candidate itself for the top match /
+  // legacy bare options). The NOW panel + switcher stay on `candidate`.
+  const active = resolveSelected(candidate, selected);
+  // A non-top option that carries NO diff (a row banked before per-candidate
+  // previews) falls back to the top match. The preview is then the TOP, not the
+  // selected release — so the header keeps the recommendation word and a note
+  // explains the mismatch (the centralized successor to the deleted page hints).
+  const isTopFallback =
+    selected !== 0 && candidate.options[selected]?.album_after == null;
   return (
     <div className="flex flex-col gap-6">
-      <MatchHeader candidate={candidate} />
+      <MatchHeader candidate={active} showRecommendation={selected === 0 || isTopFallback} />
       {candidate.options.length > 1 && (
         <CandidateSwitcher
           options={candidate.options}
@@ -53,16 +67,59 @@ export function CandidateReview({
           onSelect={onSelect}
         />
       )}
-      <BeforeAfter candidate={candidate} nowCoverUrl={nowCoverUrl} />
-      <WhatChanges candidate={candidate} />
+      {isTopFallback && (
+        <p className="text-muted-foreground text-sm" role="status">
+          Showing the top match — this row predates per-candidate previews; Apply
+          will still use the selected release.
+        </p>
+      )}
+      <BeforeAfter candidate={active} nowCoverUrl={nowCoverUrl} />
+      <WhatChanges candidate={active} />
       <Separator />
-      <TrackDiff candidate={candidate} />
+      <TrackDiff candidate={active} />
     </div>
   );
 }
 
-/** `<confidence>% · <recommendation>` + Artist — Album + the source line. */
-function MatchHeader({ candidate }: { candidate: Candidate }) {
+/**
+ * Resolve the candidate the preview should render for `selected`. When the
+ * chosen option carries its own diff (`album_after != null`), merge its
+ * per-release fields over the shared candidate so the whole preview re-renders
+ * for that release. Otherwise — the top match, or a row banked before
+ * per-candidate diffs existed (bare options) — return the candidate unchanged,
+ * a graceful fall back to the top match. The NOW panel (`album_before` +
+ * `nowCoverUrl`) and `recommendation` are selection-invariant and stay put.
+ */
+function resolveSelected(candidate: Candidate, selected: number): Candidate {
+  const opt = candidate.options[selected];
+  if (!opt || opt.album_after == null) return candidate;
+  return {
+    ...candidate,
+    confidence: opt.confidence,
+    data_source: opt.data_source,
+    data_url: opt.data_url ?? null,
+    cover_after_url: opt.cover_after_url ?? null,
+    changed_fields: opt.changed_fields,
+    album_after: opt.album_after,
+    tracks: opt.tracks,
+    missing: opt.missing,
+    unmatched: opt.unmatched,
+  };
+}
+
+/** `<confidence>% · <recommendation>` + Artist — Album + the source line. The
+ * recommendation word is shown when the preview reflects the top match
+ * (`showRecommendation`): beets computes it once per album, not per candidate,
+ * so it is dropped ONLY for a genuine alternate diff (per-release %, no
+ * fabricated tier). A legacy bare-option row falls back to the top match, so it
+ * keeps the word — the caller passes `showRecommendation` true there too. */
+function MatchHeader({
+  candidate,
+  showRecommendation,
+}: {
+  candidate: Candidate;
+  showRecommendation: boolean;
+}) {
   const after = candidate.album_after;
   const sourceBits = [
     candidate.data_source,
@@ -82,7 +139,7 @@ function MatchHeader({ candidate }: { candidate: Candidate }) {
         <span className="text-foreground font-medium">
           {Math.round(candidate.confidence)}%
         </span>
-        · {RECOMMENDATION_LABEL[candidate.recommendation]}
+        {showRecommendation && <>· {RECOMMENDATION_LABEL[candidate.recommendation]}</>}
         {sourceBits.length > 0 && <span aria-hidden="true">·</span>}
         <span className="truncate">{sourceBits.join(" · ")}</span>
         {candidate.data_url && (
@@ -92,7 +149,7 @@ function MatchHeader({ candidate }: { candidate: Candidate }) {
             rel="noreferrer"
             className="text-foreground inline-flex items-center gap-1 underline underline-offset-4"
           >
-            view <span className="sr-only">(opens MusicBrainz in a new tab)</span>
+            view <span className="sr-only">(opens the release page in a new tab)</span>
             <External className="size-3" aria-hidden="true" />
           </a>
         )}
@@ -101,8 +158,10 @@ function MatchHeader({ candidate }: { candidate: Candidate }) {
   );
 }
 
-/** Pick a different ranked release to Apply. A native <select> styled as a
- * control — the option text carries % + source + disambiguation. */
+/** Pick a different ranked release. Selecting one both re-pins what Apply
+ * imports AND re-renders the whole preview above for that release (via
+ * `resolveSelected`). A native <select> styled as a control — the option text
+ * carries % + source + disambiguation. */
 function CandidateSwitcher({
   options,
   selected,

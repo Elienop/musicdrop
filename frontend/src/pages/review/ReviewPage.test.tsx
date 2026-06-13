@@ -135,8 +135,8 @@ describe("ReviewPage", () => {
       http.get(ITEMS, () =>
         HttpResponse.json({
           items: [
-            { name: "Lost Tapes", mtime: 2, size: 10, track_count: 9, outcome: "set_aside", source: "slskd" },
-            { name: "Demo 99", mtime: 1, size: 5, track_count: 1, outcome: null, source: "slskd" },
+            { name: "Lost Tapes", mtime: 2, size: 10, track_count: 9, outcome: "set_aside" },
+            { name: "Demo 99", mtime: 1, size: 5, track_count: 1, outcome: null },
           ],
         }),
       ),
@@ -153,7 +153,7 @@ describe("ReviewPage", () => {
     server.use(
       http.get(ITEMS, () =>
         HttpResponse.json({
-          items: [{ name: "Lost Tapes", mtime: 1, size: 10, track_count: 9, outcome: null, source: "slskd" }],
+          items: [{ name: "Lost Tapes", mtime: 1, size: 10, track_count: 9, outcome: null }],
         }),
       ),
       http.post(IMPORT_ITEM, () =>
@@ -170,7 +170,7 @@ describe("ReviewPage", () => {
     server.use(
       http.get(ITEMS, () =>
         HttpResponse.json({
-          items: [{ name: "Lost Tapes", mtime: 1, size: 10, track_count: 9, outcome: null, source: "slskd" }],
+          items: [{ name: "Lost Tapes", mtime: 1, size: 10, track_count: 9, outcome: null }],
         }),
       ),
       http.post(REVIEW_ALL, () =>
@@ -190,7 +190,7 @@ describe("ReviewPage", () => {
       ),
       http.get(ITEMS, () =>
         HttpResponse.json({
-          items: [{ name: "Lost Tapes", mtime: 1, size: 10, track_count: 9, outcome: null, source: "slskd" }],
+          items: [{ name: "Lost Tapes", mtime: 1, size: 10, track_count: 9, outcome: null }],
         }),
       ),
     );

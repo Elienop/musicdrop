@@ -173,13 +173,6 @@ function ReviewActions({
 
   return (
     <div className="bg-background/80 sticky bottom-0 z-10 -mx-2 flex flex-col gap-1.5 border-t px-2 py-3 backdrop-blur">
-      {/* Picking an alternate candidate changes what Apply submits, but the diff
-          above always reflects the top match — say so (there's no undo). */}
-      {selected !== 0 && (
-        <p className="text-muted-foreground text-sm" role="status">
-          Showing the top match — Apply will import the selected release.
-        </p>
-      )}
       {/* useSubmitChoice swallows 404/409 (already-advanced, navigates anyway);
           a genuine transport error surfaces here instead of silently re-enabling
           the button. */}

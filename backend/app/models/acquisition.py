@@ -64,7 +64,6 @@ class InboxItem(BaseModel):
     size: int
     track_count: int
     outcome: LedgerOutcome | None = None
-    source: str = "slskd"
 
 
 class InboxListing(BaseModel):

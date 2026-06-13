@@ -25,6 +25,7 @@ from beets.importer.tasks import Action
 from app.bank import store as bank_store
 from app.bank.fingerprint import folder_fingerprint
 from app.beets.import_mapping import (
+    CANDIDATE_LIMIT,
     _confidence,
     _opt_int,
     _opt_str,
@@ -459,7 +460,12 @@ class WebImportSession(ImportSession):
         # This hook only fires for album tasks, so every candidate is an
         # AlbumMatch; typed as Any since beets' task.candidates is the wider
         # list[AlbumMatch | TrackMatch] union (singletons go through choose_item).
-        candidates: list[Any] = list(task.candidates or [])
+        # Capped to CANDIDATE_LIMIT so the apply-able set stays in lock-step with
+        # the switcher options + per-option diffs (also capped at the mapping
+        # boundary): a user can only ever select a release that was both shown
+        # and persisted. The strong-auto-apply and directive paths use only
+        # candidates[0], so the cap is a no-op for them.
+        candidates: list[Any] = list(task.candidates or [])[:CANDIDATE_LIMIT]
         # Each album gets a stable index for both its outcome and (if parked) its
         # reply slot. Serial-only: single-writer counter, no lock (config
         # ["threaded"] = False keeps choose_match on one thread).
