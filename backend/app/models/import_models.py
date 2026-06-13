@@ -125,6 +125,24 @@ class CandidateOption(BaseModel):
     album_artist: str | None = None
     album: str | None = None
     year: int | None = None
+    # This option's own FULL before/after diff, so the review screen can
+    # re-render the whole preview (header %, after panel, change chips,
+    # tracklist) for the SELECTED release — not just the top match. Computed
+    # at park/sweep time from the same AlbumMatch the apply would pin (the
+    # lookups were already paid for), so switching the dropdown never needs a
+    # new lookup. ``album_before``/``has_current_art``/``recommendation`` stay
+    # on ``Candidate`` (selection-invariant). Every field is Optional/defaulted:
+    # the same back-compat as the identity fields above — rows banked before
+    # this change carry bare options, and the frontend falls back to the top
+    # match when ``album_after`` is absent. ``options[0]`` is the canonical top
+    # and its diff equals ``Candidate``'s top diff.
+    album_after: AlbumChange | None = None
+    changed_fields: list[str] = []
+    tracks: list[TrackChange] = []
+    missing: list[MissingTrack] = []
+    unmatched: list[UnmatchedItem] = []
+    cover_after_url: str | None = None
+    data_url: str | None = None
 
 
 class Candidate(BaseModel):

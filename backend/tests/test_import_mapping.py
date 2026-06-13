@@ -169,6 +169,80 @@ def _unmatched_match() -> AlbumMatch:
     return AlbumMatch(dist, info, dict(pairs), extra_items, extra_tracks)
 
 
+def test_candidate_options_carry_per_release_diff() -> None:
+    from app.beets.import_mapping import map_candidate_options
+
+    options = map_candidate_options([_perfect_match(), _diff_match()])
+    # Every option carries its OWN full diff now, not just identity — so the
+    # switcher can re-render the whole preview for the selected release.
+    top, alt = options
+    assert top.album_after is not None and top.album_after.album == "OK Computer"
+    assert top.album_after.year == 1997
+    assert top.changed_fields == []
+    assert len(top.tracks) == 1
+    assert top.missing == []
+    assert top.unmatched == []
+    assert top.cover_after_url == "https://coverartarchive.org/release/a1/front-500"
+    assert top.data_url == "https://musicbrainz.org/release/a1"
+    # The alternate's diff differs from the top's — proving it is per-release.
+    assert alt.album_after is not None
+    assert "album" in alt.changed_fields
+    assert len(alt.tracks) == 2
+    assert [m.title for m in alt.missing] == ["Subterranean"]
+
+
+def test_options_top_diff_equals_candidate_top_diff() -> None:
+    from app.beets.import_mapping import map_candidate_options
+
+    top = _diff_match()
+    options = map_candidate_options([top, _perfect_match()])
+    candidate = map_album_match(
+        top, cur_artist="Radiohead", cur_album="OK Computr", options=options
+    )
+    # options[0] is the canonical top: its diff must equal the Candidate's top
+    # diff (single source of truth — both go through the same block builders).
+    assert options[0].album_after == candidate.album_after
+    assert options[0].changed_fields == candidate.changed_fields
+    assert options[0].tracks == candidate.tracks
+    assert options[0].missing == candidate.missing
+    assert options[0].unmatched == candidate.unmatched
+    assert options[0].cover_after_url == candidate.cover_after_url
+    assert options[0].data_url == candidate.data_url
+    assert options[0].confidence == candidate.confidence
+
+
+def test_candidate_options_capped_at_five() -> None:
+    from app.beets.import_mapping import CANDIDATE_LIMIT, map_candidate_options
+
+    # Mirrors beets' search_limit default; applied uniformly at the mapping
+    # boundary so the switcher + diffs never exceed the apply-able set.
+    assert CANDIDATE_LIMIT == 5
+    options = map_candidate_options([_perfect_match() for _ in range(7)])
+    assert len(options) == 5
+    assert [o.index for o in options] == [0, 1, 2, 3, 4]
+
+
+def test_legacy_bare_option_still_validates() -> None:
+    from app.models.import_models import CandidateOption
+
+    # A row banked before the per-release diff existed: bare options, no diff.
+    # It must still validate, with the diff fields defaulting empty/None so the
+    # frontend falls back to the top match for non-top selections.
+    bare = CandidateOption(index=1, confidence=60.0, data_source="MusicBrainz", disambiguation=None)
+    assert bare.album_after is None
+    assert bare.changed_fields == []
+    assert bare.tracks == []
+    assert bare.missing == []
+    assert bare.unmatched == []
+    assert bare.cover_after_url is None
+    assert bare.data_url is None
+    # And it slots into a full banked Candidate payload without error.
+    candidate = map_album_match(
+        _perfect_match(), cur_artist="Radiohead", cur_album="OK Computer", options=[bare]
+    )
+    assert candidate.options[0].album_after is None
+
+
 def test_map_unmatched_local_file_is_reported() -> None:
     candidate = map_album_match(
         _unmatched_match(), cur_artist="Radiohead", cur_album="OK Computer", options=[]

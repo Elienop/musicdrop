@@ -4783,6 +4783,70 @@
               }
             ],
             "title": "Year"
+          },
+          "album_after": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlbumChange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "changed_fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Changed Fields",
+            "default": []
+          },
+          "tracks": {
+            "items": {
+              "$ref": "#/components/schemas/TrackChange"
+            },
+            "type": "array",
+            "title": "Tracks",
+            "default": []
+          },
+          "missing": {
+            "items": {
+              "$ref": "#/components/schemas/MissingTrack"
+            },
+            "type": "array",
+            "title": "Missing",
+            "default": []
+          },
+          "unmatched": {
+            "items": {
+              "$ref": "#/components/schemas/UnmatchedItem"
+            },
+            "type": "array",
+            "title": "Unmatched",
+            "default": []
+          },
+          "cover_after_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover After Url"
+          },
+          "data_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Url"
           }
         },
         "type": "object",

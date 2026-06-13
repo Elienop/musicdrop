@@ -1868,6 +1868,31 @@ export interface components {
             album?: string | null;
             /** Year */
             year?: number | null;
+            album_after?: components["schemas"]["AlbumChange"] | null;
+            /**
+             * Changed Fields
+             * @default []
+             */
+            changed_fields: string[];
+            /**
+             * Tracks
+             * @default []
+             */
+            tracks: components["schemas"]["TrackChange"][];
+            /**
+             * Missing
+             * @default []
+             */
+            missing: components["schemas"]["MissingTrack"][];
+            /**
+             * Unmatched
+             * @default []
+             */
+            unmatched: components["schemas"]["UnmatchedItem"][];
+            /** Cover After Url */
+            cover_after_url?: string | null;
+            /** Data Url */
+            data_url?: string | null;
         };
         /**
          * CoverInstallResult
