@@ -11,7 +11,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from app.models.import_models import DuplicateAction, DuplicatePrompt, ParkedAlbum
+from app.models.import_models import (
+    DuplicateAction,
+    DuplicatePrompt,
+    ExistingAlbum,
+    ParkedAlbum,
+)
 
 BankSource = Literal["sweep", "inbox", "manual"]
 
@@ -32,7 +37,9 @@ class BankDecision(BaseModel):
 
     Mirrors the live review dialect (``ImportChoice``): ``apply`` selects a
     ranked option by ``candidate_index`` (None = the top candidate);
-    ``duplicate`` needs the ``duplicate_action``; the rest stand alone. Fields
+    ``duplicate`` needs the ``duplicate_action`` and may ALSO pin the selected
+    release by ``candidate_index`` (the "decide once" path — one click both
+    picks the release and resolves the collision); the rest stand alone. Fields
     foreign to the chosen action — known or unknown — are rejected here so an
     impossible decision can never be persisted or queued.
     """
@@ -41,15 +48,15 @@ class BankDecision(BaseModel):
 
     action: BankDecisionAction
     # Index into the banked Candidate.options; only meaningful when action ==
-    # "apply". None means "apply the top candidate" (the apply runner resolves
-    # None -> 0), exactly like ImportChoice.candidate_index.
+    # "apply" or "duplicate". None means "apply the top candidate" (the apply
+    # runner resolves None -> 0), exactly like ImportChoice.candidate_index.
     candidate_index: int | None = None
     duplicate_action: DuplicateAction | None = None
 
     @model_validator(mode="after")
     def _fields_match_action(self) -> "BankDecision":
-        if self.action != "apply" and self.candidate_index is not None:
-            raise ValueError("candidate_index is only valid on an apply decision")
+        if self.action not in ("apply", "duplicate") and self.candidate_index is not None:
+            raise ValueError("candidate_index is only valid on an apply or duplicate decision")
         if self.action == "duplicate":
             if self.duplicate_action is None:
                 raise ValueError("a duplicate decision requires duplicate_action")
@@ -165,3 +172,10 @@ class BankBulkIgnoreResponse(BaseModel):
     """How many rows actually flipped (non-``needs_review`` ids are skipped)."""
 
     ignored: int
+
+
+class BankDuplicatesResponse(BaseModel):
+    """``GET /api/bank/{id}/duplicates``: library albums the selected
+    candidate would collide with (empty = no collision, import is clean)."""
+
+    existing: list[ExistingAlbum]
