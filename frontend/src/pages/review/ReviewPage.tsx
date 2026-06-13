@@ -543,6 +543,13 @@ function BankSection() {
     .filter((row) => selected.has(row.id))
     .map((row) => row.id);
 
+  // "Ignore" only flips needs_review rows server-side, so its label + payload
+  // count ONLY those — the wider checkboxes also select failed/done/stale/etc
+  // (which Delete handles), and counting them would over-promise the ignore.
+  const ignorableSelected = data.items
+    .filter((row) => selected.has(row.id) && row.status === "needs_review")
+    .map((row) => row.id);
+
   // Tri-state for the header checkbox: all eligible rows ticked, some, or none.
   const allSelected =
     selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
@@ -605,9 +612,9 @@ function BankSection() {
             type="button"
             variant="outline"
             size="sm"
-            disabled={visibleSelected.length === 0 || bulkIgnore.isPending}
+            disabled={ignorableSelected.length === 0 || bulkIgnore.isPending}
             onClick={() =>
-              bulkIgnore.mutate(visibleSelected, {
+              bulkIgnore.mutate(ignorableSelected, {
                 onSuccess: (res) => {
                   setSelected(new Set());
                   toast.success(`Ignored ${res.ignored} row${res.ignored === 1 ? "" : "s"}.`);
@@ -616,7 +623,7 @@ function BankSection() {
               })
             }
           >
-            Ignore selected ({visibleSelected.length})
+            Ignore selected ({ignorableSelected.length})
           </Button>
           <AlertDialog>
             <AlertDialogTrigger asChild>
