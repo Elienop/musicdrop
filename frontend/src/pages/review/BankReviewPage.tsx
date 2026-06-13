@@ -166,7 +166,12 @@ function FailedDuplicateStrip({
         Use these if the apply failed because the album is already in your
         library.
       </p>
-      <DuplicateActions pending={pending} busy={busy} onDecide={onDecide} />
+      <DuplicateActions
+        pending={pending}
+        busy={busy}
+        onDecide={onDecide}
+        context="bank"
+      />
     </section>
   );
 }
@@ -227,6 +232,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
           <DuplicateActions
             pending={pendingDup}
             busy={decide.isPending}
+            context="bank"
             onDecide={(action) => {
               setPendingDup(action);
               submit({
@@ -365,7 +371,12 @@ function BankDuplicateScreen({ item }: { item: BankItem }) {
         </Button>
         <DecisionError error={decide.error} />
       </div>
-      <DuplicateActions pending={pending} busy={decide.isPending} onDecide={onDecide} />
+      <DuplicateActions
+        pending={pending}
+        busy={decide.isPending}
+        onDecide={onDecide}
+        context="bank"
+      />
     </div>
   );
 }

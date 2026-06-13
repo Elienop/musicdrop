@@ -18,4 +18,28 @@ describe("DuplicateActions", () => {
       "bg-primary",
     );
   });
+
+  test("the live footnote promises Merge reappears as a normal review", () => {
+    render(<DuplicateActions pending={null} busy={false} onDecide={vi.fn()} />);
+    expect(
+      screen.getByText(/reappears as a normal review/i),
+    ).toBeInTheDocument();
+  });
+
+  test("the bank footnote drops the re-review promise (merge is terminal there)", () => {
+    render(
+      <DuplicateActions
+        pending={null}
+        busy={false}
+        onDecide={vi.fn()}
+        context="bank"
+      />,
+    );
+    expect(
+      screen.queryByText(/reappears as a normal review/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/combines them into your library/i),
+    ).toBeInTheDocument();
+  });
 });

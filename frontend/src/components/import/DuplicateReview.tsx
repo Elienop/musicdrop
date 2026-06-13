@@ -68,15 +68,23 @@ export function DuplicateComparison({
  * both / Replace old / Merge — with the footnote. The caller owns the
  * mutation: `onDecide(action)`; `pending` puts the spinner on the clicked
  * button; `busy` disables the row while a submission is in flight.
+ *
+ * `context` tunes the Merge wording: on the live attended import beets' 'm'
+ * rebuilds the album and re-runs the match, so it "reappears as a normal
+ * review"; on the bank the merge is directive-driven and TERMINAL (the row
+ * settles to done), so that promise would be false — bank says it merges into
+ * the library, full stop.
  */
 export function DuplicateActions({
   pending,
   busy,
   onDecide,
+  context = "live",
 }: {
   pending: DuplicateAction | null;
   busy: boolean;
   onDecide: (action: DuplicateAction) => void;
+  context?: "live" | "bank";
 }) {
   return (
     <>
@@ -125,8 +133,10 @@ export function DuplicateActions({
       </div>
       <p id="duplicate-footnote" className="text-muted-foreground text-xs">
         Keep both imports alongside the existing copy · Replace moves the old
-        copy to Trash (reversible) · Merge combines them, then reappears as a
-        normal review.
+        copy to Trash (reversible) ·{" "}
+        {context === "bank"
+          ? "Merge combines them into your library."
+          : "Merge combines them, then reappears as a normal review."}
       </p>
     </>
   );
