@@ -30,6 +30,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
 
+import beets
 from confuse import REDACTED_TOMBSTONE
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -466,8 +467,46 @@ def save(handle: LibraryHandle, req: SaveRequest) -> BeetsConfigSnapshot:
     return build_config_snapshot(handle)
 
 
+def _beets_default_naming() -> tuple[dict[str, str], dict[str, str]]:
+    """beets' built-in ``paths``/``replace`` defaults, read FRESH from the
+    installed beets' bundled ``config_default.yaml``.
+
+    NOT ``beets.config``: that is the loaded/merged config, which is STALE
+    between a naming Save and an Apply (Apply has not reloaded beets yet), so
+    reading it would show the pre-Save values and make the panel revert the
+    user's just-saved edit. The bundled file is static and version-pinned
+    (``beets==2.11.*``), never contaminated by the loaded user config, so
+    "on-disk override ?? bundled default" is correct both with no override AND
+    immediately after a Save.
+
+    Returns ``(paths_defaults, replace_defaults)`` as plain ``{str: str}`` maps
+    (a ``None`` value coerced to ``""`` for forward-safety). Degrades to
+    ``({}, {})`` on any read/parse failure so :func:`read_naming` never 500s.
+    """
+    try:
+        text = (Path(beets.__file__).parent / "config_default.yaml").read_text(encoding="utf-8")
+        doc = parse_yaml(text)
+    except (OSError, ValueError, YAMLError):
+        return ({}, {})
+    if not isinstance(doc, dict):
+        return ({}, {})
+
+    paths_raw = doc.get("paths")
+    paths_src = paths_raw if isinstance(paths_raw, dict) else {}
+    paths = {str(k): "" if v is None else str(v) for k, v in paths_src.items()}
+
+    replace_raw = doc.get("replace")
+    replace_src = replace_raw if isinstance(replace_raw, dict) else {}
+    replace = {str(k): "" if v is None else str(v) for k, v in replace_src.items()}
+
+    return (paths, replace)
+
+
 def read_naming(handle: LibraryHandle) -> NamingConfig:
-    """Parse the on-disk ``paths:``/``replace:`` into structured rows + CAS sha.
+    """Parse the on-disk ``paths:``/``replace:`` into structured rows + CAS sha,
+    falling back per key to beets' built-in defaults so the panel reflects the
+    *effective* naming even when the user relies on the defaults (no explicit
+    ``paths:``/``replace:`` block).
 
     ``previews`` and ``replace_errors`` are left empty here — the router fills
     them by calling the renderer with ``handle.lib`` (this function stays
@@ -495,8 +534,29 @@ def read_naming(handle: LibraryHandle) -> NamingConfig:
         else:
             custom.append(NamingRuleInput(query=skey, template=tmpl))
 
+    # Per-key fallback to beets' bundled defaults. ``paths`` IS merged per-key in
+    # beets, so a user who set only ``default`` still inherits ``comp``/
+    # ``singleton`` — this mirrors that. The explicit on-disk value (even an
+    # explicit ``""``) wins; a bundled key may still be absent (``None``) if a
+    # future beets drops it.
+    paths_default, replace_default = _beets_default_naming()
+    if default is None:
+        default = paths_default.get("default")
+    if comp is None:
+        comp = paths_default.get("comp")
+    if singleton is None:
+        singleton = paths_default.get("singleton")
+
+    # ``replace`` is NOT merged. beets reads it from a single source
+    # (``config["replace"].get(dict)`` -> confuse ``first()``), so a present
+    # ``replace:`` block *wholly replaces* beets' defaults. Show the explicit
+    # rows verbatim when present, else the bundled defaults. (An explicit empty
+    # ``replace: {}`` is indistinguishable from absent here -> both show the
+    # defaults; an accepted rare-case simplification.)
     replace_raw = doc.get("replace")
     replace_map = replace_raw if isinstance(replace_raw, dict) else {}
+    if not replace_map:
+        replace_map = replace_default
     replace = [
         ReplaceRuleInput(pattern=str(p), replacement="" if r is None else str(r))
         for p, r in replace_map.items()

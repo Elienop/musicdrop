@@ -90,3 +90,55 @@ test("Add rule reveals a custom query input", async () => {
   await userEvent.click(screen.getByRole("button", { name: /add rule/i }));
   expect(screen.getByLabelText(/custom rule 1 query/i)).toBeInTheDocument();
 });
+
+// With no explicit paths:/replace: on disk, the backend now returns beets'
+// effective defaults (default/comp/singleton + replace rows). The panel must
+// pre-fill those — not blanks — so it's a faithful, editable view of the
+// active naming.
+test("pre-fills with beets' effective defaults (no-override case)", async () => {
+  const effective = {
+    default: "$albumartist/$album%aunique{}/$track $title",
+    comp: "Compilations/$album%aunique{}/$track $title",
+    singleton: "Non-Album/$artist/$title",
+    custom: [],
+    replace: [
+      { pattern: "[<>:\\?\\*\\|]", replacement: "_" },
+      { pattern: "^-", replacement: "_" },
+      { pattern: "\\s+$", replacement: "" },
+    ],
+    sha256: "sha-eff",
+    previews: [],
+    replace_errors: [],
+  };
+  vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
+    if (path === "/api/config/naming")
+      return { data: effective, response: { ok: true, status: 200 } } as never;
+    if (path === "/api/imports/active")
+      return {
+        data: { active: false },
+        response: { ok: true, status: 200 },
+      } as never;
+    if (path === "/api/config")
+      return {
+        data: { apply_pending: false },
+        response: { ok: true, status: 200 },
+      } as never;
+    return { data: undefined, response: { ok: false, status: 404 } } as never;
+  });
+
+  wrap(<NamingPanel />);
+
+  expect(
+    await screen.findByDisplayValue(
+      "$albumartist/$album%aunique{}/$track $title",
+    ),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByDisplayValue("Compilations/$album%aunique{}/$track $title"),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByDisplayValue("Non-Album/$artist/$title"),
+  ).toBeInTheDocument();
+  // A bundled replace row pre-fills too (no blank panel).
+  expect(screen.getByDisplayValue("^-")).toBeInTheDocument();
+});

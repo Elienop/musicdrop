@@ -1,10 +1,15 @@
 import hashlib
 from pathlib import Path
 
+import beets
 import pytest
 from fastapi import HTTPException
 
-from app.beets.config_editor import read_naming, save_naming
+from app.beets.config_editor import (
+    _beets_default_naming,
+    read_naming,
+    save_naming,
+)
 from app.beets.library import LibraryHandle
 from app.models.config_editor import (
     NamingRuleInput,
@@ -31,9 +36,12 @@ def test_read_naming_splits_keys(beets_library: LibraryHandle) -> None:
     cfg = read_naming(beets_library)
     assert cfg.default == "$albumartist/$album/$track $title"
     assert cfg.comp == "Compilations/$album/$track $title"
-    assert cfg.singleton is None
+    # singleton has no explicit override -> falls back to the bundled default
+    # (paths is merged per-key in beets).
+    assert cfg.singleton == "Non-Album/$artist/$title"
     assert cfg.custom[0].query == "albumtype:soundtrack"
-    assert cfg.replace[0].pattern == "[?]" and cfg.replace[0].replacement == "_"
+    # An explicit replace: block wholly replaces beets' defaults (no merge).
+    assert [(r.pattern, r.replacement) for r in cfg.replace] == [("[?]", "_")]
     assert cfg.sha256 == _sha(cfg_path)
 
 
@@ -89,11 +97,74 @@ def test_save_naming_422_on_bad_regex(beets_library: LibraryHandle) -> None:
 
 
 def test_read_naming_tolerates_non_mapping_paths(beets_library: LibraryHandle) -> None:
-    # A hand-corrupted config (paths: scalar) must not 500 — coerce to empty.
+    # A hand-corrupted config (paths: scalar) must not 500 — coerce to empty,
+    # then the per-key fallback fills in beets' bundled defaults.
     cfg_path = beets_library.config_path
     cfg_path.write_text("directory: /tmp/music\nlibrary: library.db\npaths: just-a-string\n")
     cfg = read_naming(beets_library)
-    assert cfg.default is None and cfg.comp is None and cfg.custom == []
+    assert cfg.custom == []
+    assert cfg.default == "$albumartist/$album%aunique{}/$track $title"
+    assert cfg.comp == "Compilations/$album%aunique{}/$track $title"
+    assert cfg.singleton == "Non-Album/$artist/$title"
+
+
+def test_read_naming_falls_back_to_bundled_defaults(beets_library: LibraryHandle) -> None:
+    # The common case: a config with no paths:/replace: blocks at all. The panel
+    # must pre-fill with beets' effective built-in naming, not blanks.
+    cfg_path = beets_library.config_path
+    cfg_path.write_text("directory: /tmp/music\nlibrary: library.db\n")
+    cfg = read_naming(beets_library)
+    assert cfg.default == "$albumartist/$album%aunique{}/$track $title"
+    assert cfg.comp == "Compilations/$album%aunique{}/$track $title"
+    assert cfg.singleton == "Non-Album/$artist/$title"
+    assert cfg.custom == []
+    rows = {r.pattern: r.replacement for r in cfg.replace}
+    assert len(cfg.replace) == 9
+    assert rows["^-"] == "_"
+    assert rows["\\s+$"] == ""  # the whitespace strippers replace with nothing
+    # The CAS sha stays the on-disk bytes hash — the default file is never
+    # folded in, or the Save round-trip would break.
+    assert cfg.sha256 == _sha(cfg_path)
+
+
+def test_read_naming_per_key_path_fallback(beets_library: LibraryHandle) -> None:
+    # An explicit default only -> comp/singleton fall back to bundled defaults.
+    cfg_path = beets_library.config_path
+    cfg_path.write_text(
+        "directory: /tmp/music\nlibrary: library.db\n"
+        "paths:\n"
+        "  default: $albumartist/$album/$track. $title\n"
+    )
+    cfg = read_naming(beets_library)
+    assert cfg.default == "$albumartist/$album/$track. $title"
+    assert cfg.comp == "Compilations/$album%aunique{}/$track $title"
+    assert cfg.singleton == "Non-Album/$artist/$title"
+
+
+def test_read_naming_explicit_replace_suppresses_defaults(
+    beets_library: LibraryHandle,
+) -> None:
+    # A present replace: block WHOLLY replaces beets' defaults (no merge).
+    cfg_path = beets_library.config_path
+    cfg_path.write_text("directory: /tmp/music\nlibrary: library.db\nreplace:\n  '[?]': _\n")
+    cfg = read_naming(beets_library)
+    assert [(r.pattern, r.replacement) for r in cfg.replace] == [("[?]", "_")]
+    # Path keys still fall back since there is no paths: block.
+    assert cfg.default == "$albumartist/$album%aunique{}/$track $title"
+
+
+def test_beets_default_naming_known_values_and_missing_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, replace = _beets_default_naming()
+    assert paths["default"] == "$albumartist/$album%aunique{}/$track $title"
+    assert paths["comp"] == "Compilations/$album%aunique{}/$track $title"
+    assert paths["singleton"] == "Non-Album/$artist/$title"
+    assert len(replace) == 9
+    # Degrades to empty dicts when the bundled file can't be read, so
+    # read_naming never 500s.
+    monkeypatch.setattr(beets, "__file__", "/no/such/dir/beets/__init__.py")
+    assert _beets_default_naming() == ({}, {})
 
 
 def test_save_naming_skips_empty_query_custom_row(beets_library: LibraryHandle) -> None:
