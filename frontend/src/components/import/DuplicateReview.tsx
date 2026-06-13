@@ -195,19 +195,23 @@ function Panel({
       >
         {heading}
       </p>
-      <CoverArt src={coverUrl} className="w-full rounded-lg" />
-      <div className="flex flex-col gap-0.5">
-        <p className="truncate font-medium">{album.album ?? "Unknown album"}</p>
-        <p className="text-muted-foreground truncate text-sm">
-          {album.album_artist ?? "Unknown artist"}
-        </p>
-        <p className="text-muted-foreground text-sm">{meta.join(" · ")}</p>
-        <p
-          className="text-muted-foreground truncate font-mono text-xs"
-          title={album.folder}
-        >
-          {album.folder}
-        </p>
+      <div className="flex gap-4">
+        <div className="w-48 shrink-0">
+          <CoverArt src={coverUrl} className="w-full rounded-lg" />
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5 self-center">
+          <p className="truncate font-medium">{album.album ?? "Unknown album"}</p>
+          <p className="text-muted-foreground truncate text-sm">
+            {album.album_artist ?? "Unknown artist"}
+          </p>
+          <p className="text-muted-foreground text-sm">{meta.join(" · ")}</p>
+          <p
+            className="text-muted-foreground truncate font-mono text-xs"
+            title={album.folder}
+          >
+            {album.folder}
+          </p>
+        </div>
       </div>
     </section>
   );
