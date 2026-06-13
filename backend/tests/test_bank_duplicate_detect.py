@@ -163,3 +163,121 @@ def test_duplicates_endpoint_empty_for_no_match_row(
 ) -> None:
     # A row with no parked candidate has nothing to check.
     assert client.get(f"/api/bank/{no_match_row}/duplicates").json()["existing"] == []
+
+
+# ----- detection follows the SELECTED option's metadata, not the top match -----
+
+
+def _option(
+    *,
+    index: int,
+    release_id: str | None,
+    album_artist: str | None = None,
+    album: str | None = None,
+    year: int | None = None,
+) -> CandidateOption:
+    return CandidateOption(
+        index=index,
+        confidence=80.0,
+        data_source="MusicBrainz",
+        disambiguation=None,
+        release_id=release_id,
+        album_artist=album_artist,
+        album=album,
+        year=year,
+    )
+
+
+def _candidate_with_options(
+    *, artist: str, album: str, options: list[CandidateOption]
+) -> Candidate:
+    change = AlbumChange(
+        artist=artist, album=album, year=1995, label=None, country=None, media=None
+    )
+    return Candidate(
+        confidence=80.0,
+        recommendation=Recommendation.medium,
+        data_source="MusicBrainz",
+        data_url=None,
+        cover_after_url=None,
+        has_current_art=False,
+        changed_fields=[],
+        album_before=change,
+        album_after=change,
+        tracks=[],
+        missing=[],
+        unmatched=[],
+        options=options,
+    )
+
+
+def _bank_row(bank_dir: Path, candidate: Candidate) -> str:
+    parked = ParkedAlbum(album_index=0, folder="/inbox/Foo", candidate=candidate)
+    item = store.create_item(
+        bank_dir,
+        folder="/inbox/Foo",
+        source="sweep",
+        reason="needs_review",
+        fingerprint="f" * 64,
+        parked=parked,
+    )
+    return item.id
+
+
+def test_duplicates_endpoint_follows_the_selected_option_metadata(
+    client: TestClient, bank_dir: Path, beets_library: LibraryHandle
+) -> None:
+    # Two distinct in-library albums by the SAME artist — only the selected
+    # option's album title should pick out which one collides.
+    lib = beets_library.lib
+    foo_id = _add_album(lib, artist="The Band", album="Foo", mb="mb-foo", n=10)
+    deluxe_id = _add_album(lib, artist="The Band", album="Foo (Deluxe)", mb="mb-dlx", n=14)
+    # Top match (album_after) is "Foo"; the two options carry distinct titles.
+    candidate = _candidate_with_options(
+        artist="The Band",
+        album="Foo",
+        options=[
+            _option(index=0, release_id="mb-foo", album_artist="The Band", album="Foo", year=1995),
+            _option(
+                index=1,
+                release_id="mb-dlx",
+                album_artist="The Band",
+                album="Foo (Deluxe)",
+                year=1995,
+            ),
+        ],
+    )
+    row_id = _bank_row(bank_dir, candidate)
+
+    top = client.get(f"/api/bank/{row_id}/duplicates", params={"candidate_index": 0})
+    assert top.status_code == 200
+    assert [e["album_id"] for e in top.json()["existing"]] == [foo_id]
+
+    deluxe = client.get(f"/api/bank/{row_id}/duplicates", params={"candidate_index": 1})
+    assert deluxe.status_code == 200
+    assert [e["album_id"] for e in deluxe.json()["existing"]] == [deluxe_id]
+
+
+def test_duplicates_endpoint_falls_back_to_album_after_for_legacy_rows(
+    client: TestClient, bank_dir: Path, beets_library: LibraryHandle
+) -> None:
+    # A legacy banked row whose options predate the per-option metadata fields
+    # (album_artist/album/year all None) must still detect via album_after.
+    lib = beets_library.lib
+    foo_id = _add_album(lib, artist="The Band", album="Foo", mb="mb-foo", n=10)
+    _add_album(lib, artist="The Band", album="Foo (Deluxe)", mb="mb-dlx", n=14)
+    candidate = _candidate_with_options(
+        artist="The Band",
+        album="Foo",
+        options=[
+            _option(index=0, release_id="mb-foo"),
+            _option(index=1, release_id="mb-dlx"),
+        ],
+    )
+    row_id = _bank_row(bank_dir, candidate)
+
+    # Both indices fall back to album_after ("Foo") -> the plain "Foo" album.
+    for idx in (0, 1):
+        r = client.get(f"/api/bank/{row_id}/duplicates", params={"candidate_index": idx})
+        assert r.status_code == 200
+        assert [e["album_id"] for e in r.json()["existing"]] == [foo_id]

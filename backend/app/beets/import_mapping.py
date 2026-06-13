@@ -182,6 +182,12 @@ def map_candidate_options(
                 data_source=_opt_str(match.info.data_source),
                 disambiguation=_opt_str(match.disambig_string),
                 release_id=_opt_str(getattr(match.info, "album_id", None)),
+                # Per-option identity, derived EXACTLY as album_after is
+                # (_album_change_from_info), so the bank's duplicate check on a
+                # non-top selection matches the apply on that same release.
+                album_artist=_opt_str(match.info.artist),
+                album=_opt_str(match.info.album),
+                year=_opt_int(match.info.year),
             )
         )
     return options

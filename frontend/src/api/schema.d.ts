@@ -1832,6 +1832,12 @@ export interface components {
             disambiguation: string | null;
             /** Release Id */
             release_id?: string | null;
+            /** Album Artist */
+            album_artist?: string | null;
+            /** Album */
+            album?: string | null;
+            /** Year */
+            year?: number | null;
         };
         /**
          * CoverInstallResult

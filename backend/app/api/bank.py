@@ -86,14 +86,23 @@ async def bank_item_duplicates(
     after = parked.candidate.album_after
     options = parked.candidate.options
     idx = candidate_index if 0 <= candidate_index < len(options) else 0
-    mb_albumid = options[idx].release_id if options else None
+    # Detect against the SELECTED option's own metadata so the up-front check
+    # equals what the apply does (the apply pins this option's release_id and
+    # beets runs find_duplicates on ITS albumartist/album). Fall back to
+    # album_after field-by-field for legacy rows banked before options carried
+    # their own identity (and for the top option, which equals album_after).
+    opt = options[idx] if options else None
+    albumartist = opt.album_artist if opt and opt.album_artist is not None else after.artist
+    album = opt.album if opt and opt.album is not None else after.album
+    year = opt.year if opt and opt.year is not None else after.year
+    mb_albumid = opt.release_id if opt else None
     handle: LibraryHandle = request.app.state.beets_library
     existing = await run_in_threadpool(
         find_import_duplicates,
         handle.lib,
-        albumartist=after.artist,
-        album=after.album,
-        year=after.year,
+        albumartist=albumartist,
+        album=album,
+        year=year,
         mb_albumid=mb_albumid,
         exclude_under=item.folder,
     )

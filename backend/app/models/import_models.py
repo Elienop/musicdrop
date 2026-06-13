@@ -117,6 +117,14 @@ class CandidateOption(BaseModel):
     data_source: str | None
     disambiguation: str | None
     release_id: str | None = None
+    # This option's own matched-release identity — mirrors ``album_after`` but
+    # per candidate, so the bank's up-front duplicate check keys on the SELECTED
+    # release (not the top match) and equals what the apply does. Optional +
+    # defaulting to None keeps rows banked before these fields existed valid;
+    # the endpoint falls back to ``album_after`` field-by-field when absent.
+    album_artist: str | None = None
+    album: str | None = None
+    year: int | None = None
 
 
 class Candidate(BaseModel):
