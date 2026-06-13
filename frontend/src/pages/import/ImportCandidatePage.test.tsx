@@ -321,6 +321,62 @@ describe("ImportCandidatePage", () => {
     ).not.toBeInTheDocument();
   });
 
+  test("legacy bare-option row: an alternate falls back to the top, keeping the word + an explanatory note", async () => {
+    // A row banked before per-candidate previews: the options carry no diff
+    // (no `album_after`), so a non-top selection cannot re-render — it falls
+    // back to the TOP match. The header must stay coherent (keep the
+    // recommendation word) and a note must explain the mismatch.
+    const legacy = makeCandidate({
+      options: [
+        {
+          index: 0,
+          confidence: 76,
+          data_source: "MusicBrainz",
+          disambiguation: "1997 UK CD",
+          changed_fields: [],
+          tracks: [],
+          missing: [],
+          unmatched: [],
+        },
+        {
+          index: 1,
+          confidence: 71,
+          data_source: "MusicBrainz",
+          disambiguation: "2008 reissue",
+          changed_fields: [],
+          tracks: [],
+          missing: [],
+          unmatched: [],
+        },
+      ],
+    });
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(legacy)));
+    const user = userEvent.setup();
+    renderAt();
+
+    await screen.findByRole("heading", { name: /Radiohead — OK Computer$/i });
+    await user.selectOptions(screen.getByLabelText(/candidate release/i), "1");
+
+    // (b) the legacy note explains the fallback (role=status).
+    const note = await screen.findByText(/Showing the top match/i);
+    expect(note).toHaveAttribute("role", "status");
+    // (a) the recommendation word STAYS — the preview is still the top match.
+    expect(screen.getByText(/Medium match/i)).toBeInTheDocument();
+    // (c) album + tracklist stay the TOP match's — no alternate diff to show.
+    expect(
+      screen.getByRole("heading", { name: /Radiohead — OK Computer$/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Paranoid Android")).toBeInTheDocument();
+    expect(screen.queryByText(/OKNOTOK/)).not.toBeInTheDocument();
+    // The header % stays the top's (76%), even though the dropdown shows the
+    // alternate — the note + kept word make that honest, not contradictory.
+    expect(
+      screen.getByText(
+        (_, el) => el?.tagName === "SPAN" && el.textContent === "76%",
+      ),
+    ).toBeInTheDocument();
+  });
+
   test("switching candidate then Apply posts the chosen index", async () => {
     let body: unknown = null;
     server.use(

@@ -51,15 +51,27 @@ export function CandidateReview({
   // merged over the candidate (or the candidate itself for the top match /
   // legacy bare options). The NOW panel + switcher stay on `candidate`.
   const active = resolveSelected(candidate, selected);
+  // A non-top option that carries NO diff (a row banked before per-candidate
+  // previews) falls back to the top match. The preview is then the TOP, not the
+  // selected release — so the header keeps the recommendation word and a note
+  // explains the mismatch (the centralized successor to the deleted page hints).
+  const isTopFallback =
+    selected !== 0 && candidate.options[selected]?.album_after == null;
   return (
     <div className="flex flex-col gap-6">
-      <MatchHeader candidate={active} selected={selected} />
+      <MatchHeader candidate={active} showRecommendation={selected === 0 || isTopFallback} />
       {candidate.options.length > 1 && (
         <CandidateSwitcher
           options={candidate.options}
           selected={selected}
           onSelect={onSelect}
         />
+      )}
+      {isTopFallback && (
+        <p className="text-muted-foreground text-sm" role="status">
+          Showing the top match — this row predates per-candidate previews; Apply
+          will still use the selected release.
+        </p>
       )}
       <BeforeAfter candidate={active} nowCoverUrl={nowCoverUrl} />
       <WhatChanges candidate={active} />
@@ -96,15 +108,17 @@ function resolveSelected(candidate: Candidate, selected: number): Candidate {
 }
 
 /** `<confidence>% · <recommendation>` + Artist — Album + the source line. The
- * recommendation word is shown only for the top match (`selected === 0`): beets
- * computes it once per album, not per candidate, so for an alternate we drop it
- * and keep the honest, per-release %. */
+ * recommendation word is shown when the preview reflects the top match
+ * (`showRecommendation`): beets computes it once per album, not per candidate,
+ * so it is dropped ONLY for a genuine alternate diff (per-release %, no
+ * fabricated tier). A legacy bare-option row falls back to the top match, so it
+ * keeps the word — the caller passes `showRecommendation` true there too. */
 function MatchHeader({
   candidate,
-  selected,
+  showRecommendation,
 }: {
   candidate: Candidate;
-  selected: number;
+  showRecommendation: boolean;
 }) {
   const after = candidate.album_after;
   const sourceBits = [
@@ -125,7 +139,7 @@ function MatchHeader({
         <span className="text-foreground font-medium">
           {Math.round(candidate.confidence)}%
         </span>
-        {selected === 0 && <>· {RECOMMENDATION_LABEL[candidate.recommendation]}</>}
+        {showRecommendation && <>· {RECOMMENDATION_LABEL[candidate.recommendation]}</>}
         {sourceBits.length > 0 && <span aria-hidden="true">·</span>}
         <span className="truncate">{sourceBits.join(" · ")}</span>
         {candidate.data_url && (
@@ -135,7 +149,7 @@ function MatchHeader({
             rel="noreferrer"
             className="text-foreground inline-flex items-center gap-1 underline underline-offset-4"
           >
-            view <span className="sr-only">(opens MusicBrainz in a new tab)</span>
+            view <span className="sr-only">(opens the release page in a new tab)</span>
             <External className="size-3" aria-hidden="true" />
           </a>
         )}
