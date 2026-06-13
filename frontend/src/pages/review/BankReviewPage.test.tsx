@@ -16,8 +16,21 @@ vi.mock("react-router", async (importOriginal) => ({
 const O = window.location.origin;
 const ITEM = `${O}/api/bank/:itemId`;
 const DECISION = `${O}/api/bank/:itemId/decision`;
+const DUP = `${O}/api/bank/:itemId/duplicates`;
 const ACTIVE = `${O}/api/imports/active`;
 const IMPORT_URL = `${O}/api/import`;
+
+/** One in-library album the candidate would collide with. */
+const existingAlbum = {
+  album_id: 7,
+  album_artist: "Boards of Canada",
+  album: "Music Has the Right to Children",
+  year: 1998,
+  track_count: 17,
+  format: "MP3",
+  bitrate_kbps: 320,
+  folder: "/library/BoC/MHTRTC",
+};
 
 /** A complete banked Candidate — the exact generated shape (every field). */
 const candidate = {
@@ -83,6 +96,9 @@ describe("BankReviewPage", () => {
     mockNavigate.mockClear();
     server.use(
       http.get(ACTIVE, () => HttpResponse.json({ active: false, origin: "manual", needs_review_count: 0 })),
+      // No collision by default — candidate-screen tests get the normal footer;
+      // collision tests override this to return an existing album.
+      http.get(DUP, () => HttpResponse.json({ existing: [] })),
     );
   });
 
@@ -170,21 +186,46 @@ describe("BankReviewPage", () => {
     await waitFor(() => expect(body).toEqual({ action: "asis" }));
   });
 
-  test("a failed row surfaces the error and the duplicate-resolution strip", async () => {
+  test("a detected duplicate shows the up-front resolver and resolves in one decision", async () => {
     let body: unknown = null;
     server.use(
-      http.get(ITEM, () =>
-        HttpResponse.json(bankItem({ status: "failed", error: "the album duplicates one already in your library - decide again with a duplicate action", decided: { action: "apply", candidate_index: 0, duplicate_action: null } })),
-      ),
+      http.get(ITEM, () => HttpResponse.json(bankItem())),
+      http.get(DUP, () => HttpResponse.json({ existing: [existingAlbum] })),
       http.post(DECISION, async ({ request }) => {
         body = await request.json();
-        return HttpResponse.json(bankItem({ status: "queued", decided: { action: "duplicate", candidate_index: null, duplicate_action: "replace" } }));
+        return HttpResponse.json(bankItem({ status: "queued", decided: { action: "duplicate", candidate_index: 0, duplicate_action: "replace" } }));
       }),
     );
     renderRow();
-    expect(await screen.findByRole("alert")).toHaveTextContent(/duplicates one already in your library/);
+    await screen.findByRole("heading", { name: /Music Has the Right/ });
+    // The up-front collision notice + a View link to the existing copy.
+    expect(await screen.findByText(/already in your library/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /^view$/i })).toHaveAttribute("href", "/albums/7");
+    // One click both pins the selected release and resolves the collision.
     await userEvent.click(screen.getByRole("button", { name: /replace old/i }));
-    await waitFor(() => expect(body).toEqual({ action: "duplicate", duplicate_action: "replace" }));
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/review"));
+    expect(body).toEqual({ action: "duplicate", candidate_index: 0, duplicate_action: "replace" });
+  });
+
+  test("no detected duplicate keeps the normal apply footer", async () => {
+    // The beforeEach default returns { existing: [] }.
+    server.use(http.get(ITEM, () => HttpResponse.json(bankItem())));
+    renderRow();
+    await screen.findByRole("heading", { name: /Music Has the Right/ });
+    expect(screen.getByRole("button", { name: /apply/i })).toBeInTheDocument();
+    expect(screen.queryByText(/already in your library/i)).not.toBeInTheDocument();
+  });
+
+  test("a failed row with no collision shows the error and the normal retry footer", async () => {
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(bankItem({ status: "failed", error: "the apply imported nothing (the lookup may have failed transiently) - decide again", decided: { action: "apply", candidate_index: 0, duplicate_action: null } })),
+      ),
+    );
+    renderRow();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/imported nothing/);
+    expect(screen.getByRole("button", { name: /apply/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /replace old/i })).not.toBeInTheDocument();
   });
 
   test("a decision 409 shows the backend's reason inline (string detail tolerated)", async () => {

@@ -2,10 +2,11 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 
 import { useActiveImport } from "@/api/useActiveImport";
-import type { BankDecision, BankItem } from "@/api/useBank";
+import type { BankDecision, BankItem, ExistingAlbum } from "@/api/useBank";
 import {
   BankConflictError,
   useBankDecision,
+  useBankDuplicates,
   useBankItem,
   useDeleteBankItem,
 } from "@/api/useBank";
@@ -177,7 +178,19 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
   const [pendingDup, setPendingDup] = useState<DuplicateAction | null>(null);
   // The BankScreen branch guarantees parked; narrow for tsc without a cast.
   const parked = item.parked;
+  // A candidate row is decidable while it awaits a verdict (fresh) OR after a
+  // failed apply (retry) — both run the up-front library-collision check keyed
+  // on the selected release; queued/applying/done rows never reach here.
+  const decidable = item.status === "needs_review" || item.status === "failed";
+  const dups = useBankDuplicates(item.id, selected, decidable && parked != null);
   if (!parked) return null;
+
+  // The matched release already exists in the library — fold beets' four
+  // duplicate actions into the footer so one click both pins this release and
+  // resolves the collision (no failed apply, no re-open). While the check is
+  // pending or finds nothing, the normal footer stands.
+  const existing = dups.data?.existing ?? [];
+  const hasCollision = existing.length > 0;
 
   const submit = (decision: BankDecision) =>
     decide.mutate(decision, {
@@ -197,73 +210,126 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
         selected={selected}
         onSelect={setSelected}
       />
-      {item.status === "failed" && (
-        <FailedDuplicateStrip
-          busy={decide.isPending}
-          pending={pendingDup}
-          onDecide={(action) => {
-            setPendingDup(action);
-            submit({ action: "duplicate", duplicate_action: action });
-          }}
-        />
-      )}
-      <div className="bg-background/80 sticky bottom-0 z-10 -mx-2 flex flex-col gap-1.5 border-t px-2 py-3 backdrop-blur">
-        {selected !== 0 && (
-          <p className="text-muted-foreground text-sm" role="status">
-            Showing the top match — Apply will queue the selected release.
+      {hasCollision ? (
+        <>
+          <AlreadyInLibraryNotice existing={existing} />
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={decide.isPending}
+              onClick={() => submit({ action: "ignore" })}
+            >
+              Ignore
+            </Button>
+            <DecisionError error={decide.error} />
+          </div>
+          <DuplicateActions
+            pending={pendingDup}
+            busy={decide.isPending}
+            onDecide={(action) => {
+              setPendingDup(action);
+              submit({
+                action: "duplicate",
+                candidate_index: selected,
+                duplicate_action: action,
+              });
+            }}
+          />
+        </>
+      ) : (
+        <div className="bg-background/80 sticky bottom-0 z-10 -mx-2 flex flex-col gap-1.5 border-t px-2 py-3 backdrop-blur">
+          {selected !== 0 && (
+            <p className="text-muted-foreground text-sm" role="status">
+              Showing the top match — Apply will queue the selected release.
+            </p>
+          )}
+          <DecisionError error={decide.error} />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={decide.isPending}
+              onClick={() => submit({ action: "ignore" })}
+            >
+              Ignore
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={decide.isPending}
+              aria-describedby="bank-actions-hint"
+              onClick={() => submit({ action: "asis" })}
+            >
+              Use as-is
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={decide.isPending}
+              aria-describedby="bank-actions-hint"
+              onClick={() => submit({ action: "astracks" })}
+            >
+              As tracks
+            </Button>
+            <Button
+              className="ml-auto"
+              disabled={decide.isPending}
+              onClick={() => submit({ action: "apply", candidate_index: selected })}
+            >
+              {decide.isPending ? (
+                <>
+                  <Spinner className="animate-spin" aria-hidden="true" /> Queuing…
+                </>
+              ) : (
+                <>
+                  <Success aria-hidden="true" /> Apply
+                </>
+              )}
+            </Button>
+          </div>
+          <p id="bank-actions-hint" className="text-muted-foreground text-xs">
+            Decisions queue for the background apply — files move when the
+            import slot is free. Use as-is imports with your current tags; As
+            tracks imports each file as a standalone track.
           </p>
-        )}
-        <DecisionError error={decide.error} />
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={decide.isPending}
-            onClick={() => submit({ action: "ignore" })}
-          >
-            Ignore
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={decide.isPending}
-            aria-describedby="bank-actions-hint"
-            onClick={() => submit({ action: "asis" })}
-          >
-            Use as-is
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={decide.isPending}
-            aria-describedby="bank-actions-hint"
-            onClick={() => submit({ action: "astracks" })}
-          >
-            As tracks
-          </Button>
-          <Button
-            className="ml-auto"
-            disabled={decide.isPending}
-            onClick={() => submit({ action: "apply", candidate_index: selected })}
-          >
-            {decide.isPending ? (
-              <>
-                <Spinner className="animate-spin" aria-hidden="true" /> Queuing…
-              </>
-            ) : (
-              <>
-                <Success aria-hidden="true" /> Apply
-              </>
-            )}
-          </Button>
         </div>
-        <p id="bank-actions-hint" className="text-muted-foreground text-xs">
-          Decisions queue for the background apply — files move when the
-          import slot is free. Use as-is imports with your current tags; As
-          tracks imports each file as a standalone track.
-        </p>
-      </div>
+      )}
     </div>
+  );
+}
+
+/** The up-front "this already exists" notice on a banked candidate screen —
+ * lists each colliding library copy with a View link, above the four duplicate
+ * actions. The candidate switcher stays live, so Keep both / Replace / Merge
+ * tag the new copy as the SELECTED release. */
+function AlreadyInLibraryNotice({ existing }: { existing: ExistingAlbum[] }) {
+  return (
+    <section aria-label="Already in your library" className="flex flex-col gap-3">
+      <SectionLabel>Already in your library</SectionLabel>
+      <p className="text-muted-foreground text-sm">
+        This album matches{" "}
+        {existing.length === 1 ? "one you already have" : `${existing.length} you already have`}.
+        Choose what to do below — your choice imports the selected release.
+      </p>
+      <ul className="flex flex-col gap-2">
+        {existing.map((album) => (
+          <li
+            key={album.album_id}
+            className="border-border flex items-center justify-between gap-3 rounded-lg border p-3"
+          >
+            <span className="truncate text-sm">
+              <span className="font-medium">{album.album_artist ?? "Unknown artist"}</span>
+              {" — "}
+              {album.album ?? "Unknown album"}
+            </span>
+            <Button variant="outline" size="sm" asChild>
+              <Link to={`/albums/${album.album_id}`}>View</Link>
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
