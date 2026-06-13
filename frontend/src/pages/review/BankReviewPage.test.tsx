@@ -285,6 +285,30 @@ describe("BankReviewPage", () => {
     expect(within(second.container).getByRole("link", { name: /view album/i })).toHaveAttribute("href", "/albums/7");
   });
 
+  test("a skip_new dup resolution says it kept the existing copy, not 'landed'", async () => {
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(bankItem({ status: "done", album_id: null, decided: { action: "duplicate", candidate_index: 0, duplicate_action: "skip_new" } })),
+      ),
+    );
+    renderRow();
+    expect(await screen.findByText(/kept your existing copy/i)).toBeInTheDocument();
+    expect(screen.queryByText(/landed in your library/i)).not.toBeInTheDocument();
+    // No album landed — the settled notice offers Remove, not View album.
+    expect(screen.getByRole("button", { name: /remove from bank/i })).toBeInTheDocument();
+  });
+
+  test("a replace dup resolution says it replaced the old copy", async () => {
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(bankItem({ status: "done", album_id: 7, decided: { action: "duplicate", candidate_index: 0, duplicate_action: "replace" } })),
+      ),
+    );
+    renderRow();
+    expect(await screen.findByText(/^replaced$/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /view album/i })).toHaveAttribute("href", "/albums/7");
+  });
+
   test("a vanished row shows the gone notice", async () => {
     server.use(http.get(ITEM, () => HttpResponse.json({ detail: "Bank item not found" }, { status: 404 })));
     renderRow();

@@ -447,12 +447,13 @@ function PendingNotice({ item }: { item: BankItem }) {
 }
 
 function DoneNotice({ item }: { item: BankItem }) {
+  const { title, body } = doneOutcome(item);
   return (
     <EmptyState
       bordered
       icon={Success}
-      title="Imported"
-      body={`${item.artist ?? "Unknown artist"} — ${item.album ?? lastSegment(item.folder)} landed in your library.`}
+      title={title}
+      body={body}
       action={
         item.album_id != null ? (
           <Button size="sm" asChild>
@@ -464,6 +465,32 @@ function DoneNotice({ item }: { item: BankItem }) {
       }
     />
   );
+}
+
+/** Title + body describing what the resolved row actually did, read from the
+ * decision. A skip_new duplicate resolution KEPT your copy — it never "landed
+ * in your library", so it must not claim it did. */
+function doneOutcome(item: BankItem): { title: string; body: string } {
+  const label = `${item.artist ?? "Unknown artist"} — ${item.album ?? lastSegment(item.folder)}`;
+  const decided = item.decided;
+  if (decided?.action === "duplicate") {
+    switch (decided.duplicate_action) {
+      case "skip_new":
+        return {
+          title: "Kept your existing copy",
+          body: "Nothing new was imported — your existing copy is untouched.",
+        };
+      case "replace":
+        return {
+          title: "Replaced",
+          body: `${label} was imported; the old copy was moved to Trash.`,
+        };
+      case "merge":
+        return { title: "Merged", body: `${label} was combined into your library.` };
+      // keep_both lands a new album — fall through to the "Imported" wording.
+    }
+  }
+  return { title: "Imported", body: `${label} landed in your library.` };
 }
 
 function IgnoredNotice({ item }: { item: BankItem }) {
