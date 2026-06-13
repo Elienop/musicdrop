@@ -300,18 +300,21 @@ function InboxSection({
         {items.map((item) => {
           const starting =
             reviewOne.isPending && reviewOne.variables === item.name;
-          const outcomeTag =
+          // The inbox doesn't track where a folder came from (it just lists a
+          // directory), so the only honest subtitle is its outcome — set-aside
+          // or failed — and nothing for a fresh drop.
+          const subtitle =
             item.outcome === "set_aside"
-              ? " · set aside"
+              ? "Set aside"
               : item.outcome === "failed"
-                ? " · import failed"
-                : "";
+                ? "Import failed"
+                : undefined;
           return (
             <li key={item.name}>
               <AlbumRow
                 cover={null}
                 title={item.name}
-                subtitle={`${item.source}${outcomeTag}`}
+                subtitle={subtitle}
                 meta={`${item.track_count} ${item.track_count === 1 ? "track" : "tracks"}`}
                 action={
                   <Button

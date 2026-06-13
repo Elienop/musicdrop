@@ -82,7 +82,7 @@ def test_list_inbox_lists_audio_folders_skips_empty(tmp_path: Path) -> None:
     assert items["Direct Album"]["track_count"] == 2
     assert items["Some Artist"]["track_count"] == 1
     assert items["Direct Album"]["outcome"] is None  # fresh, no ledger entry
-    assert items["Direct Album"]["source"] == "slskd"
+    assert "source" not in items["Direct Album"]  # no hardcoded provenance claim
 
 
 def test_list_inbox_skips_symlinked_top_dir(tmp_path: Path) -> None:

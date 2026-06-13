@@ -5657,11 +5657,6 @@
               }
             ],
             "title": "Outcome"
-          },
-          "source": {
-            "type": "string",
-            "title": "Source",
-            "default": "slskd"
           }
         },
         "type": "object",

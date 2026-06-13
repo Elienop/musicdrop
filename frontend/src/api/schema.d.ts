@@ -2265,11 +2265,6 @@ export interface components {
             track_count: number;
             /** Outcome */
             outcome?: ("imported" | "set_aside" | "failed") | null;
-            /**
-             * Source
-             * @default slskd
-             */
-            source: string;
         };
         /**
          * InboxListing
