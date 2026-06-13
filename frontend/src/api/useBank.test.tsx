@@ -15,6 +15,7 @@ import {
   BankConflictError,
   bankListPollMs,
   useBankDecision,
+  useBankDuplicates,
   useBankItem,
   useBankList,
   useBulkIgnoreBank,
@@ -27,6 +28,7 @@ const O = window.location.origin;
 const LIST = `${O}/api/bank`;
 const ITEM = `${O}/api/bank/:itemId`;
 const DECISION = `${O}/api/bank/:itemId/decision`;
+const DUPLICATES = `${O}/api/bank/:itemId/duplicates`;
 const BULK = `${O}/api/bank/bulk-ignore`;
 
 function wrapper() {
@@ -349,6 +351,43 @@ describe("useBulkIgnoreBank", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(body).toEqual({ ids: ["b1", "b2"] });
     expect(result.current.data?.ignored).toBe(2);
+  });
+});
+
+describe("useBankDuplicates", () => {
+  const existingAlbum = {
+    album_id: 1,
+    album_artist: "2Pac",
+    album: "Me Against the World",
+    year: 1995,
+    track_count: 15,
+    format: "FLAC",
+    bitrate_kbps: 900,
+    folder: "/library/2Pac/Me Against the World",
+  };
+
+  test("fetches the collision set for the selected candidate", async () => {
+    let seenIndex: string | null = null;
+    server.use(
+      http.get(DUPLICATES, ({ request }) => {
+        seenIndex = new URL(request.url).searchParams.get("candidate_index");
+        return HttpResponse.json({ existing: [existingAlbum] });
+      }),
+    );
+    const { result } = renderHook(() => useBankDuplicates("b1", 0, true), {
+      wrapper: wrapper(),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.existing).toHaveLength(1);
+    expect(result.current.data?.existing[0].album_artist).toBe("2Pac");
+    expect(seenIndex).toBe("0");
+  });
+
+  test("stays idle while disabled", () => {
+    const { result } = renderHook(() => useBankDuplicates("b1", 0, false), {
+      wrapper: wrapper(),
+    });
+    expect(result.current.fetchStatus).toBe("idle");
   });
 });
 
