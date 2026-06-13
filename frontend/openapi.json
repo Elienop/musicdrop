@@ -3054,6 +3054,60 @@
         }
       }
     },
+    "/api/bank/{item_id}/duplicates": {
+      "get": {
+        "tags": [
+          "bank"
+        ],
+        "summary": "Bank Item Duplicates",
+        "description": "Library albums the selected candidate would collide with \u2014 run beets'\nown duplicate query on the matched-release metadata (lazy, fresh).",
+        "operationId": "bank_item_duplicates_api_bank__item_id__duplicates_get",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          },
+          {
+            "name": "candidate_index",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Candidate Index"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BankDuplicatesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/bank/{item_id}/decision": {
       "post": {
         "tags": [
@@ -4007,7 +4061,24 @@
           "action"
         ],
         "title": "BankDecision",
-        "description": "The user's verdict on a banked row.\n\nMirrors the live review dialect (``ImportChoice``): ``apply`` selects a\nranked option by ``candidate_index`` (None = the top candidate);\n``duplicate`` needs the ``duplicate_action``; the rest stand alone. Fields\nforeign to the chosen action \u2014 known or unknown \u2014 are rejected here so an\nimpossible decision can never be persisted or queued."
+        "description": "The user's verdict on a banked row.\n\nMirrors the live review dialect (``ImportChoice``): ``apply`` selects a\nranked option by ``candidate_index`` (None = the top candidate);\n``duplicate`` needs the ``duplicate_action`` and may ALSO pin the selected\nrelease by ``candidate_index`` (the \"decide once\" path \u2014 one click both\npicks the release and resolves the collision); the rest stand alone. Fields\nforeign to the chosen action \u2014 known or unknown \u2014 are rejected here so an\nimpossible decision can never be persisted or queued."
+      },
+      "BankDuplicatesResponse": {
+        "properties": {
+          "existing": {
+            "items": {
+              "$ref": "#/components/schemas/ExistingAlbum"
+            },
+            "type": "array",
+            "title": "Existing"
+          }
+        },
+        "type": "object",
+        "required": [
+          "existing"
+        ],
+        "title": "BankDuplicatesResponse",
+        "description": "``GET /api/bank/{id}/duplicates``: library albums the selected\ncandidate would collide with (empty = no collision, import is clean)."
       },
       "BankItem": {
         "properties": {

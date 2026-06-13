@@ -1240,6 +1240,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/bank/{item_id}/duplicates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Bank Item Duplicates
+         * @description Library albums the selected candidate would collide with — run beets'
+         *     own duplicate query on the matched-release metadata (lazy, fresh).
+         */
+        get: operations["bank_item_duplicates_api_bank__item_id__duplicates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/bank/{item_id}/decision": {
         parameters: {
             query?: never;
@@ -1580,7 +1601,9 @@ export interface components {
          *
          *     Mirrors the live review dialect (``ImportChoice``): ``apply`` selects a
          *     ranked option by ``candidate_index`` (None = the top candidate);
-         *     ``duplicate`` needs the ``duplicate_action``; the rest stand alone. Fields
+         *     ``duplicate`` needs the ``duplicate_action`` and may ALSO pin the selected
+         *     release by ``candidate_index`` (the "decide once" path — one click both
+         *     picks the release and resolves the collision); the rest stand alone. Fields
          *     foreign to the chosen action — known or unknown — are rejected here so an
          *     impossible decision can never be persisted or queued.
          */
@@ -1593,6 +1616,15 @@ export interface components {
             /** Candidate Index */
             candidate_index?: number | null;
             duplicate_action?: components["schemas"]["DuplicateAction"] | null;
+        };
+        /**
+         * BankDuplicatesResponse
+         * @description ``GET /api/bank/{id}/duplicates``: library albums the selected
+         *     candidate would collide with (empty = no collision, import is clean).
+         */
+        BankDuplicatesResponse: {
+            /** Existing */
+            existing: components["schemas"]["ExistingAlbum"][];
         };
         /**
          * BankItem
@@ -5366,6 +5398,39 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bank_item_duplicates_api_bank__item_id__duplicates_get: {
+        parameters: {
+            query?: {
+                candidate_index?: number;
+            };
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BankDuplicatesResponse"];
+                };
             };
             /** @description Validation Error */
             422: {
