@@ -3200,6 +3200,47 @@
           }
         }
       }
+    },
+    "/api/bank/bulk-delete": {
+      "post": {
+        "tags": [
+          "bank"
+        ],
+        "summary": "Bulk Delete Bank",
+        "operationId": "bulk_delete_bank_api_bank_bulk_delete_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BankBulkDeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BankBulkDeleteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3989,6 +4030,36 @@
         ],
         "title": "ArtistImageSettings",
         "description": "The artist-image feature on/off flag (GET + PUT body + PUT response)."
+      },
+      "BankBulkDeleteRequest": {
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ids"
+        ],
+        "title": "BankBulkDeleteRequest"
+      },
+      "BankBulkDeleteResponse": {
+        "properties": {
+          "deleted": {
+            "type": "integer",
+            "title": "Deleted"
+          }
+        },
+        "type": "object",
+        "required": [
+          "deleted"
+        ],
+        "title": "BankBulkDeleteResponse",
+        "description": "How many rows were actually removed (``applying``/missing ids skipped)."
       },
       "BankBulkIgnoreRequest": {
         "properties": {

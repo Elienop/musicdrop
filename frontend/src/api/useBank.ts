@@ -277,3 +277,27 @@ export function useBulkIgnoreBank() {
     },
   });
 }
+
+async function bulkDeleteBank(
+  ids: string[],
+): Promise<components["schemas"]["BankBulkDeleteResponse"]> {
+  const { data, error, response } = await client.POST("/api/bank/bulk-delete", {
+    body: { ids },
+  });
+  if (error || !response.ok || !data) {
+    throw new Error("Failed to remove the selected rows");
+  }
+  return data;
+}
+
+/** Bulk-delete (`POST /api/bank/bulk-delete`). The backend skips `applying`
+ * and missing ids and reports how many rows were actually removed. */
+export function useBulkDeleteBank() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: bulkDeleteBank,
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["bank"] });
+    },
+  });
+}

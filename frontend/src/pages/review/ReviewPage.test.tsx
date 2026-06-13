@@ -536,6 +536,83 @@ describe("ReviewPage", () => {
     await waitFor(() => expect(body).toEqual({ ids: ["b1", "b2"] }));
   });
 
+  test("the header Select all ticks every eligible row, skipping applying", async () => {
+    server.use(
+      http.get(BANK, () =>
+        HttpResponse.json({
+          items: [
+            bankRow(),
+            bankRow({ id: "b2", album: "Album Y", status: "failed", error: "boom" }),
+            bankRow({ id: "b3", album: "Album Z", status: "applying" }),
+          ],
+          total: 3,
+          offset: 0,
+          limit: 48,
+        }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    await userEvent.click(within(section).getByRole("checkbox", { name: /select all/i }));
+    expect(within(section).getByRole("checkbox", { name: /select album x/i })).toBeChecked();
+    expect(within(section).getByRole("checkbox", { name: /select album y/i })).toBeChecked();
+    // The applying row carries no checkbox — it can't be acted on.
+    expect(
+      within(section).queryByRole("checkbox", { name: /select album z/i }),
+    ).not.toBeInTheDocument();
+    // Only the two eligible rows count toward the bulk actions.
+    expect(
+      within(section).getByRole("button", { name: /delete selected \(2\)/i }),
+    ).toBeInTheDocument();
+  });
+
+  test("Delete selected confirms, then bulk-deletes the selected ids", async () => {
+    let body: unknown = null;
+    server.use(
+      http.get(BANK, () =>
+        HttpResponse.json({
+          items: [bankRow(), bankRow({ id: "b2", album: "Album Y" })],
+          total: 2,
+          offset: 0,
+          limit: 48,
+        }),
+      ),
+      http.post(`${O}/api/bank/bulk-delete`, async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({ deleted: 2 });
+      }),
+    );
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    await userEvent.click(within(section).getByRole("checkbox", { name: /select album x/i }));
+    await userEvent.click(within(section).getByRole("checkbox", { name: /select album y/i }));
+    await userEvent.click(
+      within(section).getByRole("button", { name: /delete selected \(2\)/i }),
+    );
+    // AlertDialog confirm step — removing forfeits the banked candidates.
+    await userEvent.click(await screen.findByRole("button", { name: /^remove$/i }));
+    await waitFor(() => expect(body).toEqual({ ids: ["b1", "b2"] }));
+  });
+
+  test("an applying bank row has no checkbox", async () => {
+    server.use(
+      http.get(BANK, () =>
+        HttpResponse.json({
+          items: [bankRow({ id: "b3", album: "Album Z", status: "applying" })],
+          total: 1,
+          offset: 0,
+          limit: 48,
+        }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    expect(within(section).getByText("Album Z")).toBeInTheDocument();
+    expect(
+      within(section).queryByRole("checkbox", { name: /select album z/i }),
+    ).not.toBeInTheDocument();
+  });
+
   test("Remove confirms, then deletes the row", async () => {
     let deleted = false;
     server.use(
