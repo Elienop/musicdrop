@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { BankReviewPage } from "@/pages/review/BankReviewPage";
@@ -214,6 +214,46 @@ describe("BankReviewPage", () => {
     await screen.findByRole("heading", { name: /Music Has the Right/ });
     expect(screen.getByRole("button", { name: /apply/i })).toBeInTheDocument();
     expect(screen.queryByText(/already in your library/i)).not.toBeInTheDocument();
+  });
+
+  test("while the duplicate check is in flight Apply is disabled and a checking hint shows", async () => {
+    server.use(
+      http.get(ITEM, () => HttpResponse.json(bankItem())),
+      // The check never lands — the footer must hold the apply-style actions.
+      http.get(DUP, async () => {
+        await delay("infinite");
+        return HttpResponse.json({ existing: [] });
+      }),
+    );
+    renderRow();
+    await screen.findByRole("heading", { name: /Music Has the Right/ });
+    expect(screen.getByText(/checking your library/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /apply/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /use as-is/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /as tracks/i })).toBeDisabled();
+    // Ignore is always safe — it never queues an apply.
+    expect(screen.getByRole("button", { name: /^ignore$/i })).toBeEnabled();
+  });
+
+  test("a failed row whose re-check errors still offers the four duplicate actions", async () => {
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(
+          bankItem({
+            status: "failed",
+            error: "the apply imported nothing - decide again",
+            decided: { action: "apply", candidate_index: 0, duplicate_action: null },
+          }),
+        ),
+      ),
+      // The re-check itself fails — the dup actions are the documented fallback.
+      http.get(DUP, () => HttpResponse.json({ detail: "boom" }, { status: 500 })),
+    );
+    renderRow();
+    await screen.findByRole("heading", { name: /Music Has the Right/ });
+    for (const name of [/skip new/i, /keep both/i, /replace old/i, /merge/i]) {
+      expect(await screen.findByRole("button", { name })).toBeInTheDocument();
+    }
   });
 
   test("a failed row with no collision shows the error and the normal retry footer", async () => {

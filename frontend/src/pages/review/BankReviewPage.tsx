@@ -196,6 +196,16 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
   // pending or finds nothing, the normal footer stands.
   const existing = dups.data?.existing ?? [];
   const hasCollision = existing.length > 0;
+  // The first collision check is still in flight (the query is always enabled
+  // on this decidable screen). Block the apply-style actions until it lands so
+  // a fast click can't queue an apply that the runner would just fail with a
+  // duplicate block. Ignore stays free; the layout doesn't shift (disable, not
+  // unmount).
+  const checking = dups.isLoading;
+  // Offer the four duplicate actions on a real collision OR — as a fallback —
+  // when the re-check ERRORS on an already-failed row, so the failed-banner's
+  // "decide again with a duplicate action" instruction stays followable.
+  const showDupActions = hasCollision || (dups.isError && item.status === "failed");
 
   const submit = (decision: BankDecision) =>
     decide.mutate(decision, {
@@ -215,9 +225,25 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
         selected={selected}
         onSelect={setSelected}
       />
-      {hasCollision ? (
+      {showDupActions ? (
         <>
-          <AlreadyInLibraryNotice existing={existing} />
+          {hasCollision ? (
+            <AlreadyInLibraryNotice existing={existing} />
+          ) : (
+            // Error-on-failed fallback: the re-check couldn't run, so we can't
+            // list the colliding copies, but the failed-banner already told the
+            // user to resolve it as a duplicate — keep that path reachable.
+            <section
+              aria-label="Resolve as a duplicate"
+              className="flex flex-col gap-2"
+            >
+              <SectionLabel>Resolve as a duplicate</SectionLabel>
+              <p className="text-muted-foreground text-sm">
+                Couldn’t re-check your library. If the apply failed because this
+                album is already in it, resolve it as a duplicate below.
+              </p>
+            </section>
+          )}
           <div className="flex items-center gap-2">
             <Button
               variant="ghost"
@@ -245,6 +271,11 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
         </>
       ) : (
         <div className="bg-background/80 sticky bottom-0 z-10 -mx-2 flex flex-col gap-1.5 border-t px-2 py-3 backdrop-blur">
+          {checking && (
+            <p className="text-muted-foreground text-sm" role="status">
+              Checking your library…
+            </p>
+          )}
           {selected !== 0 && (
             <p className="text-muted-foreground text-sm" role="status">
               Showing the top match — Apply will queue the selected release.
@@ -263,7 +294,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
             <Button
               variant="outline"
               size="sm"
-              disabled={decide.isPending}
+              disabled={decide.isPending || checking}
               aria-describedby="bank-actions-hint"
               onClick={() => submit({ action: "asis" })}
             >
@@ -272,7 +303,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
             <Button
               variant="outline"
               size="sm"
-              disabled={decide.isPending}
+              disabled={decide.isPending || checking}
               aria-describedby="bank-actions-hint"
               onClick={() => submit({ action: "astracks" })}
             >
@@ -280,7 +311,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
             </Button>
             <Button
               className="ml-auto"
-              disabled={decide.isPending}
+              disabled={decide.isPending || checking}
               onClick={() => submit({ action: "apply", candidate_index: selected })}
             >
               {decide.isPending ? (
