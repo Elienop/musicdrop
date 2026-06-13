@@ -59,17 +59,83 @@ function makeCandidate(overrides: Partial<Candidate> = {}): Candidate {
     missing: [{ index: 10, title: "Lull" }],
     unmatched: [{ title: "bonus.mp3", track: null }],
     options: [
+      // options[0] is the canonical top — its diff MIRRORS the candidate's top
+      // diff (so resolveSelected at selected=0 renders identically).
       {
         index: 0,
         confidence: 76,
         data_source: "MusicBrainz",
         disambiguation: "1997 UK CD",
+        release_id: "abc",
+        album_artist: "Radiohead",
+        album: "OK Computer",
+        year: 1997,
+        album_after: {
+          artist: "Radiohead",
+          album: "OK Computer",
+          year: 1997,
+          label: "Parlophone",
+          country: "GB",
+          media: "CD",
+        },
+        changed_fields: ["album", "label"],
+        tracks: [
+          {
+            index: 1,
+            status: "unchanged",
+            title_before: "Airbag",
+            title_after: "Airbag",
+            track_before: 1,
+            track_after: 1,
+          },
+          {
+            index: 2,
+            status: "changed",
+            title_before: "Paranoid Andrid",
+            title_after: "Paranoid Android",
+            track_before: 2,
+            track_after: 2,
+          },
+        ],
+        missing: [{ index: 10, title: "Lull" }],
+        unmatched: [{ title: "bonus.mp3", track: null }],
+        cover_after_url: "https://coverartarchive.org/release/abc/front-500",
+        data_url: "https://musicbrainz.org/release/abc",
       },
+      // options[1] carries a DISTINCT per-release diff — selecting it must
+      // re-render the whole preview (album, %, tracklist all change).
       {
         index: 1,
         confidence: 71,
         data_source: "MusicBrainz",
         disambiguation: "2008 reissue",
+        release_id: "def",
+        album_artist: "Radiohead",
+        album: "OK Computer OKNOTOK",
+        year: 2017,
+        album_after: {
+          artist: "Radiohead",
+          album: "OK Computer OKNOTOK",
+          year: 2017,
+          label: "XL Recordings",
+          country: "GB",
+          media: "CD",
+        },
+        changed_fields: ["album", "year"],
+        tracks: [
+          {
+            index: 1,
+            status: "changed",
+            title_before: "Airbag",
+            title_after: "Airbag (2017 Remaster)",
+            track_before: 1,
+            track_after: 1,
+          },
+        ],
+        missing: [],
+        unmatched: [],
+        cover_after_url: "https://coverartarchive.org/release/def/front-500",
+        data_url: "https://musicbrainz.org/release/def",
       },
     ],
     ...overrides,
@@ -218,24 +284,41 @@ describe("ImportCandidatePage", () => {
     );
   });
 
-  test("selecting an alternate shows the switcher note (absent at top match)", async () => {
+  test("selecting an alternate re-renders the whole preview for that release", async () => {
     server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
     const user = userEvent.setup();
     renderAt();
 
-    // At the default top match (selected === 0) the note is absent.
-    await screen.findByLabelText(/candidate release/i);
+    // Top match (selected === 0): the top release + its recommendation word.
+    await screen.findByRole("heading", { name: /Radiohead — OK Computer$/i });
+    expect(screen.getByText(/Medium match/i)).toBeInTheDocument();
     expect(
-      screen.queryByText(/Apply will import the selected release/i),
-    ).not.toBeInTheDocument();
+      screen.getByText(
+        (_, el) => el?.tagName === "SPAN" && el.textContent === "76%",
+      ),
+    ).toBeInTheDocument();
 
     await user.selectOptions(screen.getByLabelText(/candidate release/i), "1");
 
-    const note = await screen.findByText(
-      /Showing the top match — Apply will import the selected release\./,
-    );
-    expect(note).toBeInTheDocument();
-    expect(note).toHaveAttribute("role", "status");
+    // The header %, album, and tracklist now reflect the SELECTED release.
+    expect(
+      await screen.findByRole("heading", {
+        name: /Radiohead — OK Computer OKNOTOK/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        (_, el) => el?.tagName === "SPAN" && el.textContent === "71%",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Airbag (2017 Remaster)")).toBeInTheDocument();
+    // The recommendation WORD is dropped for an alternate (beets computes it
+    // once per album, not per candidate) — the honest % stays.
+    expect(screen.queryByText(/Medium match/i)).not.toBeInTheDocument();
+    // And the old apology hint is gone — the preview is real now, not the top.
+    expect(
+      screen.queryByText(/Showing the top match/i),
+    ).not.toBeInTheDocument();
   });
 
   test("switching candidate then Apply posts the chosen index", async () => {
