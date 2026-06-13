@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { BankReviewPage } from "@/pages/review/BankReviewPage";
@@ -16,8 +16,21 @@ vi.mock("react-router", async (importOriginal) => ({
 const O = window.location.origin;
 const ITEM = `${O}/api/bank/:itemId`;
 const DECISION = `${O}/api/bank/:itemId/decision`;
+const DUP = `${O}/api/bank/:itemId/duplicates`;
 const ACTIVE = `${O}/api/imports/active`;
 const IMPORT_URL = `${O}/api/import`;
+
+/** One in-library album the candidate would collide with. */
+const existingAlbum = {
+  album_id: 7,
+  album_artist: "Boards of Canada",
+  album: "Music Has the Right to Children",
+  year: 1998,
+  track_count: 17,
+  format: "MP3",
+  bitrate_kbps: 320,
+  folder: "/library/BoC/MHTRTC",
+};
 
 /** A complete banked Candidate — the exact generated shape (every field). */
 const candidate = {
@@ -83,6 +96,9 @@ describe("BankReviewPage", () => {
     mockNavigate.mockClear();
     server.use(
       http.get(ACTIVE, () => HttpResponse.json({ active: false, origin: "manual", needs_review_count: 0 })),
+      // No collision by default — candidate-screen tests get the normal footer;
+      // collision tests override this to return an existing album.
+      http.get(DUP, () => HttpResponse.json({ existing: [] })),
     );
   });
 
@@ -170,21 +186,86 @@ describe("BankReviewPage", () => {
     await waitFor(() => expect(body).toEqual({ action: "asis" }));
   });
 
-  test("a failed row surfaces the error and the duplicate-resolution strip", async () => {
+  test("a detected duplicate shows the up-front resolver and resolves in one decision", async () => {
     let body: unknown = null;
     server.use(
-      http.get(ITEM, () =>
-        HttpResponse.json(bankItem({ status: "failed", error: "the album duplicates one already in your library - decide again with a duplicate action", decided: { action: "apply", candidate_index: 0, duplicate_action: null } })),
-      ),
+      http.get(ITEM, () => HttpResponse.json(bankItem())),
+      http.get(DUP, () => HttpResponse.json({ existing: [existingAlbum] })),
       http.post(DECISION, async ({ request }) => {
         body = await request.json();
-        return HttpResponse.json(bankItem({ status: "queued", decided: { action: "duplicate", candidate_index: null, duplicate_action: "replace" } }));
+        return HttpResponse.json(bankItem({ status: "queued", decided: { action: "duplicate", candidate_index: 0, duplicate_action: "replace" } }));
       }),
     );
     renderRow();
-    expect(await screen.findByRole("alert")).toHaveTextContent(/duplicates one already in your library/);
+    await screen.findByRole("heading", { name: /Music Has the Right/ });
+    // The up-front collision notice + a View link to the existing copy.
+    expect(await screen.findByText(/already in your library/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /^view$/i })).toHaveAttribute("href", "/albums/7");
+    // One click both pins the selected release and resolves the collision.
     await userEvent.click(screen.getByRole("button", { name: /replace old/i }));
-    await waitFor(() => expect(body).toEqual({ action: "duplicate", duplicate_action: "replace" }));
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/review"));
+    expect(body).toEqual({ action: "duplicate", candidate_index: 0, duplicate_action: "replace" });
+  });
+
+  test("no detected duplicate keeps the normal apply footer", async () => {
+    // The beforeEach default returns { existing: [] }.
+    server.use(http.get(ITEM, () => HttpResponse.json(bankItem())));
+    renderRow();
+    await screen.findByRole("heading", { name: /Music Has the Right/ });
+    expect(screen.getByRole("button", { name: /apply/i })).toBeInTheDocument();
+    expect(screen.queryByText(/already in your library/i)).not.toBeInTheDocument();
+  });
+
+  test("while the duplicate check is in flight Apply is disabled and a checking hint shows", async () => {
+    server.use(
+      http.get(ITEM, () => HttpResponse.json(bankItem())),
+      // The check never lands — the footer must hold the apply-style actions.
+      http.get(DUP, async () => {
+        await delay("infinite");
+        return HttpResponse.json({ existing: [] });
+      }),
+    );
+    renderRow();
+    await screen.findByRole("heading", { name: /Music Has the Right/ });
+    expect(screen.getByText(/checking your library/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /apply/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /use as-is/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /as tracks/i })).toBeDisabled();
+    // Ignore is always safe — it never queues an apply.
+    expect(screen.getByRole("button", { name: /^ignore$/i })).toBeEnabled();
+  });
+
+  test("a failed row whose re-check errors still offers the four duplicate actions", async () => {
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(
+          bankItem({
+            status: "failed",
+            error: "the apply imported nothing - decide again",
+            decided: { action: "apply", candidate_index: 0, duplicate_action: null },
+          }),
+        ),
+      ),
+      // The re-check itself fails — the dup actions are the documented fallback.
+      http.get(DUP, () => HttpResponse.json({ detail: "boom" }, { status: 500 })),
+    );
+    renderRow();
+    await screen.findByRole("heading", { name: /Music Has the Right/ });
+    for (const name of [/skip new/i, /keep both/i, /replace old/i, /merge/i]) {
+      expect(await screen.findByRole("button", { name })).toBeInTheDocument();
+    }
+  });
+
+  test("a failed row with no collision shows the error and the normal retry footer", async () => {
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(bankItem({ status: "failed", error: "the apply imported nothing (the lookup may have failed transiently) - decide again", decided: { action: "apply", candidate_index: 0, duplicate_action: null } })),
+      ),
+    );
+    renderRow();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/imported nothing/);
+    expect(screen.getByRole("button", { name: /apply/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /replace old/i })).not.toBeInTheDocument();
   });
 
   test("a decision 409 shows the backend's reason inline (string detail tolerated)", async () => {
@@ -242,6 +323,30 @@ describe("BankReviewPage", () => {
     const second = renderWithProviders(<BankReviewPage />, { route: "/review/bank/b1", path: "/review/bank/:itemId" });
     expect(await within(second.container).findByText(/imported/i)).toBeInTheDocument();
     expect(within(second.container).getByRole("link", { name: /view album/i })).toHaveAttribute("href", "/albums/7");
+  });
+
+  test("a skip_new dup resolution says it kept the existing copy, not 'landed'", async () => {
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(bankItem({ status: "done", album_id: null, decided: { action: "duplicate", candidate_index: 0, duplicate_action: "skip_new" } })),
+      ),
+    );
+    renderRow();
+    expect(await screen.findByText(/kept your existing copy/i)).toBeInTheDocument();
+    expect(screen.queryByText(/landed in your library/i)).not.toBeInTheDocument();
+    // No album landed — the settled notice offers Remove, not View album.
+    expect(screen.getByRole("button", { name: /remove from bank/i })).toBeInTheDocument();
+  });
+
+  test("a replace dup resolution says it replaced the old copy", async () => {
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(bankItem({ status: "done", album_id: 7, decided: { action: "duplicate", candidate_index: 0, duplicate_action: "replace" } })),
+      ),
+    );
+    renderRow();
+    expect(await screen.findByText(/^replaced$/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /view album/i })).toHaveAttribute("href", "/albums/7");
   });
 
   test("a vanished row shows the gone notice", async () => {

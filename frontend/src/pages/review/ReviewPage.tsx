@@ -77,12 +77,13 @@ export function ReviewPage() {
   const active = activeQuery.data;
   // Only fetch the job when an attended import is actually running (the hook is
   // disabled on an undefined id), so the page is a cheap aggregator when idle.
-  // Sweep-origin jobs are excluded: a sweep banks decisions instead of parking
-  // them, so its `albums` feed stays empty by design — the 1s job poll would
-  // spend a whole multi-hour sweep computing decisions=[]. The sweep banner
-  // deliberately rides the active probe's 5s cadence instead.
+  // Sweep- AND bank_apply-origin jobs are excluded: both run unattended and bank
+  // decisions instead of parking them, so their `albums` feed never holds a live
+  // decision — the 1s job poll would only ever compute decisions=[], and a
+  // background bank apply would otherwise flash a dead-end "Needs your decision"
+  // ghost. They ride the active probe's 5s cadence instead.
   const job = useImportJob(
-    active?.active && active.origin !== "sweep"
+    active?.active && active.origin !== "sweep" && active.origin !== "bank_apply"
       ? (active.job_id ?? undefined)
       : undefined,
   );

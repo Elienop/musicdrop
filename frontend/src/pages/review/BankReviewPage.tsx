@@ -2,10 +2,11 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 
 import { useActiveImport } from "@/api/useActiveImport";
-import type { BankDecision, BankItem } from "@/api/useBank";
+import type { BankDecision, BankItem, ExistingAlbum } from "@/api/useBank";
 import {
   BankConflictError,
   useBankDecision,
+  useBankDuplicates,
   useBankItem,
   useDeleteBankItem,
 } from "@/api/useBank";
@@ -165,7 +166,12 @@ function FailedDuplicateStrip({
         Use these if the apply failed because the album is already in your
         library.
       </p>
-      <DuplicateActions pending={pending} busy={busy} onDecide={onDecide} />
+      <DuplicateActions
+        pending={pending}
+        busy={busy}
+        onDecide={onDecide}
+        context="bank"
+      />
     </section>
   );
 }
@@ -177,7 +183,29 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
   const [pendingDup, setPendingDup] = useState<DuplicateAction | null>(null);
   // The BankScreen branch guarantees parked; narrow for tsc without a cast.
   const parked = item.parked;
+  // A candidate row is decidable while it awaits a verdict (fresh) OR after a
+  // failed apply (retry) — both run the up-front library-collision check keyed
+  // on the selected release; queued/applying/done rows never reach here.
+  const decidable = item.status === "needs_review" || item.status === "failed";
+  const dups = useBankDuplicates(item.id, selected, decidable && parked != null);
   if (!parked) return null;
+
+  // The matched release already exists in the library — fold beets' four
+  // duplicate actions into the footer so one click both pins this release and
+  // resolves the collision (no failed apply, no re-open). While the check is
+  // pending or finds nothing, the normal footer stands.
+  const existing = dups.data?.existing ?? [];
+  const hasCollision = existing.length > 0;
+  // The first collision check is still in flight (the query is always enabled
+  // on this decidable screen). Block the apply-style actions until it lands so
+  // a fast click can't queue an apply that the runner would just fail with a
+  // duplicate block. Ignore stays free; the layout doesn't shift (disable, not
+  // unmount).
+  const checking = dups.isLoading;
+  // Offer the four duplicate actions on a real collision OR — as a fallback —
+  // when the re-check ERRORS on an already-failed row, so the failed-banner's
+  // "decide again with a duplicate action" instruction stays followable.
+  const showDupActions = hasCollision || (dups.isError && item.status === "failed");
 
   const submit = (decision: BankDecision) =>
     decide.mutate(decision, {
@@ -197,73 +225,148 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
         selected={selected}
         onSelect={setSelected}
       />
-      {item.status === "failed" && (
-        <FailedDuplicateStrip
-          busy={decide.isPending}
-          pending={pendingDup}
-          onDecide={(action) => {
-            setPendingDup(action);
-            submit({ action: "duplicate", duplicate_action: action });
-          }}
-        />
-      )}
-      <div className="bg-background/80 sticky bottom-0 z-10 -mx-2 flex flex-col gap-1.5 border-t px-2 py-3 backdrop-blur">
-        {selected !== 0 && (
-          <p className="text-muted-foreground text-sm" role="status">
-            Showing the top match — Apply will queue the selected release.
+      {showDupActions ? (
+        <>
+          {hasCollision ? (
+            <AlreadyInLibraryNotice existing={existing} />
+          ) : (
+            // Error-on-failed fallback: the re-check couldn't run, so we can't
+            // list the colliding copies, but the failed-banner already told the
+            // user to resolve it as a duplicate — keep that path reachable.
+            <section
+              aria-label="Resolve as a duplicate"
+              className="flex flex-col gap-2"
+            >
+              <SectionLabel>Resolve as a duplicate</SectionLabel>
+              <p className="text-muted-foreground text-sm">
+                Couldn’t re-check your library. If the apply failed because this
+                album is already in it, resolve it as a duplicate below.
+              </p>
+            </section>
+          )}
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={decide.isPending}
+              onClick={() => submit({ action: "ignore" })}
+            >
+              Ignore
+            </Button>
+            <DecisionError error={decide.error} />
+          </div>
+          <DuplicateActions
+            pending={pendingDup}
+            busy={decide.isPending}
+            context="bank"
+            onDecide={(action) => {
+              setPendingDup(action);
+              submit({
+                action: "duplicate",
+                candidate_index: selected,
+                duplicate_action: action,
+              });
+            }}
+          />
+        </>
+      ) : (
+        <div className="bg-background/80 sticky bottom-0 z-10 -mx-2 flex flex-col gap-1.5 border-t px-2 py-3 backdrop-blur">
+          {checking && (
+            <p className="text-muted-foreground text-sm" role="status">
+              Checking your library…
+            </p>
+          )}
+          {selected !== 0 && (
+            <p className="text-muted-foreground text-sm" role="status">
+              Showing the top match — Apply will queue the selected release.
+            </p>
+          )}
+          <DecisionError error={decide.error} />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={decide.isPending}
+              onClick={() => submit({ action: "ignore" })}
+            >
+              Ignore
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={decide.isPending || checking}
+              aria-describedby="bank-actions-hint"
+              onClick={() => submit({ action: "asis" })}
+            >
+              Use as-is
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={decide.isPending || checking}
+              aria-describedby="bank-actions-hint"
+              onClick={() => submit({ action: "astracks" })}
+            >
+              As tracks
+            </Button>
+            <Button
+              className="ml-auto"
+              disabled={decide.isPending || checking}
+              onClick={() => submit({ action: "apply", candidate_index: selected })}
+            >
+              {decide.isPending ? (
+                <>
+                  <Spinner className="animate-spin" aria-hidden="true" /> Queuing…
+                </>
+              ) : (
+                <>
+                  <Success aria-hidden="true" /> Apply
+                </>
+              )}
+            </Button>
+          </div>
+          <p id="bank-actions-hint" className="text-muted-foreground text-xs">
+            Decisions queue for the background apply — files move when the
+            import slot is free. Use as-is imports with your current tags; As
+            tracks imports each file as a standalone track.
           </p>
-        )}
-        <DecisionError error={decide.error} />
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={decide.isPending}
-            onClick={() => submit({ action: "ignore" })}
-          >
-            Ignore
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={decide.isPending}
-            aria-describedby="bank-actions-hint"
-            onClick={() => submit({ action: "asis" })}
-          >
-            Use as-is
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={decide.isPending}
-            aria-describedby="bank-actions-hint"
-            onClick={() => submit({ action: "astracks" })}
-          >
-            As tracks
-          </Button>
-          <Button
-            className="ml-auto"
-            disabled={decide.isPending}
-            onClick={() => submit({ action: "apply", candidate_index: selected })}
-          >
-            {decide.isPending ? (
-              <>
-                <Spinner className="animate-spin" aria-hidden="true" /> Queuing…
-              </>
-            ) : (
-              <>
-                <Success aria-hidden="true" /> Apply
-              </>
-            )}
-          </Button>
         </div>
-        <p id="bank-actions-hint" className="text-muted-foreground text-xs">
-          Decisions queue for the background apply — files move when the
-          import slot is free. Use as-is imports with your current tags; As
-          tracks imports each file as a standalone track.
-        </p>
-      </div>
+      )}
     </div>
+  );
+}
+
+/** The up-front "this already exists" notice on a banked candidate screen —
+ * lists each colliding library copy with a View link, above the four duplicate
+ * actions. The candidate switcher stays live, so Keep both / Replace / Merge
+ * tag the new copy as the SELECTED release. */
+function AlreadyInLibraryNotice({ existing }: { existing: ExistingAlbum[] }) {
+  return (
+    <section aria-label="Already in your library" className="flex flex-col gap-3">
+      <SectionLabel>Already in your library</SectionLabel>
+      <p className="text-muted-foreground text-sm">
+        This album matches{" "}
+        {existing.length === 1 ? "one you already have" : `${existing.length} you already have`}.
+        Choose what to do below — your choice imports the selected release.
+      </p>
+      <ul className="flex flex-col gap-2">
+        {existing.map((album) => (
+          <li
+            key={album.album_id}
+            className="border-border flex items-center justify-between gap-3 rounded-lg border p-3"
+          >
+            <span className="truncate text-sm">
+              <span className="font-medium">{album.album_artist ?? "Unknown artist"}</span>
+              {" — "}
+              {album.album ?? "Unknown album"}
+            </span>
+            <Button variant="outline" size="sm" asChild>
+              <Link to={`/albums/${album.album_id}`}>View</Link>
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -299,7 +402,12 @@ function BankDuplicateScreen({ item }: { item: BankItem }) {
         </Button>
         <DecisionError error={decide.error} />
       </div>
-      <DuplicateActions pending={pending} busy={decide.isPending} onDecide={onDecide} />
+      <DuplicateActions
+        pending={pending}
+        busy={decide.isPending}
+        onDecide={onDecide}
+        context="bank"
+      />
     </div>
   );
 }
@@ -381,12 +489,13 @@ function PendingNotice({ item }: { item: BankItem }) {
 }
 
 function DoneNotice({ item }: { item: BankItem }) {
+  const { title, body } = doneOutcome(item);
   return (
     <EmptyState
       bordered
       icon={Success}
-      title="Imported"
-      body={`${item.artist ?? "Unknown artist"} — ${item.album ?? lastSegment(item.folder)} landed in your library.`}
+      title={title}
+      body={body}
       action={
         item.album_id != null ? (
           <Button size="sm" asChild>
@@ -398,6 +507,32 @@ function DoneNotice({ item }: { item: BankItem }) {
       }
     />
   );
+}
+
+/** Title + body describing what the resolved row actually did, read from the
+ * decision. A skip_new duplicate resolution KEPT your copy — it never "landed
+ * in your library", so it must not claim it did. */
+function doneOutcome(item: BankItem): { title: string; body: string } {
+  const label = `${item.artist ?? "Unknown artist"} — ${item.album ?? lastSegment(item.folder)}`;
+  const decided = item.decided;
+  if (decided?.action === "duplicate") {
+    switch (decided.duplicate_action) {
+      case "skip_new":
+        return {
+          title: "Kept your existing copy",
+          body: "Nothing new was imported — your existing copy is untouched.",
+        };
+      case "replace":
+        return {
+          title: "Replaced",
+          body: `${label} was imported; the old copy was moved to Trash.`,
+        };
+      case "merge":
+        return { title: "Merged", body: `${label} was combined into your library.` };
+      // keep_both lands a new album — fall through to the "Imported" wording.
+    }
+  }
+  return { title: "Imported", body: `${label} landed in your library.` };
 }
 
 function IgnoredNotice({ item }: { item: BankItem }) {

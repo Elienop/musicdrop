@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from app.models.bank import BankDecision, BankItem
+from app.models.bank import BankDecision, BankDuplicatesResponse, BankItem
 from app.models.import_models import DuplicateAction
 
 BANKED_AT = datetime(2026, 6, 12, tzinfo=UTC)
@@ -23,6 +23,25 @@ def test_duplicate_decision_requires_duplicate_action() -> None:
         BankDecision(action="duplicate")
     decision = BankDecision(action="duplicate", duplicate_action=DuplicateAction.keep_both)
     assert decision.duplicate_action == "keep_both"
+
+
+def test_duplicate_decision_accepts_candidate_index() -> None:
+    # "decide once": a duplicate decision pins the selected candidate release.
+    decision = BankDecision(
+        action="duplicate", duplicate_action=DuplicateAction.replace, candidate_index=2
+    )
+    assert decision.candidate_index == 2
+    assert decision.duplicate_action == "replace"
+
+
+def test_candidate_index_still_rejected_on_asis() -> None:
+    with pytest.raises(ValidationError):
+        BankDecision(action="asis", candidate_index=1)
+
+
+def test_bank_duplicates_response_round_trips() -> None:
+    resp = BankDuplicatesResponse(existing=[])
+    assert resp.existing == []
 
 
 def test_decision_rejects_fields_foreign_to_its_action() -> None:

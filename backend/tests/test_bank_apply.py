@@ -217,6 +217,37 @@ def test_directive_for_duplicate_and_passthroughs() -> None:
     assert directive_for(_queued_item(BankDecision(action="astracks"))).action == "astracks"
 
 
+def test_duplicate_directive_pins_selected_release() -> None:
+    # "decide once": a duplicate decision on a parked candidate row pins the
+    # selected option's release_id so the apply imports the chosen release AND
+    # resolves the collision in one pass.
+    parked = ParkedAlbum(
+        album_index=0, folder="/x/A", candidate=_candidate_with_options(["rel-0", "rel-1"])
+    )
+    item = _queued_item(
+        BankDecision(
+            action="duplicate", duplicate_action=DuplicateAction.replace, candidate_index=1
+        ),
+        parked=parked,
+    )
+    directive = directive_for(item)
+    assert directive.action == "duplicate"
+    assert directive.search_id == "rel-1"
+    assert directive.duplicate_action == DuplicateAction.replace
+
+
+def test_duplicate_directive_unpinned_when_no_parked() -> None:
+    # A sweep-banked needs_dup_resolution row (parked is None) stays unpinned.
+    item = _queued_item(
+        BankDecision(action="duplicate", duplicate_action=DuplicateAction.skip_new),
+        duplicate=_dup_prompt(),
+    )
+    directive = directive_for(item)
+    assert directive.action == "duplicate"
+    assert directive.search_id is None
+    assert directive.duplicate_action == DuplicateAction.skip_new
+
+
 # ----- the runner -----
 
 

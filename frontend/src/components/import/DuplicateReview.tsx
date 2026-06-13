@@ -68,23 +68,35 @@ export function DuplicateComparison({
  * both / Replace old / Merge — with the footnote. The caller owns the
  * mutation: `onDecide(action)`; `pending` puts the spinner on the clicked
  * button; `busy` disables the row while a submission is in flight.
+ *
+ * `context` tunes the Merge wording: on the live attended import beets' 'm'
+ * rebuilds the album and re-runs the match, so it "reappears as a normal
+ * review"; on the bank the merge is directive-driven and TERMINAL (the row
+ * settles to done), so that promise would be false — bank says it merges into
+ * the library, full stop.
  */
 export function DuplicateActions({
   pending,
   busy,
   onDecide,
+  context = "live",
 }: {
   pending: DuplicateAction | null;
   busy: boolean;
   onDecide: (action: DuplicateAction) => void;
+  context?: "live" | "bank";
 }) {
   return (
     <>
       <div className="bg-background/80 sticky bottom-0 z-10 -mx-2 flex flex-wrap items-center gap-2 border-t px-2 py-3 backdrop-blur">
+        {/* None of the four is the preferred choice — they sit as one neutral
+            peer row. Replace old keeps only its amber caution tint (it trashes
+            the old copy: a safety signal, not a preference). */}
         <Button
-          variant="ghost"
+          variant="outline"
           size="sm"
           disabled={busy}
+          aria-describedby="duplicate-footnote"
           onClick={() => onDecide("skip_new")}
         >
           <ActionIcon action="skip_new" pending={pending} icon={Close} /> Skip new
@@ -109,7 +121,7 @@ export function DuplicateActions({
           <ActionIcon action="replace" pending={pending} icon={ReplaceIcon} /> Replace old
         </Button>
         <Button
-          className="ml-auto"
+          variant="outline"
           size="sm"
           disabled={busy}
           aria-describedby="duplicate-footnote"
@@ -121,8 +133,10 @@ export function DuplicateActions({
       </div>
       <p id="duplicate-footnote" className="text-muted-foreground text-xs">
         Keep both imports alongside the existing copy · Replace moves the old
-        copy to Trash (reversible) · Merge combines them, then reappears as a
-        normal review.
+        copy to Trash (reversible) ·{" "}
+        {context === "bank"
+          ? "Merge combines them into your library."
+          : "Merge combines them, then reappears as a normal review."}
       </p>
     </>
   );

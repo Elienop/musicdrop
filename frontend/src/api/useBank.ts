@@ -17,6 +17,8 @@ export type BankStatus = BankItemSummary["status"];
 /** A banked parked-album payload (generated; `candidate` is the exact shape
  * the live review screen renders). */
 export type ParkedAlbum = components["schemas"]["ParkedAlbum"];
+/** One in-library album a banked candidate collides with (generated). */
+export type ExistingAlbum = components["schemas"]["ExistingAlbum"];
 
 /** Thrown when the bank refuses a transition (409: deciding a queued row,
  * deleting an applying row) or the row vanished under a decision (404).
@@ -133,6 +135,35 @@ export function useBankItem(itemId: string | undefined) {
       return status === "queued" || status === "applying"
         ? BANK_ROW_POLL_MS
         : false;
+    },
+  });
+}
+
+/** Library-collision check for a banked candidate
+ * (`GET /api/bank/{id}/duplicates`). Keyed on the selected candidate so a
+ * switcher change re-checks; gate `enabled` to decidable candidate rows. */
+export function useBankDuplicates(
+  itemId: string,
+  candidateIndex: number,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: ["bank", "duplicates", itemId, candidateIndex],
+    enabled,
+    queryFn: async () => {
+      const { data, error, response } = await client.GET(
+        "/api/bank/{item_id}/duplicates",
+        {
+          params: {
+            path: { item_id: itemId },
+            query: { candidate_index: candidateIndex },
+          },
+        },
+      );
+      if (error || !response.ok || !data) {
+        throw new Error("Failed to check for duplicates");
+      }
+      return data;
     },
   });
 }

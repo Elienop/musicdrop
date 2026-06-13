@@ -627,6 +627,38 @@ describe("ReviewPage", () => {
     expect(jobGets).toBe(0);
   });
 
+  test("a bank_apply import never lights up the decision section (ghost banner)", async () => {
+    // A background bank apply is fully unattended — it never parks a live
+    // decision, so its job feed must not surface as "Needs your decision".
+    let jobGets = 0;
+    server.use(
+      http.get(ACTIVE, () =>
+        HttpResponse.json({ active: true, job_id: "j1", origin: "bank_apply", needs_review_count: 0 }),
+      ),
+      http.get(JOB, () => {
+        jobGets += 1;
+        return HttpResponse.json({
+          job_id: "j1",
+          phase: "reviewing",
+          progress: { applied: 0, needs_review: 0, skipped: 0 },
+          albums: [album({ index: 0, album: "Echoes", status: "needs_dup_resolution" })],
+          summary: null,
+          error: null,
+          origin: "bank_apply",
+          set_aside: 0,
+        });
+      }),
+    );
+    renderWithProviders(<ReviewPage />);
+    await screen.findByText(/nothing to review/i);
+    // Give a would-be job fetch a beat to reach MSW before asserting silence.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(
+      screen.queryByRole("region", { name: /needs your decision/i }),
+    ).not.toBeInTheDocument();
+    expect(jobGets).toBe(0);
+  });
+
   test("the header meta counts bank rows awaiting review", async () => {
     server.use(
       http.get(BANK, ({ request }) => {

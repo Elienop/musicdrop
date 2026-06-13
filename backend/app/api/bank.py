@@ -15,11 +15,14 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 
 from app.bank import store
+from app.beets.duplicates import find_import_duplicates
+from app.beets.library import LibraryHandle
 from app.config import settings
 from app.models.bank import (
     BankBulkIgnoreRequest,
     BankBulkIgnoreResponse,
     BankDecision,
+    BankDuplicatesResponse,
     BankItem,
     BankListResponse,
     BankStatus,
@@ -64,6 +67,46 @@ async def get_bank_item(item_id: str) -> BankItem:
     if item is None:
         raise HTTPException(status_code=404, detail="Bank item not found")
     return item
+
+
+@router.get("/bank/{item_id}/duplicates", response_model=BankDuplicatesResponse)
+async def bank_item_duplicates(
+    item_id: str,
+    request: Request,
+    candidate_index: Annotated[int, Query(ge=0)] = 0,
+) -> BankDuplicatesResponse:
+    """Library albums the selected candidate would collide with — run beets'
+    own duplicate query on the matched-release metadata (lazy, fresh)."""
+    item = await run_in_threadpool(store.get_item, get_bank_dir(), item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Bank item not found")
+    parked = item.parked
+    if parked is None:
+        return BankDuplicatesResponse(existing=[])  # nothing to check (no_match)
+    after = parked.candidate.album_after
+    options = parked.candidate.options
+    idx = candidate_index if 0 <= candidate_index < len(options) else 0
+    # Detect against the SELECTED option's own metadata so the up-front check
+    # equals what the apply does (the apply pins this option's release_id and
+    # beets runs find_duplicates on ITS albumartist/album). Fall back to
+    # album_after field-by-field for legacy rows banked before options carried
+    # their own identity (and for the top option, which equals album_after).
+    opt = options[idx] if options else None
+    albumartist = opt.album_artist if opt and opt.album_artist is not None else after.artist
+    album = opt.album if opt and opt.album is not None else after.album
+    year = opt.year if opt and opt.year is not None else after.year
+    mb_albumid = opt.release_id if opt else None
+    handle: LibraryHandle = request.app.state.beets_library
+    existing = await run_in_threadpool(
+        find_import_duplicates,
+        handle.lib,
+        albumartist=albumartist,
+        album=album,
+        year=year,
+        mb_albumid=mb_albumid,
+        exclude_under=item.folder,
+    )
+    return BankDuplicatesResponse(existing=existing)
 
 
 @router.post("/bank/{item_id}/decision", response_model=BankItem)
