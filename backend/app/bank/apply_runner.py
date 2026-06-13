@@ -66,7 +66,21 @@ def directive_for(item: BankItem) -> BankApplyDirective:
         # defensive for a hand-edited row file.
         raise RuntimeError("queued row has no decision")
     if decision.action == "duplicate":
-        return BankApplyDirective(action="duplicate", duplicate_action=decision.duplicate_action)
+        # "decide once": when the row carries a parked candidate, pin the
+        # selected option's release_id so the apply imports exactly the chosen
+        # release while resolving the collision. Sweep-banked dup rows (no
+        # parked payload) stay unpinned, exactly as before.
+        dup_search_id: str | None = None
+        if item.parked is not None and item.parked.candidate.options:
+            options = item.parked.candidate.options
+            idx = decision.candidate_index or 0
+            chosen = options[idx] if 0 <= idx < len(options) else options[0]
+            dup_search_id = chosen.release_id
+        return BankApplyDirective(
+            action="duplicate",
+            search_id=dup_search_id,
+            duplicate_action=decision.duplicate_action,
+        )
     if decision.action == "apply":
         search_id: str | None = None
         if item.parked is not None and item.parked.candidate.options:
