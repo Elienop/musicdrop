@@ -85,8 +85,8 @@ def _fetch_release(mb_albumid: str, data_source: str) -> _FetchResult:
     return _FetchResult(info=info)
 
 
-def _empty(status: ReportStatus) -> AlbumMissingReport:
-    return AlbumMissingReport(status=status, total=0, present_count=0, missing=[], source=None)
+def _empty(status: ReportStatus, source: str | None = None) -> AlbumMissingReport:
+    return AlbumMissingReport(status=status, total=0, present_count=0, missing=[], source=source)
 
 
 def _build_report(info: Any, present_ids: set[str], data_source: str) -> AlbumMissingReport:
@@ -141,7 +141,10 @@ def release_missing_report(lib: Library, album_id: int) -> AlbumMissingReport:
         )
         result = _fetch_release(album.mb_albumid, data_source)
     if result.info is None:
-        return _empty(result.status)
+        # Carry the resolved source so a fetch failure can be labelled with the
+        # provider it actually tried (e.g. "Couldn't reach Deezer"), not a
+        # hardcoded "MusicBrainz". (no_musicbrainz_id returns earlier, source=None.)
+        return _empty(result.status, data_source)
     return _build_report(result.info, present_ids, data_source)
 
 

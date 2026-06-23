@@ -428,7 +428,8 @@ function TracklistStatus({
   if (query.fetchStatus === "fetching" && !report) {
     return (
       <p className="text-muted-foreground text-sm" role="status">
-        Checking MusicBrainz for missing tracks…
+        {/* The source isn't known until the report lands, so stay generic here. */}
+        Checking for missing tracks…
       </p>
     );
   }
@@ -447,14 +448,16 @@ function TracklistStatus({
   if (report.status === "release_unavailable") {
     return (
       <p className="text-muted-foreground text-sm">
-        Couldn’t find this release on MusicBrainz.
+        {report.source
+          ? `Couldn’t find this release on ${report.source}.`
+          : "Couldn’t find this release."}
       </p>
     );
   }
   if (report.status === "fetch_failed") {
     return (
       <p className="text-muted-foreground flex items-center gap-2 text-sm">
-        Couldn’t reach MusicBrainz.
+        {report.source ? `Couldn’t reach ${report.source}.` : "Couldn’t reach the metadata source."}
         <Button variant="link" size="sm" className="h-auto p-0" onClick={() => void query.refetch()}>
           Retry
         </Button>
