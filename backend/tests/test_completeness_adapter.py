@@ -107,6 +107,29 @@ def test_classifies_present_and_missing(tmp_path: Any, monkeypatch: pytest.Monke
     assert report.source == "MusicBrainz"
 
 
+def test_numeric_release_ids_match_string_item_ids(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Deezer-sourced release yields integer track_id; the library stores the
+    same id as a string (beets mb_trackid is a String field). The owned tracks
+    must NOT be flagged missing despite the int-vs-str difference."""
+    from app.beets.completeness import release_missing_report
+
+    lib = _make_lib(tmp_path, mb_albumid="123", trackids=["1421196172", "1421196173"])
+    release = SimpleNamespace(
+        tracks=[
+            SimpleNamespace(track_id=1421196172, index=1, medium=1, title="Track 1", length=181.0),
+            SimpleNamespace(track_id=1421196173, index=2, medium=1, title="Track 2", length=182.0),
+        ]
+    )
+    _patch_source(monkeypatch, lambda mbid: release)
+    report = release_missing_report(lib, _aid(lib))
+    assert report.status == "ok"
+    assert report.total == 2
+    assert report.present_count == 2  # both owned -> nothing missing
+    assert report.missing == []
+
+
 def test_no_mb_albumid(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.beets.completeness import release_missing_report
 
