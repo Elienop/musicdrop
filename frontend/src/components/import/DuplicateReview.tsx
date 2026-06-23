@@ -7,6 +7,7 @@ import {
   Spinner,
   type AppIcon,
 } from "@/components/icons";
+import { MergePreviewTable } from "@/components/import/MergePreviewTable";
 import { CoverArt } from "@/components/system/CoverArt";
 import { Button } from "@/components/ui/button";
 
@@ -59,6 +60,10 @@ export function DuplicateComparison({
           />
         ))}
       </div>
+
+      {/* Per-track library-vs-import comparison — makes Merge/Replace/Skip
+          legible. Absent for an as-is duplicate (no matched release to anchor). */}
+      {prompt.merge_preview && <MergePreviewTable preview={prompt.merge_preview} />}
     </>
   );
 }

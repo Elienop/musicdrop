@@ -33,6 +33,7 @@ from app.beets.import_mapping import (
     map_album_match,
     map_candidate_options,
 )
+from app.beets.merge_preview import build_merge_preview
 from app.beets.trash import album_folder, album_format_bitrate, trash_album
 from app.models.bank import BankApplyDirective, BankReason
 from app.models.import_models import (
@@ -392,7 +393,12 @@ class WebImportSession(ImportSession):
         art_source = self._first_item_art_source(list(task.items or []))
         incoming = self._to_incoming_album(task)
         existing = [self._to_existing_album(album) for album in found_duplicates]
-        prompt = DuplicatePrompt(album_index=index, incoming=incoming, existing=existing)
+        prompt = DuplicatePrompt(
+            album_index=index,
+            incoming=incoming,
+            existing=existing,
+            merge_preview=build_merge_preview(task, found_duplicates),
+        )
         self.bridge.note_outcome(self._dup_outcome(index, task))
         if self._directive is not None:
             dup_action = self._directive.duplicate_action
@@ -775,9 +781,17 @@ class WebImportSession(ImportSession):
 
     @staticmethod
     def _task_folder(task: ImportTask) -> str:
-        if task.paths:
-            return os.fsdecode(task.paths[0])
-        return ""
+        # The album's folder = the common parent of the task's paths. For a
+        # one-folder album this is that folder; for a multi-disc task whose paths
+        # are [CD1, CD2, CD3] (a deemix layout excludes the parent) it is the
+        # album dir — NOT paths[0]=CD1, which would bank/re-import only disc 1.
+        if not task.paths:
+            return ""
+        decoded = [os.fsdecode(p) for p in task.paths]
+        try:
+            return os.path.commonpath(decoded)
+        except ValueError:  # mixed/relative paths — never happens for beets toppaths
+            return decoded[0]
 
 
 def run_import_worker(

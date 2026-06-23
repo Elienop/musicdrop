@@ -222,6 +222,51 @@ describe("ImportCandidatePage", () => {
     expect(within(row).getByText("changed")).toHaveClass("sr-only");
   });
 
+  test("surfaces a track-number change when the title is identical (multi-disc renumber)", async () => {
+    // A multi-disc match renumbers tracks to album-global indices, so a row can
+    // be "changed" with an unchanged title. The # cell must show before→after so
+    // the highlight isn't a mystery (it otherwise shows only the final number).
+    // The preview renders the selected option's diff (options[0] at selected=0),
+    // so the renumbered track must live on options[0].tracks, not just the
+    // top-level candidate.tracks.
+    const base = makeCandidate();
+    const candidate: Candidate = {
+      ...base,
+      options: [
+        {
+          ...base.options[0],
+          tracks: [
+            {
+              index: 19,
+              status: "changed",
+              title_before: "Wall Street Shuffle",
+              title_after: "Wall Street Shuffle",
+              track_before: 1,
+              track_after: 19,
+            },
+          ],
+          missing: [],
+          unmatched: [],
+        },
+        ...base.options.slice(1),
+      ],
+    };
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(candidate)));
+    renderAt();
+
+    expect(await screen.findByText("1 → 19")).toBeInTheDocument();
+  });
+
+  test("does not show a number delta when only the title changed", async () => {
+    // The default fixture's changed track keeps its number (2 → 2); the # cell
+    // must show the single position, never a no-op "2 → 2" arrow.
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
+    renderAt();
+
+    await screen.findByText("Paranoid Android");
+    expect(screen.queryByText("2 → 2")).not.toBeInTheDocument();
+  });
+
   test("labels the covers honestly — yours kept, release art is reference", async () => {
     server.use(
       http.get(CANDIDATE_URL, () =>

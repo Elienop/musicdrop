@@ -30,6 +30,10 @@ export type DuplicatePrompt = components["schemas"]["DuplicatePrompt"];
 export type DuplicateDecision = components["schemas"]["DuplicateDecision"];
 /** beets' four duplicate actions (generated; mirrors the backend enum). */
 export type DuplicateAction = components["schemas"]["DuplicateAction"];
+/** The per-track library-vs-import comparison shown on a duplicate prompt. */
+export type MergePreview = components["schemas"]["MergePreview"];
+/** One release position compared across the library copy and the import. */
+export type DuplicateTrackRow = components["schemas"]["DuplicateTrackRow"];
 /** Live sweep counters on a sweep-origin job/probe (generated contract). */
 export type SweepStatus = components["schemas"]["SweepStatus"];
 

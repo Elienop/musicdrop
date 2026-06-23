@@ -305,16 +305,66 @@ class DuplicateAction(StrEnum):
     merge = "merge"
 
 
+class DuplicateTrackState(StrEnum):
+    """Per release-position relationship between the library copy and the import.
+
+    added         -> import has it, library does not (merge would fold it in)
+    library_only  -> library has it, import does not (kept, untouched)
+    upgrade       -> both have it, the import is higher quality (replace wins)
+    downgrade     -> both have it, the import is lower quality
+    same          -> both have it, equal quality
+    missing       -> neither has it (still missing after any action)
+    """
+
+    added = "added"
+    library_only = "library_only"
+    upgrade = "upgrade"
+    downgrade = "downgrade"
+    same = "same"
+    missing = "missing"
+
+
+class DuplicateTrackRow(BaseModel):
+    """One release position compared across your library copy and the import."""
+
+    position: int  # album-global track index (release order)
+    disc: int  # disc number (1 when single-disc)
+    title: str
+    state: DuplicateTrackState
+    library_format: str | None  # e.g. "FLAC"/"MP3"; None when absent that side
+    library_bitrate_kbps: int | None
+    import_format: str | None
+    import_bitrate_kbps: int | None
+
+
+class MergePreview(BaseModel):
+    """The per-track before/after comparison rendered as the duplicate table.
+
+    Counts feed the summary line so the frontend stays a pure renderer;
+    ``in_library_count + added_count + missing_count == total``.
+    """
+
+    rows: list[DuplicateTrackRow]
+    total: int  # len(release tracks)
+    in_library_count: int  # tracks you already have (any in-library state)
+    added_count: int  # tracks the import would fold in
+    upgrade_count: int  # shared tracks the import improves
+    missing_count: int  # tracks neither side has
+
+
 class DuplicatePrompt(BaseModel):
     """A parked import album that duplicates one or more already in the library.
 
     Pushed onto the import bridge's duplicate channel; ``album_index`` keys the
     reply (the SAME index the album's candidate outcome already carries).
+    ``merge_preview`` is the per-track comparison table; ``None`` when it cannot
+    be built (an as-is import has no matched release to anchor positions on).
     """
 
     album_index: int
     incoming: IncomingAlbum
     existing: list[ExistingAlbum]
+    merge_preview: MergePreview | None = None
 
 
 class DuplicateDecision(BaseModel):
