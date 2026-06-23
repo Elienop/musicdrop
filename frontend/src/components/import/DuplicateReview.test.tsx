@@ -76,6 +76,46 @@ describe("DuplicateComparison", () => {
     render(<DuplicateComparison prompt={makePrompt()} incomingCoverUrl={null} />);
     expect(screen.queryByText("Track comparison")).not.toBeInTheDocument();
   });
+
+  test("shows each side's release identity so 'same release?' is answerable", () => {
+    const base = makePrompt();
+    const prompt = {
+      ...base,
+      incoming: {
+        ...base.incoming,
+        release: {
+          data_source: "Deezer",
+          label: null,
+          country: null,
+          media: null,
+          disambiguation: "2016 reissue",
+          release_url: "https://www.deezer.com/album/9",
+        },
+      },
+      existing: [
+        {
+          ...base.existing[0],
+          release: {
+            data_source: "MusicBrainz",
+            label: "Warner Bros.",
+            country: "US",
+            media: '12" Vinyl',
+            disambiguation: null,
+            release_url: "https://musicbrainz.org/release/m1",
+          },
+        },
+      ],
+    };
+    render(<DuplicateComparison prompt={prompt} incomingCoverUrl={null} />);
+    // incoming = a different release than the existing copy
+    expect(screen.getByText("Deezer")).toBeInTheDocument();
+    expect(screen.getByText("2016 reissue")).toBeInTheDocument();
+    // existing = the library copy's MusicBrainz edition
+    expect(screen.getByText('MusicBrainz · 12" Vinyl · US')).toBeInTheDocument();
+    expect(screen.getByText("Warner Bros.")).toBeInTheDocument();
+    // both link out to their release page
+    expect(screen.getAllByRole("link", { name: /view release/i })).toHaveLength(2);
+  });
 });
 
 describe("DuplicateActions", () => {

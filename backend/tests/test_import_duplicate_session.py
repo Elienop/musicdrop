@@ -92,11 +92,21 @@ def _task(match: AlbumMatch, monkeypatch: pytest.MonkeyPatch) -> ImportTask:
 class _FakeAlbum:
     """A minimal stand-in for a beets library Album in found_duplicates."""
 
-    def __init__(self, album_id: int) -> None:
+    def __init__(
+        self,
+        album_id: int,
+        *,
+        data_source: str | None = None,
+        mb_albumid: str | None = None,
+        label: str | None = None,
+    ) -> None:
         self.id = album_id
         self.albumartist = "Radiohead"
         self.album = "In Rainbows"
         self.year = 2007
+        self.data_source = data_source
+        self.mb_albumid = mb_albumid
+        self.label = label
 
     def items(self) -> list[Any]:
         return []
@@ -131,6 +141,30 @@ def test_resolve_duplicate_parks_and_emits_needs_dup_resolution(
     bridge.push_duplicate_decision(7, DuplicateDecision(action=DuplicateAction.keep_both))
     t.join(timeout=2.0)
     assert task.choice_flag is Action.APPLY  # keep_both leaves the choice intact
+
+
+def test_duplicate_prompt_carries_release_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    match = _match()  # AlbumInfo: data_source MusicBrainz, album_id "a1"
+    bridge = ImportBridge()
+    session = _session(bridge)
+    task = _task(match, monkeypatch)
+    task.md_album_index = 0  # type: ignore[attr-defined]  # choose_match's stash
+    existing = _FakeAlbum(1, data_source="MusicBrainz", mb_albumid="e1", label="XL Recordings")
+
+    t = _run_hook(session, task, [existing])
+    prompt = bridge.get_parked_duplicate(timeout=2.0)
+    assert prompt is not None
+    # incoming = the matched release (what the import will become)
+    assert prompt.incoming.release is not None
+    assert prompt.incoming.release.data_source == "MusicBrainz"
+    assert prompt.incoming.release.release_url == "https://musicbrainz.org/release/a1"
+    # existing = the library copy's own release
+    assert prompt.existing[0].release is not None
+    assert prompt.existing[0].release.release_url == "https://musicbrainz.org/release/e1"
+    assert prompt.existing[0].release.label == "XL Recordings"
+
+    bridge.push_duplicate_decision(0, DuplicateDecision(action=DuplicateAction.keep_both))
+    t.join(timeout=2.0)
 
 
 def test_unattended_resolve_duplicate_skips_without_parking(

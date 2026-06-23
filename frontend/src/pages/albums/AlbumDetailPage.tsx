@@ -11,6 +11,7 @@ import { formatDuration } from "@/lib/format";
 import { useDeferredH1Focus } from "@/lib/useDeferredH1Focus";
 import { buildDiscGroups, type DiscGroup } from "@/pages/albums/missingTracks";
 import { albumOriginFromState, BackLink } from "@/components/albums/album-grid";
+import { ReleaseInfo } from "@/components/albums/ReleaseInfo";
 import {
   Cover as CoverIcon,
   Edit as EditIcon,
@@ -188,6 +189,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
                 {album.track_count} {album.track_count === 1 ? "track" : "tracks"}
               </span>
               {album.genre && <span>{album.genre}</span>}
+              {album.release && <ReleaseInfo release={album.release} />}
             </div>
           </div>
           {/* Maintenance actions — the Koito idiom: one centered row of large

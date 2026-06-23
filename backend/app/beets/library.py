@@ -20,6 +20,7 @@ from beets.library import Library
 from beets.ui import get_path_formats, get_replacements
 from mediafile import MediaFile
 
+from app.beets.release_identity import release_identity
 from app.models.album import Album, AlbumDetail, Track
 from app.models.artist import Artist
 from app.models.browse import BrowseFacets, FacetValue
@@ -198,7 +199,11 @@ def get_album_detail(lib: Library, album_id: int) -> AlbumDetail | None:
         (_to_track(item) for item in items),
         key=lambda t: (t.disc, t.track),
     )
-    return AlbumDetail(**_album_fields(album, items), tracks=tracks)
+    return AlbumDetail(
+        **_album_fields(album, items),
+        tracks=tracks,
+        release=release_identity(album, album.mb_albumid),
+    )
 
 
 def list_artists(lib: Library) -> list[Artist]:

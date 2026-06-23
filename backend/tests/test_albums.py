@@ -359,6 +359,32 @@ def test_album_detail_exposes_musicbrainz_ids(edit_lib: "Library") -> None:
     assert all(t.mb_trackid is None for t in detail.tracks)
 
 
+def test_album_detail_exposes_release_identity(temp_library: "Library") -> None:
+    # Real beets album: data_source is a flex attr, the rest are fixed fields.
+    from app.beets.library import get_album_detail
+
+    album = next(iter(temp_library.albums()))
+    album["data_source"] = "MusicBrainz"
+    album.label = "Warner Bros. Records"
+    album.country = "US"
+    album.media = '12" Vinyl'
+    album.albumdisambig = "1973 reissue"
+    album.mb_albumid = "rel-xyz"
+    album.store()
+
+    detail = get_album_detail(temp_library, int(album.id))
+    assert detail is not None and detail.release is not None
+    r = detail.release
+    assert r.data_source == "MusicBrainz"
+    assert (r.label, r.country, r.media, r.disambiguation) == (
+        "Warner Bros. Records",
+        "US",
+        '12" Vinyl',
+        "1973 reissue",
+    )
+    assert r.release_url == "https://musicbrainz.org/release/rel-xyz"
+
+
 def test_album_detail_track_has_lyrics_flag(temp_library: "Library") -> None:
     """A track with stored lyrics reports has_lyrics=True; one without reports False."""
     from app.beets.library import get_album_detail

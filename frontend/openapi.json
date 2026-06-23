@@ -3565,6 +3565,16 @@
             },
             "type": "array",
             "title": "Tracks"
+          },
+          "release": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReleaseIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -5362,6 +5372,16 @@
           "folder": {
             "type": "string",
             "title": "Folder"
+          },
+          "release": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReleaseIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -5851,6 +5871,16 @@
           "has_current_art": {
             "type": "boolean",
             "title": "Has Current Art"
+          },
+          "release": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReleaseIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -6903,6 +6933,87 @@
         ],
         "title": "Recommendation",
         "description": "Mirror of beets' Recommendation enum (beets/autotag/match.py).\n\nBeets uses an IntEnum (none=0..strong=3); we expose the names as strings so\nthe JSON contract is self-describing for the frontend."
+      },
+      "ReleaseIdentity": {
+        "properties": {
+          "data_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Source"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "media": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media"
+          },
+          "disambiguation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disambiguation"
+          },
+          "release_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "data_source",
+          "label",
+          "country",
+          "media",
+          "disambiguation",
+          "release_url"
+        ],
+        "title": "ReleaseIdentity",
+        "description": "Which release an album is \u2014 the provenance needed to tell two copies apart.\n\n``data_source`` is the matcher (``\"MusicBrainz\"``/``\"Deezer\"``/...); ``media``\n+ ``country`` + ``disambiguation`` are the edition; ``release_url`` links to\nthe release page (``None`` when it can't be built). Every field is optional \u2014\nan as-is or sparsely-tagged album may carry none of them."
       },
       "RenderedRule": {
         "properties": {
