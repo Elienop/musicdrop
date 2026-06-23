@@ -5074,6 +5074,16 @@
             },
             "type": "array",
             "title": "Existing"
+          },
+          "merge_preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MergePreview"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -5083,7 +5093,96 @@
           "existing"
         ],
         "title": "DuplicatePrompt",
-        "description": "A parked import album that duplicates one or more already in the library.\n\nPushed onto the import bridge's duplicate channel; ``album_index`` keys the\nreply (the SAME index the album's candidate outcome already carries)."
+        "description": "A parked import album that duplicates one or more already in the library.\n\nPushed onto the import bridge's duplicate channel; ``album_index`` keys the\nreply (the SAME index the album's candidate outcome already carries).\n``merge_preview`` is the per-track comparison table; ``None`` when it cannot\nbe built (an as-is import has no matched release to anchor positions on)."
+      },
+      "DuplicateTrackRow": {
+        "properties": {
+          "position": {
+            "type": "integer",
+            "title": "Position"
+          },
+          "disc": {
+            "type": "integer",
+            "title": "Disc"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "state": {
+            "$ref": "#/components/schemas/DuplicateTrackState"
+          },
+          "library_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Library Format"
+          },
+          "library_bitrate_kbps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Library Bitrate Kbps"
+          },
+          "import_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Import Format"
+          },
+          "import_bitrate_kbps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Import Bitrate Kbps"
+          }
+        },
+        "type": "object",
+        "required": [
+          "position",
+          "disc",
+          "title",
+          "state",
+          "library_format",
+          "library_bitrate_kbps",
+          "import_format",
+          "import_bitrate_kbps"
+        ],
+        "title": "DuplicateTrackRow",
+        "description": "One release position compared across your library copy and the import."
+      },
+      "DuplicateTrackState": {
+        "type": "string",
+        "enum": [
+          "added",
+          "library_only",
+          "upgrade",
+          "downgrade",
+          "same",
+          "missing"
+        ],
+        "title": "DuplicateTrackState",
+        "description": "Per release-position relationship between the library copy and the import.\n\nadded         -> import has it, library does not (merge would fold it in)\nlibrary_only  -> library has it, import does not (kept, untouched)\nupgrade       -> both have it, the import is higher quality (replace wins)\ndowngrade     -> both have it, the import is lower quality\nsame          -> both have it, equal quality\nmissing       -> neither has it (still missing after any action)"
       },
       "DuplicatesReport": {
         "properties": {
@@ -6015,6 +6114,48 @@
           "percent"
         ],
         "title": "LyricsCoverage"
+      },
+      "MergePreview": {
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/DuplicateTrackRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "in_library_count": {
+            "type": "integer",
+            "title": "In Library Count"
+          },
+          "added_count": {
+            "type": "integer",
+            "title": "Added Count"
+          },
+          "upgrade_count": {
+            "type": "integer",
+            "title": "Upgrade Count"
+          },
+          "missing_count": {
+            "type": "integer",
+            "title": "Missing Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rows",
+          "total",
+          "in_library_count",
+          "added_count",
+          "upgrade_count",
+          "missing_count"
+        ],
+        "title": "MergePreview",
+        "description": "The per-track before/after comparison rendered as the duplicate table.\n\nCounts feed the summary line so the frontend stays a pure renderer;\n``in_library_count + added_count + missing_count == total``."
       },
       "MissingReleaseTrack": {
         "properties": {

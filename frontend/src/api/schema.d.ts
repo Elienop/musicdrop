@@ -1999,6 +1999,8 @@ export interface components {
          *
          *     Pushed onto the import bridge's duplicate channel; ``album_index`` keys the
          *     reply (the SAME index the album's candidate outcome already carries).
+         *     ``merge_preview`` is the per-track comparison table; ``None`` when it cannot
+         *     be built (an as-is import has no matched release to anchor positions on).
          */
         DuplicatePrompt: {
             /** Album Index */
@@ -2006,7 +2008,42 @@ export interface components {
             incoming: components["schemas"]["IncomingAlbum"];
             /** Existing */
             existing: components["schemas"]["ExistingAlbum"][];
+            merge_preview?: components["schemas"]["MergePreview"] | null;
         };
+        /**
+         * DuplicateTrackRow
+         * @description One release position compared across your library copy and the import.
+         */
+        DuplicateTrackRow: {
+            /** Position */
+            position: number;
+            /** Disc */
+            disc: number;
+            /** Title */
+            title: string;
+            state: components["schemas"]["DuplicateTrackState"];
+            /** Library Format */
+            library_format: string | null;
+            /** Library Bitrate Kbps */
+            library_bitrate_kbps: number | null;
+            /** Import Format */
+            import_format: string | null;
+            /** Import Bitrate Kbps */
+            import_bitrate_kbps: number | null;
+        };
+        /**
+         * DuplicateTrackState
+         * @description Per release-position relationship between the library copy and the import.
+         *
+         *     added         -> import has it, library does not (merge would fold it in)
+         *     library_only  -> library has it, import does not (kept, untouched)
+         *     upgrade       -> both have it, the import is higher quality (replace wins)
+         *     downgrade     -> both have it, the import is lower quality
+         *     same          -> both have it, equal quality
+         *     missing       -> neither has it (still missing after any action)
+         * @enum {string}
+         */
+        DuplicateTrackState: "added" | "library_only" | "upgrade" | "downgrade" | "same" | "missing";
         /** DuplicatesReport */
         DuplicatesReport: {
             mode: components["schemas"]["DuplicateMode"];
@@ -2394,6 +2431,27 @@ export interface components {
             with_lyrics: number;
             /** Percent */
             percent: number;
+        };
+        /**
+         * MergePreview
+         * @description The per-track before/after comparison rendered as the duplicate table.
+         *
+         *     Counts feed the summary line so the frontend stays a pure renderer;
+         *     ``in_library_count + added_count + missing_count == total``.
+         */
+        MergePreview: {
+            /** Rows */
+            rows: components["schemas"]["DuplicateTrackRow"][];
+            /** Total */
+            total: number;
+            /** In Library Count */
+            in_library_count: number;
+            /** Added Count */
+            added_count: number;
+            /** Upgrade Count */
+            upgrade_count: number;
+            /** Missing Count */
+            missing_count: number;
         };
         /** MissingReleaseTrack */
         MissingReleaseTrack: {
