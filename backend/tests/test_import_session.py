@@ -1389,3 +1389,51 @@ def test_non_directive_run_never_touches_search_ids() -> None:
     run_import_worker(s)  # type: ignore[arg-type]  # minimal stand-in
     assert s.seen["search_ids"] == ["user-pin"]  # manual/inbox/sweep: untouched
     assert config["import"]["search_ids"].get() == ["user-pin"]
+
+
+# ----- _task_folder: multi-disc bank-folder fix -----
+
+
+def test_task_folder_is_the_common_parent_of_multidisc_paths() -> None:
+    # A deemix multi-disc layout collapses to paths=[CD1, CD2, CD3] (the album
+    # parent is excluded because its loose files defeat the nested collapse). The
+    # bank folder must be the album dir, not CD1, or the apply re-imports CD1 only.
+    task = ImportTask(
+        toppath=None,
+        paths=[b"/dl/Album/CD1", b"/dl/Album/CD2", b"/dl/Album/CD3"],
+        items=[],
+    )
+    assert WebImportSession._task_folder(task) == "/dl/Album"
+
+
+def test_task_folder_single_path_is_unchanged() -> None:
+    # A normal one-folder album: common-parent of a single path is that path.
+    task = ImportTask(toppath=None, paths=[b"/dl/Album"], items=[])
+    assert WebImportSession._task_folder(task) == "/dl/Album"
+
+
+def test_task_folder_empty_paths_is_blank() -> None:
+    task = ImportTask(toppath=None, paths=[], items=[])
+    assert WebImportSession._task_folder(task) == ""
+
+
+def test_albums_in_dir_collapses_deemix_multidisc(tmp_path: Path) -> None:
+    # Guards the beets behaviour the fix relies on: re-importing the album PARENT
+    # (loose files + CD1/CD2/CD3) collapses the three discs into ONE album, so a
+    # common-parent bank folder re-imports every disc.
+    root = tmp_path / "Album"
+    for cd in ("CD1", "CD2", "CD3"):
+        leaf = root / cd
+        leaf.mkdir(parents=True)
+        for i in range(1, 3):
+            (leaf / f"{i:02d} t.flac").write_bytes(b"\0")
+    for extra in ("cover.jpg", "playlist.m3u8", "Thumbs.db"):  # deemix leftovers
+        (root / extra).write_bytes(b"\0")
+
+    albums = list(beets_tasks.albums_in_dir(os.fsencode(str(root))))
+    collapsed = [
+        paths
+        for paths, _items in albums
+        if {os.path.basename(os.fsdecode(p)) for p in paths} == {"CD1", "CD2", "CD3"}
+    ]
+    assert len(collapsed) == 1  # the three discs are ONE album

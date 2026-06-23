@@ -781,9 +781,17 @@ class WebImportSession(ImportSession):
 
     @staticmethod
     def _task_folder(task: ImportTask) -> str:
-        if task.paths:
-            return os.fsdecode(task.paths[0])
-        return ""
+        # The album's folder = the common parent of the task's paths. For a
+        # one-folder album this is that folder; for a multi-disc task whose paths
+        # are [CD1, CD2, CD3] (a deemix layout excludes the parent) it is the
+        # album dir — NOT paths[0]=CD1, which would bank/re-import only disc 1.
+        if not task.paths:
+            return ""
+        decoded = [os.fsdecode(p) for p in task.paths]
+        try:
+            return os.path.commonpath(decoded)
+        except ValueError:  # mixed/relative paths — never happens for beets toppaths
+            return decoded[0]
 
 
 def run_import_worker(
