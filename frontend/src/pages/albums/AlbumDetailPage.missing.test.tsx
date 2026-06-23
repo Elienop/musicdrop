@@ -83,14 +83,37 @@ describe("AlbumDetailPage missing tracks", () => {
     expect(screen.queryByText(/tracks missing/i)).not.toBeInTheDocument();
   });
 
-  it("surfaces a fetch_failed note with Retry", async () => {
+  it("surfaces a fetch_failed note with Retry, naming the source", async () => {
     useAlbumMissingMock.mockReturnValue({
-      data: { status: "fetch_failed", total: 0, present_count: 0, missing: [], source: null },
+      data: { status: "fetch_failed", total: 0, present_count: 0, missing: [], source: "Deezer" },
       fetchStatus: "idle",
       refetch: vi.fn(),
     });
     await renderPage();
-    expect(await screen.findByText(/couldn’t reach musicbrainz/i)).toBeInTheDocument();
+    expect(await screen.findByText(/couldn’t reach deezer/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
+
+  it("names the source in a release_unavailable note", async () => {
+    useAlbumMissingMock.mockReturnValue({
+      data: {
+        status: "release_unavailable",
+        total: 0,
+        present_count: 0,
+        missing: [],
+        source: "Deezer",
+      },
+      fetchStatus: "idle",
+      refetch: vi.fn(),
+    });
+    await renderPage();
+    expect(await screen.findByText(/couldn’t find this release on deezer/i)).toBeInTheDocument();
+  });
+
+  it("shows a source-agnostic note while still fetching", async () => {
+    useAlbumMissingMock.mockReturnValue({ data: undefined, fetchStatus: "fetching", refetch: vi.fn() });
+    await renderPage();
+    expect(await screen.findByText(/checking for missing tracks/i)).toBeInTheDocument();
+    expect(screen.queryByText(/musicbrainz/i)).not.toBeInTheDocument();
   });
 });

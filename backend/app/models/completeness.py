@@ -26,4 +26,6 @@ class AlbumMissingReport(BaseModel):
     total: int  # len(release tracks); 0 when status != "ok"
     present_count: int  # total - len(missing)
     missing: list[MissingReleaseTrack]
-    source: str | None  # e.g. "MusicBrainz"; None when status != "ok"
+    source: str | None  # the provider tried, e.g. "MusicBrainz"/"Deezer"; populated
+    # for "ok" + fetch-failure statuses (release_unavailable/fetch_failed), None for
+    # no_musicbrainz_id (no fetch attempted)

@@ -158,6 +158,37 @@ def test_release_unavailable_on_none(tmp_path: Any, monkeypatch: pytest.MonkeyPa
     _patch_source(monkeypatch, lambda mbid: None)
     report = release_missing_report(lib, _aid(lib))
     assert report.status == "release_unavailable"
+    assert report.source == "MusicBrainz"  # falls back to MB when no data_source set
+
+
+def test_error_report_carries_resolved_source(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fetch failure still names WHICH source it tried, so the UI can label it
+    (e.g. 'Couldn't reach Deezer') instead of always saying MusicBrainz."""
+    from app.beets.completeness import release_missing_report
+
+    lib = _make_lib(tmp_path, mb_albumid="rel-1", trackids=["t1"])
+    album = lib.get_album(_aid(lib))
+    assert album is not None
+    album["data_source"] = "Deezer"
+    album.store()
+
+    _patch_source(monkeypatch, lambda mbid: None)  # release not found
+    unavailable = release_missing_report(lib, _aid(lib))
+    assert unavailable.status == "release_unavailable"
+    assert unavailable.source == "Deezer"
+
+    def _boom(mbid: str) -> Any:
+        raise requests.exceptions.ConnectionError("network down")
+
+    from app.beets.completeness import clear_release_cache
+
+    clear_release_cache()
+    _patch_source(monkeypatch, _boom)  # network error
+    failed = release_missing_report(lib, _aid(lib))
+    assert failed.status == "fetch_failed"
+    assert failed.source == "Deezer"
 
 
 def test_release_unavailable_when_source_missing(
@@ -186,6 +217,7 @@ def test_fetch_failed_on_network_error(tmp_path: Any, monkeypatch: pytest.Monkey
     _patch_source(monkeypatch, _boom)
     report = release_missing_report(lib, _aid(lib))
     assert report.status == "fetch_failed"
+    assert report.source == "MusicBrainz"  # falls back to MB when no data_source set
 
 
 def test_unknown_album_raises(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
