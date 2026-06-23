@@ -90,8 +90,12 @@ def _empty(status: ReportStatus) -> AlbumMissingReport:
 
 
 def _build_report(info: Any, present_ids: set[str], data_source: str) -> AlbumMissingReport:
-    tracks = list(info.tracks)
-    missing = [
+    # MissingReleaseTrack.mb_trackid normalizes the id to a string; matching on
+    # that field (not the raw track_id) is essential because a Deezer release
+    # yields an integer track_id while the library stores mb_trackid as a string
+    # — a raw int-vs-str test would flag every owned track as missing.
+    # present_ids is already string-normalized by the caller.
+    rows = [
         MissingReleaseTrack(
             index=int(getattr(t, "index", 0) or 0),
             disc=int(getattr(t, "medium", 0) or 1),
@@ -99,10 +103,10 @@ def _build_report(info: Any, present_ids: set[str], data_source: str) -> AlbumMi
             duration_seconds=_optional_float(getattr(t, "length", None)),
             mb_trackid=_optional_str(getattr(t, "track_id", None)),
         )
-        for t in tracks
-        if getattr(t, "track_id", None) not in present_ids
+        for t in info.tracks
     ]
-    total = len(tracks)
+    missing = [r for r in rows if r.mb_trackid not in present_ids]
+    total = len(rows)
     return AlbumMissingReport(
         status="ok",
         total=total,
@@ -125,7 +129,7 @@ def release_missing_report(lib: Library, album_id: int) -> AlbumMissingReport:
         if not album.mb_albumid:
             return _empty("no_musicbrainz_id")
         items = list(album.items())
-        present_ids = {it.mb_trackid for it in items if it.mb_trackid}
+        present_ids = {str(it.mb_trackid) for it in items if it.mb_trackid}
         if not present_ids:
             # MB album but nothing carries an id -> can't classify; avoid a
             # misleading "everything missing".
