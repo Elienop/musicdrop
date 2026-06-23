@@ -1441,6 +1441,7 @@ export interface components {
             mb_albumid: string | null;
             /** Tracks */
             tracks: components["schemas"]["Track"][];
+            release?: components["schemas"]["ReleaseIdentity"] | null;
         };
         /**
          * AlbumDiffSide
@@ -2737,6 +2738,29 @@ export interface components {
          * @enum {string}
          */
         Recommendation: "none" | "low" | "medium" | "strong";
+        /**
+         * ReleaseIdentity
+         * @description Which release an album is — the provenance needed to tell two copies apart.
+         *
+         *     ``data_source`` is the matcher (``"MusicBrainz"``/``"Deezer"``/...); ``media``
+         *     + ``country`` + ``disambiguation`` are the edition; ``release_url`` links to
+         *     the release page (``None`` when it can't be built). Every field is optional —
+         *     an as-is or sparsely-tagged album may carry none of them.
+         */
+        ReleaseIdentity: {
+            /** Data Source */
+            data_source: string | null;
+            /** Label */
+            label: string | null;
+            /** Country */
+            country: string | null;
+            /** Media */
+            media: string | null;
+            /** Disambiguation */
+            disambiguation: string | null;
+            /** Release Url */
+            release_url: string | null;
+        };
         /**
          * RenderedRule
          * @description A single rule's live preview: the path a sample track would get under this

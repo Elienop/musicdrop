@@ -8,6 +8,8 @@ import type { components } from "@/api/schema";
 export type AlbumDetail = components["schemas"]["AlbumDetail"];
 /** A single tracklist row (generated contract). */
 export type Track = components["schemas"]["Track"];
+/** Which release an album is — source, edition, label, release link (generated). */
+export type ReleaseIdentity = components["schemas"]["ReleaseIdentity"];
 
 /** Thrown when the album id is unknown (API 404). Lets the page distinguish a
  * genuine not-found from a transient/server error and render the dedicated
