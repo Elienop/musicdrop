@@ -10,6 +10,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from app.models.album import ReleaseIdentity
+
 ImportOrigin = Literal["manual", "inbox", "sweep", "bank_apply"]
 
 
@@ -266,6 +268,7 @@ class ExistingAlbum(BaseModel):
     format: str | None
     bitrate_kbps: int | None
     folder: str
+    release: ReleaseIdentity | None = None  # which release this library copy is
 
 
 class IncomingAlbum(BaseModel):
@@ -284,6 +287,7 @@ class IncomingAlbum(BaseModel):
     bitrate_kbps: int | None
     folder: str
     has_current_art: bool
+    release: ReleaseIdentity | None = None  # the release this import resolves to
 
 
 class DuplicateAction(StrEnum):

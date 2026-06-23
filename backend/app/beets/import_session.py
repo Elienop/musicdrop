@@ -34,7 +34,9 @@ from app.beets.import_mapping import (
     map_candidate_options,
 )
 from app.beets.merge_preview import build_merge_preview
+from app.beets.release_identity import release_identity
 from app.beets.trash import album_folder, album_format_bitrate, trash_album
+from app.models.album import ReleaseIdentity
 from app.models.bank import BankApplyDirective, BankReason
 from app.models.import_models import (
     AlbumOutcome,
@@ -264,6 +266,21 @@ class ImportBridge:
     def known_skips(self) -> int:
         with self._lock:
             return self._known_skips
+
+
+def _incoming_release(task: ImportTask, items: list[Any]) -> ReleaseIdentity | None:
+    """Release identity for the import's 'new' side.
+
+    The matched release when the album matched (what it WILL become, so the user
+    can compare it to the existing copy); otherwise the current files' own tags.
+    """
+    match = getattr(task, "match", None)
+    info = getattr(match, "info", None) if match is not None else None
+    if info is not None:
+        return release_identity(info, getattr(info, "album_id", None))
+    if items:
+        return release_identity(items[0], getattr(items[0], "mb_albumid", None))
+    return None
 
 
 class WebImportSession(ImportSession):
@@ -735,6 +752,7 @@ class WebImportSession(ImportSession):
             bitrate_kbps=bitrate_kbps,
             folder=self._task_folder(task),
             has_current_art=has_art,
+            release=_incoming_release(task, items),
         )
 
     def _to_existing_album(self, album: Any) -> ExistingAlbum:
@@ -756,6 +774,7 @@ class WebImportSession(ImportSession):
             format=fmt,
             bitrate_kbps=bitrate_kbps,
             folder=folder,
+            release=release_identity(album, getattr(album, "mb_albumid", None)),
         )
 
     @staticmethod

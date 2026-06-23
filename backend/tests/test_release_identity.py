@@ -75,3 +75,20 @@ def test_tolerates_absent_attributes() -> None:
     ri = release_identity(_obj(data_source="MusicBrainz", label="X"), "id1")
     assert (ri.country, ri.media, ri.disambiguation) == (None, None, None)
     assert ri.label == "X"
+
+
+def test_tolerates_attrdict_keyerror() -> None:
+    # beets AlbumInfo/TrackInfo are AttrDicts: a missing key raises KeyError, not
+    # AttributeError, which getattr(default) would NOT swallow.
+    from app.beets.release_identity import release_identity
+
+    class _AttrDictish:
+        data_source = "MusicBrainz"  # present via normal lookup
+
+        def __getattr__(self, key: str) -> object:
+            raise KeyError(key)  # absent keys
+
+    ri = release_identity(_AttrDictish(), "a1")
+    assert ri.data_source == "MusicBrainz"
+    assert (ri.label, ri.media) == (None, None)
+    assert ri.release_url == "https://musicbrainz.org/release/a1"

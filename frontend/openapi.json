@@ -5372,6 +5372,16 @@
           "folder": {
             "type": "string",
             "title": "Folder"
+          },
+          "release": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReleaseIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -5861,6 +5871,16 @@
           "has_current_art": {
             "type": "boolean",
             "title": "Has Current Art"
+          },
+          "release": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReleaseIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",

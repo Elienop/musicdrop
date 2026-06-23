@@ -7,6 +7,7 @@ import {
   Spinner,
   type AppIcon,
 } from "@/components/icons";
+import { ReleaseInfo } from "@/components/albums/ReleaseInfo";
 import { MergePreviewTable } from "@/components/import/MergePreviewTable";
 import { CoverArt } from "@/components/system/CoverArt";
 import { Button } from "@/components/ui/button";
@@ -210,6 +211,11 @@ function Panel({
             {album.album_artist ?? "Unknown artist"}
           </p>
           <p className="text-muted-foreground text-sm">{meta.join(" · ")}</p>
+          {album.release && (
+            <div className="text-muted-foreground flex flex-col gap-0.5 text-xs">
+              <ReleaseInfo release={album.release} />
+            </div>
+          )}
           <p
             className="text-muted-foreground truncate font-mono text-xs"
             title={album.folder}

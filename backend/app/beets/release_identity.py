@@ -14,6 +14,16 @@ from typing import Any
 from app.models.album import ReleaseIdentity
 
 
+def _attr(obj: Any, key: str) -> object:
+    """Read ``obj.key`` defensively. A beets ``Album`` raises ``AttributeError``
+    for an absent flex field, but ``AlbumInfo``/``TrackInfo`` (AttrDict) raise
+    ``KeyError`` — ``getattr(..., default)`` only swallows the former, so catch both."""
+    try:
+        return getattr(obj, key)
+    except (AttributeError, KeyError):
+        return None
+
+
 def _opt_str(value: object) -> str | None:
     """Coerce to a stripped string, or ``None`` (beets fixed fields are "" when unset)."""
     if value is None:
@@ -39,12 +49,12 @@ def release_identity(obj: Any, release_id: object) -> ReleaseIdentity:
     ``release_id`` is the source's release id (``Album.mb_albumid`` /
     ``AlbumInfo.album_id``) — passed explicitly since the two name it differently.
     """
-    data_source = _opt_str(getattr(obj, "data_source", None))
+    data_source = _opt_str(_attr(obj, "data_source"))
     return ReleaseIdentity(
         data_source=data_source,
-        label=_opt_str(getattr(obj, "label", None)),
-        country=_opt_str(getattr(obj, "country", None)),
-        media=_opt_str(getattr(obj, "media", None)),
-        disambiguation=_opt_str(getattr(obj, "albumdisambig", None)),
+        label=_opt_str(_attr(obj, "label")),
+        country=_opt_str(_attr(obj, "country")),
+        media=_opt_str(_attr(obj, "media")),
+        disambiguation=_opt_str(_attr(obj, "albumdisambig")),
         release_url=_release_url(data_source, _opt_str(release_id)),
     )

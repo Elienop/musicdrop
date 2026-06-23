@@ -2100,6 +2100,7 @@ export interface components {
             bitrate_kbps: number | null;
             /** Folder */
             folder: string;
+            release?: components["schemas"]["ReleaseIdentity"] | null;
         };
         /**
          * FacetValue
@@ -2340,6 +2341,7 @@ export interface components {
             folder: string;
             /** Has Current Art */
             has_current_art: boolean;
+            release?: components["schemas"]["ReleaseIdentity"] | null;
         };
         /**
          * ItemWriteResult
