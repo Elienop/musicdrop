@@ -349,7 +349,7 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead className="w-12 pr-4 text-right">#</TableHead>
+            <TableHead className="w-20 pr-4 text-right">#</TableHead>
             <TableHead>Now</TableHead>
             <TableHead>After import</TableHead>
           </TableRow>
@@ -357,13 +357,22 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
         <TableBody>
           {candidate.tracks.map((t, i) => {
             const changed = t.status === "changed";
+            // A multi-disc match renumbers tracks to album-global indices, so a
+            // row can be "changed" with an identical title. Show the position
+            // before→after (not just the final number) so the highlight reads.
+            const numberChanged =
+              t.track_before != null &&
+              t.track_after != null &&
+              t.track_before !== t.track_after;
             return (
               <TableRow
                 key={t.index ?? `row-${i}`}
                 className={cn("hover:bg-transparent", changed && "bg-primary/5")}
               >
-                <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
-                  {t.track_after ?? t.track_before ?? "–"}
+                <TableCell className="text-muted-foreground pr-4 text-right tabular-nums whitespace-nowrap">
+                  {numberChanged
+                    ? `${t.track_before} → ${t.track_after}`
+                    : (t.track_after ?? t.track_before ?? "–")}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   <span className="truncate">{t.title_before ?? "—"}</span>
