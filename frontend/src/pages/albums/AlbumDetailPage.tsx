@@ -33,6 +33,7 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlbumEditPanel } from "@/pages/albums/AlbumEditPanel";
 import { CoverEditPanel } from "@/pages/albums/CoverEditPanel";
+import { DeleteAlbumAction } from "@/pages/albums/DeleteAlbumAction";
 import {
   Table,
   TableBody,
@@ -225,6 +226,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
                     label="Add album to playlist"
                     large
                   />
+                  <DeleteAlbumAction album={album} />
                 </>
               }
             />

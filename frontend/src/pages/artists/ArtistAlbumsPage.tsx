@@ -27,6 +27,7 @@ import { PageSkeleton } from "@/components/system/PageSkeleton";
 import { PAGE_SIZE, Pagination } from "@/components/system/Pagination";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { DeleteArtistAction } from "@/pages/artists/DeleteArtistAction";
 
 /** `decodeURIComponent` throws `URIError` on malformed input (e.g. a lone "%").
  * Fall back to the raw param so a bad URL renders gracefully rather than
@@ -186,6 +187,7 @@ export function ArtistAlbumsPage() {
                   {writeEnabled && (
                     <ArtistArtStatus displayName={displayName} />
                   )}
+                  <DeleteArtistAction name={artist} albumCount={total} />
                 </>
               }
             />
