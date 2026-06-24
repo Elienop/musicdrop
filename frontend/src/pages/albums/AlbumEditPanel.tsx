@@ -174,7 +174,12 @@ export function AlbumEditPanel({ album, onClose }: { album: AlbumDetail; onClose
         <Button onClick={onApply} disabled={!preview || applying}>
           Apply
         </Button>
-        <Button variant="ghost" onClick={onClose} disabled={applying}>Cancel</Button>
+        <Button variant="ghost" onClick={onClose} disabled={applying}>
+          {/* After a successful apply the edit is already written — "Cancel"
+              would wrongly imply it reverts. Show "Done" until the next edit
+              (which resets the mutation) gives something to cancel. */}
+          {applyMutation.isSuccess ? "Done" : "Cancel"}
+        </Button>
       </div>
     </section>
   );

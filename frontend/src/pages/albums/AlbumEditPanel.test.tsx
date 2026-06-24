@@ -238,10 +238,14 @@ describe("AlbumEditPanel", () => {
 
     // The success line appears after apply.
     await waitFor(() => expect(screen.getByText(/^Updated/)).toBeInTheDocument());
+    // ...and the close button reads "Done" — the edit is saved, nothing to cancel.
+    expect(screen.getByRole("button", { name: /^done$/i })).toBeInTheDocument();
 
     // Starting a new edit clears the now-stale outcome banner.
     fireEvent.change(screen.getByLabelText("Genre"), { target: { value: "Rock" } });
     expect(screen.queryByText(/^Updated/)).not.toBeInTheDocument();
+    // ...and the button reverts to "Cancel" now that there are edits to discard.
+    expect(screen.getByRole("button", { name: /^cancel$/i })).toBeInTheDocument();
   });
 
   it("omits the tag count when nothing was written and there are no failures", async () => {
