@@ -14,7 +14,14 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { createMemoryRouter, Navigate, RouterProvider } from "react-router";
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "vitest";
 
 import type { components } from "@/api/schema";
 import { SettingsBeetsPage } from "@/pages/settings/SettingsBeetsPage";
@@ -77,9 +84,19 @@ const REORGANIZE_STATUS_URL = `${window.location.origin}/api/reorganize/status`;
 /** Idle reorganize job — shape mirrors useReorganizeStatus's fallback. */
 function idleReorganizeStatus() {
   return {
-    phase: "idle", job_id: null, scope: null, total: 0, processed: 0,
-    moved: 0, skipped: 0, failed: 0, current: null, error: null,
-    artist: null, album_id: null, scope_label: "library",
+    phase: "idle",
+    job_id: null,
+    scope: null,
+    total: 0,
+    processed: 0,
+    moved: 0,
+    skipped: 0,
+    failed: 0,
+    current: null,
+    error: null,
+    artist: null,
+    album_id: null,
+    scope_label: "library",
   };
 }
 
@@ -250,9 +267,7 @@ describe("SettingsPage", () => {
     await user.keyboard("x");
 
     // The "Unsaved changes" banner is the page's primary dirty signal.
-    expect(
-      await screen.findByText(/unsaved changes/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/unsaved changes/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
   });
 
@@ -303,9 +318,7 @@ describe("SettingsPage", () => {
           }),
         );
       }),
-      http.get(ACTIVE_IMPORT_URL, () =>
-        HttpResponse.json({ active: false }),
-      ),
+      http.get(ACTIVE_IMPORT_URL, () => HttpResponse.json({ active: false })),
       http.post(VALIDATE_URL, () => HttpResponse.json({ errors: [] })),
       http.post(SAVE_URL, () =>
         HttpResponse.json(
@@ -348,9 +361,7 @@ describe("SettingsPage", () => {
           }),
         );
       }),
-      http.get(ACTIVE_IMPORT_URL, () =>
-        HttpResponse.json({ active: false }),
-      ),
+      http.get(ACTIVE_IMPORT_URL, () => HttpResponse.json({ active: false })),
       http.post(VALIDATE_URL, () => HttpResponse.json({ errors: [] })),
       http.post(APPLY_URL, () =>
         HttpResponse.json(snapshotFixture({ apply_pending: false })),
@@ -393,24 +404,20 @@ describe("SettingsPage", () => {
           }),
         );
       }),
-      http.get(ACTIVE_IMPORT_URL, () =>
-        HttpResponse.json({ active: true }),
-      ),
+      http.get(ACTIVE_IMPORT_URL, () => HttpResponse.json({ active: true })),
       http.post(VALIDATE_URL, () => HttpResponse.json({ errors: [] })),
     );
     renderPage();
     await findEditorContent();
 
-    // The button must stay disabled (importActive gate) and the inline
+    // The button must stay disabled (library-job gate) and the inline
     // helper text must mention the running import.
     await waitFor(() => {
       expect(
         screen.getByRole("button", { name: /apply changes/i }),
       ).toBeDisabled();
     });
-    expect(
-      await screen.findByText(/1 import running/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/import is running/i)).toBeInTheDocument();
   });
 
   test("a 422 from validate paints an error marker in the CodeMirror gutter", async () => {
@@ -568,7 +575,10 @@ describe("SettingsPage", () => {
         }
         // Second Save (Overwrite): 200 with the new snapshot.
         return HttpResponse.json(
-          snapshotFixture({ apply_pending: true, sha256: "sha-after-overwrite" }),
+          snapshotFixture({
+            apply_pending: true,
+            sha256: "sha-after-overwrite",
+          }),
         );
       }),
     );
@@ -635,9 +645,7 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
     // The inline helper text replaces the (mouse-only) tooltip for screen
     // readers, so assert it's present.
-    expect(
-      screen.getByText(/1 validation error/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/1 validation error/i)).toBeInTheDocument();
   });
 
   test("Mod-s in clean state does not fire Save (read-only guard)", async () => {
@@ -732,8 +740,10 @@ describe("SettingsPage", () => {
     defaultMocks();
     renderPage();
     expect(
-      await screen.findByRole("heading", { level: 2, name: "Reorganize library" }),
+      await screen.findByRole("heading", {
+        level: 2,
+        name: "Reorganize library",
+      }),
     ).toBeInTheDocument();
   });
 });
-

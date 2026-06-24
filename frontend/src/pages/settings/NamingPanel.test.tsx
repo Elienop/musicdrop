@@ -72,7 +72,9 @@ test("renders current default + its live preview", async () => {
 
 test("Save posts the assembled rules with the base sha", async () => {
   wrap(<NamingPanel />);
-  await screen.findByDisplayValue(/\$albumartist/);
+  const def = await screen.findByDisplayValue(/\$albumartist/);
+  // Save is gated on a real change — make one so the button enables.
+  await userEvent.type(def, "X");
   await userEvent.click(screen.getByRole("button", { name: /save naming/i }));
   await waitFor(() =>
     expect(client.POST).toHaveBeenCalledWith(
@@ -82,6 +84,17 @@ test("Save posts the assembled rules with the base sha", async () => {
       }),
     ),
   );
+});
+
+test("Save is disabled until the config actually changes", async () => {
+  wrap(<NamingPanel />);
+  const def = await screen.findByDisplayValue(/\$albumartist/);
+  const saveBtn = screen.getByRole("button", { name: /save naming/i });
+  // No edits yet -> nothing to save, so the button is inert (no more spamming
+  // an unchanged Save).
+  expect(saveBtn).toBeDisabled();
+  await userEvent.type(def, "X");
+  expect(saveBtn).toBeEnabled();
 });
 
 test("Add rule reveals a custom query input", async () => {

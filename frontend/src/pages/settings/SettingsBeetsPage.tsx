@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { useActiveImport } from "@/api/useActiveImport";
+import { useLibraryJobActive } from "@/api/useLibraryJobActive";
 import {
   type BeetsConfigSnapshot,
   type ConfigOpError,
@@ -85,7 +85,9 @@ export function SettingsBeetsPage() {
   const save = useSaveConfig();
   const applyMutation = useApplyConfig();
   const validate = useValidateConfig();
-  const active = useActiveImport();
+  // Any library job (import / lyrics / artist-art / reorganize) blocks Apply
+  // server-side; mirror that so Apply disables instead of firing into a 409.
+  const job = useLibraryJobActive();
   const queryClient = useQueryClient();
 
   // The editor's imperative handle. `asyncSource` needs `view.state.doc` to
@@ -174,8 +176,6 @@ export function SettingsBeetsPage() {
         : dirty
           ? "dirty"
           : "clean";
-
-  const importActive = active.data?.active ?? false;
 
   async function asyncSource(text: string): Promise<Diagnostic[]> {
     try {
@@ -341,7 +341,7 @@ export function SettingsBeetsPage() {
 
         <ConfigStateBanner
           state={pageState}
-          importActive={importActive}
+          jobActive={job.active}
           data={data}
         />
 
@@ -364,7 +364,10 @@ export function SettingsBeetsPage() {
           >
             Edit
           </Button>
-          <Button onClick={handleSave} disabled={pageState !== "dirty" || lintErrors > 0}>
+          <Button
+            onClick={handleSave}
+            disabled={pageState !== "dirty" || lintErrors > 0}
+          >
             {pageState === "saving" ? (
               <>
                 <Spinner className="animate-spin" aria-hidden="true" />
@@ -391,7 +394,7 @@ export function SettingsBeetsPage() {
           )}
           <Button
             onClick={handleApply}
-            disabled={pageState !== "apply_pending" || importActive}
+            disabled={pageState !== "apply_pending" || job.active}
           >
             {pageState === "applying" ? (
               <>
@@ -402,10 +405,11 @@ export function SettingsBeetsPage() {
               "Apply changes"
             )}
           </Button>
-          {pageState === "apply_pending" && importActive && (
+          {pageState === "apply_pending" && job.active && (
             // Visible helper text under the disabled Apply (same rule).
             <p className="text-muted-foreground text-sm">
-              1 import running &mdash; Apply available when it finishes.
+              Apply paused &mdash; {job.label} is running; available when it
+              finishes.
             </p>
           )}
         </div>
@@ -428,10 +432,7 @@ export function SettingsBeetsPage() {
  * stable across the read-only -> editor refactor. */
 function Loader() {
   return (
-    <section
-      className="flex flex-col gap-6"
-      aria-label="Beets configuration"
-    >
+    <section className="flex flex-col gap-6" aria-label="Beets configuration">
       <div className="flex flex-col gap-1">
         <SectionLabel>Beets configuration</SectionLabel>
       </div>
@@ -451,10 +452,7 @@ function Loader() {
 function ErrorBanner({ err }: { err: unknown }) {
   const message = err instanceof Error ? err.message : null;
   return (
-    <section
-      className="flex flex-col gap-6"
-      aria-label="Beets configuration"
-    >
+    <section className="flex flex-col gap-6" aria-label="Beets configuration">
       <div className="flex flex-col gap-1">
         <SectionLabel>Beets configuration</SectionLabel>
       </div>
@@ -481,11 +479,11 @@ function ErrorBanner({ err }: { err: unknown }) {
  * gone); dirty keeps its primary box, saving/applying share the neutral one. */
 function ConfigStateBanner({
   state,
-  importActive,
+  jobActive,
   data,
 }: {
   state: PageState;
-  importActive: boolean;
+  jobActive: boolean;
   data: BeetsConfigSnapshot;
 }) {
   if (state === "clean") {
@@ -521,7 +519,9 @@ function ConfigStateBanner({
           className="text-muted-foreground mt-0.5 size-5 shrink-0 animate-spin"
           aria-hidden="true"
         />
-        <p>{state === "saving" ? "Saving configuration…" : "Reloading beets…"}</p>
+        <p>
+          {state === "saving" ? "Saving configuration…" : "Reloading beets…"}
+        </p>
       </div>
     );
   }
@@ -534,8 +534,8 @@ function ConfigStateBanner({
         {data.file_modified_at && (
           <> ({new Date(data.file_modified_at).toLocaleTimeString()})</>
         )}
-        {importActive
-          ? " — Apply available once the running import finishes."
+        {jobActive
+          ? " — Apply available once the running job finishes."
           : " — click Apply to load it into beets."}
       </p>
     </StatusBanner>

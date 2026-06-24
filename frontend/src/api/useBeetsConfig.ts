@@ -25,8 +25,16 @@ export interface ConfigOpError extends Error {
   body: unknown;
 }
 
-function configOpError(message: string, status: number, body: unknown): ConfigOpError {
-  return Object.assign(new Error(message), { status, body, name: "ConfigOpError" });
+function configOpError(
+  message: string,
+  status: number,
+  body: unknown,
+): ConfigOpError {
+  return Object.assign(new Error(message), {
+    status,
+    body,
+    name: "ConfigOpError",
+  });
 }
 
 async function fetchConfig(): Promise<BeetsConfigSnapshot> {
@@ -95,7 +103,9 @@ export function useSaveConfig() {
  */
 export function useApplyConfig() {
   const queryClient = useQueryClient();
-  return useMutation({
+  // Type the error as ConfigOpError (what the mutationFn throws) so callers can
+  // branch on `.status` — e.g. a 409 when a library job is blocking Apply.
+  return useMutation<BeetsConfigSnapshot, ConfigOpError>({
     mutationFn: async (): Promise<BeetsConfigSnapshot> => {
       const { data, error, response } = await client.POST("/api/config/apply");
       if (!response.ok || !data) {
@@ -127,10 +137,15 @@ export function useApplyConfig() {
  */
 export function useValidateConfig() {
   return useMutation({
-    mutationFn: async (req: ValidateRequest): Promise<ValidationErrorItem[]> => {
-      const { data, error, response } = await client.POST("/api/config/validate", {
-        body: req,
-      });
+    mutationFn: async (
+      req: ValidateRequest,
+    ): Promise<ValidationErrorItem[]> => {
+      const { data, error, response } = await client.POST(
+        "/api/config/validate",
+        {
+          body: req,
+        },
+      );
       if (!response.ok || !data) {
         throw configOpError("Validate failed", response.status, error);
       }
