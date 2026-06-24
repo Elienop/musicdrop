@@ -2,8 +2,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { useActiveImport } from "@/api/useActiveImport";
 import { useApplyConfig, useBeetsConfig } from "@/api/useBeetsConfig";
+import { useLibraryJobActive } from "@/api/useLibraryJobActive";
 import {
   NAMING_KEY,
   type NamingConfig,
@@ -96,13 +96,15 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
   const preview = usePreviewNaming();
   const save = useSaveNaming();
   const apply = useApplyConfig();
-  const active = useActiveImport();
+  // Any library job (import / lyrics / artist-art / reorganize backfill) blocks
+  // Apply server-side (it tears down + rebuilds beets). Mirror that gate here so
+  // the button is disabled — not clickable into a 409.
+  const job = useLibraryJobActive();
   // Read apply-pending from the shared config snapshot (queryKey ["beets-config"]),
   // so the "Saved — now Apply" cue survives this panel's post-save remount and
   // clears automatically once Apply reloads beets.
   const config = useBeetsConfig();
   const applyPending = config.data?.apply_pending ?? false;
-  const importActive = active.data?.active ?? false;
 
   // Tracks the focused template input so the Insert palette writes at the caret.
   const focusedRef = useRef<HTMLInputElement | null>(null);
@@ -112,6 +114,34 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
       replace.map((r) => ({ pattern: r.pattern, replacement: r.replacement })),
     [replace],
   );
+
+  // Whether the editable state differs from the on-disk snapshot — gates Save so
+  // an unchanged config can't be re-saved (which would needlessly advance mtime
+  // and re-light the apply-pending cue). The panel remounts on a fresh sha256,
+  // so `initial` is always the current on-disk config.
+  const dirty = useMemo(() => {
+    const cur = JSON.stringify({
+      base,
+      custom: custom.map((c) => ({ query: c.query, template: c.template })),
+      replace: replaceDraft,
+    });
+    const init = JSON.stringify({
+      base: {
+        default: initial.default ?? "",
+        comp: initial.comp ?? "",
+        singleton: initial.singleton ?? "",
+      },
+      custom: initial.custom.map((c) => ({
+        query: c.query,
+        template: c.template,
+      })),
+      replace: initial.replace.map((r) => ({
+        pattern: r.pattern,
+        replacement: r.replacement,
+      })),
+    });
+    return cur !== init;
+  }, [base, custom, replaceDraft, initial]);
 
   const previewMutate = preview.mutate;
   // Debounced live preview for every change.
@@ -199,9 +229,8 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
   return (
     <SettingsSection title="Naming">
       <p className="text-muted-foreground text-sm">
-        Edit how files are named (beets{" "}
-        <code className="font-mono">paths</code> /{" "}
-        <code className="font-mono">replace</code>) with a live preview. New
+        Edit how files are named (beets <code className="font-mono">paths</code>{" "}
+        / <code className="font-mono">replace</code>) with a live preview. New
         names apply to imported files — use{" "}
         <span className="font-medium">Reorganize library</span> (Settings →
         Beets) to rename existing files. Saving writes to the same config;{" "}
@@ -323,13 +352,16 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
       />
 
       <div className="border-border mt-2 flex flex-wrap items-center gap-3 border-t pt-3">
-        <Button onClick={handleSave} disabled={save.isPending || hasReplaceErrors}>
+        <Button
+          onClick={handleSave}
+          disabled={save.isPending || hasReplaceErrors || !dirty}
+        >
           {save.isPending ? "Saving…" : "Save naming"}
         </Button>
         <Button
           variant="outline"
           onClick={() => apply.mutate()}
-          disabled={apply.isPending || importActive}
+          disabled={apply.isPending || job.active || !applyPending}
         >
           {apply.isPending ? "Applying…" : "Apply"}
         </Button>
@@ -338,14 +370,18 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
             Invalid replace pattern — fix to save.
           </p>
         )}
-        {!hasReplaceErrors && applyPending && !save.isPending && (
+        {!hasReplaceErrors &&
+          applyPending &&
+          !save.isPending &&
+          !job.active && (
+            <p className="text-muted-foreground text-sm" role="status">
+              Saved — click <span className="font-medium">Apply</span> to load
+              it.
+            </p>
+          )}
+        {job.active && (
           <p className="text-muted-foreground text-sm" role="status">
-            Saved — click <span className="font-medium">Apply</span> to load it.
-          </p>
-        )}
-        {importActive && (
-          <p className="text-muted-foreground text-sm">
-            1 import running — Apply available when it finishes.
+            Apply paused — {job.label} is running; available when it finishes.
           </p>
         )}
       </div>
@@ -355,12 +391,17 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
           Save failed: {save.error?.message ?? "unknown error"}
         </p>
       )}
-      {apply.isError && (
-        <p className="text-destructive text-sm" role="alert">
-          Apply failed — your config is saved on disk; try again or restart
-          MusicDrop.
-        </p>
-      )}
+      {apply.isError &&
+        (apply.error?.status === 409 ? (
+          <p className="text-muted-foreground text-sm" role="status">
+            A library job is running — Apply will be available when it finishes.
+          </p>
+        ) : (
+          <p className="text-destructive text-sm" role="alert">
+            Apply failed — your config is saved on disk; try again or restart
+            MusicDrop.
+          </p>
+        ))}
     </SettingsSection>
   );
 }
