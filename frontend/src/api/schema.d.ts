@@ -49,7 +49,12 @@ export interface paths {
         get: operations["get_album_detail_endpoint_api_albums__album_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Album Endpoint
+         * @description Move the album's whole folder to Trash (reversible) and drop it from the
+         *     library. 404 unknown album; 409 while a library job is running.
+         */
+        delete: operations["delete_album_endpoint_api_albums__album_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -188,7 +193,14 @@ export interface paths {
         get: operations["list_artists_endpoint_api_artists_get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Artist Endpoint
+         * @description Move EVERY album of the named artist to Trash (reversible) and drop them.
+         *
+         *     ``name`` is a query param so slashes (e.g. "AC/DC") survive routing. 409
+         *     while a library job is running.
+         */
+        delete: operations["delete_artist_endpoint_api_artists_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1913,6 +1925,20 @@ export interface components {
             message?: string | null;
         };
         /**
+         * DeleteResult
+         * @description Outcome of a reversible delete: how many albums went to Trash + where.
+         *
+         *     ``trashed_albums`` is 1 for a single-album delete, N for an artist (every
+         *     album of theirs). ``trash_path`` is the Trash location the files were moved
+         *     to (recoverable from there).
+         */
+        DeleteResult: {
+            /** Trashed Albums */
+            trashed_albums: number;
+            /** Trash Path */
+            trash_path: string;
+        };
+        /**
          * DuplicateAction
          * @description beets' four faithful duplicate-resolution actions (importer/stages.py).
          *
@@ -3415,6 +3441,37 @@ export interface operations {
             };
         };
     };
+    delete_album_endpoint_api_albums__album_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                album_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_album_missing_endpoint_api_albums__album_id__missing_get: {
         parameters: {
             query?: never;
@@ -3660,6 +3717,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Artist"][];
+                };
+            };
+        };
+    };
+    delete_artist_endpoint_api_artists_delete: {
+        parameters: {
+            query: {
+                name: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

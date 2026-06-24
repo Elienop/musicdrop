@@ -138,6 +138,47 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "albums"
+        ],
+        "summary": "Delete Album Endpoint",
+        "description": "Move the album's whole folder to Trash (reversible) and drop it from the\nlibrary. 404 unknown album; 409 while a library job is running.",
+        "operationId": "delete_album_endpoint_api_albums__album_id__delete",
+        "parameters": [
+          {
+            "name": "album_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Album Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/albums/{album_id}/missing": {
@@ -477,11 +518,53 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/Artist"
                   },
-                  "type": "array",
                   "title": "Response List Artists Endpoint Api Artists Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "artists"
+        ],
+        "summary": "Delete Artist Endpoint",
+        "description": "Move EVERY album of the named artist to Trash (reversible) and drop them.\n\n``name`` is a query param so slashes (e.g. \"AC/DC\") survive routing. 409\nwhile a library job is running.",
+        "operationId": "delete_artist_endpoint_api_artists_delete",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -4909,6 +4992,25 @@
         ],
         "title": "CoverInstallResult",
         "description": "Outcome of installing an album cover (set artpath + optional embed).\n\n``embedded`` is True only when the user's config enables ``embedart`` and\nthe image is jpeg/png; ``embed_detail`` explains why it was skipped."
+      },
+      "DeleteResult": {
+        "properties": {
+          "trashed_albums": {
+            "type": "integer",
+            "title": "Trashed Albums"
+          },
+          "trash_path": {
+            "type": "string",
+            "title": "Trash Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "trashed_albums",
+          "trash_path"
+        ],
+        "title": "DeleteResult",
+        "description": "Outcome of a reversible delete: how many albums went to Trash + where.\n\n``trashed_albums`` is 1 for a single-album delete, N for an artist (every\nalbum of theirs). ``trash_path`` is the Trash location the files were moved\nto (recoverable from there)."
       },
       "DuplicateAction": {
         "type": "string",

@@ -98,6 +98,8 @@ module = [
     "app.lyrics_jobs.registry",
     "app.lyrics_jobs.runner",
     "tests.test_lyrics_backfill",
+    "app.beets.delete",
+    "tests.test_delete",
     "tests.test_artwork_library_mbid",
     "tests.test_artist_art_write",
     "tests.test_artist_art_mutex",

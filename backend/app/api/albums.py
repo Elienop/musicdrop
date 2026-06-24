@@ -4,12 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 
 from app.beets.completeness import missing_report_op
 from app.beets.cover import fetch_cover_op, install_cover_op
+from app.beets.delete import delete_album_op
 from app.beets.edit import apply_album_edit_op, preview_album_edit_op
 from app.beets.library import LibraryHandle, get_album_cover, get_album_detail, list_albums
 from app.beets.lyrics import start_album_lyrics_op
 from app.models.album import Album, AlbumDetail, AlbumPage
 from app.models.completeness import AlbumMissingReport
 from app.models.cover import CoverInstallResult
+from app.models.delete import DeleteResult
 from app.models.edit import AlbumEditPreview, AlbumEditRequest, AlbumEditResult
 from app.models.lyrics import LyricsBackfillStatus
 
@@ -146,3 +148,10 @@ async def fetch_album_lyrics_endpoint(
     """Start an album-scoped lyrics fetch job (writes tags → Plex). Poll
     GET /api/lyrics/backfill for marching progress. 404 unknown album, 409 if busy."""
     return await start_album_lyrics_op(request, album_id)
+
+
+@router.delete("/albums/{album_id}", response_model=DeleteResult)
+async def delete_album_endpoint(album_id: int, request: Request) -> DeleteResult:
+    """Move the album's whole folder to Trash (reversible) and drop it from the
+    library. 404 unknown album; 409 while a library job is running."""
+    return await delete_album_op(request, album_id)
