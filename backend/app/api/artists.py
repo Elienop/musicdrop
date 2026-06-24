@@ -14,6 +14,7 @@ from app.artwork.images import MAX_IMAGE_BYTES, sniff_image_mime
 from app.artwork.service import ArtistImageService
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
 from app.beets import library as beets_library
+from app.beets.delete import delete_artist_op
 from app.beets.library import LibraryHandle, list_artists
 from app.config import resolve_artist_image_cache_dir
 from app.config import settings as _module_settings
@@ -21,6 +22,7 @@ from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import lyrics_backfill_active
 from app.models.artist import Artist, ArtistImageOverrideResult, ArtistImageSettings
 from app.models.artist_art import ArtistArtBackfillStatus, ArtistArtWriteSettings
+from app.models.delete import DeleteResult
 from app.reorganize_jobs.registry import reorganize_backfill_active
 
 router = APIRouter(tags=["artists"])
@@ -252,3 +254,16 @@ def _start(
         force=force,
         artist=artist,
     )
+
+
+@router.delete("/artists", response_model=DeleteResult)
+async def delete_artist_endpoint(
+    request: Request,
+    name: Annotated[str, Query(min_length=1)],
+) -> DeleteResult:
+    """Move EVERY album of the named artist to Trash (reversible) and drop them.
+
+    ``name`` is a query param so slashes (e.g. "AC/DC") survive routing. 409
+    while a library job is running.
+    """
+    return await delete_artist_op(request, name)
