@@ -94,6 +94,7 @@ module = [
     "app.api.lyrics",
     "tests.test_lyrics_adapter",
     "tests.test_lyrics_api",
+    "tests.test_lyrics_sidecars",
     "app.lyrics_jobs.registry",
     "app.lyrics_jobs.runner",
     "tests.test_lyrics_backfill",

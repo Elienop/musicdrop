@@ -7,14 +7,19 @@ rather than ``plugin.get_lyrics`` so we can tell a network ``fetch_failed`` apar
 from a real ``not_found`` (``get_lyrics`` wraps each call in ``handle_request``,
 which swallows both to None — the same gotcha as ``completeness`` and
 ``metadata_plugins.album_for_id``). LRCLib is the default keyless source; we
-store plain lyrics into ``item.lyrics`` + flex fields and write the file tag
-(``try_write``) only when writes are on, which is what Plex reads.
+store plain lyrics into ``item.lyrics`` + flex fields, write the file tag
+(``try_write``) when writes are on, AND write an external ``.lrc``/``.txt``
+sidecar next to the track. The sidecar is what **Plex** actually reads — Plex
+ignores embedded lyrics tags, so the embed alone never surfaced in Plex.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import beets
@@ -49,31 +54,113 @@ def writes_enabled() -> bool:
 
 
 def make_lyrics_plugin() -> Any:
-    """Throwaway LyricsPlugin with the import stage disabled (auto=False).
+    """Throwaway LyricsPlugin with the import stage off + synced lyrics on.
 
     Returned as an opaque object: callers (the backfill runner) only ferry it
     back into ``fetch_item_lyrics``, never call beets on it themselves.
+    ``synced: True`` makes LRCLib return timestamped text so we can write a real
+    ``.lrc`` (the runtime overlay does NOT touch the user's config.yaml).
     """
-    beets.config["lyrics"].set({"auto": False})  # overlay before construct
+    # Overlay before construct: ``auto`` off (no import stage), ``synced`` on.
+    beets.config["lyrics"].set({"auto": False, "synced": True})
     from beetsplug.lyrics import LyricsPlugin
 
     return LyricsPlugin()
 
 
-def _store_lyrics(item: Any, lyrics: Lyrics, *, write: bool) -> bool:
-    """Persist beets-style: item.lyrics + flex fields, DB store, gated file write.
+def _atomic_write_text(dst: Path, text: str) -> None:
+    """Atomic utf-8 write at 0o644 (text mirror of ``artist_art._atomic_write_bytes``):
+    tmp in same dir -> fsync -> chmod 0o644 -> os.replace -> fsync parent dir."""
+    tmp = dst.parent / f".{dst.name}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)  # world-readable so the Plex process (other uid) can read it
+        os.replace(tmp, dst)
+        dir_fd = os.open(dst.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        if tmp.exists():
+            with suppress(OSError):
+                tmp.unlink()
 
-    Returns whether the file tag was actually written: ``item.try_write()``'s
-    bool result when writes are on, else ``False``. ``item.store()`` (the DB
-    write) always runs regardless.
+
+def _sidecar_base(item: Any) -> str | None:
+    """The track path without its extension, for building a sibling sidecar path.
+
+    ``item.path`` is beets' bytes path; an absent/empty path yields None (e.g. a
+    singleton not yet on disk) so the caller no-ops instead of writing garbage.
     """
-    item.lyrics = lyrics.text
+    raw = getattr(item, "path", None)
+    if not raw:
+        return None
+    base, _ext = os.path.splitext(os.fsdecode(raw))
+    return base or None
+
+
+def _has_sidecar(item: Any) -> bool:
+    """Whether a ``.lrc`` or ``.txt`` lyric sidecar already sits next to the track."""
+    base = _sidecar_base(item)
+    if base is None:
+        return False
+    return os.path.exists(base + ".lrc") or os.path.exists(base + ".txt")
+
+
+def write_lyric_sidecar(item: Any, lyrics: Lyrics) -> str | None:
+    """Write a Plex-readable lyric sidecar next to the track; return its path or None.
+
+    ``.lrc`` (timestamped) when the fetched lyrics are synced, else ``.txt``
+    (plain, timestamps stripped). Writing one removes the opposite-extension
+    sibling so Plex never sees two conflicting files. Non-destructive (never
+    touches the audio file) and best-effort: a write error is logged and
+    swallowed so a batch keeps going; never raises.
+    """
+    base = _sidecar_base(item)
+    if base is None:
+        return None
+    if lyrics.synced:
+        ext, body = ".lrc", lyrics.text
+    else:
+        ext, body = ".txt", "\n".join(lyrics.text_lines)
+    body = body.strip()
+    if not body:
+        return None
+    dst = Path(base + ext)
+    other = Path(base + (".txt" if ext == ".lrc" else ".lrc"))
+    try:
+        _atomic_write_text(dst, body + "\n")
+    except OSError:
+        _log.warning("lyric sidecar write failed: %s", dst, exc_info=True)
+        return None
+    if other.exists():
+        with suppress(OSError):
+            other.unlink()
+    return str(dst)
+
+
+def _store_lyrics(item: Any, lyrics: Lyrics, *, write: bool) -> bool:
+    """Persist beets-style: item.lyrics + flex fields, DB store, gated file write,
+    and a Plex-readable ``.lrc``/``.txt`` sidecar.
+
+    The embedded tag stores PLAIN text (timestamps stripped); the synced timing
+    lives in the ``.lrc`` sidecar. Returns whether the FILE TAG was written:
+    ``item.try_write()``'s bool when writes are on, else ``False``. ``item.store()``
+    (DB) and the sidecar are written regardless of the tag-write gate — a sidecar
+    is non-destructive and is the whole point for Plex.
+    """
+    item.lyrics = "\n".join(lyrics.text_lines)
     for key in ("backend", "url", "language"):
         value = getattr(lyrics, key, None)
         if value:
             item[f"lyrics_{key}"] = value
     item.store()
     written = bool(item.try_write()) if write else False
+    write_lyric_sidecar(item, lyrics)
     return written
 
 
@@ -87,7 +174,10 @@ def fetch_item_lyrics(plugin: Any, item: Any, *, force: bool, write: bool) -> It
     from beetsplug.lyrics import search_pairs
 
     item_id = int(item.id)
-    if not force and item.lyrics:
+    # Skip only when BOTH the lyrics tag AND a sidecar already exist: a track
+    # fetched before this feature has embedded lyrics but no sidecar, so a
+    # backfill re-run must reprocess it to emit the Plex-readable file.
+    if not force and item.lyrics and _has_sidecar(item):
         return ItemLyricsOutcome(
             item_id=item_id, status="skipped_existing", source=None, written=False
         )

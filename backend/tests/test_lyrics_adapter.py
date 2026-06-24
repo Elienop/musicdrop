@@ -135,7 +135,30 @@ def test_fetch_item_network_error_is_fetch_failed(edit_lib: Library) -> None:
     assert out.status == "fetch_failed"
 
 
-def test_fetch_item_skips_existing_unless_forced(edit_lib: Library) -> None:
+def test_fetch_item_skips_when_lyrics_and_sidecar_exist_unless_forced(edit_lib: Library) -> None:
+    # Skip-existing now requires BOTH a lyrics tag AND a sidecar on disk, so a
+    # track fetched before sidecars existed gets reprocessed on the next run.
+    from app.beets.lyrics import fetch_item_lyrics
+
+    item = _first_item(edit_lib)
+    plugin = _FakePlugin([_FakeBackend(result=Lyrics("new", "lrclib", "u"))])
+
+    # First fetch: stores lyrics AND writes a sidecar next to the track.
+    first = fetch_item_lyrics(plugin, item, force=False, write=True)
+    assert first.status == "found"
+
+    # Second fetch: lyrics + sidecar both present -> skipped.
+    skipped = fetch_item_lyrics(plugin, item, force=False, write=True)
+    assert skipped.status == "skipped_existing"
+    assert item.lyrics == "new"  # untouched
+
+    # force still re-fetches.
+    forced = fetch_item_lyrics(plugin, item, force=True, write=True)
+    assert forced.status == "found"
+
+
+def test_fetch_item_reprocesses_lyrics_without_sidecar(edit_lib: Library) -> None:
+    # Embedded lyrics but no sidecar (the pre-feature state) -> NOT skipped.
     from app.beets.lyrics import fetch_item_lyrics
 
     item = _first_item(edit_lib)
@@ -143,12 +166,8 @@ def test_fetch_item_skips_existing_unless_forced(edit_lib: Library) -> None:
     item.store()
     plugin = _FakePlugin([_FakeBackend(result=Lyrics("new", "lrclib", "u"))])
 
-    skipped = fetch_item_lyrics(plugin, item, force=False, write=True)
-    assert skipped.status == "skipped_existing"
-    assert item.lyrics == "already here"  # untouched
-
-    forced = fetch_item_lyrics(plugin, item, force=True, write=True)
-    assert forced.status == "found"
+    out = fetch_item_lyrics(plugin, item, force=False, write=True)
+    assert out.status == "found"  # reprocessed to emit the sidecar
     assert item.lyrics == "new"
 
 
