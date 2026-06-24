@@ -26,13 +26,6 @@ from app.models.import_models import (
     UnmatchedItem,
 )
 
-# The review screen shows at most this many ranked releases in the switcher,
-# mirroring beets' ``search_limit`` default of 5. Applied UNIFORMLY at the
-# mapping boundary — to the switcher options, their per-release diffs, and the
-# apply-able candidate set (see WebImportSession.choose_match) — so the
-# dropdown, the rendered diff, and what Apply imports stay in lock-step.
-CANDIDATE_LIMIT = 5
-
 
 def _confidence(distance: Any) -> float:
     """beets distance (0.0 = perfect) -> a confidence percentage.
@@ -179,19 +172,19 @@ def _unmatched_items(match: AlbumMatch) -> list[UnmatchedItem]:
 def map_candidate_options(
     candidates: list[AlbumMatch],
 ) -> list[CandidateOption]:
-    """Map the ranked ``task.candidates`` to the switcher options, top 5.
+    """Map the ranked ``task.candidates`` to the switcher options — all of them.
 
     Each option carries its OWN full per-release diff (album_after,
     changed_fields, tracks, missing, unmatched, cover_after_url, data_url) built
     from the SAME per-release block builders the top-match ``Candidate`` uses, so
     the review screen can re-render the whole preview for the selected release.
     ``options[0]`` is the canonical top and its diff equals the ``Candidate``'s
-    top diff by construction. The list is capped at ``CANDIDATE_LIMIT`` here —
-    the single mapping boundary — and ``choose_match`` caps the apply-able
-    candidate set to the same limit so the two stay in lock-step.
+    top diff by construction. No MusicDrop-side cap: beets owns the candidate
+    count (its per-source ``search_limit``), and ``choose_match`` applies over
+    this SAME full list, so the switcher and the apply-able set stay in lock-step.
     """
     options: list[CandidateOption] = []
-    for index, match in enumerate(candidates[:CANDIDATE_LIMIT]):
+    for index, match in enumerate(candidates):
         data_source = _opt_str(match.info.data_source)
         album_id = _opt_str(getattr(match.info, "album_id", None))
         options.append(

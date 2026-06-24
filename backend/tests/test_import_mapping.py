@@ -211,15 +211,16 @@ def test_options_top_diff_equals_candidate_top_diff() -> None:
     assert options[0].confidence == candidate.confidence
 
 
-def test_candidate_options_capped_at_five() -> None:
-    from app.beets.import_mapping import CANDIDATE_LIMIT, map_candidate_options
+def test_candidate_options_pass_through_all_beets_returned() -> None:
+    from app.beets.import_mapping import map_candidate_options
 
-    # Mirrors beets' search_limit default; applied uniformly at the mapping
-    # boundary so the switcher + diffs never exceed the apply-able set.
-    assert CANDIDATE_LIMIT == 5
-    options = map_candidate_options([_perfect_match() for _ in range(7)])
-    assert len(options) == 5
-    assert [o.index for o in options] == [0, 1, 2, 3, 4]
+    # beets owns the candidate count via its per-source search_limit and returns
+    # the full deduped, distance-sorted union. The mapping boundary must NOT cap
+    # below that: every release beets handed us becomes a switcher option, in
+    # order, so the UI mirrors beets exactly (no MusicDrop-side truncation).
+    options = map_candidate_options([_perfect_match() for _ in range(8)])
+    assert len(options) == 8
+    assert [o.index for o in options] == list(range(8))
 
 
 def test_legacy_bare_option_still_validates() -> None:
