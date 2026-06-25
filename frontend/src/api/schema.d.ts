@@ -1324,6 +1324,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/trash": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Trash
+         * @description List the albums sitting in Trash (read off disk; no gate).
+         */
+        get: operations["list_trash_api_trash_get"];
+        put?: never;
+        post?: never;
+        /**
+         * Empty Trash One
+         * @description Permanently remove one trashed album folder. 409 if busy, 404 if not in Trash.
+         */
+        delete: operations["empty_trash_one_api_trash_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trash/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore Trash
+         * @description Re-import a trashed folder as-is. 409 if busy, 404 if not in Trash.
+         */
+        post: operations["restore_trash_api_trash_restore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trash/all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Empty Trash All
+         * @description Permanently clear the whole Trash dir. 409 if busy.
+         */
+        delete: operations["empty_trash_all_api_trash_all_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2107,6 +2171,11 @@ export interface components {
             artist_before?: string | null;
             /** Artist After */
             artist_after?: string | null;
+        };
+        /** EmptyResult */
+        EmptyResult: {
+            /** Removed */
+            removed: number;
         };
         /**
          * ExistingAlbum
@@ -2977,6 +3046,30 @@ export interface components {
             moved: components["schemas"]["MovedAlbum"][];
         };
         /**
+         * RestoreRequest
+         * @description Body of ``POST /api/trash/restore`` — the folder (relative to Trash).
+         */
+        RestoreRequest: {
+            /** Folder */
+            folder: string;
+        };
+        /**
+         * RestoreResult
+         * @description Outcome of an as-is restore. ``already_in_library`` = a matching album is
+         *     already present, so beets safely skipped (files stay in Trash).
+         */
+        RestoreResult: {
+            /** Restored */
+            restored: boolean;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "restored" | "already_in_library" | "could_not_restore";
+            /** Album Id */
+            album_id?: number | null;
+        };
+        /**
          * ReviewInboxResponse
          * @description Result of ``POST /api/acquisition/review-inbox`` (the slskd-panel review).
          *
@@ -3261,6 +3354,34 @@ export interface components {
             old_path: string;
             /** New Path */
             new_path: string;
+        };
+        /** TrashListing */
+        TrashListing: {
+            /** Albums */
+            albums: components["schemas"]["TrashedAlbum"][];
+            /** Trash Path */
+            trash_path: string;
+        };
+        /**
+         * TrashedAlbum
+         * @description One album sitting in Trash (no beets DB row — read off disk).
+         *
+         *     ``folder`` is the album's path RELATIVE to the Trash dir; it is the key the
+         *     restore/empty endpoints take (resolved + traversal-checked server-side).
+         */
+        TrashedAlbum: {
+            /** Folder */
+            folder: string;
+            /** Album Artist */
+            album_artist: string | null;
+            /** Album */
+            album: string | null;
+            /** Year */
+            year: number | null;
+            /** Track Count */
+            track_count: number;
+            /** Format */
+            format: string | null;
         };
         /**
          * TypedSearchPage
@@ -5799,6 +5920,110 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_trash_api_trash_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrashListing"];
+                };
+            };
+        };
+    };
+    empty_trash_one_api_trash_delete: {
+        parameters: {
+            query: {
+                folder: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmptyResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_trash_api_trash_restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestoreRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestoreResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    empty_trash_all_api_trash_all_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmptyResult"];
                 };
             };
         };
