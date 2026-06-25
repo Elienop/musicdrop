@@ -277,6 +277,7 @@ describe("useImportCandidate", () => {
       missing: [],
       unmatched: [],
       options: [],
+      search_revision: 0,
     };
     server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(candidate)));
 

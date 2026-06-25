@@ -138,6 +138,7 @@ function makeCandidate(overrides: Partial<Candidate> = {}): Candidate {
         data_url: "https://musicbrainz.org/release/def",
       },
     ],
+    search_revision: 0,
     ...overrides,
   };
 }

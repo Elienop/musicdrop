@@ -1851,6 +1851,13 @@ export interface components {
             unmatched: components["schemas"]["UnmatchedItem"][];
             /** Options */
             options: components["schemas"]["CandidateOption"][];
+            /** Search Feedback */
+            search_feedback?: string | null;
+            /**
+             * Search Revision
+             * @default 0
+             */
+            search_revision: number;
         };
         /**
          * CandidateOption
@@ -2167,13 +2174,13 @@ export interface components {
          * ImportAction
          * @description The decisions the user can return for a parked album.
          *
-         *     Subset of beets' choices relevant to chunk 1 (enter-id / search-again are a
-         *     later chunk). ``apply`` selects a ranked option by index; ``abort`` stops the
-         *     whole import (the session raises beets' ``ImportAbortError``, which beets'
-         *     ``run()`` catches to stop cleanly).
+         *     ``apply`` selects a ranked option by index; ``search`` re-looks-up the album
+         *     against a user-supplied release id/URL or a forced-non-VA name search and
+         *     re-parks (it never resolves the park); ``abort`` stops the whole import (the
+         *     session raises beets' ``ImportAbortError``, caught by ``run()``).
          * @enum {string}
          */
-        ImportAction: "apply" | "skip" | "asis" | "astracks" | "abort";
+        ImportAction: "apply" | "skip" | "asis" | "astracks" | "abort" | "search";
         /**
          * ImportAlbumStatus
          * @description Per-album state in the live feed.
@@ -2218,6 +2225,7 @@ export interface components {
             action: components["schemas"]["ImportAction"];
             /** Candidate Index */
             candidate_index?: number | null;
+            search?: components["schemas"]["ImportSearch"] | null;
         };
         /**
          * ImportInboxItemRequest
@@ -2309,6 +2317,29 @@ export interface components {
             needs_review: number;
             /** Skipped */
             skipped: number;
+        };
+        /**
+         * ImportSearch
+         * @description Re-lookup parameters carried by an ``ImportAction.search`` choice.
+         *
+         *     Either a release id/URL — the reliable escape from beets' Various-Artists
+         *     filter (``tag_album(search_ids=...)`` never computes ``va_likely``) — OR an
+         *     artist+album name search. ``force_non_va`` only affects the name search: it
+         *     pins beets' ``va_likely=False`` so a single-artist album is not filtered to
+         *     Various-Artists releases. ``release_id`` wins when both are provided.
+         */
+        ImportSearch: {
+            /** Release Id */
+            release_id?: string | null;
+            /** Artist */
+            artist?: string | null;
+            /** Album */
+            album?: string | null;
+            /**
+             * Force Non Va
+             * @default true
+             */
+            force_non_va: boolean;
         };
         /**
          * InboxItem
