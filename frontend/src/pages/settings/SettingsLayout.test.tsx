@@ -19,6 +19,7 @@ function renderAt(path: string) {
           { path: "naming", element: <p>naming section body</p> },
           { path: "metadata", element: <p>metadata section body</p> },
           { path: "integrations", element: <p>integrations section body</p> },
+          { path: "trash", element: <p>trash section body</p> },
         ],
       },
     ],
@@ -34,7 +35,7 @@ describe("SettingsLayout", () => {
     expect(h1).toHaveAttribute("tabindex", "-1");
   });
 
-  test("renders the four section links in the sub-nav", () => {
+  test("renders the five section links in the sub-nav", () => {
     renderAt("/settings/beets");
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     const links = within(nav).getAllByRole("link");
@@ -43,6 +44,7 @@ describe("SettingsLayout", () => {
       "/settings/naming",
       "/settings/metadata",
       "/settings/integrations",
+      "/settings/trash",
     ]);
   });
 
@@ -51,6 +53,7 @@ describe("SettingsLayout", () => {
     ["/settings/naming", "Naming"],
     ["/settings/metadata", "Metadata"],
     ["/settings/integrations", "Integrations"],
+    ["/settings/trash", "Trash"],
   ])("marks exactly one active section with aria-current at %s", (path, label) => {
     renderAt(path);
     const active = screen.getByRole("link", { name: label });

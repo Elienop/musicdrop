@@ -100,6 +100,11 @@ const SettingsNamingPage = lazy(() =>
     default: m.SettingsNamingPage,
   })),
 );
+const SettingsTrashPage = lazy(() =>
+  import("@/pages/settings/SettingsTrashPage").then((m) => ({
+    default: m.SettingsTrashPage,
+  })),
+);
 
 // Cap retries so an outage surfaces the error state promptly instead of
 // hanging through TanStack's long default backoff; a short staleTime avoids
@@ -158,6 +163,7 @@ const router = createBrowserRouter([
           { path: "naming", element: <SettingsNamingPage /> },
           { path: "metadata", element: <SettingsMetadataPage /> },
           { path: "integrations", element: <SettingsIntegrationsPage /> },
+          { path: "trash", element: <SettingsTrashPage /> },
         ],
       },
       { path: "/duplicates", element: <DuplicatesPage /> },
