@@ -105,6 +105,7 @@ def test_import_choice_actions() -> None:
         "asis",
         "astracks",
         "abort",
+        "search",
     ]
     choice = ImportChoice(action=ImportAction.apply, candidate_index=2)
     assert choice.action is ImportAction.apply
