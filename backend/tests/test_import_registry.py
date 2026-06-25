@@ -15,6 +15,7 @@ from app.models.import_models import (
     ImportAction,
     ImportChoice,
     ImportOptions,
+    ImportSearch,
     ParkedAlbum,
     Recommendation,
 )
@@ -126,6 +127,56 @@ def test_record_choice_marks_decided_and_unblocks_worker() -> None:
     assert state.phase is ImportPhase.done
     assert state.albums[0].status is ImportAlbumStatus.decided
     assert state.summary is not None
+
+
+def test_search_choice_does_not_mark_row_decided() -> None:
+    # A search is a re-lookup request, not a decision: the row must stay
+    # needs_review (the real worker re-parks it in place). The fake just unblocks
+    # on the pushed choice, so the job finishes with the row still needs_review.
+    fake = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
+    registry = ImportJobRegistry(runner=fake)
+    job_id = registry.start("/music/incoming")
+    _poll(lambda: registry.state(job_id).albums, lambda rows: len(rows) == 1)
+
+    registry.record_choice(
+        job_id,
+        0,
+        ImportChoice(action=ImportAction.search, search=ImportSearch(release_id="rel-1")),
+    )
+
+    _poll(lambda: registry.state(job_id).phase, lambda p: p is ImportPhase.done)
+    # NOT decided — a search never resolves the park.
+    assert registry.state(job_id).albums[0].status is ImportAlbumStatus.needs_review
+
+
+def test_needs_review_reemit_refreshes_feed_confidence() -> None:
+    # A search re-park emits a fresh needs_review outcome for an album already in
+    # the feed with the re-looked-up release's confidence; the feed row must show
+    # the new value, not the stale first-match one. Modelled as a first
+    # needs_review (75%) for index 0, then a second (88%) for the same index.
+    first = AlbumOutcome(
+        album_index=0,
+        folder="/music/incoming/album0",
+        artist="Radiohead",
+        album="OK Computer",
+        recommendation=Recommendation.medium,
+        confidence=75.0,
+        status=AlbumOutcomeStatus.needs_review,
+    )
+    reparked = ParkedAlbum(
+        album_index=0,
+        folder="/music/incoming/album0",
+        candidate=_candidate(Recommendation.medium, confidence=88.0),
+    )
+    fake = FakeImportRunner(applied=[first], parked=[reparked])
+    registry = ImportJobRegistry(runner=fake)
+    job_id = registry.start("/music/incoming")
+
+    # The re-emit (88%) replaces the first outcome's 75% in the feed row.
+    _poll(
+        lambda: registry.state(job_id).albums,
+        lambda rows: len(rows) == 1 and rows[0].confidence == 88.0,
+    )
 
 
 def test_unknown_index_choice_raises_keyerror() -> None:
