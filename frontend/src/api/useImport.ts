@@ -200,12 +200,14 @@ export function useImportCandidate(
   jobId: string,
   index: number,
   enabled: boolean,
+  refetchInterval: number | false = false,
 ) {
   return useQuery({
     queryKey: ["import", "candidate", jobId, index],
     queryFn: () => fetchCandidate(jobId, index),
     enabled,
     retry: false,
+    refetchInterval,
   });
 }
 
@@ -248,9 +250,14 @@ export function useSubmitChoice(jobId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (args: SubmitChoiceArgs) => submitChoice(jobId, args),
-    onSettled: () => {
+    onSettled: (_data, _err, args) => {
       void queryClient.invalidateQueries({
         queryKey: ["import", "job", jobId],
+      });
+      // A `search` choice makes the worker re-park this album in place — refetch
+      // its candidate so the re-looked-up release renders once it lands.
+      void queryClient.invalidateQueries({
+        queryKey: ["import", "candidate", jobId, args.index],
       });
     },
   });
