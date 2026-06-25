@@ -98,6 +98,7 @@ export function ImportCandidatePage() {
         backTo={backTo}
         searching={searching !== null}
         onSearchStart={(baseline) => setSearching({ baseline })}
+        onSearchError={() => setSearching(null)}
       />
     </Shell>
   );
@@ -128,6 +129,7 @@ function ReviewScreen({
   backTo,
   searching,
   onSearchStart,
+  onSearchError,
 }: {
   candidate: Candidate;
   jobId: string;
@@ -135,6 +137,7 @@ function ReviewScreen({
   backTo: string;
   searching: boolean;
   onSearchStart: (baseline: number) => void;
+  onSearchError: () => void;
 }) {
   // The candidate index the user will Apply — defaults to the top match (0).
   const [selected, setSelected] = useState(0);
@@ -144,10 +147,13 @@ function ReviewScreen({
 
   function runSearch(search: ImportSearch) {
     onSearchStart(candidate.search_revision);
-    submit.mutate({
-      index,
-      choice: { action: "search", candidate_index: null, search },
-    });
+    submit.mutate(
+      { index, choice: { action: "search", candidate_index: null, search } },
+      // A failed POST never bumps search_revision, so clear the searching state
+      // here or the panel + actions stay frozen forever (the error banner shows
+      // but every retry control is disabled).
+      { onError: () => onSearchError() },
+    );
   }
 
   return (

@@ -673,4 +673,24 @@ describe("ImportCandidatePage", () => {
       await screen.findByText(/No release found for that search/i),
     ).toBeInTheDocument();
   });
+
+  test("a failed search re-enables the panel instead of softlocking", async () => {
+    server.use(
+      http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())),
+      http.post(CHOICE_URL, () => HttpResponse.json({ detail: "boom" }, { status: 500 })),
+    );
+    const user = userEvent.setup();
+    renderAt();
+
+    await screen.findByRole("heading", { name: /Radiohead — OK Computer/i });
+    await user.type(screen.getByLabelText(/release url or id/i), "rel-1");
+    await user.click(screen.getByRole("button", { name: /^Search/i }));
+
+    // The POST failed (no revision bump): the Search button must un-freeze and
+    // the panel's error must show — not stay stuck on "Searching…" forever.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Search$/ })).toBeEnabled(),
+    );
+    expect(screen.getByText(/Couldn.t run that search/i)).toBeInTheDocument();
+  });
 });
