@@ -6,9 +6,9 @@ so beets internals never leak past the adapter boundary. No beets imports here.
 """
 
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from app.models.album import ReleaseIdentity
 
@@ -173,6 +173,14 @@ class Candidate(BaseModel):
     missing: list[MissingTrack]
     unmatched: list[UnmatchedItem]
     options: list[CandidateOption]
+    # A short human note describing the LAST search done on this parked album,
+    # or None on the initial park. Display only.
+    search_feedback: str | None = None
+    # Monotonic counter, bumped on every in-place re-park caused by a search
+    # (success OR empty). The initial park is 0. The client captures it before a
+    # search and polls until it increases — the only reliable "my search landed"
+    # signal (the re-park is asynchronous and results can look identical).
+    search_revision: int = 0
 
 
 class ParkedAlbum(BaseModel):
@@ -230,10 +238,10 @@ class AlbumOutcome(BaseModel):
 class ImportAction(StrEnum):
     """The decisions the user can return for a parked album.
 
-    Subset of beets' choices relevant to chunk 1 (enter-id / search-again are a
-    later chunk). ``apply`` selects a ranked option by index; ``abort`` stops the
-    whole import (the session raises beets' ``ImportAbortError``, which beets'
-    ``run()`` catches to stop cleanly).
+    ``apply`` selects a ranked option by index; ``search`` re-looks-up the album
+    against a user-supplied release id/URL or a forced-non-VA name search and
+    re-parks (it never resolves the park); ``abort`` stops the whole import (the
+    session raises beets' ``ImportAbortError``, caught by ``run()``).
     """
 
     apply = "apply"
@@ -241,6 +249,31 @@ class ImportAction(StrEnum):
     asis = "asis"
     astracks = "astracks"
     abort = "abort"
+    search = "search"
+
+
+class ImportSearch(BaseModel):
+    """Re-lookup parameters carried by an ``ImportAction.search`` choice.
+
+    Either a release id/URL — the reliable escape from beets' Various-Artists
+    filter (``tag_album(search_ids=...)`` never computes ``va_likely``) — OR an
+    artist+album name search. ``force_non_va`` only affects the name search: it
+    pins beets' ``va_likely=False`` so a single-artist album is not filtered to
+    Various-Artists releases. ``release_id`` wins when both are provided.
+    """
+
+    release_id: str | None = None  # MB release URL/MBID or Deezer album URL/id
+    artist: str | None = None
+    album: str | None = None
+    force_non_va: bool = True
+
+    @model_validator(mode="after")
+    def _require_target(self) -> Self:
+        if self.release_id and self.release_id.strip():
+            return self
+        if self.artist and self.artist.strip() and self.album and self.album.strip():
+            return self
+        raise ValueError("provide a release id/URL, or both an artist and album to search")
 
 
 class ImportChoice(BaseModel):
@@ -250,6 +283,14 @@ class ImportChoice(BaseModel):
     # Index into Candidate.options; only meaningful when action == apply.
     # None means "apply the top candidate" — the session resolves None -> 0.
     candidate_index: int | None = None
+    # Re-lookup parameters; required iff action == search, forbidden otherwise.
+    search: ImportSearch | None = None
+
+    @model_validator(mode="after")
+    def _search_matches_action(self) -> Self:
+        if (self.action is ImportAction.search) != (self.search is not None):
+            raise ValueError("the search payload is required iff action is 'search'")
+        return self
 
 
 class ExistingAlbum(BaseModel):

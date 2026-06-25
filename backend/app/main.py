@@ -23,6 +23,7 @@ from app.api.reorganize import router as reorganize_router
 from app.api.search import router as search_router
 from app.api.slskd import router as slskd_router
 from app.api.stats import router as stats_router
+from app.api.trash import router as trash_router
 from app.artwork.cache import ArtistImageCache
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
@@ -228,6 +229,7 @@ app.include_router(plex_router, prefix="/api")
 app.include_router(slskd_router, prefix="/api")
 app.include_router(acquisition_router, prefix="/api")
 app.include_router(bank_router, prefix="/api")
+app.include_router(trash_router, prefix="/api")
 
 # Production single-image mode: serve the built SPA. Registered after every
 # API router so the catch-all cannot shadow /api/*. Dev (static_dir unset)

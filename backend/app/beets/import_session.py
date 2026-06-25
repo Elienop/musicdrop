@@ -34,12 +34,14 @@ from app.beets.import_mapping import (
 )
 from app.beets.merge_preview import build_merge_preview
 from app.beets.release_identity import release_identity
+from app.beets.relookup import relookup
 from app.beets.trash import album_folder, album_format_bitrate, trash_album
 from app.models.album import ReleaseIdentity
 from app.models.bank import BankApplyDirective, BankReason
 from app.models.import_models import (
     AlbumOutcome,
     AlbumOutcomeStatus,
+    Candidate,
     DuplicateAction,
     DuplicateDecision,
     DuplicatePrompt,
@@ -570,11 +572,81 @@ class WebImportSession(ImportSession):
                     parked=ParkedAlbum(album_index=index, folder=folder, candidate=candidate),
                 )
             return Action.SKIP
-        choice = self.bridge.park(
-            ParkedAlbum(album_index=index, folder=folder, candidate=candidate),
+        # Attended: park and allow "search for a different release" re-lookups
+        # (beets' enter-Id loop). A search choice re-runs the lookup on this
+        # worker thread and re-parks the SAME index; any other action resolves it.
+        return self._park_with_research(
+            task,
+            index=index,
+            folder=folder,
             art_source=art_source,
+            has_current_art=has_current_art,
+            candidates=candidates,
+            recommendation=recommendation,
+            first_candidate=candidate,
         )
-        return self._apply_choice(choice, candidates)
+
+    def _park_with_research(
+        self,
+        task: ImportTask,
+        *,
+        index: int,
+        folder: str,
+        art_source: str | None,
+        has_current_art: bool,
+        candidates: list[Any],
+        recommendation: Recommendation,
+        first_candidate: Candidate,
+    ) -> Any:
+        """Park the attended review, looping on 'search for a different release'.
+
+        The first park reuses the candidate choose_match already built + the
+        needs_review outcome it already emitted. A ``search`` choice re-runs the
+        lookup (release id / forced-non-VA name search) on this worker thread and
+        re-parks the SAME index with the fresh candidate, a re-emitted
+        needs_review outcome (which flips the registry row back from ``decided``),
+        and a bumped ``search_revision`` (the client's completion signal). An
+        empty result keeps the previous candidates and sets ``search_feedback``.
+        Any non-search action resolves via ``_apply_choice``. Manual-search
+        results are NEVER auto-applied — always re-parked to confirm (mirrors
+        beets' enter-Id).
+        """
+        candidate = first_candidate
+        revision = 0
+        while True:
+            choice = self.bridge.park(
+                ParkedAlbum(album_index=index, folder=folder, candidate=candidate),
+                art_source=art_source,
+            )
+            if choice.action is not ImportAction.search or choice.search is None:
+                return self._apply_choice(choice, candidates)
+            new_candidates, new_rec = relookup(task, choice.search)
+            revision += 1
+            feedback: str | None
+            if new_candidates:
+                candidates = new_candidates
+                task.candidates = candidates
+                recommendation = _REC_MAP.get(new_rec, Recommendation.none)
+                feedback = None
+            else:
+                feedback = "No release found for that search — showing your previous matches."
+            top = candidates[0]
+            candidate = map_album_match(
+                top,
+                cur_artist=task.cur_artist,
+                cur_album=task.cur_album,
+                options=map_candidate_options(candidates),
+                recommendation=recommendation,
+                has_current_art=has_current_art,
+            ).model_copy(update={"search_feedback": feedback, "search_revision": revision})
+            # Re-emit needs_review (plain note_outcome — NOT the album-id stash;
+            # the task is not applied) so the registry's drain upgrade branch flips
+            # the row back from `decided` (record_choice marked it on submit).
+            self.bridge.note_outcome(
+                self._outcome(
+                    index, task, recommendation, AlbumOutcomeStatus.needs_review, match=top
+                )
+            )
 
     def _directive_choice(
         self,

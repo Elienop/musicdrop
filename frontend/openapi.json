@@ -3324,6 +3324,133 @@
           }
         }
       }
+    },
+    "/api/trash": {
+      "get": {
+        "tags": [
+          "trash"
+        ],
+        "summary": "List Trash",
+        "description": "List the albums sitting in Trash (read off disk; no gate).",
+        "operationId": "list_trash_api_trash_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrashListing"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "trash"
+        ],
+        "summary": "Empty Trash One",
+        "description": "Permanently remove one trashed album folder. 409 if busy, 404 if not in Trash.",
+        "operationId": "empty_trash_one_api_trash_delete",
+        "parameters": [
+          {
+            "name": "folder",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Folder"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmptyResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/trash/restore": {
+      "post": {
+        "tags": [
+          "trash"
+        ],
+        "summary": "Restore Trash",
+        "description": "Re-import a trashed folder as-is. 409 if busy, 404 if not in Trash.",
+        "operationId": "restore_trash_api_trash_restore_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/trash/all": {
+      "delete": {
+        "tags": [
+          "trash"
+        ],
+        "summary": "Empty Trash All",
+        "description": "Permanently clear the whole Trash dir. 409 if busy.",
+        "operationId": "empty_trash_all_api_trash_all_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmptyResult"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4780,6 +4907,22 @@
             },
             "type": "array",
             "title": "Options"
+          },
+          "search_feedback": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Feedback"
+          },
+          "search_revision": {
+            "type": "integer",
+            "title": "Search Revision",
+            "default": 0
           }
         },
         "type": "object",
@@ -5406,6 +5549,19 @@
         "title": "EditTrackChange",
         "description": "One track row's before/after, for the preview diff (changed rows only)."
       },
+      "EmptyResult": {
+        "properties": {
+          "removed": {
+            "type": "integer",
+            "title": "Removed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "removed"
+        ],
+        "title": "EmptyResult"
+      },
       "ExistingAlbum": {
         "properties": {
           "album_id": {
@@ -5580,10 +5736,11 @@
           "skip",
           "asis",
           "astracks",
-          "abort"
+          "abort",
+          "search"
         ],
         "title": "ImportAction",
-        "description": "The decisions the user can return for a parked album.\n\nSubset of beets' choices relevant to chunk 1 (enter-id / search-again are a\nlater chunk). ``apply`` selects a ranked option by index; ``abort`` stops the\nwhole import (the session raises beets' ``ImportAbortError``, which beets'\n``run()`` catches to stop cleanly)."
+        "description": "The decisions the user can return for a parked album.\n\n``apply`` selects a ranked option by index; ``search`` re-looks-up the album\nagainst a user-supplied release id/URL or a forced-non-VA name search and\nre-parks (it never resolves the park); ``abort`` stops the whole import (the\nsession raises beets' ``ImportAbortError``, caught by ``run()``)."
       },
       "ImportAlbumStatus": {
         "type": "string",
@@ -5679,6 +5836,16 @@
               }
             ],
             "title": "Candidate Index"
+          },
+          "search": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportSearch"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -5844,6 +6011,51 @@
         ],
         "title": "ImportProgress",
         "description": "Coarse progress counters derived from the drained outcomes."
+      },
+      "ImportSearch": {
+        "properties": {
+          "release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Id"
+          },
+          "artist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist"
+          },
+          "album": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album"
+          },
+          "force_non_va": {
+            "type": "boolean",
+            "title": "Force Non Va",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "ImportSearch",
+        "description": "Re-lookup parameters carried by an ``ImportAction.search`` choice.\n\nEither a release id/URL \u2014 the reliable escape from beets' Various-Artists\nfilter (``tag_album(search_ids=...)`` never computes ``va_likely``) \u2014 OR an\nartist+album name search. ``force_non_va`` only affects the name search: it\npins beets' ``va_likely=False`` so a single-artist album is not filtered to\nVarious-Artists releases. ``release_id`` wins when both are provided."
       },
       "InboxItem": {
         "properties": {
@@ -7515,6 +7727,55 @@
         ],
         "title": "ResolveResult"
       },
+      "RestoreRequest": {
+        "properties": {
+          "folder": {
+            "type": "string",
+            "title": "Folder"
+          }
+        },
+        "type": "object",
+        "required": [
+          "folder"
+        ],
+        "title": "RestoreRequest",
+        "description": "Body of ``POST /api/trash/restore`` \u2014 the folder (relative to Trash)."
+      },
+      "RestoreResult": {
+        "properties": {
+          "restored": {
+            "type": "boolean",
+            "title": "Restored"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "restored",
+              "already_in_library",
+              "could_not_restore"
+            ],
+            "title": "Reason"
+          },
+          "album_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "restored",
+          "reason"
+        ],
+        "title": "RestoreResult",
+        "description": "Outcome of an as-is restore. ``already_in_library`` = a matching album is\nalready present, so beets safely skipped (files stay in Trash)."
+      },
       "ReviewInboxResponse": {
         "properties": {
           "started": {
@@ -8202,6 +8463,94 @@
         ],
         "title": "TrackPathChange",
         "description": "A track whose file would relocate when move is enabled."
+      },
+      "TrashListing": {
+        "properties": {
+          "albums": {
+            "items": {
+              "$ref": "#/components/schemas/TrashedAlbum"
+            },
+            "type": "array",
+            "title": "Albums"
+          },
+          "trash_path": {
+            "type": "string",
+            "title": "Trash Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "albums",
+          "trash_path"
+        ],
+        "title": "TrashListing"
+      },
+      "TrashedAlbum": {
+        "properties": {
+          "folder": {
+            "type": "string",
+            "title": "Folder"
+          },
+          "album_artist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Artist"
+          },
+          "album": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          },
+          "track_count": {
+            "type": "integer",
+            "title": "Track Count"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format"
+          }
+        },
+        "type": "object",
+        "required": [
+          "folder",
+          "album_artist",
+          "album",
+          "year",
+          "track_count",
+          "format"
+        ],
+        "title": "TrashedAlbum",
+        "description": "One album sitting in Trash (no beets DB row \u2014 read off disk).\n\n``folder`` is the album's path RELATIVE to the Trash dir; it is the key the\nrestore/empty endpoints take (resolved + traversal-checked server-side)."
       },
       "TypedSearchPage": {
         "properties": {

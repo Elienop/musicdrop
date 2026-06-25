@@ -24,6 +24,8 @@ export type StartImportResponse = components["schemas"]["StartImportResponse"];
 export type Candidate = components["schemas"]["Candidate"];
 /** A user's decision for one parked album (generated contract). */
 export type ImportChoice = components["schemas"]["ImportChoice"];
+/** Re-lookup parameters carried by a search choice (generated contract). */
+export type ImportSearch = components["schemas"]["ImportSearch"];
 /** A parked import album that duplicates one already in the library (generated). */
 export type DuplicatePrompt = components["schemas"]["DuplicatePrompt"];
 /** The user's resolution for a parked duplicate (generated contract). */
@@ -200,12 +202,14 @@ export function useImportCandidate(
   jobId: string,
   index: number,
   enabled: boolean,
+  refetchInterval: number | false = false,
 ) {
   return useQuery({
     queryKey: ["import", "candidate", jobId, index],
     queryFn: () => fetchCandidate(jobId, index),
     enabled,
     retry: false,
+    refetchInterval,
   });
 }
 
@@ -248,9 +252,14 @@ export function useSubmitChoice(jobId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (args: SubmitChoiceArgs) => submitChoice(jobId, args),
-    onSettled: () => {
+    onSettled: (_data, _err, args) => {
       void queryClient.invalidateQueries({
         queryKey: ["import", "job", jobId],
+      });
+      // A `search` choice makes the worker re-park this album in place — refetch
+      // its candidate so the re-looked-up release renders once it lands.
+      void queryClient.invalidateQueries({
+        queryKey: ["import", "candidate", jobId, args.index],
       });
     },
   });

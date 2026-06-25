@@ -14,6 +14,7 @@ const SETTINGS_SECTIONS = [
   { label: "Naming", to: "/settings/naming" },
   { label: "Metadata", to: "/settings/metadata" },
   { label: "Integrations", to: "/settings/integrations" },
+  { label: "Trash", to: "/settings/trash" },
 ] as const;
 
 export function SettingsLayout() {

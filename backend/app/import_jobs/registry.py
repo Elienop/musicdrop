@@ -289,6 +289,13 @@ class ImportJobRegistry:
                 # mis-reported as imported (and uncounted as set-aside). Mirrors
                 # the manual flow's park-duplicate status flip.
                 row.status = _OUTCOME_STATUS[outcome.status]
+                if outcome.status is AlbumOutcomeStatus.needs_review:
+                    # A search re-park re-emits needs_review for an album already
+                    # in the feed; its match changed, so refresh the row's
+                    # confidence/recommendation (preserving any album_id a later
+                    # follow-up attaches). Scoped to needs_review so the duplicate
+                    # path (needs_dup_resolution) keeps its existing row.outcome.
+                    row.outcome = outcome.model_copy(update={"album_id": row.outcome.album_id})
             elif outcome.album_id is not None:
                 # A follow-up outcome carrying the library album id beets
                 # assigned at task.add (flushed by the session AFTER
@@ -416,7 +423,11 @@ class ImportJobRegistry:
         with self._lock:
             job.bridge.push_choice(index, choice)  # non-blocking; KeyError/RuntimeError bubble
             row = job.albums.get(index)
-            if row is not None:
+            # A `search` is a re-lookup request, not a decision: the worker
+            # re-parks the album in place, so leave the row needs_review. Marking
+            # it decided would transiently miscount it as skipped (search is not in
+            # _APPLY_ACTIONS) until the re-park flips it back.
+            if row is not None and choice.action is not ImportAction.search:
                 row.status = ImportAlbumStatus.decided
                 row.decided_action = choice.action
 

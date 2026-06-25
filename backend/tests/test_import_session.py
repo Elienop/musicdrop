@@ -28,6 +28,7 @@ from app.models.import_models import (
     AlbumOutcomeStatus,
     ImportAction,
     ImportChoice,
+    ImportSearch,
     Recommendation,
 )
 
@@ -67,6 +68,26 @@ def _build_match(rec_level: BeetsRec) -> AlbumMatch:
     )
     pairs, extra_items, extra_tracks = assign_items(items, info.tracks)
     return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_items, extra_tracks)
+
+
+def _build_other_match() -> AlbumMatch:
+    """A distinct release the 'search' re-lookup resolves to (different album)."""
+    items = [
+        Item(artist="Radiohead", album="Amnesiac", title="Pyramid Song", track=1, length=200.0)
+    ]
+    tracks = [TrackInfo(title="Pyramid Song", track_id="t9", index=1, length=200.0)]
+    info = AlbumInfo(
+        tracks=tracks,
+        album="Amnesiac",
+        artist="Radiohead",
+        album_id="a9",
+        data_source="MusicBrainz",
+        data_url="https://mb/a9",
+        year=2001,
+        va=False,
+    )
+    pairs, extra_i, extra_t = assign_items(items, info.tracks)
+    return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_i, extra_t)
 
 
 def _patch_tag_album(monkeypatch: pytest.MonkeyPatch, match: AlbumMatch, rec: BeetsRec) -> None:
@@ -159,6 +180,93 @@ def test_uncertain_rec_parks_then_applies_pushed_choice(
 
     assert task.choice_flag is Action.APPLY
     assert task.match is match
+
+
+def test_search_choice_relooks_up_and_reparks_new_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.beets.import_session as session_mod
+
+    match = _build_match(BeetsRec.medium)
+    other = _build_other_match()
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    monkeypatch.setattr(session_mod, "relookup", lambda t, s: ([other], BeetsRec.strong))
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    first = bridge.get_parked(timeout=2.0)
+    assert first is not None
+    assert first.candidate.search_revision == 0
+    assert first.candidate.album_after.album == "OK Computer"
+
+    bridge.push_choice(
+        first.album_index,
+        ImportChoice(action=ImportAction.search, search=ImportSearch(release_id="a9")),
+    )
+
+    second = bridge.get_parked(timeout=2.0)
+    assert second is not None
+    assert second.album_index == first.album_index
+    assert second.candidate.search_revision == 1
+    assert second.candidate.search_feedback is None
+    assert second.candidate.album_after.album == "Amnesiac"  # the re-looked-up release
+
+    # A re-emitted needs_review outcome flips the registry row back from `decided`.
+    assert any(o.status is AlbumOutcomeStatus.needs_review for o in bridge.drain_outcomes())
+
+    bridge.push_choice(second.album_index, ImportChoice(action=ImportAction.apply))
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert task.match is other  # apply selects from the NEW candidate list
+
+
+def test_search_with_no_results_keeps_previous_and_sets_feedback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.beets.import_session as session_mod
+
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    monkeypatch.setattr(session_mod, "relookup", lambda t, s: ([], BeetsRec.none))
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    first = bridge.get_parked(timeout=2.0)
+    assert first is not None
+    bridge.push_choice(
+        first.album_index,
+        ImportChoice(action=ImportAction.search, search=ImportSearch(release_id="nope")),
+    )
+
+    second = bridge.get_parked(timeout=2.0)
+    assert second is not None
+    assert second.candidate.search_revision == 1
+    assert second.candidate.search_feedback is not None
+    assert "No release found" in second.candidate.search_feedback
+    assert second.candidate.album_after.album == "OK Computer"  # previous match kept
+
+    bridge.push_choice(second.album_index, ImportChoice(action=ImportAction.apply))
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert task.match is match  # original candidate still applies
 
 
 def test_uncertain_rec_skip_choice_skips(monkeypatch: pytest.MonkeyPatch) -> None:
