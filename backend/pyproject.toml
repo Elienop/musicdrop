@@ -102,6 +102,8 @@ module = [
     "tests.test_delete",
     "app.beets.relookup",
     "tests.test_relookup",
+    "app.beets.trash_manage",
+    "tests.test_trash_manage",
     "tests.test_artwork_library_mbid",
     "tests.test_artist_art_write",
     "tests.test_artist_art_mutex",
