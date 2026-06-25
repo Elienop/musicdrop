@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from beets.autotag.hooks import AlbumMatch
+from beets.autotag import AlbumMatch
 from beets.util import get_most_common_tags
 from mediafile import MediaFile
 

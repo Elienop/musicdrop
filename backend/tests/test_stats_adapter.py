@@ -5,15 +5,12 @@ from beets.library import Item, Library
 
 from app.beets.library import list_artists
 from app.beets.stats import build_stats_response, compute_stats, recent_albums
+from tests.conftest import build_library
 
 
 def _lib(tmp_path: Path) -> Library:
     music = tmp_path / "music"
-    lib = Library(
-        str(tmp_path / "library.db"),
-        directory=str(music),
-        path_formats=[("default", "$albumartist/$album/$track $title")],
-    )
+    lib = build_library(str(tmp_path / "library.db"), str(music))
 
     def add(folder: str, fname: str, **fields: object) -> Item:
         base = music / folder
@@ -95,11 +92,7 @@ def test_build_stats_response(tmp_path: Path) -> None:
 
 
 def test_empty_library_is_all_zero(tmp_path: Path) -> None:
-    empty = Library(
-        str(tmp_path / "e.db"),
-        directory=str(tmp_path / "m"),
-        path_formats=[("default", "$albumartist/$album/$track $title")],
-    )
+    empty = build_library(str(tmp_path / "e.db"), str(tmp_path / "m"))
     resp = build_stats_response(empty)
     assert resp.stats.track_count == 0
     assert resp.stats.total_bytes == 0
@@ -108,11 +101,7 @@ def test_empty_library_is_all_zero(tmp_path: Path) -> None:
 
 def test_artist_count_skips_blank_and_matches_roster(tmp_path: Path) -> None:
     music = tmp_path / "music"
-    lib = Library(
-        str(tmp_path / "library.db"),
-        directory=str(music),
-        path_formats=[("default", "$albumartist/$album/$track $title")],
-    )
+    lib = build_library(str(tmp_path / "library.db"), str(music))
 
     def add(folder: str, fname: str, **fields: object) -> Item:
         base = music / folder

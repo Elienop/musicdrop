@@ -17,7 +17,6 @@ from typing import Any
 from beets.dbcore.query import MatchQuery, ParsingError
 from beets.library import Album as BeetsAlbum
 from beets.library import Library
-from beets.ui import get_path_formats, get_replacements
 from mediafile import MediaFile
 
 from app.beets.release_identity import release_identity
@@ -63,17 +62,13 @@ class LibraryHandle:
 def open_library(library_path: str, directory: str | None = None) -> Library:
     """Open a beets library database at ``library_path``.
 
-    ``directory`` is the music root beets indexed. The library is opened WITH the
-    configured path formats + replacements (from beets' global config), so an
-    import places and names files exactly as ``beet import`` would — beets' own
-    ``_open_library`` opens it the same way.
+    ``directory`` is the music root beets indexed. beets 2.12's ``Library`` reads
+    the configured path formats + replacements from the global config itself (the
+    ``path_formats``/``replacements`` constructor kwargs were removed), so an
+    import places and names files exactly as ``beet import`` would — provided the
+    config is loaded first (``setup_beets`` does).
     """
-    return Library(
-        library_path,
-        directory=directory,
-        path_formats=get_path_formats(),
-        replacements=get_replacements(),
-    )
+    return Library(library_path, directory=directory)
 
 
 def close_library(lib: Library) -> None:

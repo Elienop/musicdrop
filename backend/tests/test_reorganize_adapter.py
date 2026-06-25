@@ -13,6 +13,7 @@ from app.beets.reorganize import (
     collect_units,
     plan_reorganize,
 )
+from tests.conftest import build_library
 
 
 def _album(lib: Library, name: str) -> Album:
@@ -78,10 +79,10 @@ def test_plan_artist_scope(reorganize_lib: Library) -> None:
 
 def test_multidisc_to_path_is_album_root(tmp_path: Path) -> None:
     music = tmp_path / "music"
-    lib = Library(
+    lib = build_library(
         str(tmp_path / "library.db"),
-        directory=str(music),
-        path_formats=[("default", "$albumartist/$album/Disc $disc/$track $title")],
+        str(music),
+        path_format="$albumartist/$album/Disc $disc/$track $title",
     )
     base = music / "junk"
     base.mkdir(parents=True, exist_ok=True)

@@ -16,17 +16,15 @@ import pytest
 import requests
 from beets.library import Item, Library
 
+from tests.conftest import build_library
+
 
 def _make_lib(tmp_path: Any, *, mb_albumid: str, trackids: list[str | None]) -> Library:
     """A hermetic 1-album library; each item gets the given mb_trackid (or none)."""
     music = tmp_path / "music"
     base = music / "Radiohead" / "In Rainbows"
     base.mkdir(parents=True, exist_ok=True)
-    lib = Library(
-        str(tmp_path / "library.db"),
-        directory=str(music),
-        path_formats=[("default", "$albumartist/$album/$track $title")],
-    )
+    lib = build_library(str(tmp_path / "library.db"), str(music))
     items = []
     for i, tid in enumerate(trackids, start=1):
         f = base / f"{i:02d} Track {i}.mp3"

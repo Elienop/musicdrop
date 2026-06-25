@@ -263,6 +263,12 @@ def _maybe_move(lib: Library, item: Any) -> bool:
     destination = os.fsdecode(item.destination(basedir=lib.directory))
     if destination == current:
         return False
+    if not os.path.exists(current):
+        # beets 2.12's item.move() logs "file not found, skipping" and returns
+        # WITHOUT raising when the source is gone (2.11 raised). Surface it as the
+        # move failure it is, so the caller reports it (a real I/O error during
+        # the move below — permission, disk — still raises as before).
+        raise FileNotFoundError(f"source file is missing: {current}")
     item.move(basedir=lib.directory, store=False)
     return True
 

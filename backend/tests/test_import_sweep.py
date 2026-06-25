@@ -14,11 +14,13 @@ from typing import Any
 
 import beets.importer.tasks as beets_tasks
 import pytest
+from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
 from beets.autotag.distance import distance
-from beets.autotag.hooks import AlbumInfo, AlbumMatch, TrackInfo
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
-from beets.importer.tasks import Action, ImportTask
+from beets.importer.actions import Action
+from beets.importer.actions import DuplicateAction as BeetsDuplicateAction
+from beets.importer.tasks import ImportTask
 from beets.library import Item, Library
 
 import app.beets.import_session as session_mod
@@ -186,9 +188,9 @@ def test_sweep_banks_duplicate_prompt_then_skips(
     folder = _album_folder(tmp_path)
     task = _make_task(match, monkeypatch, BeetsRec.strong, paths=[os.fsencode(str(folder))])
 
-    session.resolve_duplicate(task, [existing_album])
+    action = session.get_duplicate_action(task, [existing_album])
 
-    assert task.choice_flag is Action.SKIP  # the library copy is kept
+    assert action is BeetsDuplicateAction.SKIP  # the library copy is kept
     summaries = store.list_items(bank_dir, offset=0, limit=10)
     assert len(summaries) == 1
     row = store.get_item(bank_dir, summaries[0].id)

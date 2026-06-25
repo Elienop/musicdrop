@@ -16,6 +16,7 @@ from app.beets.trash_manage import (
     resolve_trash_child,
     restore_album,
 )
+from tests.conftest import build_library
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
@@ -40,11 +41,7 @@ def _tagged_flac(dst: Path, *, artist: str, album: str, title: str, track: int) 
 
 
 def _new_library(tmp_path: Path) -> Library:
-    return Library(
-        str(tmp_path / "library.db"),
-        directory=str(tmp_path / "music"),
-        path_formats=[("default", "$albumartist/$album/$track $title")],
-    )
+    return build_library(str(tmp_path / "library.db"), str(tmp_path / "music"))
 
 
 def test_list_groups_whole_folder_album(tmp_path: Path) -> None:
