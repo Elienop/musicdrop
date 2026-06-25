@@ -24,6 +24,8 @@ export type StartImportResponse = components["schemas"]["StartImportResponse"];
 export type Candidate = components["schemas"]["Candidate"];
 /** A user's decision for one parked album (generated contract). */
 export type ImportChoice = components["schemas"]["ImportChoice"];
+/** Re-lookup parameters carried by a search choice (generated contract). */
+export type ImportSearch = components["schemas"]["ImportSearch"];
 /** A parked import album that duplicates one already in the library (generated). */
 export type DuplicatePrompt = components["schemas"]["DuplicatePrompt"];
 /** The user's resolution for a parked duplicate (generated contract). */

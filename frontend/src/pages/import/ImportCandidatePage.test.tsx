@@ -543,4 +543,134 @@ describe("ImportCandidatePage", () => {
     });
     expect(h1).toHaveAttribute("tabindex", "-1");
   });
+
+  test("searching by release id posts a search choice and shows the new release", async () => {
+    let current = makeCandidate();
+    let posted: unknown = null;
+    server.use(
+      http.get(CANDIDATE_URL, () => HttpResponse.json(current)),
+      http.post(CHOICE_URL, async ({ request }) => {
+        posted = await request.json();
+        // The worker re-looks-up + re-parks: the next GET returns the new release
+        // with a bumped search_revision (the page's completion signal).
+        current = makeCandidate({
+          search_revision: 1,
+          album_after: {
+            artist: "2 Brothers",
+            album: "Dreams",
+            year: 1994,
+            label: "Lowland",
+            country: "NL",
+            media: "CD",
+          },
+          options: [
+            {
+              ...makeCandidate().options[0],
+              album: "Dreams",
+              album_after: {
+                artist: "2 Brothers",
+                album: "Dreams",
+                year: 1994,
+                label: "Lowland",
+                country: "NL",
+                media: "CD",
+              },
+            },
+          ],
+        });
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt();
+
+    await screen.findByRole("heading", { name: /Radiohead — OK Computer/i });
+    await user.type(
+      screen.getByLabelText(/release url or id/i),
+      "https://musicbrainz.org/release/dreams",
+    );
+    await user.click(screen.getByRole("button", { name: /^Search/i }));
+
+    await waitFor(() =>
+      expect(posted).toEqual({
+        action: "search",
+        candidate_index: null,
+        search: {
+          release_id: "https://musicbrainz.org/release/dreams",
+          artist: null,
+          album: null,
+          force_non_va: true,
+        },
+      }),
+    );
+    // The re-looked-up release renders once the revision bumps.
+    expect(
+      await screen.findByRole("heading", { name: /2 Brothers — Dreams/i }),
+    ).toBeInTheDocument();
+  });
+
+  test("the not-Various-Artists toggle defaults checked; a name search omits release_id", async () => {
+    let posted: unknown = null;
+    server.use(
+      http.get(CANDIDATE_URL, () =>
+        HttpResponse.json(makeCandidate({ search_revision: 1 })),
+      ),
+      http.post(CHOICE_URL, async ({ request }) => {
+        posted = await request.json();
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt();
+
+    await screen.findByRole("heading", { name: /Radiohead — OK Computer/i });
+    // Reveal the name search, then assert the toggle defaults on.
+    await user.click(screen.getByText(/or search by name/i));
+    expect(
+      screen.getByRole("checkbox", {
+        name: /not a various-artists compilation/i,
+      }),
+    ).toBeChecked();
+    await user.type(screen.getByLabelText(/^artist/i), "2 Brothers");
+    await user.type(screen.getByLabelText(/^album/i), "Dreams");
+    await user.click(screen.getByRole("button", { name: /^Search/i }));
+
+    await waitFor(() =>
+      expect(posted).toEqual({
+        action: "search",
+        candidate_index: null,
+        search: {
+          release_id: null,
+          artist: "2 Brothers",
+          album: "Dreams",
+          force_non_va: true,
+        },
+      }),
+    );
+  });
+
+  test("a no-match search surfaces the backend feedback note", async () => {
+    let current = makeCandidate();
+    server.use(
+      http.get(CANDIDATE_URL, () => HttpResponse.json(current)),
+      http.post(CHOICE_URL, async () => {
+        current = makeCandidate({
+          search_revision: 1,
+          search_feedback:
+            "No release found for that search — showing your previous matches.",
+        });
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt();
+
+    await screen.findByRole("heading", { name: /Radiohead — OK Computer/i });
+    await user.type(screen.getByLabelText(/release url or id/i), "artist-url");
+    await user.click(screen.getByRole("button", { name: /^Search/i }));
+
+    expect(
+      await screen.findByText(/No release found for that search/i),
+    ).toBeInTheDocument();
+  });
 });
