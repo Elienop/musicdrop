@@ -91,9 +91,29 @@ def test_list_groups_per_item_layout_and_multidisc(tmp_path: Path) -> None:
     )
     albums = {a.album: a for a in list_trashed_albums(trash)}
     assert set(albums) == {"Amnesiac", "25"}
-    assert albums["Amnesiac"].folder == os.path.join("Radiohead", "Amnesiac")
-    assert albums["25"].folder == "Adele - 25"  # commonpath of CD1/CD2
+    # Per-item layout keys on the top dir under trash (the $albumartist dir
+    # holding the one album) — still reachable for restore/empty.
+    assert albums["Amnesiac"].folder == "Radiohead"
+    assert albums["25"].folder == "Adele - 25"  # multi-disc shares one top dir
     assert albums["25"].track_count == 2
+
+
+def test_list_keeps_same_tagged_siblings_distinct(tmp_path: Path) -> None:
+    # Two trashed copies of the same album (the trash subsystem appends " (n)" on
+    # collision) carry identical tags; they must stay TWO reachable rows, never
+    # collapse onto folder="." (which the restore/empty guard would 404).
+    trash = tmp_path / "trash"
+    for sub in ("Dreams", "Dreams (1)"):
+        _tagged_flac(
+            trash / sub / "01 Dreams.flac",
+            artist="2 Brothers",
+            album="Dreams",
+            title="Dreams",
+            track=1,
+        )
+    albums = list_trashed_albums(trash)
+    assert {a.folder for a in albums} == {"Dreams", "Dreams (1)"}
+    assert all(a.folder != "." for a in albums)
 
 
 def test_list_missing_dir_is_empty(tmp_path: Path) -> None:
@@ -162,3 +182,13 @@ def test_empty_one_and_all(tmp_path: Path) -> None:
     assert not (trash / "A").exists()
     assert empty_all(trash).removed == 1  # B remains
     assert list(trash.iterdir()) == []
+
+
+def test_empty_one_removes_a_loose_file(tmp_path: Path) -> None:
+    # A loose audio file directly under trash_dir lists with folder=<filename>;
+    # emptying it must unlink the file, not 500 on rmtree (NotADirectoryError).
+    trash = tmp_path / "trash"
+    trash.mkdir()
+    (trash / "loose.flac").write_bytes(b"x")
+    assert empty_one(str(trash / "loose.flac")).removed == 1
+    assert not (trash / "loose.flac").exists()

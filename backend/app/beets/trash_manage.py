@@ -33,7 +33,12 @@ def list_trashed_albums(trash_dir: Path) -> list[TrashedAlbum]:
     """
     if not trash_dir.exists():
         return []
-    groups: dict[tuple[str, str], list[Any]] = {}
+    # Group by the entry directly under trash_dir — each trashed album is its own
+    # subdir there — NOT by tags, so same-tagged or untagged sibling folders stay
+    # distinct and reachable (grouping by tags collapsed them onto folder=".",
+    # which the restore/empty guard then 404s). Multi-disc folders group naturally
+    # (one shared top dir); ``top`` is the restore/empty key.
+    groups: dict[str, list[Any]] = {}
     for root, _dirs, files in os.walk(trash_dir):
         for name in files:
             path = os.path.join(root, name)
@@ -41,18 +46,16 @@ def list_trashed_albums(trash_dir: Path) -> list[TrashedAlbum]:
                 item = Item.from_path(os.fsencode(path))
             except Exception:  # non-media file (e.g. cover art): skip
                 continue
-            key = (_coerce_str(item.albumartist), _coerce_str(item.album))
-            groups.setdefault(key, []).append(item)
+            top = os.path.relpath(path, trash_dir).split(os.sep, 1)[0]
+            groups.setdefault(top, []).append(item)
     albums: list[TrashedAlbum] = []
-    for (artist, album), items in groups.items():
-        dirs = [os.path.dirname(os.fsdecode(it.path)) for it in items]
-        folder_abs = dirs[0] if len(dirs) == 1 else os.path.commonpath(dirs)
+    for folder, items in groups.items():
         first = items[0]
         albums.append(
             TrashedAlbum(
-                folder=os.path.relpath(folder_abs, trash_dir),
-                album_artist=artist or None,
-                album=album or None,
+                folder=folder,
+                album_artist=_coerce_str(first.albumartist) or None,
+                album=_coerce_str(first.album) or None,
                 year=_coerce_int(getattr(first, "year", 0)) or None,
                 track_count=len(items),
                 format=_coerce_optional_str(getattr(first, "format", None)),
@@ -99,8 +102,12 @@ def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
 
 
 def empty_one(folder_abs: str) -> EmptyResult:
-    """Permanently remove one trashed album folder."""
-    shutil.rmtree(folder_abs)
+    """Permanently remove one trashed entry — a folder or a loose file."""
+    path = Path(folder_abs)
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
     return EmptyResult(removed=1)
 
 
