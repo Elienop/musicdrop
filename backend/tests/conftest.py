@@ -62,6 +62,29 @@ def make_test_handle(lib: "Library", beets_dir: Path) -> LibraryHandle:
     )
 
 
+def build_library(
+    path: str,
+    directory: str,
+    *,
+    path_format: str = "$albumartist/$album/$track $title",
+) -> "Library":
+    """Build a hermetic beets ``Library`` with a path format set through config.
+
+    beets 2.12 removed the ``path_formats``/``replacements`` constructor kwargs;
+    ``Library.path_formats`` is now a ``cached_property`` over ``config['paths']``.
+    So the format is set in config BEFORE construction (before that property is
+    first read), mirroring how the production adapter relies on the loaded config.
+    Replacements fall through to beets' defaults (no test customises them). The
+    autouse ``_clear_beets_globals`` fixture resets config between tests, so this
+    write never leaks. Tests that need a different layout pass ``path_format``.
+    """
+    from beets import config
+    from beets.library import Library
+
+    config["paths"]["default"] = path_format
+    return Library(path, directory=directory)
+
+
 @pytest.fixture
 def anyio_backend() -> str:
     """Run anyio-marked async tests on asyncio only (no trio dependency)."""
@@ -214,16 +237,10 @@ def duplicates_lib(tmp_path: Path) -> "Library":
     """
     import os
 
-    from beets.library import Item, Library
+    from beets.library import Item
 
     music = tmp_path / "music"
-    lib = Library(
-        str(tmp_path / "library.db"),
-        directory=str(music),
-        # Explicit default template so Album.move(basedir=...) can resolve a
-        # destination, the same way setup_beets passes get_path_formats().
-        path_formats=[("default", "$albumartist/$album/$track $title")],
-    )
+    lib = build_library(str(tmp_path / "library.db"), str(music))
 
     def add_album(*, mb: str, artist: str, album: str, n: int, folder: str) -> None:
         items = []
@@ -279,15 +296,11 @@ def edit_lib(tmp_path: "Path") -> "Library":
     import os
     import shutil
 
-    from beets.library import Item, Library
+    from beets.library import Item
 
     sample = Path(__file__).parent / "fixtures" / "silent.flac"
     music = tmp_path / "music"
-    lib = Library(
-        str(tmp_path / "library.db"),
-        directory=str(music),
-        path_formats=[("default", "$albumartist/$album/$track $title")],
-    )
+    lib = build_library(str(tmp_path / "library.db"), str(music))
 
     base = music / "Radiohead" / "In Rainbows"
     base.mkdir(parents=True, exist_ok=True)
@@ -327,14 +340,10 @@ def reorganize_lib(tmp_path: "Path") -> "Library":
     """
     import os
 
-    from beets.library import Item, Library
+    from beets.library import Item
 
     music = tmp_path / "music"
-    lib = Library(
-        str(tmp_path / "library.db"),
-        directory=str(music),
-        path_formats=[("default", "$albumartist/$album/$track $title")],
-    )
+    lib = build_library(str(tmp_path / "library.db"), str(music))
 
     def album(*, artist: str, name: str, titles: list[str], folder: str, names: list[str]) -> None:
         base = music / folder

@@ -41,6 +41,7 @@ from app.beets.import_session import ImportBridge, is_in_library_source
 from app.import_jobs.runner import BeetsImportRunner
 from app.models.bank import BankApplyDirective
 from app.models.import_models import ImportOptions
+from tests.conftest import build_library
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
@@ -128,11 +129,7 @@ def _user_default_copy_mode() -> None:
 
 
 def _new_library(db_path: Path, music_dir: Path) -> Library:
-    return Library(
-        str(db_path),
-        directory=str(music_dir),
-        path_formats=[("default", "$albumartist/$album/$track $title")],
-    )
+    return build_library(str(db_path), str(music_dir))
 
 
 def test_inlibrary_literal_apply_moves(tmp_path: Path) -> None:

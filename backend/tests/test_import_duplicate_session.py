@@ -17,11 +17,12 @@ from typing import Any
 import beets.importer.tasks as beets_tasks
 import pytest
 from beets import config
+from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
 from beets.autotag.distance import distance
-from beets.autotag.hooks import AlbumInfo, AlbumMatch, TrackInfo
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
-from beets.importer.tasks import Action, ImportTask
+from beets.importer.actions import DuplicateAction as BeetsDuplicateAction
+from beets.importer.tasks import ImportTask
 from beets.library import Item
 
 from app.beets.import_session import (
@@ -112,10 +113,19 @@ class _FakeAlbum:
         return []
 
 
-def _run_hook(session: WebImportSession, task: ImportTask, dups: list[Any]) -> threading.Thread:
-    t = threading.Thread(target=lambda: session.resolve_duplicate(task, dups), daemon=True)
+def _run_hook(
+    session: WebImportSession, task: ImportTask, dups: list[Any]
+) -> tuple[threading.Thread, dict[str, Any]]:
+    """Run the (blocking) get_duplicate_action hook on a worker thread, capturing
+    its returned beets DuplicateAction into ``result['action']`` once it unblocks."""
+    result: dict[str, Any] = {}
+
+    def target() -> None:
+        result["action"] = session.get_duplicate_action(task, dups)
+
+    t = threading.Thread(target=target, daemon=True)
     t.start()
-    return t
+    return t, result
 
 
 def test_resolve_duplicate_parks_and_emits_needs_dup_resolution(
@@ -128,7 +138,7 @@ def test_resolve_duplicate_parks_and_emits_needs_dup_resolution(
     # dynamic attr beets' ImportTask doesn't declare (mirrors choose_match's stash)
     task.md_album_index = 7  # type: ignore[attr-defined]  # the index choose_match assigned
 
-    t = _run_hook(session, task, [_FakeAlbum(1)])
+    t, result = _run_hook(session, task, [_FakeAlbum(1)])
     prompt = bridge.get_parked_duplicate(timeout=2.0)
     assert prompt is not None
     assert prompt.album_index == 7  # reuses the album's existing feed index
@@ -140,7 +150,7 @@ def test_resolve_duplicate_parks_and_emits_needs_dup_resolution(
 
     bridge.push_duplicate_decision(7, DuplicateDecision(action=DuplicateAction.keep_both))
     t.join(timeout=2.0)
-    assert task.choice_flag is Action.APPLY  # keep_both leaves the choice intact
+    assert result["action"] is BeetsDuplicateAction.KEEP  # keep_both -> import alongside
 
 
 def test_duplicate_prompt_carries_release_identity(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -151,7 +161,7 @@ def test_duplicate_prompt_carries_release_identity(monkeypatch: pytest.MonkeyPat
     task.md_album_index = 0  # type: ignore[attr-defined]  # choose_match's stash
     existing = _FakeAlbum(1, data_source="MusicBrainz", mb_albumid="e1", label="XL Recordings")
 
-    t = _run_hook(session, task, [existing])
+    t, _ = _run_hook(session, task, [existing])
     prompt = bridge.get_parked_duplicate(timeout=2.0)
     assert prompt is not None
     # incoming = the matched release (what the import will become)
@@ -179,10 +189,10 @@ def test_unattended_resolve_duplicate_skips_without_parking(
     task = _task(match, monkeypatch)
     task.md_album_index = 0  # type: ignore[attr-defined]  # dynamic attr (see above)
 
-    session.resolve_duplicate(task, [_FakeAlbum(1)])
+    action = session.get_duplicate_action(task, [_FakeAlbum(1)])
 
     assert bridge.pending_count() == 0  # did NOT park
-    assert task.choice_flag is Action.SKIP
+    assert action is BeetsDuplicateAction.SKIP  # new album skipped, library copy kept
     assert any(o.status is AlbumOutcomeStatus.needs_dup_resolution for o in bridge.drain_outcomes())
 
 
@@ -201,7 +211,7 @@ def test_resolve_duplicate_records_art_source(
     art_path = os.fsencode(str(tmp_path / "a.flac"))
     task.items[0].path = art_path
 
-    t = _run_hook(session, task, [_FakeAlbum(1)])
+    t, _ = _run_hook(session, task, [_FakeAlbum(1)])
     prompt = bridge.get_parked_duplicate(timeout=2.0)
     assert prompt is not None
     assert session.bridge.art_source(prompt.album_index) == os.fsdecode(art_path)
@@ -217,43 +227,44 @@ def test_skip_new_sets_skip(monkeypatch: pytest.MonkeyPatch) -> None:
     task = _task(match, monkeypatch)
     task.md_album_index = 0  # type: ignore[attr-defined]  # dynamic attr (see above)
 
-    t = _run_hook(session, task, [_FakeAlbum(1)])
+    t, result = _run_hook(session, task, [_FakeAlbum(1)])
     prompt = bridge.get_parked_duplicate(timeout=2.0)
     assert prompt is not None
     bridge.push_duplicate_decision(0, DuplicateDecision(action=DuplicateAction.skip_new))
     t.join(timeout=2.0)
-    assert task.choice_flag is Action.SKIP
+    assert result["action"] is BeetsDuplicateAction.SKIP
 
 
-def test_merge_sets_should_merge(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_merge_returns_merge(monkeypatch: pytest.MonkeyPatch) -> None:
     match = _match()
     bridge = ImportBridge()
     session = _session(bridge)
     task = _task(match, monkeypatch)
     task.md_album_index = 0  # type: ignore[attr-defined]  # dynamic attr (see above)
 
-    t = _run_hook(session, task, [_FakeAlbum(1)])
+    t, result = _run_hook(session, task, [_FakeAlbum(1)])
     assert bridge.get_parked_duplicate(timeout=2.0) is not None
     bridge.push_duplicate_decision(0, DuplicateDecision(action=DuplicateAction.merge))
     t.join(timeout=2.0)
-    assert task.should_merge_duplicates is True
-    assert task.should_remove_duplicates is False  # never beets' hard-delete
+    # beets 2.12 merges when task.duplicate_action is MERGE (never the hard-delete
+    # REMOVE); our hook returns MERGE for the merge decision.
+    assert result["action"] is BeetsDuplicateAction.MERGE
 
 
-def test_replace_records_ids_without_hard_delete(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_replace_records_ids_and_keeps(monkeypatch: pytest.MonkeyPatch) -> None:
     match = _match()
     bridge = ImportBridge()
     session = _session(bridge, trash_dir=Path("/tmp/trash"))
     task = _task(match, monkeypatch)
     task.md_album_index = 0  # type: ignore[attr-defined]  # dynamic attr (see above)
 
-    t = _run_hook(session, task, [_FakeAlbum(11), _FakeAlbum(22)])
+    t, result = _run_hook(session, task, [_FakeAlbum(11), _FakeAlbum(22)])
     assert bridge.get_parked_duplicate(timeout=2.0) is not None
     bridge.push_duplicate_decision(0, DuplicateDecision(action=DuplicateAction.replace))
     t.join(timeout=2.0)
-    # New album imports normally; old copies are recorded for post-run trashing.
-    assert task.choice_flag is Action.APPLY
-    assert task.should_remove_duplicates is False
+    # New album imports + the old copies are KEPT in the DB (never beets' REMOVE),
+    # then recorded for the post-run reversible Trash by id.
+    assert result["action"] is BeetsDuplicateAction.KEEP
     assert session._replace_album_ids == {11, 22}
 
 

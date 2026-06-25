@@ -8,11 +8,13 @@ from typing import Any, ClassVar
 import beets.importer.tasks as beets_tasks
 import pytest
 from beets import config
+from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
 from beets.autotag.distance import distance
-from beets.autotag.hooks import AlbumInfo, AlbumMatch, TrackInfo
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
-from beets.importer.tasks import Action, ImportTask
+from beets.importer.actions import Action
+from beets.importer.actions import DuplicateAction as BeetsDuplicateAction
+from beets.importer.tasks import ImportTask
 from beets.library import Item, Library
 
 from app.beets.import_mapping import embedded_art
@@ -1159,7 +1161,7 @@ def test_pause_aborts_at_top_of_each_hook(monkeypatch: pytest.MonkeyPatch) -> No
     with pytest.raises(ImportAbortError):
         session.choose_item(task)
     with pytest.raises(ImportAbortError):
-        session.resolve_duplicate(task, [])
+        session.get_duplicate_action(task, [])
     assert bridge.pending_count() == 0
     assert bridge.drain_outcomes() == []
 
@@ -1168,8 +1170,9 @@ def test_already_imported_counts_known_skips() -> None:
     bridge = ImportBridge()
     session = _make_session(bridge)
     # __init__ is skipped: provide what beets' already_imported reads. A plain
-    # bool stands in for the iconfig view (truthiness is all it uses).
-    session.config = {"incremental": True}
+    # dict stands in for the iconfig view (truthiness is all it uses); 2.12's
+    # stricter ImportSession.config annotation needs the scoped ignore.
+    session.config = {"incremental": True}  # type: ignore[assignment]  # fake config view
     session._is_resuming = {}
     session._history_dirs = {(b"/music/done",)}
     assert session.already_imported(b"/top", [b"/music/done"]) is True
@@ -1379,33 +1382,29 @@ def test_directive_duplicate_actions_map_like_attended(
     session._directive = BankApplyDirective(
         action="duplicate", duplicate_action=DuplicateAction.skip_new
     )
-    session.resolve_duplicate(task, [existing])
-    assert task.choice_flag is Action.SKIP
+    assert session.get_duplicate_action(task, [existing]) is BeetsDuplicateAction.SKIP
 
     # merge
     session2, task2, existing2 = _directive_dup_setup(tmp_path, monkeypatch)
     session2._directive = BankApplyDirective(
         action="duplicate", duplicate_action=DuplicateAction.merge
     )
-    session2.resolve_duplicate(task2, [existing2])
-    assert task2.should_merge_duplicates is True
+    assert session2.get_duplicate_action(task2, [existing2]) is BeetsDuplicateAction.MERGE
 
-    # replace records the ids for the post-run Trash pass (never hard-delete)
+    # replace records the ids for the post-run Trash pass (KEEP, never hard-delete)
     session3, task3, existing3 = _directive_dup_setup(tmp_path, monkeypatch)
     session3._directive = BankApplyDirective(
         action="duplicate", duplicate_action=DuplicateAction.replace
     )
-    session3.resolve_duplicate(task3, [existing3])
+    assert session3.get_duplicate_action(task3, [existing3]) is BeetsDuplicateAction.KEEP
     assert session3._replace_album_ids == {int(existing3.id)}
 
-    # keep_both leaves the choice intact (no-op)
+    # keep_both imports alongside the existing copy
     session4, task4, existing4 = _directive_dup_setup(tmp_path, monkeypatch)
     session4._directive = BankApplyDirective(
         action="duplicate", duplicate_action=DuplicateAction.keep_both
     )
-    session4.resolve_duplicate(task4, [existing4])
-    assert task4.choice_flag is None
-    assert task4.should_merge_duplicates is False
+    assert session4.get_duplicate_action(task4, [existing4]) is BeetsDuplicateAction.KEEP
 
 
 def test_directive_without_dup_action_skips_unanticipated_duplicate(
@@ -1418,8 +1417,7 @@ def test_directive_without_dup_action_skips_unanticipated_duplicate(
 
     session, task, existing = _directive_dup_setup(tmp_path, monkeypatch)
     session._directive = BankApplyDirective(action="apply", search_id="rel-1")
-    session.resolve_duplicate(task, [existing])
-    assert task.choice_flag is Action.SKIP
+    assert session.get_duplicate_action(task, [existing]) is BeetsDuplicateAction.SKIP
     outcomes = session.bridge.drain_outcomes()
     assert any(o.status is AlbumOutcomeStatus.needs_dup_resolution for o in outcomes)
 

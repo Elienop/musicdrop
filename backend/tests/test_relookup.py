@@ -2,8 +2,8 @@ from typing import Any
 
 import pytest
 from beets import metadata_plugins
+from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
 from beets.autotag.distance import distance
-from beets.autotag.hooks import AlbumInfo, AlbumMatch, TrackInfo
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
 from beets.library import Item

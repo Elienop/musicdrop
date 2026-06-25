@@ -11,17 +11,14 @@ from app.beets.naming import (
     render_samples,
 )
 from app.models.config_editor import NamingRuleInput, ReplaceRuleInput
+from tests.conftest import build_library
 
 
 @pytest.fixture
 def naming_lib(tmp_path: Path) -> Library:
     """A normal album track, a compilation track, and a singleton."""
     music = tmp_path / "music"
-    lib = Library(
-        str(tmp_path / "library.db"),
-        directory=str(music),
-        path_formats=[("default", "$albumartist/$album/$track $title")],
-    )
+    lib = build_library(str(tmp_path / "library.db"), str(music))
 
     def add(folder: str, fname: str, **fields: object) -> Item:
         base = music / folder
@@ -98,11 +95,7 @@ def test_bad_replace_regex_reported_and_excluded(naming_lib: Library) -> None:
 
 
 def test_synthetic_fallback_on_empty_library(tmp_path: Path) -> None:
-    empty = Library(
-        str(tmp_path / "e.db"),
-        directory=str(tmp_path / "m"),
-        path_formats=[("default", "$albumartist/$album/$track $title")],
-    )
+    empty = build_library(str(tmp_path / "e.db"), str(tmp_path / "m"))
     rules = [NamingRuleInput(query="default", template="$albumartist/$album/$track $title")]
     rendered, _ = render_samples(empty, rules=rules, replace=[])
     assert rendered[0].sample_path == "Adele/25/01 Hello.flac"
@@ -143,11 +136,7 @@ def test_is_legible_prefers_latin() -> None:
 
 def test_default_prefers_legible_sample_over_rtl(tmp_path: Path) -> None:
     music = tmp_path / "music"
-    lib = Library(
-        str(tmp_path / "l.db"),
-        directory=str(music),
-        path_formats=[("default", "$albumartist/$album/$track $title")],
-    )
+    lib = build_library(str(tmp_path / "l.db"), str(music))
 
     def add(folder: str, fname: str, **f: object) -> Item:
         base = music / folder

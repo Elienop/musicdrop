@@ -4,15 +4,12 @@ from pathlib import Path
 from beets.library import Item, Library
 
 from app.beets.playlists import TrackRef, m3u_entries, resolve_tracks, track_match_refs
+from tests.conftest import build_library
 
 
 def _lib_with_items(tmp_path: Path) -> tuple[Library, list[int]]:
     music = tmp_path / "music"
-    lib = Library(
-        str(tmp_path / "library.db"),
-        directory=str(music),
-        path_formats=[("default", "$albumartist/$album/$track $title")],
-    )
+    lib = build_library(str(tmp_path / "library.db"), str(music))
 
     def add(folder: str, fname: str, **fields: object) -> Item:
         base = music / folder

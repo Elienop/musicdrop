@@ -19,8 +19,9 @@ from typing import TYPE_CHECKING, Any
 
 from beets import config
 from beets.autotag.match import Recommendation as BeetsRec
+from beets.importer.actions import Action
+from beets.importer.actions import DuplicateAction as BeetsDuplicateAction
 from beets.importer.session import ImportAbortError, ImportSession
-from beets.importer.tasks import Action
 
 from app.bank import store as bank_store
 from app.bank.fingerprint import folder_fingerprint
@@ -387,21 +388,29 @@ class WebImportSession(ImportSession):
             return Action.ASIS
         return Action.SKIP
 
-    def resolve_duplicate(self, task: ImportTask, found_duplicates: Any) -> None:
-        """Park a duplicate prompt and apply the user's decision.
+    def get_duplicate_action(self, task: ImportTask, found_duplicates: Any) -> BeetsDuplicateAction:
+        """Park a duplicate prompt and return the user's resolution.
 
-        beets calls this (when ``import.duplicate_action`` resolves to ``ask`` —
-        forced in run_import_worker) for any APPLY/ASIS/RETAG task that has
-        library duplicates. We reuse the album's feed index (stashed by
-        choose_match) so the duplicate prompt flips that one row, then block the
-        serial worker until a decision arrives over the bridge. In sweep mode
-        the prompt is banked (reason needs_dup_resolution) and the new album
-        SKIPped instead — the library copy stays, the decision moves to the bank.
+        beets 2.12 renamed the old ``resolve_duplicate`` hook to this and made it
+        RETURN a ``DuplicateAction`` enum (the pipeline assigns it to
+        ``task.duplicate_action``) instead of mutating boolean flags. beets calls
+        it (when ``import.duplicate_action`` resolves to ``ask`` — forced in
+        run_import_worker) for any APPLY/ASIS/RETAG task with library duplicates.
+        We reuse the album's feed index (stashed by choose_match) so the prompt
+        flips that one row, then block the serial worker until a decision arrives.
+        In sweep mode the prompt is banked (reason needs_dup_resolution) and the
+        new album SKIPped instead — the library copy stays, the decision moves to
+        the bank.
+
+        Our four model actions map onto beets' enum:
+        skip_new→SKIP, keep_both→KEEP, merge→MERGE, and replace→KEEP (the new
+        album imports + the old copy is kept in the DB, then trashed by id after
+        run() — never beets' destructive REMOVE).
         """
         self._check_pause()
         index = getattr(task, "md_album_index", None)
         if index is None:
-            # Defensive: resolve_duplicate should always follow choose_match.
+            # Defensive: this hook should always follow choose_match.
             index = self._album_index
             self._album_index += 1
         # The current files' first item supplies the "before" cover; record it on
@@ -425,21 +434,8 @@ class WebImportSession(ImportSession):
                 # library album: never auto-pick a destructive resolution.
                 # SKIP; the dup outcome above flips the feed row, and the
                 # apply runner fails the bank row with re-decide guidance.
-                task.set_choice(Action.SKIP)
-                return None
-            if dup_action is DuplicateAction.skip_new:
-                task.set_choice(Action.SKIP)
-            elif dup_action is DuplicateAction.merge:
-                # Loop-safe: the merged task carries the duplicate's paths, so
-                # beets' find_duplicates excludes the old album next time
-                # (tasks.py:391-422) and record_replaced absorbs its rows.
-                task.should_merge_duplicates = True
-            elif dup_action is DuplicateAction.replace:
-                # Reversible Trash after run(), by id - never beets' hard
-                # delete (mirrors the attended Replace path).
-                self._replace_album_ids.update(int(a.id) for a in found_duplicates)
-            # keep_both: leave the choice intact (no-op, now explicit + chosen).
-            return None
+                return BeetsDuplicateAction.SKIP
+            return self._beets_dup_action(dup_action, found_duplicates)
         if self.unattended:
             if self.sweep:
                 # Bank the prompt the attended flow would park: the user
@@ -454,20 +450,30 @@ class WebImportSession(ImportSession):
                 )
             # Unattended: the outcome above records the set-aside; SKIP the new
             # album (keeps the library copy) without parking + blocking.
-            task.set_choice(Action.SKIP)
-            return None
+            return BeetsDuplicateAction.SKIP
         decision = self.bridge.park_duplicate(prompt, art_source=art_source)
-        if decision.action is DuplicateAction.skip_new:
-            task.set_choice(Action.SKIP)
-        elif decision.action is DuplicateAction.merge:
-            task.should_merge_duplicates = True
-        elif decision.action is DuplicateAction.replace:
-            # Leave the APPLY choice intact (new album imports normally); record
-            # the existing ids to move to Trash AFTER run() (see run_import_worker).
-            # NOT should_remove_duplicates — that is beets' hard-delete path.
+        return self._beets_dup_action(decision.action, found_duplicates)
+
+    def _beets_dup_action(
+        self, action: DuplicateAction, found_duplicates: Any
+    ) -> BeetsDuplicateAction:
+        """Translate our model DuplicateAction into beets' enum (recording the
+        replace ids for the post-run Trash on a ``replace``)."""
+        if action is DuplicateAction.skip_new:
+            return BeetsDuplicateAction.SKIP
+        if action is DuplicateAction.merge:
+            # Loop-safe: the merged task carries the duplicate's paths, so beets'
+            # find_duplicates excludes the old album next time and record_replaced
+            # absorbs its rows.
+            return BeetsDuplicateAction.MERGE
+        if action is DuplicateAction.replace:
+            # Import the new album + KEEP the old in the DB, then move the old to
+            # the reversible Trash by id AFTER run() — never beets' destructive
+            # REMOVE (its hard-delete path).
             self._replace_album_ids.update(int(a.id) for a in found_duplicates)
-        # keep_both: leave the choice intact (no-op, now explicit + chosen).
-        return None
+            return BeetsDuplicateAction.KEEP
+        # keep_both: import alongside the existing copy.
+        return BeetsDuplicateAction.KEEP
 
     def choose_match(self, task: ImportTask) -> Any:
         """Auto-apply a strong match; otherwise park and await the user.

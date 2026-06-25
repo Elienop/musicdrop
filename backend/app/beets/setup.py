@@ -17,7 +17,6 @@ import beets
 from beets import metadata_plugins, plugins
 from beets.library import Library
 from beets.plugins import BeetsPlugin
-from beets.ui import get_path_formats, get_replacements
 
 from app.beets.library import LibraryHandle, close_library
 
@@ -74,12 +73,10 @@ def setup_beets(beets_dir: str, *, container_music_default: bool = False) -> Lib
     lib_path = beets.config["library"].as_filename()
     directory = beets.config["directory"].as_filename()
 
-    lib = Library(
-        lib_path,
-        directory=directory,
-        path_formats=get_path_formats(),
-        replacements=get_replacements(),
-    )
+    # beets 2.12's Library reads path formats + replacements from the global
+    # config itself (the constructor kwargs were removed); the config is fully
+    # loaded by this point, so naming/placement matches `beet import`.
+    lib = Library(lib_path, directory=directory)
     plugins.send("library_opened", lib=lib)
 
     return LibraryHandle(
