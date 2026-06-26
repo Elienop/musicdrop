@@ -42,6 +42,7 @@ def test_album_fetch_starts_scoped_job(
         delay: float,
         write: bool,
         album_id: int | None = None,
+        recheck_misses: bool = False,
     ) -> None:
         reg.set_total(0)
         reg.finish("done")
@@ -95,7 +96,9 @@ def test_backfill_start_status_stop(
     # Make the worker thread deterministic: a no-op sweep that just finishes.
     import app.api.lyrics as lyrics_api
 
-    def fake_start_backfill(reg: object, handle: object, *, delay: float, write: bool) -> None:
+    def fake_start_backfill(
+        reg: object, handle: object, *, delay: float, write: bool, recheck_misses: bool = False
+    ) -> None:
         reg.set_total(0)  # type: ignore[attr-defined]  # fake reg is the real registry
         reg.finish("done")  # type: ignore[attr-defined]
 
@@ -123,4 +126,56 @@ def test_backfill_409_when_import_active(
     monkeypatch.setattr(get_registry(), "has_active_job", lambda: True)
     r = lyrics_client.post("/api/lyrics/backfill")
     assert r.status_code == 409
+    reset_lyrics_backfill()
+
+
+def test_library_backfill_passes_recheck_misses(
+    lyrics_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.api.lyrics as lyrics_api
+    from app.lyrics_jobs.registry import reset_lyrics_backfill
+
+    reset_lyrics_backfill()
+    seen: dict[str, bool] = {}
+
+    def fake_start_backfill(
+        reg: object, handle: object, *, delay: float, write: bool, recheck_misses: bool = False
+    ) -> None:
+        seen["recheck_misses"] = recheck_misses
+        reg.set_total(0)  # type: ignore[attr-defined]
+        reg.finish("done")  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(lyrics_api, "start_backfill", fake_start_backfill)
+    r = lyrics_client.post("/api/lyrics/backfill?recheck_misses=true")
+    assert r.status_code == 200
+    assert seen["recheck_misses"] is True
+    reset_lyrics_backfill()
+
+
+def test_album_fetch_forces_recheck_misses(
+    lyrics_client: TestClient, edit_lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.lyrics_jobs.runner as runner_mod
+    from app.lyrics_jobs.registry import LyricsBackfillRegistry, reset_lyrics_backfill
+
+    reset_lyrics_backfill()
+    seen: dict[str, bool] = {}
+
+    def fake_start_backfill(
+        reg: LyricsBackfillRegistry,
+        handle: object,
+        *,
+        delay: float,
+        write: bool,
+        album_id: int | None = None,
+        recheck_misses: bool = False,
+    ) -> None:
+        seen["recheck_misses"] = recheck_misses
+        reg.set_total(0)
+        reg.finish("done")
+
+    monkeypatch.setattr(runner_mod, "start_backfill", fake_start_backfill)
+    r = lyrics_client.post(f"/api/albums/{_aid(edit_lib)}/lyrics/fetch")
+    assert r.status_code == 200
+    assert seen["recheck_misses"] is True
     reset_lyrics_backfill()

@@ -366,7 +366,7 @@ async def start_album_lyrics_op(request_obj: Any, album_id: int) -> LyricsBackfi
         ) from None
     app_settings = getattr(app.state, "settings", None)
     delay = float(getattr(app_settings, "lyrics_backfill_delay_seconds", 0.2))
-    start_backfill(reg, handle, delay=delay, write=write, album_id=album_id)
+    start_backfill(reg, handle, delay=delay, write=write, album_id=album_id, recheck_misses=True)
     return reg.state()
 
 
