@@ -4,6 +4,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
 
 from app.api.albums import get_library
+from app.api.http_cache import revalidating_image_response
 from app.artist_art_jobs.registry import (
     ArtistArtBackfillRegistry,
     artist_art_backfill_active,
@@ -85,6 +86,7 @@ async def list_artists_endpoint(
     },
 )
 async def get_artist_image_endpoint(
+    request: Request,
     name: Annotated[str, Query(min_length=1)],
     service: Annotated[ArtistImageService, Depends(get_artist_image_service)],
     handle: Annotated[LibraryHandle, Depends(get_library)],
@@ -100,11 +102,10 @@ async def get_artist_image_endpoint(
         raise HTTPException(status_code=404, detail="Artist image not found")
 
     image_bytes, mime = result
-    return Response(
-        content=image_bytes,
-        media_type=mime,
-        headers={"Cache-Control": "public, max-age=86400"},
-    )
+    # Revalidate every time (no max-age) so a freshly-set override shows up
+    # immediately — no hard refresh, and correct even for consumers that don't
+    # pass the ?v= buster (the roster cards). See app.api.http_cache.
+    return revalidating_image_response(request, image_bytes, mime)
 
 
 @router.get("/artists/image/settings", response_model=ArtistImageSettings)

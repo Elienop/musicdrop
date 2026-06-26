@@ -43,7 +43,9 @@ export function ArtistImage({
   className?: string;
   monogramClassName?: string;
   decorative?: boolean;
-  /** Bump to defeat the max-age cache after an override save/reset. */
+  /** Bump on override save/reset to force the <img> to re-request: a mounted
+   * image with an unchanged src won't refetch on its own, even though the
+   * endpoint now revalidates (ETag) instead of long-caching. */
   version?: number;
 }) {
   const [failed, setFailed] = useState(false);

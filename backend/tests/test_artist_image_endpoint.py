@@ -59,10 +59,53 @@ def test_hit_returns_image_bytes_and_media_type(hit_client: TestClient) -> None:
     assert resp.headers["content-type"] == "image/jpeg"
 
 
-def test_hit_sets_cache_control_header(hit_client: TestClient) -> None:
+def test_hit_revalidates_with_etag(hit_client: TestClient) -> None:
+    # The portrait must revalidate so a freshly-set override shows up without a
+    # hard refresh; the content-derived ETag keeps that revalidation cheap.
     resp = hit_client.get("/api/artists/image", params={"name": "ABBA"})
-    assert "public" in resp.headers["cache-control"]
-    assert "max-age=" in resp.headers["cache-control"]
+    assert resp.headers["cache-control"] == "no-cache"
+    assert resp.headers["etag"]
+
+
+def test_matching_if_none_match_returns_304(hit_client: TestClient) -> None:
+    first = hit_client.get("/api/artists/image", params={"name": "ABBA"})
+    etag = first.headers["etag"]
+    second = hit_client.get(
+        "/api/artists/image",
+        params={"name": "ABBA"},
+        headers={"If-None-Match": etag},
+    )
+    assert second.status_code == 304
+    assert second.content == b""
+    # The 304 re-asserts the validator + cache policy so the cache entry refreshes.
+    assert second.headers["etag"] == etag
+    assert second.headers["cache-control"] == "no-cache"
+
+
+def test_weak_if_none_match_returns_304(hit_client: TestClient) -> None:
+    # A gzip-enabling reverse proxy (nginx) weakens our strong ETag to W/"...".
+    # The browser echoes that back, and RFC 9110 weak comparison must still match
+    # — otherwise every view re-downloads the image instead of getting a 304.
+    first = hit_client.get("/api/artists/image", params={"name": "ABBA"})
+    weak = "W/" + first.headers["etag"]
+    second = hit_client.get(
+        "/api/artists/image",
+        params={"name": "ABBA"},
+        headers={"If-None-Match": weak},
+    )
+    assert second.status_code == 304
+
+
+def test_stale_if_none_match_returns_fresh_bytes(hit_client: TestClient) -> None:
+    # A non-matching validator (e.g. a recycled ?v= URL pointing at new bytes)
+    # must return the current image, not a 304 — this is the hard-refresh bug.
+    resp = hit_client.get(
+        "/api/artists/image",
+        params={"name": "ABBA"},
+        headers={"If-None-Match": '"stale-etag"'},
+    )
+    assert resp.status_code == 200
+    assert resp.content == b"JPEGBYTES"
 
 
 def test_slash_in_name_works_as_query_param(hit_client: TestClient) -> None:

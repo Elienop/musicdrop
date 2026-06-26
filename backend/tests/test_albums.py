@@ -159,7 +159,69 @@ def test_album_cover_from_artpath(temp_library: Library, tmp_path: Path) -> None
 
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/png"
-    assert resp.headers["cache-control"] == "public, max-age=3600"
+    assert resp.headers["cache-control"] == "no-cache"
+    assert resp.headers["etag"]
+    assert resp.content == _TINY_PNG
+
+
+def test_album_cover_matching_if_none_match_returns_304(
+    temp_library: Library, tmp_path: Path
+) -> None:
+    # The cover must revalidate so a freshly-installed image shows up without a
+    # hard refresh; the content-derived ETag keeps that revalidation cheap — an
+    # unchanged cover returns a bodiless 304.
+    art_file = tmp_path / "cover.png"
+    art_file.write_bytes(_TINY_PNG)
+
+    albums = sorted(temp_library.albums(), key=lambda a: int(a.id))
+    album = albums[0]
+    album["artpath"] = os.fsencode(str(art_file))
+    album.store()
+
+    handle = make_test_handle(temp_library, tmp_path)
+    app.dependency_overrides[get_library] = lambda: handle
+    try:
+        client = TestClient(app)
+        first = client.get(f"/api/albums/{album.id}/cover")
+        etag = first.headers["etag"]
+        second = client.get(
+            f"/api/albums/{album.id}/cover",
+            headers={"If-None-Match": etag},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert second.status_code == 304
+    assert second.content == b""
+    # The 304 re-asserts the validator + cache policy so the cache entry refreshes.
+    assert second.headers["etag"] == etag
+    assert second.headers["cache-control"] == "no-cache"
+
+
+def test_album_cover_stale_if_none_match_returns_fresh_bytes(
+    temp_library: Library, tmp_path: Path
+) -> None:
+    # A non-matching validator (e.g. a recycled URL pointing at new bytes) must
+    # return the current image, not a 304 — this is the hard-refresh bug.
+    art_file = tmp_path / "cover.png"
+    art_file.write_bytes(_TINY_PNG)
+
+    albums = sorted(temp_library.albums(), key=lambda a: int(a.id))
+    album = albums[0]
+    album["artpath"] = os.fsencode(str(art_file))
+    album.store()
+
+    handle = make_test_handle(temp_library, tmp_path)
+    app.dependency_overrides[get_library] = lambda: handle
+    try:
+        resp = TestClient(app).get(
+            f"/api/albums/{album.id}/cover",
+            headers={"If-None-Match": '"stale"'},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
     assert resp.content == _TINY_PNG
 
 
