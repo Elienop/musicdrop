@@ -4,7 +4,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.artists import get_artist_image_cache, get_artist_image_service
+from app.api.artists import (
+    get_artist_image_cache,
+    get_artist_image_http_client,
+    get_artist_image_service,
+)
 from app.artwork.cache import ArtistImageCache, CachedImage
 from app.artwork.service import ArtistImageService
 from app.main import app
@@ -29,6 +33,9 @@ def cache(tmp_path: Path) -> ArtistImageCache:
 @pytest.fixture
 def client(cache: ArtistImageCache) -> Iterator[TestClient]:
     app.dependency_overrides[get_artist_image_cache] = lambda: cache
+    # The from-url tests monkeypatch fetch_image_bytes, so this client is unused;
+    # override the dep so it doesn't reach into app.state (lifespan doesn't run).
+    app.dependency_overrides[get_artist_image_http_client] = lambda: object()
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -111,3 +118,66 @@ def test_uploaded_override_is_served_by_image_get(
         assert resp.headers["content-type"] == "image/png"
     finally:
         app.dependency_overrides.pop(get_artist_image_service, None)
+
+
+def test_from_url_writes_override(
+    client: TestClient, cache: ArtistImageCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.api.artists as artists_api
+
+    async def fake_fetch(http_client: object, url: str) -> bytes:
+        return PNG.read_bytes()
+
+    monkeypatch.setattr(artists_api, "fetch_image_bytes", fake_fetch)
+    resp = client.post(
+        "/api/artists/image/override/from-url",
+        params={"name": "ABBA"},
+        json={"url": "https://example.test/a.png"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "content_type": "image/png"}
+    assert isinstance(cache.get("ABBA"), CachedImage)
+
+
+def test_from_url_rejects_non_image_bytes(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.api.artists as artists_api
+
+    async def fake_fetch(http_client: object, url: str) -> bytes:
+        return b"<html>not an image</html>"
+
+    monkeypatch.setattr(artists_api, "fetch_image_bytes", fake_fetch)
+    resp = client.post(
+        "/api/artists/image/override/from-url",
+        params={"name": "ABBA"},
+        json={"url": "https://example.test/x"},
+    )
+    assert resp.status_code == 422
+    assert "not a supported image" in resp.json()["detail"].lower()
+
+
+def test_from_url_fetch_failure_is_422(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.api.artists as artists_api
+
+    async def fake_fetch(http_client: object, url: str) -> bytes:
+        raise ValueError("could not fetch image: boom")
+
+    monkeypatch.setattr(artists_api, "fetch_image_bytes", fake_fetch)
+    resp = client.post(
+        "/api/artists/image/override/from-url",
+        params={"name": "ABBA"},
+        json={"url": "https://example.test/dead"},
+    )
+    assert resp.status_code == 422
+    assert "could not fetch" in resp.json()["detail"]
+
+
+def test_from_url_malformed_url_is_422(client: TestClient) -> None:
+    # HttpUrl rejects a non-URL before the handler body runs.
+    resp = client.post(
+        "/api/artists/image/override/from-url",
+        params={"name": "ABBA"},
+        json={"url": "not-a-url"},
+    )
+    assert resp.status_code == 422

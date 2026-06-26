@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 
 
 class Artist(BaseModel):
@@ -17,3 +17,9 @@ class ArtistImageOverrideResult(BaseModel):
 
     ok: bool
     content_type: str
+
+
+class ArtistImageUrlOverride(BaseModel):
+    """Request body for setting an artist override from an image URL."""
+
+    url: HttpUrl
