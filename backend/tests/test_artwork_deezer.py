@@ -340,3 +340,26 @@ async def test_resolve_accepts_and_ignores_mbid(client: httpx.AsyncClient) -> No
         data=b"IMG", content_type="image/jpeg"
     )
     assert search.called
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_no_photo_placeholder_returns_none(source: DeezerArtistImageSource) -> None:
+    # A matched artist whose picture 302-redirects to Deezer's blank-avatar
+    # placeholder (empty-string MD5) is a confirmed no-image, NOT transient.
+    blank = (
+        "https://cdn-images.dzcdn.net/images/artist/"
+        "d41d8cd98f00b204e9800998ecf8427e/1000x1000-000000-80-0-0.jpg"
+    )
+    real = "https://cdn-images.dzcdn.net/images/artist/realhash/1000x1000-000000-80-0-0.jpg"
+    respx.get(SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [_hit(name="ABBA", nb_fan=100, nb_album=8, picture_xl=real)]},
+        )
+    )
+    respx.get(real).mock(return_value=httpx.Response(302, headers={"location": blank}))
+    respx.get(blank).mock(
+        return_value=httpx.Response(200, content=b"BLANK", headers={"content-type": "image/jpeg"})
+    )
+    assert await source.resolve("ABBA") is None
