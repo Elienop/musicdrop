@@ -12,7 +12,12 @@ from pydantic import BaseModel
 #: file untouched. skipped_existing = already had lyrics (skip-existing default);
 #: skipped_no_metadata = no usable artist/title to search.
 ItemLyricsStatus = Literal[
-    "found", "not_found", "fetch_failed", "skipped_existing", "skipped_no_metadata"
+    "found",
+    "not_found",
+    "fetch_failed",
+    "skipped_existing",
+    "skipped_checked",
+    "skipped_no_metadata",
 ]
 
 

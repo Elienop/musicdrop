@@ -164,22 +164,29 @@ def _store_lyrics(item: Any, lyrics: Lyrics, *, write: bool) -> bool:
     return written
 
 
-def fetch_item_lyrics(plugin: Any, item: Any, *, force: bool, write: bool) -> ItemLyricsOutcome:
+def fetch_item_lyrics(
+    plugin: Any, item: Any, *, force: bool, write: bool, recheck_misses: bool = False
+) -> ItemLyricsOutcome:
     """Fetch one item's lyrics directly off the plugin's backends.
 
-    Skip-existing unless ``force`` (beets' default). Returns a typed outcome;
-    never raises on a fetch problem — a network error becomes ``fetch_failed``
-    so a batch can keep going.
+    Skip-existing unless ``force``. A track previously searched with no result
+    carries a ``lyrics_checked`` flag and is skipped (``skipped_checked``) on bulk
+    runs unless ``recheck_misses``/``force`` — so instrumentals/obscure tracks
+    aren't re-searched every backfill. A clean ``not_found`` sets the flag; a
+    network error stays ``fetch_failed`` (transient) and is NOT marked.
     """
     from beetsplug.lyrics import search_pairs
 
     item_id = int(item.id)
-    # Skip only when BOTH the lyrics tag AND a sidecar already exist: a track
-    # fetched before this feature has embedded lyrics but no sidecar, so a
-    # backfill re-run must reprocess it to emit the Plex-readable file.
+    # Already complete: has a lyrics tag AND a Plex sidecar.
     if not force and item.lyrics and _has_sidecar(item):
         return ItemLyricsOutcome(
             item_id=item_id, status="skipped_existing", source=None, written=False
+        )
+    # Known-empty: searched before, found nothing. Skip on bulk runs.
+    if not force and not recheck_misses and not item.lyrics and item.get("lyrics_checked"):
+        return ItemLyricsOutcome(
+            item_id=item_id, status="skipped_checked", source=None, written=False
         )
     if not str(item.title or "").strip() or not str(item.artist or "").strip():
         return ItemLyricsOutcome(
@@ -196,8 +203,15 @@ def fetch_item_lyrics(plugin: Any, item: Any, *, force: bool, write: bool) -> It
                     result = backend.fetch(artist, title, album, length)
                 except HTTPNotFoundError:
                     continue  # this pair/backend simply has nothing
-                except requests.exceptions.RequestException:
-                    _log.warning("lyrics fetch failed for item %s", item_id, exc_info=True)
+                except requests.exceptions.RequestException as exc:
+                    # Concise one-liner (str(exc) reads "429 ... Too Many Requests
+                    # for url: ...") instead of a per-item traceback flood.
+                    _log.warning(
+                        "lyrics fetch failed: %s [%s]: %s",
+                        _item_label(item),
+                        getattr(backend, "name", "?"),
+                        exc,
+                    )
                     failed = True
                     continue
                 if result is not None:
@@ -205,7 +219,12 @@ def fetch_item_lyrics(plugin: Any, item: Any, *, force: bool, write: bool) -> It
                     return ItemLyricsOutcome(
                         item_id=item_id, status="found", source=result.backend, written=written
                     )
-    status: ItemLyricsStatus = "fetch_failed" if failed else "not_found"
+    if failed:
+        status: ItemLyricsStatus = "fetch_failed"  # transient — do NOT mark
+    else:
+        status = "not_found"
+        item["lyrics_checked"] = 1  # searched, nothing found (DB-only bookkeeping)
+        item.store()
     return ItemLyricsOutcome(item_id=item_id, status=status, source=None, written=False)
 
 

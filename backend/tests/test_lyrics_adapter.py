@@ -171,6 +171,44 @@ def test_fetch_item_reprocesses_lyrics_without_sidecar(edit_lib: Library) -> Non
     assert item.lyrics == "new"
 
 
+def test_fetch_item_not_found_marks_checked(edit_lib: Library) -> None:
+    from app.beets.lyrics import fetch_item_lyrics
+
+    item = _first_item(edit_lib)
+    out = fetch_item_lyrics(_FakePlugin([_FakeBackend(result=None)]), item, force=False, write=True)
+    assert out.status == "not_found"
+    assert item.get("lyrics_checked")  # persisted "searched, found nothing"
+
+
+def test_fetch_item_fetch_failed_does_not_mark_checked(edit_lib: Library) -> None:
+    from app.beets.lyrics import fetch_item_lyrics
+
+    item = _first_item(edit_lib)
+    plugin = _FakePlugin([_FakeBackend(exc=requests.exceptions.ConnectionError("boom"))])
+    out = fetch_item_lyrics(plugin, item, force=False, write=True)
+    assert out.status == "fetch_failed"
+    assert not item.get("lyrics_checked")  # transient — must be retried next run
+
+
+def test_fetch_item_skips_checked_unless_recheck(edit_lib: Library) -> None:
+    from app.beets.lyrics import fetch_item_lyrics
+
+    item = _first_item(edit_lib)
+    empty = _FakeBackend(result=None)
+    plugin = _FakePlugin([empty])
+
+    fetch_item_lyrics(plugin, item, force=False, write=True)  # marks checked
+    after_first = empty.calls
+
+    out = fetch_item_lyrics(plugin, item, force=False, write=True)
+    assert out.status == "skipped_checked"
+    assert empty.calls == after_first  # backend NOT called again
+
+    out2 = fetch_item_lyrics(plugin, item, force=False, write=True, recheck_misses=True)
+    assert out2.status == "not_found"
+    assert empty.calls > after_first  # recheck re-searches
+
+
 def test_fetch_item_runs_from_worker_thread(edit_lib: Library) -> None:
     from app.beets.lyrics import fetch_item_lyrics
 
