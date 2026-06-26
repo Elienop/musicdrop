@@ -49,9 +49,6 @@ jobs:
             exit 1
           }
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -62,12 +59,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2.+3. Build for amd64+arm64 and push with the computed tag.
+      # 2.+3. Build for amd64 and push with the computed tag. arm64 was dropped:
+      #       it built under QEMU emulation (by far the slowest step, ~minutes to
+      #       hours) and the deploy target is amd64. QEMU setup removed with it.
       - name: Build and push image
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           build-args: |
             APP_VERSION=${{ steps.version.outputs.new_tag }}
