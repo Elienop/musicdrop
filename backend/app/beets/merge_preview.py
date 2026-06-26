@@ -79,20 +79,32 @@ def build_merge_preview(task: Any, found_duplicates: Any) -> MergePreview | None
         if idx is not None:
             import_by_pos[int(idx)] = item
 
-    # normalized release track id -> library item (union across all duplicates)
+    # Library coverage by release track id (works when the matched release and
+    # the library copy share a source) AND by (disc, track number). The latter
+    # rescues a CROSS-source duplicate (e.g. a Deezer import dup'ing a
+    # MusicBrainz library album, where the release track_id and the library
+    # mb_trackid are different id namespaces and never match). Union across all
+    # duplicate albums.
     lib_by_id: dict[str, Any] = {}
+    lib_by_pos: dict[tuple[int, int], Any] = {}
     for album in found_duplicates:
         for it in album.items():
             tid = _norm_id(getattr(it, "mb_trackid", None))
             if tid and tid not in lib_by_id:
                 lib_by_id[tid] = it
+            tnum = getattr(it, "track", None)
+            if tnum is not None:
+                lib_by_pos.setdefault((int(getattr(it, "disc", 1) or 1), int(tnum)), it)
 
     rows: list[DuplicateTrackRow] = []
     in_library = added = upgrade = missing = 0
     for t in tracks:
         pos = int(getattr(t, "index", 0) or 0)
+        disc = int(getattr(t, "medium", 0) or 1)
+        # per-disc track number (single-disc: == index) for the cross-source match
+        track_num = int(getattr(t, "medium_index", None) or pos)
         key = _norm_id(getattr(t, "track_id", None))
-        lib_item = lib_by_id.get(key) if key else None
+        lib_item = (lib_by_id.get(key) if key else None) or lib_by_pos.get((disc, track_num))
         imp_item = import_by_pos.get(pos)
         state = _classify(lib_item, imp_item)
         lib_fmt, lib_kbps = _quality(lib_item)
@@ -100,7 +112,7 @@ def build_merge_preview(task: Any, found_duplicates: Any) -> MergePreview | None
         rows.append(
             DuplicateTrackRow(
                 position=pos,
-                disc=int(getattr(t, "medium", 0) or 1),
+                disc=disc,
                 title=str(getattr(t, "title", "") or ""),
                 state=state,
                 library_format=lib_fmt,
