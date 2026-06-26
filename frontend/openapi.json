@@ -1940,13 +1940,25 @@
       }
     },
     "/api/lyrics/backfill": {
-      "get": {
+      "post": {
         "tags": [
           "lyrics"
         ],
-        "summary": "Get Lyrics Backfill Status",
-        "description": "Poll the backfill (phase + counters). Returns phase=idle when none ran.",
-        "operationId": "get_lyrics_backfill_status_api_lyrics_backfill_get",
+        "summary": "Start Lyrics Backfill",
+        "description": "Start a library-wide backfill. 409 if an import, another backfill, or a\nconfig-apply/edit/cover op is in flight.",
+        "operationId": "start_lyrics_backfill_api_lyrics_backfill_post",
+        "parameters": [
+          {
+            "name": "recheck_misses",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Recheck Misses"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1957,16 +1969,26 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
         }
       },
-      "post": {
+      "get": {
         "tags": [
           "lyrics"
         ],
-        "summary": "Start Lyrics Backfill",
-        "description": "Start a library-wide backfill. 409 if an import, another backfill, or a\nconfig-apply/edit/cover op is in flight.",
-        "operationId": "start_lyrics_backfill_api_lyrics_backfill_post",
+        "summary": "Get Lyrics Backfill Status",
+        "description": "Poll the backfill (phase + counters). Returns phase=idle when none ran.",
+        "operationId": "get_lyrics_backfill_status_api_lyrics_backfill_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -6446,6 +6468,10 @@
             "type": "integer",
             "title": "With Lyrics"
           },
+          "checked_no_lyrics": {
+            "type": "integer",
+            "title": "Checked No Lyrics"
+          },
           "percent": {
             "type": "number",
             "title": "Percent"
@@ -6455,6 +6481,7 @@
         "required": [
           "total",
           "with_lyrics",
+          "checked_no_lyrics",
           "percent"
         ],
         "title": "LyricsCoverage"
