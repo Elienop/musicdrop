@@ -1,3 +1,4 @@
+import hashlib
 from typing import Annotated
 
 import httpx
@@ -85,6 +86,7 @@ async def list_artists_endpoint(
     },
 )
 async def get_artist_image_endpoint(
+    request: Request,
     name: Annotated[str, Query(min_length=1)],
     service: Annotated[ArtistImageService, Depends(get_artist_image_service)],
     handle: Annotated[LibraryHandle, Depends(get_library)],
@@ -100,11 +102,16 @@ async def get_artist_image_endpoint(
         raise HTTPException(status_code=404, detail="Artist image not found")
 
     image_bytes, mime = result
-    return Response(
-        content=image_bytes,
-        media_type=mime,
-        headers={"Cache-Control": "public, max-age=86400"},
-    )
+    # Revalidate every time (no max-age) so a freshly-set override shows up
+    # immediately — no hard refresh, and correct even for consumers that don't
+    # pass the ?v= buster (the roster cards). The content-hash ETag keeps that
+    # revalidation cheap: an unchanged portrait returns a bodiless 304.
+    etag = f'"{hashlib.sha256(image_bytes).hexdigest()}"'
+    cache_headers = {"Cache-Control": "no-cache", "ETag": etag}
+    if_none_match = request.headers.get("if-none-match")
+    if if_none_match is not None and etag in {t.strip() for t in if_none_match.split(",")}:
+        return Response(status_code=304, headers=cache_headers)
+    return Response(content=image_bytes, media_type=mime, headers=cache_headers)
 
 
 @router.get("/artists/image/settings", response_model=ArtistImageSettings)
