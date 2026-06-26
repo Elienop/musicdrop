@@ -115,7 +115,7 @@ def test_sweep_processes_all_items_and_finishes_done(edit_lib: Library, tmp_path
         delay=0.0,
         write=False,
         fetch_one=fake_fetch_one,
-        make_plugin=lambda: object(),
+        make_plugin=lambda **_: object(),
     )
 
     s = reg.state()
@@ -143,7 +143,7 @@ def test_sweep_honours_stop(edit_lib: Library, tmp_path: Path) -> None:
         delay=0.0,
         write=False,
         fetch_one=fake_fetch_one,
-        make_plugin=lambda: object(),
+        make_plugin=lambda **_: object(),
     )
     s = reg.state()
     assert s.phase == "stopped"
@@ -157,7 +157,7 @@ def test_sweep_failure_sets_failed_phase(edit_lib: Library, tmp_path: Path) -> N
     reg = LyricsBackfillRegistry()
     reg.start(writes_enabled=False)
 
-    def boom() -> Any:
+    def boom(**_: Any) -> Any:
         raise RuntimeError("kaboom")
 
     sweep(reg, make_test_handle(edit_lib, tmp_path), delay=0.0, write=False, make_plugin=boom)
@@ -276,7 +276,7 @@ def test_sweep_album_scope_only_touches_that_album(edit_lib: Library, tmp_path: 
         write=False,
         album_id=target_id,
         fetch_one=fake_fetch_one,
-        make_plugin=lambda: object(),
+        make_plugin=lambda **_: object(),
     )
     s = reg.state()
     assert s.phase == "done"
@@ -319,7 +319,7 @@ def test_sweep_threads_recheck_misses(edit_lib: Library, tmp_path: Path) -> None
         write=False,
         recheck_misses=True,
         fetch_one=fake_fetch_one,
-        make_plugin=lambda: object(),
+        make_plugin=lambda **_: object(),
     )
     assert seen and all(seen)  # every fetch saw recheck_misses=True
 
@@ -347,7 +347,65 @@ def test_sweep_logs_end_summary(
             delay=0.0,
             write=False,
             fetch_one=fake_fetch_one,
-            make_plugin=lambda: object(),
+            make_plugin=lambda **_: object(),
         )
     assert "sweep done" in caplog.text
     assert "found" in caplog.text  # per-status tally present
+
+
+def test_sweep_library_scope_queries_lrclib_only(edit_lib: Library, tmp_path: Path) -> None:
+    from app.lyrics_jobs.registry import LyricsBackfillRegistry
+    from app.lyrics_jobs.runner import sweep
+
+    reg = LyricsBackfillRegistry()
+    reg.start(writes_enabled=False)
+    seen: dict[str, bool] = {}
+
+    def spy_make_plugin(*, lrclib_only: bool = False) -> object:
+        seen["lrclib_only"] = lrclib_only
+        return object()
+
+    def fake_fetch_one(
+        plugin: Any, item: Any, *, force: bool, write: bool, recheck_misses: bool = False
+    ) -> ItemLyricsOutcome:
+        return _outcome("found")
+
+    sweep(  # album_id=None -> library scope
+        reg,
+        make_test_handle(edit_lib, tmp_path),
+        delay=0.0,
+        write=False,
+        fetch_one=fake_fetch_one,
+        make_plugin=spy_make_plugin,
+    )
+    assert seen["lrclib_only"] is True
+
+
+def test_sweep_album_scope_keeps_genius(edit_lib: Library, tmp_path: Path) -> None:
+    from app.lyrics_jobs.registry import LyricsBackfillRegistry
+    from app.lyrics_jobs.runner import sweep
+
+    reg = LyricsBackfillRegistry()
+    aid = int(next(iter(edit_lib.albums())).id)
+    reg.start(writes_enabled=False, album_id=aid, scope_label="x")
+    seen: dict[str, bool] = {}
+
+    def spy_make_plugin(*, lrclib_only: bool = False) -> object:
+        seen["lrclib_only"] = lrclib_only
+        return object()
+
+    def fake_fetch_one(
+        plugin: Any, item: Any, *, force: bool, write: bool, recheck_misses: bool = False
+    ) -> ItemLyricsOutcome:
+        return _outcome("found")
+
+    sweep(
+        reg,
+        make_test_handle(edit_lib, tmp_path),
+        delay=0.0,
+        write=False,
+        album_id=aid,
+        fetch_one=fake_fetch_one,
+        make_plugin=spy_make_plugin,
+    )
+    assert seen["lrclib_only"] is False

@@ -247,3 +247,16 @@ def test_make_lyrics_plugin_keeps_google_with_key() -> None:
     plugin = make_lyrics_plugin()
     names = [getattr(type(b), "name", None) for b in plugin.backends]
     assert "google" in names
+
+
+def test_make_lyrics_plugin_lrclib_only_drops_genius() -> None:
+    import beets
+
+    from app.beets.lyrics import make_lyrics_plugin
+
+    beets.config["lyrics"]["sources"].set(["lrclib", "genius"])
+
+    # Library sweeps pass lrclib_only=True so a big bulk run never hammers Genius
+    # (which 429s under load); Genius stays for the targeted per-album fetch.
+    plugin = make_lyrics_plugin(lrclib_only=True)
+    assert [getattr(type(b), "name", None) for b in plugin.backends] == ["lrclib"]

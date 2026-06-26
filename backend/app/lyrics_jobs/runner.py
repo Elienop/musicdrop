@@ -38,14 +38,16 @@ def sweep(
     album_id: int | None = None,
     recheck_misses: bool = False,
     fetch_one: Callable[..., ItemLyricsOutcome] = fetch_item_lyrics,
-    make_plugin: Callable[[], Any] = make_lyrics_plugin,  # beets plugin stays opaque
+    make_plugin: Callable[..., Any] = make_lyrics_plugin,  # beets plugin stays opaque
 ) -> None:
     """Run the (library- or album-scoped) sweep to completion. Never raises."""
     try:
         # Bound for the WHOLE loop: the per-item file writes (try_write) must
         # resolve real paths on this worker thread, not just the snapshot.
         with library_paths_context(handle):
-            plugin = make_plugin()
+            # Library sweeps (album_id is None) query LRCLib only — Genius 429s a
+            # big bulk run; it stays available for the targeted per-album fetch.
+            plugin = make_plugin(lrclib_only=album_id is None)
             units = collect_lyrics_units(handle, album_id)
             reg.set_total(len(units))
             scope = "album" if album_id is not None else "library"
