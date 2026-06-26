@@ -103,7 +103,9 @@ def test_sweep_processes_all_items_and_finishes_done(edit_lib: Library, tmp_path
 
     seen: list[int] = []
 
-    def fake_fetch_one(plugin: Any, item: Any, *, force: bool, write: bool) -> ItemLyricsOutcome:
+    def fake_fetch_one(
+        plugin: Any, item: Any, *, force: bool, write: bool, recheck_misses: bool = False
+    ) -> ItemLyricsOutcome:
         seen.append(int(item.id))
         return _outcome("found")
 
@@ -129,7 +131,9 @@ def test_sweep_honours_stop(edit_lib: Library, tmp_path: Path) -> None:
     reg = LyricsBackfillRegistry()
     reg.start(writes_enabled=False)
 
-    def fake_fetch_one(plugin: Any, item: Any, *, force: bool, write: bool) -> ItemLyricsOutcome:
+    def fake_fetch_one(
+        plugin: Any, item: Any, *, force: bool, write: bool, recheck_misses: bool = False
+    ) -> ItemLyricsOutcome:
         reg.request_stop()  # stop after the first item
         return _outcome("found")
 
@@ -261,7 +265,7 @@ def test_sweep_album_scope_only_touches_that_album(edit_lib: Library, tmp_path: 
     reg.start(writes_enabled=False, album_id=target_id, scope_label="Radiohead — In Rainbows")
 
     def fake_fetch_one(
-        plugin: object, item: object, *, force: bool, write: bool
+        plugin: object, item: object, *, force: bool, write: bool, recheck_misses: bool = False
     ) -> ItemLyricsOutcome:
         return _outcome("found")
 
@@ -292,3 +296,58 @@ def test_lyrics_coverage_counts_checked_no_lyrics(edit_lib: Library) -> None:
     assert cov.total == 3
     assert cov.with_lyrics == 1
     assert cov.checked_no_lyrics == 1
+
+
+def test_sweep_threads_recheck_misses(edit_lib: Library, tmp_path: Path) -> None:
+    from app.lyrics_jobs.registry import LyricsBackfillRegistry
+    from app.lyrics_jobs.runner import sweep
+
+    reg = LyricsBackfillRegistry()
+    reg.start(writes_enabled=False)
+    seen: list[bool] = []
+
+    def fake_fetch_one(
+        plugin: Any, item: Any, *, force: bool, write: bool, recheck_misses: bool = False
+    ) -> ItemLyricsOutcome:
+        seen.append(recheck_misses)
+        return _outcome("found")
+
+    sweep(
+        reg,
+        make_test_handle(edit_lib, tmp_path),
+        delay=0.0,
+        write=False,
+        recheck_misses=True,
+        fetch_one=fake_fetch_one,
+        make_plugin=lambda: object(),
+    )
+    assert seen and all(seen)  # every fetch saw recheck_misses=True
+
+
+def test_sweep_logs_end_summary(
+    edit_lib: Library, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    from app.lyrics_jobs.registry import LyricsBackfillRegistry
+    from app.lyrics_jobs.runner import sweep
+
+    reg = LyricsBackfillRegistry()
+    reg.start(writes_enabled=False)
+
+    def fake_fetch_one(
+        plugin: Any, item: Any, *, force: bool, write: bool, recheck_misses: bool = False
+    ) -> ItemLyricsOutcome:
+        return _outcome("found")
+
+    with caplog.at_level(logging.INFO, logger="app.lyrics_jobs.runner"):
+        sweep(
+            reg,
+            make_test_handle(edit_lib, tmp_path),
+            delay=0.0,
+            write=False,
+            fetch_one=fake_fetch_one,
+            make_plugin=lambda: object(),
+        )
+    assert "sweep done" in caplog.text
+    assert "found" in caplog.text  # per-status tally present

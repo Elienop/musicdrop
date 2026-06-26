@@ -105,6 +105,14 @@ def make_lyrics_plugin() -> Any:
     return LyricsPlugin()
 
 
+def active_source_names(plugin: Any) -> list[str]:
+    """Source names of a lyrics plugin's resolved backends (e.g. ``["lrclib",
+    "genius"]``). Keeps ``plugin.backends`` access on the adapter side of the
+    boundary so the job runner can log active sources without touching beets.
+    """
+    return [_backend_name(b) for b in getattr(plugin, "backends", [])]
+
+
 def _atomic_write_text(dst: Path, text: str) -> None:
     """Atomic utf-8 write at 0o644 (text mirror of ``artist_art._atomic_write_bytes``):
     tmp in same dir -> fsync -> chmod 0o644 -> os.replace -> fsync parent dir."""
