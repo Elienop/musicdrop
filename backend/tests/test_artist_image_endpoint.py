@@ -82,6 +82,20 @@ def test_matching_if_none_match_returns_304(hit_client: TestClient) -> None:
     assert second.headers["cache-control"] == "no-cache"
 
 
+def test_weak_if_none_match_returns_304(hit_client: TestClient) -> None:
+    # A gzip-enabling reverse proxy (nginx) weakens our strong ETag to W/"...".
+    # The browser echoes that back, and RFC 9110 weak comparison must still match
+    # — otherwise every view re-downloads the image instead of getting a 304.
+    first = hit_client.get("/api/artists/image", params={"name": "ABBA"})
+    weak = "W/" + first.headers["etag"]
+    second = hit_client.get(
+        "/api/artists/image",
+        params={"name": "ABBA"},
+        headers={"If-None-Match": weak},
+    )
+    assert second.status_code == 304
+
+
 def test_stale_if_none_match_returns_fresh_bytes(hit_client: TestClient) -> None:
     # A non-matching validator (e.g. a recycled ?v= URL pointing at new bytes)
     # must return the current image, not a 304 — this is the hard-refresh bug.

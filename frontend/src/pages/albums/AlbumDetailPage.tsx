@@ -90,7 +90,9 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
   const [editingCover, setEditingCover] = useState(false);
   const [coverVersion, setCoverVersion] = useState(0);
 
-  // ?v= cache-busts the rail cover after a cover install.
+  // ?v= forces the rail <img> to re-request after a cover install — a mounted
+  // image with an unchanged src won't refetch even though /cover now revalidates
+  // (ETag) instead of long-caching.
   const coverSrc = `/api/albums/${album.id}/cover${coverVersion ? `?v=${coverVersion}` : ""}`;
 
   // Spec §4 disclosure pattern: opening an inline panel moves focus into it so

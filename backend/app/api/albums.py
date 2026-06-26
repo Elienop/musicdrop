@@ -2,6 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
 
+from app.api.http_cache import revalidating_image_response
 from app.beets.completeness import missing_report_op
 from app.beets.cover import fetch_cover_op, install_cover_op
 from app.beets.delete import delete_album_op
@@ -90,6 +91,7 @@ async def edit_album_endpoint(
 @router.get("/albums/{album_id}/cover")
 async def get_album_cover_endpoint(
     album_id: int,
+    request: Request,
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> Response:
     cover = get_album_cover(handle.lib, album_id)
@@ -97,11 +99,10 @@ async def get_album_cover_endpoint(
         raise HTTPException(status_code=404, detail="Cover not found")
 
     image_bytes, mime = cover
-    return Response(
-        content=image_bytes,
-        media_type=mime,
-        headers={"Cache-Control": "public, max-age=3600"},
-    )
+    # Revalidate every time (no max-age) so a freshly-edited cover shows up
+    # immediately — no hard refresh, and correct even for the roster grid, which
+    # fetches /cover with no ?v= buster. See app.api.http_cache.
+    return revalidating_image_response(request, image_bytes, mime)
 
 
 @router.post("/albums/{album_id}/cover/fetch")

@@ -1,10 +1,10 @@
-import hashlib
 from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
 
 from app.api.albums import get_library
+from app.api.http_cache import revalidating_image_response
 from app.artist_art_jobs.registry import (
     ArtistArtBackfillRegistry,
     artist_art_backfill_active,
@@ -104,14 +104,8 @@ async def get_artist_image_endpoint(
     image_bytes, mime = result
     # Revalidate every time (no max-age) so a freshly-set override shows up
     # immediately — no hard refresh, and correct even for consumers that don't
-    # pass the ?v= buster (the roster cards). The content-hash ETag keeps that
-    # revalidation cheap: an unchanged portrait returns a bodiless 304.
-    etag = f'"{hashlib.sha256(image_bytes).hexdigest()}"'
-    cache_headers = {"Cache-Control": "no-cache", "ETag": etag}
-    if_none_match = request.headers.get("if-none-match")
-    if if_none_match is not None and etag in {t.strip() for t in if_none_match.split(",")}:
-        return Response(status_code=304, headers=cache_headers)
-    return Response(content=image_bytes, media_type=mime, headers=cache_headers)
+    # pass the ?v= buster (the roster cards). See app.api.http_cache.
+    return revalidating_image_response(request, image_bytes, mime)
 
 
 @router.get("/artists/image/settings", response_model=ArtistImageSettings)
