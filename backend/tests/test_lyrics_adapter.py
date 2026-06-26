@@ -217,3 +217,33 @@ def test_fetch_item_runs_from_worker_thread(edit_lib: Library) -> None:
     with edit_lib.music_dir_context(), ThreadPoolExecutor(max_workers=1) as pool:
         out = pool.submit(fetch_item_lyrics, plugin, item, force=False, write=True).result()
     assert out.status == "found"
+
+
+def test_make_lyrics_plugin_drops_keyless_google() -> None:
+    import beets
+
+    from app.beets.lyrics import make_lyrics_plugin
+
+    beets.config["lyrics"]["sources"].set(["lrclib", "google", "genius"])
+    beets.config["lyrics"]["google_API_key"].set(None)
+
+    plugin = make_lyrics_plugin()
+
+    # We pin sources (dropping a keyless google) BEFORE construction, so beets'
+    # "Disabling Google source" warning never fires.
+    assert list(beets.config["lyrics"]["sources"].as_str_seq()) == ["lrclib", "genius"]
+    assert [getattr(type(b), "name", None) for b in plugin.backends] == ["lrclib", "genius"]
+
+
+def test_make_lyrics_plugin_keeps_google_with_key() -> None:
+    import beets
+
+    from app.beets.lyrics import make_lyrics_plugin
+
+    beets.config["lyrics"]["sources"].set(["lrclib", "google"])
+    beets.config["lyrics"]["google_API_key"].set("test-key")
+    beets.config["lyrics"]["google_engine_ID"].set("test-engine")
+
+    plugin = make_lyrics_plugin()
+    names = [getattr(type(b), "name", None) for b in plugin.backends]
+    assert "google" in names

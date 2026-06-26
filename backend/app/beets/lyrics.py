@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import beets
+import confuse
 import requests
 from beets.library import Library
 from beets.util.lyrics import Lyrics
@@ -53,16 +54,52 @@ def writes_enabled() -> bool:
     return bool(should_write(None))
 
 
-def make_lyrics_plugin() -> Any:
-    """Throwaway LyricsPlugin with the import stage off + synced lyrics on.
+def _backend_name(backend: Any) -> str:
+    """A lyrics backend's source name (e.g. ``"lrclib"``).
 
-    Returned as an opaque object: callers (the backfill runner) only ferry it
-    back into ``fetch_item_lyrics``, never call beets on it themselves.
-    ``synced: True`` makes LRCLib return timestamped text so we can write a real
-    ``.lrc`` (the runtime overlay does NOT touch the user's config.yaml).
+    beets sets ``name`` on the backend CLASS via its metaclass, so it is read off
+    the type — ``getattr(instance, "name")`` is absent on a backend instance.
     """
-    # Overlay before construct: ``auto`` off (no import stage), ``synced`` on.
-    beets.config["lyrics"].set({"auto": False, "synced": True})
+    return str(getattr(type(backend), "name", None) or "?")
+
+
+def _opt_cfg(view: Any) -> Any | None:
+    """A confuse value, or None when the key is unset (it raises NotFoundError)."""
+    try:
+        return view.get()
+    except confuse.NotFoundError:
+        return None
+
+
+def _resolve_lyrics_sources(lyrics_cfg: Any) -> list[str]:
+    """User-configured lyrics sources, dropping a keyless google.
+
+    ``["lrclib", "genius"]`` when unset (MusicDrop's default — google needs a
+    Custom Search key we don't ship). Read BEFORE LyricsPlugin adds its defaults,
+    so both ``sources`` and ``google_API_key`` raise NotFoundError when unset —
+    both accesses are guarded.
+    """
+    try:
+        configured = list(lyrics_cfg["sources"].as_str_seq())
+    except confuse.NotFoundError:
+        configured = []
+    if not configured:
+        return ["lrclib", "genius"]
+    if "google" in configured and not _opt_cfg(lyrics_cfg["google_API_key"]):
+        return [s for s in configured if s != "google"]
+    return configured
+
+
+def make_lyrics_plugin() -> Any:
+    """Throwaway LyricsPlugin with the import stage off, synced lyrics on, and a
+    keyless google dropped from sources (so beets' 'Disabling Google source'
+    warning never fires). The runtime overlay does NOT touch the user's
+    config.yaml; ``synced: True`` makes LRCLib return timestamped text for a real
+    ``.lrc``.
+    """
+    lyrics_cfg = beets.config["lyrics"]
+    sources = _resolve_lyrics_sources(lyrics_cfg)
+    lyrics_cfg.set({"auto": False, "synced": True, "sources": sources})
     from beetsplug.lyrics import LyricsPlugin
 
     return LyricsPlugin()
@@ -209,7 +246,7 @@ def fetch_item_lyrics(
                     _log.warning(
                         "lyrics fetch failed: %s [%s]: %s",
                         _item_label(item),
-                        getattr(backend, "name", "?"),
+                        _backend_name(backend),
                         exc,
                     )
                     failed = True
