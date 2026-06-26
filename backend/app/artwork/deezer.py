@@ -31,6 +31,10 @@ from app.artwork.source import ResolvedImage, TransientSourceError
 
 _SEARCH_URL = "https://api.deezer.com/search/artist"
 
+# Deezer serves a no-photo artist's picture URL as a 302 to this blank-avatar
+# placeholder (the hash is the MD5 of the empty string). Treat it as no-match.
+_NO_PHOTO_PLACEHOLDER = "d41d8cd98f00b204e9800998ecf8427e"
+
 
 class DeezerArtistImageSource:
     def __init__(self, *, client: httpx.AsyncClient, search_limit: int) -> None:
@@ -58,7 +62,9 @@ class DeezerArtistImageSource:
         if not url:
             return None
 
-        return await download_image(self._client, url)
+        return await download_image(
+            self._client, url, reject_url_substrings=(_NO_PHOTO_PLACEHOLDER,)
+        )
 
     async def _search(self, name: str) -> list[dict[str, Any]]:
         try:
