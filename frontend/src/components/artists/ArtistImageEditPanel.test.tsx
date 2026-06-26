@@ -5,10 +5,12 @@ import { ArtistImageEditPanel } from "@/components/artists/ArtistImageEditPanel"
 
 const uploadMutate = vi.fn();
 const resetMutate = vi.fn();
+const setFromUrlMutate = vi.fn();
 
 vi.mock("@/api/useArtistImage", () => ({
   useUploadArtistImageOverride: () => ({ mutate: uploadMutate, isPending: false, isError: false, error: null }),
   useResetArtistImageOverride: () => ({ mutate: resetMutate, isPending: false, isError: false, error: null }),
+  useSetArtistImageFromUrl: () => ({ mutate: setFromUrlMutate, isPending: false, isError: false, error: null }),
 }));
 
 beforeEach(() => {
@@ -43,5 +45,14 @@ describe("ArtistImageEditPanel", () => {
     render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /reset to auto/i }));
     expect(resetMutate).toHaveBeenCalled();
+  });
+
+  it("sets the image from a pasted URL", () => {
+    render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/image url/i), {
+      target: { value: "https://example.test/a.jpg" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^set$/i }));
+    expect(setFromUrlMutate).toHaveBeenCalledWith("https://example.test/a.jpg", expect.anything());
   });
 });

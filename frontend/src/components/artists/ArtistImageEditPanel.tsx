@@ -2,8 +2,13 @@ import { useEffect, useRef, useState } from "react";
 
 import { Error as ErrorIcon, Reset, Upload } from "@/components/icons";
 
-import { useResetArtistImageOverride, useUploadArtistImageOverride } from "@/api/useArtistImage";
+import {
+  useResetArtistImageOverride,
+  useSetArtistImageFromUrl,
+  useUploadArtistImageOverride,
+} from "@/api/useArtistImage";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 const ACCEPTED_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const MAX_BYTES = 10 * 1024 * 1024;
@@ -25,6 +30,8 @@ export function ArtistImageEditPanel({
   const [pickError, setPickError] = useState<string | null>(null);
   const upload = useUploadArtistImageOverride(name);
   const reset = useResetArtistImageOverride(name);
+  const fromUrl = useSetArtistImageFromUrl(name);
+  const [url, setUrl] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -71,35 +78,79 @@ export function ArtistImageEditPanel({
     });
   };
 
+  const onSetFromUrl = () => {
+    fromUrl.mutate(url.trim(), {
+      onSuccess: () => {
+        onSaved();
+        onClose();
+      },
+    });
+  };
+
   return (
     <section aria-label="Edit artist image" className="flex flex-col gap-3 rounded-lg border p-4">
       <p className="text-muted-foreground text-sm">
         Upload a custom portrait for {name}, or reset to the automatic one.
       </p>
       {!pending && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
-            <Upload className="size-4" aria-hidden="true" /> Upload an image…
-          </Button>
-          <Button variant="secondary" onClick={onReset} disabled={reset.isPending}>
-            <Reset className="size-4" aria-hidden="true" />
-            {reset.isPending ? "Resetting…" : "Reset to auto"}
-          </Button>
-          <Button variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/png,image/jpeg,image/gif,image/webp"
-            aria-label="Upload artist image"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) onPickFile(f);
-              e.target.value = "";
-            }}
-          />
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
+              <Upload className="size-4" aria-hidden="true" /> Upload an image…
+            </Button>
+            <Button variant="secondary" onClick={onReset} disabled={reset.isPending}>
+              <Reset className="size-4" aria-hidden="true" />
+              {reset.isPending ? "Resetting…" : "Reset to auto"}
+            </Button>
+            <Button variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              aria-label="Upload artist image"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) onPickFile(f);
+                e.target.value = "";
+              }}
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <label htmlFor="artist-image-url" className="text-muted-foreground text-sm">
+              …or paste an image link
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                id="artist-image-url"
+                type="url"
+                aria-label="Image URL"
+                placeholder="https://…/image.jpg"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                className="min-w-0 flex-1"
+              />
+              <Button onClick={onSetFromUrl} disabled={!url.trim() || fromUrl.isPending}>
+                {fromUrl.isPending ? "Setting…" : "Set"}
+              </Button>
+            </div>
+            {url.trim() && (
+              <img
+                src={url}
+                alt="Image link preview"
+                className="bg-muted size-40 rounded-xl object-cover shadow-sm"
+                onError={(e) => {
+                  e.currentTarget.style.display = "none";
+                }}
+                onLoad={(e) => {
+                  e.currentTarget.style.display = "";
+                }}
+              />
+            )}
+            {fromUrl.isError && <Notice>{fromUrl.error.message}</Notice>}
+          </div>
         </div>
       )}
 

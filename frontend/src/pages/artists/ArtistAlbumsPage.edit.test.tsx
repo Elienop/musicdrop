@@ -31,6 +31,12 @@ vi.mock("@/api/useArtistImage", () => ({
     isError: false,
     error: null,
   }),
+  useSetArtistImageFromUrl: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+    error: null,
+  }),
 }));
 
 // The reorganize header control runs a live status useQuery; stub it so this

@@ -92,3 +92,59 @@ async def test_download_rejects_placeholder_url(client: httpx.AsyncClient) -> No
         client, src, reject_url_substrings=("d41d8cd98f00b204e9800998ecf8427e",)
     )
     assert result is None
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_fetch_image_bytes_returns_body(client: httpx.AsyncClient) -> None:
+    from app.artwork.download import fetch_image_bytes
+
+    respx.get("https://x/a.jpg").mock(
+        return_value=httpx.Response(
+            200, content=b"IMGBYTES", headers={"content-type": "image/jpeg"}
+        )
+    )
+    assert await fetch_image_bytes(client, "https://x/a.jpg") == b"IMGBYTES"
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_fetch_image_bytes_follows_redirect_and_ignores_content_type(
+    client: httpx.AsyncClient,
+) -> None:
+    from app.artwork.download import fetch_image_bytes
+
+    # 302 -> real bytes, served with a NON-image content-type (we trust the bytes).
+    respx.get("https://x/src").mock(
+        return_value=httpx.Response(302, headers={"location": "https://x/dst"})
+    )
+    respx.get("https://x/dst").mock(
+        return_value=httpx.Response(
+            200, content=b"OK", headers={"content-type": "application/octet-stream"}
+        )
+    )
+    assert await fetch_image_bytes(client, "https://x/src") == b"OK"
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_fetch_image_bytes_http_error_raises_valueerror(client: httpx.AsyncClient) -> None:
+    from app.artwork.download import fetch_image_bytes
+
+    respx.get("https://x/500").mock(return_value=httpx.Response(500))
+    with pytest.raises(ValueError):
+        await fetch_image_bytes(client, "https://x/500")
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_fetch_image_bytes_oversize_content_length_raises(client: httpx.AsyncClient) -> None:
+    from app.artwork.download import fetch_image_bytes
+
+    respx.get("https://x/big").mock(
+        return_value=httpx.Response(
+            200, content=b"x", headers={"content-length": str(MAX_IMAGE_BYTES + 1)}
+        )
+    )
+    with pytest.raises(ValueError):
+        await fetch_image_bytes(client, "https://x/big")

@@ -1,5 +1,6 @@
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
 
 from app.api.albums import get_library
@@ -10,6 +11,7 @@ from app.artist_art_jobs.registry import (
 )
 from app.artist_art_jobs.runner import start_backfill as start_art_backfill
 from app.artwork.cache import ArtistImageCache
+from app.artwork.download import fetch_image_bytes
 from app.artwork.images import MAX_IMAGE_BYTES, sniff_image_mime
 from app.artwork.service import ArtistImageService
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
@@ -20,7 +22,12 @@ from app.config import resolve_artist_image_cache_dir
 from app.config import settings as _module_settings
 from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import lyrics_backfill_active
-from app.models.artist import Artist, ArtistImageOverrideResult, ArtistImageSettings
+from app.models.artist import (
+    Artist,
+    ArtistImageOverrideResult,
+    ArtistImageSettings,
+    ArtistImageUrlOverride,
+)
 from app.models.artist_art import ArtistArtBackfillStatus, ArtistArtWriteSettings
 from app.models.delete import DeleteResult
 from app.reorganize_jobs.registry import reorganize_backfill_active
@@ -49,6 +56,12 @@ def get_artist_image_cache(request: Request) -> ArtistImageCache:
     """The process-wide artist-image disk cache, built in the app lifespan."""
     cache: ArtistImageCache = request.app.state.artist_image_cache
     return cache
+
+
+def get_artist_image_http_client(request: Request) -> httpx.AsyncClient:
+    """The shared artist-image httpx client (built in the lifespan). Overridable in tests."""
+    client: httpx.AsyncClient = request.app.state.artist_image_http_client
+    return client
 
 
 def get_artist_art_write_toggle(request: Request) -> ArtistArtWriteToggle:
@@ -128,6 +141,27 @@ async def upload_artist_image_override_endpoint(
     if mime is None:
         raise HTTPException(status_code=422, detail="not a supported image (png/jpeg/gif/webp)")
     cache.write_override(name, image_bytes, mime)
+    return ArtistImageOverrideResult(ok=True, content_type=mime)
+
+
+@router.post("/artists/image/override/from-url", response_model=ArtistImageOverrideResult)
+async def set_artist_image_override_from_url_endpoint(
+    body: ArtistImageUrlOverride,
+    name: Annotated[str, Query(min_length=1)],
+    cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
+    http_client: Annotated[httpx.AsyncClient, Depends(get_artist_image_http_client)],
+) -> ArtistImageOverrideResult:
+    try:
+        data = await fetch_image_bytes(http_client, str(body.url))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    mime = sniff_image_mime(data)
+    if mime is None:
+        raise HTTPException(
+            status_code=422,
+            detail="that link is not a supported image (png/jpeg/gif/webp)",
+        )
+    cache.write_override(name, data, mime)
     return ArtistImageOverrideResult(ok=True, content_type=mime)
 
 

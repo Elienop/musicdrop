@@ -259,6 +259,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/artists/image/override/from-url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set Artist Image Override From Url Endpoint */
+        post: operations["set_artist_image_override_from_url_endpoint_api_artists_image_override_from_url_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/artists/art/settings": {
         parameters: {
             query?: never;
@@ -1675,6 +1692,17 @@ export interface components {
         ArtistImageSettings: {
             /** Enabled */
             enabled: boolean;
+        };
+        /**
+         * ArtistImageUrlOverride
+         * @description Request body for setting an artist override from an image URL.
+         */
+        ArtistImageUrlOverride: {
+            /**
+             * Url
+             * Format: uri
+             */
+            url: string;
         };
         /** BankBulkDeleteRequest */
         BankBulkDeleteRequest: {
@@ -4050,6 +4078,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_artist_image_override_from_url_endpoint_api_artists_image_override_from_url_post: {
+        parameters: {
+            query: {
+                name: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ArtistImageUrlOverride"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtistImageOverrideResult"];
+                };
             };
             /** @description Validation Error */
             422: {

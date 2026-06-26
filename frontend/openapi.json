@@ -764,6 +764,59 @@
         }
       }
     },
+    "/api/artists/image/override/from-url": {
+      "post": {
+        "tags": [
+          "artists"
+        ],
+        "summary": "Set Artist Image Override From Url Endpoint",
+        "operationId": "set_artist_image_override_from_url_endpoint_api_artists_image_override_from_url_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtistImageUrlOverride"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtistImageOverrideResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/artists/art/settings": {
       "get": {
         "tags": [
@@ -4272,6 +4325,23 @@
         ],
         "title": "ArtistImageSettings",
         "description": "The artist-image feature on/off flag (GET + PUT body + PUT response)."
+      },
+      "ArtistImageUrlOverride": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "maxLength": 2083,
+            "minLength": 1,
+            "format": "uri",
+            "title": "Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "title": "ArtistImageUrlOverride",
+        "description": "Request body for setting an artist override from an image URL."
       },
       "BankBulkDeleteRequest": {
         "properties": {

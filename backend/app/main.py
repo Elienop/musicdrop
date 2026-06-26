@@ -173,6 +173,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
         },
     )
+    app.state.artist_image_http_client = http_client
     # The write toggle ALSO enables fetching (one switch): the engine resolves
     # portraits whenever EITHER the image toggle OR the write toggle is on.
     app.state.artist_image_service = _build_artist_image_service(

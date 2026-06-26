@@ -48,3 +48,26 @@ async def download_image(
         raise TransientSourceError("image exceeds size limit")
 
     return ResolvedImage(data=data, content_type=content_type)
+
+
+async def fetch_image_bytes(client: httpx.AsyncClient, url: str) -> bytes:
+    """Fetch a USER-supplied image URL as raw bytes (follows redirects, size-capped).
+
+    Distinct from ``download_image`` (trusted source CDNs, validated by Content-Type
+    header): a pasted URL may carry a wrong/missing content-type, so this returns raw
+    bytes and the caller validates them with ``sniff_image_mime`` (magic bytes), exactly
+    how the upload endpoint validates an uploaded file. Raises ``ValueError`` on a
+    non-fetchable or oversize response.
+    """
+    try:
+        response = await client.get(url, follow_redirects=True, timeout=10.0)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise ValueError(f"could not fetch image: {exc}") from exc
+    declared = response.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > MAX_IMAGE_BYTES:
+        raise ValueError("image is too large (max 10 MB)")
+    data = response.content
+    if len(data) > MAX_IMAGE_BYTES:
+        raise ValueError("image is too large (max 10 MB)")
+    return data
