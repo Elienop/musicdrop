@@ -26,17 +26,30 @@ class _FakeItem:
     it defines __eq__ so it's unhashable, and import items key the match mapping)."""
 
     def __init__(
-        self, *, mb_trackid: str | None = None, fmt: str = "FLAC", bitrate: int = 1_000_000
+        self,
+        *,
+        mb_trackid: str | None = None,
+        track: int | None = None,
+        disc: int = 1,
+        fmt: str = "FLAC",
+        bitrate: int = 1_000_000,
     ):
         self.mb_trackid = mb_trackid
+        self.track = track  # beets per-disc track number
+        self.disc = disc
         self.format = fmt  # beets reports e.g. "FLAC"/"MP3"
         self.bitrate = bitrate  # beets stores bitrate in bps
 
 
 def _item(
-    *, mb_trackid: str | None = None, fmt: str = "FLAC", bitrate: int = 1_000_000
+    *,
+    mb_trackid: str | None = None,
+    track: int | None = None,
+    disc: int = 1,
+    fmt: str = "FLAC",
+    bitrate: int = 1_000_000,
 ) -> _FakeItem:
-    return _FakeItem(mb_trackid=mb_trackid, fmt=fmt, bitrate=bitrate)
+    return _FakeItem(mb_trackid=mb_trackid, track=track, disc=disc, fmt=fmt, bitrate=bitrate)
 
 
 def _album(items: list[_FakeItem]) -> SimpleNamespace:
@@ -155,6 +168,35 @@ def test_numeric_release_id_matches_string_mb_trackid() -> None:
     preview = build_merge_preview(_task(tracks, {}), [lib])
     assert preview is not None
     assert preview.rows[0].state == DuplicateTrackState.library_only  # NOT added
+
+
+def test_cross_source_matches_library_by_track_number() -> None:
+    # The import matched a release from a DIFFERENT source than the library copy
+    # (e.g. a Deezer download dup'ing a MusicBrainz library album): the release
+    # track_ids (Deezer) and the library mb_trackids (MB UUIDs) are different id
+    # namespaces and never match. The owned tracks must still be matched by
+    # (disc, track number), not reported as "missing".
+    from app.beets.merge_preview import build_merge_preview
+
+    tracks = [_track("dz-1", 1), _track("dz-2", 2), _track("dz-3", 3)]  # ids != library ids
+    lib = _album(
+        [
+            _item(mb_trackid="mb-uuid-1", track=1),
+            _item(mb_trackid="mb-uuid-2", track=2),
+            _item(mb_trackid="mb-uuid-3", track=3),
+        ]
+    )
+    imp2 = _item(track=2)  # the import brings only track 2
+    preview = build_merge_preview(_task(tracks, {imp2: tracks[1]}), [lib])
+    assert preview is not None
+    assert [r.state for r in preview.rows] == [
+        DuplicateTrackState.library_only,
+        DuplicateTrackState.same,
+        DuplicateTrackState.library_only,
+    ]
+    assert preview.missing_count == 0
+    assert preview.added_count == 0
+    assert preview.in_library_count == 3
 
 
 def test_no_match_returns_none() -> None:
