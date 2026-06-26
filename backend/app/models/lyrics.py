@@ -31,6 +31,7 @@ class ItemLyricsOutcome(BaseModel):
 class LyricsCoverage(BaseModel):
     total: int
     with_lyrics: int
+    checked_no_lyrics: int  # no lyrics, but already searched (lyrics_checked set)
     percent: float  # 0.0-100.0, rounded to 1 dp
 
 

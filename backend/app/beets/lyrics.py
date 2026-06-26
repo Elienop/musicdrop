@@ -326,13 +326,18 @@ async def start_album_lyrics_op(request_obj: Any, album_id: int) -> LyricsBackfi
 
 
 def lyrics_coverage(lib: Library) -> LyricsCoverage:
-    """Count items with vs. without stored lyrics. One DB scan; no network."""
+    """Count items with lyrics vs. known-empty vs. total. One DB scan; no network."""
     with lib.music_dir_context():
         total = 0
         with_lyrics = 0
+        checked_no_lyrics = 0
         for item in lib.items():
             total += 1
             if item.lyrics:
                 with_lyrics += 1
+            elif item.get("lyrics_checked"):
+                checked_no_lyrics += 1
     percent = round(100.0 * with_lyrics / total, 1) if total else 0.0
-    return LyricsCoverage(total=total, with_lyrics=with_lyrics, percent=percent)
+    return LyricsCoverage(
+        total=total, with_lyrics=with_lyrics, checked_no_lyrics=checked_no_lyrics, percent=percent
+    )

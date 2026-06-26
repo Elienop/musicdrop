@@ -13,7 +13,7 @@ from tests.conftest import make_test_handle
 def test_backfill_status_model() -> None:
     from app.models.lyrics import LyricsBackfillStatus, LyricsCoverage
 
-    cov = LyricsCoverage(total=10, with_lyrics=7, percent=70.0)
+    cov = LyricsCoverage(total=10, with_lyrics=7, checked_no_lyrics=2, percent=70.0)
     assert cov.percent == 70.0
 
     status = LyricsBackfillStatus(
@@ -277,3 +277,18 @@ def test_sweep_album_scope_only_touches_that_album(edit_lib: Library, tmp_path: 
     s = reg.state()
     assert s.phase == "done"
     assert s.total == 3 and s.processed == 3  # only the Radiohead album, not the 4th item
+
+
+def test_lyrics_coverage_counts_checked_no_lyrics(edit_lib: Library) -> None:
+    from app.beets.lyrics import lyrics_coverage
+
+    items = sorted(next(iter(edit_lib.albums())).items(), key=lambda it: it.track)
+    items[0].lyrics = "x"
+    items[0].store()
+    items[1]["lyrics_checked"] = 1  # searched, none found
+    items[1].store()
+
+    cov = lyrics_coverage(edit_lib)
+    assert cov.total == 3
+    assert cov.with_lyrics == 1
+    assert cov.checked_no_lyrics == 1
