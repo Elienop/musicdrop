@@ -13,7 +13,9 @@ const baseStatus: LyricsBackfillStatus = {
 let statusData: LyricsBackfillStatus = baseStatus;
 
 vi.mock("@/api/useLyricsBackfill", () => ({
-  useLyricsCoverage: () => ({ data: { total: 10, with_lyrics: 7, percent: 70 } }),
+  useLyricsCoverage: () => ({
+    data: { total: 10, with_lyrics: 7, checked_no_lyrics: 2, percent: 70 },
+  }),
   useLyricsBackfillStatus: () => ({ data: statusData }),
   useStartLyricsBackfill: () => ({ mutate: startMock, isPending: false }),
   useStopLyricsBackfill: () => ({ mutate: vi.fn(), isPending: false }),
@@ -41,6 +43,22 @@ describe("LyricsBackfillPanel", () => {
     expect(screen.getByText(/70%/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /backfill missing lyrics/i }));
     expect(startMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the coverage breakdown", async () => {
+    await renderPanel();
+    expect(screen.getByText(/70%/)).toBeInTheDocument();
+    expect(screen.getByText(/2 with no lyrics found/i)).toBeInTheDocument();
+  });
+
+  it("passes recheckMisses when the checkbox is ticked", async () => {
+    const user = (await import("@testing-library/user-event")).default.setup();
+    await renderPanel();
+    await user.click(
+      screen.getByRole("checkbox", { name: /re-check tracks already found to have no lyrics/i }),
+    );
+    await user.click(screen.getByRole("button", { name: /backfill missing lyrics/i }));
+    expect(startMock).toHaveBeenCalledWith({ recheckMisses: true });
   });
 
   it("shows a done result line and keeps the Backfill button", async () => {

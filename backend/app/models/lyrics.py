@@ -12,7 +12,12 @@ from pydantic import BaseModel
 #: file untouched. skipped_existing = already had lyrics (skip-existing default);
 #: skipped_no_metadata = no usable artist/title to search.
 ItemLyricsStatus = Literal[
-    "found", "not_found", "fetch_failed", "skipped_existing", "skipped_no_metadata"
+    "found",
+    "not_found",
+    "fetch_failed",
+    "skipped_existing",
+    "skipped_checked",
+    "skipped_no_metadata",
 ]
 
 
@@ -26,6 +31,7 @@ class ItemLyricsOutcome(BaseModel):
 class LyricsCoverage(BaseModel):
     total: int
     with_lyrics: int
+    checked_no_lyrics: int  # no lyrics, but already searched (lyrics_checked set)
     percent: float  # 0.0-100.0, rounded to 1 dp
 
 

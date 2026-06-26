@@ -44,8 +44,10 @@ export function useLyricsBackfillStatus() {
 export function useStartLyricsBackfill() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (): Promise<LyricsBackfillStatus> => {
-      const { data, response } = await client.POST("/api/lyrics/backfill");
+    mutationFn: async (vars?: { recheckMisses?: boolean }): Promise<LyricsBackfillStatus> => {
+      const { data, response } = await client.POST("/api/lyrics/backfill", {
+        params: vars?.recheckMisses ? { query: { recheck_misses: true } } : {},
+      });
       if (!response.ok || !data) {
         throw new Error(response.status === 409 ? "A library operation is in progress" : "Backfill failed to start");
       }

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import beets
+import confuse
 import requests
 from beets.library import Library
 from beets.util.lyrics import Lyrics
@@ -53,19 +54,63 @@ def writes_enabled() -> bool:
     return bool(should_write(None))
 
 
-def make_lyrics_plugin() -> Any:
-    """Throwaway LyricsPlugin with the import stage off + synced lyrics on.
+def _backend_name(backend: Any) -> str:
+    """A lyrics backend's source name (e.g. ``"lrclib"``).
 
-    Returned as an opaque object: callers (the backfill runner) only ferry it
-    back into ``fetch_item_lyrics``, never call beets on it themselves.
-    ``synced: True`` makes LRCLib return timestamped text so we can write a real
-    ``.lrc`` (the runtime overlay does NOT touch the user's config.yaml).
+    beets sets ``name`` on the backend CLASS via its metaclass, so it is read off
+    the type — ``getattr(instance, "name")`` is absent on a backend instance.
     """
-    # Overlay before construct: ``auto`` off (no import stage), ``synced`` on.
-    beets.config["lyrics"].set({"auto": False, "synced": True})
+    return str(getattr(type(backend), "name", None) or "?")
+
+
+def _opt_cfg(view: Any) -> Any | None:
+    """A confuse value, or None when the key is unset (it raises NotFoundError)."""
+    try:
+        return view.get()
+    except confuse.NotFoundError:
+        return None
+
+
+def _resolve_lyrics_sources(lyrics_cfg: Any) -> list[str]:
+    """User-configured lyrics sources, dropping a keyless google.
+
+    ``["lrclib", "genius"]`` when unset (MusicDrop's default — google needs a
+    Custom Search key we don't ship). Read BEFORE LyricsPlugin adds its defaults,
+    so both ``sources`` and ``google_API_key`` raise NotFoundError when unset —
+    both accesses are guarded.
+    """
+    try:
+        configured = list(lyrics_cfg["sources"].as_str_seq())
+    except confuse.NotFoundError:
+        configured = []
+    if not configured:
+        return ["lrclib", "genius"]
+    if "google" in configured and not _opt_cfg(lyrics_cfg["google_API_key"]):
+        return [s for s in configured if s != "google"]
+    return configured
+
+
+def make_lyrics_plugin() -> Any:
+    """Throwaway LyricsPlugin with the import stage off, synced lyrics on, and a
+    keyless google dropped from sources (so beets' 'Disabling Google source'
+    warning never fires). The runtime overlay does NOT touch the user's
+    config.yaml; ``synced: True`` makes LRCLib return timestamped text for a real
+    ``.lrc``.
+    """
+    lyrics_cfg = beets.config["lyrics"]
+    sources = _resolve_lyrics_sources(lyrics_cfg)
+    lyrics_cfg.set({"auto": False, "synced": True, "sources": sources})
     from beetsplug.lyrics import LyricsPlugin
 
     return LyricsPlugin()
+
+
+def active_source_names(plugin: Any) -> list[str]:
+    """Source names of a lyrics plugin's resolved backends (e.g. ``["lrclib",
+    "genius"]``). Keeps ``plugin.backends`` access on the adapter side of the
+    boundary so the job runner can log active sources without touching beets.
+    """
+    return [_backend_name(b) for b in getattr(plugin, "backends", [])]
 
 
 def _atomic_write_text(dst: Path, text: str) -> None:
@@ -164,22 +209,29 @@ def _store_lyrics(item: Any, lyrics: Lyrics, *, write: bool) -> bool:
     return written
 
 
-def fetch_item_lyrics(plugin: Any, item: Any, *, force: bool, write: bool) -> ItemLyricsOutcome:
+def fetch_item_lyrics(
+    plugin: Any, item: Any, *, force: bool, write: bool, recheck_misses: bool = False
+) -> ItemLyricsOutcome:
     """Fetch one item's lyrics directly off the plugin's backends.
 
-    Skip-existing unless ``force`` (beets' default). Returns a typed outcome;
-    never raises on a fetch problem — a network error becomes ``fetch_failed``
-    so a batch can keep going.
+    Skip-existing unless ``force``. A track previously searched with no result
+    carries a ``lyrics_checked`` flag and is skipped (``skipped_checked``) on bulk
+    runs unless ``recheck_misses``/``force`` — so instrumentals/obscure tracks
+    aren't re-searched every backfill. A clean ``not_found`` sets the flag; a
+    network error stays ``fetch_failed`` (transient) and is NOT marked.
     """
     from beetsplug.lyrics import search_pairs
 
     item_id = int(item.id)
-    # Skip only when BOTH the lyrics tag AND a sidecar already exist: a track
-    # fetched before this feature has embedded lyrics but no sidecar, so a
-    # backfill re-run must reprocess it to emit the Plex-readable file.
+    # Already complete: has a lyrics tag AND a Plex sidecar.
     if not force and item.lyrics and _has_sidecar(item):
         return ItemLyricsOutcome(
             item_id=item_id, status="skipped_existing", source=None, written=False
+        )
+    # Known-empty: searched before, found nothing. Skip on bulk runs.
+    if not force and not recheck_misses and not item.lyrics and item.get("lyrics_checked"):
+        return ItemLyricsOutcome(
+            item_id=item_id, status="skipped_checked", source=None, written=False
         )
     if not str(item.title or "").strip() or not str(item.artist or "").strip():
         return ItemLyricsOutcome(
@@ -196,8 +248,15 @@ def fetch_item_lyrics(plugin: Any, item: Any, *, force: bool, write: bool) -> It
                     result = backend.fetch(artist, title, album, length)
                 except HTTPNotFoundError:
                     continue  # this pair/backend simply has nothing
-                except requests.exceptions.RequestException:
-                    _log.warning("lyrics fetch failed for item %s", item_id, exc_info=True)
+                except requests.exceptions.RequestException as exc:
+                    # Concise one-liner (str(exc) reads "429 ... Too Many Requests
+                    # for url: ...") instead of a per-item traceback flood.
+                    _log.warning(
+                        "lyrics fetch failed: %s [%s]: %s",
+                        _item_label(item),
+                        _backend_name(backend),
+                        exc,
+                    )
                     failed = True
                     continue
                 if result is not None:
@@ -205,7 +264,12 @@ def fetch_item_lyrics(plugin: Any, item: Any, *, force: bool, write: bool) -> It
                     return ItemLyricsOutcome(
                         item_id=item_id, status="found", source=result.backend, written=written
                     )
-    status: ItemLyricsStatus = "fetch_failed" if failed else "not_found"
+    if failed:
+        status: ItemLyricsStatus = "fetch_failed"  # transient — do NOT mark
+    else:
+        status = "not_found"
+        item["lyrics_checked"] = 1  # searched, nothing found (DB-only bookkeeping)
+        item.store()
     return ItemLyricsOutcome(item_id=item_id, status=status, source=None, written=False)
 
 
@@ -302,18 +366,23 @@ async def start_album_lyrics_op(request_obj: Any, album_id: int) -> LyricsBackfi
         ) from None
     app_settings = getattr(app.state, "settings", None)
     delay = float(getattr(app_settings, "lyrics_backfill_delay_seconds", 0.2))
-    start_backfill(reg, handle, delay=delay, write=write, album_id=album_id)
+    start_backfill(reg, handle, delay=delay, write=write, album_id=album_id, recheck_misses=True)
     return reg.state()
 
 
 def lyrics_coverage(lib: Library) -> LyricsCoverage:
-    """Count items with vs. without stored lyrics. One DB scan; no network."""
+    """Count items with lyrics vs. known-empty vs. total. One DB scan; no network."""
     with lib.music_dir_context():
         total = 0
         with_lyrics = 0
+        checked_no_lyrics = 0
         for item in lib.items():
             total += 1
             if item.lyrics:
                 with_lyrics += 1
+            elif item.get("lyrics_checked"):
+                checked_no_lyrics += 1
     percent = round(100.0 * with_lyrics / total, 1) if total else 0.0
-    return LyricsCoverage(total=total, with_lyrics=with_lyrics, percent=percent)
+    return LyricsCoverage(
+        total=total, with_lyrics=with_lyrics, checked_no_lyrics=checked_no_lyrics, percent=percent
+    )

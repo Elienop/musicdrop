@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -18,6 +18,7 @@ export function LyricsBackfillPanel() {
   const status = useLyricsBackfillStatus();
   const start = useStartLyricsBackfill();
   const stop = useStopLyricsBackfill();
+  const [recheckMisses, setRecheckMisses] = useState(false);
   const phase = status.data?.phase;
   const job = status.data;
   const libraryRunning = phase === "running" && job?.album_id == null;
@@ -35,11 +36,15 @@ export function LyricsBackfillPanel() {
   return (
     <SettingsSection
       title="Lyrics"
-      description={
-        coverage.data
-          ? `Coverage ${coverage.data.percent}% (${coverage.data.with_lyrics} of ${coverage.data.total} tracks)`
-          : undefined
-      }
+      description={(() => {
+        const c = coverage.data;
+        if (!c) return undefined;
+        const parts = [`Coverage ${c.percent}% (${c.with_lyrics} of ${c.total} tracks)`];
+        if (c.checked_no_lyrics > 0) parts.push(`${c.checked_no_lyrics} with no lyrics found`);
+        const left = c.total - c.with_lyrics - c.checked_no_lyrics;
+        if (left > 0) parts.push(`${left} left to check`);
+        return parts.join(" · ");
+      })()}
     >
 
       {libraryRunning && status.data ? (
@@ -60,7 +65,10 @@ export function LyricsBackfillPanel() {
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-3">
-          <Button onClick={() => start.mutate()} disabled={start.isPending || albumFetchRunning}>
+          <Button
+            onClick={() => start.mutate({ recheckMisses })}
+            disabled={start.isPending || albumFetchRunning}
+          >
             {start.isPending ? (
               <>
                 <Spinner className="size-4 animate-spin" aria-hidden="true" /> Starting…
@@ -70,6 +78,15 @@ export function LyricsBackfillPanel() {
             )}
           </Button>
           <span className="text-muted-foreground text-sm">writes tags → Plex reads them</span>
+          <label className="flex w-full items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={recheckMisses}
+              onChange={(e) => setRecheckMisses(e.target.checked)}
+              className="size-4"
+            />
+            Re-check tracks already found to have no lyrics
+          </label>
           {albumFetchRunning && (
             <span className="text-muted-foreground text-sm">A lyrics fetch is in progress.</span>
           )}

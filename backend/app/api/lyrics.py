@@ -33,6 +33,7 @@ async def get_lyrics_coverage(request: Request) -> LyricsCoverage:
 async def start_lyrics_backfill(
     request: Request,
     reg: Annotated[LyricsBackfillRegistry, Depends(get_lyrics_backfill)],
+    recheck_misses: bool = False,
 ) -> LyricsBackfillStatus:
     """Start a library-wide backfill. 409 if an import, another backfill, or a
     config-apply/edit/cover op is in flight."""
@@ -74,7 +75,7 @@ async def start_lyrics_backfill(
     # back to a default (the plan's intent — getattr default covers the absence).
     app_settings = getattr(app.state, "settings", None)
     delay = float(getattr(app_settings, "lyrics_backfill_delay_seconds", 0.2))
-    start_backfill(reg, handle, delay=delay, write=write)
+    start_backfill(reg, handle, delay=delay, write=write, recheck_misses=recheck_misses)
     return reg.state()
 
 
