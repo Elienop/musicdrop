@@ -90,15 +90,21 @@ def _resolve_lyrics_sources(lyrics_cfg: Any) -> list[str]:
     return configured
 
 
-def make_lyrics_plugin() -> Any:
+def make_lyrics_plugin(*, lrclib_only: bool = False) -> Any:
     """Throwaway LyricsPlugin with the import stage off, synced lyrics on, and a
     keyless google dropped from sources (so beets' 'Disabling Google source'
     warning never fires). The runtime overlay does NOT touch the user's
     config.yaml; ``synced: True`` makes LRCLib return timestamped text for a real
     ``.lrc``.
+
+    ``lrclib_only`` pins sources to just LRCLib. Library sweeps use it so a big
+    bulk run never hammers Genius — Genius 429s under load and beets retries each
+    429 slowly, so the run crawls and the misses never resolve. With LRCLib only,
+    a miss is a clean ``not_found`` (fast, and gets marked checked). The per-album
+    fetch leaves it False to keep Genius for targeted use.
     """
     lyrics_cfg = beets.config["lyrics"]
-    sources = _resolve_lyrics_sources(lyrics_cfg)
+    sources = ["lrclib"] if lrclib_only else _resolve_lyrics_sources(lyrics_cfg)
     lyrics_cfg.set({"auto": False, "synced": True, "sources": sources})
     from beetsplug.lyrics import LyricsPlugin
 
