@@ -112,6 +112,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     import_registry.attach_library(
         handle.lib, resolve_trash_dir(settings, handle), bank_dir=get_bank_dir()
     )
+    import_registry.attach_event_broker(app.state.event_broker)
 
     # The acquisition seam drives completed inbox drops through the SAME single
     # import slot (Option A) — constructed AFTER attach_library so it shares that

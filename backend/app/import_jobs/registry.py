@@ -116,8 +116,17 @@ class ImportJobRegistry:
         self._bank_dir: Path | None = None
         self._job: ImportJob | None = None
         self._lock = threading.Lock()
+        self._broker: object | None = None
 
     # ----- wiring -----
+
+    def attach_event_broker(self, broker: object | None) -> None:
+        """Attach the SSE broker so a finished import notifies open tabs.
+
+        ``object`` (not EventBroker) keeps this registry import-light; the only
+        method called is ``publish_library_changed``. None in tests = no-op.
+        """
+        self._broker = broker
 
     def attach_library(
         self,
@@ -201,6 +210,7 @@ class ImportJobRegistry:
         return job.id
 
     def _on_finish(self, job_id: str) -> None:
+        finished = False
         with self._lock:
             if (
                 self._job is not None
@@ -210,6 +220,12 @@ class ImportJobRegistry:
                 self._drain_locked(self._job)
                 self._job.phase = ImportPhase.done
                 self._job.summary = self._summarize(self._job)
+                finished = True
+        # Emit OUTSIDE the lock: a finished import (manual / inbox / bank-apply
+        # all route through here) tells every open tab to refetch. publish is
+        # thread-safe (this runs on the worker thread).
+        if finished and self._broker is not None:
+            self._broker.publish_library_changed()  # type: ignore[attr-defined]  # duck-typed broker
 
     def _on_error(self, job_id: str, message: str) -> None:
         with self._lock:
