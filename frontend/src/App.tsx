@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import { Outlet } from "react-router";
 
 import { useActivity } from "@/api/useActivity";
+import { useEventStream } from "@/api/useEventStream";
 import { ActivityButton } from "@/components/shell/ActivityPopover";
 import { useActivityToasts } from "@/components/shell/activityToasts";
 import { AppToaster } from "@/components/shell/AppToaster";
@@ -26,6 +27,7 @@ import { RouteLoading } from "@/components/system/RouteLoading";
 export function App() {
   const { rows } = useActivity();
   useActivityToasts(rows);
+  useEventStream();
   return (
     // ONE icon weight app-wide: every Phosphor glyph without an explicit
     // `weight` renders LIGHT (nav, status, buttons…). Deliberate overrides

@@ -10,6 +10,23 @@ import { server } from "./msw-server";
 // change). Stub it so those code paths run cleanly under tests.
 vi.stubGlobal("scrollTo", vi.fn());
 
+// jsdom has no EventSource. The app's useEventStream opens one at the shell, so
+// every App-rendering test needs a stand-in. A no-op class is enough here; the
+// dedicated useEventStream test installs its own capturing mock.
+class NoopEventSource {
+  url: string | URL;
+  onopen: ((e: Event) => void) | null = null;
+  onmessage: ((e: MessageEvent) => void) | null = null;
+  onerror: ((e: Event) => void) | null = null;
+  constructor(url: string | URL) {
+    this.url = url;
+  }
+  close(): void {}
+  addEventListener(): void {}
+  removeEventListener(): void {}
+}
+vi.stubGlobal("EventSource", NoopEventSource);
+
 // Node >=22 defines an experimental `localStorage` getter on globalThis that
 // returns undefined unless --localstorage-file is set; under vitest's
 // populateGlobal it shadows jsdom's real localStorage. Replace it with an
