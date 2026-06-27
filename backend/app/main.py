@@ -14,6 +14,7 @@ from app.api.bank import router as bank_router
 from app.api.browse import router as browse_router
 from app.api.config_ import router as config_router
 from app.api.duplicates import router as duplicates_router
+from app.api.events import router as events_router
 from app.api.health import router as health_router
 from app.api.import_ import router as import_router
 from app.api.lyrics import router as lyrics_router
@@ -96,6 +97,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # surface).
     app.state.settings = settings
     app.state.beets_swap_lock = asyncio.Lock()
+
+    from app.events.broker import EventBroker
+
+    app.state.event_broker = EventBroker(loop=asyncio.get_running_loop())
 
     from app.beets.trash import resolve_trash_dir
     from app.import_jobs.registry import registry as import_registry
@@ -215,6 +220,7 @@ app.add_middleware(
 )
 
 app.include_router(health_router, prefix="/api")
+app.include_router(events_router, prefix="/api")
 app.include_router(albums_router, prefix="/api")
 app.include_router(artists_router, prefix="/api")
 app.include_router(browse_router, prefix="/api")
