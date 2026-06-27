@@ -97,7 +97,13 @@ def test_backfill_start_status_stop(
     import app.api.lyrics as lyrics_api
 
     def fake_start_backfill(
-        reg: object, handle: object, *, delay: float, write: bool, recheck_misses: bool = False
+        reg: object,
+        handle: object,
+        *,
+        delay: float,
+        write: bool,
+        recheck_misses: bool = False,
+        on_complete: object | None = None,
     ) -> None:
         reg.set_total(0)  # type: ignore[attr-defined]  # fake reg is the real registry
         reg.finish("done")  # type: ignore[attr-defined]
@@ -139,7 +145,13 @@ def test_library_backfill_passes_recheck_misses(
     seen: dict[str, bool] = {}
 
     def fake_start_backfill(
-        reg: object, handle: object, *, delay: float, write: bool, recheck_misses: bool = False
+        reg: object,
+        handle: object,
+        *,
+        delay: float,
+        write: bool,
+        recheck_misses: bool = False,
+        on_complete: object | None = None,
     ) -> None:
         seen["recheck_misses"] = recheck_misses
         reg.set_total(0)  # type: ignore[attr-defined]
