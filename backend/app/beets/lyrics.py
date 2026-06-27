@@ -265,7 +265,13 @@ def fetch_item_lyrics(
                     )
                     failed = True
                     continue
-                if result is not None:
+                # beets 2.12's LRCLib can return a Lyrics whose ``.text`` is None
+                # (a best candidate with null plainLyrics and synced not selected);
+                # its own ``Lyrics.text_lines`` then does ``None.splitlines()`` and
+                # raises, which would abort the whole backfill on that one track.
+                # Treat empty/blank text as no usable match — fall through to the
+                # next pair/backend and ultimately ``not_found``.
+                if result is not None and (result.text or "").strip():
                     written = _store_lyrics(item, result, write=write)
                     return ItemLyricsOutcome(
                         item_id=item_id, status="found", source=result.backend, written=written
