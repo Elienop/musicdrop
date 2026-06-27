@@ -1,0 +1,51 @@
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from app.events.broker import MAX_QUEUE, EventBroker
+from app.models.events import LibraryChangedEvent
+
+
+def test_event_serializes_to_library_changed() -> None:
+    assert LibraryChangedEvent().model_dump_json() == '{"type":"library:changed"}'
+
+
+@pytest.mark.anyio
+async def test_publish_library_changed_fans_out_to_all_subscribers() -> None:
+    broker = EventBroker(asyncio.get_running_loop())
+    a, b = broker.subscribe(), broker.subscribe()
+    broker.publish_library_changed()
+    assert await asyncio.wait_for(a.get(), 1.0) == '{"type":"library:changed"}'
+    assert await asyncio.wait_for(b.get(), 1.0) == '{"type":"library:changed"}'
+
+
+@pytest.mark.anyio
+async def test_unsubscribe_stops_delivery() -> None:
+    broker = EventBroker(asyncio.get_running_loop())
+    q = broker.subscribe()
+    assert broker.subscriber_count == 1
+    broker.unsubscribe(q)
+    assert broker.subscriber_count == 0
+    broker.publish("x")
+    await asyncio.sleep(0)
+    assert q.empty()
+
+
+@pytest.mark.anyio
+async def test_full_queue_drops_without_raising() -> None:
+    broker = EventBroker(asyncio.get_running_loop())
+    q = broker.subscribe()
+    for _ in range(MAX_QUEUE + 5):
+        broker.publish("x")
+    await asyncio.sleep(0)
+    assert q.qsize() == MAX_QUEUE  # extra events dropped, no exception
+
+
+@pytest.mark.anyio
+async def test_publish_from_worker_thread_arrives_on_loop() -> None:
+    broker = EventBroker(asyncio.get_running_loop())
+    q = broker.subscribe()
+    await asyncio.to_thread(broker.publish, "from-thread")  # not the loop thread
+    assert await asyncio.wait_for(q.get(), 1.0) == "from-thread"
