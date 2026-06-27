@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { QueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
+import { invalidateLibraryContent } from "@/api/useEventStream";
 import type { components } from "@/api/schema";
 
 /** Whole-library duplicate-album report (generated contract). */
@@ -30,20 +30,6 @@ export interface DuplicatesOpError extends Error {
 
 function duplicatesOpError(message: string, status: number, body: unknown): DuplicatesOpError {
   return Object.assign(new Error(message), { status, body, name: "DuplicatesOpError" });
-}
-
-/** A resolve trashes loser albums out of the library, so beyond the
- * ["duplicates", *] reports every cached library surface — album details,
- * grids, roster, browse, search, stats — would keep serving the removed
- * albums for the 30s staleTime window. Refresh them all. */
-function invalidateAfterResolve(queryClient: QueryClient): void {
-  void queryClient.invalidateQueries({ queryKey: ["duplicates"] });
-  void queryClient.invalidateQueries({ queryKey: ["album"] });
-  void queryClient.invalidateQueries({ queryKey: ["albums"] });
-  void queryClient.invalidateQueries({ queryKey: ["artists"] });
-  void queryClient.invalidateQueries({ queryKey: ["browse"] });
-  void queryClient.invalidateQueries({ queryKey: ["search"] });
-  void queryClient.invalidateQueries({ queryKey: ["stats"] });
 }
 
 async function fetchDuplicates(mode: DuplicateMode): Promise<DuplicatesReport> {
@@ -84,7 +70,7 @@ export function useResolveDuplicate() {
       return data;
     },
     onSuccess: () => {
-      invalidateAfterResolve(queryClient);
+      invalidateLibraryContent(queryClient);
     },
   });
 }
@@ -106,7 +92,7 @@ export function useResolveAllDuplicates() {
       return data;
     },
     onSuccess: () => {
-      invalidateAfterResolve(queryClient);
+      invalidateLibraryContent(queryClient);
     },
   });
 }

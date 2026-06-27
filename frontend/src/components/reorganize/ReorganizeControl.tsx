@@ -2,6 +2,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
+import { invalidateLibraryContent } from "@/api/useEventStream";
 import {
   type ReorganizeBackfillStatus,
   type ReorganizeMove,
@@ -127,13 +128,9 @@ export function ReorganizeControl({
       isThis &&
       (phase === "done" || phase === "stopped" || phase === "failed")
     ) {
-      void queryClient.invalidateQueries({ queryKey: ["album"] });
-      void queryClient.invalidateQueries({ queryKey: ["albums"] });
-      if (scope.scope === "library") {
-        void queryClient.invalidateQueries({ queryKey: ["artists"] });
-      }
+      invalidateLibraryContent(queryClient);
     }
-  }, [isThis, phase, scope.scope, queryClient]);
+  }, [isThis, phase, queryClient]);
 
   // A preview with moves opens the inline review; an empty preview shows an
   // inline info note instead (no inline plan, no Done button).

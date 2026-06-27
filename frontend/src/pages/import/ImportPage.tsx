@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
 import { useActiveImport } from "@/api/useActiveImport";
+import { invalidateLibraryContent } from "@/api/useEventStream";
 import type { ImportAlbumSummary, ImportJobState } from "@/api/useImport";
 import {
   ImportConflictError,
@@ -259,11 +260,7 @@ function ImportRun({ jobId }: { jobId: string }) {
   const phase = data?.phase;
   useEffect(() => {
     if (phase !== undefined && isTerminalPhase(phase)) {
-      void queryClient.invalidateQueries({ queryKey: ["albums"] });
-      void queryClient.invalidateQueries({ queryKey: ["artists"] });
-      void queryClient.invalidateQueries({ queryKey: ["browse"] });
-      void queryClient.invalidateQueries({ queryKey: ["search"] });
-      void queryClient.invalidateQueries({ queryKey: ["stats"] });
+      invalidateLibraryContent(queryClient);
     }
   }, [phase, queryClient]);
   // Mounted in every branch (incl. loading) so a screen reader has a stable

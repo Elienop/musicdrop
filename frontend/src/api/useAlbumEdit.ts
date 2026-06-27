@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { client } from "@/api/client";
+import { invalidateLibraryContent } from "@/api/useEventStream";
 import type { components } from "@/api/schema";
 
 type AlbumEditRequest = components["schemas"]["AlbumEditRequest"];
@@ -35,17 +36,12 @@ export function useApplyAlbumEdit(albumId: number) {
       }
       return data;
     },
+    // An edit can change title/artist/year/genre — refresh every library
+    // surface that renders album data, not just the detail page (with the
+    // global 30s staleTime, a stale list would otherwise re-serve the old
+    // values without a background refetch).
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["album", albumId] });
-      // An edit can change title/artist/year/genre — refresh every library
-      // surface that renders album data, not just the detail page (with the
-      // global 30s staleTime, a stale list would otherwise re-serve the old
-      // values without a background refetch).
-      void queryClient.invalidateQueries({ queryKey: ["albums"] });
-      void queryClient.invalidateQueries({ queryKey: ["artists"] });
-      void queryClient.invalidateQueries({ queryKey: ["browse"] });
-      void queryClient.invalidateQueries({ queryKey: ["search"] });
-      void queryClient.invalidateQueries({ queryKey: ["stats"] });
+      invalidateLibraryContent(queryClient);
     },
   });
 }

@@ -19,15 +19,19 @@ const RESOLVE_URL = `${window.location.origin}/api/duplicates/resolve`;
 const RESOLVE_ALL_URL = `${window.location.origin}/api/duplicates/resolve-all`;
 
 /** The query keys a resolve must refresh: the report itself plus every
- * library surface that may have cached the trashed albums. */
+ * library surface that may have cached the trashed albums. A resolve now
+ * routes through the shared invalidateLibraryContent helper, so it refreshes
+ * the full library-content family. */
 const RESOLVE_INVALIDATIONS = [
-  ["duplicates"],
-  ["album"],
   ["albums"],
   ["artists"],
   ["browse"],
   ["search"],
   ["stats"],
+  ["album"],
+  ["duplicates"],
+  ["trash"],
+  ["lyrics"],
 ];
 
 function makeWrapper() {

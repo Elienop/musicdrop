@@ -73,12 +73,15 @@ describe("useApplyAlbumEdit", () => {
     const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
     expect(keys).toEqual(
       expect.arrayContaining([
-        ["album", 7],
+        ["album"],
         ["albums"],
         ["artists"],
         ["browse"],
         ["search"],
         ["stats"],
+        ["duplicates"],
+        ["trash"],
+        ["lyrics"],
       ]),
     );
   });
