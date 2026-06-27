@@ -16,6 +16,7 @@ from app.api.albums import get_library
 from app.artist_art_jobs.registry import artist_art_backfill_active
 from app.beets.library import LibraryHandle, album_exists
 from app.beets.reorganize import album_scope_label, plan_reorganize
+from app.events.emit import emit_library_changed
 from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import lyrics_backfill_active
 from app.models.reorganize import ReorganizeBackfillStatus, ReorganizePlan, ReorganizeScope
@@ -76,8 +77,16 @@ async def start_reorganize(
         reg.start(scope=scope, artist=artist, album_id=None, scope_label=label)
     except RuntimeError:
         raise HTTPException(status.HTTP_409_CONFLICT, "A reorganize is already running") from None
-    handle = request.app.state.beets_library
-    start_backfill(reg, handle, scope=scope, artist=artist, album_id=None)
+    app = request.app
+    handle = app.state.beets_library
+    start_backfill(
+        reg,
+        handle,
+        scope=scope,
+        artist=artist,
+        album_id=None,
+        on_complete=lambda: emit_library_changed(app),
+    )
     return reg.state()
 
 
@@ -96,7 +105,14 @@ async def start_album_reorganize(
         reg.start(scope="album", artist=None, album_id=album_id, scope_label=label)
     except RuntimeError:
         raise HTTPException(status.HTTP_409_CONFLICT, "A reorganize is already running") from None
-    start_backfill(reg, handle, scope="album", artist=None, album_id=album_id)
+    start_backfill(
+        reg,
+        handle,
+        scope="album",
+        artist=None,
+        album_id=album_id,
+        on_complete=lambda: emit_library_changed(request.app),
+    )
     return reg.state()
 
 

@@ -25,8 +25,13 @@ def sweep(
     delay: float = 0.0,
     reorg_album: Callable[..., ReorganizeOutcome] = reorganize_album,
     reorg_singleton: Callable[..., ReorganizeOutcome] = reorganize_singleton,
+    on_complete: Callable[[], None] | None = None,
 ) -> None:
-    """Run the scoped sweep to completion. Never raises."""
+    """Run the scoped sweep to completion. Never raises.
+
+    ``on_complete`` fires once on termination (done/stopped/fail) — a partial
+    run still moved files, so open tabs should refetch.
+    """
     try:
         with library_paths_context(handle):
             albums, singletons = collect_units(
@@ -54,6 +59,9 @@ def sweep(
             reg.finish("done")
     except Exception as exc:  # any crash becomes a failed job, never a lost thread
         reg.fail(str(exc) or exc.__class__.__name__)
+    finally:
+        if on_complete is not None:
+            on_complete()
 
 
 def start_backfill(
@@ -64,11 +72,18 @@ def start_backfill(
     artist: str | None = None,
     album_id: int | None = None,
     delay: float = 0.0,
+    on_complete: Callable[[], None] | None = None,
 ) -> None:
     """Spawn the scoped sweep on a daemon thread (non-blocking)."""
     threading.Thread(
         target=lambda: sweep(
-            reg, handle, scope=scope, artist=artist, album_id=album_id, delay=delay
+            reg,
+            handle,
+            scope=scope,
+            artist=artist,
+            album_id=album_id,
+            delay=delay,
+            on_complete=on_complete,
         ),
         name="musicdrop-reorganize",
         daemon=True,

@@ -39,8 +39,13 @@ def sweep(
     recheck_misses: bool = False,
     fetch_one: Callable[..., ItemLyricsOutcome] = fetch_item_lyrics,
     make_plugin: Callable[..., Any] = make_lyrics_plugin,  # beets plugin stays opaque
+    on_complete: Callable[[], None] | None = None,
 ) -> None:
-    """Run the (library- or album-scoped) sweep to completion. Never raises."""
+    """Run the (library- or album-scoped) sweep to completion. Never raises.
+
+    ``on_complete`` fires once on termination (done/stopped/fail) — a partial
+    run still changed lyrics, so open tabs should refetch.
+    """
     try:
         # Bound for the WHOLE loop: the per-item file writes (try_write) must
         # resolve real paths on this worker thread, not just the snapshot.
@@ -83,6 +88,9 @@ def sweep(
             _log.info("lyrics %s sweep done: %s", scope, dict(tally))
     except Exception as exc:  # any crash becomes a failed job, never a lost thread
         reg.fail(str(exc) or exc.__class__.__name__)
+    finally:
+        if on_complete is not None:
+            on_complete()
 
 
 def start_backfill(
@@ -93,11 +101,18 @@ def start_backfill(
     write: bool,
     album_id: int | None = None,
     recheck_misses: bool = False,
+    on_complete: Callable[[], None] | None = None,
 ) -> None:
     """Spawn the (library- or album-scoped) sweep on a daemon thread (non-blocking)."""
     threading.Thread(
         target=lambda: sweep(
-            reg, handle, delay=delay, write=write, album_id=album_id, recheck_misses=recheck_misses
+            reg,
+            handle,
+            delay=delay,
+            write=write,
+            album_id=album_id,
+            recheck_misses=recheck_misses,
+            on_complete=on_complete,
         ),
         name="musicdrop-lyrics-backfill",
         daemon=True,
