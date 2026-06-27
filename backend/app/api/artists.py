@@ -21,6 +21,7 @@ from app.beets.delete import delete_artist_op
 from app.beets.library import LibraryHandle, list_artists
 from app.config import resolve_artist_image_cache_dir
 from app.config import settings as _module_settings
+from app.events.emit import emit_library_changed
 from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import lyrics_backfill_active
 from app.models.artist import (
@@ -142,11 +143,13 @@ async def upload_artist_image_override_endpoint(
     if mime is None:
         raise HTTPException(status_code=422, detail="not a supported image (png/jpeg/gif/webp)")
     cache.write_override(name, image_bytes, mime)
+    emit_library_changed(request.app)
     return ArtistImageOverrideResult(ok=True, content_type=mime)
 
 
 @router.post("/artists/image/override/from-url", response_model=ArtistImageOverrideResult)
 async def set_artist_image_override_from_url_endpoint(
+    request: Request,
     body: ArtistImageUrlOverride,
     name: Annotated[str, Query(min_length=1)],
     cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
@@ -163,15 +166,18 @@ async def set_artist_image_override_from_url_endpoint(
             detail="that link is not a supported image (png/jpeg/gif/webp)",
         )
     cache.write_override(name, data, mime)
+    emit_library_changed(request.app)
     return ArtistImageOverrideResult(ok=True, content_type=mime)
 
 
 @router.delete("/artists/image/override", status_code=204)
 async def clear_artist_image_override_endpoint(
+    request: Request,
     name: Annotated[str, Query(min_length=1)],
     cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
 ) -> Response:
     cache.clear_override(name)
+    emit_library_changed(request.app)
     return Response(status_code=204)
 
 
@@ -301,4 +307,6 @@ async def delete_artist_endpoint(
     ``name`` is a query param so slashes (e.g. "AC/DC") survive routing. 409
     while a library job is running.
     """
-    return await delete_artist_op(request, name)
+    result = await delete_artist_op(request, name)
+    emit_library_changed(request.app)
+    return result

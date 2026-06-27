@@ -208,6 +208,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await asyncio.sleep(_SHUTDOWN_IMPORT_DRAIN_INTERVAL)
         await http_client.aclose()
         close_library(handle.lib)
+        # Remove the broker before the event loop is torn down so that any
+        # subsequent test that skips the lifespan (and therefore has no broker)
+        # does not find a stale EventBroker whose loop is already closed.
+        del app.state.event_broker
 
 
 app = FastAPI(title=settings.app_name, version=settings.version, lifespan=lifespan)

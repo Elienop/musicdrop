@@ -12,6 +12,7 @@ from app.beets.duplicates import (
     resolve_duplicates_op,
 )
 from app.beets.library import LibraryHandle
+from app.events.emit import emit_library_changed
 from app.models.duplicates import (
     DuplicateMode,
     DuplicatesReport,
@@ -34,9 +35,13 @@ def get_duplicates(
 
 @router.post("/duplicates/resolve", response_model=ResolveResult)
 async def resolve_duplicates(req: ResolveRequest, request: Request) -> ResolveResult:
-    return await resolve_duplicates_op(request, req)
+    result = await resolve_duplicates_op(request, req)
+    emit_library_changed(request.app)
+    return result
 
 
 @router.post("/duplicates/resolve-all", response_model=ResolveAllResult)
 async def resolve_all_duplicates(req: ResolveAllRequest, request: Request) -> ResolveAllResult:
-    return await resolve_all_op(request, req)
+    result = await resolve_all_op(request, req)
+    emit_library_changed(request.app)
+    return result

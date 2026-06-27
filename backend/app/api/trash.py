@@ -26,6 +26,7 @@ from app.beets.trash_manage import (
     resolve_trash_child,
     restore_album,
 )
+from app.events.emit import emit_library_changed
 from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import lyrics_backfill_active
 from app.models.trash import EmptyResult, RestoreRequest, RestoreResult, TrashListing
@@ -76,9 +77,11 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
         handle, dest = _child_or_404(app, body.folder)
         trash_dir = resolve_trash_dir(_settings(app), handle)
         try:
-            return await run_in_threadpool(
+            result = await run_in_threadpool(
                 restore_album, handle.lib, str(dest), trash_dir=trash_dir
             )
+            emit_library_changed(app)
+            return result
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Restore failed: {exc}") from exc
 
@@ -88,7 +91,9 @@ async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> 
     """Permanently remove one trashed album folder. 409 if busy, 404 if not in Trash."""
     _gate()
     _handle, dest = _child_or_404(request.app, folder)
-    return await run_in_threadpool(empty_one, str(dest))
+    result = await run_in_threadpool(empty_one, str(dest))
+    emit_library_changed(request.app)
+    return result
 
 
 @router.delete("/trash/all", response_model=EmptyResult)
@@ -98,4 +103,6 @@ async def empty_trash_all(request: Request) -> EmptyResult:
     _gate()
     handle: LibraryHandle = app.state.beets_library
     trash_dir = resolve_trash_dir(_settings(app), handle)
-    return await run_in_threadpool(empty_all, trash_dir)
+    result = await run_in_threadpool(empty_all, trash_dir)
+    emit_library_changed(app)
+    return result
