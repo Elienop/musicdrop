@@ -26,6 +26,27 @@
         }
       }
     },
+    "/api/events": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Events Endpoint",
+        "operationId": "events_endpoint_api_events_get",
+        "responses": {
+          "200": {
+            "description": "SSE stream of library-change events.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryChangedEvent"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/albums": {
       "get": {
         "tags": [
@@ -6359,6 +6380,19 @@
         ],
         "title": "ItemWriteResult",
         "description": "The per-track outcome of an apply (replaces beets' silent all-or-nothing)."
+      },
+      "LibraryChangedEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "library:changed",
+            "title": "Type",
+            "default": "library:changed"
+          }
+        },
+        "type": "object",
+        "title": "LibraryChangedEvent",
+        "description": "The (only) SSE event today: 'something in the library changed, refetch'."
       },
       "LibraryStats": {
         "properties": {
