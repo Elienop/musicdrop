@@ -105,13 +105,14 @@ async def start_album_reorganize(
         reg.start(scope="album", artist=None, album_id=album_id, scope_label=label)
     except RuntimeError:
         raise HTTPException(status.HTTP_409_CONFLICT, "A reorganize is already running") from None
+    app = request.app
     start_backfill(
         reg,
         handle,
         scope="album",
         artist=None,
         album_id=album_id,
-        on_complete=lambda: emit_library_changed(request.app),
+        on_complete=lambda: emit_library_changed(app),
     )
     return reg.state()
 
