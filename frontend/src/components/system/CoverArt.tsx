@@ -1,6 +1,7 @@
 // frontend/src/components/system/CoverArt.tsx
 import { useEffect, useState } from "react";
 
+import { useAssetVersion } from "@/api/assetVersion";
 import { MusicFallback } from "@/components/icons";
 import { cn } from "@/lib/utils";
 
@@ -29,11 +30,13 @@ export function CoverArt({
   className?: string;
 }) {
   const [failed, setFailed] = useState(false);
+  const assetVersion = useAssetVersion();
 
   // A new src is a new fetch — forget the previous failure (same idiom as
   // ArtistImage's reset-on-version-change), so cache-busted `?v=` reloads
-  // recover from a stale error state.
-  useEffect(() => setFailed(false), [src]);
+  // recover from a stale error state. A cross-tab art:changed bump also retries
+  // a previously-failed cover.
+  useEffect(() => setFailed(false), [src, assetVersion]);
 
   if (src === null || failed) {
     return (
@@ -59,6 +62,7 @@ export function CoverArt({
 
   return (
     <img
+      key={assetVersion}
       data-slot="cover-art"
       src={src}
       alt={alt}
