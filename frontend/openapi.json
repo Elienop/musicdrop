@@ -6385,14 +6385,17 @@
         "properties": {
           "type": {
             "type": "string",
-            "const": "library:changed",
+            "enum": [
+              "library:changed",
+              "art:changed"
+            ],
             "title": "Type",
             "default": "library:changed"
           }
         },
         "type": "object",
         "title": "LibraryChangedEvent",
-        "description": "The (only) SSE event today: 'something in the library changed, refetch'."
+        "description": "An SSE change event telling open tabs to refetch.\n\n``library:changed`` = list/metadata data changed (refetch queries).\n``art:changed`` = image BYTES changed (cover install, artist-image override);\nthe frontend remounts ``<img>`` elements only on this variant so routine\nedits don't flicker the roster."
       },
       "LibraryStats": {
         "properties": {

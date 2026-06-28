@@ -2534,15 +2534,20 @@ export interface components {
         };
         /**
          * LibraryChangedEvent
-         * @description The (only) SSE event today: 'something in the library changed, refetch'.
+         * @description An SSE change event telling open tabs to refetch.
+         *
+         *     ``library:changed`` = list/metadata data changed (refetch queries).
+         *     ``art:changed`` = image BYTES changed (cover install, artist-image override);
+         *     the frontend remounts ``<img>`` elements only on this variant so routine
+         *     edits don't flicker the roster.
          */
         LibraryChangedEvent: {
             /**
              * Type
              * @default library:changed
-             * @constant
+             * @enum {string}
              */
-            type: "library:changed";
+            type: "library:changed" | "art:changed";
         };
         /**
          * LibraryStats
