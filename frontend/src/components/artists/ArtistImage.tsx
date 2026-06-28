@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { useAssetVersion } from "@/api/assetVersion";
 import { useArtistArtSettings } from "@/api/useArtistArt";
 import { useArtistImageSettings } from "@/api/useArtistImage";
 import { cn } from "@/lib/utils";
@@ -49,6 +50,7 @@ export function ArtistImage({
   version?: number;
 }) {
   const [failed, setFailed] = useState(false);
+  const assetVersion = useAssetVersion();
   const imageSettings = useArtistImageSettings();
   const artSettings = useArtistArtSettings();
   // Fetching is on when EITHER the image toggle OR the "write to library" toggle
@@ -59,8 +61,9 @@ export function ArtistImage({
     imageSettings.data?.enabled === false && artSettings.data?.enabled === false;
 
   // A new version (or artist) means the portrait may now exist — clear a stale
-  // error so the <img> is retried instead of stuck on the monogram.
-  useEffect(() => setFailed(false), [name, version]);
+  // error so the <img> is retried instead of stuck on the monogram. A cross-tab
+  // art:changed bump (assetVersion) retries too.
+  useEffect(() => setFailed(false), [name, version, assetVersion]);
 
   if (failed || disabled) {
     return (
@@ -82,6 +85,7 @@ export function ArtistImage({
 
   return (
     <img
+      key={assetVersion}
       src={src}
       alt={decorative ? "" : `${name} portrait`}
       loading="lazy"

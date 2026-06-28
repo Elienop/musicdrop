@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
+import { invalidateLibraryContent } from "@/api/useEventStream";
 import type { components } from "@/api/schema";
 
 export type TrashedAlbum = components["schemas"]["TrashedAlbum"];
@@ -38,7 +39,7 @@ export function useRestoreTrash() {
       if (!response.ok || !data) throw new Error(trashErrorMessage(error));
       return data;
     },
-    onSuccess: () => void qc.invalidateQueries(),
+    onSuccess: () => invalidateLibraryContent(qc),
   });
 }
 

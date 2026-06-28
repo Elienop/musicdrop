@@ -26,6 +26,27 @@
         }
       }
     },
+    "/api/events": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Events Endpoint",
+        "operationId": "events_endpoint_api_events_get",
+        "responses": {
+          "200": {
+            "description": "SSE stream of library-change events.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryChangedEvent"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/albums": {
       "get": {
         "tags": [
@@ -6359,6 +6380,22 @@
         ],
         "title": "ItemWriteResult",
         "description": "The per-track outcome of an apply (replaces beets' silent all-or-nothing)."
+      },
+      "LibraryChangedEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "library:changed",
+              "art:changed"
+            ],
+            "title": "Type",
+            "default": "library:changed"
+          }
+        },
+        "type": "object",
+        "title": "LibraryChangedEvent",
+        "description": "An SSE change event telling open tabs to refetch.\n\n``library:changed`` = list/metadata data changed (refetch queries).\n``art:changed`` = image BYTES changed (cover install, artist-image override);\nthe frontend remounts ``<img>`` elements only on this variant so routine\nedits don't flicker the roster."
       },
       "LibraryStats": {
         "properties": {

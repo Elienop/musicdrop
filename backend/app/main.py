@@ -14,6 +14,7 @@ from app.api.bank import router as bank_router
 from app.api.browse import router as browse_router
 from app.api.config_ import router as config_router
 from app.api.duplicates import router as duplicates_router
+from app.api.events import router as events_router
 from app.api.health import router as health_router
 from app.api.import_ import router as import_router
 from app.api.lyrics import router as lyrics_router
@@ -97,6 +98,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.settings = settings
     app.state.beets_swap_lock = asyncio.Lock()
 
+    from app.events.broker import EventBroker
+
+    app.state.event_broker = EventBroker(loop=asyncio.get_running_loop())
+
     from app.beets.trash import resolve_trash_dir
     from app.import_jobs.registry import registry as import_registry
 
@@ -107,6 +112,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     import_registry.attach_library(
         handle.lib, resolve_trash_dir(settings, handle), bank_dir=get_bank_dir()
     )
+    import_registry.attach_event_broker(app.state.event_broker)
 
     # The acquisition seam drives completed inbox drops through the SAME single
     # import slot (Option A) — constructed AFTER attach_library so it shares that
@@ -202,6 +208,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await asyncio.sleep(_SHUTDOWN_IMPORT_DRAIN_INTERVAL)
         await http_client.aclose()
         close_library(handle.lib)
+        # Remove the broker before the event loop is torn down so that any
+        # subsequent test that skips the lifespan (and therefore has no broker)
+        # does not find a stale EventBroker whose loop is already closed.
+        del app.state.event_broker
 
 
 app = FastAPI(title=settings.app_name, version=settings.version, lifespan=lifespan)
@@ -215,6 +225,7 @@ app.add_middleware(
 )
 
 app.include_router(health_router, prefix="/api")
+app.include_router(events_router, prefix="/api")
 app.include_router(albums_router, prefix="/api")
 app.include_router(artists_router, prefix="/api")
 app.include_router(browse_router, prefix="/api")

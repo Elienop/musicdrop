@@ -1,0 +1,59 @@
+from __future__ import annotations
+
+from typing import cast
+
+from app.beets.import_session import ImportBridge
+from app.events.broker import EventBroker
+from app.import_jobs.registry import ImportJob, ImportJobRegistry
+from app.models.import_api import ImportPhase
+
+
+class _FakeBroker:
+    """Duck-typed broker: the registry only ever calls publish_library_changed.
+
+    Cast to EventBroker at the (now strongly-typed) attach site — the runtime
+    call is unchanged.
+    """
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    def publish_library_changed(self) -> None:
+        self.count += 1
+
+
+def test_on_finish_emits_library_changed_once() -> None:
+    reg = ImportJobRegistry()
+    broker = _FakeBroker()
+    reg.attach_event_broker(cast(EventBroker, broker))
+    reg._job = ImportJob(id="abc", bridge=ImportBridge())  # drive the finish callback
+    reg._on_finish("abc")
+    assert reg._job.phase is ImportPhase.done
+    assert broker.count == 1
+
+
+def test_on_finish_without_broker_does_not_raise() -> None:
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="abc", bridge=ImportBridge())
+    reg._on_finish("abc")  # no broker attached; must be a quiet no-op
+    assert reg._job.phase is ImportPhase.done
+
+
+def test_on_error_emits_library_changed_once() -> None:
+    # Imports apply sequentially, so a partial-then-failed run can have landed
+    # albums; a failed import must notify open tabs too (like reorganize/lyrics).
+    reg = ImportJobRegistry()
+    broker = _FakeBroker()
+    reg.attach_event_broker(cast(EventBroker, broker))
+    reg._job = ImportJob(id="abc", bridge=ImportBridge())
+    reg._on_error("abc", "boom")
+    assert reg._job.phase is ImportPhase.failed
+    assert reg._job.error == "boom"
+    assert broker.count == 1
+
+
+def test_on_error_without_broker_does_not_raise() -> None:
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="abc", bridge=ImportBridge())
+    reg._on_error("abc", "boom")  # no broker attached; must be a quiet no-op
+    assert reg._job.phase is ImportPhase.failed

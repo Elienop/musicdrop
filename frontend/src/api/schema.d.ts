@@ -21,6 +21,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Events Endpoint */
+        get: operations["events_endpoint_api_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/albums": {
         parameters: {
             query?: never;
@@ -2516,6 +2533,23 @@ export interface components {
             error?: string | null;
         };
         /**
+         * LibraryChangedEvent
+         * @description An SSE change event telling open tabs to refetch.
+         *
+         *     ``library:changed`` = list/metadata data changed (refetch queries).
+         *     ``art:changed`` = image BYTES changed (cover install, artist-image override);
+         *     the frontend remounts ``<img>`` elements only on this variant so routine
+         *     edits don't flicker the roster.
+         */
+        LibraryChangedEvent: {
+            /**
+             * Type
+             * @default library:changed
+             * @enum {string}
+             */
+            type: "library:changed" | "art:changed";
+        };
+        /**
          * LibraryStats
          * @description Headline library counts. ``total_bytes`` is an ESTIMATE
          *     (``sum(bitrate * length / 8)``), surfaced with ``size_is_estimate`` on the
@@ -3555,6 +3589,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    events_endpoint_api_events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description SSE stream of library-change events. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryChangedEvent"];
                 };
             };
         };

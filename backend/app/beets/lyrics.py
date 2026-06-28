@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -329,13 +330,19 @@ def _album_scope_label(lib: Library, album_id: int) -> str:
         return label or f"album {album_id}"
 
 
-async def start_album_lyrics_op(request_obj: Any, album_id: int) -> LyricsBackfillStatus:
+async def start_album_lyrics_op(
+    request_obj: Any, album_id: int, on_complete: Callable[[], None] | None = None
+) -> LyricsBackfillStatus:
     """Start an album-scoped lyrics fetch JOB (marching progress); returns its status.
 
     Mirrors the library backfill start: 409 if an import/backfill/other library op
     is in flight, 404 for an unknown album, then spawns the daemon sweep and returns
     immediately (does NOT hold the swap-lock for the fetch). The FE polls
     GET /api/lyrics/backfill.
+
+    ``on_complete`` is forwarded opaquely to the sweep so the API layer can notify
+    open tabs when the fetch finishes; the adapter never imports ``app.events``
+    (CLAUDE.md rule 3 — it only FORWARDS the callback).
     """
     from fastapi import HTTPException
     from fastapi import status as http_status
@@ -378,7 +385,15 @@ async def start_album_lyrics_op(request_obj: Any, album_id: int) -> LyricsBackfi
         ) from None
     app_settings = getattr(app.state, "settings", None)
     delay = float(getattr(app_settings, "lyrics_backfill_delay_seconds", 0.2))
-    start_backfill(reg, handle, delay=delay, write=write, album_id=album_id, recheck_misses=True)
+    start_backfill(
+        reg,
+        handle,
+        delay=delay,
+        write=write,
+        album_id=album_id,
+        recheck_misses=True,
+        on_complete=on_complete,
+    )
     return reg.state()
 
 

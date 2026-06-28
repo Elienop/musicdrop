@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 
 from app.beets.lyrics import lyrics_coverage, writes_enabled
+from app.events.emit import emit_library_changed
 from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import (
     LyricsBackfillRegistry,
@@ -75,7 +76,14 @@ async def start_lyrics_backfill(
     # back to a default (the plan's intent — getattr default covers the absence).
     app_settings = getattr(app.state, "settings", None)
     delay = float(getattr(app_settings, "lyrics_backfill_delay_seconds", 0.2))
-    start_backfill(reg, handle, delay=delay, write=write, recheck_misses=recheck_misses)
+    start_backfill(
+        reg,
+        handle,
+        delay=delay,
+        write=write,
+        recheck_misses=recheck_misses,
+        on_complete=lambda: emit_library_changed(app),
+    )
     return reg.state()
 
 

@@ -555,6 +555,10 @@ describe("ImportPage — terminal states", () => {
           ["browse"],
           ["search"],
           ["stats"],
+          ["album"],
+          ["duplicates"],
+          ["trash"],
+          ["lyrics"],
         ]),
       );
     });
