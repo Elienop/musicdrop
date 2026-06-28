@@ -36,7 +36,10 @@ class EventBroker:
         self.publish(LibraryChangedEvent().model_dump_json())
 
     def publish(self, event: str) -> None:
-        self._loop.call_soon_threadsafe(self._fanout, event)
+        try:
+            self._loop.call_soon_threadsafe(self._fanout, event)
+        except RuntimeError:
+            pass  # loop closed/stopped at shutdown — dropping the event is correct
 
     def _fanout(self, event: str) -> None:
         for q in list(self._subscribers):  # snapshot: safe against mid-iteration change

@@ -28,3 +28,23 @@ def test_on_finish_without_broker_does_not_raise() -> None:
     reg._job = ImportJob(id="abc", bridge=ImportBridge())
     reg._on_finish("abc")  # no broker attached; must be a quiet no-op
     assert reg._job.phase is ImportPhase.done
+
+
+def test_on_error_emits_library_changed_once() -> None:
+    # Imports apply sequentially, so a partial-then-failed run can have landed
+    # albums; a failed import must notify open tabs too (like reorganize/lyrics).
+    reg = ImportJobRegistry()
+    broker = _FakeBroker()
+    reg.attach_event_broker(broker)
+    reg._job = ImportJob(id="abc", bridge=ImportBridge())
+    reg._on_error("abc", "boom")
+    assert reg._job.phase is ImportPhase.failed
+    assert reg._job.error == "boom"
+    assert broker.count == 1
+
+
+def test_on_error_without_broker_does_not_raise() -> None:
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="abc", bridge=ImportBridge())
+    reg._on_error("abc", "boom")  # no broker attached; must be a quiet no-op
+    assert reg._job.phase is ImportPhase.failed

@@ -43,6 +43,7 @@ def test_album_fetch_starts_scoped_job(
         write: bool,
         album_id: int | None = None,
         recheck_misses: bool = False,
+        on_complete: object | None = None,
     ) -> None:
         reg.set_total(0)
         reg.finish("done")
@@ -181,6 +182,7 @@ def test_album_fetch_forces_recheck_misses(
         write: bool,
         album_id: int | None = None,
         recheck_misses: bool = False,
+        on_complete: object | None = None,
     ) -> None:
         seen["recheck_misses"] = recheck_misses
         reg.set_total(0)
@@ -190,4 +192,38 @@ def test_album_fetch_forces_recheck_misses(
     r = lyrics_client.post(f"/api/albums/{_aid(edit_lib)}/lyrics/fetch")
     assert r.status_code == 200
     assert seen["recheck_misses"] is True
+    reset_lyrics_backfill()
+
+
+def test_album_fetch_threads_on_complete(
+    lyrics_client: TestClient, edit_lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The per-album fetch must thread a non-None on_complete callback through to
+    start_backfill so other tabs are notified when the scoped fetch finishes."""
+    import app.lyrics_jobs.runner as runner_mod
+    from app.lyrics_jobs.registry import LyricsBackfillRegistry, reset_lyrics_backfill
+
+    reset_lyrics_backfill()
+    captured: dict[str, object] = {}
+
+    def fake_start_backfill(
+        reg: LyricsBackfillRegistry,
+        handle: object,
+        *,
+        delay: float,
+        write: bool,
+        album_id: int | None = None,
+        recheck_misses: bool = False,
+        on_complete: object | None = None,
+    ) -> None:
+        captured["on_complete"] = on_complete
+        reg.set_total(0)
+        reg.finish("done")
+
+    monkeypatch.setattr(runner_mod, "start_backfill", fake_start_backfill)
+    r = lyrics_client.post(f"/api/albums/{_aid(edit_lib)}/lyrics/fetch")
+    assert r.status_code == 200
+    on_complete = captured["on_complete"]
+    assert on_complete is not None
+    assert callable(on_complete)
     reset_lyrics_backfill()

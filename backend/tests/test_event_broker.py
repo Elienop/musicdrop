@@ -49,3 +49,12 @@ async def test_publish_from_worker_thread_arrives_on_loop() -> None:
     q = broker.subscribe()
     await asyncio.to_thread(broker.publish, "from-thread")  # not the loop thread
     assert await asyncio.wait_for(q.get(), 1.0) == "from-thread"
+
+
+def test_publish_after_loop_closed_does_not_raise() -> None:
+    # A daemon worker can finish AFTER the loop is closed at shutdown;
+    # call_soon_threadsafe would then raise RuntimeError on the worker thread.
+    loop = asyncio.new_event_loop()
+    broker = EventBroker(loop)
+    loop.close()
+    broker.publish("x")  # loop closed/stopped at shutdown — dropped, no raise

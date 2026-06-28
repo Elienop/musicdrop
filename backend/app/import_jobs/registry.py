@@ -228,10 +228,17 @@ class ImportJobRegistry:
             self._broker.publish_library_changed()  # type: ignore[attr-defined]  # duck-typed broker
 
     def _on_error(self, job_id: str, message: str) -> None:
+        matched = False
         with self._lock:
             if self._job is not None and self._job.id == job_id:
                 self._job.phase = ImportPhase.failed
                 self._job.error = message
+                matched = True
+        # Emit OUTSIDE the lock: imports apply sequentially, so a partial-then-
+        # failed run can have landed albums — open tabs must refetch (reorganize
+        # and lyrics emit on their failure paths too). publish is thread-safe.
+        if matched and self._broker is not None:
+            self._broker.publish_library_changed()  # type: ignore[attr-defined]  # duck-typed broker
 
     @staticmethod
     def _is_imported(row: _FeedAlbum) -> bool:
