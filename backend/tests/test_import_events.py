@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+from typing import cast
+
 from app.beets.import_session import ImportBridge
+from app.events.broker import EventBroker
 from app.import_jobs.registry import ImportJob, ImportJobRegistry
 from app.models.import_api import ImportPhase
 
 
 class _FakeBroker:
+    """Duck-typed broker: the registry only ever calls publish_library_changed.
+
+    Cast to EventBroker at the (now strongly-typed) attach site — the runtime
+    call is unchanged.
+    """
+
     def __init__(self) -> None:
         self.count = 0
 
@@ -16,7 +25,7 @@ class _FakeBroker:
 def test_on_finish_emits_library_changed_once() -> None:
     reg = ImportJobRegistry()
     broker = _FakeBroker()
-    reg.attach_event_broker(broker)
+    reg.attach_event_broker(cast(EventBroker, broker))
     reg._job = ImportJob(id="abc", bridge=ImportBridge())  # drive the finish callback
     reg._on_finish("abc")
     assert reg._job.phase is ImportPhase.done
@@ -35,7 +44,7 @@ def test_on_error_emits_library_changed_once() -> None:
     # albums; a failed import must notify open tabs too (like reorganize/lyrics).
     reg = ImportJobRegistry()
     broker = _FakeBroker()
-    reg.attach_event_broker(broker)
+    reg.attach_event_broker(cast(EventBroker, broker))
     reg._job = ImportJob(id="abc", bridge=ImportBridge())
     reg._on_error("abc", "boom")
     assert reg._job.phase is ImportPhase.failed

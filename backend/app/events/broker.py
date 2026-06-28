@@ -35,6 +35,9 @@ class EventBroker:
     def publish_library_changed(self) -> None:
         self.publish(LibraryChangedEvent().model_dump_json())
 
+    def publish_art_changed(self) -> None:
+        self.publish(LibraryChangedEvent(type="art:changed").model_dump_json())
+
     def publish(self, event: str) -> None:
         try:
             self._loop.call_soon_threadsafe(self._fanout, event)

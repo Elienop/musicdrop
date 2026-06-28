@@ -22,6 +22,15 @@ async def test_publish_library_changed_fans_out_to_all_subscribers() -> None:
 
 
 @pytest.mark.anyio
+async def test_publish_art_changed_fans_out_art_changed() -> None:
+    broker = EventBroker(asyncio.get_running_loop())
+    a, b = broker.subscribe(), broker.subscribe()
+    broker.publish_art_changed()
+    assert await asyncio.wait_for(a.get(), 1.0) == '{"type":"art:changed"}'
+    assert await asyncio.wait_for(b.get(), 1.0) == '{"type":"art:changed"}'
+
+
+@pytest.mark.anyio
 async def test_unsubscribe_stops_delivery() -> None:
     broker = EventBroker(asyncio.get_running_loop())
     q = broker.subscribe()

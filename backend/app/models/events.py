@@ -4,6 +4,12 @@ from pydantic import BaseModel
 
 
 class LibraryChangedEvent(BaseModel):
-    """The (only) SSE event today: 'something in the library changed, refetch'."""
+    """An SSE change event telling open tabs to refetch.
 
-    type: Literal["library:changed"] = "library:changed"
+    ``library:changed`` = list/metadata data changed (refetch queries).
+    ``art:changed`` = image BYTES changed (cover install, artist-image override);
+    the frontend remounts ``<img>`` elements only on this variant so routine
+    edits don't flicker the roster.
+    """
+
+    type: Literal["library:changed", "art:changed"] = "library:changed"

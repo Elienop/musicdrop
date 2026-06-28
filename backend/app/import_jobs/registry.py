@@ -18,6 +18,7 @@ from pathlib import Path
 
 from app.beets.import_mapping import embedded_art
 from app.beets.import_session import ImportBridge
+from app.events.broker import EventBroker
 from app.import_jobs.runner import BeetsImportRunner, ImportRunner
 from app.models.bank import BankApplyDirective
 from app.models.import_api import (
@@ -116,17 +117,25 @@ class ImportJobRegistry:
         self._bank_dir: Path | None = None
         self._job: ImportJob | None = None
         self._lock = threading.Lock()
-        self._broker: object | None = None
+        self._broker: EventBroker | None = None
 
     # ----- wiring -----
 
-    def attach_event_broker(self, broker: object | None) -> None:
+    def attach_event_broker(self, broker: EventBroker | None) -> None:
         """Attach the SSE broker so a finished import notifies open tabs.
 
-        ``object`` (not EventBroker) keeps this registry import-light; the only
-        method called is ``publish_library_changed``. None in tests = no-op.
+        None in tests (no lifespan) = a quiet no-op.
         """
         self._broker = broker
+
+    def _notify_changed(self) -> None:
+        """Publish a library-changed event if a broker is attached (no-op else).
+
+        Thread-safe: callers invoke this from the worker thread, OUTSIDE the
+        lock, and ``publish_library_changed`` hops onto the captured loop.
+        """
+        if self._broker is not None:
+            self._broker.publish_library_changed()
 
     def attach_library(
         self,
@@ -224,8 +233,8 @@ class ImportJobRegistry:
         # Emit OUTSIDE the lock: a finished import (manual / inbox / bank-apply
         # all route through here) tells every open tab to refetch. publish is
         # thread-safe (this runs on the worker thread).
-        if finished and self._broker is not None:
-            self._broker.publish_library_changed()  # type: ignore[attr-defined]  # duck-typed broker
+        if finished:
+            self._notify_changed()
 
     def _on_error(self, job_id: str, message: str) -> None:
         matched = False
@@ -237,8 +246,8 @@ class ImportJobRegistry:
         # Emit OUTSIDE the lock: imports apply sequentially, so a partial-then-
         # failed run can have landed albums — open tabs must refetch (reorganize
         # and lyrics emit on their failure paths too). publish is thread-safe.
-        if matched and self._broker is not None:
-            self._broker.publish_library_changed()  # type: ignore[attr-defined]  # duck-typed broker
+        if matched:
+            self._notify_changed()
 
     @staticmethod
     def _is_imported(row: _FeedAlbum) -> bool:

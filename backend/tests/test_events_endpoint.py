@@ -5,12 +5,14 @@ from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import cast
 
+import httpx
 import pytest
-from fastapi import Request
+from fastapi import FastAPI, Request
 from starlette.responses import StreamingResponse
 
 from app.api import events as events_module
 from app.api.events import events_endpoint
+from app.api.events import router as events_router
 from app.events.broker import EventBroker
 
 
@@ -68,3 +70,16 @@ async def test_disconnect_unsubscribes() -> None:
     await asyncio.wait_for(anext(agen), 1.0)  # advance into the loop's try block
     await agen.aclose()  # client disconnect closes the generator -> finally unsubscribes
     assert broker.subscriber_count == 0
+
+
+@pytest.mark.anyio
+async def test_missing_broker_returns_503() -> None:
+    # If the lifespan never set app.state.event_broker, the endpoint must 503
+    # (a normal short response) rather than AttributeError -> 500. The 503 is
+    # raised before any streaming, so a plain client.get won't hang.
+    app = FastAPI()
+    app.include_router(events_router, prefix="/api")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/events")
+    assert resp.status_code == 503

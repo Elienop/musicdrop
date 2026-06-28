@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from starlette.responses import StreamingResponse
 
 from app.events.broker import EventBroker
@@ -29,7 +29,9 @@ HEARTBEAT_SECONDS = 20.0  # < a typical nginx proxy_read_timeout (60s)
     },
 )
 async def events_endpoint(request: Request) -> StreamingResponse:
-    broker: EventBroker = request.app.state.event_broker
+    broker: EventBroker | None = getattr(request.app.state, "event_broker", None)
+    if broker is None:
+        raise HTTPException(status_code=503, detail="Event stream not available")
     queue = broker.subscribe()
 
     async def stream() -> AsyncIterator[str]:
