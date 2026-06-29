@@ -36,6 +36,7 @@ class _ReorganizeJob:
     album_id: int | None = None
     scope_label: str = "library"
     stop_requested: bool = False
+    orphans_trashed: int = 0
 
 
 class ReorganizeRegistry:
@@ -133,6 +134,7 @@ class ReorganizeRegistry:
                     artist=None,
                     album_id=None,
                     scope_label="library",
+                    orphans_trashed=0,
                 )
             return ReorganizeBackfillStatus(
                 phase=job.phase,
@@ -148,6 +150,7 @@ class ReorganizeRegistry:
                 artist=job.artist,
                 album_id=job.album_id,
                 scope_label=job.scope_label,
+                orphans_trashed=job.orphans_trashed,
             )
 
 

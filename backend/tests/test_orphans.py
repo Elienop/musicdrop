@@ -114,3 +114,46 @@ def test_art_only_husk_does_not_break_trash_listing(tmp_path: Path) -> None:
     # list_trashed_albums groups by audio tags; an art-only folder yields no album
     # row (it is skipped), so the album-restore listing stays clean.
     assert list_trashed_albums(trash) == []
+
+
+def test_reorganize_models_carry_orphan_fields() -> None:
+    from app.models.reorganize import (
+        OrphanFolder,
+        ReorganizeBackfillStatus,
+        ReorganizeOutcome,
+        ReorganizePlan,
+    )
+
+    of = OrphanFolder(name="Old", path="Old", file_count=2)
+    plan = ReorganizePlan(
+        scope="library",
+        scope_label="library",
+        total=0,
+        will_move=0,
+        already_in_place=0,
+        moves=[],
+        truncated=False,
+        orphans=[of],
+        orphans_total=1,
+    )
+    assert plan.orphans[0].file_count == 2 and plan.orphans_total == 1
+    out = ReorganizeOutcome(status="moved", label="A — B", source_dir="/m/A/B")
+    assert out.source_dir == "/m/A/B"
+    assert ReorganizeOutcome(status="skipped", label="x").source_dir is None
+    status = ReorganizeBackfillStatus(
+        phase="done",
+        job_id="j",
+        scope="library",
+        total=0,
+        processed=0,
+        moved=0,
+        skipped=0,
+        failed=0,
+        current=None,
+        error=None,
+        artist=None,
+        album_id=None,
+        scope_label="library",
+        orphans_trashed=3,
+    )
+    assert status.orphans_trashed == 3

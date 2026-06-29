@@ -171,6 +171,8 @@ def plan_reorganize(
             already_in_place=total - will_move,
             moves=moves,
             truncated=will_move > len(moves),
+            orphans=[],  # populated by the orphan-sweep wiring in a later task
+            orphans_total=0,
         )
 
 
