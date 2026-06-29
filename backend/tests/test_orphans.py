@@ -72,3 +72,45 @@ def test_seeds_mode_skips_when_parent_keeps_audio(tmp_path: Path) -> None:
     seed = root / "Artist" / "Moved Album"  # pruned, and Artist still has audio
     trash = tmp_path / "trash"
     assert find_orphan_folders(root, seeds=[seed], trash_dir=trash) == []
+
+
+def test_trash_folder_moves_whole_folder(tmp_path: Path) -> None:
+    from app.beets.trash import trash_folder
+
+    husk = tmp_path / "music" / "Old Name"
+    _touch(husk / "artist-poster.jpg")
+    _touch(husk / "artist-background.jpg")
+    trash = tmp_path / "trash"
+
+    dest = trash_folder(husk, trash_dir=trash)
+
+    assert not husk.exists()  # source gone
+    assert dest.parent == trash and dest.name == "Old Name"
+    assert (dest / "artist-poster.jpg").exists()  # reversible: files live in Trash
+
+
+def test_trash_folder_collision_gets_unique_name(tmp_path: Path) -> None:
+    from app.beets.trash import trash_folder
+
+    trash = tmp_path / "trash"
+    (trash / "Old Name").mkdir(parents=True)  # name already taken in Trash
+    husk = tmp_path / "music" / "Old Name"
+    _touch(husk / "cover.jpg")
+
+    dest = trash_folder(husk, trash_dir=trash)
+    assert dest.name == "Old Name (1)"
+    assert (dest / "cover.jpg").exists()
+
+
+def test_art_only_husk_does_not_break_trash_listing(tmp_path: Path) -> None:
+    from app.beets.trash import trash_folder
+    from app.beets.trash_manage import list_trashed_albums
+
+    husk = tmp_path / "music" / "Old Name"
+    _touch(husk / "artist-poster.jpg")  # no audio
+    trash = tmp_path / "trash"
+    trash_folder(husk, trash_dir=trash)
+
+    # list_trashed_albums groups by audio tags; an art-only folder yields no album
+    # row (it is skipped), so the album-restore listing stays clean.
+    assert list_trashed_albums(trash) == []
