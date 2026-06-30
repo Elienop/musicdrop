@@ -7,6 +7,7 @@ three — only one reorganize at a time — and it is mutually exclusive with ev
 other library write (see _gate_busy + the gate sites in edit/cover/config/
 duplicates/import/lyrics/artists)."""
 
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -14,8 +15,10 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.api.albums import get_library
 from app.artist_art_jobs.registry import artist_art_backfill_active
+from app.beets.config_editor import _settings
 from app.beets.library import LibraryHandle, album_exists
 from app.beets.reorganize import album_scope_label, plan_reorganize
+from app.beets.trash import resolve_trash_dir
 from app.events.emit import emit_library_changed
 from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import lyrics_backfill_active
@@ -39,28 +42,46 @@ def _gate_busy(app: object) -> None:
         raise HTTPException(status.HTTP_409_CONFLICT, _BUSY)
 
 
+def _trash_dir(app: object) -> Path:
+    """The configured Trash dir for the orphan sweep (resolved like the trash API)."""
+    handle: LibraryHandle = app.state.beets_library  # type: ignore[attr-defined]  # app duck-typed (object)
+    return resolve_trash_dir(_settings(app), handle)  # type: ignore[arg-type]  # app duck-typed (object)
+
+
 @router.get("/reorganize/preview", response_model=ReorganizePlan)
 async def preview_reorganize(
+    request: Request,
     handle: Annotated[LibraryHandle, Depends(get_library)],
     artist: Annotated[str | None, Query(min_length=1)] = None,
 ) -> ReorganizePlan:
     """Dry run: what would move under the current path config. Read-only."""
     scope: ReorganizeScope = "artist" if artist is not None else "library"
     return await run_in_threadpool(
-        plan_reorganize, handle.lib, scope=scope, artist=artist, album_id=None
+        plan_reorganize,
+        handle.lib,
+        scope=scope,
+        artist=artist,
+        album_id=None,
+        trash_dir=_trash_dir(request.app),
     )
 
 
 @router.get("/albums/{album_id}/reorganize/preview", response_model=ReorganizePlan)
 async def preview_album_reorganize(
     album_id: int,
+    request: Request,
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> ReorganizePlan:
     exists = await run_in_threadpool(album_exists, handle, album_id)
     if not exists:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Album not found")
     return await run_in_threadpool(
-        plan_reorganize, handle.lib, scope="album", artist=None, album_id=album_id
+        plan_reorganize,
+        handle.lib,
+        scope="album",
+        artist=None,
+        album_id=album_id,
+        trash_dir=_trash_dir(request.app),
     )
 
 
@@ -85,6 +106,7 @@ async def start_reorganize(
         scope=scope,
         artist=artist,
         album_id=None,
+        trash_dir=_trash_dir(app),
         on_complete=lambda: emit_library_changed(app),
     )
     return reg.state()
@@ -112,6 +134,7 @@ async def start_album_reorganize(
         scope="album",
         artist=None,
         album_id=album_id,
+        trash_dir=_trash_dir(app),
         on_complete=lambda: emit_library_changed(app),
     )
     return reg.state()

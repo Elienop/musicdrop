@@ -2735,6 +2735,15 @@ export interface components {
             /** Template */
             template: string;
         };
+        /** OrphanFolder */
+        OrphanFolder: {
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+            /** File Count */
+            file_count: number;
+        };
         /**
          * ParkedAlbum
          * @description An album whose match is uncertain and is waiting for a user decision.
@@ -3001,6 +3010,8 @@ export interface components {
             album_id: number | null;
             /** Scope Label */
             scope_label: string;
+            /** Orphans Trashed */
+            orphans_trashed: number;
         };
         /** ReorganizeMove */
         ReorganizeMove: {
@@ -3037,6 +3048,10 @@ export interface components {
             moves: components["schemas"]["ReorganizeMove"][];
             /** Truncated */
             truncated: boolean;
+            /** Orphans */
+            orphans: components["schemas"]["OrphanFolder"][];
+            /** Orphans Total */
+            orphans_total: number;
         };
         /**
          * ReplaceError
