@@ -32,3 +32,14 @@ def test_plan_without_trash_dir_has_no_orphans(reorganize_lib: Library) -> None:
     # Back-compat: existing callers pass no trash_dir -> orphan preview inactive.
     plan = plan_reorganize(reorganize_lib, scope="library", artist=None, album_id=None)
     assert plan.orphans == [] and plan.orphans_total == 0
+
+
+def test_registry_records_orphans() -> None:
+    from app.reorganize_jobs.registry import ReorganizeRegistry
+
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    reg.record_orphans(2)
+    reg.record_orphans(1)
+    reg.finish("done")
+    assert reg.state().orphans_trashed == 3

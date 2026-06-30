@@ -89,6 +89,11 @@ class ReorganizeRegistry:
             else:  # skipped
                 job.skipped += 1
 
+    def record_orphans(self, n: int) -> None:
+        with self._lock:
+            if self._job is not None:
+                self._job.orphans_trashed += n
+
     def set_current(self, label: str | None) -> None:
         with self._lock:
             if self._job is not None:
