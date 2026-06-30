@@ -43,3 +43,24 @@ def test_registry_records_orphans() -> None:
     reg.record_orphans(1)
     reg.finish("done")
     assert reg.state().orphans_trashed == 3
+
+
+def test_sweep_trashes_library_orphans(reorganize_lib: Library, tmp_path: Path) -> None:
+    from app.reorganize_jobs.registry import ReorganizeRegistry
+    from app.reorganize_jobs.runner import sweep
+    from tests.conftest import make_test_handle
+
+    music_dir = Path(os.fsdecode(reorganize_lib.directory))
+    husk = music_dir / "Ghost Artist"
+    husk.mkdir(parents=True, exist_ok=True)
+    (husk / "artist-poster.jpg").write_bytes(b"x")
+    trash = tmp_path / "trash"
+
+    handle = make_test_handle(reorganize_lib, tmp_path)
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    sweep(reg, handle, scope="library", trash_dir=trash)
+
+    assert reg.state().orphans_trashed == 1
+    assert not husk.exists()
+    assert (trash / "Ghost Artist" / "artist-poster.jpg").exists()
