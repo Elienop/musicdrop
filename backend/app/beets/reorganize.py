@@ -12,12 +12,15 @@ library dir and re-expands them via a ContextVar a worker thread does not inheri
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 from beets.util import MoveOperation
 
 from app.beets.library import LibraryHandle
+from app.beets.orphans import find_orphan_folders
 from app.models.reorganize import (
+    OrphanFolder,
     ReorganizeMove,
     ReorganizeOutcome,
     ReorganizePlan,
@@ -141,28 +144,63 @@ def _scope_label(
     return "library"
 
 
+def _orphan_preview(
+    lib: Any,
+    *,
+    scope: ReorganizeScope,
+    moves: list[ReorganizeMove],
+    trash_dir: Path | None,
+) -> tuple[list[OrphanFolder], int]:
+    """Read-only orphan candidates for the preview (no move). Empty when no
+    trash_dir is configured for this call."""
+    if trash_dir is None:
+        return [], 0
+    music_dir = Path(os.fsdecode(lib.directory))
+    if scope == "library":
+        seeds: list[Path] | None = None
+    else:
+        # Seed from the planned source dirs (the dirs that will be vacated).
+        seeds = [Path(m.from_path) for m in moves if m.from_path]
+    folders = find_orphan_folders(music_dir, seeds=seeds, trash_dir=trash_dir)
+    rows: list[OrphanFolder] = []
+    for f in folders[:PREVIEW_ROW_CAP]:
+        try:
+            rel = str(f.relative_to(music_dir))
+        except ValueError:
+            rel = str(f)
+        file_count = sum(1 for _d, _s, files in os.walk(f) for _f in files)
+        rows.append(OrphanFolder(name=f.name, path=rel, file_count=file_count))
+    return rows, len(folders)
+
+
 def plan_reorganize(
-    lib: Any, *, scope: ReorganizeScope, artist: str | None = None, album_id: int | None = None
+    lib: Any,
+    *,
+    scope: ReorganizeScope,
+    artist: str | None = None,
+    album_id: int | None = None,
+    trash_dir: Path | None = None,
 ) -> ReorganizePlan:
-    """Read-only dry run: what would move under the current path config."""
+    """Read-only dry run: what would move under the current path config + (when a
+    trash_dir is given) the audio-empty husks that would be moved to Trash."""
     with lib.music_dir_context():
         albums = _albums_for_scope(lib, scope=scope, artist=artist, album_id=album_id)
         singletons = _singletons_for_scope(lib, scope=scope)
         total = len(albums) + len(singletons)
-        moves: list[ReorganizeMove] = []
-        will_move = 0
+        all_moves: list[ReorganizeMove] = []
         for album in albums:
             m = _describe_album(lib, album)
             if m is not None:
-                will_move += 1
-                if len(moves) < PREVIEW_ROW_CAP:
-                    moves.append(m)
+                all_moves.append(m)
         for item in singletons:
             m = _describe_singleton(lib, item)
             if m is not None:
-                will_move += 1
-                if len(moves) < PREVIEW_ROW_CAP:
-                    moves.append(m)
+                all_moves.append(m)
+        will_move = len(all_moves)
+        moves = all_moves[:PREVIEW_ROW_CAP]
+        orphans, orphans_total = _orphan_preview(
+            lib, scope=scope, moves=all_moves, trash_dir=trash_dir
+        )
         return ReorganizePlan(
             scope=scope,
             scope_label=_scope_label(scope=scope, artist=artist, album_id=album_id, albums=albums),
@@ -171,8 +209,8 @@ def plan_reorganize(
             already_in_place=total - will_move,
             moves=moves,
             truncated=will_move > len(moves),
-            orphans=[],  # populated by the orphan-sweep wiring in a later task
-            orphans_total=0,
+            orphans=orphans,
+            orphans_total=orphans_total,
         )
 
 
@@ -188,9 +226,10 @@ def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
             items = list(album.items())
             if not items or not any(_item_moves(lib, i) for i in items):
                 return ReorganizeOutcome(status="skipped", label=label)
+            source_dir = _commonpath_of_dirs([i.path for i in items])  # before the move
             with lib.transaction():
                 album.move(MoveOperation.MOVE, store=True)
-            return ReorganizeOutcome(status="moved", label=label)
+            return ReorganizeOutcome(status="moved", label=label, source_dir=source_dir or None)
         except (ValueError, OSError) as exc:
             return ReorganizeOutcome(
                 status="failed", label=label, error=str(exc) or exc.__class__.__name__
@@ -204,9 +243,10 @@ def reorganize_singleton(lib: Any, item: Any) -> ReorganizeOutcome:
         try:
             if not _item_moves(lib, item):
                 return ReorganizeOutcome(status="skipped", label=label)
+            source_dir = os.path.dirname(os.fsdecode(item.path))  # before the move
             with lib.transaction():
                 item.move(MoveOperation.MOVE, with_album=False, store=True)
-            return ReorganizeOutcome(status="moved", label=label)
+            return ReorganizeOutcome(status="moved", label=label, source_dir=source_dir or None)
         except (ValueError, OSError) as exc:
             return ReorganizeOutcome(
                 status="failed", label=label, error=str(exc) or exc.__class__.__name__
