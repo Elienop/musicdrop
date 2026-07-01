@@ -102,3 +102,18 @@ def test_status_includes_orphans_trashed(reorg_client: TestClient) -> None:
     r = reorg_client.get("/api/reorganize/status")
     assert r.status_code == 200
     assert "orphans_trashed" in r.json()
+
+
+def test_preview_does_not_list_playlists_export_dir(
+    reorg_client: TestClient, reorganize_lib: Library
+) -> None:
+    import os
+    from pathlib import Path
+
+    music_dir = Path(os.fsdecode(reorganize_lib.directory))
+    (music_dir / ".playlists").mkdir(parents=True, exist_ok=True)
+    (music_dir / ".playlists" / "p1.m3u8").write_text("#EXTM3U\n")
+
+    r = reorg_client.get("/api/reorganize/preview")
+    assert r.status_code == 200
+    assert ".playlists" not in [o["name"] for o in r.json()["orphans"]]

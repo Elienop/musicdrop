@@ -148,20 +148,19 @@ def _orphan_preview(
     lib: Any,
     *,
     scope: ReorganizeScope,
-    moves: list[ReorganizeMove],
     trash_dir: Path | None,
+    ignore_dirs: tuple[Path, ...],
 ) -> tuple[list[OrphanFolder], int]:
-    """Read-only orphan candidates for the preview (no move). Empty when no
-    trash_dir is configured for this call."""
-    if trash_dir is None:
+    """Read-only orphan candidates for the preview (no move). Empty when no trash_dir
+    is configured, and empty for a non-library scope: a scoped run's husks only form
+    DURING the run (post-move), so they are surfaced in the result count, not the
+    pre-move preview. Library scope lists the pre-existing backlog."""
+    if trash_dir is None or scope != "library":
         return [], 0
     music_dir = Path(os.fsdecode(lib.directory))
-    if scope == "library":
-        seeds: list[Path] | None = None
-    else:
-        # Seed from the planned source dirs (the dirs that will be vacated).
-        seeds = [Path(m.from_path) for m in moves if m.from_path]
-    folders = find_orphan_folders(music_dir, seeds=seeds, trash_dir=trash_dir)
+    folders = find_orphan_folders(
+        music_dir, seeds=None, trash_dir=trash_dir, ignore_dirs=ignore_dirs
+    )
     rows: list[OrphanFolder] = []
     for f in folders[:PREVIEW_ROW_CAP]:
         try:
@@ -180,6 +179,7 @@ def plan_reorganize(
     artist: str | None = None,
     album_id: int | None = None,
     trash_dir: Path | None = None,
+    ignore_dirs: tuple[Path, ...] = (),
 ) -> ReorganizePlan:
     """Read-only dry run: what would move under the current path config + (when a
     trash_dir is given) the audio-empty husks that would be moved to Trash."""
@@ -199,7 +199,7 @@ def plan_reorganize(
         will_move = len(all_moves)
         moves = all_moves[:PREVIEW_ROW_CAP]
         orphans, orphans_total = _orphan_preview(
-            lib, scope=scope, moves=all_moves, trash_dir=trash_dir
+            lib, scope=scope, trash_dir=trash_dir, ignore_dirs=ignore_dirs
         )
         return ReorganizePlan(
             scope=scope,

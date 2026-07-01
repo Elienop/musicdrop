@@ -7,6 +7,7 @@ three — only one reorganize at a time — and it is mutually exclusive with ev
 other library write (see _gate_busy + the gate sites in edit/cover/config/
 duplicates/import/lyrics/artists)."""
 
+import os
 from pathlib import Path
 from typing import Annotated
 
@@ -48,6 +49,18 @@ def _trash_dir(app: object) -> Path:
     return resolve_trash_dir(_settings(app), handle)  # type: ignore[arg-type]  # app duck-typed (object)
 
 
+def _ignore_dirs(app: object) -> tuple[Path, ...]:
+    """Dirs under the music root the orphan sweep must never trash — the resolved
+    playlists export dir (defaults to <music>/.playlists). Dotdirs/NAS dirs are handled
+    name-based in the scanner; this covers a configured non-dotfile export dir."""
+    handle: LibraryHandle = app.state.beets_library  # type: ignore[attr-defined]  # app duck-typed (object)
+    configured = _settings(app).playlists_export_dir.strip()  # type: ignore[arg-type]  # app duck-typed (object)
+    export_dir = (
+        Path(configured) if configured else Path(os.fsdecode(handle.lib.directory)) / ".playlists"
+    )
+    return (export_dir,)
+
+
 @router.get("/reorganize/preview", response_model=ReorganizePlan)
 async def preview_reorganize(
     request: Request,
@@ -63,6 +76,7 @@ async def preview_reorganize(
         artist=artist,
         album_id=None,
         trash_dir=_trash_dir(request.app),
+        ignore_dirs=_ignore_dirs(request.app),
     )
 
 
@@ -82,6 +96,7 @@ async def preview_album_reorganize(
         artist=None,
         album_id=album_id,
         trash_dir=_trash_dir(request.app),
+        ignore_dirs=_ignore_dirs(request.app),
     )
 
 
@@ -107,6 +122,7 @@ async def start_reorganize(
         artist=artist,
         album_id=None,
         trash_dir=_trash_dir(app),
+        ignore_dirs=_ignore_dirs(app),
         on_complete=lambda: emit_library_changed(app),
     )
     return reg.state()
@@ -135,6 +151,7 @@ async def start_album_reorganize(
         artist=None,
         album_id=album_id,
         trash_dir=_trash_dir(app),
+        ignore_dirs=_ignore_dirs(app),
         on_complete=lambda: emit_library_changed(app),
     )
     return reg.state()

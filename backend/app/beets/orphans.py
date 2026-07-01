@@ -8,6 +8,7 @@ file extension on disk, NOT via the beets DB, so a folder containing an
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 #: Lowercase audio extensions. Over-inclusive on purpose: a husk is only reported
@@ -52,20 +53,34 @@ def _is_audio(name: str) -> bool:
     return os.path.splitext(name)[1].lower() in AUDIO_EXTS
 
 
+# Directory basenames the sweep must never treat as a stale artist/album husk:
+# app-owned exports (the default playlists export dir is <music>/.playlists — and any
+# dotdir) plus NAS/OS housekeeping dirs that legitimately hold no audio.
+SKIP_DIR_NAMES: frozenset[str] = frozenset(
+    {"@eaDir", "#recycle", "lost+found", "$RECYCLE.BIN", "System Volume Information"}
+)
+
+
+def _skip_name(name: str) -> bool:
+    return name.startswith(".") or name in SKIP_DIR_NAMES
+
+
 def _under(path: str, root: str) -> bool:
     """True if ``path`` is strictly inside ``root``."""
     return path != root and path.startswith(root + os.sep)
 
 
-def _scan_tree(root: str, trash_norm: str) -> tuple[dict[str, bool], dict[str, bool]]:
+def _scan_tree(
+    root: str, excluded: Callable[[str], bool]
+) -> tuple[dict[str, bool], dict[str, bool]]:
     """Bottom-up walk: ``has_audio[dir]`` / ``has_file[dir]`` for every dir at/under
-    ``root``. The ``trash`` subtree is skipped entirely (never recorded, never
-    counted as audio for its parent)."""
+    ``root``. Excluded subtrees (trash, ignore-dirs, dotdirs/NAS names) are skipped
+    entirely (never recorded, never counted as audio for their parent)."""
     has_audio: dict[str, bool] = {}
     has_file: dict[str, bool] = {}
     for dirpath, dirnames, filenames in os.walk(root, topdown=False, onerror=lambda _e: None):
         dp = os.path.normpath(dirpath)
-        if dp == trash_norm or dp.startswith(trash_norm + os.sep):
+        if excluded(dp):
             continue
         audio = any(_is_audio(f) for f in filenames)
         has_files = bool(filenames)
@@ -78,8 +93,8 @@ def _scan_tree(root: str, trash_norm: str) -> tuple[dict[str, bool], dict[str, b
     return has_audio, has_file
 
 
-def _library_orphans(root: str, trash_norm: str) -> list[str]:
-    has_audio, has_file = _scan_tree(root, trash_norm)
+def _library_orphans(root: str, excluded: Callable[[str], bool]) -> list[str]:
+    has_audio, has_file = _scan_tree(root, excluded)
     out: list[str] = []
     for dp, audio in has_audio.items():
         if dp == root or audio or not has_file[dp]:
@@ -92,13 +107,13 @@ def _library_orphans(root: str, trash_norm: str) -> list[str]:
     return out
 
 
-def _subtree(dirpath: str, trash_norm: str) -> tuple[bool, bool]:
+def _subtree(dirpath: str, excluded: Callable[[str], bool]) -> tuple[bool, bool]:
     """(has_audio, has_file) for a single subtree (used by seeds mode)."""
     audio = False
     has_files = False
     for d, _dirs, files in os.walk(dirpath, onerror=lambda _e: None):
         dn = os.path.normpath(d)
-        if dn == trash_norm or dn.startswith(trash_norm + os.sep):
+        if excluded(dn):
             continue
         if files:
             has_files = True
@@ -107,7 +122,7 @@ def _subtree(dirpath: str, trash_norm: str) -> tuple[bool, bool]:
     return audio, has_files
 
 
-def _seed_orphan(seed: str, root: str, trash_norm: str) -> str | None:
+def _seed_orphan(seed: str, root: str, excluded: Callable[[str], bool]) -> str | None:
     """The top-most audio-empty (and non-empty) ancestor of ``seed`` below ``root``,
     or None. Starts at the nearest existing ancestor (the seed itself may have been
     pruned)."""
@@ -119,7 +134,9 @@ def _seed_orphan(seed: str, root: str, trash_norm: str) -> str | None:
         d = parent
     candidate: str | None = None
     while _under(d, root):
-        has_audio, has_file = _subtree(d, trash_norm)
+        if excluded(d):  # an excluded ancestor stops the climb; never a candidate
+            break
+        has_audio, has_file = _subtree(d, excluded)
         if has_audio:
             break
         if has_file:
@@ -132,7 +149,11 @@ def _seed_orphan(seed: str, root: str, trash_norm: str) -> str | None:
 
 
 def find_orphan_folders(
-    music_dir: Path, *, seeds: list[Path] | None, trash_dir: Path
+    music_dir: Path,
+    *,
+    seeds: list[Path] | None,
+    trash_dir: Path,
+    ignore_dirs: tuple[Path, ...] = (),
 ) -> list[Path]:
     """Top-most audio-empty, non-empty folders under ``music_dir`` to move to Trash.
 
@@ -141,16 +162,28 @@ def find_orphan_folders(
     ancestor (a renamed husk is a sibling of the new folder). Never returns the root
     or anything inside ``trash_dir``; deduped, with no path that is an ancestor of
     another in the result.
+
+    ``ignore_dirs`` are extra absolute roots to skip (e.g. the playlists export
+    dir). Directories whose name is a dotdir or a known NAS/OS housekeeping name are
+    always skipped.
     """
     root = os.path.normpath(str(music_dir))
-    trash_norm = os.path.normpath(str(trash_dir))
+    exclude_roots = tuple(os.path.normpath(str(d)) for d in (trash_dir, *ignore_dirs))
+
+    def excluded(dp: str) -> bool:
+        for r in exclude_roots:
+            if dp == r or dp.startswith(r + os.sep):
+                return True
+        rel = os.path.relpath(dp, root)
+        return rel != os.curdir and any(_skip_name(seg) for seg in rel.split(os.sep))
+
     if seeds is None:
-        raw = _library_orphans(root, trash_norm)
+        raw = _library_orphans(root, excluded)
     else:
         seen: set[str] = set()
         raw = []
         for seed in seeds:
-            hit = _seed_orphan(os.path.normpath(str(seed)), root, trash_norm)
+            hit = _seed_orphan(os.path.normpath(str(seed)), root, excluded)
             if hit is not None and hit not in seen:
                 seen.add(hit)
                 raw.append(hit)

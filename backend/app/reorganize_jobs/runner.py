@@ -27,6 +27,7 @@ def sweep(
     artist: str | None = None,
     album_id: int | None = None,
     trash_dir: Path | None = None,
+    ignore_dirs: tuple[Path, ...] = (),
     delay: float = 0.0,
     reorg_album: Callable[..., ReorganizeOutcome] = reorganize_album,
     reorg_singleton: Callable[..., ReorganizeOutcome] = reorganize_singleton,
@@ -77,6 +78,7 @@ def sweep(
                     music_dir=Path(os.fsdecode(handle.lib.directory)),
                     trash_dir=trash_dir,
                     vacated=vacated,
+                    ignore_dirs=ignore_dirs,
                 )
             reg.finish("done")
     except Exception as exc:  # any crash becomes a failed job, never a lost thread
@@ -93,12 +95,15 @@ def _sweep_orphans(
     music_dir: Path,
     trash_dir: Path,
     vacated: list[Path],
+    ignore_dirs: tuple[Path, ...],
 ) -> None:
     """Move audio-empty husks to Trash. Library scope scans the whole root; a
     narrower scope seeds from the dirs this run vacated. Per-folder failures are
     isolated so one bad move never aborts the job."""
     seeds = None if scope == "library" else vacated
-    for folder in find_orphan_folders(music_dir, seeds=seeds, trash_dir=trash_dir):
+    for folder in find_orphan_folders(
+        music_dir, seeds=seeds, trash_dir=trash_dir, ignore_dirs=ignore_dirs
+    ):
         if reg.should_stop():
             break
         try:
@@ -116,6 +121,7 @@ def start_backfill(
     artist: str | None = None,
     album_id: int | None = None,
     trash_dir: Path | None = None,
+    ignore_dirs: tuple[Path, ...] = (),
     delay: float = 0.0,
     on_complete: Callable[[], None] | None = None,
 ) -> None:
@@ -128,6 +134,7 @@ def start_backfill(
             artist=artist,
             album_id=album_id,
             trash_dir=trash_dir,
+            ignore_dirs=ignore_dirs,
             delay=delay,
             on_complete=on_complete,
         ),

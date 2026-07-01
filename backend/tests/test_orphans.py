@@ -74,6 +74,27 @@ def test_seeds_mode_skips_when_parent_keeps_audio(tmp_path: Path) -> None:
     assert find_orphan_folders(root, seeds=[seed], trash_dir=trash) == []
 
 
+def test_dotdir_and_nas_dirs_are_never_flagged(tmp_path: Path) -> None:
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    _touch(root / ".playlists" / "p1.m3u8")  # app-owned export dir (dotdir)
+    _touch(root / "@eaDir" / "thumb.jpg")  # Synology
+    _touch(root / "#recycle" / "old.jpg")  # SMB recycle
+    trash = tmp_path / "trash"
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash) == []
+
+
+def test_ignore_dirs_excludes_a_configured_export_dir(tmp_path: Path) -> None:
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    export = root / "Playlists"  # non-dotfile, must still be skipped
+    _touch(export / "p1.m3u8")
+    trash = tmp_path / "trash"
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=(export,)) == []
+    # without the ignore it WOULD be flagged (proves the exclusion is load-bearing):
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash) == [export]
+
+
 def test_trash_folder_moves_whole_folder(tmp_path: Path) -> None:
     from app.beets.trash import trash_folder
 
