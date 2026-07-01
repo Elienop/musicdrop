@@ -5,7 +5,7 @@ from pathlib import Path
 
 from beets.library import Library
 
-from app.beets.reorganize import plan_reorganize, reorganize_album
+from app.beets.reorganize import plan_reorganize, reorganize_album, reorganize_singleton
 
 
 def test_reorganize_album_sets_source_dir_on_move(reorganize_lib: Library) -> None:
@@ -32,6 +32,31 @@ def test_plan_without_trash_dir_has_no_orphans(reorganize_lib: Library) -> None:
     # Back-compat: existing callers pass no trash_dir -> orphan preview inactive.
     plan = plan_reorganize(reorganize_lib, scope="library", artist=None, album_id=None)
     assert plan.orphans == [] and plan.orphans_total == 0
+
+
+def test_scoped_preview_has_no_orphans_premove(reorganize_lib: Library, tmp_path: Path) -> None:
+    # A scoped (artist) preview cannot show husks: they form only during the run
+    # (post-move). The actual sweep still cleans + reports them. Documents the design.
+    music_dir = Path(os.fsdecode(reorganize_lib.directory))
+    (music_dir / "Ghost").mkdir(parents=True, exist_ok=True)
+    (music_dir / "Ghost" / "art.jpg").write_bytes(b"x")
+    trash = tmp_path / "trash"
+    plan = plan_reorganize(
+        reorganize_lib, scope="artist", artist="Radiohead", album_id=None, trash_dir=trash
+    )
+    assert plan.orphans == [] and plan.orphans_total == 0
+
+
+def test_reorganize_singleton_sets_source_dir(reorganize_lib: Library) -> None:
+    outcomes = [
+        reorganize_singleton(reorganize_lib, i)
+        for i in reorganize_lib.items()
+        if i.album_id is None
+    ]
+    movers = [o for o in outcomes if o.status == "moved"]
+    # reorganize_lib includes a misfiled singleton; if present, its source_dir is set.
+    for m in movers:
+        assert m.source_dir
 
 
 def test_registry_records_orphans() -> None:
