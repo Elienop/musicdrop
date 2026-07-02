@@ -124,6 +124,33 @@ describe("CoverEditPanel", () => {
     );
   });
 
+  it("surfaces the message from a structured 500 install error", async () => {
+    // Cover install guard raises {detail: {message, recovery}} on 500 — the
+    // message carries the real cause (missing folder vs permission denied).
+    const png = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(imageResponse(png, "Cover Art Archive"))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            detail: {
+              message: "Cover install failed: [Errno 13] Permission denied",
+              recovery: "Check folder permissions and retry.",
+            },
+          },
+          500,
+        ),
+      );
+
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
+    await waitFor(() => expect(screen.getByText(/Cover Art Archive/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /use this cover/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/errno 13\] permission denied/i)).toBeInTheDocument(),
+    );
+  });
+
   it("rejects an oversize file before previewing", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
     renderPanel();

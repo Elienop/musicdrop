@@ -11,29 +11,26 @@ export function apiUrl(path: string): string {
 }
 
 /** Read FastAPI's `{ "detail": ... }` error body, falling back to the
- * caller's generic message when the response has no usable detail. */
+ * caller's generic message when the response has no usable detail. Delegates
+ * to `detailMessage` so both helpers unwrap the same shapes (string, the 422
+ * array, and our structured `{message, recovery}` guards). */
 export async function errorDetail(res: Response, fallback: string): Promise<string> {
   try {
     const body: unknown = await res.json();
-    if (
-      body !== null &&
-      typeof body === "object" &&
-      "detail" in body &&
-      typeof (body as { detail: unknown }).detail === "string"
-    ) {
-      return (body as { detail: string }).detail;
-    }
+    return detailMessage(body) ?? fallback;
   } catch {
     // Non-JSON body — fall through to the generic message.
   }
   return fallback;
 }
 
-/** Best human message from a FastAPI error body, tolerating BOTH shapes:
- * our guards' `{detail: string}` and the auto-declared HTTPValidationError
- * `{detail: [{msg, ...}, ...]}` (422 caveat — the OpenAPI schema promises the
- * array, the runtime sometimes sends the string). Null when neither matches —
- * callers fall back to their own copy. */
+/** Best human message from a FastAPI error body, tolerating every shape we
+ * emit: our guards' `{detail: string}`, the structured guards'
+ * `{detail: {message, recovery}}` (500s from cover install / delete / config
+ * apply — the message carries the real cause), and the auto-declared
+ * HTTPValidationError `{detail: [{msg, ...}, ...]}` (422 caveat — the OpenAPI
+ * schema promises the array, the runtime sometimes sends the string). Null
+ * when none match — callers fall back to their own copy. */
 export function detailMessage(body: unknown): string | null {
   if (body === null || typeof body !== "object" || !("detail" in body)) {
     return null;
@@ -42,13 +39,22 @@ export function detailMessage(body: unknown): string | null {
   if (typeof detail === "string") {
     return detail;
   }
-  if (Array.isArray(detail) && detail.length > 0) {
-    const first: unknown = detail[0];
-    if (first !== null && typeof first === "object" && "msg" in first) {
-      const msg = (first as { msg: unknown }).msg;
-      if (typeof msg === "string") {
-        return msg;
+  if (Array.isArray(detail)) {
+    if (detail.length > 0) {
+      const first: unknown = detail[0];
+      if (first !== null && typeof first === "object" && "msg" in first) {
+        const msg = (first as { msg: unknown }).msg;
+        if (typeof msg === "string") {
+          return msg;
+        }
       }
+    }
+    return null;
+  }
+  if (detail !== null && typeof detail === "object" && "message" in detail) {
+    const message = (detail as { message: unknown }).message;
+    if (typeof message === "string") {
+      return message;
     }
   }
   return null;
