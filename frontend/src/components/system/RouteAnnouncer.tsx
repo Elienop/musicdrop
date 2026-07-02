@@ -51,6 +51,21 @@ export function titleForPathname(pathname: string): string {
   return "Not found";
 }
 
+/** True when the element is a text-entry target the user may be typing in —
+ * moving focus to the h1 mid-type (e.g. the header search navigating to
+ * /search on its debounce) would yank the caret away. Click-driven navigation
+ * (focus on a link/button) keeps the a11y focus move. */
+export function isTypingTarget(el: Element | null): boolean {
+  if (!(el instanceof HTMLElement)) {
+    return false;
+  }
+  return (
+    el.tagName === "INPUT" ||
+    el.tagName === "TEXTAREA" ||
+    el.isContentEditable === true
+  );
+}
+
 /**
  * Makes route changes non-silent: on PATHNAME change (search-param churn on
  * Browse/Search never reaches the effect) it sets
@@ -72,7 +87,8 @@ export function RouteAnnouncer() {
     setAnnouncement(title);
     if (
       previousPathname.current !== null &&
-      previousPathname.current !== pathname
+      previousPathname.current !== pathname &&
+      !isTypingTarget(document.activeElement)
     ) {
       document.querySelector<HTMLElement>('h1[tabindex="-1"]')?.focus();
     }

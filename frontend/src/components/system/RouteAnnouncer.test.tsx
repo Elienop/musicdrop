@@ -1,9 +1,17 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
-import { Link, MemoryRouter, Route, Routes } from "react-router";
+import {
+  Link,
+  MemoryRouter,
+  Route,
+  Routes,
+  useNavigate,
+  type NavigateFunction,
+} from "react-router";
 
 import {
+  isTypingTarget,
   RouteAnnouncer,
   titleForPathname,
 } from "@/components/system/RouteAnnouncer";
@@ -97,6 +105,81 @@ function renderAnnouncer(initialEntry: string) {
   );
 }
 
+/**
+ * Renders the announcer with a header-style `<input>` that lives OUTSIDE the
+ * routed pages (like the real Topbar search) and captures `useNavigate` so a
+ * test can drive a pathname change programmatically — without the focus move a
+ * link click would cause — to model the debounced search navigating to /search
+ * while the caret is still in the input.
+ */
+function renderTypingHarness(initialEntry: string): {
+  navigate: NavigateFunction;
+} {
+  let captured: NavigateFunction | null = null;
+  function CaptureNavigate() {
+    captured = useNavigate();
+    return null;
+  }
+  render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <RouteAnnouncer />
+      <CaptureNavigate />
+      <input aria-label="Search" />
+      <Routes>
+        <Route
+          path="/"
+          element={
+            <PageStub
+              title="Overview"
+              linkTo="/artists"
+              linkLabel="Go to artists"
+            />
+          }
+        />
+        <Route
+          path="/artists"
+          element={<PageStub title="Artists" linkTo="/" linkLabel="Go home" />}
+        />
+      </Routes>
+    </MemoryRouter>,
+  );
+  if (captured === null) {
+    throw new Error("useNavigate was not captured during render");
+  }
+  return { navigate: captured };
+}
+
+describe("isTypingTarget", () => {
+  it("is false for null", () => {
+    expect(isTypingTarget(null)).toBe(false);
+  });
+
+  it("is false for a button", () => {
+    expect(isTypingTarget(document.createElement("button"))).toBe(false);
+  });
+
+  it("is true for an input", () => {
+    expect(isTypingTarget(document.createElement("input"))).toBe(true);
+  });
+
+  it("is true for a textarea", () => {
+    expect(isTypingTarget(document.createElement("textarea"))).toBe(true);
+  });
+
+  it("is true for a contenteditable element", () => {
+    const div = document.createElement("div");
+    div.contentEditable = "true";
+    // jsdom does not implement HTMLElement.isContentEditable (it returns
+    // undefined), so stub it to the value a real browser reports for the
+    // branch isTypingTarget keys on.
+    Object.defineProperty(div, "isContentEditable", {
+      configurable: true,
+      value: true,
+    });
+    expect(isTypingTarget(div)).toBe(true);
+  });
+});
+
 describe("RouteAnnouncer", () => {
   beforeEach(() => {
     document.title = "";
@@ -129,5 +212,35 @@ describe("RouteAnnouncer", () => {
       screen.getByRole("heading", { level: 1, name: "Browse" }),
     ).not.toHaveFocus();
     expect(document.title).toBe("Browse — MusicDrop");
+  });
+
+  it("keeps focus in a text input on route change", async () => {
+    const { navigate } = renderTypingHarness("/");
+    const input = screen.getByRole("textbox");
+    input.focus();
+    expect(input).toHaveFocus();
+
+    // The header search's debounce navigates while the caret is in the input.
+    await act(async () => {
+      navigate("/artists");
+    });
+
+    expect(input).toHaveFocus();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Artists" }),
+    ).not.toHaveFocus();
+  });
+
+  it("moves focus to the page h1 when the user is not typing", async () => {
+    const { navigate } = renderTypingHarness("/");
+    // Nothing focused (activeElement is <body>) — a click-driven / passive
+    // navigation, so the a11y focus move should still happen.
+    await act(async () => {
+      navigate("/artists");
+    });
+
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Artists" }),
+    ).toHaveFocus();
   });
 });
