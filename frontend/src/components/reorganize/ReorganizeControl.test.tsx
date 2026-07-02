@@ -26,6 +26,7 @@ const idle = {
   artist: null,
   album_id: null,
   scope_label: "library",
+  failures: [],
 };
 
 beforeEach(() => {
@@ -177,6 +178,33 @@ test("rail: the trigger stays focusable while the plan is open and swallows re-c
   const before = previewCalls();
   await userEvent.click(trigger);
   expect(previewCalls()).toBe(before);
+});
+
+test("renders per-file failures when this scope's job is terminal", async () => {
+  const doneWithFailures = {
+    ...idle,
+    phase: "done",
+    scope: "library",
+    job_id: "j1",
+    total: 2,
+    processed: 2,
+    moved: 1,
+    failed: 1,
+    failures: [
+      { label: "Arcane — Get Jinxed", error: "file not found on disk after move" },
+    ],
+  };
+  vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
+    if (path === "/api/reorganize/status")
+      return { data: doneWithFailures, response: { ok: true, status: 200 } } as never;
+    return { data: undefined, response: { ok: false, status: 404 } } as never;
+  });
+  wrap(<ReorganizeControl scope={{ scope: "library" }} />);
+  const list = await screen.findByRole("alert", {
+    name: /files that could not be reorganized/i,
+  });
+  expect(list).toHaveTextContent("Arcane — Get Jinxed");
+  expect(list).toHaveTextContent(/file not found on disk after move/i);
 });
 
 test("a failed preview shows an inline error next to the buttons", async () => {

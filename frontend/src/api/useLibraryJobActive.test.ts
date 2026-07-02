@@ -55,6 +55,7 @@ const idleReorganize: ReorganizeBackfillStatus = {
   artist: null,
   album_id: null,
   scope_label: "library",
+  failures: [],
 };
 
 let importData: ActiveImportStatus = idleImport;

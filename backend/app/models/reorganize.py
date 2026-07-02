@@ -59,6 +59,11 @@ class ReorganizeOutcome(BaseModel):
     source_dir: str | None = None
 
 
+class ReorganizeUnitFailure(BaseModel):
+    label: str  # "Artist — Album" / "Artist — Title"
+    error: str  # human-readable reason from the move/verification
+
+
 #: idle = never run / reset; running = sweeping; done/stopped/failed = terminal.
 ReorganizePhase = Literal["idle", "running", "done", "stopped", "failed"]
 
@@ -78,3 +83,4 @@ class ReorganizeBackfillStatus(BaseModel):
     album_id: int | None  # set for album scope (None otherwise)
     scope_label: str  # "library" / artist name / "Artist — Album"
     orphans_trashed: int  # husks moved to Trash this run (0 until the post-move pass)
+    failures: list[ReorganizeUnitFailure]  # first FAILURE_ROW_CAP failed units (label + reason)

@@ -56,6 +56,7 @@ def test_status_idle_shape() -> None:
         album_id=None,
         scope_label="library",
         orphans_trashed=0,
+        failures=[],
     )
     assert s.phase == "idle"
     assert s.artist is None and s.album_id is None

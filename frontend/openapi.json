@@ -7632,6 +7632,13 @@
           "orphans_trashed": {
             "type": "integer",
             "title": "Orphans Trashed"
+          },
+          "failures": {
+            "items": {
+              "$ref": "#/components/schemas/ReorganizeUnitFailure"
+            },
+            "type": "array",
+            "title": "Failures"
           }
         },
         "type": "object",
@@ -7649,7 +7656,8 @@
           "artist",
           "album_id",
           "scope_label",
-          "orphans_trashed"
+          "orphans_trashed",
+          "failures"
         ],
         "title": "ReorganizeBackfillStatus"
       },
@@ -7753,6 +7761,24 @@
           "orphans_total"
         ],
         "title": "ReorganizePlan"
+      },
+      "ReorganizeUnitFailure": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "error"
+        ],
+        "title": "ReorganizeUnitFailure"
       },
       "ReplaceError": {
         "properties": {

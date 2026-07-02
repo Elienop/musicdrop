@@ -28,6 +28,48 @@ def test_start_then_running_then_finish() -> None:
     assert (s.phase, s.total, s.processed, s.moved, s.skipped, s.failed) == ("done", 3, 3, 1, 1, 1)
 
 
+def test_records_failure_labels_and_reasons() -> None:
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    reg.record(ReorganizeOutcome(status="moved", label="ok"))
+    reg.record(ReorganizeOutcome(status="failed", label="A — B", error="file not found on disk"))
+    reg.record(ReorganizeOutcome(status="failed", label="C — D", error="permission denied"))
+    reg.finish("failed")
+    s = reg.state()
+    assert s.failed == 2
+    assert [(f.label, f.error) for f in s.failures] == [
+        ("A — B", "file not found on disk"),
+        ("C — D", "permission denied"),
+    ]
+
+
+def test_failure_reason_defaults_to_empty_string() -> None:
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    reg.record(ReorganizeOutcome(status="failed", label="A — B"))  # error is None
+    assert reg.state().failures[0].error == ""
+
+
+def test_failure_rows_are_capped_at_ten() -> None:
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    for i in range(11):
+        reg.record(ReorganizeOutcome(status="failed", label=f"L{i}", error="boom"))
+    s = reg.state()
+    assert s.failed == 11  # count is exact
+    assert len(s.failures) == 10  # rows are capped
+    assert s.failures[0].label == "L0" and s.failures[-1].label == "L9"
+
+
+def test_state_failures_is_a_copy() -> None:
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    reg.record(ReorganizeOutcome(status="failed", label="A — B", error="boom"))
+    snapshot = reg.state().failures
+    reg.record(ReorganizeOutcome(status="failed", label="C — D", error="boom2"))
+    assert len(snapshot) == 1  # the earlier snapshot must not see later mutations
+
+
 def test_double_start_raises() -> None:
     reg = ReorganizeRegistry()
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")

@@ -3012,6 +3012,8 @@ export interface components {
             scope_label: string;
             /** Orphans Trashed */
             orphans_trashed: number;
+            /** Failures */
+            failures: components["schemas"]["ReorganizeUnitFailure"][];
         };
         /** ReorganizeMove */
         ReorganizeMove: {
@@ -3052,6 +3054,13 @@ export interface components {
             orphans: components["schemas"]["OrphanFolder"][];
             /** Orphans Total */
             orphans_total: number;
+        };
+        /** ReorganizeUnitFailure */
+        ReorganizeUnitFailure: {
+            /** Label */
+            label: string;
+            /** Error */
+            error: string;
         };
         /**
          * ReplaceError

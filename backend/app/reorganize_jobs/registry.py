@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.models.reorganize import (
     ReorganizeBackfillStatus,
     ReorganizeOutcome,
     ReorganizePhase,
     ReorganizeScope,
+    ReorganizeUnitFailure,
 )
+
+#: Cap on the per-unit failure rows carried on the wire status (count stays exact).
+FAILURE_ROW_CAP = 10
 
 
 @dataclass
@@ -37,6 +41,7 @@ class _ReorganizeJob:
     scope_label: str = "library"
     stop_requested: bool = False
     orphans_trashed: int = 0
+    failures: list[ReorganizeUnitFailure] = field(default_factory=list)
 
 
 class ReorganizeRegistry:
@@ -86,6 +91,10 @@ class ReorganizeRegistry:
                 job.moved += 1
             elif outcome.status == "failed":
                 job.failed += 1
+                if len(job.failures) < FAILURE_ROW_CAP:
+                    job.failures.append(
+                        ReorganizeUnitFailure(label=outcome.label, error=outcome.error or "")
+                    )
             else:  # skipped
                 job.skipped += 1
 
@@ -140,6 +149,7 @@ class ReorganizeRegistry:
                     album_id=None,
                     scope_label="library",
                     orphans_trashed=0,
+                    failures=[],
                 )
             return ReorganizeBackfillStatus(
                 phase=job.phase,
@@ -156,6 +166,7 @@ class ReorganizeRegistry:
                 album_id=job.album_id,
                 scope_label=job.scope_label,
                 orphans_trashed=job.orphans_trashed,
+                failures=list(job.failures),
             )
 
 

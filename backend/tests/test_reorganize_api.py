@@ -104,6 +104,12 @@ def test_status_includes_orphans_trashed(reorg_client: TestClient) -> None:
     assert "orphans_trashed" in r.json()
 
 
+def test_status_includes_failures(reorg_client: TestClient) -> None:
+    r = reorg_client.get("/api/reorganize/status")
+    assert r.status_code == 200
+    assert r.json()["failures"] == []
+
+
 def test_preview_does_not_list_playlists_export_dir(
     reorg_client: TestClient, reorganize_lib: Library
 ) -> None:
