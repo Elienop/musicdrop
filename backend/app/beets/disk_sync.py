@@ -19,6 +19,7 @@ threads.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from typing import Any
 
 from beets import library
@@ -27,6 +28,7 @@ from beets.library import ReadError
 from app.beets.reorganize import PREVIEW_ROW_CAP
 from app.models.disk_sync import (
     DiskSyncChange,
+    DiskSyncOutcome,
     DiskSyncPlan,
     DiskSyncReadError,
     DiskSyncRemoval,
@@ -157,3 +159,76 @@ def plan_disk_sync(lib: Any) -> DiskSyncPlan:
             read_errors=read_errors,
             truncated=truncated,
         )
+
+
+def run_disk_sync(
+    lib: Any,
+    *,
+    on_total: Callable[[int], None],
+    on_item: Callable[[DiskSyncOutcome], None],
+    should_stop: Callable[[], bool],
+) -> int:
+    """Apply the sync (beets ``update_items`` semantics, no printing, no moves).
+
+    Emits one ``DiskSyncOutcome`` per processed item; honors ``should_stop``
+    between items (already-applied work stands — the sync is idempotent and a
+    re-run is cheap thanks to the mtime gate). Returns the number of albums
+    pruned (emptied). Never touches a file: removals use ``delete=False`` and
+    nothing is ever moved or written to disk.
+    """
+    with lib.music_dir_context():
+        _require_root(lib)
+        items = list(lib.items())
+        on_total(len(items))
+        affected: set[int] = set()
+        media_fields = library.Item._media_fields
+        for item in items:
+            if should_stop():
+                break
+            label = _item_label(item)
+            if _file_missing(item):
+                if item.album_id is not None:
+                    affected.add(int(item.album_id))
+                item.remove(delete=False, with_album=True)
+                on_item(DiskSyncOutcome(status="removed", label=label))
+                continue
+            if item.current_mtime() <= item.mtime:
+                on_item(DiskSyncOutcome(status="unchanged", label=label))
+                continue
+            old_albumartist = item.albumartist
+            old_artist = item.artist
+            try:
+                item.read()
+            except ReadError as exc:
+                on_item(DiskSyncOutcome(status="read_error", label=label, error=str(exc)))
+                continue
+            # beets' albumartist special case (update.py): an empty re-read
+            # albumartist is not a change when the old row had
+            # albumartist == artist and the artist itself is unchanged.
+            if not item.albumartist and old_albumartist == old_artist == item.artist:
+                item.albumartist = old_albumartist
+                item._dirty.discard("albumartist")
+            changed = sorted(f for f in item._dirty if f in media_fields)
+            # Store either way: with no field changes this persists the new
+            # mtime (set by read()) so the item is not re-checked forever —
+            # exactly beets' no-change branch.
+            item.store(fields=media_fields)
+            if changed:
+                if item.album_id is not None:
+                    affected.add(int(item.album_id))
+                on_item(DiskSyncOutcome(status="updated", label=label, fields=changed))
+            else:
+                on_item(DiskSyncOutcome(status="unchanged", label=label))
+        emptied = 0
+        for album_id in affected:
+            album = lib.get_album(album_id)
+            if album is None:
+                emptied += 1  # pruned by the last item.remove(with_album=True)
+                continue
+            first_item = album.items().get()
+            if first_item is None:
+                continue
+            for key in library.Album.item_keys:
+                album[key] = first_item[key]
+            album.store()
+        return emptied

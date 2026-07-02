@@ -119,3 +119,135 @@ def test_plan_fails_fast_when_root_missing(
     shutil.rmtree(root)
     with pytest.raises(LibraryRootUnavailableError):
         plan_disk_sync(edit_lib)
+
+
+def _run(lib: Library) -> tuple[list[Any], int]:
+    from app.beets.disk_sync import run_disk_sync
+
+    outcomes: list[Any] = []
+    emptied = run_disk_sync(
+        lib,
+        on_total=lambda n: None,
+        on_item=outcomes.append,
+        should_stop=lambda: False,
+    )
+    return outcomes, emptied
+
+
+def test_run_removes_missing_row_keeps_album_with_survivors(edit_lib: Library) -> None:
+    victim = _items(edit_lib)[0]
+    album_id = victim.album_id
+    os.remove(victim.path)
+    outcomes, emptied = _run(edit_lib)
+    assert edit_lib.get_item(victim.id) is None
+    assert edit_lib.get_album(album_id) is not None  # survivors keep the album
+    assert emptied == 0
+    assert [o.status for o in outcomes].count("removed") == 1
+
+
+def test_run_prunes_album_when_all_files_gone(edit_lib: Library) -> None:
+    album = next(iter(edit_lib.albums()))
+    album_id = int(album.id)
+    for it in album.items():
+        os.remove(it.path)
+    _outcomes, emptied = _run(edit_lib)
+    assert edit_lib.get_album(album_id) is None
+    assert emptied == 1
+
+
+def test_run_refreshes_changed_tags_and_realigns_album(edit_lib: Library) -> None:
+    # Change a track-level field (title) on one item AND an album-inherited
+    # field (year) on EVERY item of its album: the run must refresh the item
+    # rows AND realign the Album row (beets copies Album.item_keys from the
+    # album's FIRST item, so all items must agree for a deterministic assert).
+    album = next(iter(edit_lib.albums()))
+    item = sorted(album.items(), key=lambda i: os.fsdecode(i.path))[0]
+    future = time.time() + 10
+    for it in album.items():
+        p = os.fsdecode(it.path)
+        mf = MediaFile(p)
+        if it.id == item.id:
+            mf.title = "Fresh Title From Disk"
+        mf.year = 1987
+        mf.save()
+        os.utime(p, (future, future))
+    outcomes, _ = _run(edit_lib)
+    refreshed = edit_lib.get_item(item.id)
+    assert refreshed is not None
+    assert refreshed.title == "Fresh Title From Disk" and refreshed.year == 1987
+    updated = [o for o in outcomes if o.status == "updated"]
+    assert updated and any("title" in o.fields for o in updated)
+    # Album-level realign: year is an Album.item_keys field.
+    realigned = edit_lib.get_album(int(album.id))
+    assert realigned is not None and realigned.year == 1987
+
+
+def test_run_persists_mtime_so_second_run_is_quiet(edit_lib: Library) -> None:
+    item = _items(edit_lib)[0]
+    _bump_title_on_disk(item, "Once")
+    _run(edit_lib)
+    outcomes, _ = _run(edit_lib)
+    assert all(o.status == "unchanged" for o in outcomes)
+
+
+def test_run_albumartist_special_case_preserved(edit_lib: Library) -> None:
+    # File on disk carries NO albumartist; DB row has albumartist == artist.
+    item = _items(edit_lib)[0]
+    path = os.fsdecode(item.path)
+    mf = MediaFile(path)
+    mf.albumartist = None
+    mf.save()
+    future = time.time() + 10
+    os.utime(path, (future, future))
+    old_albumartist = item.albumartist
+    assert old_albumartist == item.artist  # fixture precondition
+    _run(edit_lib)
+    row = edit_lib.get_item(item.id)
+    assert row is not None and row.albumartist == old_albumartist
+
+
+def test_run_read_error_is_isolated(edit_lib: Library) -> None:
+    items = _items(edit_lib)
+    bad, good = items[0], items[1]
+    with open(os.fsdecode(bad.path), "wb") as fh:
+        fh.write(b"garbage")
+    future = time.time() + 10
+    os.utime(bad.path, (future, future))
+    _bump_title_on_disk(good, "Still Synced")
+    outcomes, _ = _run(edit_lib)
+    statuses = {o.status for o in outcomes}
+    assert "read_error" in statuses
+    good_row = edit_lib.get_item(good.id)
+    assert good_row is not None and good_row.title == "Still Synced"
+
+
+def test_run_honors_stop(edit_lib: Library) -> None:
+    for it in _items(edit_lib):
+        os.remove(it.path)
+    from app.beets.disk_sync import run_disk_sync
+
+    calls = {"n": 0}
+
+    def stop_after_one() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    run_disk_sync(
+        edit_lib, on_total=lambda n: None, on_item=lambda o: None, should_stop=stop_after_one
+    )
+    # Stopped early: at least one row must survive.
+    assert len(list(edit_lib.items())) >= 1
+
+
+def test_run_fails_fast_when_root_missing(edit_lib: Library) -> None:
+    import shutil
+
+    from app.beets.disk_sync import run_disk_sync
+
+    n_before = len(list(edit_lib.items()))
+    shutil.rmtree(os.fsdecode(edit_lib.directory))
+    with pytest.raises(LibraryRootUnavailableError):
+        run_disk_sync(
+            edit_lib, on_total=lambda n: None, on_item=lambda o: None, should_stop=lambda: False
+        )
+    assert len(list(edit_lib.items())) == n_before  # nothing removed
