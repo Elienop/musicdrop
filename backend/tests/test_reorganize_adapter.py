@@ -153,3 +153,43 @@ def test_reorganize_album_failure_is_caught(
         outcome = reorg.reorganize_album(reorganize_lib, album)
     assert outcome.status == "failed"
     assert "disk full" in (outcome.error or "")
+
+
+def test_reorganize_album_missing_source_fails(reorganize_lib: Library) -> None:
+    """A moving item whose file is gone at the DB path: beets 2.12 silently skips
+    the move (models.py:1142 — no store, no exception). Verification must turn the
+    unit into `failed` and name the file + cause. Other tracks may still move; we
+    assert only status/error."""
+    with reorganize_lib.music_dir_context():
+        album = _album(reorganize_lib, "In Rainbows")
+        victim = os.fsdecode(next(iter(album.items())).path)
+        os.remove(victim)  # DB row untouched; on-disk file gone
+        outcome = reorg.reorganize_album(reorganize_lib, album)
+    assert outcome.status == "failed"
+    assert "not found on disk" in (outcome.error or "")
+
+
+def test_reorganize_album_destination_collision_fails(tmp_path: Path) -> None:
+    """Two tracks share track#+title, so both compute the SAME destination. beets
+    diverts the second to a `.1`-suffixed name (unique_path) — no exception, and the
+    preview re-flags it forever. Verification must report `failed`."""
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    base = music / "junk" / "col"
+    base.mkdir(parents=True, exist_ok=True)
+    items = []
+    for fname in ("01 Song.mp3", "01 Song other.mp3"):
+        f = base / fname
+        f.write_bytes(b"\x00")
+        it = Item(album="Collide", albumartist="X", artist="X", title="Song", track=1, disc=1)
+        it.path = os.fsencode(str(f))
+        items.append(it)
+    lib.add_album(items).store()
+
+    with lib.music_dir_context():
+        outcome = reorg.reorganize_album(lib, next(iter(lib.albums())))
+
+    assert outcome.status == "failed"
+    assert "already taken by another track" in (outcome.error or "")
+    # Documents the ping-pong: the diverted track landed at the .1 name on disk.
+    assert (music / "X" / "Collide" / "01 Song.1.mp3").exists()
