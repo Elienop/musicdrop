@@ -67,6 +67,32 @@ function PlanView({ plan }: { plan: ReorganizePlan }) {
           )}
         </ul>
       )}
+      {plan.orphans.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <p className="text-muted-foreground text-xs">
+            Folders to clean up (move to Trash):{" "}
+            <span className="font-medium">{plan.orphans_total}</span>
+          </p>
+          <ul className="max-h-40 overflow-auto rounded-md border px-3 text-sm">
+            {plan.orphans.map((o, i) => (
+              <li
+                key={`${o.path}-${i}`}
+                className="flex items-center justify-between gap-2 border-b py-1.5 last:border-b-0"
+              >
+                <span className="truncate">{o.name}</span>
+                <span className="text-muted-foreground shrink-0 text-xs">
+                  {o.file_count} file{o.file_count === 1 ? "" : "s"}
+                </span>
+              </li>
+            ))}
+            {plan.orphans_total > plan.orphans.length && (
+              <li className="text-muted-foreground py-1.5 text-xs">
+                + {plan.orphans_total - plan.orphans.length} more…
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

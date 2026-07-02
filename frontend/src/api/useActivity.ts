@@ -280,6 +280,7 @@ function reorganizeRow(
         [status.moved, "moved"],
         [status.skipped, "skipped"],
         [status.failed, "failed"],
+        [status.orphans_trashed, "cleaned up"],
       ]),
       href: "/settings/beets",
     };

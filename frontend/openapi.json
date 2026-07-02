@@ -6893,6 +6893,29 @@
         "title": "NamingRuleInput",
         "description": "One ``paths:`` entry as the panel sees it: a beets query key (``default`` /\n``comp`` / ``singleton`` / any query like ``albumtype:soundtrack``) and its\npath-format template string."
       },
+      "OrphanFolder": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "file_count": {
+            "type": "integer",
+            "title": "File Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "path",
+          "file_count"
+        ],
+        "title": "OrphanFolder"
+      },
       "ParkedAlbum": {
         "properties": {
           "album_index": {
@@ -7605,6 +7628,10 @@
           "scope_label": {
             "type": "string",
             "title": "Scope Label"
+          },
+          "orphans_trashed": {
+            "type": "integer",
+            "title": "Orphans Trashed"
           }
         },
         "type": "object",
@@ -7621,7 +7648,8 @@
           "error",
           "artist",
           "album_id",
-          "scope_label"
+          "scope_label",
+          "orphans_trashed"
         ],
         "title": "ReorganizeBackfillStatus"
       },
@@ -7699,6 +7727,17 @@
           "truncated": {
             "type": "boolean",
             "title": "Truncated"
+          },
+          "orphans": {
+            "items": {
+              "$ref": "#/components/schemas/OrphanFolder"
+            },
+            "type": "array",
+            "title": "Orphans"
+          },
+          "orphans_total": {
+            "type": "integer",
+            "title": "Orphans Total"
           }
         },
         "type": "object",
@@ -7709,7 +7748,9 @@
           "will_move",
           "already_in_place",
           "moves",
-          "truncated"
+          "truncated",
+          "orphans",
+          "orphans_total"
         ],
         "title": "ReorganizePlan"
       },

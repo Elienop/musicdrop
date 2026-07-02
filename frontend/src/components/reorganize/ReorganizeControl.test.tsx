@@ -57,6 +57,10 @@ beforeEach(() => {
               track_count: 2,
             },
           ],
+          orphans: [
+            { name: "Old Artist feat. X", path: "Old Artist feat. X", file_count: 2 },
+          ],
+          orphans_total: 1,
         },
         response: { ok: true, status: 200 },
       } as never;
@@ -79,6 +83,14 @@ test("preview shows summary, folder move, and rename-in-place", async () => {
   expect(screen.getByText("Radiohead — In Rainbows")).toBeInTheDocument();
   // rename-in-place row (from === to)
   expect(screen.getByText(/renamed in place/i)).toBeInTheDocument();
+});
+
+test("preview lists orphan folders to clean up", async () => {
+  wrap(<ReorganizeControl scope={{ scope: "library" }} />);
+  await userEvent.click(screen.getByRole("button", { name: /reorganize files/i }));
+  await screen.findByText(/3 will move/i);
+  expect(screen.getByText(/Folders to clean up/i)).toBeInTheDocument();
+  expect(screen.getByText("Old Artist feat. X")).toBeInTheDocument();
 });
 
 test("confirm starts the job", async () => {

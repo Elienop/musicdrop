@@ -30,7 +30,7 @@ const idleArtistArt: ArtistArtBackfillStatus = {
 };
 const idleReorganize: ReorganizeBackfillStatus = {
   phase: "idle", job_id: null, scope: null, total: 0, processed: 0,
-  moved: 0, skipped: 0, failed: 0, current: null, error: null,
+  moved: 0, skipped: 0, failed: 0, orphans_trashed: 0, current: null, error: null,
   artist: null, album_id: null, scope_label: "library",
 };
 

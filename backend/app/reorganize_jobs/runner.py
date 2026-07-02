@@ -5,12 +5,16 @@ local file IO, so no courtesy delay is needed (default 0)."""
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 from app.beets.library import LibraryHandle, library_paths_context
+from app.beets.orphans import find_orphan_folders
 from app.beets.reorganize import collect_units, reorganize_album, reorganize_singleton
+from app.beets.trash import trash_folder
 from app.models.reorganize import ReorganizeOutcome, ReorganizeScope
 from app.reorganize_jobs.registry import ReorganizeRegistry
 
@@ -22,6 +26,8 @@ def sweep(
     scope: ReorganizeScope,
     artist: str | None = None,
     album_id: int | None = None,
+    trash_dir: Path | None = None,
+    ignore_dirs: tuple[Path, ...] = (),
     delay: float = 0.0,
     reorg_album: Callable[..., ReorganizeOutcome] = reorganize_album,
     reorg_singleton: Callable[..., ReorganizeOutcome] = reorganize_singleton,
@@ -31,6 +37,10 @@ def sweep(
 
     ``on_complete`` fires once on termination (done/stopped/fail) — a partial
     run still moved files, so open tabs should refetch.
+
+    When ``trash_dir`` is given, an orphan pass runs after the moves: any
+    audio-empty husk left behind is moved to Trash. Omit it (the default) and
+    the pass is skipped, leaving existing callers unchanged.
     """
     try:
         with library_paths_context(handle):
@@ -38,6 +48,7 @@ def sweep(
                 handle.lib, scope=scope, artist=artist, album_id=album_id
             )
             reg.set_total(len(albums) + len(singletons))
+            vacated: list[Path] = []
             for album in albums:
                 if reg.should_stop():
                     reg.finish("stopped")
@@ -45,6 +56,8 @@ def sweep(
                 outcome = reorg_album(handle.lib, album)
                 reg.record(outcome)
                 reg.set_current(outcome.label)
+                if outcome.source_dir:
+                    vacated.append(Path(outcome.source_dir))
                 if delay:
                     time.sleep(delay)
             for item in singletons:
@@ -54,14 +67,50 @@ def sweep(
                 outcome = reorg_singleton(handle.lib, item)
                 reg.record(outcome)
                 reg.set_current(outcome.label)
+                if outcome.source_dir:
+                    vacated.append(Path(outcome.source_dir))
                 if delay:
                     time.sleep(delay)
+            if trash_dir is not None:
+                _sweep_orphans(
+                    reg,
+                    scope=scope,
+                    music_dir=Path(os.fsdecode(handle.lib.directory)),
+                    trash_dir=trash_dir,
+                    vacated=vacated,
+                    ignore_dirs=ignore_dirs,
+                )
             reg.finish("done")
     except Exception as exc:  # any crash becomes a failed job, never a lost thread
         reg.fail(str(exc) or exc.__class__.__name__)
     finally:
         if on_complete is not None:
             on_complete()
+
+
+def _sweep_orphans(
+    reg: ReorganizeRegistry,
+    *,
+    scope: ReorganizeScope,
+    music_dir: Path,
+    trash_dir: Path,
+    vacated: list[Path],
+    ignore_dirs: tuple[Path, ...],
+) -> None:
+    """Move audio-empty husks to Trash. Library scope scans the whole root; a
+    narrower scope seeds from the dirs this run vacated. Per-folder failures are
+    isolated so one bad move never aborts the job."""
+    seeds = None if scope == "library" else vacated
+    for folder in find_orphan_folders(
+        music_dir, seeds=seeds, trash_dir=trash_dir, ignore_dirs=ignore_dirs
+    ):
+        if reg.should_stop():
+            break
+        try:
+            trash_folder(folder, trash_dir=trash_dir)
+            reg.record_orphans(1)
+        except OSError:
+            continue
 
 
 def start_backfill(
@@ -71,6 +120,8 @@ def start_backfill(
     scope: ReorganizeScope,
     artist: str | None = None,
     album_id: int | None = None,
+    trash_dir: Path | None = None,
+    ignore_dirs: tuple[Path, ...] = (),
     delay: float = 0.0,
     on_complete: Callable[[], None] | None = None,
 ) -> None:
@@ -82,6 +133,8 @@ def start_backfill(
             scope=scope,
             artist=artist,
             album_id=album_id,
+            trash_dir=trash_dir,
+            ignore_dirs=ignore_dirs,
             delay=delay,
             on_complete=on_complete,
         ),

@@ -27,6 +27,8 @@ def test_plan_counts_and_truncation() -> None:
         already_in_place=8,
         moves=[],
         truncated=True,
+        orphans=[],
+        orphans_total=0,
     )
     assert p.scope == "library"
     assert p.already_in_place == 8
@@ -53,6 +55,7 @@ def test_status_idle_shape() -> None:
         artist=None,
         album_id=None,
         scope_label="library",
+        orphans_trashed=0,
     )
     assert s.phase == "idle"
     assert s.artist is None and s.album_id is None

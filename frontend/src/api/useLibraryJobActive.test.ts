@@ -49,6 +49,7 @@ const idleReorganize: ReorganizeBackfillStatus = {
   moved: 0,
   skipped: 0,
   failed: 0,
+  orphans_trashed: 0,
   current: null,
   error: null,
   artist: null,

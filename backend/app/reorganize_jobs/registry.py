@@ -36,6 +36,7 @@ class _ReorganizeJob:
     album_id: int | None = None
     scope_label: str = "library"
     stop_requested: bool = False
+    orphans_trashed: int = 0
 
 
 class ReorganizeRegistry:
@@ -88,6 +89,11 @@ class ReorganizeRegistry:
             else:  # skipped
                 job.skipped += 1
 
+    def record_orphans(self, n: int) -> None:
+        with self._lock:
+            if self._job is not None:
+                self._job.orphans_trashed += n
+
     def set_current(self, label: str | None) -> None:
         with self._lock:
             if self._job is not None:
@@ -133,6 +139,7 @@ class ReorganizeRegistry:
                     artist=None,
                     album_id=None,
                     scope_label="library",
+                    orphans_trashed=0,
                 )
             return ReorganizeBackfillStatus(
                 phase=job.phase,
@@ -148,6 +155,7 @@ class ReorganizeRegistry:
                 artist=job.artist,
                 album_id=job.album_id,
                 scope_label=job.scope_label,
+                orphans_trashed=job.orphans_trashed,
             )
 
 

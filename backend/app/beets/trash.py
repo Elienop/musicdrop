@@ -134,6 +134,20 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path) -> str:
     return str(dest)
 
 
+def trash_folder(folder: Path, *, trash_dir: Path) -> Path:
+    """Move an orphan husk folder (no tracked items) wholesale into Trash.
+
+    Reversible: ``shutil.move`` relocates the whole directory under ``trash_dir`` to
+    a collision-free name and returns the destination. No DB interaction — these
+    folders hold only art/sidecars, never library items (unlike
+    :func:`trash_album_folder`). Caller owns guard/selection (``find_orphan_folders``).
+    """
+    trash_dir.mkdir(parents=True, exist_ok=True)
+    dest = _unique_trash_dest(trash_dir, folder.name)
+    shutil.move(str(folder), str(dest))
+    return dest
+
+
 def resolve_trash_dir(settings: Settings, handle: LibraryHandle) -> Path:
     """Where resolved-away copies go: configured ``trash_dir`` or ``<beets_dir>/trash``.
 
