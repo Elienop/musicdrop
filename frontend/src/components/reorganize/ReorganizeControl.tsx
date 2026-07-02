@@ -8,6 +8,7 @@ import {
   type ReorganizeMove,
   type ReorganizePlan,
   type ReorganizeScope,
+  type ReorganizeUnitFailure,
   usePreviewReorganize,
   useReorganizeStatus,
   useStartReorganize,
@@ -45,6 +46,25 @@ function MoveRow({ m }: { m: ReorganizeMove }) {
         </span>
       )}
     </li>
+  );
+}
+
+/** The per-unit failures a terminal job carries (label + reason) — this is
+ * what finally shows the user WHICH file is stuck and WHY. */
+function FailureList({ failures }: { failures: ReorganizeUnitFailure[] }) {
+  return (
+    <ul
+      role="alert"
+      aria-label="Files that could not be reorganized"
+      className="text-destructive flex max-w-prose flex-col gap-1 text-sm"
+    >
+      {failures.map((f, i) => (
+        <li key={`${f.label}-${i}`}>
+          <span className="font-medium">{f.label}</span>
+          <span className="text-muted-foreground"> — {f.error}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -146,6 +166,13 @@ export function ReorganizeControl({
   const isThis = jobMatches(job, scope);
   const runningThis = phase === "running" && isThis;
   const otherRunning = phase === "running" && !isThis;
+
+  // Once THIS scope's job is terminal, surface its per-unit failures (label +
+  // reason) under the controls — counts alone can't say which file is stuck.
+  const failures =
+    isThis && (phase === "done" || phase === "stopped" || phase === "failed")
+      ? (job?.failures ?? [])
+      : [];
 
   // Files moved + DB paths changed — refresh the album/artist rosters that show
   // those paths once THIS scope's job reaches a terminal state.
@@ -277,6 +304,7 @@ export function ReorganizeControl({
             {message.text}
           </span>
         )}
+        {failures.length > 0 && <FailureList failures={failures} />}
       </div>
     );
   }
@@ -346,6 +374,7 @@ export function ReorganizeControl({
           </span>
         )}
       </div>
+      {failures.length > 0 && <FailureList failures={failures} />}
     </div>
   );
 }

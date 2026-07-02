@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,26 @@ def test_delete_album_trashes_whole_folder_and_drops(
     assert duplicates_lib.get_album(album_id) is None  # dropped from the library
     assert (Path(result.trash_path) / "cover-extra.lrc").is_file()  # sidecar came along
     assert not os.path.exists(folder)  # no orphaned husk
+
+
+def test_delete_album_ghost_folder_already_gone(duplicates_lib: Library, tmp_path: Path) -> None:
+    """Folder deleted on disk outside MusicDrop -> drop the ghost rows, don't 500.
+
+    Reproduces the live user case: an artist folder removed over SMB leaves the
+    beets DB rows behind. The front-door delete must clean them, not fail on the
+    missing source folder.
+    """
+    trash = tmp_path / "trash"
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = int(album.id)
+    folder = album_folder(duplicates_lib, list(album.items()))
+    shutil.rmtree(folder)  # ghost: DB rows remain, the files are gone
+
+    result = delete_album(duplicates_lib, album_id, trash_dir=trash)
+
+    assert result.trashed_albums == 1
+    assert duplicates_lib.get_album(album_id) is None  # ghost rows dropped
+    assert not trash.exists()  # nothing relocated — there was nothing to move
 
 
 def test_delete_album_unknown_id_raises(duplicates_lib: Library, tmp_path: Path) -> None:

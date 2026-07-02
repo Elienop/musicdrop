@@ -67,6 +67,32 @@ def _item_moves(lib: Any, item: Any) -> bool:
     return bool(item.path != item.destination(basedir=lib.directory))
 
 
+def _verify_moves(pending: list[tuple[int, bytes, bytes]], after: dict[int, bytes]) -> list[str]:
+    """Post-move verification: beets 2.12 silently skips a move whose source file is
+    absent (models.py:1142) and silently diverts to a `.N`-suffixed name when the
+    destination is occupied (unique_path) — both leave the unit eternally re-flagged
+    by the preview. Returns one human-readable problem per affected file."""
+    problems: list[str] = []
+    for item_id, old_path, dest in pending:
+        new_path = after.get(item_id, old_path)
+        name = os.path.basename(os.fsdecode(old_path))
+        if new_path == old_path:
+            if not os.path.exists(old_path):
+                problems.append(
+                    f"{name}: file not found on disk at the library's recorded path"
+                    " — fix the file name on disk or re-import the album"
+                )
+            else:
+                problems.append(f"{name}: move did not take effect")
+        elif new_path != dest:
+            problems.append(
+                f"{name}: computed filename is already taken by another track"
+                f" (landed at {os.path.basename(os.fsdecode(new_path))!r})"
+                " — two tracks share the same track number and title"
+            )
+    return problems
+
+
 def _commonpath_of_dirs(paths: list[bytes]) -> str:
     """The deepest directory shared by all of ``paths`` (the unit's album root).
 
@@ -227,8 +253,19 @@ def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
             if not items or not any(_item_moves(lib, i) for i in items):
                 return ReorganizeOutcome(status="skipped", label=label)
             source_dir = _commonpath_of_dirs([i.path for i in items])  # before the move
+            pending = [
+                (int(i.id), bytes(i.path), bytes(i.destination(basedir=lib.directory)))
+                for i in items
+                if _item_moves(lib, i)
+            ]
             with lib.transaction():
                 album.move(MoveOperation.MOVE, store=True)
+            # Album.move re-fetches its own item objects; the local `items` list is
+            # NOT mutated, so re-read the album's items to see the post-move paths.
+            after = {int(i.id): bytes(i.path) for i in album.items()}
+            problems = _verify_moves(pending, after)
+            if problems:
+                return ReorganizeOutcome(status="failed", label=label, error="; ".join(problems))
             return ReorganizeOutcome(status="moved", label=label, source_dir=source_dir or None)
         except (ValueError, OSError) as exc:
             return ReorganizeOutcome(
@@ -244,8 +281,16 @@ def reorganize_singleton(lib: Any, item: Any) -> ReorganizeOutcome:
             if not _item_moves(lib, item):
                 return ReorganizeOutcome(status="skipped", label=label)
             source_dir = os.path.dirname(os.fsdecode(item.path))  # before the move
+            old_path = bytes(item.path)
+            dest = bytes(item.destination(basedir=lib.directory))
             with lib.transaction():
                 item.move(MoveOperation.MOVE, with_album=False, store=True)
+            # item.move mutates this same object's `.path`, so compare it directly.
+            problems = _verify_moves(
+                [(int(item.id), old_path, dest)], {int(item.id): bytes(item.path)}
+            )
+            if problems:
+                return ReorganizeOutcome(status="failed", label=label, error="; ".join(problems))
             return ReorganizeOutcome(status="moved", label=label, source_dir=source_dir or None)
         except (ValueError, OSError) as exc:
             return ReorganizeOutcome(

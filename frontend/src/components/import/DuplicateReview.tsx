@@ -96,8 +96,9 @@ export function DuplicateActions({
     <>
       <div className="bg-background/80 sticky bottom-0 z-10 -mx-2 flex flex-wrap items-center gap-2 border-t px-2 py-3 backdrop-blur">
         {/* None of the four is the preferred choice — they sit as one neutral
-            peer row. Replace old keeps only its amber caution tint (it trashes
-            the old copy: a safety signal, not a preference). */}
+            peer row. Replace included: it moves the old copy to the reversible
+            Trash (the footnote says so), so a warning tint would overstate the
+            risk and discourage what is often the normal choice. */}
         <Button
           variant="outline"
           size="sm"
@@ -120,7 +121,6 @@ export function DuplicateActions({
           variant="outline"
           size="sm"
           disabled={busy}
-          className="border-warning text-warning hover:bg-warning/10 hover:text-warning"
           aria-describedby="duplicate-footnote"
           onClick={() => onDecide("replace")}
         >

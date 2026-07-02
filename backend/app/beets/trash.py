@@ -125,6 +125,13 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path) -> str:
         album.remove(delete=False)
         return str(trash_dir)
     album_root = _album_root(lib, items)
+    if not os.path.isdir(album_root):
+        # Ghost album: the folder was deleted outside MusicDrop (the DB rows are
+        # all that's left). Nothing to relocate — just drop the rows so the
+        # library stops advertising files that don't exist. beets 2.12 would
+        # silently skip the per-item moves anyway (missing sources).
+        album.remove(delete=False)
+        return str(trash_dir)
     if _folder_is_shared(lib, album, album_root):
         return trash_album(lib, album, trash_dir=trash_dir)
     trash_dir.mkdir(parents=True, exist_ok=True)

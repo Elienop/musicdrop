@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 from beets.library import Library
@@ -65,6 +66,26 @@ def test_trash_album_folder_takes_whole_folder_incl_sidecars(
     assert str(trash) in dest and os.path.isdir(dest)
     assert (Path(dest) / "01 Track.lrc").is_file()  # the sidecar came along
     assert not os.path.exists(src_folder)  # no orphaned husk left behind
+
+
+def test_trash_album_folder_ghost_folder_already_gone_drops_rows(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    trash = tmp_path / "trash"
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = int(album.id)
+    src_folder = album_folder(duplicates_lib, list(album.items()))
+    # The user deleted the album's folder on disk (e.g. over SMB); the DB rows
+    # are all that's left. Trashing the "ghost" must drop the rows, not raise
+    # FileNotFoundError trying to relocate a folder that no longer exists.
+    shutil.rmtree(src_folder)
+
+    with duplicates_lib.transaction():
+        dest = trash_album_folder(duplicates_lib, album, trash_dir=trash)
+
+    assert duplicates_lib.get_album(album_id) is None  # ghost rows dropped
+    assert str(trash) in dest  # returns the trash dir, nothing actually moved
+    assert not trash.exists()  # nothing relocated — there was nothing on disk
 
 
 def test_folder_shared_guard(duplicates_lib: Library) -> None:
