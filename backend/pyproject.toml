@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A self-hosted web UI for beets — browse your music library, run tagging & enrichment, and build Plex-compatible playlists."
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.138.0",
+    "fastapi>=0.139.0",
     "uvicorn[standard]>=0.49.0",
     "pydantic-settings>=2.14.2",
     "beets==2.12.*",
@@ -19,7 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "mypy>=1.11",
-    "ruff>=0.15.19",
+    "ruff>=0.15.20",
     "pytest>=9.1.1",
     "respx>=0.23.1",
 ]
