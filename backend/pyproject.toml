@@ -126,6 +126,8 @@ module = [
     "app.beets.playlists",
     "tests.test_playlists_beets",
     "tests.test_playlists_api",
+    "app.beets.disk_sync",
+    "tests.test_disk_sync_adapter",
     "app.plex.client",
     "app.plex.mapping",
     "app.plex.service",
