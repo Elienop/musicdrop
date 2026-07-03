@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ActiveImportStatus } from "@/api/useActiveImport";
 import type { ArtistArtBackfillStatus } from "@/api/useArtistArt";
+import type { DiskSyncStatus } from "@/api/useDiskSync";
 import { useLibraryJobActive } from "@/api/useLibraryJobActive";
 import type { LyricsBackfillStatus } from "@/api/useLyricsBackfill";
 import type { ReorganizeBackfillStatus } from "@/api/useReorganize";
@@ -57,11 +58,26 @@ const idleReorganize: ReorganizeBackfillStatus = {
   scope_label: "library",
   failures: [],
 };
+const idleDiskSync: DiskSyncStatus = {
+  phase: "idle",
+  job_id: null,
+  total: 0,
+  processed: 0,
+  removed: 0,
+  updated: 0,
+  unchanged: 0,
+  read_errors: 0,
+  emptied_albums: 0,
+  current: null,
+  error: null,
+  failures: [],
+};
 
 let importData: ActiveImportStatus = idleImport;
 let lyricsData: LyricsBackfillStatus = idleLyrics;
 let artistArtData: ArtistArtBackfillStatus = idleArtistArt;
 let reorganizeData: ReorganizeBackfillStatus = idleReorganize;
+let diskSyncData: DiskSyncStatus = idleDiskSync;
 
 vi.mock("@/api/useActiveImport", () => ({
   useActiveImport: () => ({ data: importData }),
@@ -75,12 +91,16 @@ vi.mock("@/api/useArtistArt", () => ({
 vi.mock("@/api/useReorganize", () => ({
   useReorganizeStatus: () => ({ data: reorganizeData }),
 }));
+vi.mock("@/api/useDiskSync", () => ({
+  useDiskSyncStatus: () => ({ data: diskSyncData }),
+}));
 
 beforeEach(() => {
   importData = idleImport;
   lyricsData = idleLyrics;
   artistArtData = idleArtistArt;
   reorganizeData = idleReorganize;
+  diskSyncData = idleDiskSync;
 });
 
 describe("useLibraryJobActive", () => {
@@ -114,5 +134,12 @@ describe("useLibraryJobActive", () => {
     const { result } = renderHook(() => useLibraryJobActive());
     expect(result.current.active).toBe(true);
     expect(result.current.label).toMatch(/reorganize/);
+  });
+
+  it("flags a running disk sync", () => {
+    diskSyncData = { ...idleDiskSync, phase: "running" };
+    const { result } = renderHook(() => useLibraryJobActive());
+    expect(result.current.active).toBe(true);
+    expect(result.current.label).toMatch(/disk sync/);
   });
 });

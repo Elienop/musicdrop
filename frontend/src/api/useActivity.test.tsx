@@ -5,6 +5,7 @@ import { vi } from "vitest";
 import type { AcquisitionQueueStatus } from "@/api/useAcquisitionStatus";
 import type { ActiveImportStatus } from "@/api/useActiveImport";
 import type { ArtistArtBackfillStatus } from "@/api/useArtistArt";
+import type { DiskSyncStatus } from "@/api/useDiskSync";
 import type { LyricsBackfillStatus } from "@/api/useLyricsBackfill";
 import type { ReorganizeBackfillStatus } from "@/api/useReorganize";
 import { useActivity, useActivityDismissals } from "@/api/useActivity";
@@ -33,12 +34,18 @@ const idleReorganize: ReorganizeBackfillStatus = {
   moved: 0, skipped: 0, failed: 0, orphans_trashed: 0, current: null, error: null,
   artist: null, album_id: null, scope_label: "library", failures: [],
 };
+const idleDiskSync: DiskSyncStatus = {
+  phase: "idle", job_id: null, total: 0, processed: 0, removed: 0, updated: 0,
+  unchanged: 0, read_errors: 0, emptied_albums: 0, current: null, error: null,
+  failures: [],
+};
 
 let importData: ActiveImportStatus = idleImport;
 let acquisitionData: AcquisitionQueueStatus = idleAcquisition;
 let lyricsData: LyricsBackfillStatus = idleLyrics;
 let artistArtData: ArtistArtBackfillStatus = idleArtistArt;
 let reorganizeData: ReorganizeBackfillStatus = idleReorganize;
+let diskSyncData: DiskSyncStatus = idleDiskSync;
 
 vi.mock("@/api/useActiveImport", () => ({
   useActiveImport: () => ({ data: importData }),
@@ -55,6 +62,9 @@ vi.mock("@/api/useArtistArt", () => ({
 vi.mock("@/api/useReorganize", () => ({
   useReorganizeStatus: () => ({ data: reorganizeData }),
 }));
+vi.mock("@/api/useDiskSync", () => ({
+  useDiskSyncStatus: () => ({ data: diskSyncData }),
+}));
 
 function renderActivity() {
   return renderHook(() => ({
@@ -70,6 +80,7 @@ describe("useActivity", () => {
     lyricsData = idleLyrics;
     artistArtData = idleArtistArt;
     reorganizeData = idleReorganize;
+    diskSyncData = idleDiskSync;
     sessionStorage.clear();
   });
 
@@ -189,6 +200,34 @@ describe("useActivity", () => {
       "5 found · 2 skipped",
     );
     expect(result.current.activity.runningCount).toBe(1);
+  });
+
+  it("maps a running disk sync with progress, and a done sync with outcome counts", () => {
+    diskSyncData = {
+      ...idleDiskSync, phase: "running", job_id: "d1", processed: 120, total: 600,
+    };
+    const { result, rerender } = renderActivity();
+    expect(result.current.activity.rows).toEqual([
+      {
+        id: "disk-sync:d1",
+        kind: "disk-sync",
+        label: "Disk sync",
+        scope: "library",
+        state: "running",
+        progress: { done: 120, total: 600 },
+        href: "/settings/beets",
+      },
+    ]);
+
+    diskSyncData = {
+      ...idleDiskSync, phase: "done", job_id: "d1", total: 600, processed: 600,
+      removed: 2, updated: 1, emptied_albums: 1, read_errors: 3,
+    };
+    rerender();
+    expect(result.current.activity.rows[0]).toMatchObject({
+      state: "done",
+      countsText: "2 removed · 1 updated · 1 albums pruned · 3 read errors",
+    });
   });
 
   it("drops idle and stopped phases entirely", () => {

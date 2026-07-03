@@ -14,17 +14,25 @@ import { useSyncExternalStore } from "react";
 import { useAcquisitionStatus } from "@/api/useAcquisitionStatus";
 import { useActiveImport } from "@/api/useActiveImport";
 import { useArtistArtBackfillStatus } from "@/api/useArtistArt";
+import { useDiskSyncStatus } from "@/api/useDiskSync";
 import { useLyricsBackfillStatus } from "@/api/useLyricsBackfill";
 import { useReorganizeStatus } from "@/api/useReorganize";
 import type { AcquisitionQueueStatus } from "@/api/useAcquisitionStatus";
 import type { ActiveImportStatus } from "@/api/useActiveImport";
 import type { ArtistArtBackfillStatus } from "@/api/useArtistArt";
+import type { DiskSyncStatus } from "@/api/useDiskSync";
 import type { LyricsBackfillStatus } from "@/api/useLyricsBackfill";
 import type { ReorganizeBackfillStatus } from "@/api/useReorganize";
 
 export type ActivityRow = {
   id: string;
-  kind: "import" | "lyrics" | "artist-art" | "reorganize" | "acquisition";
+  kind:
+    | "import"
+    | "lyrics"
+    | "artist-art"
+    | "reorganize"
+    | "disk-sync"
+    | "acquisition";
   label: string;
   scope?: string;
   state: "running" | "failed" | "done";
@@ -288,9 +296,46 @@ function reorganizeRow(
   return null;
 }
 
+function diskSyncRow(status: DiskSyncStatus | undefined): ActivityRow | null {
+  if (status === undefined) {
+    return null;
+  }
+  const id = `disk-sync:${status.job_id ?? "job"}`;
+  if (status.phase === "running") {
+    return {
+      id, kind: "disk-sync", label: "Disk sync", scope: "library",
+      state: "running",
+      progress: { done: status.processed, total: status.total },
+      href: "/settings/beets",
+    };
+  }
+  if (status.phase === "failed") {
+    return {
+      id, kind: "disk-sync", label: "Disk sync", scope: "library",
+      state: "failed",
+      countsText: status.error ?? undefined,
+      href: "/settings/beets",
+    };
+  }
+  if (status.phase === "done") {
+    return {
+      id, kind: "disk-sync", label: "Disk sync", scope: "library",
+      state: "done",
+      countsText: outcomeCounts([
+        [status.removed, "removed"],
+        [status.updated, "updated"],
+        [status.emptied_albums, "albums pruned"],
+        [status.read_errors, "read errors"],
+      ]),
+      href: "/settings/beets",
+    };
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 
-/** Compose the five job sources into the activity rows the topbar popover
+/** Compose the six job sources into the activity rows the topbar popover
  * renders and the toast effect diffs. Dismissed FAILED rows are excluded
  * (running/done rows never are — ids are job-scoped, so a new run is a new
  * id and a stale dismissal cannot hide it). */
@@ -300,6 +345,7 @@ export function useActivity(): { rows: ActivityRow[]; runningCount: number } {
   const lyricsStatus = useLyricsBackfillStatus().data;
   const artistArtStatus = useArtistArtBackfillStatus().data;
   const reorganizeStatus = useReorganizeStatus().data;
+  const diskSyncStatus = useDiskSyncStatus().data;
   const { dismissed } = useActivityDismissals();
 
   const rows = [
@@ -308,6 +354,7 @@ export function useActivity(): { rows: ActivityRow[]; runningCount: number } {
     lyricsRow(lyricsStatus),
     artistArtRow(artistArtStatus),
     reorganizeRow(reorganizeStatus),
+    diskSyncRow(diskSyncStatus),
   ]
     .filter((row): row is ActivityRow => row !== null)
     .filter((row) => row.state !== "failed" || !dismissed.has(row.id));
