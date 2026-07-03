@@ -21,6 +21,7 @@ from app.beets.delete import delete_artist_op
 from app.beets.library import LibraryHandle, list_artists
 from app.config import resolve_artist_image_cache_dir
 from app.config import settings as _module_settings
+from app.disk_sync_jobs.registry import disk_sync_active
 from app.events.emit import emit_art_changed, emit_library_changed
 from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import lyrics_backfill_active
@@ -190,6 +191,7 @@ def _gate_library_busy(app: object) -> None:
         or lyrics_backfill_active()
         or artist_art_backfill_active()
         or reorganize_backfill_active()
+        or disk_sync_active()
     ):
         raise HTTPException(
             st.HTTP_409_CONFLICT,

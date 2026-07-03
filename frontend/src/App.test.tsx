@@ -19,9 +19,10 @@ const ACQUISITION_URL = `${window.location.origin}/api/acquisition/status`;
 const REORGANIZE_URL = `${window.location.origin}/api/reorganize/status`;
 const LYRICS_URL = `${window.location.origin}/api/lyrics/backfill`;
 const ARTIST_ART_URL = `${window.location.origin}/api/artists/art/backfill`;
+const DISK_SYNC_URL = `${window.location.origin}/api/disk-sync/status`;
 
 /** Idle handlers for every probe the shell polls (health + the Review badge
- * probe + the five activity sources), so shell tests are deterministic and
+ * probe + the six activity sources), so shell tests are deterministic and
  * quiet under MSW's onUnhandledRequest:"error". Spread these AFTER any
  * per-test override — within one server.use() call, earlier handlers win. */
 function idleShellHandlers() {
@@ -96,6 +97,22 @@ function idleShellHandlers() {
         error: null,
         artist: null,
         scope_label: "library",
+      }),
+    ),
+    http.get(DISK_SYNC_URL, () =>
+      HttpResponse.json({
+        phase: "idle",
+        job_id: null,
+        total: 0,
+        processed: 0,
+        removed: 0,
+        updated: 0,
+        unchanged: 0,
+        read_errors: 0,
+        emptied_albums: 0,
+        current: null,
+        error: null,
+        failures: [],
       }),
     ),
   ];

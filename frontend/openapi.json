@@ -2326,6 +2326,91 @@
         }
       }
     },
+    "/api/disk-sync/preview": {
+      "get": {
+        "tags": [
+          "disk-sync"
+        ],
+        "summary": "Preview Disk Sync",
+        "description": "Dry run: what a sync would remove/update. Read-only.",
+        "operationId": "preview_disk_sync_api_disk_sync_preview_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiskSyncPlan"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/disk-sync": {
+      "post": {
+        "tags": [
+          "disk-sync"
+        ],
+        "summary": "Start Disk Sync",
+        "operationId": "start_disk_sync_api_disk_sync_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiskSyncStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/disk-sync/status": {
+      "get": {
+        "tags": [
+          "disk-sync"
+        ],
+        "summary": "Disk Sync Status",
+        "operationId": "disk_sync_status_api_disk_sync_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiskSyncStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/disk-sync/stop": {
+      "post": {
+        "tags": [
+          "disk-sync"
+        ],
+        "summary": "Stop Disk Sync",
+        "operationId": "stop_disk_sync_api_disk_sync_stop_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiskSyncStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/stats": {
       "get": {
         "tags": [
@@ -5267,6 +5352,227 @@
         ],
         "title": "DeleteResult",
         "description": "Outcome of a reversible delete: how many albums went to Trash + where.\n\n``trashed_albums`` is 1 for a single-album delete, N for an artist (every\nalbum of theirs). ``trash_path`` is the Trash location the files were moved\nto (recoverable from there)."
+      },
+      "DiskSyncChange": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Fields"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "fields"
+        ],
+        "title": "DiskSyncChange"
+      },
+      "DiskSyncPlan": {
+        "properties": {
+          "total_items": {
+            "type": "integer",
+            "title": "Total Items"
+          },
+          "will_remove": {
+            "type": "integer",
+            "title": "Will Remove"
+          },
+          "will_update": {
+            "type": "integer",
+            "title": "Will Update"
+          },
+          "emptied_albums": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Emptied Albums"
+          },
+          "emptied_total": {
+            "type": "integer",
+            "title": "Emptied Total"
+          },
+          "removals": {
+            "items": {
+              "$ref": "#/components/schemas/DiskSyncRemoval"
+            },
+            "type": "array",
+            "title": "Removals"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/DiskSyncChange"
+            },
+            "type": "array",
+            "title": "Changes"
+          },
+          "read_errors": {
+            "items": {
+              "$ref": "#/components/schemas/DiskSyncReadError"
+            },
+            "type": "array",
+            "title": "Read Errors"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_items",
+          "will_remove",
+          "will_update",
+          "emptied_albums",
+          "emptied_total",
+          "removals",
+          "changes",
+          "read_errors",
+          "truncated"
+        ],
+        "title": "DiskSyncPlan"
+      },
+      "DiskSyncReadError": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "error"
+        ],
+        "title": "DiskSyncReadError"
+      },
+      "DiskSyncRemoval": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "path"
+        ],
+        "title": "DiskSyncRemoval"
+      },
+      "DiskSyncStatus": {
+        "properties": {
+          "phase": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "running",
+              "done",
+              "stopped",
+              "failed"
+            ],
+            "title": "Phase"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "processed": {
+            "type": "integer",
+            "title": "Processed"
+          },
+          "removed": {
+            "type": "integer",
+            "title": "Removed"
+          },
+          "updated": {
+            "type": "integer",
+            "title": "Updated"
+          },
+          "unchanged": {
+            "type": "integer",
+            "title": "Unchanged"
+          },
+          "read_errors": {
+            "type": "integer",
+            "title": "Read Errors"
+          },
+          "emptied_albums": {
+            "type": "integer",
+            "title": "Emptied Albums"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "failures": {
+            "items": {
+              "$ref": "#/components/schemas/DiskSyncReadError"
+            },
+            "type": "array",
+            "title": "Failures"
+          }
+        },
+        "type": "object",
+        "required": [
+          "phase",
+          "job_id",
+          "total",
+          "processed",
+          "removed",
+          "updated",
+          "unchanged",
+          "read_errors",
+          "emptied_albums",
+          "current",
+          "error",
+          "failures"
+        ],
+        "title": "DiskSyncStatus"
       },
       "DuplicateAction": {
         "type": "string",

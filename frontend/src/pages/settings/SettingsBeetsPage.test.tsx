@@ -80,6 +80,7 @@ const APPLY_URL = `${window.location.origin}/api/config/apply`;
 const VALIDATE_URL = `${window.location.origin}/api/config/validate`;
 const ACTIVE_IMPORT_URL = `${window.location.origin}/api/imports/active`;
 const REORGANIZE_STATUS_URL = `${window.location.origin}/api/reorganize/status`;
+const DISK_SYNC_STATUS_URL = `${window.location.origin}/api/disk-sync/status`;
 
 /** Idle reorganize job — shape mirrors useReorganizeStatus's fallback. */
 function idleReorganizeStatus() {
@@ -100,10 +101,32 @@ function idleReorganizeStatus() {
   };
 }
 
+/** Idle disk-sync job — shape mirrors useDiskSyncStatus's fallback. The page
+ * now hosts the DiskSyncPanel, which polls this probe on mount. */
+function idleDiskSyncStatus() {
+  return {
+    phase: "idle",
+    job_id: null,
+    total: 0,
+    processed: 0,
+    removed: 0,
+    updated: 0,
+    unchanged: 0,
+    read_errors: 0,
+    emptied_albums: 0,
+    current: null,
+    error: null,
+    failures: [],
+  };
+}
+
 beforeEach(() => {
   server.use(
     http.get(REORGANIZE_STATUS_URL, () =>
       HttpResponse.json(idleReorganizeStatus()),
+    ),
+    http.get(DISK_SYNC_STATUS_URL, () =>
+      HttpResponse.json(idleDiskSyncStatus()),
     ),
   );
 });

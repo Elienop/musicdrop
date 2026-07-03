@@ -348,6 +348,7 @@ async def start_album_lyrics_op(
     from fastapi import status as http_status
 
     from app.artist_art_jobs.registry import artist_art_backfill_active
+    from app.disk_sync_jobs.registry import disk_sync_active
     from app.import_jobs.registry import get_registry
     from app.lyrics_jobs.registry import get_lyrics_backfill, lyrics_backfill_active
     from app.lyrics_jobs.runner import start_backfill
@@ -360,6 +361,7 @@ async def start_album_lyrics_op(
         or lyrics_backfill_active()
         or artist_art_backfill_active()
         or reorganize_backfill_active()
+        or disk_sync_active()
     ):
         raise HTTPException(
             status_code=http_status.HTTP_409_CONFLICT,

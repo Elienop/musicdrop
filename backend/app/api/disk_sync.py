@@ -1,0 +1,84 @@
+# backend/app/api/disk_sync.py
+"""Sync-with-disk endpoints: dry-run preview + the single-slot job.
+
+Library-wide only. Mutually exclusive with every other library writer (the
+same 8-gate set — see _gate_busy) in BOTH directions."""
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
+
+from app.api.albums import get_library
+from app.artist_art_jobs.registry import artist_art_backfill_active
+from app.beets.disk_sync import LibraryRootUnavailableError, plan_disk_sync
+from app.beets.library import LibraryHandle
+from app.disk_sync_jobs.registry import (
+    DiskSyncRegistry,
+    get_disk_sync_registry,
+)
+from app.disk_sync_jobs.runner import start_backfill
+from app.events.emit import emit_library_changed
+from app.import_jobs.registry import get_registry
+from app.lyrics_jobs.registry import lyrics_backfill_active
+from app.models.disk_sync import DiskSyncPlan, DiskSyncStatus
+from app.reorganize_jobs.registry import reorganize_backfill_active
+
+router = APIRouter(tags=["disk-sync"])
+
+_BUSY = "A library operation is in progress — disk sync available when it finishes"
+
+
+def _gate_busy(app: object) -> None:
+    if (
+        get_registry().has_active_job()
+        or lyrics_backfill_active()
+        or artist_art_backfill_active()
+        or reorganize_backfill_active()
+    ):
+        raise HTTPException(status.HTTP_409_CONFLICT, _BUSY)
+    lock = getattr(app.state, "beets_swap_lock", None)  # type: ignore[attr-defined]  # app is duck-typed (object) so tests can pass a stub
+    if lock is not None and lock.locked():
+        raise HTTPException(status.HTTP_409_CONFLICT, _BUSY)
+
+
+@router.get("/disk-sync/preview", response_model=DiskSyncPlan)
+async def preview_disk_sync(
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> DiskSyncPlan:
+    """Dry run: what a sync would remove/update. Read-only."""
+    try:
+        return await run_in_threadpool(plan_disk_sync, handle.lib)
+    except LibraryRootUnavailableError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+
+
+@router.post("/disk-sync", response_model=DiskSyncStatus)
+async def start_disk_sync(
+    request: Request,
+    reg: Annotated[DiskSyncRegistry, Depends(get_disk_sync_registry)],
+) -> DiskSyncStatus:
+    _gate_busy(request.app)
+    try:
+        reg.start()
+    except RuntimeError:
+        raise HTTPException(status.HTTP_409_CONFLICT, "A disk sync is already running") from None
+    app = request.app
+    handle = app.state.beets_library
+    start_backfill(reg, handle, on_complete=lambda: emit_library_changed(app))
+    return reg.state()
+
+
+@router.get("/disk-sync/status", response_model=DiskSyncStatus)
+async def disk_sync_status(
+    reg: Annotated[DiskSyncRegistry, Depends(get_disk_sync_registry)],
+) -> DiskSyncStatus:
+    return reg.state()
+
+
+@router.post("/disk-sync/stop", response_model=DiskSyncStatus)
+async def stop_disk_sync(
+    reg: Annotated[DiskSyncRegistry, Depends(get_disk_sync_registry)],
+) -> DiskSyncStatus:
+    reg.request_stop()
+    return reg.state()

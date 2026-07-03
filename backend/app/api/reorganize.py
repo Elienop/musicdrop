@@ -20,6 +20,7 @@ from app.beets.config_editor import _settings
 from app.beets.library import LibraryHandle, album_exists
 from app.beets.reorganize import album_scope_label, plan_reorganize
 from app.beets.trash import resolve_trash_dir
+from app.disk_sync_jobs.registry import disk_sync_active
 from app.events.emit import emit_library_changed
 from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import lyrics_backfill_active
@@ -36,7 +37,12 @@ _BUSY = "A library operation is in progress — reorganize available when it fin
 
 
 def _gate_busy(app: object) -> None:
-    if get_registry().has_active_job() or lyrics_backfill_active() or artist_art_backfill_active():
+    if (
+        get_registry().has_active_job()
+        or lyrics_backfill_active()
+        or artist_art_backfill_active()
+        or disk_sync_active()
+    ):
         raise HTTPException(status.HTTP_409_CONFLICT, _BUSY)
     lock = getattr(app.state, "beets_swap_lock", None)  # type: ignore[attr-defined]  # app is duck-typed (object) so tests can pass a stub
     if lock is not None and lock.locked():

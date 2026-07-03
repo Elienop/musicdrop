@@ -945,6 +945,77 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/disk-sync/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview Disk Sync
+         * @description Dry run: what a sync would remove/update. Read-only.
+         */
+        get: operations["preview_disk_sync_api_disk_sync_preview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/disk-sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start Disk Sync */
+        post: operations["start_disk_sync_api_disk_sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/disk-sync/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Disk Sync Status */
+        get: operations["disk_sync_status_api_disk_sync_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/disk-sync/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop Disk Sync */
+        post: operations["stop_disk_sync_api_disk_sync_stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/stats": {
         parameters: {
             query?: never;
@@ -2053,6 +2124,78 @@ export interface components {
             trashed_albums: number;
             /** Trash Path */
             trash_path: string;
+        };
+        /** DiskSyncChange */
+        DiskSyncChange: {
+            /** Label */
+            label: string;
+            /** Fields */
+            fields: string[];
+        };
+        /** DiskSyncPlan */
+        DiskSyncPlan: {
+            /** Total Items */
+            total_items: number;
+            /** Will Remove */
+            will_remove: number;
+            /** Will Update */
+            will_update: number;
+            /** Emptied Albums */
+            emptied_albums: string[];
+            /** Emptied Total */
+            emptied_total: number;
+            /** Removals */
+            removals: components["schemas"]["DiskSyncRemoval"][];
+            /** Changes */
+            changes: components["schemas"]["DiskSyncChange"][];
+            /** Read Errors */
+            read_errors: components["schemas"]["DiskSyncReadError"][];
+            /** Truncated */
+            truncated: boolean;
+        };
+        /** DiskSyncReadError */
+        DiskSyncReadError: {
+            /** Label */
+            label: string;
+            /** Error */
+            error: string;
+        };
+        /** DiskSyncRemoval */
+        DiskSyncRemoval: {
+            /** Label */
+            label: string;
+            /** Path */
+            path: string;
+        };
+        /** DiskSyncStatus */
+        DiskSyncStatus: {
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "idle" | "running" | "done" | "stopped" | "failed";
+            /** Job Id */
+            job_id: string | null;
+            /** Total */
+            total: number;
+            /** Processed */
+            processed: number;
+            /** Removed */
+            removed: number;
+            /** Updated */
+            updated: number;
+            /** Unchanged */
+            unchanged: number;
+            /** Read Errors */
+            read_errors: number;
+            /** Emptied Albums */
+            emptied_albums: number;
+            /** Current */
+            current: string | null;
+            /** Error */
+            error: string | null;
+            /** Failures */
+            failures: components["schemas"]["DiskSyncReadError"][];
         };
         /**
          * DuplicateAction
@@ -5253,6 +5396,86 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReorganizeBackfillStatus"];
+                };
+            };
+        };
+    };
+    preview_disk_sync_api_disk_sync_preview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiskSyncPlan"];
+                };
+            };
+        };
+    };
+    start_disk_sync_api_disk_sync_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiskSyncStatus"];
+                };
+            };
+        };
+    };
+    disk_sync_status_api_disk_sync_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiskSyncStatus"];
+                };
+            };
+        };
+    };
+    stop_disk_sync_api_disk_sync_stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiskSyncStatus"];
                 };
             };
         };

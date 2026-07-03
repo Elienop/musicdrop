@@ -23,6 +23,7 @@ import { SectionLabel } from "@/components/system/SectionLabel";
 import { StatusBanner } from "@/components/system/StatusBanner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { DiskSyncPanel } from "./DiskSyncPanel";
 import { ReorganizeLibraryPanel } from "./ReorganizeLibraryPanel";
 import { SettingsConflict } from "@/pages/settings/SettingsConflict";
 import {
@@ -424,6 +425,7 @@ export function SettingsBeetsPage() {
         )}
       </section>
       <ReorganizeLibraryPanel />
+      <DiskSyncPanel />
     </div>
   );
 }

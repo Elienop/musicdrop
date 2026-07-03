@@ -37,6 +37,7 @@ const ACQUISITION_URL = `${window.location.origin}/api/acquisition/status`;
 const REORGANIZE_URL = `${window.location.origin}/api/reorganize/status`;
 const LYRICS_URL = `${window.location.origin}/api/lyrics/backfill`;
 const ARTIST_ART_URL = `${window.location.origin}/api/artists/art/backfill`;
+const DISK_SYNC_URL = `${window.location.origin}/api/disk-sync/status`;
 const ARTIST_ART_SETTINGS_URL = `${window.location.origin}/api/artists/art/settings`;
 const ARTIST_IMAGE_SETTINGS_URL = `${window.location.origin}/api/artists/image/settings`;
 
@@ -189,6 +190,22 @@ function appHandlers() {
         error: null,
         artist: null,
         scope_label: "library",
+      }),
+    ),
+    http.get(DISK_SYNC_URL, () =>
+      HttpResponse.json({
+        phase: "idle",
+        job_id: null,
+        total: 0,
+        processed: 0,
+        removed: 0,
+        updated: 0,
+        unchanged: 0,
+        read_errors: 0,
+        emptied_albums: 0,
+        current: null,
+        error: null,
+        failures: [],
       }),
     ),
     http.get(ARTIST_ART_SETTINGS_URL, () =>

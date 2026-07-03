@@ -25,9 +25,15 @@ def import_gate_clear(import_registry: ImportJobRegistry, swap_lock: asyncio.Loc
     if swap_lock is not None and swap_lock.locked():
         return False
     from app.artist_art_jobs.registry import artist_art_backfill_active
+    from app.disk_sync_jobs.registry import disk_sync_active
     from app.lyrics_jobs.registry import lyrics_backfill_active
     from app.reorganize_jobs.registry import reorganize_backfill_active
 
-    if lyrics_backfill_active() or artist_art_backfill_active() or reorganize_backfill_active():
+    if (
+        lyrics_backfill_active()
+        or artist_art_backfill_active()
+        or reorganize_backfill_active()
+        or disk_sync_active()
+    ):
         return False
     return True
