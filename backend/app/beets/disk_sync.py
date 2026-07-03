@@ -182,6 +182,11 @@ def run_disk_sync(
         on_total(len(items))
         affected: set[int] = set()
         media_fields = library.Item._media_fields
+        # Field-limited store protects DB-only flex fields (e.g. lyrics_checked)
+        # from being clobbered by the re-read. mtime is NOT a media field, so it
+        # must be added explicitly — otherwise store() drops the fresh mtime and
+        # the gate never shuts, re-reading every touched file on every sync.
+        store_fields = media_fields | {"mtime"}
         for item in items:
             if should_stop():
                 break
@@ -209,10 +214,12 @@ def run_disk_sync(
                 item.albumartist = old_albumartist
                 item._dirty.discard("albumartist")
             changed = sorted(f for f in item._dirty if f in media_fields)
-            # Store either way: with no field changes this persists the new
+            # Store either way: even with no tag change this persists the new
             # mtime (set by read()) so the item is not re-checked forever —
-            # exactly beets' no-change branch.
-            item.store(fields=media_fields)
+            # exactly beets' no-change branch. mtime must be in store_fields; it
+            # is deliberately excluded from `changed` so it never counts as a
+            # tag change.
+            item.store(fields=store_fields)
             if changed:
                 if item.album_id is not None:
                     affected.add(int(item.album_id))

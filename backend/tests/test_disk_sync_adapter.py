@@ -184,8 +184,17 @@ def test_run_refreshes_changed_tags_and_realigns_album(edit_lib: Library) -> Non
 
 def test_run_persists_mtime_so_second_run_is_quiet(edit_lib: Library) -> None:
     item = _items(edit_lib)[0]
+    item_id = item.id
+    path = os.fsdecode(item.path)
     _bump_title_on_disk(item, "Once")
     _run(edit_lib)
+    # Run 1 must persist the file's on-disk mtime into the DB row. Otherwise the
+    # mtime gate (current_mtime() <= item.mtime) never shuts and this file is
+    # re-read on EVERY later sync forever — the exact I/O the gate exists to
+    # prevent. Pin it: the stored mtime now equals the file's current mtime.
+    row = edit_lib.get_item(item_id)
+    assert row is not None
+    assert row.mtime == int(os.path.getmtime(path))
     outcomes, _ = _run(edit_lib)
     assert all(o.status == "unchanged" for o in outcomes)
 
