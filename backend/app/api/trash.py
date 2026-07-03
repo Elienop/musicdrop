@@ -26,6 +26,7 @@ from app.beets.trash_manage import (
     resolve_trash_child,
     restore_album,
 )
+from app.disk_sync_jobs.registry import disk_sync_active
 from app.events.emit import emit_library_changed
 from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import lyrics_backfill_active
@@ -42,6 +43,7 @@ def _gate() -> None:
         or lyrics_backfill_active()
         or artist_art_backfill_active()
         or reorganize_backfill_active()
+        or disk_sync_active()
     ):
         raise HTTPException(
             status_code=409,

@@ -24,6 +24,7 @@ from app.artist_art_jobs.registry import artist_art_backfill_active
 from app.beets.config_editor import _settings, _swap_lock
 from app.beets.library import LibraryHandle, _coerce_str
 from app.beets.trash import resolve_trash_dir, trash_album_folder
+from app.disk_sync_jobs.registry import disk_sync_active
 from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import lyrics_backfill_active
 from app.models.delete import DeleteResult
@@ -81,6 +82,7 @@ def _gate(app: Any) -> None:
         or lyrics_backfill_active()
         or artist_art_backfill_active()
         or reorganize_backfill_active()
+        or disk_sync_active()
     ):
         raise HTTPException(
             status_code=409,

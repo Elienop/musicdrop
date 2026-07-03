@@ -56,6 +56,7 @@ from app.beets.library import LibraryHandle
 from app.beets.setup import reset_beets_globals, setup_beets
 from app.config import Settings
 from app.config import settings as _module_settings
+from app.disk_sync_jobs.registry import disk_sync_active
 from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import lyrics_backfill_active
 from app.models.config_api import BeetsConfigSnapshot
@@ -746,6 +747,7 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
         or lyrics_backfill_active()
         or artist_art_backfill_active()
         or reorganize_backfill_active()
+        or disk_sync_active()
     ):
         raise HTTPException(
             status_code=409,

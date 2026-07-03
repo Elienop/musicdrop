@@ -35,6 +35,7 @@ from app.beets.library import (
     _coerce_str,
 )
 from app.beets.trash import album_folder, album_format_bitrate, resolve_trash_dir, trash_album
+from app.disk_sync_jobs.registry import disk_sync_active
 from app.import_jobs.registry import get_registry
 from app.lyrics_jobs.registry import lyrics_backfill_active
 from app.models.duplicates import (
@@ -296,6 +297,7 @@ async def resolve_duplicates_op(request: Request, req: ResolveRequest) -> Resolv
         or lyrics_backfill_active()
         or artist_art_backfill_active()
         or reorganize_backfill_active()
+        or disk_sync_active()
     ):
         raise HTTPException(
             status_code=409,
@@ -388,6 +390,7 @@ async def resolve_all_op(request: Request, req: ResolveAllRequest) -> ResolveAll
         or lyrics_backfill_active()
         or artist_art_backfill_active()
         or reorganize_backfill_active()
+        or disk_sync_active()
     ):
         raise HTTPException(
             status_code=409,

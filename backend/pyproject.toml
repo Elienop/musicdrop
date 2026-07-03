@@ -116,6 +116,7 @@ module = [
     "tests.test_reorganize_jobs",
     "tests.test_reorganize_api",
     "tests.test_reorganize_mutex",
+    "tests.test_disk_sync_mutex",
     "app.beets.naming",
     "tests.test_naming_adapter",
     "tests.test_naming_api",
