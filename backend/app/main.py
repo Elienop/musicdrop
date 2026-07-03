@@ -13,6 +13,7 @@ from app.api.bank import get_bank_dir
 from app.api.bank import router as bank_router
 from app.api.browse import router as browse_router
 from app.api.config_ import router as config_router
+from app.api.disk_sync import router as disk_sync_router
 from app.api.duplicates import router as duplicates_router
 from app.api.events import router as events_router
 from app.api.health import router as health_router
@@ -235,6 +236,7 @@ app.include_router(config_router, prefix="/api")
 app.include_router(duplicates_router, prefix="/api")
 app.include_router(lyrics_router, prefix="/api")
 app.include_router(reorganize_router, prefix="/api")
+app.include_router(disk_sync_router, prefix="/api")
 app.include_router(stats_router, prefix="/api")
 app.include_router(playlists_router, prefix="/api")
 app.include_router(plex_router, prefix="/api")
