@@ -35,6 +35,22 @@ interface ReplaceRow {
 let nextId = 1;
 const mkId = () => nextId++;
 
+/** Curated typographic→ASCII replace rules for the "Add recommended rules"
+ * button. MusicBrainz spells names with Unicode that is visually identical to
+ * ASCII in a file browser (e.g. "blink‐182" with a U+2010 HYPHEN), which mints
+ * a twin folder next to the ASCII one. beets' built-in replace rules leave
+ * these alone, so we offer them one click. Patterns are Python `re` and stored
+ * as literal `\uXXXX` text (the `\\u` here escapes to a backslash at runtime)
+ * so the characters stay legible instead of being invisible glyphs.
+ * Keep in sync with backend/app/beets/config.starter.yaml. */
+const RECOMMENDED_REPLACE_RULES: { pattern: string; replacement: string }[] = [
+  { pattern: "[\\u2010\\u2011\\u2212]", replacement: "-" },
+  { pattern: "[\\u2013\\u2014]", replacement: "-" },
+  { pattern: "[\\u2018\\u2019\\u02bc]", replacement: "'" },
+  { pattern: "[\\u201c\\u201d]", replacement: "_" },
+  { pattern: "\\u2026", replacement: "..." },
+];
+
 /** Assemble the ordered flat rule list the API expects (default, comp,
  * singleton, then custom) — mirrors the backend `assemble_rules`. */
 function assemble(
@@ -559,7 +575,7 @@ function ReplaceEditor({
           </div>
         );
       })}
-      <div>
+      <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="outline"
           size="sm"
@@ -572,7 +588,37 @@ function ReplaceEditor({
         >
           <Add className="size-4" aria-hidden="true" /> Add replacement
         </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          title={
+            "Maps look-alike typographic characters (‐ – — ’ “ …) " +
+            "to ASCII so they can’t create twin folders"
+          }
+          onClick={() =>
+            setRows((rs) => {
+              // Dedupe by exact pattern string — a user may already have added
+              // one of these by hand; only append the ones not present yet.
+              const present = new Set(rs.map((r) => r.pattern));
+              const additions = RECOMMENDED_REPLACE_RULES.filter(
+                (r) => !present.has(r.pattern),
+              ).map((r) => ({
+                id: mkId(),
+                pattern: r.pattern,
+                replacement: r.replacement,
+              }));
+              return [...rs, ...additions];
+            })
+          }
+        >
+          <Add className="size-4" aria-hidden="true" /> Add recommended rules
+        </Button>
       </div>
+      <p className="text-muted-foreground text-xs">
+        Recommended rules map look-alike typographic characters (curly quotes,
+        en/em dashes, the non-breaking hyphen, ellipsis) to ASCII so metadata
+        can&rsquo;t mint visually-identical twin folders.
+      </p>
     </div>
   );
 }

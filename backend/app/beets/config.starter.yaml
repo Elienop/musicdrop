@@ -21,3 +21,20 @@ import:
   write: yes          # write tags back to imported files on Apply
 
 # Full reference: https://beets.readthedocs.io/en/stable/reference/config.html
+
+# Sanitize MusicBrainz typographic Unicode when building file paths. These
+# characters are visually identical to their ASCII twins in a file browser,
+# so MB's "blink\u2010182" (U+2010 HYPHEN) mints a folder twin next to the
+# ASCII "blink-182" one. beets' built-in replace rules sanitize illegal
+# filesystem characters but deliberately leave these alone, so we add them.
+# confuse overlays this dict onto beets' defaults per-key, so the built-ins
+# survive. Keys are single-quoted so the \uXXXX escapes reach Python's re as
+# literal text (double quotes would decode them into the invisible glyphs
+# this whole block exists to catch). Keep in sync with the Naming panel's
+# "Add recommended rules" button (NamingPanel.tsx).
+replace:
+  '[\u2010\u2011\u2212]': '-'   # hyphen / non-breaking hyphen / minus sign
+  '[\u2013\u2014]': '-'         # en dash / em dash
+  '[\u2018\u2019\u02bc]': "'"  # curly single quotes + modifier apostrophe
+  '[\u201c\u201d]': '_'         # curly double quotes (mirrors beets' " -> _)
+  '\u2026': '...'                # horizontal ellipsis
