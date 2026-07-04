@@ -389,3 +389,22 @@ def test_broker_publish_library_changed_drops_the_browse_cache(
         assert "Ska" in {v.value for v in browse_facets(browse_lib).genres}
     finally:
         loop.close()
+
+
+def test_facets_endpoint_includes_new_facets(client: TestClient) -> None:
+    body = client.get("/api/browse/facets").json()
+    assert {v["value"] for v in body["album_types"]} == {"album", "single", "Unknown"}
+    assert {v["value"] for v in body["sources"]} == {"MusicBrainz", "Deezer", "Unknown"}
+    assert "media" in body
+    assert "countries" in body
+    assert "lyrics" in body
+
+
+def test_browse_albums_endpoint_new_filters_and_sort(client: TestClient) -> None:
+    assert client.get("/api/browse/albums", params={"album_type": "single"}).json()["total"] == 1
+    assert client.get("/api/browse/albums?source=Unknown&country=US").json()["total"] == 2
+    assert client.get("/api/browse/albums", params={"sort": "added"}).status_code == 200
+
+
+def test_browse_albums_endpoint_rejects_junk_sort(client: TestClient) -> None:
+    assert client.get("/api/browse/albums", params={"sort": "loudness"}).status_code == 422
