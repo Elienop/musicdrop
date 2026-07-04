@@ -754,3 +754,77 @@ def test_did_not_land_is_terminal_gated_mid_run() -> None:
     state = reg.state("mid")
     assert state.albums[0].did_not_land is False
     assert state.progress.not_landed == 0
+
+
+# ----- bank as-tracks apply: an applied outcome that can never carry an id -----
+
+
+def _applied_row(*, album_id: int | None = None) -> "object":
+    """An auto-applied feed row (status=applied, no dup action) — the exact
+    shape a bank astracks apply emits: the directive drives an `applied`
+    outcome, yet its singletons re-pipeline and never form an Album row."""
+    from app.import_jobs.registry import _FeedAlbum
+
+    outcome = _applied_outcome(0).model_copy(update={"album_id": album_id})
+    return _FeedAlbum(outcome=outcome, status=ImportAlbumStatus.applied)
+
+
+def test_astracks_directive_exempts_applied_no_id_row() -> None:
+    # A bank astracks apply's applied/no-id row: exempt from the landing veto
+    # ONLY when the job carries the astracks directive.
+    row = _applied_row()
+    assert ImportJobRegistry._did_not_land(row, astracks_directive=True) is False  # type: ignore[arg-type]
+    assert ImportJobRegistry._is_imported(row, astracks_directive=True) is True  # type: ignore[arg-type]
+    # Regression guard: the SAME shape WITHOUT the directive is the real
+    # crash-before-landing case -> still flagged, still not imported.
+    assert ImportJobRegistry._did_not_land(row) is True  # type: ignore[arg-type]
+    assert ImportJobRegistry._is_imported(row) is False  # type: ignore[arg-type]
+
+
+def test_bank_astracks_apply_applied_row_not_flagged_did_not_land() -> None:
+    # End-to-end: a bank astracks apply emits an `applied` outcome with no
+    # album id (its singletons re-pipeline; no Album row is ever created). At
+    # terminal the row must count imported, NOT be flagged did_not_land.
+    from app.models.bank import BankApplyDirective
+
+    fake = FakeImportRunner(applied=[_applied_outcome(0)])
+    reg = ImportJobRegistry(runner=fake)
+    job_id = reg.start(
+        "/library/Radiohead/OK Computer",
+        origin="bank_apply",
+        directive=BankApplyDirective(action="astracks"),
+    )
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.done)
+    state = reg.state(job_id)
+    assert state.albums[0].did_not_land is False
+    assert state.progress.applied == 1
+    assert state.progress.not_landed == 0
+    assert state.summary == "1 imported, 0 skipped"
+
+
+def test_start_sets_directive_astracks_flag_from_astracks_directive() -> None:
+    from app.models.bank import BankApplyDirective
+
+    fake = FakeImportRunner(applied=[_applied_outcome(0)])
+    reg = ImportJobRegistry(runner=fake)
+    job_id = reg.start(
+        "/library/A/B", origin="bank_apply", directive=BankApplyDirective(action="astracks")
+    )
+    job = reg.get(job_id)
+    assert job is not None
+    assert job.directive_astracks is True
+
+
+def test_start_leaves_directive_astracks_false_for_apply_directive() -> None:
+    from app.models.bank import BankApplyDirective
+
+    fake = FakeImportRunner(applied=[_applied_outcome(0)])
+    reg = ImportJobRegistry(runner=fake)
+    job_id = reg.start(
+        "/library/A/B",
+        origin="bank_apply",
+        directive=BankApplyDirective(action="apply", search_id="rel-1"),
+    )
+    job = reg.get(job_id)
+    assert job is not None
+    assert job.directive_astracks is False

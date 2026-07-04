@@ -340,6 +340,13 @@ class WebImportSession(ImportSession):
         # (pipeline.pull), so the previous task has fully finished at both
         # points. Holds at most one task between flushes.
         self._await_album_id: list[tuple[AlbumOutcome, ImportTask]] = []
+        # True only while an attended album decided "as tracks" is being
+        # re-pipelined into singletons: choose_match arms it when it returns
+        # Action.TRACKS, choose_item reads it to import each singleton ASIS, and
+        # the next album's choose_match clears it. config["threaded"]=False keeps
+        # the pipeline serial, so this album's singletons all pass through
+        # choose_item before the next choose_match runs.
+        self._astracks_in_flight: bool = False
 
     # ----- the four decision hooks -----
 
@@ -375,16 +382,21 @@ class WebImportSession(ImportSession):
 
     def choose_item(self, task: ImportTask) -> Action:
         # Singletons stay out of scope (the whole web flow is album-shaped,
-        # the chunk-1 decision) with ONE exception: a banked astracks apply.
-        # Its TRACKS choice re-pipelines each file as a SingletonImportTask
-        # whose choose_match routes HERE (beets tasks.py:758-760), so ASIS is
-        # what actually imports the tracks - the chunk-1 SKIP would silently
-        # import nothing. Every other mode (attended, inbox, sweep, non-
-        # astracks directives) keeps SKIP; the sweep worker additionally
-        # forces import.singletons off so a singletons:yes user config can
-        # never funnel files here and history-mark them done without banking.
+        # the chunk-1 decision) with TWO exceptions, both an "as tracks"
+        # decision: a banked astracks apply (directive) OR an attended park the
+        # user decided astracks (_astracks_in_flight, armed by choose_match). An
+        # astracks choice re-pipelines each file as a SingletonImportTask whose
+        # choose_match routes HERE (beets tasks.py:758-760), so ASIS is what
+        # actually imports the tracks - the chunk-1 SKIP silently imported
+        # NOTHING for the attended path (the bug this branch fixes). Every other
+        # mode (inbox, sweep, non-astracks directives) keeps SKIP; the sweep
+        # worker additionally forces import.singletons off so a singletons:yes
+        # user config can never funnel files here and history-mark them done
+        # without banking.
         self._check_pause()
         if self._directive is not None and self._directive.action == "astracks":
+            return Action.ASIS
+        if self._astracks_in_flight:
             return Action.ASIS
         return Action.SKIP
 
@@ -487,6 +499,10 @@ class WebImportSession(ImportSession):
         # Flush the PREVIOUS task's library album id (its task.add has run by
         # now — sequential pipeline) before this album claims the feed.
         self._flush_album_ids()
+        # The previous album's astracks singleton window is over by now (serial
+        # pipeline): clear the flag so this album's own singletons default to
+        # SKIP unless it too is decided astracks below.
+        self._astracks_in_flight = False
         # This hook only fires for album tasks, so every candidate is an
         # AlbumMatch; typed as Any since beets' task.candidates is the wider
         # list[AlbumMatch | TrackMatch] union (singletons go through choose_item).
@@ -625,7 +641,13 @@ class WebImportSession(ImportSession):
                 art_source=art_source,
             )
             if choice.action is not ImportAction.search or choice.search is None:
-                return self._apply_choice(choice, candidates)
+                result = self._apply_choice(choice, candidates)
+                if result is Action.TRACKS:
+                    # Arm the astracks window: the serial pipeline delivers this
+                    # task's re-pipelined singletons to choose_item (which reads
+                    # the flag -> ASIS) before the next choose_match clears it.
+                    self._astracks_in_flight = True
+                return result
             new_candidates, new_rec = relookup(task, choice.search)
             revision += 1
             feedback: str | None
