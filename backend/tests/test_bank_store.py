@@ -1,13 +1,15 @@
 """Bank store tests — pure filesystem, no beets, payloads kept None
 (ParkedAlbum construction is exercised by its own model/mapping tests)."""
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from app.bank import store
-from app.models.bank import BankDecision
+from app.models.bank import BankDecision, BankItem
+from app.models.import_models import DuplicatePrompt, IncomingAlbum
 
 
 def _bank(tmp_path: Path) -> Path:
@@ -326,6 +328,150 @@ def test_summary_carries_album_id(tmp_path: Path) -> None:
     store.set_status(bank, item_id, "done", album_id=7)
     [summary] = store.list_items(bank, offset=0, limit=10)
     assert summary.album_id == 7
+
+
+def _dup_prompt() -> DuplicatePrompt:
+    return DuplicatePrompt(
+        album_index=0,
+        incoming=IncomingAlbum(
+            album_artist="A",
+            album="B",
+            year=None,
+            track_count=1,
+            format=None,
+            bitrate_kbps=None,
+            folder="/x",
+            has_current_art=False,
+        ),
+        existing=[],
+    )
+
+
+def test_store_scans_the_bank_dir_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The perf pin: the in-memory summary index means the whole dir is globbed
+    # and parsed EXACTLY once, no matter how many creates/upserts/list calls
+    # follow. On the pre-index store every list_items/count_items/upsert
+    # re-globbed (O(N^2) across a sweep).
+    calls = {"n": 0}
+    original_glob = Path.glob
+
+    def counting_glob(self: Path, pattern: str) -> Iterator[Path]:
+        calls["n"] += 1
+        return original_glob(self, pattern)
+
+    monkeypatch.setattr(Path, "glob", counting_glob)
+    bank = _bank(tmp_path)
+    for i in range(3):
+        store.create_item(
+            bank, folder=f"/lib/c{i}", source="sweep", reason="no_match", fingerprint="f" * 64
+        )
+    for i in range(3):
+        store.upsert_by_folder(
+            bank, folder=f"/lib/u{i}", source="sweep", reason="no_match", fingerprint="g" * 64
+        )
+    for _ in range(4):
+        store.list_page(bank, offset=0, limit=50)
+        store.list_items(bank, offset=0, limit=50)
+        store.count_items(bank)
+    assert calls["n"] == 1
+
+
+def test_list_page_reports_total_and_total_all(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    pending = _create(tmp_path, folder="/l/pending")
+    ignored = _create(tmp_path, folder="/l/ignored")
+    store.decide_item(bank, ignored, BankDecision(action="ignore"))
+    # active view: only the pending row; total_all counts BOTH rows.
+    page, total, total_all = store.list_page(bank, active_only=True, offset=0, limit=50)
+    assert [s.id for s in page] == [pending]
+    assert total == 1
+    assert total_all == 2
+    # status filter narrows total but total_all is unconditional.
+    _, total_ignored, total_all2 = store.list_page(bank, status="ignored", offset=0, limit=50)
+    assert total_ignored == 1
+    assert total_all2 == 2
+
+
+def test_list_page_reason_filter(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    a = _create(tmp_path, folder="/l/a", reason="no_match")
+    _create(tmp_path, folder="/l/b", reason="no_match")
+    dup = store.create_item(
+        bank,
+        folder="/l/dup",
+        source="sweep",
+        reason="needs_dup_resolution",
+        fingerprint="f" * 64,
+        duplicate=_dup_prompt(),
+    )
+    page, total, total_all = store.list_page(bank, reason="no_match", offset=0, limit=50)
+    assert {s.id for s in page} == {a, page[1].id}
+    assert total == 2
+    assert total_all == 3
+    dup_page, dup_total, _ = store.list_page(
+        bank, reason="needs_dup_resolution", offset=0, limit=50
+    )
+    assert [s.id for s in dup_page] == [dup.id]
+    assert dup_total == 1
+
+
+def test_list_page_reason_ands_with_active_only(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    active_dup = store.create_item(
+        bank,
+        folder="/l/active",
+        source="sweep",
+        reason="needs_dup_resolution",
+        fingerprint="f" * 64,
+        duplicate=_dup_prompt(),
+    )
+    resolved_dup = store.create_item(
+        bank,
+        folder="/l/resolved",
+        source="sweep",
+        reason="needs_dup_resolution",
+        fingerprint="f" * 64,
+        duplicate=_dup_prompt(),
+    )
+    store.decide_item(bank, resolved_dup.id, BankDecision(action="ignore"))
+    _create(tmp_path, folder="/l/nomatch", reason="no_match")  # active but wrong reason
+    page, total, total_all = store.list_page(
+        bank, active_only=True, reason="needs_dup_resolution", offset=0, limit=50
+    )
+    assert [s.id for s in page] == [active_dup.id]
+    assert total == 1
+    assert total_all == 3
+
+
+def test_list_page_preserves_fifo_and_paging(tmp_path: Path) -> None:
+    ids = [_create(tmp_path, folder=f"/l/{i}") for i in range(5)]
+    first, total, total_all = store.list_page(tmp_path / "bank", offset=0, limit=2)
+    assert [s.id for s in first] == ids[:2]
+    assert total == 5
+    assert total_all == 5
+    rest, _, _ = store.list_page(tmp_path / "bank", offset=2, limit=10)
+    assert [s.id for s in rest] == ids[2:]
+
+
+def test_reset_bank_index_reveals_externally_written_row(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    seeded = _create(tmp_path, folder="/l/seeded")  # builds the index
+    external = BankItem(
+        id="a" * 32,
+        folder="/l/external",
+        source="manual",
+        reason="no_match",
+        fingerprint="x" * 64,
+        status="needs_review",
+        banked_at=store._now(),
+    )
+    (bank / f"{external.id}.json").write_text(external.model_dump_json(), encoding="utf-8")
+    # The store is the single writer: an out-of-band file is invisible until reset.
+    before = {s.id for s in store.list_items(bank, offset=0, limit=50)}
+    assert before == {seeded}
+    store.reset_bank_index()
+    after = {s.id for s in store.list_items(bank, offset=0, limit=50)}
+    assert after == {seeded, external.id}
 
 
 def test_reconcile_interrupted_applying(tmp_path: Path) -> None:
