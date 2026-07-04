@@ -103,6 +103,11 @@ class ImportJob:
     # sweep would otherwise hold thousands of _FeedAlbum dicts. None for
     # manual/inbox jobs (their feed is untouched).
     sweep: SweepStatus | None = None
+    # A bank astracks apply emits an `applied` outcome yet its singletons
+    # re-pipeline and never form an Album row — so its applied rows can never
+    # carry a library album id. The not-landed veto must exempt them (they are
+    # NOT the crash-before-landing case an idless applied row otherwise signals).
+    directive_astracks: bool = False
 
 
 class ImportJobRegistry:
@@ -205,6 +210,7 @@ class ImportJobRegistry:
                 bridge=ImportBridge(),
                 origin=origin,
                 sweep=SweepStatus() if origin == "sweep" else None,
+                directive_astracks=directive is not None and directive.action == "astracks",
             )
             self._job = job
 
@@ -250,13 +256,21 @@ class ImportJobRegistry:
             self._notify_changed()
 
     @staticmethod
-    def _did_not_land(row: _FeedAlbum) -> bool:
+    def _did_not_land(row: _FeedAlbum, *, astracks_directive: bool = False) -> bool:
         """Resolved as an album-landing action but no library album id ever
         arrived — the session died/aborted before beets ran task.add.
         astracks and dup-merge are exempt: they land without an id of their
         own (singletons form no Album row; a merge lands under the merged
-        task's row)."""
+        task's row). A bank astracks apply (``astracks_directive``) emits an
+        `applied` outcome for the SAME reason — its singletons never form an
+        Album row — so an idless applied row on such a job is exempt too."""
         if row.outcome.album_id is not None:
+            return False
+        if (
+            astracks_directive
+            and row.duplicate_action is None
+            and row.status is ImportAlbumStatus.applied
+        ):
             return False
         if row.duplicate_action is not None:
             return row.duplicate_action in (DuplicateAction.keep_both, DuplicateAction.replace)
@@ -266,7 +280,7 @@ class ImportJobRegistry:
         )
 
     @staticmethod
-    def _is_imported(row: _FeedAlbum) -> bool:
+    def _is_imported(row: _FeedAlbum, *, astracks_directive: bool = False) -> bool:
         """Imported: auto-applied, a parked album resolved apply-like, or a
         duplicate resolved keep_both/replace/merge — AND it actually landed (a
         library album id is attached), except astracks/merge which carry no id
@@ -277,7 +291,9 @@ class ImportJobRegistry:
             decided = row.status is ImportAlbumStatus.applied or (
                 row.status is ImportAlbumStatus.decided and row.decided_action in _APPLY_ACTIONS
             )
-        return decided and not ImportJobRegistry._did_not_land(row)
+        return decided and not ImportJobRegistry._did_not_land(
+            row, astracks_directive=astracks_directive
+        )
 
     @staticmethod
     def _is_skipped(row: _FeedAlbum) -> bool:
@@ -301,12 +317,21 @@ class ImportJobRegistry:
             if sweep.paused:
                 summary += " - paused"
             return summary
-        imported = sum(1 for a in job.albums.values() if ImportJobRegistry._is_imported(a))
+        astracks = job.directive_astracks
+        imported = sum(
+            1
+            for a in job.albums.values()
+            if ImportJobRegistry._is_imported(a, astracks_directive=astracks)
+        )
         skipped = sum(1 for a in job.albums.values() if ImportJobRegistry._is_skipped(a))
         # Safe to assert here: _summarize runs only from _on_finish, AFTER
         # _drain_locked flushed every follow-up id, so a landing-less row is
         # genuinely one the session never task.add'd (not an id trailing a poll).
-        not_landed = sum(1 for a in job.albums.values() if ImportJobRegistry._did_not_land(a))
+        not_landed = sum(
+            1
+            for a in job.albums.values()
+            if ImportJobRegistry._did_not_land(a, astracks_directive=astracks)
+        )
         summary = f"{imported} imported, {skipped} skipped"
         if not_landed > 0:
             summary += f", {not_landed} did not land"
@@ -543,7 +568,10 @@ class ImportJobRegistry:
         self.drain(job_id)
         job = self._require(job_id)
         with self._lock:
-            applied = sum(1 for a in job.albums.values() if self._is_imported(a))
+            astracks = job.directive_astracks
+            applied = sum(
+                1 for a in job.albums.values() if self._is_imported(a, astracks_directive=astracks)
+            )
             needs_review = sum(
                 1 for a in job.albums.values() if a.status is ImportAlbumStatus.needs_review
             )
@@ -553,7 +581,13 @@ class ImportJobRegistry:
             # row's follow-up id can still be one drain behind.
             terminal = job.phase in (ImportPhase.done, ImportPhase.failed)
             not_landed = (
-                sum(1 for a in job.albums.values() if self._did_not_land(a)) if terminal else 0
+                sum(
+                    1
+                    for a in job.albums.values()
+                    if self._did_not_land(a, astracks_directive=astracks)
+                )
+                if terminal
+                else 0
             )
             return ImportJobState(
                 job_id=job.id,
@@ -636,7 +670,10 @@ class ImportJobRegistry:
                     confidence=outcome.confidence,
                     status=row.status,
                     album_id=outcome.album_id,
-                    did_not_land=terminal and ImportJobRegistry._did_not_land(row),
+                    did_not_land=terminal
+                    and ImportJobRegistry._did_not_land(
+                        row, astracks_directive=job.directive_astracks
+                    ),
                 )
             )
         return rows
