@@ -2473,6 +2473,11 @@ export interface components {
             status: components["schemas"]["ImportAlbumStatus"];
             /** Album Id */
             album_id?: number | null;
+            /**
+             * Did Not Land
+             * @default false
+             */
+            did_not_land: boolean;
         };
         /**
          * ImportChoice
@@ -2574,6 +2579,11 @@ export interface components {
             needs_review: number;
             /** Skipped */
             skipped: number;
+            /**
+             * Not Landed
+             * @default 0
+             */
+            not_landed: number;
         };
         /**
          * ImportSearch

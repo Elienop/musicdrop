@@ -79,8 +79,14 @@ def test_record_duplicate_decision_unblocks_and_marks() -> None:
     _poll(lambda: registry.state(job_id).phase, lambda p: p is ImportPhase.done)
     state = registry.state(job_id)
     assert state.albums[0].status is ImportAlbumStatus.decided
-    assert state.progress.applied == 1  # replace counts as imported
+    # replace is a landing action, but the fake emits no follow-up id (it models
+    # a replace beets never task.add'd) -> it did not land, so it is not counted
+    # imported. A real replace that landed would carry an album_id (see the
+    # helper matrix in test_import_registry).
+    assert state.progress.applied == 0
+    assert state.progress.not_landed == 1
     assert state.progress.skipped == 0
+    assert state.albums[0].did_not_land is True
 
 
 def test_skip_new_counts_as_skipped() -> None:
