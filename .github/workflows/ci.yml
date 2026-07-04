@@ -1,10 +1,19 @@
 name: CI
 
+# No bare `push` trigger: every branch lands via a PR (repo rule), so
+# `pull_request` covers branch CI — a push trigger would run the identical
+# suite twice per push. main is gated by release.yml calling this workflow.
 on:
-  push:
-    branches-ignore: [main]   # main is gated by release.yml calling this workflow
   pull_request:
   workflow_call:
+
+# One live run per PR: a re-push cancels the superseded run instead of letting
+# it burn minutes. When called from release.yml (event = push to main) the
+# condition is false, and release.yml's own release-main group already
+# serializes those runs.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   backend:
