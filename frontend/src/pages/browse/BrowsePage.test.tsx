@@ -193,19 +193,24 @@ describe("BrowsePage", () => {
     ).toHaveAttribute("href", "/import");
   });
 
-  test("renders all eight facet groups", async () => {
+  test("renders all eight facet groups with their own values", async () => {
     renderWithProviders(<BrowsePage />, { route: "/browse" });
-    for (const name of [
-      "Genre",
-      "Decade",
-      "Format",
-      "Type",
-      "Media",
-      "Country",
-      "Source",
-      "Lyrics",
-    ]) {
-      expect(await screen.findByRole("group", { name })).toBeInTheDocument();
+    // Value-pin each group: a facetKey swap between two rows renders the wrong
+    // values under a heading, which the label-only check can't see (and the
+    // same-type swap is invisible to the typechecker too).
+    const expected = [
+      ["Genre", "Rock"],
+      ["Decade", "2010s"],
+      ["Format", "FLAC"],
+      ["Type", "single"],
+      ["Media", "CD"],
+      ["Country", "US"],
+      ["Source", "MusicBrainz"],
+      ["Lyrics", "Missing"],
+    ] as const;
+    for (const [name, value] of expected) {
+      const group = await screen.findByRole("group", { name });
+      expect(within(group).getByText(value)).toBeInTheDocument();
     }
   });
 
