@@ -49,6 +49,7 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = [
     "app.beets.library",
+    "app.beets.browse",
     "app.beets.import_mapping",
     "app.beets.import_session",
     "app.beets.setup",

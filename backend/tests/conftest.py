@@ -163,6 +163,19 @@ def reset_bank_index() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def reset_browse_cache() -> Iterator[None]:
+    """Drop the browse cache's module-level rows around every test.
+
+    Keyed by resolved DB path; per-test tmp dirs never collide, but the
+    scan-count pin relies on a clean slate."""
+    from app.beets.browse import invalidate_browse_cache as _invalidate
+
+    _invalidate()
+    yield
+    _invalidate()
+
+
+@pytest.fixture(autouse=True)
 def _clear_beets_globals() -> Iterator[None]:
     """Reset beets' global confuse + plugin singletons between every test.
 

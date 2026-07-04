@@ -20,3 +20,8 @@ class BrowseFacets(BaseModel):
     genres: list[FacetValue]
     decades: list[FacetValue]
     formats: list[FacetValue]
+    album_types: list[FacetValue]
+    sources: list[FacetValue]
+    media: list[FacetValue]
+    countries: list[FacetValue]
+    lyrics: list[FacetValue]

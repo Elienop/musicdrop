@@ -11,7 +11,8 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.albums import get_library
-from app.beets.library import LibraryHandle, browse_albums, browse_facets
+from app.beets.browse import browse_albums, browse_facets
+from app.beets.library import LibraryHandle
 from app.models.album import AlbumPage
 from app.models.browse import BrowseFacets
 
