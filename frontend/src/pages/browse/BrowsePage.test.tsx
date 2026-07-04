@@ -32,6 +32,14 @@ const FACETS_BODY = {
   ],
   decades: [{ value: "2010s", count: 3 }],
   formats: [{ value: "FLAC", count: 3 }],
+  album_types: [
+    { value: "album", count: 2 },
+    { value: "single", count: 1 },
+  ],
+  sources: [{ value: "MusicBrainz", count: 3 }],
+  media: [{ value: "CD", count: 3 }],
+  countries: [{ value: "US", count: 3 }],
+  lyrics: [{ value: "Missing", count: 3 }],
 };
 
 describe("BrowsePage", () => {
@@ -183,5 +191,83 @@ describe("BrowsePage", () => {
     expect(
       screen.getByRole("link", { name: /add music from a folder/i }),
     ).toHaveAttribute("href", "/import");
+  });
+
+  test("renders all eight facet groups with their own values", async () => {
+    renderWithProviders(<BrowsePage />, { route: "/browse" });
+    // Value-pin each group: a facetKey swap between two rows renders the wrong
+    // values under a heading, which the label-only check can't see (and the
+    // same-type swap is invisible to the typechecker too).
+    const expected = [
+      ["Genre", "Rock"],
+      ["Decade", "2010s"],
+      ["Format", "FLAC"],
+      ["Type", "single"],
+      ["Media", "CD"],
+      ["Country", "US"],
+      ["Source", "MusicBrainz"],
+      ["Lyrics", "Missing"],
+    ] as const;
+    for (const [name, value] of expected) {
+      const group = await screen.findByRole("group", { name });
+      expect(within(group).getByText(value)).toBeInTheDocument();
+    }
+  });
+
+  test("toggling a type checkbox puts album_type in the query", async () => {
+    renderWithProviders(<BrowsePage />, { route: "/browse" });
+    await userEvent.click(await screen.findByRole("checkbox", { name: /single/i }));
+    await waitFor(() =>
+      expect(lastQuery.getAll("album_type")).toEqual(["single"]),
+    );
+  });
+
+  test("a long facet group collapses to 8 with a Show all toggle", async () => {
+    const many = Array.from({ length: 10 }, (_, i) => ({
+      value: `G${i}`,
+      count: 1,
+    }));
+    server.use(
+      http.get(FACETS, () =>
+        HttpResponse.json({ ...FACETS_BODY, genres: many }),
+      ),
+    );
+    renderWithProviders(<BrowsePage />, { route: "/browse" });
+    const genre = await screen.findByRole("group", { name: "Genre" });
+    expect(within(genre).getByText("G7")).toBeInTheDocument();
+    expect(within(genre).queryByText("G8")).not.toBeInTheDocument();
+    await userEvent.click(
+      within(genre).getByRole("button", { name: /show all \(10\)/i }),
+    );
+    expect(within(genre).getByText("G9")).toBeInTheDocument();
+    await userEvent.click(
+      within(genre).getByRole("button", { name: /show less/i }),
+    );
+    expect(within(genre).queryByText("G9")).not.toBeInTheDocument();
+  });
+
+  test("the sort select drives the sort param and resets the offset", async () => {
+    renderWithProviders(<BrowsePage />, { route: "/browse?offset=48" });
+    const select = await screen.findByRole("combobox", { name: /sort albums/i });
+    await userEvent.selectOptions(select, "added");
+    await waitFor(() => {
+      expect(lastQuery.get("sort")).toBe("added");
+      // useBrowseAlbums always threads offset; the reset lands as "0" (page 1),
+      // not an omitted param — openapi-fetch serializes the numeric zero.
+      expect(lastQuery.get("offset")).toBe("0");
+    });
+  });
+
+  test("Clear all keeps the sort", async () => {
+    renderWithProviders(<BrowsePage />, {
+      route: "/browse?genre=Rock&sort=added",
+    });
+    await userEvent.click(
+      await screen.findByRole("button", { name: /clear all/i }),
+    );
+    await waitFor(() => {
+      expect(lastQuery.getAll("genre")).toEqual([]);
+      expect(lastQuery.get("sort")).toBe("added");
+    });
   });
 });

@@ -2003,6 +2003,16 @@ export interface components {
             decades: components["schemas"]["FacetValue"][];
             /** Formats */
             formats: components["schemas"]["FacetValue"][];
+            /** Album Types */
+            album_types: components["schemas"]["FacetValue"][];
+            /** Sources */
+            sources: components["schemas"]["FacetValue"][];
+            /** Media */
+            media: components["schemas"]["FacetValue"][];
+            /** Countries */
+            countries: components["schemas"]["FacetValue"][];
+            /** Lyrics */
+            lyrics: components["schemas"]["FacetValue"][];
         };
         /**
          * Candidate
@@ -4531,6 +4541,12 @@ export interface operations {
                 genre?: string[] | null;
                 decade?: string[] | null;
                 format?: string[] | null;
+                album_type?: string[] | null;
+                source?: string[] | null;
+                media?: string[] | null;
+                country?: string[] | null;
+                lyrics?: string[] | null;
+                sort?: "artist" | "added";
                 limit?: number;
                 offset?: number;
             };

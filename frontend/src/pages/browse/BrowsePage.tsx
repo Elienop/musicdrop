@@ -1,8 +1,9 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
 import {
   type BrowseFilters,
+  type BrowseSort,
   useBrowseAlbums,
   useBrowseFacets,
 } from "@/api/useBrowse";
@@ -23,18 +24,25 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
 const FACET_FIELDS = [
-  { param: "genre", label: "Genre" },
-  { param: "decade", label: "Decade" },
-  { param: "format", label: "Format" },
+  { param: "genre", facetKey: "genres", label: "Genre" },
+  { param: "decade", facetKey: "decades", label: "Decade" },
+  { param: "format", facetKey: "formats", label: "Format" },
+  { param: "album_type", facetKey: "album_types", label: "Type" },
+  { param: "media", facetKey: "media", label: "Media" },
+  { param: "country", facetKey: "countries", label: "Country" },
+  { param: "source", facetKey: "sources", label: "Source" },
+  { param: "lyrics", facetKey: "lyrics", label: "Lyrics" },
 ] as const;
+const FACET_PREVIEW_COUNT = 8;
 
 type FacetParam = (typeof FACET_FIELDS)[number]["param"];
 
 /**
- * Browse — slice the whole library by genre · decade · format.
+ * Browse — slice the whole library across eight facets (genre, decade, format,
+ * type, media, country, source, lyrics) with an optional artist/added sort.
  *
  * A filter rail (checkbox groups + counts) beside the filtered album grid. All
- * state lives in the URL (`?genre=Rock&decade=2010s&format=FLAC&offset=48`), so
+ * state lives in the URL (`?genre=Rock&decade=2010s&sort=added&offset=48`), so
  * filters are bookmarkable and Back works. Filter logic is standard faceted: OR
  * within a facet, AND across facets — the backend does the matching. Counts are
  * whole-library totals (not re-derived against the active selection).
@@ -46,17 +54,22 @@ export function BrowsePage() {
     genre: searchParams.getAll("genre"),
     decade: searchParams.getAll("decade"),
     format: searchParams.getAll("format"),
+    album_type: searchParams.getAll("album_type"),
+    media: searchParams.getAll("media"),
+    country: searchParams.getAll("country"),
+    source: searchParams.getAll("source"),
+    lyrics: searchParams.getAll("lyrics"),
   };
+  const sort: BrowseSort =
+    searchParams.get("sort") === "added" ? "added" : "artist";
   const offset = Math.max(Number(searchParams.get("offset")) || 0, 0);
 
-  const facetsQuery = useBrowseFacets();
-  const albumsQuery = useBrowseAlbums(filters, PAGE_SIZE, offset);
+  // Per-group top-N expander — local only. An applied value beyond the top 8
+  // stays reachable via its chip, so this state never needs to live in the URL.
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  const facetGroups = {
-    genre: facetsQuery.data?.genres ?? [],
-    decade: facetsQuery.data?.decades ?? [],
-    format: facetsQuery.data?.formats ?? [],
-  };
+  const facetsQuery = useBrowseFacets();
+  const albumsQuery = useBrowseAlbums(filters, sort, PAGE_SIZE, offset);
 
   const toggle = (param: FacetParam, value: string) => {
     const next = new URLSearchParams(searchParams);
@@ -70,7 +83,19 @@ export function BrowsePage() {
     setSearchParams(next);
   };
 
-  const clearAll = () => setSearchParams(new URLSearchParams());
+  const clearAll = () => {
+    const next = new URLSearchParams();
+    if (searchParams.get("sort") === "added") next.set("sort", "added");
+    setSearchParams(next);
+  };
+
+  const setSort = (value: BrowseSort) => {
+    const next = new URLSearchParams(searchParams);
+    if (value === "added") next.set("sort", "added");
+    else next.delete("sort");
+    next.delete("offset"); // a re-sort returns to page 1
+    setSearchParams(next);
+  };
 
   // Post-page-change contract (spec §6): plain scroll to top + move focus to
   // the always-mounted count line in the PageHeader meta region.
@@ -126,15 +151,18 @@ export function BrowsePage() {
             />
           ) : (
             <div className="flex flex-col gap-5">
-              {FACET_FIELDS.map(({ param, label }) => {
-                const values = facetGroups[param];
+              {FACET_FIELDS.map(({ param, facetKey, label }) => {
+                const values = facetsQuery.data?.[facetKey] ?? [];
                 if (values.length === 0) return null;
+                const shown = expanded[param]
+                  ? values
+                  : values.slice(0, FACET_PREVIEW_COUNT);
                 return (
                   <fieldset key={param} className="flex flex-col gap-1.5">
                     <legend className="mb-1 text-sm font-medium">
                       {label}
                     </legend>
-                    {values.map((fv) => {
+                    {shown.map((fv) => {
                       const id = `facet-${param}-${encodeURIComponent(fv.value)}`;
                       return (
                         <div
@@ -150,7 +178,14 @@ export function BrowsePage() {
                             htmlFor={id}
                             className="flex min-w-0 flex-1 cursor-pointer items-center gap-2"
                           >
-                            <span className="flex-1 truncate">{fv.value}</span>
+                            <span
+                              className={cn(
+                                "flex-1 truncate",
+                                param === "album_type" && "capitalize",
+                              )}
+                            >
+                              {fv.value}
+                            </span>
                             <span className="text-muted-foreground tabular-nums">
                               {fv.count}
                             </span>
@@ -158,6 +193,24 @@ export function BrowsePage() {
                         </div>
                       );
                     })}
+                    {values.length > FACET_PREVIEW_COUNT && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="text-muted-foreground h-7 justify-start px-0"
+                        onClick={() =>
+                          setExpanded((prev) => ({
+                            ...prev,
+                            [param]: !prev[param],
+                          }))
+                        }
+                      >
+                        {expanded[param]
+                          ? "Show less"
+                          : `Show all (${values.length})`}
+                      </Button>
+                    )}
                   </fieldset>
                 );
               })}
@@ -168,38 +221,52 @@ export function BrowsePage() {
         <div className="flex min-w-0 flex-1 flex-col gap-4">
           {/* NO-JUMP INVARIANT: active-filter bar always rendered with a
               reserved min-h-8, so applying the FIRST filter fills it instead
-              of inserting a new row that shoves the grid down. */}
-          <div className="flex min-h-8 flex-wrap items-center gap-2">
-            {hasFilters ? (
-              <>
-                {activeChips.map(({ param, value }) => (
+              of inserting a new row that shoves the grid down. Chips wrap on
+              the left; the sort select stays pinned right and always visible. */}
+          <div className="flex min-h-8 items-center gap-2">
+            <div className="flex flex-1 flex-wrap items-center gap-2">
+              {hasFilters ? (
+                <>
+                  {activeChips.map(({ param, value }) => (
+                    <Button
+                      key={`${param}:${value}`}
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      className="h-7 gap-1 px-2"
+                      aria-label={`Remove ${value} filter`}
+                      onClick={() => toggle(param, value)}
+                    >
+                      {value}
+                      <Close className="size-3" aria-hidden="true" />
+                    </Button>
+                  ))}
                   <Button
-                    key={`${param}:${value}`}
                     type="button"
-                    variant="secondary"
+                    variant="ghost"
                     size="sm"
-                    className="h-7 gap-1 px-2"
-                    aria-label={`Remove ${value} filter`}
-                    onClick={() => toggle(param, value)}
+                    onClick={clearAll}
                   >
-                    {value}
-                    <Close className="size-3" aria-hidden="true" />
+                    Clear all
                   </Button>
-                ))}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={clearAll}
-                >
-                  Clear all
-                </Button>
-              </>
-            ) : (
-              <span className="text-muted-foreground text-sm">
-                Pick a filter to narrow your library.
-              </span>
-            )}
+                </>
+              ) : (
+                <span className="text-muted-foreground text-sm">
+                  Pick a filter to narrow your library.
+                </span>
+              )}
+            </div>
+            <select
+              aria-label="Sort albums"
+              className="border-input bg-background ml-auto h-8 shrink-0 rounded-md border px-2 text-sm"
+              value={sort}
+              onChange={(e) =>
+                setSort(e.target.value === "added" ? "added" : "artist")
+              }
+            >
+              <option value="artist">A–Z (artist)</option>
+              <option value="added">Recently added</option>
+            </select>
           </div>
           {/* NO-JUMP INVARIANT: reserved results height — filter flips never
               collapse the column under the sticky rail. */}

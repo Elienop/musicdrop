@@ -6,8 +6,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.beets.browse import invalidate_browse_cache
+
 
 def emit_library_changed(app: Any) -> None:
+    # Invalidate BEFORE the broker null-check: lifespan-less tests have no
+    # broker but still mutate the library through paths that call this helper.
+    invalidate_browse_cache()
     broker = getattr(app.state, "event_broker", None)
     if broker is not None:
         broker.publish_library_changed()
