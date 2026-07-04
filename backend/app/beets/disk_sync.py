@@ -237,5 +237,12 @@ def run_disk_sync(
                 continue
             for key in library.Album.item_keys:
                 album[key] = first_item[key]
-            album.store()
+            # inherit=False — beets' default (inherit=True) would push these
+            # album-level values down onto EVERY track row, clobbering
+            # per-track values that legitimately differ file-to-file, and
+            # beets zeroes each touched track's mtime ("Reset mtime on
+            # dirty"), reopening the gate so the same tracks re-sync forever.
+            # Deliberate deviation from beets' update.py (which has this same
+            # churn): disk-sync promises each row mirrors ITS OWN file.
+            album.store(inherit=False)
         return emptied
