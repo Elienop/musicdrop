@@ -106,6 +106,47 @@ test("confirm starts the job", async () => {
   );
 });
 
+test("orphan-only preview opens the plan and confirms as a folder clean-up", async () => {
+  vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
+    if (path === "/api/reorganize/status")
+      return { data: idle, response: { ok: true, status: 200 } } as never;
+    if (path === "/api/reorganize/preview")
+      return {
+        data: {
+          scope: "library",
+          scope_label: "library",
+          total: 14,
+          will_move: 0,
+          already_in_place: 14,
+          truncated: false,
+          moves: [],
+          orphans: [
+            { name: "Old Artist feat. X", path: "Old Artist feat. X", file_count: 2 },
+            { name: "Ghost Album", path: "Ghost Album", file_count: 1 },
+          ],
+          orphans_total: 2,
+        },
+        response: { ok: true, status: 200 },
+      } as never;
+    return { data: undefined, response: { ok: false, status: 404 } } as never;
+  });
+  wrap(<ReorganizeControl scope={{ scope: "library" }} />);
+  await userEvent.click(
+    screen.getByRole("button", { name: /reorganize files/i }),
+  );
+  // The plan opens even with no moves — the orphan husks are the reason.
+  expect(await screen.findByText(/Folders to clean up/i)).toBeInTheDocument();
+  expect(screen.getByText("Old Artist feat. X")).toBeInTheDocument();
+  // Confirm reads as a clean-up, not a move.
+  const confirm = screen.getByRole("button", { name: /clean up 2 folders/i });
+  await userEvent.click(confirm);
+  await waitFor(() =>
+    expect(client.POST).toHaveBeenCalledWith("/api/reorganize", {
+      params: { query: {} },
+    }),
+  );
+});
+
 test("zero-move preview shows an inline notice — no review, no Done button", async () => {
   vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
     if (path === "/api/reorganize/status")

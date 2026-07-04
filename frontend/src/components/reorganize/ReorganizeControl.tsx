@@ -30,6 +30,14 @@ function jobMatches(
   return job.scope === "library";
 }
 
+/** The confirm button's label: a real move plan counts items; an orphan-only
+ * plan (no moves, only husk folders to sweep) counts folders to clean up. */
+function confirmLabel(plan: ReorganizePlan): string {
+  if (plan.will_move > 0)
+    return `Reorganize ${plan.will_move} item${plan.will_move === 1 ? "" : "s"}`;
+  return `Clean up ${plan.orphans_total} folder${plan.orphans_total === 1 ? "" : "s"}`;
+}
+
 function MoveRow({ m }: { m: ReorganizeMove }) {
   const renameInPlace = m.from_path === m.to_path;
   return (
@@ -185,16 +193,16 @@ export function ReorganizeControl({
     }
   }, [isThis, phase, queryClient]);
 
-  // A preview with moves opens the inline review; an empty preview shows an
-  // inline info note instead (no inline plan, no Done button).
+  // A preview with moves OR orphan husks to sweep opens the inline review; a
+  // truly empty preview shows an inline info note instead (no plan, no Done).
   function onPreviewed(result: ReorganizePlan) {
-    if (result.will_move === 0) {
+    if (result.will_move > 0 || result.orphans_total > 0) {
+      setPlan(result);
+    } else {
       setMessage({
         kind: "info",
         text: "Nothing to reorganize — everything already matches your config.",
       });
-    } else {
-      setPlan(result);
     }
   }
 
@@ -278,9 +286,7 @@ export function ReorganizeControl({
               className="aria-disabled:opacity-50"
               onClick={onConfirmStart}
             >
-              {start.isPending
-                ? "Starting…"
-                : `Reorganize ${plan.will_move} item${plan.will_move === 1 ? "" : "s"}`}
+              {start.isPending ? "Starting…" : confirmLabel(plan)}
             </Button>
             <Button
               variant="ghost"
@@ -347,9 +353,7 @@ export function ReorganizeControl({
               className="aria-disabled:opacity-50"
               onClick={onConfirmStart}
             >
-              {start.isPending
-                ? "Starting…"
-                : `Reorganize ${plan.will_move} item${plan.will_move === 1 ? "" : "s"}`}
+              {start.isPending ? "Starting…" : confirmLabel(plan)}
             </Button>
             <Button
               variant="ghost"
