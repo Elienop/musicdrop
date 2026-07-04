@@ -27,7 +27,7 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 
 ## Stack
 
-- **Backend** — Python ≥ 3.11, **FastAPI + Pydantic** on Uvicorn; **beets 2.11** runs in-process behind the typed adapter in `app/beets/`. HTTP via httpx, Plex via [python-plexapi](https://github.com/pkkid/python-plexapi), YAML config editing via ruamel.yaml. Packaged with **uv**; `mypy --strict`, **Ruff** (lint + format), and **pytest** enforced in CI.
+- **Backend** — Python ≥ 3.11, **FastAPI + Pydantic** on Uvicorn; **beets 2.12** runs in-process behind the typed adapter in `app/beets/`. HTTP via httpx, Plex via [python-plexapi](https://github.com/pkkid/python-plexapi), YAML config editing via ruamel.yaml. Packaged with **uv**; `mypy --strict`, **Ruff** (lint + format), and **pytest** enforced in CI.
 - **Frontend** — **React 19 + TypeScript**, built with **Vite**. UI is **shadcn/ui** (Radix primitives) + **Tailwind CSS 4** + [Phosphor](https://phosphoricons.com/) icons, with **League Spartan** as the display face; server state via **TanStack Query**; routing via React Router. The API client is **openapi-fetch**, and the TypeScript API types are **generated** from the backend's OpenAPI schema — never hand-written. Tested with Vitest + Testing Library + MSW.
 
 ## Status
@@ -38,17 +38,21 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 
 - **Browse** — artist → albums → tracklist, with cover art, lyrics, and a release's missing tracks.
 - **Search** across the library.
-- **Cover art** — fetch + replace. **Artist images** — multi-source (fanart.tv / Spotify / Deezer) with manual override, written into the library for Plex.
+- **Cover art** — fetch + replace. **Artist images** — multi-source (fanart.tv / Spotify / Deezer) with per-artist override (upload or paste a URL), written into the library for Plex.
 - **Lyrics** — presence, per-album fetch, and a library-wide backfill.
 - **Edit tags** — album & track, from the UI.
-- **Import** — interactive candidate picker, resume, and an import-time duplicate guard.
+- **Import** — interactive candidate picker, resume, an import-time duplicate guard, and search-by-release-ID when the right match isn't offered. Unattended runs **bank** undecidable albums for later review instead of stalling, and the summary verifies each album actually **landed** in the library.
 - **Duplicates** — find & resolve duplicate albums (resolve one, or resolve-all).
+- **Release identity** — which release an album is (source · label · country · media · disambiguation), with view-release links.
+- **Delete & Trash** — delete albums or artists into a reversible Trash; restore or empty it under **Settings → Trash**.
 - **beets config** — viewer + writable editor.
-- **Naming** — edit beets path/replace rules with a live preview. **Reorganize** — re-apply them to existing files.
+- **Naming** — edit beets path/replace rules with a live preview. **Reorganize** — re-apply them to existing files (and sweep emptied leftover folders into the Trash).
+- **Disk sync** — a `beet update` equivalent: preview-first removal of library entries whose files were deleted outside the app, plus tag refresh for files changed on disk.
 - **Library dashboard** — counts, duration, size, recently added.
 - **Playlists** — create / edit / delete; `.m3u8` export; Plex-compatible, multi-user sync (metadata-matched, with cascade-delete). Configure Plex under **Settings → Plex** (base URL + admin token + the music-library path *as Plex sees it*), or seed it from `MUSICDROP_PLEX_URL` / `MUSICDROP_PLEX_TOKEN` / `MUSICDROP_PLEX_LIBRARY_PATH`.
 - **Acquisition (slskd)** — completed slskd downloads land in a watched inbox (webhook-driven) and queue into the import pipeline; a unified **Review** page is the one home for import decisions and inbox backlog.
-- **Faceted Browse** — filter the library by genre · decade · format.
+- **Faceted Browse** — slice the library by genre · decade · format · type · media · country · source · lyrics coverage, sorted A–Z or recently added.
+- **Live updates** — library changes stream to every open tab (SSE), no manual refresh.
 - **Dark, art-forward UI** — violet-accented dark theme, dissolving detail rails, Koito-inspired row cards, a two-font type system (League Spartan display face), and the original MusicDrop logo re-colored onto the design tokens.
 
 **Planned** — deemix acquisition adapter.
@@ -61,7 +65,7 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 
 ## Install (Docker)
 
-MusicDrop ships as a single container: `ghcr.io/elienop/musicdrop` (amd64 + arm64), FastAPI serving both the API and the UI on port **3030**.
+MusicDrop ships as a single container: `ghcr.io/elienop/musicdrop` (amd64), FastAPI serving both the API and the UI on port **3030**.
 
 ```yaml
 services:
