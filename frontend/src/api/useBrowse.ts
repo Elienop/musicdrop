@@ -15,7 +15,15 @@ export interface BrowseFilters {
   genre: string[];
   decade: string[];
   format: string[];
+  album_type: string[];
+  media: string[];
+  country: string[];
+  source: string[];
+  lyrics: string[];
 }
+
+/** Album ordering for the browse grid. */
+export type BrowseSort = "artist" | "added";
 
 /** Poll the facet values (cached — absolute counts rarely change between visits). */
 export function useBrowseFacets() {
@@ -30,14 +38,15 @@ export function useBrowseFacets() {
   });
 }
 
-/** The filtered, paginated album page for the current filters + offset. */
+/** The filtered, paginated album page for the current filters + sort + offset. */
 export function useBrowseAlbums(
   filters: BrowseFilters,
+  sort: BrowseSort,
   limit: number,
   offset: number,
 ) {
   return useQuery<AlbumPage>({
-    queryKey: ["browse", "albums", filters, limit, offset],
+    queryKey: ["browse", "albums", filters, sort, limit, offset],
     queryFn: async () => {
       const { data, error, response } = await client.GET("/api/browse/albums", {
         params: {
@@ -45,6 +54,12 @@ export function useBrowseAlbums(
             genre: filters.genre,
             decade: filters.decade,
             format: filters.format,
+            album_type: filters.album_type,
+            media: filters.media,
+            country: filters.country,
+            source: filters.source,
+            lyrics: filters.lyrics,
+            sort,
             limit,
             offset,
           },
