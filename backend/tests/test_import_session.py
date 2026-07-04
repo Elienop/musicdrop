@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -126,6 +127,9 @@ def _make_session(bridge: ImportBridge) -> WebImportSession:
     session._directive = None
     # __init__ is skipped, so seed the album-id stash choose_match appends to.
     session._await_album_id = []
+    # __init__ is skipped, so default the astracks-in-flight flag choose_item
+    # now reads (armed by choose_match when a park is decided "as tracks").
+    session._astracks_in_flight = False
     # __init__ is skipped, so the in-library guard's session.paths read has a
     # value; empty means the guard no-ops (these tests drive run() directly).
     session.paths = []
@@ -1543,3 +1547,156 @@ def test_albums_in_dir_collapses_deemix_multidisc(tmp_path: Path) -> None:
         if {os.path.basename(os.fsdecode(p)) for p in paths} == {"CD1", "CD2", "CD3"}
     ]
     assert len(collapsed) == 1  # the three discs are ONE album
+
+
+# ----- attended "as tracks": the singletons must land, not silently skip -----
+
+
+def test_choose_item_skips_by_default_but_asis_when_astracks_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A singleton reaching choose_item (no directive) is set aside by default...
+    match = _build_match(BeetsRec.medium)
+    session = _make_session(ImportBridge())
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    assert session.choose_item(task) is Action.SKIP
+    # ...but once choose_match has armed the in-flight flag for an astracks'd
+    # album, its re-pipelined singletons import ASIS (previously silent no-op).
+    session._astracks_in_flight = True
+    assert session.choose_item(task) is Action.ASIS
+
+
+def test_attended_astracks_arms_the_in_flight_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    parked = bridge.get_parked(timeout=2.0)
+    assert parked is not None
+    bridge.push_choice(parked.album_index, ImportChoice(action=ImportAction.astracks))
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    # The album's TRACKS choice re-pipelines singletons through choose_item; the
+    # flag is what makes that hook answer ASIS instead of the default SKIP.
+    assert task.choice_flag is Action.TRACKS
+    assert session._astracks_in_flight is True
+
+
+def test_next_choose_match_clears_the_in_flight_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A prior album armed the flag; the next album task's choose_match closes the
+    # singleton window (its files already re-pipelined) by resetting it to False.
+    match = _build_match(BeetsRec.strong)
+    session = _make_session(ImportBridge())
+    session._astracks_in_flight = True
+    task = _make_task(match, monkeypatch, BeetsRec.strong)
+
+    result = session.choose_match(task)  # strong rec: auto-applies, never parks
+
+    assert result is match
+    assert session._astracks_in_flight is False
+
+
+def test_attended_astracks_lands_the_singletons_full_pipeline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """E2E regression: an attended run decided "as tracks" must import the files.
+
+    The album parks (medium rec), the user chooses astracks, and beets
+    re-pipelines each file as a SingletonImportTask whose choose_match routes to
+    ``choose_item``. Before the fix that hook answered SKIP for the attended
+    path, so the run completed "cleanly" while the library gained ZERO items.
+    The in-flight flag makes those singletons import ASIS instead.
+    """
+    from mediafile import MediaFile
+
+    from tests.conftest import build_library
+
+    sample = Path(__file__).parent / "fixtures" / "silent.flac"
+    source = tmp_path / "downloads" / "okc"
+    source.mkdir(parents=True)
+    for i in range(1, 3):
+        dst = source / f"{i:02d} Track {i}.flac"
+        shutil.copyfile(sample, dst)
+        mf = MediaFile(str(dst))
+        mf.artist = "Radiohead"
+        mf.albumartist = "Radiohead"
+        mf.album = "OK Computer"
+        mf.title = f"Airbag {i}"
+        mf.track = i
+        mf.save()
+
+    music = tmp_path / "music"
+    music.mkdir()
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+
+    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
+        # A canned MEDIUM-rec match built FROM the passed items so the album parks.
+        item_list = list(items)
+        tracks = [
+            TrackInfo(title=f"Airbag {i}", track_id=f"t{i}", index=i, length=1.0)
+            for i in range(1, len(item_list) + 1)
+        ]
+        info = AlbumInfo(
+            tracks=tracks,
+            album="OK Computer",
+            artist="Radiohead",
+            album_id="mb-okc",
+            data_source="MusicBrainz",
+            data_url="https://mb/okc",
+            year=1997,
+            va=False,
+        )
+        pairs, extra_items, extra_tracks = assign_items(item_list, info.tracks)
+        match = AlbumMatch(
+            distance(item_list, info, pairs), info, dict(pairs), extra_items, extra_tracks
+        )
+        return ("Radiohead", "OK Computer", Proposal([match], BeetsRec.medium))
+
+    def fake_tag_item(item: Any, search_ids: Any = None) -> Proposal:
+        return Proposal([], BeetsRec.none)
+
+    monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
+    monkeypatch.setattr(beets_tasks, "tag_item", fake_tag_item)
+
+    bridge = ImportBridge()
+    session = WebImportSession(
+        lib,
+        None,
+        [os.fsencode(str(source))],
+        None,
+        bridge,
+        None,
+        unattended=False,
+        sweep=False,
+        bank_dir=None,
+        directive=None,
+    )
+    errors: list[str] = []
+
+    def worker() -> None:
+        try:
+            run_import_worker(session, move=None, sweep=False, directive=None)
+        except Exception as exc:
+            errors.append(f"{exc.__class__.__name__}: {exc}")
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    parked = bridge.get_parked(timeout=10.0)
+    assert parked is not None
+    bridge.push_choice(parked.album_index, ImportChoice(action=ImportAction.astracks))
+    t.join(timeout=20.0)
+    assert not t.is_alive(), "import worker hung"
+    assert errors == [], f"import worker errored: {errors}"
+
+    # As-tracks lands the two files as singletons (no album row).
+    assert len(list(lib.items())) == 2
+    assert len(list(lib.albums())) == 0
