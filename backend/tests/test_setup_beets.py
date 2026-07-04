@@ -164,3 +164,39 @@ def test_setup_logs_deprecation_for_old_env_vars(
         assert any("MUSICDROP_BEETS_LIBRARY_DIRECTORY" in m for m in msgs)
     finally:
         close_library(handle.lib)
+
+
+def test_starter_replace_rules_map_typographic_to_ascii() -> None:
+    """The starter's ``replace:`` block sanitizes MusicBrainz typographic Unicode.
+
+    The literal characters are visually identical to their ASCII twins (that is
+    the entire bug class — MB spells "blink-182" with a U+2010 HYPHEN, which
+    minted a folder twin next to the ASCII one), so both this test and the config
+    spell them with ``\\uXXXX`` escapes. Assert (a) the YAML loads a ``replace``
+    mapping, (b) every pattern compiles under Python ``re``, and (c) applying the
+    compiled rules collapses the twins back to ASCII.
+    """
+    import re
+
+    import yaml
+
+    starter = Path(__file__).parent.parent / "app" / "beets" / "config.starter.yaml"
+    data = yaml.safe_load(starter.read_text(encoding="utf-8"))
+
+    # (a) the YAML round-trips into a non-empty replace mapping.
+    replace = data["replace"]
+    assert isinstance(replace, dict) and replace
+
+    # (b) every pattern compiles under Python re (single-quoted YAML keeps the
+    # \uXXXX escapes as literal text, which re then decodes).
+    compiled = [(re.compile(pattern), replacement) for pattern, replacement in replace.items()]
+
+    def sanitize(text: str) -> str:
+        for pattern, replacement in compiled:
+            text = pattern.sub(replacement, text)
+        return text
+
+    # (c) the blink-182 (U+2010) twin class + MB's curly apostrophe collapse to ASCII.
+    # Spelled with escapes because the literals are indistinguishable on screen.
+    assert sanitize("blink\u2010182") == "blink-182"  # U+2010 HYPHEN
+    assert sanitize("Don\u2019t Stop") == "Don't Stop"  # U+2019 RIGHT SINGLE QUOTE

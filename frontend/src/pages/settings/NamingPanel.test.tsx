@@ -155,3 +155,85 @@ test("pre-fills with beets' effective defaults (no-override case)", async () => 
   // A bundled replace row pre-fills too (no blank panel).
   expect(screen.getByDisplayValue("^-")).toBeInTheDocument();
 });
+
+// The recommended-rules button maps MusicBrainz typographic Unicode (the
+// blink‐182 twin class) to ASCII. Patterns are stored as literal \uXXXX text
+// (JS source escapes the backslash) so they stay legible in the editor.
+test("Add recommended rules seeds the five typographic replace rows", async () => {
+  wrap(<NamingPanel />);
+  await screen.findByDisplayValue(/\$albumartist/);
+  await userEvent.click(
+    screen.getByRole("button", { name: /add recommended rules/i }),
+  );
+  expect(screen.getAllByLabelText(/replace pattern/i)).toHaveLength(5);
+  // Exact pattern strings reach the inputs verbatim.
+  expect(
+    screen.getByDisplayValue("[\\u2010\\u2011\\u2212]"),
+  ).toBeInTheDocument();
+  expect(screen.getByDisplayValue("\\u2026")).toBeInTheDocument();
+});
+
+test("Add recommended rules is idempotent (clicking twice adds no duplicates)", async () => {
+  wrap(<NamingPanel />);
+  await screen.findByDisplayValue(/\$albumartist/);
+  const btn = screen.getByRole("button", { name: /add recommended rules/i });
+  await userEvent.click(btn);
+  await userEvent.click(btn);
+  expect(screen.getAllByLabelText(/replace pattern/i)).toHaveLength(5);
+});
+
+test("Add recommended rules skips a recommended pattern already present", async () => {
+  const seeded = {
+    ...naming,
+    replace: [{ pattern: "\\u2026", replacement: "..." }],
+    sha256: "sha-seed",
+  };
+  vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
+    if (path === "/api/config/naming")
+      return { data: seeded, response: { ok: true, status: 200 } } as never;
+    if (path === "/api/imports/active")
+      return {
+        data: { active: false },
+        response: { ok: true, status: 200 },
+      } as never;
+    if (path === "/api/config")
+      return {
+        data: { apply_pending: false },
+        response: { ok: true, status: 200 },
+      } as never;
+    return { data: undefined, response: { ok: false, status: 404 } } as never;
+  });
+
+  wrap(<NamingPanel />);
+  await screen.findByDisplayValue(/\$albumartist/);
+  // Exactly the seeded row is present before the click.
+  expect(screen.getAllByLabelText(/replace pattern/i)).toHaveLength(1);
+  await userEvent.click(
+    screen.getByRole("button", { name: /add recommended rules/i }),
+  );
+  // 1 seeded + 4 new (the ellipsis is deduped by exact pattern) = 5.
+  expect(screen.getAllByLabelText(/replace pattern/i)).toHaveLength(5);
+  expect(screen.getAllByDisplayValue("\\u2026")).toHaveLength(1);
+});
+
+test("Save includes the recommended rules once added", async () => {
+  wrap(<NamingPanel />);
+  await screen.findByDisplayValue(/\$albumartist/);
+  await userEvent.click(
+    screen.getByRole("button", { name: /add recommended rules/i }),
+  );
+  await userEvent.click(screen.getByRole("button", { name: /save naming/i }));
+  await waitFor(() =>
+    expect(client.POST).toHaveBeenCalledWith(
+      "/api/config/naming/save",
+      expect.objectContaining({
+        body: expect.objectContaining({
+          replace: expect.arrayContaining([
+            { pattern: "[\\u2010\\u2011\\u2212]", replacement: "-" },
+            { pattern: "\\u2026", replacement: "..." },
+          ]),
+        }),
+      }),
+    ),
+  );
+});
