@@ -317,6 +317,14 @@ function diskSyncRow(status: DiskSyncStatus | undefined): ActivityRow | null {
       href: "/settings/beets",
     };
   }
+  if (status.phase === "stopped") {
+    return {
+      id, kind: "disk-sync", label: "Disk sync", scope: "library",
+      state: "done",
+      countsText: `stopped early · ${status.processed} of ${status.total} processed`,
+      href: "/settings/beets",
+    };
+  }
   if (status.phase === "done") {
     return {
       id, kind: "disk-sync", label: "Disk sync", scope: "library",
