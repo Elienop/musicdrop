@@ -15,6 +15,7 @@ import {
   useDeleteBankItem,
   useIgnoreBankItem,
   type BankItemSummary,
+  type BankReason,
   type BankStatus,
 } from "@/api/useBank";
 import {
@@ -477,11 +478,28 @@ const BANK_STATUS_LABEL: Record<BankStatus, string> = {
   stale: "Folder changed",
 };
 
-const BANK_REASON_LABEL: Record<BankItemSummary["reason"], string> = {
+const BANK_REASON_LABEL: Record<BankReason, string> = {
   needs_review: "Uncertain match",
   needs_dup_resolution: "Already in library",
   no_match: "No match",
 };
+
+/** The reason dropdown's value space: `""` = every reason (param absent),
+ * otherwise one specific banked reason. */
+type BankReasonFilter = "" | BankReason;
+
+const BANK_REASON_FILTERS: { value: BankReasonFilter; label: string }[] = [
+  { value: "", label: "All reasons" },
+  { value: "needs_review", label: BANK_REASON_LABEL.needs_review },
+  { value: "needs_dup_resolution", label: BANK_REASON_LABEL.needs_dup_resolution },
+  { value: "no_match", label: BANK_REASON_LABEL.no_match },
+];
+
+/** Narrows a select value back into the reason-filter space (no cast — the
+ * option values all come from BANK_REASON_FILTERS). Unknown falls to default. */
+function toBankReason(value: string | null): BankReasonFilter {
+  return BANK_REASON_FILTERS.find((f) => f.value === value)?.value ?? "";
+}
 
 function isBankStatus(value: string | null): value is BankStatus {
   return (
@@ -512,11 +530,14 @@ function BankSection() {
   const [searchParams, setSearchParams] = useSearchParams();
   const filter = toBankFilter(searchParams.get("bank_status"));
   const status = isBankStatus(filter) ? filter : undefined;
+  const reasonFilter = toBankReason(searchParams.get("bank_reason"));
+  const reason = reasonFilter === "" ? undefined : reasonFilter;
   const offset = Math.max(0, Number(searchParams.get("bank_offset") ?? "0") || 0);
 
   const listQuery = useBankList({
     status,
     view: filter === "" ? "active" : undefined,
+    reason,
     offset,
     limit: PAGE_SIZE,
   });
@@ -527,7 +548,11 @@ function BankSection() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const data = listQuery.data;
-  if (!data || (data.total === 0 && filter === "" && offset === 0)) {
+  // Hide only when the bank is truly empty (no rows of ANY status). Once any
+  // row exists the section stays mounted — its filters are the ONLY path to
+  // the resolved (Imported/Ignored) history, so an empty active view must not
+  // take the whole section (and its dropdowns) down with it.
+  if (!data || data.total_all === 0) {
     return null;
   }
 
@@ -565,12 +590,18 @@ function BankSection() {
     setSelected(checked ? new Set(selectableIds) : new Set());
   };
 
-  const setParams = (next: { filter: BankFilter; offset: number }) => {
+  const setParams = (next: {
+    filter: BankFilter;
+    reason: BankReasonFilter;
+    offset: number;
+  }) => {
     setSelected(new Set());
     setSearchParams((params) => {
       const copy = new URLSearchParams(params);
       if (next.filter === "") copy.delete("bank_status");
       else copy.set("bank_status", next.filter);
+      if (next.reason === "") copy.delete("bank_reason");
+      else copy.set("bank_reason", next.reason);
       if (next.offset === 0) copy.delete("bank_offset");
       else copy.set("bank_offset", String(next.offset));
       return copy;
@@ -675,10 +706,30 @@ function BankSection() {
           <select
             aria-label="Filter by status"
             value={filter}
-            onChange={(e) => setParams({ filter: toBankFilter(e.target.value), offset: 0 })}
+            onChange={(e) =>
+              setParams({
+                filter: toBankFilter(e.target.value),
+                reason: reasonFilter,
+                offset: 0,
+              })
+            }
             className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-8 appearance-none rounded-md border px-2 pr-7 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
           >
             {BANK_FILTERS.map((f) => (
+              <option key={f.value} value={f.value}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Filter by reason"
+            value={reasonFilter}
+            onChange={(e) =>
+              setParams({ filter, reason: toBankReason(e.target.value), offset: 0 })
+            }
+            className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-8 appearance-none rounded-md border px-2 pr-7 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
+          >
+            {BANK_REASON_FILTERS.map((f) => (
               <option key={f.value} value={f.value}>
                 {f.label}
               </option>
@@ -702,15 +753,21 @@ function BankSection() {
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => setParams({ filter, offset: 0 })}
+                onClick={() => setParams({ filter, reason: reasonFilter, offset: 0 })}
               >
                 Back to first page
               </Button>
             }
           />
+        ) : filter === "" && reasonFilter === "" ? (
+          // The pristine "Needs attention" view is empty but rows still exist
+          // (total_all > 0) — everything's resolved. Point at the filters so
+          // the Imported/Ignored history stays discoverable, not a dead end.
+          <p className="text-muted-foreground text-sm">
+            Nothing needs attention — switch the filter to see resolved history.
+          </p>
         ) : (
-          // At offset 0 an empty page can only mean an active filter matched
-          // nothing (empty + unfiltered hides the whole section above).
+          // An active status/reason filter matched nothing on this page.
           <p className="text-muted-foreground text-sm">No rows match this filter.</p>
         )
       ) : (
@@ -735,7 +792,9 @@ function BankSection() {
           offset={offset}
           limit={PAGE_SIZE}
           busy={listQuery.isPlaceholderData}
-          onOffsetChange={(next) => setParams({ filter, offset: next })}
+          onOffsetChange={(next) =>
+            setParams({ filter, reason: reasonFilter, offset: next })
+          }
         />
       )}
     </section>

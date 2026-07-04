@@ -72,6 +72,7 @@ describe("useBankList", () => {
         return HttpResponse.json({
           items: [summary],
           total: 1,
+          total_all: 1,
           offset: 48,
           limit: 48,
         });
@@ -96,7 +97,7 @@ describe("useBankList", () => {
         const params = new URL(request.url).searchParams;
         seenHasStatus = params.has("status");
         seenHasView = params.has("view");
-        return HttpResponse.json({ items: [], total: 0, offset: 0, limit: 48 });
+        return HttpResponse.json({ items: [], total: 0, total_all: 0, offset: 0, limit: 48 });
       }),
     );
     const { result } = renderHook(() => useBankList({ offset: 0, limit: 48 }), {
@@ -115,7 +116,7 @@ describe("useBankList", () => {
         const params = new URL(request.url).searchParams;
         seenView = params.get("view");
         seenHasStatus = params.has("status");
-        return HttpResponse.json({ items: [], total: 0, offset: 0, limit: 48 });
+        return HttpResponse.json({ items: [], total: 0, total_all: 0, offset: 0, limit: 48 });
       }),
     );
     const { result } = renderHook(
@@ -125,6 +126,49 @@ describe("useBankList", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(seenView).toBe("active");
     expect(seenHasStatus).toBe(false);
+  });
+
+  test("passes the reason filter through", async () => {
+    let seenReason: string | null = null;
+    server.use(
+      http.get(LIST, ({ request }) => {
+        seenReason = new URL(request.url).searchParams.get("reason");
+        return HttpResponse.json({
+          items: [],
+          total: 0,
+          total_all: 0,
+          offset: 0,
+          limit: 48,
+        });
+      }),
+    );
+    const { result } = renderHook(
+      () => useBankList({ reason: "needs_dup_resolution", offset: 0, limit: 48 }),
+      { wrapper: wrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(seenReason).toBe("needs_dup_resolution");
+  });
+
+  test("omits the reason param when unset", async () => {
+    let seenHasReason: boolean | null = null;
+    server.use(
+      http.get(LIST, ({ request }) => {
+        seenHasReason = new URL(request.url).searchParams.has("reason");
+        return HttpResponse.json({
+          items: [],
+          total: 0,
+          total_all: 0,
+          offset: 0,
+          limit: 48,
+        });
+      }),
+    );
+    const { result } = renderHook(() => useBankList({ offset: 0, limit: 48 }), {
+      wrapper: wrapper(),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(seenHasReason).toBe(false);
   });
 });
 

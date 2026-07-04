@@ -80,7 +80,9 @@ describe("ReviewPage", () => {
       http.get(ACTIVE, () => HttpResponse.json(idleActive)),
       http.get(ITEMS, () => HttpResponse.json({ items: [] })),
       http.get(STATUS, () => HttpResponse.json(idleStatus)),
-      http.get(BANK, () => HttpResponse.json({ items: [], total: 0, offset: 0, limit: 48 })),
+      http.get(BANK, () =>
+        HttpResponse.json({ items: [], total: 0, total_all: 0, offset: 0, limit: 48 }),
+      ),
       http.get(JOB, () =>
         HttpResponse.json({
           job_id: "j1",
@@ -319,18 +321,82 @@ describe("ReviewPage", () => {
   test("bank rows render guess, reason chip, confidence and an Open link", async () => {
     server.use(
       http.get(BANK, () =>
-        HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 }),
+        HttpResponse.json({ items: [bankRow()], total: 1, total_all: 1, offset: 0, limit: 48 }),
       ),
     );
     renderWithProviders(<ReviewPage />);
     const section = await screen.findByRole("region", { name: /waiting for review/i });
     expect(within(section).getByText("Album X")).toBeInTheDocument();
-    expect(within(section).getByText(/uncertain match/i)).toBeInTheDocument();
+    // Scoped to the row — "Uncertain match" is also an option in the reason
+    // filter, so the chip assertion must not reach into the dropdown.
+    const row = within(section).getByRole("listitem");
+    expect(within(row).getByText(/uncertain match/i)).toBeInTheDocument();
     expect(within(section).getByText(/71%/)).toBeInTheDocument();
     expect(within(section).getByRole("link", { name: /open/i })).toHaveAttribute(
       "href",
       "/review/bank/b1",
     );
+  });
+
+  test("an all-resolved bank keeps the section and its history hint reachable", async () => {
+    // The active view is empty (everything's resolved) but rows still exist —
+    // the section, both filters, and a hint back to history must stay visible.
+    server.use(
+      http.get(BANK, () =>
+        HttpResponse.json({ items: [], total: 0, total_all: 5, offset: 0, limit: 48 }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    expect(within(section).getByLabelText(/filter by status/i)).toBeInTheDocument();
+    expect(within(section).getByLabelText(/filter by reason/i)).toBeInTheDocument();
+    expect(
+      within(section).getByText(/nothing needs attention — switch the filter/i),
+    ).toBeInTheDocument();
+  });
+
+  test("a truly empty bank (no rows at all) hides the whole section", async () => {
+    server.use(
+      http.get(BANK, () =>
+        HttpResponse.json({ items: [], total: 0, total_all: 0, offset: 0, limit: 48 }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+    // Wait for the page itself to settle before asserting the section's absence.
+    await screen.findByText(/need your decision/i);
+    expect(
+      screen.queryByRole("region", { name: /waiting for review/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("the reason filter narrows the query, sets bank_reason, and resets offset", async () => {
+    const reasons: Array<string | null> = [];
+    const offsets: Array<string | null> = [];
+    server.use(
+      http.get(BANK, ({ request }) => {
+        const params = new URL(request.url).searchParams;
+        if (params.get("limit") === "48") {
+          reasons.push(params.get("reason"));
+          offsets.push(params.get("offset"));
+        }
+        return HttpResponse.json({
+          items: [bankRow()],
+          total: 1,
+          total_all: 1,
+          offset: 0,
+          limit: 48,
+        });
+      }),
+    );
+    renderWithProviders(<ReviewPage />, { route: "/review?bank_offset=48" });
+    await screen.findByRole("region", { name: /waiting for review/i });
+    await userEvent.selectOptions(
+      screen.getByLabelText(/filter by reason/i),
+      "needs_dup_resolution",
+    );
+    // The request carries the reason and pagination has reset to the first page.
+    await waitFor(() => expect(reasons).toContain("needs_dup_resolution"));
+    await waitFor(() => expect(offsets.at(-1)).toBe("0"));
   });
 
   test("the bank section paginates — Next requests the next offset", async () => {
@@ -342,6 +408,7 @@ describe("ReviewPage", () => {
         return HttpResponse.json({
           items: [bankRow()],
           total: 60,
+          total_all: 60,
           offset: Number(url.searchParams.get("offset") ?? "0"),
           limit: 48,
         });
@@ -363,8 +430,8 @@ describe("ReviewPage", () => {
         const offset = Number(url.searchParams.get("offset") ?? "0");
         return HttpResponse.json(
           offset >= 48
-            ? { items: [], total: 1, offset, limit: 48 }
-            : { items: [bankRow()], total: 1, offset, limit: 48 },
+            ? { items: [], total: 1, total_all: 1, offset, limit: 48 }
+            : { items: [bankRow()], total: 1, total_all: 1, offset, limit: 48 },
         );
       }),
     );
@@ -386,10 +453,10 @@ describe("ReviewPage", () => {
       http.get(BANK, () =>
         HttpResponse.json(
           ignored
-            ? { items: [bankRow({ id: "b2", album: "Album Y" })], total: 1, offset: 0, limit: 48 }
+            ? { items: [bankRow({ id: "b2", album: "Album Y" })], total: 1, total_all: 1, offset: 0, limit: 48 }
             : {
                 items: [bankRow(), bankRow({ id: "b2", album: "Album Y" })],
-                total: 2, offset: 0, limit: 48,
+                total: 2, total_all: 2, offset: 0, limit: 48,
               },
         ),
       ),
@@ -421,7 +488,7 @@ describe("ReviewPage", () => {
         if (params.get("limit") === "48") {
           queries.push({ status: params.get("status"), view: params.get("view") });
         }
-        return HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 });
+        return HttpResponse.json({ items: [bankRow()], total: 1, total_all: 1, offset: 0, limit: 48 });
       }),
     );
     renderWithProviders(<ReviewPage />);
@@ -441,7 +508,7 @@ describe("ReviewPage", () => {
         if (params.get("limit") === "48") {
           queries.push({ status: params.get("status"), view: params.get("view") });
         }
-        return HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 });
+        return HttpResponse.json({ items: [bankRow()], total: 1, total_all: 1, offset: 0, limit: 48 });
       }),
     );
     renderWithProviders(<ReviewPage />);
@@ -462,7 +529,7 @@ describe("ReviewPage", () => {
         if (params.get("limit") === "48") {
           queries.push({ status: params.get("status"), view: params.get("view") });
         }
-        return HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 });
+        return HttpResponse.json({ items: [bankRow()], total: 1, total_all: 1, offset: 0, limit: 48 });
       }),
     );
     renderWithProviders(<ReviewPage />);
@@ -479,7 +546,7 @@ describe("ReviewPage", () => {
         if (params.get("limit") === "48") {
           queries.push({ status: params.get("status"), view: params.get("view") });
         }
-        return HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 });
+        return HttpResponse.json({ items: [bankRow()], total: 1, total_all: 1, offset: 0, limit: 48 });
       }),
     );
     renderWithProviders(<ReviewPage />, { route: "/review?bank_status=all" });
@@ -496,7 +563,7 @@ describe("ReviewPage", () => {
         // Count only the section's page-sized list query (the header's limit-1
         // probe shares the endpoint).
         if (new URL(request.url).searchParams.get("limit") === "48") listGets += 1;
-        return HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 });
+        return HttpResponse.json({ items: [bankRow()], total: 1, total_all: 1, offset: 0, limit: 48 });
       }),
       http.post(`${O}/api/bank/:itemId/decision`, async ({ request }) => {
         body = await request.json();
@@ -520,7 +587,7 @@ describe("ReviewPage", () => {
       http.get(BANK, () =>
         HttpResponse.json({
           items: [bankRow(), bankRow({ id: "b2", album: "Album Y" })],
-          total: 2, offset: 0, limit: 48,
+          total: 2, total_all: 2, offset: 0, limit: 48,
         }),
       ),
       http.post(`${O}/api/bank/bulk-ignore`, async ({ request }) => {
@@ -546,6 +613,7 @@ describe("ReviewPage", () => {
             bankRow({ id: "b3", album: "Album Z", status: "applying" }),
           ],
           total: 3,
+          total_all: 3,
           offset: 0,
           limit: 48,
         }),
@@ -573,6 +641,7 @@ describe("ReviewPage", () => {
         HttpResponse.json({
           items: [bankRow(), bankRow({ id: "b2", album: "Album Y" })],
           total: 2,
+          total_all: 2,
           offset: 0,
           limit: 48,
         }),
@@ -600,6 +669,7 @@ describe("ReviewPage", () => {
         HttpResponse.json({
           items: [bankRow({ id: "b3", album: "Album Z", status: "applying" })],
           total: 1,
+          total_all: 1,
           offset: 0,
           limit: 48,
         }),
@@ -616,7 +686,7 @@ describe("ReviewPage", () => {
   test("Remove confirms, then deletes the row", async () => {
     let deleted = false;
     server.use(
-      http.get(BANK, () => HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 })),
+      http.get(BANK, () => HttpResponse.json({ items: [bankRow()], total: 1, total_all: 1, offset: 0, limit: 48 })),
       http.delete(`${O}/api/bank/:itemId`, () => {
         deleted = true;
         return new HttpResponse(null, { status: 204 });
@@ -635,7 +705,7 @@ describe("ReviewPage", () => {
       http.get(ACTIVE, () =>
         HttpResponse.json({ active: true, job_id: "j1", origin: "manual", needs_review_count: 0 }),
       ),
-      http.get(BANK, () => HttpResponse.json({ items: [bankRow()], total: 1, offset: 0, limit: 48 })),
+      http.get(BANK, () => HttpResponse.json({ items: [bankRow()], total: 1, total_all: 1, offset: 0, limit: 48 })),
     );
     renderWithProviders(<ReviewPage />);
     const section = await screen.findByRole("region", { name: /waiting for review/i });
@@ -742,8 +812,8 @@ describe("ReviewPage", () => {
         const status = new URL(request.url).searchParams.get("status");
         return HttpResponse.json(
           status === "needs_review"
-            ? { items: [bankRow()], total: 3, offset: 0, limit: 1 }
-            : { items: [bankRow()], total: 5, offset: 0, limit: 48 },
+            ? { items: [bankRow()], total: 3, total_all: 3, offset: 0, limit: 1 }
+            : { items: [bankRow()], total: 5, total_all: 5, offset: 0, limit: 48 },
         );
       }),
     );
