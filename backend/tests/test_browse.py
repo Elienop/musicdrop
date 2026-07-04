@@ -403,6 +403,11 @@ def test_facets_endpoint_includes_new_facets(client: TestClient) -> None:
 def test_browse_albums_endpoint_new_filters_and_sort(client: TestClient) -> None:
     assert client.get("/api/browse/albums", params={"album_type": "single"}).json()["total"] == 1
     assert client.get("/api/browse/albums?source=Unknown&country=US").json()["total"] == 2
+    # Single-param assertions pin each wire->kwarg mapping independently: every
+    # expected total differs from the unfiltered 6 AND from a crossed pair's 0.
+    assert client.get("/api/browse/albums", params={"source": "Deezer"}).json()["total"] == 1
+    assert client.get("/api/browse/albums", params={"media": "CD"}).json()["total"] == 2
+    assert client.get("/api/browse/albums", params={"lyrics": "Complete"}).json()["total"] == 1
     assert client.get("/api/browse/albums", params={"sort": "added"}).status_code == 200
 
 
