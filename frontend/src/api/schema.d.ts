@@ -1951,6 +1951,11 @@ export interface components {
             items: components["schemas"]["BankItemSummary"][];
             /** Total */
             total: number;
+            /**
+             * Total All
+             * @default 0
+             */
+            total_all: number;
             /** Offset */
             offset: number;
             /** Limit */
@@ -6088,6 +6093,7 @@ export interface operations {
             query?: {
                 status?: ("needs_review" | "queued" | "applying" | "done" | "failed" | "ignored" | "stale") | null;
                 view?: "all" | "active";
+                reason?: ("needs_review" | "needs_dup_resolution" | "no_match") | null;
                 offset?: number;
                 limit?: number;
             };

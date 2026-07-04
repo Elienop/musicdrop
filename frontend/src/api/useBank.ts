@@ -14,6 +14,9 @@ export type BankDecision = components["schemas"]["BankDecision"];
 export type BankListResponse = components["schemas"]["BankListResponse"];
 /** Row lifecycle status (derived from the generated row type). */
 export type BankStatus = BankItemSummary["status"];
+/** Why a row was banked (derived from the generated row type) — the
+ * `reason` list filter's value space. */
+export type BankReason = BankItemSummary["reason"];
 /** A banked parked-album payload (generated; `candidate` is the exact shape
  * the live review screen renders). */
 export type ParkedAlbum = components["schemas"]["ParkedAlbum"];
@@ -57,6 +60,9 @@ export interface BankListParams {
   /** `active` narrows an unfiltered list to the needs-attention statuses
    * (the Review page's default); absent/`all` keeps every row. */
   view?: "all" | "active";
+  /** Narrows the list to rows banked for one reason (uncertain match /
+   * already-in-library / no-match); absent keeps every reason. */
+  reason?: BankReason;
   offset: number;
   limit: number;
 }
@@ -70,6 +76,7 @@ async function fetchBankList(
         // undefined omits the param (unfiltered); the API treats absent as All.
         status: params.status,
         view: params.view,
+        reason: params.reason,
         offset: params.offset,
         limit: params.limit,
       },
@@ -90,6 +97,7 @@ export function useBankList(params: BankListParams) {
       "list",
       params.status ?? "all",
       params.view ?? "all",
+      params.reason ?? "all",
       params.offset,
       params.limit,
     ],

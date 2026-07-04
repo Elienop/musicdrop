@@ -27,6 +27,7 @@ from app.models.bank import (
     BankDuplicatesResponse,
     BankItem,
     BankListResponse,
+    BankReason,
     BankStatus,
 )
 
@@ -45,22 +46,30 @@ def get_bank_dir() -> Path:
 async def list_bank(
     status_filter: Annotated[BankStatus | None, Query(alias="status")] = None,
     view: Annotated[Literal["all", "active"], Query()] = "all",
+    reason: Annotated[BankReason | None, Query()] = None,
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> BankListResponse:
     bank_dir = get_bank_dir()
     # A specific status wins; ``view=active`` only narrows the unfiltered list
     # to the Review page's needs-attention statuses (the FE never sends both).
+    # ``reason`` ANDs on top. One index pass yields the page, the filtered
+    # total, and total_all (any status) so the Review page section stays visible
+    # once the active view empties.
     active_only = status_filter is None and view == "active"
-    items = await run_in_threadpool(
-        lambda: store.list_items(
-            bank_dir, status=status_filter, active_only=active_only, offset=offset, limit=limit
+    page, total, total_all = await run_in_threadpool(
+        lambda: store.list_page(
+            bank_dir,
+            status=status_filter,
+            active_only=active_only,
+            reason=reason,
+            offset=offset,
+            limit=limit,
         )
     )
-    total = await run_in_threadpool(
-        lambda: store.count_items(bank_dir, status=status_filter, active_only=active_only)
+    return BankListResponse(
+        items=page, total=total, total_all=total_all, offset=offset, limit=limit
     )
-    return BankListResponse(items=items, total=total, offset=offset, limit=limit)
 
 
 @router.get("/bank/{item_id}", response_model=BankItem)

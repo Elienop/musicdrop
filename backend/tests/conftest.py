@@ -148,6 +148,21 @@ def reset_disk_sync_registry() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def reset_bank_index() -> Iterator[None]:
+    """Drop the bank store's module-level summary index around every test.
+
+    The index is keyed by resolved bank-dir path; per-test tmp dirs never
+    collide, but the glob-count perf pin and the external-file test rely on a
+    clean slate, so reset both sides.
+    """
+    from app.bank.store import reset_bank_index as _reset
+
+    _reset()
+    yield
+    _reset()
+
+
+@pytest.fixture(autouse=True)
 def _clear_beets_globals() -> Iterator[None]:
     """Reset beets' global confuse + plugin singletons between every test.
 

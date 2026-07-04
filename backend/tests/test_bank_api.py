@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from app.bank import store
 from app.config import settings
 from app.models.bank import BankDecision
+from app.models.import_models import DuplicatePrompt, IncomingAlbum
 
 
 @pytest.fixture()
@@ -22,10 +23,41 @@ def _seed(bank_dir: Path, *, folder: str = "/library/A/B") -> str:
     ).id
 
 
+def _seed_dup(bank_dir: Path, *, folder: str) -> str:
+    prompt = DuplicatePrompt(
+        album_index=0,
+        incoming=IncomingAlbum(
+            album_artist="A",
+            album="B",
+            year=None,
+            track_count=1,
+            format=None,
+            bitrate_kbps=None,
+            folder=folder,
+            has_current_art=False,
+        ),
+        existing=[],
+    )
+    return store.create_item(
+        bank_dir,
+        folder=folder,
+        source="sweep",
+        reason="needs_dup_resolution",
+        fingerprint="f" * 64,
+        duplicate=prompt,
+    ).id
+
+
 def test_list_empty(client: TestClient, bank_dir: Path) -> None:
     response = client.get("/api/bank")
     assert response.status_code == 200
-    assert response.json() == {"items": [], "total": 0, "offset": 0, "limit": 50}
+    assert response.json() == {
+        "items": [],
+        "total": 0,
+        "total_all": 0,
+        "offset": 0,
+        "limit": 50,
+    }
 
 
 def test_list_and_detail(client: TestClient, bank_dir: Path) -> None:
@@ -72,6 +104,28 @@ def test_list_default_view_stays_all(client: TestClient, bank_dir: Path) -> None
 
 def test_list_rejects_unknown_view(client: TestClient, bank_dir: Path) -> None:
     assert client.get("/api/bank", params={"view": "resolved"}).status_code == 422
+
+
+def test_list_reason_filter(client: TestClient, bank_dir: Path) -> None:
+    _seed(bank_dir, folder="/library/A/nomatch")  # reason=no_match
+    dup_id = _seed_dup(bank_dir, folder="/library/A/dup")
+    listing = client.get("/api/bank", params={"reason": "needs_dup_resolution"}).json()
+    assert [row["id"] for row in listing["items"]] == [dup_id]
+    assert listing["total"] == 1
+    assert listing["total_all"] == 2  # the reason filter never narrows total_all
+
+
+def test_total_all_survives_an_empty_active_view(client: TestClient, bank_dir: Path) -> None:
+    # Resolve BOTH rows so the default needs-attention view is empty; total_all
+    # still reports the resolved history so the Review page keeps its section.
+    first = _seed(bank_dir)
+    second = _seed(bank_dir, folder="/library/A/C")
+    store.decide_item(bank_dir, first, BankDecision(action="ignore"))
+    store.decide_item(bank_dir, second, BankDecision(action="ignore"))
+    listing = client.get("/api/bank", params={"view": "active"}).json()
+    assert listing["items"] == []
+    assert listing["total"] == 0
+    assert listing["total_all"] == 2
 
 
 def test_detail_404(client: TestClient, bank_dir: Path) -> None:

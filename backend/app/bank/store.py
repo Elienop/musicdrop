@@ -34,8 +34,33 @@ ACTIVE_STATUSES: frozenset[str] = frozenset(
 )
 
 # One lock for all mutations: the sweep worker (chunk 3) and the API thread
-# both write; per-row files keep contention negligible.
+# both write; per-row files keep contention negligible. It ALSO guards the
+# in-memory summary index below (reads included) so a listing never races a
+# write-through update.
 _LOCK = threading.Lock()
+
+# In-memory summary index — the antidote to the O(N^2) full-dir re-glob every
+# list/count/upsert used to pay. Two dicts per bank dir, keyed by the resolved
+# path: id -> summary (the list-row projection) and folder -> id (upsert's O(1)
+# dedupe lookup). Built lazily with ONE glob+parse pass, then kept coherent
+# WRITE-THROUGH by every mutation (all writes funnel through ``_write``, all
+# removals through the unlink in ``delete_item``). CONSTRAINT: the app is the
+# single writer of the bank dir — rows added out-of-band are seen only after
+# ``reset_bank_index()`` (or a restart). All index helpers assume the caller
+# already holds ``_LOCK``.
+_INDEX: dict[str, dict[str, BankItemSummary]] = {}
+_FOLDER: dict[str, dict[str, str]] = {}
+
+# The heavy fields a summary drops (kept identical to what ``list_page`` needs).
+# A plain set so it satisfies pydantic ``model_dump(exclude=...)``'s IncEx type.
+_SUMMARY_EXCLUDE: set[str] = {
+    "parked",
+    "duplicate",
+    "decided",
+    "fingerprint",
+    "decided_at",
+    "resolved_at",
+}
 
 
 def _now() -> datetime:
@@ -46,8 +71,78 @@ def _row_path(bank_dir: Path, item_id: str) -> Path:
     return bank_dir / f"{item_id}.json"
 
 
+def _index_key(bank_dir: Path) -> str:
+    return str(Path(bank_dir).resolve())
+
+
+def _summary_of(item: BankItem) -> BankItemSummary:
+    return BankItemSummary(**item.model_dump(exclude=_SUMMARY_EXCLUDE))
+
+
+def _ensure_index(bank_dir: Path) -> tuple[dict[str, BankItemSummary], dict[str, str]]:
+    """Return (id->summary, folder->id) for ``bank_dir``, building on first use.
+
+    The one and only place ``_all_items`` (the full glob+parse) runs; every
+    later call reuses the cached dicts.
+    """
+    key = _index_key(bank_dir)
+    by_id = _INDEX.get(key)
+    if by_id is not None:
+        return by_id, _FOLDER[key]
+    by_id = {}
+    by_folder: dict[str, str] = {}
+    for item in _all_items(bank_dir):
+        by_id[item.id] = _summary_of(item)
+        by_folder[item.folder] = item.id
+    _INDEX[key] = by_id
+    _FOLDER[key] = by_folder
+    return by_id, by_folder
+
+
+def _index_put(bank_dir: Path, item: BankItem) -> None:
+    by_id, by_folder = _ensure_index(bank_dir)
+    by_id[item.id] = _summary_of(item)
+    by_folder[item.folder] = item.id
+
+
+def _index_drop(bank_dir: Path, item_id: str) -> None:
+    by_id, by_folder = _ensure_index(bank_dir)
+    summary = by_id.pop(item_id, None)
+    if summary is not None and by_folder.get(summary.folder) == item_id:
+        del by_folder[summary.folder]
+
+
+def _index_forget(bank_dir: Path, item_id: str) -> None:
+    """Stale-entry drop when a file backing an indexed id is gone.
+
+    Never builds the index (no glob): a missing file for an id we never indexed
+    is a no-op. Callers MUST hold ``_LOCK`` — a concurrent ``list_page`` iterates
+    these dicts under it, and an unlocked pop could break that iteration.
+    """
+    key = _index_key(bank_dir)
+    by_id = _INDEX.get(key)
+    if by_id is None:
+        return
+    summary = by_id.pop(item_id, None)
+    if summary is not None:
+        by_folder = _FOLDER.get(key)
+        if by_folder is not None and by_folder.get(summary.folder) == item_id:
+            del by_folder[summary.folder]
+
+
+def reset_bank_index() -> None:
+    """Drop the in-memory index so the next read rebuilds from disk.
+
+    For tests (per-test tmp dirs share this module global) and the rare case
+    where rows were written to the bank dir out-of-band.
+    """
+    _INDEX.clear()
+    _FOLDER.clear()
+
+
 def _write(bank_dir: Path, item: BankItem) -> None:
     write_atomic_text(_row_path(bank_dir, item.id), item.model_dump_json(indent=2))
+    _index_put(bank_dir, item)
 
 
 def create_item(
@@ -90,6 +185,10 @@ def get_item(bank_dir: Path, item_id: str) -> BankItem | None:
     try:
         raw = _row_path(bank_dir, item_id).read_text(encoding="utf-8")
     except OSError:
+        # No index cleanup here: get_item is called WITHOUT _LOCK from the API,
+        # and the index may only be mutated under it. A missing-file-for-indexed
+        # -id state can't arise under the single-writer invariant anyway; true
+        # out-of-band edits are handled by reset_bank_index().
         return None
     try:
         return BankItem.model_validate_json(raw)
@@ -111,6 +210,38 @@ def _all_items(bank_dir: Path) -> list[BankItem]:
     return items
 
 
+def list_page(
+    bank_dir: Path,
+    *,
+    status: BankStatus | None = None,
+    active_only: bool = False,
+    reason: BankReason | None = None,
+    offset: int = 0,
+    limit: int = 50,
+) -> tuple[list[BankItemSummary], int, int]:
+    """One index pass -> (page, total_filtered, total_all).
+
+    ``total_all`` counts rows of ANY status (drives the Review page's section
+    visibility so resolved history stays reachable when the active view empties
+    out). A specific ``status`` wins over ``active_only`` (the router never
+    sends both); ``reason`` ANDs with whichever status narrowing is in effect.
+    """
+    with _LOCK:
+        by_id, _ = _ensure_index(bank_dir)
+        # FIFO review order: oldest banked first; id breaks timestamp ties.
+        rows = sorted(by_id.values(), key=lambda s: (s.banked_at, s.id))
+        total_all = len(rows)
+        if status is not None:
+            rows = [s for s in rows if s.status == status]
+        elif active_only:
+            rows = [s for s in rows if s.status in ACTIVE_STATUSES]
+        if reason is not None:
+            rows = [s for s in rows if s.reason == reason]
+        total = len(rows)
+        page = rows[offset : offset + limit]
+    return page, total, total_all
+
+
 def list_items(
     bank_dir: Path,
     *,
@@ -119,19 +250,10 @@ def list_items(
     offset: int = 0,
     limit: int = 50,
 ) -> list[BankItemSummary]:
-    items = _all_items(bank_dir)
-    if status is not None:
-        items = [item for item in items if item.status == status]
-    elif active_only:
-        items = [item for item in items if item.status in ACTIVE_STATUSES]
-    page = items[offset : offset + limit]
-    summaries: list[BankItemSummary] = []
-    for item in page:
-        data = item.model_dump(
-            exclude={"parked", "duplicate", "decided", "fingerprint", "decided_at", "resolved_at"}
-        )
-        summaries.append(BankItemSummary(**data))
-    return summaries
+    page, _total, _total_all = list_page(
+        bank_dir, status=status, active_only=active_only, offset=offset, limit=limit
+    )
+    return page
 
 
 def count_items(
@@ -140,12 +262,10 @@ def count_items(
     status: BankStatus | None = None,
     active_only: bool = False,
 ) -> int:
-    items = _all_items(bank_dir)
-    if status is not None:
-        items = [item for item in items if item.status == status]
-    elif active_only:
-        items = [item for item in items if item.status in ACTIVE_STATUSES]
-    return len(items)
+    _page, total, _total_all = list_page(
+        bank_dir, status=status, active_only=active_only, offset=0, limit=0
+    )
+    return total
 
 
 class InvalidTransitionError(RuntimeError):
@@ -222,9 +342,11 @@ def delete_item(bank_dir: Path, item_id: str) -> bool:
             raise InvalidTransitionError("row is applying; wait for the apply to finish")
         try:
             _row_path(bank_dir, item_id).unlink()
-            return True
         except FileNotFoundError:
+            _index_forget(bank_dir, item_id)  # already gone: keep the index honest
             return False
+        _index_drop(bank_dir, item_id)
+        return True
 
 
 def bulk_ignore(bank_dir: Path, ids: list[str]) -> int:
@@ -278,7 +400,9 @@ def upsert_by_folder(
     row to ``needs_review`` (the spec's dedupe rule — a re-banked folder is a
     fresh decision)."""
     with _LOCK:
-        existing = next((i for i in _all_items(bank_dir) if i.folder == folder), None)
+        _by_id, by_folder = _ensure_index(bank_dir)
+        existing_id = by_folder.get(folder)
+        existing = get_item(bank_dir, existing_id) if existing_id is not None else None
         if existing is None:
             pass  # fall through to create below (outside the lock reuse)
         elif existing.fingerprint == fingerprint:
@@ -326,11 +450,12 @@ def reconcile_interrupted(bank_dir: Path) -> int:
     """Startup pass: rows stuck in ``applying`` (process died mid-apply) revert
     to ``needs_review`` with a note. Never blind-requeues (spec §5/§8)."""
     flipped = 0
-    for item in _all_items(bank_dir):
-        if item.status != "applying":
-            continue
+    with _LOCK:
+        by_id, _ = _ensure_index(bank_dir)
+        applying_ids = [s.id for s in by_id.values() if s.status == "applying"]
+    for item_id in applying_ids:
         with _LOCK:
-            fresh = get_item(bank_dir, item.id)
+            fresh = get_item(bank_dir, item_id)
             if fresh is None or fresh.status != "applying":
                 continue
             fresh.status = "needs_review"
@@ -348,7 +473,16 @@ def next_queued(bank_dir: Path) -> BankItem | None:
     queued row (decide_item stamps it); ``banked_at`` is a defensive fallback
     for a hand-edited row file.
     """
-    queued = [item for item in _all_items(bank_dir) if item.status == "queued"]
-    if not queued:
-        return None
-    return min(queued, key=lambda item: (item.decided_at or item.banked_at, item.id))
+    with _LOCK:
+        by_id, _ = _ensure_index(bank_dir)
+        queued_ids = [s.id for s in by_id.values() if s.status == "queued"]
+        # decided_at lives only on the full row (not the summary), so load the
+        # queued rows — a small set — to order by it.
+        queued = [
+            row
+            for row in (get_item(bank_dir, item_id) for item_id in queued_ids)
+            if row is not None and row.status == "queued"
+        ]
+        if not queued:
+            return None
+        return min(queued, key=lambda item: (item.decided_at or item.banked_at, item.id))
