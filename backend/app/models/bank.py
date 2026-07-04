@@ -160,6 +160,10 @@ class BankListResponse(BaseModel):
 
     items: list[BankItemSummary]
     total: int
+    # Rows of ANY status (ignores the status/view/reason filters). Drives the
+    # Review page section's visibility so resolved history stays reachable once
+    # the active view empties out.
+    total_all: int = 0
     offset: int
     limit: int
 
