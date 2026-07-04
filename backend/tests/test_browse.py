@@ -7,6 +7,7 @@ unambiguous. Hermetic temp library; no real files, no network.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -19,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from app.api.albums import get_library
 from app.beets.browse import browse_albums, browse_facets
+from app.events.broker import EventBroker
 from app.events.emit import emit_library_changed
 from app.main import app
 from tests.conftest import make_test_handle
@@ -367,3 +369,23 @@ def test_emit_library_changed_drops_the_browse_cache(browse_lib: Library, tmp_pa
     assert "Disco" not in {v.value for v in browse_facets(browse_lib).genres}  # stale until emit
     emit_library_changed(SimpleNamespace(state=SimpleNamespace()))  # no broker -> still invalidates
     assert "Disco" in {v.value for v in browse_facets(browse_lib).genres}
+
+
+def test_broker_publish_library_changed_drops_the_browse_cache(
+    browse_lib: Library, tmp_path: Path
+) -> None:
+    """The import registry publishes on the broker DIRECTLY (registry.py
+    ``_notify_changed``), never passing through ``emit_library_changed`` — the
+    broker itself must invalidate, or imports leave Browse stale."""
+    loop = asyncio.new_event_loop()
+    try:
+        broker = EventBroker(loop)
+        browse_facets(browse_lib)  # warm the cache
+        _add(
+            browse_lib, tmp_path, artist="Yara", album="Direct", year=2021, genre="Ska", fmt="FLAC"
+        )
+        assert "Ska" not in {v.value for v in browse_facets(browse_lib).genres}
+        broker.publish_library_changed()
+        assert "Ska" in {v.value for v in browse_facets(browse_lib).genres}
+    finally:
+        loop.close()

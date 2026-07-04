@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 
+from app.beets.browse import invalidate_browse_cache
 from app.models.events import LibraryChangedEvent
 
 MAX_QUEUE = 64  # bounded; a stuck tab drops events instead of growing unbounded
@@ -33,6 +34,10 @@ class EventBroker:
         self._subscribers.discard(q)
 
     def publish_library_changed(self) -> None:
+        # Invalidate here, not only in emit.py's helper: the import registry
+        # holds the broker directly and publishes without going through emit.
+        # (emit.py keeps its own call for the broker-less/lifespan-less paths.)
+        invalidate_browse_cache()
         self.publish(LibraryChangedEvent().model_dump_json())
 
     def publish_art_changed(self) -> None:
