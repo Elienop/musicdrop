@@ -3,6 +3,10 @@ name: Release
 on:
   push:
     branches: [main]
+    # Docs-only merges don't change the image — skip the release entirely.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
 
 # Serialize release runs so two near-simultaneous pushes to main can't push
 # image vX while the other creates git tag vX+1. cancel-in-progress is false
@@ -26,28 +30,40 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          fetch-tags: true
 
-      # 1. COMPUTE the next version only (dry run — no tag yet). Conventional
-      #    commits drive the bump: feat -> minor, fix/chore/etc -> patch.
-      #    Building before tagging closes the orphaned-tag hole: a failed
-      #    build/push leaves no tag, so the next push retries cleanly.
-      - name: Compute next version (dry run)
+      # 1. COMPUTE the next version only (no tag yet). Conventional commits
+      #    drive the bump: breaking (! or BREAKING CHANGE) -> major,
+      #    feat -> minor, anything else -> patch — the max across the pushed
+      #    commits wins. Tagging AFTER the image push closes the orphaned-tag
+      #    hole: a failed build/push leaves no tag, so the next push retries
+      #    cleanly; a re-run on an already-tagged HEAD aborts here instead of
+      #    pushing an invalid ref.
+      - name: Compute next version
         id: version
-        uses: mathieudutour/github-tag-action@a22cf08638b34d5badda920f9daf6e72c477b07b # v6.2
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          default_bump: patch
-          tag_prefix: v
-          dry_run: true
-
-      # Re-running a partially-failed job after the tag step finds no new
-      # commits -> empty new_tag. Abort instead of pushing an invalid ref.
-      - name: Abort if no new version
         run: |
-          test -n "${{ steps.version.outputs.new_tag }}" || {
-            echo "No new version computed (HEAD already tagged?) - nothing to release."
+          set -euo pipefail
+          last_tag=$(git describe --tags --abbrev=0 --match 'v*')
+          if [ "$(git rev-list -n1 "$last_tag")" = "$(git rev-list -n1 HEAD)" ]; then
+            echo "HEAD already tagged $last_tag — nothing to release."
             exit 1
-          }
+          fi
+          subjects=$(git log --format=%s "$last_tag"..HEAD)
+          bodies=$(git log --format=%b "$last_tag"..HEAD)
+          bump=patch
+          if grep -qE '^[a-z]+(\([^)]*\))?!:' <<<"$subjects" || grep -qF 'BREAKING CHANGE' <<<"$bodies"; then
+            bump=major
+          elif grep -qE '^feat(\([^)]*\))?:' <<<"$subjects"; then
+            bump=minor
+          fi
+          IFS=. read -r major minor patch <<<"${last_tag#v}"
+          case $bump in
+            major) new_tag="v$((major + 1)).0.0" ;;
+            minor) new_tag="v${major}.$((minor + 1)).0" ;;
+            patch) new_tag="v${major}.${minor}.$((patch + 1))" ;;
+          esac
+          echo "$bump: $last_tag -> $new_tag"
+          echo "new_tag=$new_tag" >> "$GITHUB_OUTPUT"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
@@ -74,21 +90,19 @@ jobs:
             ghcr.io/elienop/musicdrop:${{ steps.version.outputs.new_tag }}
             ghcr.io/elienop/musicdrop:latest
 
-      # 4. Image is live -> NOW create the real git tag (recomputes to the
-      #    same value within this run).
+      # 4. Image is live -> NOW create the real git tag. The checkout's
+      #    persisted GITHUB_TOKEN can push refs (permissions: contents: write).
       - name: Create and push tag
-        id: tag
-        uses: mathieudutour/github-tag-action@a22cf08638b34d5badda920f9daf6e72c477b07b # v6.2
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          default_bump: patch
-          tag_prefix: v
+        run: |
+          set -euo pipefail
+          git tag "${{ steps.version.outputs.new_tag }}"
+          git push origin "refs/tags/${{ steps.version.outputs.new_tag }}"
 
       # 5. Release last, against the now-existing tag + live image.
-      - name: Create a release
-        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1.21.0
-        with:
-          name: ${{ steps.tag.outputs.new_tag }}
-          tag: ${{ steps.tag.outputs.new_tag }}
-          body: ${{ steps.version.outputs.changelog }}
-          generateReleaseNotes: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.new_tag }}" \
+            --title "${{ steps.version.outputs.new_tag }}" \
+            --generate-notes --verify-tag
