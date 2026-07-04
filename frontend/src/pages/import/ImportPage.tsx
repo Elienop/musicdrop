@@ -556,7 +556,7 @@ function FeedRow({
           // is correct — not a 0–1 fraction.
           `${Math.round(album.confidence)}% · ${RECOMMENDATION_LABEL[album.recommendation]}`
         }
-        badge={<StatusBadge status={album.status} />}
+        badge={<StatusBadge album={album} />}
         href={linked ? `/albums/${albumId}` : undefined}
         hrefState={linked ? origin : undefined}
         action={
@@ -587,8 +587,29 @@ function FeedRow({
 
 /** The status chip. Color + the text label both carry the state (not color
  * alone). `needs_dup_resolution` reads "Already in library" — matching the
- * resolve screen's heading, so "Duplicates" names only the library finder. */
-function StatusBadge({ status }: { status: ImportAlbumSummary["status"] }) {
+ * resolve screen's heading, so "Duplicates" names only the library finder.
+ *
+ * Precedence over the raw status (both landing outcomes the status alone can't
+ * express): a row that never landed (only ever set on a TERMINAL job — the
+ * backend gates the flag) flags the failure destructively; else a row that DID
+ * land (an album_id arrived) reads as the positive "Imported" chip, upgrading a
+ * user-decided Apply from the vague "Decided"; else the per-status label. */
+function StatusBadge({ album }: { album: ImportAlbumSummary }) {
+  if (album.did_not_land) {
+    return (
+      <Badge variant="destructive" className="shrink-0">
+        Didn&apos;t land
+      </Badge>
+    );
+  }
+  if (album.album_id != null) {
+    return (
+      <Badge variant="secondary" className="shrink-0">
+        Imported
+      </Badge>
+    );
+  }
+  const status = album.status;
   const label: Record<ImportAlbumSummary["status"], string> = {
     applied: "Imported",
     decided: "Decided",
@@ -619,15 +640,16 @@ function folderName(folder: string): string {
  * albums) + the feed list, whose applied rows now link straight to their
  * library pages (replaces the old blanket "View in library", spec §1). */
 function JobDone({ state, jobId }: { state: ImportJobState; jobId: string }) {
-  const { applied, skipped } = state.progress;
+  const { applied, skipped, not_landed } = state.progress;
+  // Own up to albums that were decided/applied but never landed in the library
+  // (the session died before beets ran task.add) — only ever nonzero here on a
+  // terminal job, so the clause simply drops out of a clean run.
+  const body =
+    `${applied} ${applied === 1 ? "album" : "albums"} imported · ${skipped} skipped` +
+    (not_landed > 0 ? ` · ${not_landed} didn't land` : "");
   return (
     <div className="flex flex-col gap-4">
-      <EmptyState
-        bordered
-        icon={Success}
-        title="Import finished"
-        body={`${applied} ${applied === 1 ? "album" : "albums"} imported · ${skipped} skipped`}
-      />
+      <EmptyState bordered icon={Success} title="Import finished" body={body} />
       {state.albums.length > 0 && (
         <FeedList albums={state.albums} jobId={jobId} />
       )}

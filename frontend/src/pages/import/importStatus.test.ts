@@ -7,7 +7,7 @@ function job(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
     job_id: "j",
     phase: "reviewing",
-    progress: { applied: 0, needs_review: 0, skipped: 0 },
+    progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
     albums: [],
     summary: null,
     error: null,
@@ -23,7 +23,7 @@ function sweepState(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
     job_id: "s",
     phase: "scanning",
-    progress: { applied: 0, needs_review: 0, skipped: 0 },
+    progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
     albums: [],
     summary: null,
     error: null,
@@ -90,7 +90,9 @@ describe("announceMessage", () => {
       isPending: false,
       isError: false,
       notFound: false,
-      data: job({ progress: { applied: 2, needs_review: 1, skipped: 1 } }),
+      data: job({
+        progress: { applied: 2, needs_review: 1, skipped: 1, not_landed: 0 },
+      }),
     });
     expect(active).toMatch(/imported 2/i);
     expect(active).toMatch(/skipped 1/i);
@@ -105,7 +107,7 @@ describe("announceMessage", () => {
       // `progress` has no duplicate counter — the announcer derives it from the
       // feed row, so a screen-reader user hears the worker is waiting on them.
       data: job({
-        progress: { applied: 1, needs_review: 0, skipped: 0 },
+        progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
         albums: [
           {
             index: 0,
@@ -115,6 +117,7 @@ describe("announceMessage", () => {
             recommendation: "strong",
             confidence: 99,
             status: "needs_dup_resolution",
+            did_not_land: false,
           },
         ],
       }),
@@ -130,7 +133,7 @@ describe("announceMessage", () => {
         notFound: false,
         data: job({
           phase: "done",
-          progress: { applied: 3, needs_review: 0, skipped: 1 },
+          progress: { applied: 3, needs_review: 0, skipped: 1, not_landed: 0 },
         }),
       }),
     ).toMatch(/import complete.*imported 3.*skipped 1/i);
