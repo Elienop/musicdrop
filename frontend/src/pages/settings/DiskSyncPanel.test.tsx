@@ -112,6 +112,48 @@ test("an empty plan shows an info message and no confirm button", async () => {
   expect(screen.queryByRole("button", { name: /sync \d+ items/i })).toBeNull();
 });
 
+test("a failed job surfaces its error in an alert", async () => {
+  const failed = {
+    ...idle,
+    phase: "failed",
+    job_id: "f1",
+    total: 10,
+    processed: 4,
+    error: "kaboom",
+  };
+  vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
+    if (path === "/api/disk-sync/status")
+      return { data: failed, response: { ok: true, status: 200 } } as never;
+    return { data: undefined, response: { ok: false, status: 404 } } as never;
+  });
+  wrap(<DiskSyncPanel />);
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent(/Sync failed: kaboom/i);
+});
+
+test("a stopped (partial) job labels the summary as stopped early", async () => {
+  const stopped = {
+    ...idle,
+    phase: "stopped",
+    job_id: "s1",
+    total: 10,
+    processed: 3,
+    removed: 1,
+    updated: 0,
+    unchanged: 2,
+    emptied_albums: 0,
+  };
+  vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
+    if (path === "/api/disk-sync/status")
+      return { data: stopped, response: { ok: true, status: 200 } } as never;
+    return { data: undefined, response: { ok: false, status: 404 } } as never;
+  });
+  wrap(<DiskSyncPanel />);
+  expect(
+    await screen.findByText(/Stopped early — 3 of 10 processed ·/),
+  ).toBeInTheDocument();
+});
+
 test("a terminal job with read errors renders the failure list", async () => {
   const doneWithFailures = {
     ...idle,

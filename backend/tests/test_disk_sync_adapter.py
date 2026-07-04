@@ -182,6 +182,40 @@ def test_run_refreshes_changed_tags_and_realigns_album(edit_lib: Library) -> Non
     assert realigned is not None and realigned.year == 1987
 
 
+def test_run_realign_keeps_per_track_album_fields(edit_lib: Library) -> None:
+    """Regression: the album realign must NOT clobber per-track album-level
+    fields with track 1's values. beets' Album.store(inherit=True) propagates
+    them onto every track AND zeroes each touched track's mtime (models.py
+    "Reset mtime on dirty"), making the same tracks re-sync forever."""
+    items = _items(edit_lib)
+    genres = {0: ["Rock"], 1: ["Hard Rock"], 2: ["Rock"]}
+    for idx, item in enumerate(items):
+        path = os.fsdecode(item.path)
+        mf = MediaFile(path)
+        mf.genres = genres[idx]
+        mf.save()
+    # Re-rest: DB rows honestly match each file (incl. heterogeneous genres).
+    for item in edit_lib.items():
+        item.read()
+        item.store()
+    # Real drift on the heterogeneous track -> run 1 marks its album affected.
+    hetero = _items(edit_lib)[1]
+    _bump_title_on_disk(hetero, "Bodysnatchers (remaster)")
+
+    outcomes, _ = _run(edit_lib)
+    assert [o.status for o in outcomes].count("updated") == 1
+
+    row = edit_lib.get_item(hetero.id)
+    assert row is not None
+    assert list(row.genres) == ["Hard Rock"]  # its OWN file's value, not track 1's
+    assert row.mtime == int(os.path.getmtime(os.fsdecode(row.path)))  # gate shut
+
+    # The loop is dead: second run all-unchanged, preview quiet.
+    outcomes2, _ = _run(edit_lib)
+    assert {o.status for o in outcomes2} == {"unchanged"}
+    assert plan_disk_sync(edit_lib).will_update == 0
+
+
 def test_run_persists_mtime_so_second_run_is_quiet(edit_lib: Library) -> None:
     item = _items(edit_lib)[0]
     item_id = item.id

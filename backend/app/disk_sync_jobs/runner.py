@@ -4,12 +4,15 @@ it on a daemon thread so the API start endpoint returns immediately."""
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 
 from app.beets.disk_sync import LibraryRootUnavailableError, run_disk_sync
 from app.beets.library import LibraryHandle, library_paths_context
 from app.disk_sync_jobs.registry import DiskSyncRegistry
+
+_log = logging.getLogger(__name__)
 
 
 def sweep(
@@ -36,6 +39,7 @@ def sweep(
     except LibraryRootUnavailableError as exc:
         reg.fail(str(exc))
     except Exception as exc:  # any crash becomes a failed job, never a lost thread
+        _log.exception("disk sync crashed")
         reg.fail(str(exc) or exc.__class__.__name__)
     finally:
         if on_complete is not None:

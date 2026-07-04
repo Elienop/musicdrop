@@ -292,11 +292,20 @@ function DiskSyncControl() {
         )}
       </div>
       {terminal && (
-        <p className="text-muted-foreground text-sm">
-          {job?.removed ?? 0} removed · {job?.updated ?? 0} updated ·{" "}
-          {job?.unchanged ?? 0} unchanged · {job?.emptied_albums ?? 0} albums
-          pruned
-        </p>
+        <div className="flex flex-col gap-1">
+          {phase === "failed" && job?.error != null && (
+            <span role="alert" className="text-destructive text-sm">
+              Sync failed: {job.error}
+            </span>
+          )}
+          <p className="text-muted-foreground text-sm">
+            {phase === "stopped" &&
+              `Stopped early — ${job?.processed ?? 0} of ${job?.total ?? 0} processed · `}
+            {job?.removed ?? 0} removed · {job?.updated ?? 0} updated ·{" "}
+            {job?.unchanged ?? 0} unchanged · {job?.emptied_albums ?? 0} albums
+            pruned
+          </p>
+        </div>
       )}
       {failures.length > 0 && <FailureList failures={failures} />}
     </div>

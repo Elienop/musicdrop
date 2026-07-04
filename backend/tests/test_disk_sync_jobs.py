@@ -79,6 +79,29 @@ def test_sweep_missing_root_fails_job(edit_lib: Library, tmp_path: Path) -> None
     assert s.error is not None and "unavailable" in s.error.lower()
 
 
+def test_sweep_crash_is_logged_and_fails_job(
+    edit_lib: Library,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.disk_sync_jobs import runner
+    from app.disk_sync_jobs.registry import DiskSyncRegistry
+    from tests.conftest import make_test_handle
+
+    def boom(*args: object, **kwargs: object) -> int:
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(runner, "run_disk_sync", boom)
+    reg = DiskSyncRegistry()
+    reg.start()
+    with caplog.at_level("ERROR"):
+        runner.sweep(reg, make_test_handle(edit_lib, tmp_path))
+    assert reg.state().phase == "failed"
+    assert reg.state().error == "kaboom"
+    assert any(r.exc_info for r in caplog.records)  # traceback reaches the logs
+
+
 def test_stop_yields_stopped_phase(edit_lib: Library, tmp_path: Path) -> None:
     from app.disk_sync_jobs.registry import DiskSyncRegistry
     from app.disk_sync_jobs.runner import sweep

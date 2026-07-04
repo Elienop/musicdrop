@@ -230,6 +230,25 @@ describe("useActivity", () => {
     });
   });
 
+  it("maps a stopped disk sync to a done row carrying the partial-progress count", () => {
+    diskSyncData = {
+      ...idleDiskSync, phase: "stopped", job_id: "d1", processed: 3, total: 10,
+    };
+    const { result } = renderActivity();
+    expect(result.current.activity.rows).toEqual([
+      {
+        id: "disk-sync:d1",
+        kind: "disk-sync",
+        label: "Disk sync",
+        scope: "library",
+        state: "done",
+        countsText: "stopped early · 3 of 10 processed",
+        href: "/settings/beets",
+      },
+    ]);
+    expect(result.current.activity.runningCount).toBe(0);
+  });
+
   it("drops idle and stopped phases entirely", () => {
     lyricsData = { ...idleLyrics, phase: "stopped", job_id: "L1" };
     artistArtData = { ...idleArtistArt, phase: "stopped", job_id: "a1" };
