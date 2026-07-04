@@ -84,6 +84,11 @@ class ImportProgress(BaseModel):
     # the user resolved with a non-apply action. The live mirror of the done
     # summary's skipped count (registry._is_skipped backs both).
     skipped: int
+    # Albums resolved as an album-landing action (auto-apply / decided apply|asis
+    # / dup keep_both|replace) for which no library album id ever arrived — the
+    # session died before beets ran task.add. Only ever nonzero on a TERMINAL
+    # (done/failed) job: mid-run an id can simply trail its row by one poll.
+    not_landed: int = 0
 
 
 class ImportAlbumSummary(BaseModel):
@@ -107,6 +112,12 @@ class ImportAlbumSummary(BaseModel):
     # skipped/set-aside rows — and transiently for landed rows (the id can
     # trail its row by one poll; the first poll after done carries every id).
     album_id: int | None = None
+    # True when this row was resolved as an album-landing action but no library
+    # album id ever arrived — beets never ran task.add for it (the session
+    # died/aborted). Only ever True on a TERMINAL (done/failed) job; mid-run the
+    # id may simply not have arrived yet, so the flag stays False. astracks and
+    # dup-merge never flag (they land without an id of their own).
+    did_not_land: bool = False
 
 
 class SweepStatus(BaseModel):

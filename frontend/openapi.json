@@ -6225,6 +6225,11 @@
               }
             ],
             "title": "Album Id"
+          },
+          "did_not_land": {
+            "type": "boolean",
+            "title": "Did Not Land",
+            "default": false
           }
         },
         "type": "object",
@@ -6420,6 +6425,11 @@
           "skipped": {
             "type": "integer",
             "title": "Skipped"
+          },
+          "not_landed": {
+            "type": "integer",
+            "title": "Not Landed",
+            "default": 0
           }
         },
         "type": "object",

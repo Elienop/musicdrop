@@ -98,8 +98,11 @@ def test_second_start_while_active_raises() -> None:
 
 
 def test_drain_builds_feed_with_applied_then_the_current_parked() -> None:
+    # Index 0 auto-applies AND its follow-up landing id arrives (a real applied
+    # album lands), so it counts imported; index 1 is parked for review.
     fake = FakeImportRunner(
-        applied=[_applied_outcome(0)], parked=[_parked(1, Recommendation.medium)]
+        applied=[_applied_outcome(0), _applied_follow_up(0, 5)],
+        parked=[_parked(1, Recommendation.medium)],
     )
     registry = ImportJobRegistry(runner=fake)
     job_id = registry.start("/music/incoming")
@@ -214,21 +217,23 @@ def test_worker_error_marks_job_failed() -> None:
 
 
 @pytest.mark.parametrize(
-    ("action", "imported", "skipped"),
+    ("action", "imported", "skipped", "not_landed"),
     [
-        (ImportAction.apply, 1, 0),
-        (ImportAction.asis, 1, 0),
-        (ImportAction.astracks, 1, 0),
-        (ImportAction.skip, 0, 1),
+        # No follow-up id arrives (the fake models a decided album that beets
+        # never task.add'd): apply/asis land nothing -> not_landed, not imported.
+        (ImportAction.apply, 0, 0, 1),
+        (ImportAction.asis, 0, 0, 1),
+        # astracks is exempt from the landing veto (singletons carry no id).
+        (ImportAction.astracks, 1, 0, 0),
+        (ImportAction.skip, 0, 1, 0),
     ],
 )
 def test_decided_action_buckets_imported_vs_skipped(
-    action: ImportAction, imported: int, skipped: int
+    action: ImportAction, imported: int, skipped: int, not_landed: int
 ) -> None:
-    # Guards _APPLY_ACTIONS membership: apply/asis/astracks count as imported,
-    # everything else (skip, and abort via the same not-in-apply branch) as
-    # skipped. Without this, dropping asis/astracks from the set is a silent
-    # mis-count.
+    # Guards _APPLY_ACTIONS membership AND the landing veto: astracks counts as
+    # imported without an id; skip is skipped; apply/asis WITHOUT a landing id
+    # count as neither (did-not-land) — the truthful bucketing.
     fake = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
     registry = ImportJobRegistry(runner=fake)
     job_id = registry.start("/music/incoming")
@@ -238,11 +243,16 @@ def test_decided_action_buckets_imported_vs_skipped(
     state = registry.state(job_id)
     assert state.progress.applied == imported
     assert state.progress.skipped == skipped
+    assert state.progress.not_landed == not_landed
 
 
 def test_summary_counts_applied_and_decided_truthfully() -> None:
+    # Mixed truthful outcome: index 0 auto-applies and its landing id arrives
+    # (imported); index 1 is decided apply but no landing id ever comes (the
+    # session died before task.add) -> it did not land, not imported.
     fake = FakeImportRunner(
-        applied=[_applied_outcome(0)], parked=[_parked(1, Recommendation.medium)]
+        applied=[_applied_outcome(0), _applied_follow_up(0, 4)],
+        parked=[_parked(1, Recommendation.medium)],
     )
     registry = ImportJobRegistry(runner=fake)
     job_id = registry.start("/music/incoming")
@@ -251,8 +261,9 @@ def test_summary_counts_applied_and_decided_truthfully() -> None:
     _poll(lambda: registry.state(job_id).phase, lambda p: p is ImportPhase.done)
     summary = registry.state(job_id).summary
     assert summary is not None
-    assert "2 imported" in summary
+    assert "1 imported" in summary
     assert "0 skipped" in summary
+    assert "1 did not land" in summary
 
 
 def test_stale_on_finish_is_ignored() -> None:
@@ -301,8 +312,10 @@ def test_progress_skipped_mirrors_summary_skipped() -> None:
 
 def test_progress_applied_matches_summary_imported() -> None:
     # A decided-skip must not inflate progress.applied (it is not imported).
+    # Index 0 auto-applies with its landing id (imported); index 1 is skipped.
     fake = FakeImportRunner(
-        applied=[_applied_outcome(0)], parked=[_parked(1, Recommendation.medium)]
+        applied=[_applied_outcome(0), _applied_follow_up(0, 3)],
+        parked=[_parked(1, Recommendation.medium)],
     )
     registry = ImportJobRegistry(runner=fake)
     job_id = registry.start("/music/incoming")
@@ -620,3 +633,124 @@ def test_request_pause_refuses_bank_apply_job() -> None:
     reg._job = ImportJob(id="apply-job", bridge=ImportBridge(), origin="bank_apply")
     with pytest.raises(RuntimeError):
         reg.request_pause("apply-job")
+
+
+# ----- landing veto: an album counts as imported only when it actually landed -----
+
+
+def _decided_row(
+    action: ImportAction, *, album_id: int | None = None
+) -> "object":  # returns a _FeedAlbum
+    """A parked-then-decided feed row (status=decided) carrying an optional
+    landing album_id — for white-box helper matrix tests."""
+    from app.import_jobs.registry import _FeedAlbum
+
+    outcome = _applied_outcome(0).model_copy(update={"album_id": album_id})
+    return _FeedAlbum(outcome=outcome, status=ImportAlbumStatus.decided, decided_action=action)
+
+
+def _dup_row(action: "object", *, album_id: int | None = None) -> "object":
+    """A duplicate-resolved feed row carrying an optional landing album_id."""
+    from app.import_jobs.registry import _FeedAlbum
+
+    outcome = _applied_outcome(0).model_copy(update={"album_id": album_id})
+    return _FeedAlbum(
+        outcome=outcome,
+        status=ImportAlbumStatus.decided,
+        duplicate_action=action,  # type: ignore[arg-type]  # DuplicateAction, imported at call site
+    )
+
+
+def test_decided_apply_without_landing_id_does_not_count_imported() -> None:
+    # End-to-end through the public drain/state/summarize path: a parked album
+    # the user resolved apply but for which NO follow-up album_id ever arrived
+    # (the session died before beets ran task.add) must NOT be counted imported
+    # on a terminal job — it is flagged did_not_land and surfaced in the summary.
+    fake = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
+    reg = ImportJobRegistry(runner=fake)
+    job_id = reg.start("/music/incoming")
+    _poll(lambda: reg.state(job_id).albums, lambda rows: len(rows) == 1)
+    reg.record_choice(job_id, 0, ImportChoice(action=ImportAction.apply))
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.done)
+    state = reg.state(job_id)
+    assert state.progress.applied == 0
+    assert state.progress.not_landed == 1
+    assert state.albums[0].did_not_land is True
+    assert state.summary is not None
+    assert state.summary.endswith(", 1 did not land")
+
+
+def test_applied_with_landing_id_counts_imported_and_not_flagged() -> None:
+    # The truthful positive: an auto-applied album whose follow-up album_id
+    # arrived DID land — counted imported, never flagged, no "did not land" text.
+    fake = FakeImportRunner(applied=[_applied_outcome(0), _applied_follow_up(0, 7)])
+    reg = ImportJobRegistry(runner=fake)
+    job_id = reg.start("/music/incoming")
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.done)
+    state = reg.state(job_id)
+    assert state.progress.applied == 1
+    assert state.progress.not_landed == 0
+    assert state.albums[0].did_not_land is False
+    assert state.summary is not None
+    assert "did not land" not in state.summary
+
+
+def test_astracks_without_landing_id_still_counts_imported() -> None:
+    # astracks is exempt: items re-pipeline as singletons, so no Album row (and
+    # thus no album_id) is ever created — yet the tracks DID land.
+    fake = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
+    reg = ImportJobRegistry(runner=fake)
+    job_id = reg.start("/music/incoming")
+    _poll(lambda: reg.state(job_id).albums, lambda rows: len(rows) == 1)
+    reg.record_choice(job_id, 0, ImportChoice(action=ImportAction.astracks))
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.done)
+    state = reg.state(job_id)
+    assert state.progress.applied == 1
+    assert state.progress.not_landed == 0
+    assert state.albums[0].did_not_land is False
+
+
+def test_did_not_land_helper_matrix() -> None:
+    # White-box the _did_not_land / _is_imported verdicts across every landing
+    # action, with and without a follow-up album_id.
+    from app.models.import_models import DuplicateAction
+
+    # apply / asis with no id -> did not land, not imported.
+    for action in (ImportAction.apply, ImportAction.asis):
+        row = _decided_row(action)
+        assert ImportJobRegistry._did_not_land(row) is True  # type: ignore[arg-type]
+        assert ImportJobRegistry._is_imported(row) is False  # type: ignore[arg-type]
+    # ...but WITH an id they landed.
+    for action in (ImportAction.apply, ImportAction.asis):
+        row = _decided_row(action, album_id=9)
+        assert ImportJobRegistry._did_not_land(row) is False  # type: ignore[arg-type]
+        assert ImportJobRegistry._is_imported(row) is True  # type: ignore[arg-type]
+    # astracks is exempt even with no id.
+    row = _decided_row(ImportAction.astracks)
+    assert ImportJobRegistry._did_not_land(row) is False  # type: ignore[arg-type]
+    assert ImportJobRegistry._is_imported(row) is True  # type: ignore[arg-type]
+    # duplicate replace / keep_both with no id -> did not land, not imported.
+    for dup in (DuplicateAction.replace, DuplicateAction.keep_both):
+        row = _dup_row(dup)
+        assert ImportJobRegistry._did_not_land(row) is True  # type: ignore[arg-type]
+        assert ImportJobRegistry._is_imported(row) is False  # type: ignore[arg-type]
+    # duplicate merge is exempt (it lands under the merged task's own row).
+    row = _dup_row(DuplicateAction.merge)
+    assert ImportJobRegistry._did_not_land(row) is False  # type: ignore[arg-type]
+    assert ImportJobRegistry._is_imported(row) is True  # type: ignore[arg-type]
+
+
+def test_did_not_land_is_terminal_gated_mid_run() -> None:
+    # Mid-run a decided-apply row's follow-up id can simply trail by one drain,
+    # so the "did not land" verdict must NEVER surface on a non-terminal job:
+    # the summary flag and the not_landed counter both stay quiet until done.
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="mid", bridge=ImportBridge(), phase=ImportPhase.reviewing)
+    job.albums[0] = _decided_row(ImportAction.apply)  # type: ignore[assignment]
+    reg._job = job
+    state = reg.state("mid")
+    assert state.albums[0].did_not_land is False
+    assert state.progress.not_landed == 0

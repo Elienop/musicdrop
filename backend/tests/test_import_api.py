@@ -99,7 +99,13 @@ def test_job_state_round_trips() -> None:
     )
     dumped = state.model_dump(mode="json")
     assert dumped["phase"] == "reviewing"
-    assert dumped["progress"] == {"applied": 1, "needs_review": 1, "skipped": 0}
+    assert dumped["progress"] == {
+        "applied": 1,
+        "needs_review": 1,
+        "skipped": 0,
+        "not_landed": 0,
+    }
+    assert dumped["albums"][0]["did_not_land"] is False  # defaulted
     assert dumped["albums"][0]["status"] == "applied"
     assert dumped["albums"][1]["status"] == "needs_review"
     assert dumped["summary"] is None
@@ -385,8 +391,11 @@ def test_second_concurrent_import_is_409() -> None:
 
 
 def test_feed_shows_applied_then_the_current_needs_review() -> None:
+    # Index 0 auto-applies and its landing id arrives (it lands -> imported);
+    # index 1 is parked for review.
     client = _client_with_fake(
-        applied=[_api_applied(0)], parked=[_api_parked(1, Recommendation.medium)]
+        applied=[_api_applied(0), _api_applied(0).model_copy(update={"album_id": 5})],
+        parked=[_api_parked(1, Recommendation.medium)],
     )
     job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
     state = _poll(client, job_id, lambda s: len(s["albums"]) == 2)
@@ -395,7 +404,12 @@ def test_feed_shows_applied_then_the_current_needs_review() -> None:
     assert by_index[0]["status"] == "applied"
     assert by_index[1]["status"] == "needs_review"
     assert by_index[1]["album"] == "OK Computer"
-    assert state["progress"] == {"applied": 1, "needs_review": 1, "skipped": 0}
+    assert state["progress"] == {
+        "applied": 1,
+        "needs_review": 1,
+        "skipped": 0,
+        "not_landed": 0,
+    }
 
 
 def test_get_album_returns_full_candidate() -> None:
@@ -419,8 +433,12 @@ def test_get_album_unknown_index_is_404() -> None:
 
 
 def test_choice_apply_drives_job_to_done_with_truthful_summary() -> None:
+    # Index 0 auto-applies and lands (its follow-up id arrives -> imported);
+    # index 1 is decided apply but no landing id ever comes (the fake models a
+    # decision beets never task.add'd) -> it did not land.
     client = _client_with_fake(
-        applied=[_api_applied(0)], parked=[_api_parked(1, Recommendation.medium)]
+        applied=[_api_applied(0), _api_applied(0).model_copy(update={"album_id": 4})],
+        parked=[_api_parked(1, Recommendation.medium)],
     )
     job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
     _poll(client, job_id, lambda s: len(s["albums"]) == 2)
@@ -434,9 +452,12 @@ def test_choice_apply_drives_job_to_done_with_truthful_summary() -> None:
     assert state["phase"] == "done"
     by_index = {a["index"]: a for a in state["albums"]}
     assert by_index[0]["status"] == "applied"
+    assert by_index[0]["did_not_land"] is False
     assert by_index[1]["status"] == "decided"
-    assert "2 imported" in state["summary"]
+    assert by_index[1]["did_not_land"] is True
+    assert "1 imported" in state["summary"]
     assert "0 skipped" in state["summary"]
+    assert "1 did not land" in state["summary"]
 
 
 def test_choice_unknown_index_is_404() -> None:

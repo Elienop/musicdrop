@@ -22,7 +22,7 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
     job_id: "job-1",
     phase: "reviewing",
-    progress: { applied: 1, needs_review: 1, skipped: 0 },
+    progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
     albums: [
       {
         index: 0,
@@ -33,6 +33,7 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
         confidence: 99,
         status: "applied",
         album_id: 41,
+        did_not_land: false,
       },
       {
         index: 1,
@@ -43,6 +44,7 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
         confidence: 76,
         status: "needs_review",
         album_id: null,
+        did_not_land: false,
       },
     ],
     summary: null,
@@ -59,7 +61,7 @@ function sweepJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
     job_id: "s1",
     phase: "scanning",
-    progress: { applied: 0, needs_review: 0, skipped: 0 },
+    progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
     albums: [],
     summary: null,
     error: null,
@@ -309,7 +311,7 @@ describe("ImportPage — live feed", () => {
             // index 0 becomes a duplicate awaiting resolution. Keep `progress`
             // internally consistent with the single duplicate row (the default
             // makeJob progress disagrees: it claims an applied + a needs_review).
-            progress: { applied: 0, needs_review: 0, skipped: 0 },
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
             albums: [
               {
                 index: 0,
@@ -320,6 +322,7 @@ describe("ImportPage — live feed", () => {
                 confidence: 99,
                 status: "needs_dup_resolution",
                 album_id: null,
+                did_not_land: false,
               },
             ],
           }),
@@ -344,7 +347,7 @@ describe("ImportPage — live feed", () => {
       http.get(JOB_URL, () =>
         HttpResponse.json(
           makeJob({
-            progress: { applied: 0, needs_review: 0, skipped: 0 },
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
             albums: [
               {
                 index: 0,
@@ -355,6 +358,7 @@ describe("ImportPage — live feed", () => {
                 confidence: 99,
                 status: "needs_dup_resolution",
                 album_id: null,
+                did_not_land: false,
               },
             ],
           }),
@@ -387,7 +391,7 @@ describe("ImportPage — live feed", () => {
         HttpResponse.json(
           makeJob({
             phase: "scanning",
-            progress: { applied: 0, needs_review: 0, skipped: 0 },
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
             albums: [],
           }),
         ),
@@ -404,7 +408,7 @@ describe("ImportPage — live feed", () => {
         HttpResponse.json(
           makeJob({
             phase: "reviewing",
-            progress: { applied: 1, needs_review: 1, skipped: 1 },
+            progress: { applied: 1, needs_review: 1, skipped: 1, not_landed: 0 },
           }),
         ),
       ),
@@ -477,7 +481,7 @@ describe("ImportPage — terminal states", () => {
           makeJob({
             phase: "done",
             summary: "1 imported, 1 skipped",
-            progress: { applied: 1, needs_review: 0, skipped: 1 },
+            progress: { applied: 1, needs_review: 0, skipped: 1, not_landed: 0 },
             albums: [
               {
                 index: 0,
@@ -488,6 +492,7 @@ describe("ImportPage — terminal states", () => {
                 confidence: 99,
                 status: "applied",
                 album_id: 41,
+                did_not_land: false,
               },
               {
                 index: 1,
@@ -498,6 +503,7 @@ describe("ImportPage — terminal states", () => {
                 confidence: 0,
                 status: "skipped",
                 album_id: null,
+                did_not_land: false,
               },
             ],
           }),
@@ -517,6 +523,73 @@ describe("ImportPage — terminal states", () => {
     ).not.toBeInTheDocument();
   });
 
+  test("a row that never landed shows a Didn't-land badge and the done body counts it", async () => {
+    // A decided/applied row whose library album id never arrived on a terminal
+    // job carries did_not_land; progress.not_landed mirrors the count. The row
+    // must flag the failure and the summary must own up to it.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "done",
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 1 },
+            albums: [
+              {
+                index: 0,
+                folder: "/music/incoming/Radiohead - OK Computer",
+                artist: "Radiohead",
+                album: "OK Computer",
+                recommendation: "strong",
+                confidence: 99,
+                status: "decided",
+                album_id: null,
+                did_not_land: true,
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    // The row badge names the failure (its own element, exact text).
+    expect(await screen.findByText("Didn't land")).toBeInTheDocument();
+    // The finished body appends the count.
+    expect(screen.getByText(/1 didn't land/)).toBeInTheDocument();
+  });
+
+  test("a decided row that landed shows the Imported badge, not Decided", async () => {
+    // Once the album_id follows a decided Apply, the vague "Decided" chip
+    // upgrades to the positive "Imported" — album_id != null is the signal.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "done",
+            progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+            albums: [
+              {
+                index: 0,
+                folder: "/music/incoming/Radiohead - In Rainbows",
+                artist: "Radiohead",
+                album: "In Rainbows",
+                recommendation: "strong",
+                confidence: 99,
+                status: "decided",
+                album_id: 77,
+                did_not_land: false,
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Imported")).toBeInTheDocument();
+    expect(screen.queryByText("Decided")).not.toBeInTheDocument();
+  });
+
   test("reaching done refreshes the cached library surfaces (albums landed)", async () => {
     // Imported albums are in the library now — within the 30s staleTime the
     // grids/roster/browse/search/stats would otherwise keep serving lists
@@ -526,7 +599,7 @@ describe("ImportPage — terminal states", () => {
         HttpResponse.json(
           makeJob({
             phase: "done",
-            progress: { applied: 1, needs_review: 0, skipped: 0 },
+            progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
           }),
         ),
       ),
@@ -666,7 +739,7 @@ describe("ImportPage — sweep & bank", () => {
         HttpResponse.json(
           makeJob({
             phase: "scanning",
-            progress: { applied: 0, needs_review: 0, skipped: 0 },
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
             albums: [],
           }),
         ),
