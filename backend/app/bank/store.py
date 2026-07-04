@@ -113,10 +113,11 @@ def _index_drop(bank_dir: Path, item_id: str) -> None:
 
 
 def _index_forget(bank_dir: Path, item_id: str) -> None:
-    """Best-effort stale-entry drop when a file backing an indexed id is gone.
+    """Stale-entry drop when a file backing an indexed id is gone.
 
     Never builds the index (no glob): a missing file for an id we never indexed
-    is a no-op. Safe to call without holding ``_LOCK`` — plain dict ops only.
+    is a no-op. Callers MUST hold ``_LOCK`` — a concurrent ``list_page`` iterates
+    these dicts under it, and an unlocked pop could break that iteration.
     """
     key = _index_key(bank_dir)
     by_id = _INDEX.get(key)
@@ -184,7 +185,10 @@ def get_item(bank_dir: Path, item_id: str) -> BankItem | None:
     try:
         raw = _row_path(bank_dir, item_id).read_text(encoding="utf-8")
     except OSError:
-        _index_forget(bank_dir, item_id)  # the file's gone: drop any stale entry
+        # No index cleanup here: get_item is called WITHOUT _LOCK from the API,
+        # and the index may only be mutated under it. A missing-file-for-indexed
+        # -id state can't arise under the single-writer invariant anyway; true
+        # out-of-band edits are handled by reset_bank_index().
         return None
     try:
         return BankItem.model_validate_json(raw)
