@@ -27,6 +27,7 @@ function makePrompt(overrides: Partial<DuplicatePrompt> = {}): DuplicatePrompt {
         format: "FLAC",
         bitrate_kbps: 1000,
         folder: "/music/10cc",
+        tracks: [],
       },
     ],
     merge_preview: null,
