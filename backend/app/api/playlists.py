@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
@@ -19,6 +20,7 @@ from fastapi.concurrency import run_in_threadpool
 from app.api.albums import get_library
 from app.api.plex import get_plex_store
 from app.beets.library import LibraryHandle
+from app.beets.playlist_match import build_match_index, match_entries
 from app.beets.playlists import (
     TrackRef,
     item_exists,
@@ -36,9 +38,18 @@ from app.models.playlist import (
     PlaylistResolveEntryRequest,
     PlaylistUpdateRequest,
 )
+from app.models.playlist_import import (
+    PlaylistImportPreview,
+    PlaylistImportPreviewRequest,
+    PlaylistImportPreviewResponse,
+    PlaylistImportRequest,
+    PlaylistImportResponse,
+)
 from app.playlists import store
 from app.playlists.m3u import delete_m3u, write_m3u
-from app.playlists.store import StoredPlaylist
+from app.playlists.m3u_parse import parse_m3u
+from app.playlists.store import StoredEntry, StoredPlaylist
+from app.plex import playlists_pull
 from app.plex import sync as plex_sync
 from app.plex.config import PlexConfig, PlexConfigStore
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
@@ -354,3 +365,97 @@ async def delete_playlist_endpoint(
         rating_keys = {target: state.rating_key for target, state in record.plex.items()}
         await _best_effort_plex_delete(plex_store.get(), rating_keys, f"delete {playlist_id}")
     return Response(status_code=204)
+
+
+@router.post("/playlists/import/preview", response_model=PlaylistImportPreviewResponse)
+async def import_preview_endpoint(
+    body: PlaylistImportPreviewRequest,
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+    plex_store: Annotated[PlexConfigStore, Depends(get_plex_store)],
+) -> PlaylistImportPreviewResponse:
+    """Parse/pull the source playlists and match every entry. Read-only:
+    nothing is stored; the uploaded content never touches disk."""
+    if body.files is not None:
+        parsed = [parse_m3u(f.name, f.content) for f in body.files]
+    else:
+        try:
+            parsed = await run_in_threadpool(
+                playlists_pull.pull_playlist_entries,
+                plex_store.get(),
+                body.plex_playlists or [],
+            )
+        except PlexNotConfigured as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PlexConnectionError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    def _match_all() -> list[PlaylistImportPreview]:
+        index = build_match_index(handle.lib)  # ONE scan for the whole request
+        previews: list[PlaylistImportPreview] = []
+        for playlist in parsed:
+            entries = match_entries(index, playlist.entries)
+            previews.append(
+                PlaylistImportPreview(
+                    name=playlist.name,
+                    entries=entries,
+                    matched_count=sum(e.status == "matched" for e in entries),
+                    ambiguous_count=sum(e.status == "ambiguous" for e in entries),
+                    unmatched_count=sum(e.status == "unmatched" for e in entries),
+                )
+            )
+        return previews
+
+    return PlaylistImportPreviewResponse(playlists=await run_in_threadpool(_match_all))
+
+
+def _unique_name(name: str, taken: set[str]) -> str:
+    if name not in taken:
+        return name
+    n = 2
+    while f"{name} ({n})" in taken:
+        n += 1
+    return f"{name} ({n})"
+
+
+@router.post("/playlists/import", response_model=PlaylistImportResponse)
+async def import_commit_endpoint(
+    body: PlaylistImportRequest,
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> PlaylistImportResponse:
+    """Create the playlists exactly as reviewed — resolved entries as tracks,
+    unresolved ones as position-holding pending rows."""
+    wanted_ids = sorted(
+        {e.item_id for pl in body.playlists for e in pl.entries if e.item_id is not None}
+    )
+
+    def _missing() -> list[int]:
+        return [item_id for item_id in wanted_ids if not item_exists(handle.lib, item_id)]
+
+    missing = await run_in_threadpool(_missing)
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown item ids: {', '.join(str(i) for i in missing)}",
+        )
+
+    existing = await run_in_threadpool(store.list_playlists, playlists_dir)
+    taken = {record.name for record in existing}
+    created: list[Playlist] = []
+    for playlist in body.playlists:
+        name = _unique_name(playlist.name.strip() or "Imported playlist", taken)
+        taken.add(name)
+        entries = [
+            StoredEntry(uid=uuid.uuid4().hex, item_id=e.item_id, pending=e.pending)
+            for e in playlist.entries
+        ]
+        record = await run_in_threadpool(
+            store.create_playlist,
+            playlists_dir,
+            name=name,
+            description=playlist.description,
+            entries=entries,
+        )
+        await _export_playlist(record, handle)
+        created.append(_to_playlist(record))
+    return PlaylistImportResponse(created=created)
