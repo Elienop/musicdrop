@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.plex import service
+from app.plex.errors import PlexNotConfigured
 
 
 class _FakeUser:
@@ -28,7 +29,12 @@ class _FakeServer:
 def test_settings_round_trip_redacts_token(client: TestClient) -> None:
     r = client.get("/api/plex/settings")
     assert r.status_code == 200
-    assert r.json() == {"base_url": "", "library_path": "", "has_token": False}
+    assert r.json() == {
+        "base_url": "",
+        "library_path": "",
+        "library_section": "",
+        "has_token": False,
+    }
 
     r = client.put(
         "/api/plex/settings",
@@ -67,3 +73,34 @@ def test_users_endpoint(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> 
 def test_users_unconfigured_409(client: TestClient) -> None:
     r = client.get("/api/plex/users")
     assert r.status_code == 409
+
+
+def test_settings_round_trips_library_section(client: TestClient) -> None:
+    # The ``client`` fixture routes the Plex store into the tmp beets_dir, so the
+    # PUT persists and a fresh GET reads it back (mirrors the base_url/library_path
+    # round-trip above).
+    r = client.put("/api/plex/settings", json={"library_section": "MusicDrop"})
+    assert r.status_code == 200
+    assert r.json()["library_section"] == "MusicDrop"
+    assert client.get("/api/plex/settings").json()["library_section"] == "MusicDrop"
+
+
+def test_sections_endpoint_lists_titles(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "app.api.plex.service.list_music_sections", lambda config: ["Music", "MusicDrop"]
+    )
+    r = client.get("/api/plex/sections")
+    assert r.status_code == 200
+    assert r.json() == {"sections": ["Music", "MusicDrop"]}
+
+
+def test_sections_endpoint_409_when_unconfigured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _raise(config: object) -> list[str]:
+        raise PlexNotConfigured("Plex is not configured.")
+
+    monkeypatch.setattr("app.api.plex.service.list_music_sections", _raise)
+    assert client.get("/api/plex/sections").status_code == 409

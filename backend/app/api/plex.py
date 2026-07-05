@@ -16,6 +16,7 @@ from fastapi.concurrency import run_in_threadpool
 from app.config import settings
 from app.models.plex import (
     PlexConnection,
+    PlexSectionList,
     PlexSettings,
     PlexSettingsUpdate,
     PlexUserList,
@@ -34,6 +35,7 @@ def get_plex_store() -> PlexConfigStore:
         base_url=settings.plex_url,
         token=settings.plex_token,
         library_path=settings.plex_library_path,
+        library_section=settings.plex_library_section,
     )
     return PlexConfigStore(directory / "plex.json", env_defaults=env)
 
@@ -42,6 +44,7 @@ def _to_settings(config: PlexConfig) -> PlexSettings:
     return PlexSettings(
         base_url=config.base_url,
         library_path=config.library_path,
+        library_section=config.library_section,
         has_token=bool(config.token),
     )
 
@@ -63,6 +66,7 @@ async def put_plex_settings(
         base_url=body.base_url,
         token=body.token,
         library_path=body.library_path,
+        library_section=body.library_section,
     )
     return _to_settings(config)
 
@@ -85,3 +89,16 @@ async def list_plex_users(
     except PlexConnectionError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return PlexUserList(users=users)
+
+
+@router.get("/plex/sections", response_model=PlexSectionList)
+async def list_plex_sections(
+    store: Annotated[PlexConfigStore, Depends(get_plex_store)],
+) -> PlexSectionList:
+    try:
+        sections = await run_in_threadpool(service.list_music_sections, store.get())
+    except PlexNotConfigured as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PlexConnectionError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return PlexSectionList(sections=sections)
