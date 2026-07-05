@@ -447,7 +447,7 @@ function NoMatchScreen({ item }: { item: BankItem }) {
       <SearchConflict error={search.error} />
       {item.status === "failed" && (
         <FailedDuplicateStrip
-          busy={decide.isPending}
+          busy={decide.isPending || search.isPending}
           pending={pendingDup}
           onDecide={(action) => {
             setPendingDup(action);

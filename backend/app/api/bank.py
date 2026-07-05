@@ -136,6 +136,8 @@ async def search_bank_item(item_id: str, search: ImportSearch) -> BankSearchResp
     item = await run_in_threadpool(store.get_item, bank_dir, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Bank item not found")
+    # Fast-path pre-check only — the store's locked _SEARCHABLE re-check in
+    # research_item is authoritative if this tuple ever drifts.
     if item.status not in ("needs_review", "failed") or item.reason == "needs_dup_resolution":
         raise HTTPException(
             status_code=409,
@@ -144,6 +146,9 @@ async def search_bank_item(item_id: str, search: ImportSearch) -> BankSearchResp
 
     # A searched payload must describe the banked files: a changed or vanished
     # folder flips to stale (the apply runner's exact semantics) instead.
+    # The flip below is intentionally unguarded (no expected=): the mismatch is
+    # a fact about the disk, and a decision racing past the pre-check would hit
+    # the apply runner's own fingerprint re-check and land on stale anyway.
     def _current_fingerprint() -> str | None:
         try:
             return folder_fingerprint(Path(item.folder))
