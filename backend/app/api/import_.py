@@ -11,8 +11,11 @@ No beets imports: the registry + models are the whole surface here.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 
+from app.beets.duplicates import find_import_duplicates
+from app.beets.library import LibraryHandle
 from app.import_jobs.registry import ImportJobRegistry, get_registry
 from app.import_jobs.runner import InLibraryCopyError
 from app.models.import_api import (
@@ -21,7 +24,13 @@ from app.models.import_api import (
     StartImportRequest,
     StartImportResponse,
 )
-from app.models.import_models import Candidate, DuplicateDecision, DuplicatePrompt, ImportChoice
+from app.models.import_models import (
+    Candidate,
+    DuplicateDecision,
+    DuplicatePrompt,
+    DuplicatesCheckResponse,
+    ImportChoice,
+)
 
 router = APIRouter(tags=["import"])
 
@@ -150,6 +159,51 @@ async def get_import_album_cover(
         media_type=mime,
         headers={"Cache-Control": "no-store"},  # parked-album art is transient
     )
+
+
+@router.get(
+    "/import/{job_id}/albums/{index}/duplicates",
+    response_model=DuplicatesCheckResponse,
+)
+async def get_import_album_duplicates(
+    job_id: str,
+    index: Annotated[int, Path(ge=0)],
+    request: Request,
+    reg: Annotated[ImportJobRegistry, Depends(get_registry)],
+    candidate_index: Annotated[int, Query(ge=0)] = 0,
+) -> DuplicatesCheckResponse:
+    """Up-front library-collision check for the SELECTED candidate option.
+
+    A heads-up only — Apply still routes through beets' duplicate prompt.
+    Pure library read keyed on the option's own identity (the bank check's
+    exact posture); never touches the parked worker.
+    """
+    try:
+        parked = reg.parked_album(job_id, index)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Import album not found"
+        ) from None
+    candidate = parked.candidate
+    options = candidate.options
+    idx = candidate_index if 0 <= candidate_index < len(options) else 0
+    opt = options[idx] if options else None
+    after = candidate.album_after
+    albumartist = opt.album_artist if opt and opt.album_artist is not None else after.artist
+    album = opt.album if opt and opt.album is not None else after.album
+    year = opt.year if opt and opt.year is not None else after.year
+    mb_albumid = opt.release_id if opt else None
+    handle: LibraryHandle = request.app.state.beets_library
+    existing = await run_in_threadpool(
+        find_import_duplicates,
+        handle.lib,
+        albumartist=albumartist,
+        album=album,
+        year=year,
+        mb_albumid=mb_albumid,
+        exclude_under=parked.folder,
+    )
+    return DuplicatesCheckResponse(existing=existing)
 
 
 @router.post("/import/{job_id}/albums/{index}/choice", status_code=status.HTTP_204_NO_CONTENT)
