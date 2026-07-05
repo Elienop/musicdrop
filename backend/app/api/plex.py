@@ -16,12 +16,13 @@ from fastapi.concurrency import run_in_threadpool
 from app.config import settings
 from app.models.plex import (
     PlexConnection,
+    PlexPlaylistList,
     PlexSectionList,
     PlexSettings,
     PlexSettingsUpdate,
     PlexUserList,
 )
-from app.plex import service
+from app.plex import playlists_pull, service
 from app.plex.config import PlexConfig, PlexConfigStore
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
 
@@ -102,3 +103,16 @@ async def list_plex_sections(
     except PlexConnectionError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return PlexSectionList(sections=sections)
+
+
+@router.get("/plex/playlists", response_model=PlexPlaylistList)
+async def list_plex_playlists(
+    store: Annotated[PlexConfigStore, Depends(get_plex_store)],
+) -> PlexPlaylistList:
+    try:
+        playlists = await run_in_threadpool(playlists_pull.list_audio_playlists, store.get())
+    except PlexNotConfigured as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PlexConnectionError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return PlexPlaylistList(playlists=playlists)

@@ -104,3 +104,27 @@ def test_sections_endpoint_409_when_unconfigured(
 
     monkeypatch.setattr("app.api.plex.service.list_music_sections", _raise)
     assert client.get("/api/plex/sections").status_code == 409
+
+
+def test_playlists_endpoint_lists_audio(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.models.plex import PlexPlaylistInfo
+
+    monkeypatch.setattr(
+        "app.api.plex.playlists_pull.list_audio_playlists",
+        lambda config: [PlexPlaylistInfo(name="Road", track_count=2)],
+    )
+    r = client.get("/api/plex/playlists")
+    assert r.status_code == 200
+    assert r.json() == {"playlists": [{"name": "Road", "track_count": 2}]}
+
+
+def test_playlists_endpoint_409_when_unconfigured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _raise(config: object) -> list[object]:
+        raise PlexNotConfigured("Plex is not configured.")
+
+    monkeypatch.setattr("app.api.plex.playlists_pull.list_audio_playlists", _raise)
+    assert client.get("/api/plex/playlists").status_code == 409

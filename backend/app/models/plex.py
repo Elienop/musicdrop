@@ -29,6 +29,17 @@ class PlexSectionList(BaseModel):
     sections: list[str]
 
 
+class PlexPlaylistInfo(BaseModel):
+    """One audio playlist on the Plex server (import source listing)."""
+
+    name: str
+    track_count: int
+
+
+class PlexPlaylistList(BaseModel):
+    playlists: list[PlexPlaylistInfo]
+
+
 class PlexConnection(BaseModel):
     ok: bool
     server_name: str | None = None
