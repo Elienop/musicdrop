@@ -298,6 +298,48 @@ def decide_item(bank_dir: Path, item_id: str, decision: BankDecision) -> BankIte
         return item
 
 
+# Statuses a search may re-park from: fresh rows and failed applies. Stale is
+# deliberately narrower than _DECIDABLE: a searched payload must describe the
+# banked files, and a stale row's folder no longer does — its rescue is the
+# stale screen's attended re-scan.
+_SEARCHABLE: frozenset[str] = frozenset({"needs_review", "failed"})
+
+
+def research_item(
+    bank_dir: Path,
+    item_id: str,
+    *,
+    parked: ParkedAlbum,
+    artist: str | None,
+    album: str | None,
+    recommendation: str | None,
+    confidence: float | None,
+) -> BankItem | None:
+    """Replace a row's candidate payload with a fresh search result.
+
+    The API pre-checks unlocked; this locked re-check wins any race with a
+    concurrent decision. Reason flips to needs_review (a no_match row gains
+    its first payload); STATUS is preserved (failed stays failed — the
+    banner's "decide again" stays true). ``decided``/``error`` untouched.
+    """
+    with _LOCK:
+        item = get_item(bank_dir, item_id)
+        if item is None:
+            return None
+        if item.status not in _SEARCHABLE or item.reason == "needs_dup_resolution":
+            raise InvalidTransitionError(
+                f"row is {item.status}/{item.reason}; a search needs an undecided match row"
+            )
+        item.parked = parked
+        item.reason = "needs_review"
+        item.artist = artist
+        item.album = album
+        item.recommendation = recommendation
+        item.confidence = confidence
+        _write(bank_dir, item)
+        return item
+
+
 def set_status(
     bank_dir: Path,
     item_id: str,
