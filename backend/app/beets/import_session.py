@@ -27,6 +27,7 @@ from app.bank import store as bank_store
 from app.bank.fingerprint import folder_fingerprint
 from app.beets.existing_album import to_existing_album
 from app.beets.import_mapping import (
+    _REC_MAP,
     _confidence,
     _opt_int,
     _opt_str,
@@ -111,15 +112,6 @@ def is_in_library_source(library_dir: bytes, source: str) -> bool:
         except OSError:
             continue
     return False
-
-
-# beets IntEnum -> our string enum (only the album-level levels are needed).
-_REC_MAP = {
-    BeetsRec.none: Recommendation.none,
-    BeetsRec.low: Recommendation.low,
-    BeetsRec.medium: Recommendation.medium,
-    BeetsRec.strong: Recommendation.strong,
-}
 
 
 class ImportBridge:

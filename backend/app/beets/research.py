@@ -27,13 +27,13 @@ from beets.library import Item as Item  # explicit re-export: tests patch res.It
 from beets.util import get_most_common_tags
 
 from app.beets.import_mapping import (
+    _REC_MAP,
     _confidence,
     _opt_str,
     embedded_art,
     map_album_match,
     map_candidate_options,
 )
-from app.beets.import_session import _REC_MAP
 from app.beets.relookup import relookup_items
 from app.models.import_models import Candidate, Recommendation
 
