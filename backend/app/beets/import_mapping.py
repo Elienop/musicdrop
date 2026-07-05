@@ -12,6 +12,7 @@ import os
 from typing import Any
 
 from beets.autotag import AlbumMatch
+from beets.autotag.match import Recommendation as BeetsRec
 from beets.util import get_most_common_tags
 from mediafile import MediaFile
 
@@ -33,6 +34,17 @@ def _confidence(distance: Any) -> float:
     Mirrors beets' own display: ``(1 - distance) * 100`` (autotag/distance.py).
     """
     return round((1.0 - float(distance)) * 100.0, 1)
+
+
+# beets IntEnum -> our string enum (only the album-level levels are needed).
+# Lives here (not import_session) so session-less lookup code can map
+# recommendations without importing the session module.
+_REC_MAP = {
+    BeetsRec.none: Recommendation.none,
+    BeetsRec.low: Recommendation.low,
+    BeetsRec.medium: Recommendation.medium,
+    BeetsRec.strong: Recommendation.strong,
+}
 
 
 def coverartarchive_front_url(*, data_source: str | None, album_id: str | None) -> str | None:

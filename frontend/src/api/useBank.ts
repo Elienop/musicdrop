@@ -222,6 +222,48 @@ export function useBankSearch(itemId: string) {
   });
 }
 
+/**
+ * Re-scan a banked folder (`POST /api/bank/{id}/rescan`) — re-reads the folder
+ * from disk, re-matches with beets' default lookup, and REFRESHES the
+ * fingerprint (the explicit "I changed the folder on purpose" gesture; search
+ * treats a changed folder as stale instead). Success writes the returned row
+ * into the item cache, so the page re-branches to whatever the row now is
+ * (stale → candidate, candidate → no-match, dup-prompt → candidate).
+ */
+export function useBankRescan(itemId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (): Promise<BankItem> => {
+      const { data, error, response } = await client.POST(
+        "/api/bank/{item_id}/rescan",
+        { params: { path: { item_id: itemId } } },
+      );
+      if (response.status === 409) {
+        throw new BankConflictError(
+          detailMessage(error) ?? "This row can’t be rescanned — go back and reopen it.",
+        );
+      }
+      if (response.status === 404) {
+        throw new BankConflictError("This row is no longer in the bank.");
+      }
+      if (error || !response.ok || !data) {
+        throw new Error("Failed to rescan the folder");
+      }
+      return data;
+    },
+    onSuccess: (item) => {
+      queryClient.setQueryData(["bank", "item", itemId], item);
+      void queryClient.invalidateQueries({ queryKey: ["bank", "list"] });
+      void queryClient.invalidateQueries({ queryKey: ["bank", "duplicates", itemId] });
+    },
+    onError: (err) => {
+      if (err instanceof BankConflictError) {
+        void queryClient.invalidateQueries({ queryKey: ["bank", "item", itemId] });
+      }
+    },
+  });
+}
+
 async function decideBankItem(
   itemId: string,
   decision: BankDecision,

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes } from "react-router";
@@ -738,5 +738,25 @@ describe("ImportCandidatePage", () => {
       screen.queryByRole("button", { name: /replace old/i }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /apply/i })).toBeEnabled();
+  });
+
+  test("posts a rescan choice and enters the searching state", async () => {
+    const bodies: unknown[] = [];
+    server.use(
+      http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())),
+      http.post(CHOICE_URL, async ({ request }) => {
+        bodies.push(await request.json());
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderAt();
+    const rescanButton = await screen.findByRole("button", {
+      name: /rescan folder/i,
+    });
+    fireEvent.click(rescanButton);
+    await waitFor(() => expect(bodies.length).toBe(1));
+    expect(bodies[0]).toMatchObject({ action: "rescan", candidate_index: null });
+    // In-flight: the decision buttons disable until the revision bumps.
+    expect(screen.getByRole("button", { name: /apply/i })).toBeDisabled();
   });
 });

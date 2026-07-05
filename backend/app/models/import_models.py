@@ -242,6 +242,10 @@ class ImportAction(StrEnum):
     against a user-supplied release id/URL or a forced-non-VA name search and
     re-parks (it never resolves the park); ``abort`` stops the whole import (the
     session raises beets' ``ImportAbortError``, caught by ``run()``).
+
+    ``rescan`` re-reads the album's folder from disk (the user changed the
+    files on purpose) and re-runs beets' default lookup, re-parking like
+    ``search``; it carries no payload.
     """
 
     apply = "apply"
@@ -250,6 +254,7 @@ class ImportAction(StrEnum):
     astracks = "astracks"
     abort = "abort"
     search = "search"
+    rescan = "rescan"
 
 
 class ImportSearch(BaseModel):

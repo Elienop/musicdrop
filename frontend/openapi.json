@@ -3619,6 +3619,49 @@
         }
       }
     },
+    "/api/bank/{item_id}/rescan": {
+      "post": {
+        "tags": [
+          "bank"
+        ],
+        "summary": "Rescan Bank Item",
+        "description": "Re-read the banked folder from disk and re-match it in place.\n\nThe explicit \"I changed the folder on purpose\" gesture (deleted a\nduplicate track, added a missing one): re-reads tags, runs beets' DEFAULT\nfirst-scan lookup, and REFRESHES the fingerprint \u2014 the deliberate\ncontrast with search, which treats a changed folder as stale. Also the\nstale row's in-place rescue. Preview-only: no file or library writes.",
+        "operationId": "rescan_bank_item_api_bank__item_id__rescan_post",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BankItem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/bank/{item_id}/decision": {
       "post": {
         "tags": [
@@ -6543,10 +6586,11 @@
           "asis",
           "astracks",
           "abort",
-          "search"
+          "search",
+          "rescan"
         ],
         "title": "ImportAction",
-        "description": "The decisions the user can return for a parked album.\n\n``apply`` selects a ranked option by index; ``search`` re-looks-up the album\nagainst a user-supplied release id/URL or a forced-non-VA name search and\nre-parks (it never resolves the park); ``abort`` stops the whole import (the\nsession raises beets' ``ImportAbortError``, caught by ``run()``)."
+        "description": "The decisions the user can return for a parked album.\n\n``apply`` selects a ranked option by index; ``search`` re-looks-up the album\nagainst a user-supplied release id/URL or a forced-non-VA name search and\nre-parks (it never resolves the park); ``abort`` stops the whole import (the\nsession raises beets' ``ImportAbortError``, caught by ``run()``).\n\n``rescan`` re-reads the album's folder from disk (the user changed the\nfiles on purpose) and re-runs beets' default lookup, re-parking like\n``search``; it carries no payload."
       },
       "ImportAlbumStatus": {
         "type": "string",

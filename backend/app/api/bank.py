@@ -19,7 +19,7 @@ from app.bank.apply_runner import _STALE_CHANGED_ERROR, _STALE_GONE_ERROR
 from app.bank.fingerprint import folder_fingerprint
 from app.beets.duplicates import find_import_duplicates
 from app.beets.library import LibraryHandle
-from app.beets.research import research_folder
+from app.beets.research import NoAudioFilesError, rescan_folder, research_folder
 from app.config import settings
 from app.models.bank import (
     BankBulkDeleteRequest,
@@ -187,6 +187,86 @@ async def search_bank_item(item_id: str, search: ImportSearch) -> BankSearchResp
     if updated is None:
         raise HTTPException(status_code=404, detail="Bank item not found")
     return BankSearchResponse(item=updated, found=True)
+
+
+@router.post("/bank/{item_id}/rescan", response_model=BankItem)
+async def rescan_bank_item(item_id: str) -> BankItem:
+    """Re-read the banked folder from disk and re-match it in place.
+
+    The explicit "I changed the folder on purpose" gesture (deleted a
+    duplicate track, added a missing one): re-reads tags, runs beets' DEFAULT
+    first-scan lookup, and REFRESHES the fingerprint — the deliberate
+    contrast with search, which treats a changed folder as stale. Also the
+    stale row's in-place rescue. Preview-only: no file or library writes.
+    """
+    bank_dir = get_bank_dir()
+    item = await run_in_threadpool(store.get_item, bank_dir, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Bank item not found")
+    if item.status not in ("needs_review", "failed", "stale"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"row is {item.status}; a rescan needs an undecided row",
+        )
+
+    # Fingerprint FIRST: it describes the folder version being blessed. An
+    # edit racing the lookup below surfaces as a mismatch at apply time and
+    # goes stale — the safe direction.
+    def _current_fingerprint() -> str | None:
+        try:
+            return folder_fingerprint(Path(item.folder))
+        except FileNotFoundError:
+            return None
+
+    fingerprint = await run_in_threadpool(_current_fingerprint)
+    if fingerprint is None:
+        raise HTTPException(
+            status_code=409, detail="the banked folder no longer exists — remove the row"
+        )
+    try:
+        outcome = await run_in_threadpool(rescan_folder, item.folder)
+    except NoAudioFilesError:
+        raise HTTPException(
+            status_code=409,
+            detail="no audio files remain in the folder — remove the row or restore files",
+        ) from None
+
+    previous_revision = item.parked.candidate.search_revision if item.parked else 0
+    if outcome.result is not None:
+        parked: ParkedAlbum | None = ParkedAlbum(
+            album_index=item.parked.album_index if item.parked else 0,
+            folder=item.folder,
+            candidate=outcome.result.candidate.model_copy(
+                update={"search_revision": previous_revision + 1}
+            ),
+        )
+        artist, album = outcome.result.artist, outcome.result.album
+        recommendation = outcome.result.recommendation.value
+        confidence: float | None = outcome.result.confidence
+    else:
+        parked = None
+        artist, album = outcome.cur_artist, outcome.cur_album
+        recommendation = outcome.recommendation.value
+        confidence = 0.0
+
+    try:
+        updated = await run_in_threadpool(
+            lambda: store.rescan_item(
+                bank_dir,
+                item_id,
+                fingerprint=fingerprint,
+                parked=parked,
+                artist=artist,
+                album=album,
+                recommendation=recommendation,
+                confidence=confidence,
+            )
+        )
+    except store.InvalidTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Bank item not found")
+    return updated
 
 
 @router.post("/bank/{item_id}/decision", response_model=BankItem)

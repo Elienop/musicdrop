@@ -160,6 +160,17 @@ function ReviewScreen({
     );
   }
 
+  // Re-scan re-reads the folder from disk + re-runs beets' default lookup (no
+  // search terms); the worker re-parks with a bumped search_revision, which
+  // ends the searching state via the same effect a search uses.
+  function runRescan() {
+    onSearchStart(candidate.search_revision);
+    submit.mutate(
+      { index, choice: { action: "rescan", candidate_index: null } },
+      { onError: () => onSearchError() },
+    );
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <CandidateReview
@@ -180,6 +191,19 @@ function ReviewScreen({
         feedback={candidate.search_feedback ?? null}
         error={submit.isError}
       />
+      <div className="flex items-center gap-3">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={searching || submit.isPending}
+          onClick={runRescan}
+        >
+          Rescan folder
+        </Button>
+        <p className="text-muted-foreground text-xs">
+          Changed the files on disk? Re-reads the folder and matches it again.
+        </p>
+      </div>
       <ReviewActions
         jobId={jobId}
         index={index}

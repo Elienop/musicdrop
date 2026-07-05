@@ -27,6 +27,7 @@ from app.bank import store as bank_store
 from app.bank.fingerprint import folder_fingerprint
 from app.beets.existing_album import to_existing_album
 from app.beets.import_mapping import (
+    _REC_MAP,
     _confidence,
     _opt_int,
     _opt_str,
@@ -37,6 +38,7 @@ from app.beets.import_mapping import (
 from app.beets.merge_preview import build_merge_preview
 from app.beets.release_identity import release_identity
 from app.beets.relookup import relookup
+from app.beets.research import _read_items, lookup_items
 from app.beets.trash import album_format_bitrate, trash_album
 from app.models.album import ReleaseIdentity
 from app.models.bank import BankApplyDirective, BankReason
@@ -111,15 +113,6 @@ def is_in_library_source(library_dir: bytes, source: str) -> bool:
         except OSError:
             continue
     return False
-
-
-# beets IntEnum -> our string enum (only the album-level levels are needed).
-_REC_MAP = {
-    BeetsRec.none: Recommendation.none,
-    BeetsRec.low: Recommendation.low,
-    BeetsRec.medium: Recommendation.medium,
-    BeetsRec.strong: Recommendation.strong,
-}
 
 
 class ImportBridge:
@@ -631,7 +624,8 @@ class WebImportSession(ImportSession):
         empty result keeps the previous candidates and sets ``search_feedback``.
         Any non-search action resolves via ``_apply_choice``. Manual-search
         results are NEVER auto-applied — always re-parked to confirm (mirrors
-        beets' enter-Id).
+        beets' enter-Id). A ``rescan`` choice re-reads the folder and re-runs the
+        default lookup, swapping ``task.items`` only when it yields candidates.
         """
         candidate = first_candidate
         revision = 0
@@ -640,7 +634,9 @@ class WebImportSession(ImportSession):
                 ParkedAlbum(album_index=index, folder=folder, candidate=candidate),
                 art_source=art_source,
             )
-            if choice.action is not ImportAction.search or choice.search is None:
+            is_search = choice.action is ImportAction.search and choice.search is not None
+            is_rescan = choice.action is ImportAction.rescan
+            if not is_search and not is_rescan:
                 result = self._apply_choice(choice, candidates)
                 if result is Action.TRACKS:
                     # Arm the astracks window: the serial pipeline delivers this
@@ -648,16 +644,48 @@ class WebImportSession(ImportSession):
                     # the flag -> ASIS) before the next choose_match clears it.
                     self._astracks_in_flight = True
                 return result
-            new_candidates, new_rec = relookup(task, choice.search)
             revision += 1
             feedback: str | None
-            if new_candidates:
-                candidates = new_candidates
-                task.candidates = candidates
-                recommendation = _REC_MAP.get(new_rec, Recommendation.none)
-                feedback = None
+            if is_search:
+                assert choice.search is not None  # is_search narrowed it above
+                new_candidates, new_rec = relookup(task, choice.search)
+                if new_candidates:
+                    candidates = new_candidates
+                    task.candidates = candidates
+                    recommendation = _REC_MAP.get(new_rec, Recommendation.none)
+                    feedback = None
+                else:
+                    feedback = "No release found for that search — showing your previous matches."
             else:
-                feedback = "No release found for that search — showing your previous matches."
+                # Rescan: the user changed the folder on purpose — re-read it
+                # from disk and re-run beets' DEFAULT first-scan lookup.
+                new_items = _read_items(Path(folder))
+                if not new_items:
+                    feedback = "No audio files remain in the folder — Skip or Abort."
+                else:
+                    cur_artist, cur_album, new_candidates, new_rec = lookup_items(new_items, None)
+                    if not new_candidates:
+                        # The live payload cannot represent a candidate-less park,
+                        # and a half-swap would let Apply import deleted files —
+                        # keep the task fully consistent on its original scan.
+                        feedback = (
+                            "No release matched the rescanned folder — "
+                            "showing the album as originally scanned."
+                        )
+                    else:
+                        task.items = new_items
+                        task.cur_artist = cur_artist
+                        task.cur_album = cur_album
+                        candidates = new_candidates
+                        task.candidates = candidates
+                        recommendation = _REC_MAP.get(new_rec, Recommendation.none)
+                        # The deleted file may have carried the embedded cover —
+                        # re-detect so the re-park and the cover endpoint stay true.
+                        art_source = self._first_item_art_source(new_items)
+                        has_current_art = (
+                            art_source is not None and embedded_art(art_source) is not None
+                        )
+                        feedback = None
             top = candidates[0]
             candidate = map_album_match(
                 top,
