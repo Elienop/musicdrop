@@ -12,6 +12,18 @@ from pydantic import BaseModel, field_validator
 from app.models.plex import PlexTargetState
 
 
+class PendingTrack(BaseModel):
+    """The remembered identity of a playlist entry that has no library track
+    yet (an import that didn't match). ``source`` is the original text the
+    entry came from (m3u line / file path / "plex:<playlist>")."""
+
+    artist: str | None = None
+    title: str | None = None
+    album: str | None = None
+    duration_seconds: float | None = None
+    source: str = ""
+
+
 class Playlist(BaseModel):
     """Summary view of a playlist (list rows + create/patch responses)."""
 

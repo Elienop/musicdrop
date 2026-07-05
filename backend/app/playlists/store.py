@@ -16,8 +16,9 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
+from app.models.playlist import PendingTrack
 from app.models.plex import PlexTargetState
 from app.playlists.atomic import write_atomic_text
 
@@ -32,17 +33,40 @@ def _is_valid_id(playlist_id: str) -> bool:
     return bool(_VALID_ID.match(playlist_id))
 
 
+class StoredEntry(BaseModel):
+    """One ordered playlist slot: a resolved library track OR a pending one."""
+
+    uid: str
+    item_id: int | None = None
+    pending: PendingTrack | None = None
+
+
 class StoredPlaylist(BaseModel):
     """On-disk playlist record (``<playlists_dir>/<id>.json``)."""
 
     id: str
     name: str
     description: str = ""
-    track_ids: list[int] = []
+    track_ids: list[int] = []  # legacy (pre-entries) — migrated on read, always []
+    entries: list[StoredEntry] = []
     target_plex_users: list[str] = []
     plex: dict[str, PlexTargetState] = {}
     created_at: str
     updated_at: str
+
+    @model_validator(mode="after")
+    def _migrate_legacy_track_ids(self) -> StoredPlaylist:
+        if self.track_ids and not self.entries:
+            self.entries = [
+                StoredEntry(uid=uuid.uuid4().hex, item_id=item_id) for item_id in self.track_ids
+            ]
+        self.track_ids = []
+        return self
+
+    @property
+    def resolved_item_ids(self) -> list[int]:
+        """Ordered item ids of the RESOLVED entries — what export/sync consume."""
+        return [e.item_id for e in self.entries if e.item_id is not None]
 
 
 def _now() -> str:
@@ -58,13 +82,19 @@ def _write_atomic(path: Path, record: StoredPlaylist) -> None:
     write_atomic_text(path, record.model_dump_json(indent=2))
 
 
-def create_playlist(playlists_dir: Path, *, name: str, description: str = "") -> StoredPlaylist:
+def create_playlist(
+    playlists_dir: Path,
+    *,
+    name: str,
+    description: str = "",
+    entries: list[StoredEntry] | None = None,
+) -> StoredPlaylist:
     now = _now()
     record = StoredPlaylist(
         id=uuid.uuid4().hex,
         name=name,
         description=description,
-        track_ids=[],
+        entries=list(entries or []),
         target_plex_users=[],
         created_at=now,
         updated_at=now,
@@ -133,37 +163,57 @@ def add_tracks(
     record = get_playlist(playlists_dir, playlist_id)
     if record is None:
         return None
+    new_entries = [StoredEntry(uid=uuid.uuid4().hex, item_id=item_id) for item_id in track_ids]
     if position is None:
-        record.track_ids = [*record.track_ids, *track_ids]
+        record.entries = [*record.entries, *new_entries]
     else:
-        index = max(0, min(position, len(record.track_ids)))
-        record.track_ids = [
-            *record.track_ids[:index],
-            *track_ids,
-            *record.track_ids[index:],
-        ]
+        index = max(0, min(position, len(record.entries)))
+        record.entries = [*record.entries[:index], *new_entries, *record.entries[index:]]
     record.updated_at = _now()
     _write_atomic(_record_path(playlists_dir, playlist_id), record)
     return record
 
 
-def remove_track(playlists_dir: Path, playlist_id: str, item_id: int) -> StoredPlaylist | None:
+def remove_entry(playlists_dir: Path, playlist_id: str, uid: str) -> StoredPlaylist | None:
     record = get_playlist(playlists_dir, playlist_id)
     if record is None:
         return None
-    record.track_ids = [tid for tid in record.track_ids if tid != item_id]
+    record.entries = [e for e in record.entries if e.uid != uid]
     record.updated_at = _now()
     _write_atomic(_record_path(playlists_dir, playlist_id), record)
     return record
 
 
-def set_track_order(
-    playlists_dir: Path, playlist_id: str, *, track_ids: list[int]
+def set_entry_order(
+    playlists_dir: Path, playlist_id: str, *, uids: list[str]
 ) -> StoredPlaylist | None:
+    """Full replacement: keep exactly ``uids`` in this order (a subset drops
+    the rest; empty clears). The API validates the uids BEFORE calling."""
     record = get_playlist(playlists_dir, playlist_id)
     if record is None:
         return None
-    record.track_ids = list(track_ids)
+    by_uid = {e.uid: e for e in record.entries}
+    record.entries = [by_uid[uid] for uid in uids if uid in by_uid]
+    record.updated_at = _now()
+    _write_atomic(_record_path(playlists_dir, playlist_id), record)
+    return record
+
+
+def resolve_entry(
+    playlists_dir: Path, playlist_id: str, uid: str, *, item_id: int
+) -> StoredPlaylist | None:
+    """Point the entry at a library track (clears pending; also re-points an
+    already-resolved entry in place — 'replace track, keep position')."""
+    record = get_playlist(playlists_dir, playlist_id)
+    if record is None:
+        return None
+    for entry in record.entries:
+        if entry.uid == uid:
+            entry.item_id = item_id
+            entry.pending = None
+            break
+    else:
+        return None
     record.updated_at = _now()
     _write_atomic(_record_path(playlists_dir, playlist_id), record)
     return record
