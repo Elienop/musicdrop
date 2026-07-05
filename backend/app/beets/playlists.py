@@ -18,6 +18,7 @@ from beets.library import Library
 from app.beets.library import _abs_path, _coerce_duration, _coerce_str
 from app.models.playlist import PlaylistTrack
 from app.playlists.m3u import M3uEntry
+from app.playlists.store import StoredEntry  # store never imports beets - no cycle
 
 
 @dataclass(frozen=True)
@@ -45,43 +46,77 @@ def _coerce_track(value: object) -> int | None:
     return None
 
 
-def _resolved(item: Any) -> PlaylistTrack:
+def _resolved(uid: str, item: Any) -> PlaylistTrack:
     return PlaylistTrack(
+        uid=uid,
         id=int(item.id),
         title=_coerce_str(item.title),
         artist=_coerce_str(item.artist),
         album=_coerce_str(item.album),
         duration_seconds=_coerce_duration(item.length),
         available=True,
+        pending=False,
     )
 
 
-def _unavailable(item_id: int) -> PlaylistTrack:
+def _unavailable(uid: str, item_id: int) -> PlaylistTrack:
     return PlaylistTrack(
+        uid=uid,
         id=item_id,
         title="",
         artist="",
         album="",
         duration_seconds=None,
         available=False,
+        pending=False,
     )
 
 
-def resolve_tracks(lib: Library, ids: list[int]) -> list[PlaylistTrack]:
-    """Resolve ``ids`` to ordered tracks; unknown ids become unavailable rows.
+def _pending_row(entry: StoredEntry) -> PlaylistTrack:
+    info = entry.pending
+    return PlaylistTrack(
+        uid=entry.uid,
+        id=None,
+        title=(info.title if info else None) or "",
+        artist=(info.artist if info else None) or "",
+        album=(info.album if info else None) or "",
+        duration_seconds=info.duration_seconds if info else None,
+        available=False,
+        pending=True,
+    )
+
+
+def item_exists(lib: Library, item_id: int) -> bool:
+    """True iff ``item_id`` resolves to a library track. The beets access for
+    the resolve endpoint's validity check lives here (CLAUDE.md rule 3)."""
+    try:
+        return lib.get_item(item_id) is not None
+    except Exception:  # a locked/odd row is treated as "not a valid target"
+        return False
+
+
+def resolve_entries(lib: Library, entries: list[StoredEntry]) -> list[PlaylistTrack]:
+    """Ordered rows for every entry — resolved, pending, or unavailable.
 
     A per-item lookup failure (a missing id, or a locked/odd library row that
     raises) degrades that one entry to "unavailable" rather than failing the
     whole playlist view with a 500 — the owned store still holds the membership.
     """
     tracks: list[PlaylistTrack] = []
-    for item_id in ids:
+    for entry in entries:
+        if entry.item_id is None:
+            tracks.append(_pending_row(entry))
+            continue
         try:
-            item = lib.get_item(item_id)
-            track = _resolved(item) if item is not None else _unavailable(item_id)
-        except Exception:  # one bad row degrades to unavailable, never 500s the view
-            track = _unavailable(item_id)
-        tracks.append(track)
+            item = lib.get_item(entry.item_id)
+            row = (
+                _resolved(entry.uid, item)
+                if item is not None
+                else _unavailable(entry.uid, entry.item_id)
+            )
+        except Exception:  # one bad row degrades, never 500s the view
+            row = _unavailable(entry.uid, entry.item_id)
+        tracks.append(row)
     return tracks
 
 

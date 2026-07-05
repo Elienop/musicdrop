@@ -31,6 +31,7 @@ class Playlist(BaseModel):
     name: str
     description: str
     track_count: int
+    pending_count: int
     target_plex_users: list[str]
     plex: dict[str, PlexTargetState]
     created_at: str
@@ -38,16 +39,22 @@ class Playlist(BaseModel):
 
 
 class PlaylistTrack(BaseModel):
-    """A track as shown in a playlist. ``available`` is False when the beets
-    ``item.id`` no longer resolves (deleted from the library); such entries
-    still occupy their position and can be removed."""
+    """A track row in a playlist, ordered by its stable per-slot ``uid``.
 
-    id: int
+    A RESOLVED row carries the library ``id`` (``available`` is False when that
+    id no longer resolves — deleted from the library — but the slot still holds
+    its position). A PENDING row (``pending`` True) has ``id`` None: its identity
+    is remembered text (artist/title/album) with no library track yet. Either
+    way the slot keeps its position and can be removed or resolved."""
+
+    uid: str
+    id: int | None
     title: str
     artist: str
     album: str
     duration_seconds: float | None
     available: bool
+    pending: bool = False
 
 
 class PlaylistDetail(Playlist):
@@ -123,14 +130,22 @@ class PlaylistAddTracksRequest(BaseModel):
 
 
 class PlaylistReorderRequest(BaseModel):
-    # An empty list is allowed and clears the playlist — reorder is a full
-    # replacement ("the tracks are now exactly this ordered list"), and there is
-    # no separate clear endpoint.
-    track_ids: list[int]
+    """Full replacement: the entries are now exactly this ordered uid list.
 
-    @field_validator("track_ids")
+    A duplicate-free SUBSET of the playlist's current uids — unlisted entries
+    are removed, empty clears. Unknown uids are rejected by the endpoint."""
+
+    entry_uids: list[str]
+
+    @field_validator("entry_uids")
     @classmethod
-    def _bounded(cls, value: list[int]) -> list[int]:
+    def _bounded_and_unique(cls, value: list[str]) -> list[str]:
         if len(value) > _MAX_TRACK_IDS:
-            raise ValueError(f"track_ids must contain at most {_MAX_TRACK_IDS} items")
+            raise ValueError(f"entry_uids must contain at most {_MAX_TRACK_IDS} items")
+        if len(set(value)) != len(value):
+            raise ValueError("entry_uids must not contain duplicates")
         return value
+
+
+class PlaylistResolveEntryRequest(BaseModel):
+    item_id: int

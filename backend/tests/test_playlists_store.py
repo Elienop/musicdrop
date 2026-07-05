@@ -268,21 +268,21 @@ def test_add_tracks_creates_uid_entries_at_position(tmp_path: Path) -> None:
 
 
 def test_remove_entry_by_uid_removes_only_that_entry(tmp_path: Path) -> None:
-    record = store.create_playlist(tmp_path, name="P")
-    record = store.add_tracks(tmp_path, record.id, track_ids=[5, 5], position=None)
+    created = store.create_playlist(tmp_path, name="P")
+    record = store.add_tracks(tmp_path, created.id, track_ids=[5, 5], position=None)
     assert record is not None
     first_uid = record.entries[0].uid
-    updated = store.remove_entry(tmp_path, record.id, first_uid)
+    updated = store.remove_entry(tmp_path, created.id, first_uid)
     assert updated is not None
     assert [e.item_id for e in updated.entries] == [5]  # the duplicate survives
 
 
 def test_set_entry_order_subset_reorders_and_drops(tmp_path: Path) -> None:
-    record = store.create_playlist(tmp_path, name="P")
-    record = store.add_tracks(tmp_path, record.id, track_ids=[1, 2, 3], position=None)
+    created = store.create_playlist(tmp_path, name="P")
+    record = store.add_tracks(tmp_path, created.id, track_ids=[1, 2, 3], position=None)
     assert record is not None
     u1, u2, _u3 = (e.uid for e in record.entries)
-    updated = store.set_entry_order(tmp_path, record.id, uids=[u2, u1])
+    updated = store.set_entry_order(tmp_path, created.id, uids=[u2, u1])
     assert updated is not None
     assert [e.item_id for e in updated.entries] == [2, 1]  # 3 dropped, order flipped
 

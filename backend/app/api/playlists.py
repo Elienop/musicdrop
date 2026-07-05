@@ -19,7 +19,13 @@ from fastapi.concurrency import run_in_threadpool
 from app.api.albums import get_library
 from app.api.plex import get_plex_store
 from app.beets.library import LibraryHandle
-from app.beets.playlists import TrackRef, m3u_entries, resolve_tracks, track_match_refs
+from app.beets.playlists import (
+    TrackRef,
+    item_exists,
+    m3u_entries,
+    resolve_entries,
+    track_match_refs,
+)
 from app.config import settings
 from app.models.playlist import (
     Playlist,
@@ -27,6 +33,7 @@ from app.models.playlist import (
     PlaylistCreateRequest,
     PlaylistDetail,
     PlaylistReorderRequest,
+    PlaylistResolveEntryRequest,
     PlaylistUpdateRequest,
 )
 from app.playlists import store
@@ -54,11 +61,13 @@ def get_playlists_dir() -> Path:
 
 
 def _to_playlist(record: StoredPlaylist) -> Playlist:
+    resolved = len(record.resolved_item_ids)
     return Playlist(
         id=record.id,
         name=record.name,
         description=record.description,
-        track_count=len(record.track_ids),
+        track_count=resolved,
+        pending_count=len(record.entries) - resolved,
         target_plex_users=record.target_plex_users,
         plex=record.plex,
         created_at=record.created_at,
@@ -67,7 +76,7 @@ def _to_playlist(record: StoredPlaylist) -> Playlist:
 
 
 async def _detail_response(record: StoredPlaylist, handle: LibraryHandle) -> PlaylistDetail:
-    tracks = await run_in_threadpool(resolve_tracks, handle.lib, record.track_ids)
+    tracks = await run_in_threadpool(resolve_entries, handle.lib, record.entries)
     return PlaylistDetail(**_to_playlist(record).model_dump(), tracks=tracks)
 
 
@@ -79,7 +88,7 @@ def _export_dir(handle: LibraryHandle) -> Path:
 
 
 def _render_export(record: StoredPlaylist, handle: LibraryHandle, export_dir: Path) -> None:
-    entries = m3u_entries(handle.lib, record.track_ids, str(export_dir))
+    entries = m3u_entries(handle.lib, record.resolved_item_ids, str(export_dir))
     write_m3u(export_dir / f"{record.id}.m3u8", record.name, entries)
 
 
@@ -171,16 +180,43 @@ async def add_tracks_endpoint(
     return await _detail_response(record, handle)
 
 
-@router.delete("/playlists/{playlist_id}/tracks/{item_id}", response_model=PlaylistDetail)
-async def remove_track_endpoint(
+@router.delete("/playlists/{playlist_id}/entries/{entry_uid}", response_model=PlaylistDetail)
+async def remove_entry_endpoint(
     playlist_id: str,
-    item_id: int,
+    entry_uid: str,
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> PlaylistDetail:
-    record = await run_in_threadpool(store.remove_track, playlists_dir, playlist_id, item_id)
+    record = await run_in_threadpool(store.get_playlist, playlists_dir, playlist_id)
+    if record is None or all(e.uid != entry_uid for e in record.entries):
+        raise HTTPException(status_code=404, detail="Playlist entry not found")
+    record = await run_in_threadpool(store.remove_entry, playlists_dir, playlist_id, entry_uid)
     if record is None:
         raise HTTPException(status_code=404, detail="Playlist not found")
+    await _export_playlist(record, handle)
+    return await _detail_response(record, handle)
+
+
+@router.patch("/playlists/{playlist_id}/entries/{entry_uid}", response_model=PlaylistDetail)
+async def resolve_entry_endpoint(
+    playlist_id: str,
+    entry_uid: str,
+    body: PlaylistResolveEntryRequest,
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> PlaylistDetail:
+    """Point an entry at a library track — resolves a pending row (or
+    re-points a resolved one) while keeping its position."""
+    record = await run_in_threadpool(store.get_playlist, playlists_dir, playlist_id)
+    if record is None or all(e.uid != entry_uid for e in record.entries):
+        raise HTTPException(status_code=404, detail="Playlist entry not found")
+    if not await run_in_threadpool(item_exists, handle.lib, body.item_id):
+        raise HTTPException(status_code=422, detail=f"unknown item ids: {body.item_id}")
+    record = await run_in_threadpool(
+        store.resolve_entry, playlists_dir, playlist_id, entry_uid, item_id=body.item_id
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Playlist entry not found")
     await _export_playlist(record, handle)
     return await _detail_response(record, handle)
 
@@ -192,8 +228,15 @@ async def reorder_tracks_endpoint(
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> PlaylistDetail:
+    record = await run_in_threadpool(store.get_playlist, playlists_dir, playlist_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    known = {e.uid for e in record.entries}
+    unknown = [uid for uid in body.entry_uids if uid not in known]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"unknown entry uids: {', '.join(unknown)}")
     record = await run_in_threadpool(
-        store.set_track_order, playlists_dir, playlist_id, track_ids=body.track_ids
+        store.set_entry_order, playlists_dir, playlist_id, uids=body.entry_uids
     )
     if record is None:
         raise HTTPException(status_code=404, detail="Playlist not found")
@@ -257,7 +300,7 @@ def _plex_specs_for(
     record: StoredPlaylist, handle: LibraryHandle, config: PlexConfig
 ) -> list[PlexTrackSpec]:
     beets_root = os.fsdecode(handle.lib.directory)
-    refs: list[TrackRef] = track_match_refs(handle.lib, record.track_ids)
+    refs: list[TrackRef] = track_match_refs(handle.lib, record.resolved_item_ids)
     return [
         PlexTrackSpec(
             path=translate_path(r.abs_path, beets_root, config.library_path),

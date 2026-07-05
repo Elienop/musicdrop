@@ -3,7 +3,9 @@ from pathlib import Path
 
 from beets.library import Item, Library
 
-from app.beets.playlists import TrackRef, m3u_entries, resolve_tracks, track_match_refs
+from app.beets.playlists import TrackRef, m3u_entries, resolve_entries, track_match_refs
+from app.models.playlist import PendingTrack
+from app.playlists.store import StoredEntry
 from tests.conftest import build_library
 
 
@@ -46,9 +48,12 @@ def _lib_with_items(tmp_path: Path) -> tuple[Library, list[int]]:
 
 def test_resolve_preserves_order(tmp_path: Path) -> None:
     lib, ids = _lib_with_items(tmp_path)
-    tracks = resolve_tracks(lib, [ids[1], ids[0]])  # reversed
+    entries = [StoredEntry(uid="u1", item_id=ids[1]), StoredEntry(uid="u2", item_id=ids[0])]
+    tracks = resolve_entries(lib, entries)  # reversed
     assert [t.title for t in tracks] == ["Beta", "Alpha"]
+    assert [t.uid for t in tracks] == ["u1", "u2"]
     assert all(t.available for t in tracks)
+    assert all(not t.pending for t in tracks)
     assert tracks[0].duration_seconds == 200.0
     assert tracks[0].artist == "A"
     assert tracks[0].album == "One"
@@ -56,23 +61,27 @@ def test_resolve_preserves_order(tmp_path: Path) -> None:
 
 def test_resolve_keeps_duplicates(tmp_path: Path) -> None:
     lib, ids = _lib_with_items(tmp_path)
-    tracks = resolve_tracks(lib, [ids[0], ids[0]])
+    entries = [StoredEntry(uid="a", item_id=ids[0]), StoredEntry(uid="b", item_id=ids[0])]
+    tracks = resolve_entries(lib, entries)
     assert [t.id for t in tracks] == [ids[0], ids[0]]
+    assert [t.uid for t in tracks] == ["a", "b"]  # each occurrence keeps its own uid
 
 
 def test_missing_id_is_unavailable(tmp_path: Path) -> None:
     lib, ids = _lib_with_items(tmp_path)
-    tracks = resolve_tracks(lib, [ids[0], 999_999])
+    entries = [StoredEntry(uid="ok", item_id=ids[0]), StoredEntry(uid="gone", item_id=999_999)]
+    tracks = resolve_entries(lib, entries)
     assert tracks[0].available is True
     assert tracks[1].available is False
+    assert tracks[1].pending is False
     assert tracks[1].id == 999_999
     assert tracks[1].title == ""
     assert tracks[1].duration_seconds is None
 
 
-def test_empty_ids(tmp_path: Path) -> None:
+def test_empty_entries(tmp_path: Path) -> None:
     lib, _ = _lib_with_items(tmp_path)
-    assert resolve_tracks(lib, []) == []
+    assert resolve_entries(lib, []) == []
 
 
 def test_get_item_error_degrades_to_unavailable() -> None:
@@ -80,9 +89,25 @@ def test_get_item_error_degrades_to_unavailable() -> None:
         def get_item(self, item_id: int) -> object:
             raise RuntimeError("library is locked")
 
-    tracks = resolve_tracks(_BoomLib(), [7])  # type: ignore[arg-type]  # duck-typed lib
+    tracks = resolve_entries(_BoomLib(), [StoredEntry(uid="u", item_id=7)])  # type: ignore[arg-type]  # duck-typed lib
     assert tracks[0].available is False
     assert tracks[0].id == 7
+    assert tracks[0].uid == "u"
+
+
+def test_resolve_entries_interleaves_pending_rows(tmp_path: Path) -> None:
+    lib, ids = _lib_with_items(tmp_path)
+    entries = [
+        StoredEntry(uid="u1", item_id=ids[0]),
+        StoredEntry(uid="u2", pending=PendingTrack(artist="X", title="Lost", source="line")),
+        StoredEntry(uid="u3", item_id=999999),  # gone from the library
+    ]
+    tracks = resolve_entries(lib, entries)
+    assert [t.uid for t in tracks] == ["u1", "u2", "u3"]
+    assert tracks[0].id == ids[0] and tracks[0].available and not tracks[0].pending
+    assert tracks[1].id is None and tracks[1].pending and not tracks[1].available
+    assert tracks[1].title == "Lost" and tracks[1].artist == "X"
+    assert tracks[2].id == 999999 and not tracks[2].available and not tracks[2].pending
 
 
 def test_m3u_entries_relative_paths(tmp_path: Path) -> None:
