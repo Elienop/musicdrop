@@ -50,6 +50,17 @@ def test_import_choice_search_round_trips() -> None:
     assert c.search is not None and c.search.release_id == "abc"
 
 
+def test_rescan_choice_carries_no_payload() -> None:
+    choice = ImportChoice(action=ImportAction.rescan)
+    assert choice.search is None
+    assert choice.candidate_index is None
+
+
+def test_rescan_choice_rejects_a_search_payload() -> None:
+    with pytest.raises(ValidationError):
+        ImportChoice(action=ImportAction.rescan, search=ImportSearch(release_id="x"))
+
+
 def test_candidate_search_fields_default() -> None:
     c = Candidate(
         confidence=10.0,
