@@ -193,3 +193,14 @@ class BankDuplicatesResponse(BaseModel):
     candidate would collide with (empty = no collision, import is clean)."""
 
     existing: list[ExistingAlbum]
+
+
+class BankSearchResponse(BaseModel):
+    """``POST /api/bank/{id}/search``: the row after a re-lookup.
+
+    ``found=False`` = the lookup returned nothing; the row is untouched and
+    the client shows its "no release found" line.
+    """
+
+    item: BankItem
+    found: bool
