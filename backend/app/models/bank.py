@@ -14,7 +14,6 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from app.models.import_models import (
     DuplicateAction,
     DuplicatePrompt,
-    ExistingAlbum,
     ParkedAlbum,
 )
 
@@ -186,13 +185,6 @@ class BankBulkDeleteResponse(BaseModel):
     """How many rows were actually removed (``applying``/missing ids skipped)."""
 
     deleted: int
-
-
-class BankDuplicatesResponse(BaseModel):
-    """``GET /api/bank/{id}/duplicates``: library albums the selected
-    candidate would collide with (empty = no collision, import is clean)."""
-
-    existing: list[ExistingAlbum]
 
 
 class BankSearchResponse(BaseModel):

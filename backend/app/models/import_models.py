@@ -293,6 +293,16 @@ class ImportChoice(BaseModel):
         return self
 
 
+class ExistingTrack(BaseModel):
+    """One track of an in-library duplicate copy — the up-front comparison row."""
+
+    track: int | None
+    disc: int | None
+    title: str | None
+    format: str | None
+    bitrate_kbps: int | None
+
+
 class ExistingAlbum(BaseModel):
     """A slim view of one in-library album that the incoming import duplicates.
 
@@ -310,6 +320,17 @@ class ExistingAlbum(BaseModel):
     bitrate_kbps: int | None
     folder: str
     release: ReleaseIdentity | None = None  # which release this library copy is
+    # Per-track view for the up-front comparison ("your copy has 1 track").
+    # Defaulted so rows banked before this field existed still parse.
+    tracks: list[ExistingTrack] = []
+
+
+class DuplicatesCheckResponse(BaseModel):
+    """Up-front library-collision check: albums the SELECTED candidate would
+    duplicate (empty = clean import). Shared by the bank and live import
+    endpoints — a heads-up, not a resolution surface."""
+
+    existing: list[ExistingAlbum]
 
 
 class IncomingAlbum(BaseModel):

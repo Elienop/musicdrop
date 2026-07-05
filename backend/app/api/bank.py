@@ -27,14 +27,13 @@ from app.models.bank import (
     BankBulkIgnoreRequest,
     BankBulkIgnoreResponse,
     BankDecision,
-    BankDuplicatesResponse,
     BankItem,
     BankListResponse,
     BankReason,
     BankSearchResponse,
     BankStatus,
 )
-from app.models.import_models import ImportSearch, ParkedAlbum
+from app.models.import_models import DuplicatesCheckResponse, ImportSearch, ParkedAlbum
 
 router = APIRouter(tags=["bank"])
 
@@ -85,12 +84,12 @@ async def get_bank_item(item_id: str) -> BankItem:
     return item
 
 
-@router.get("/bank/{item_id}/duplicates", response_model=BankDuplicatesResponse)
+@router.get("/bank/{item_id}/duplicates", response_model=DuplicatesCheckResponse)
 async def bank_item_duplicates(
     item_id: str,
     request: Request,
     candidate_index: Annotated[int, Query(ge=0)] = 0,
-) -> BankDuplicatesResponse:
+) -> DuplicatesCheckResponse:
     """Library albums the selected candidate would collide with — run beets'
     own duplicate query on the matched-release metadata (lazy, fresh)."""
     item = await run_in_threadpool(store.get_item, get_bank_dir(), item_id)
@@ -98,7 +97,7 @@ async def bank_item_duplicates(
         raise HTTPException(status_code=404, detail="Bank item not found")
     parked = item.parked
     if parked is None:
-        return BankDuplicatesResponse(existing=[])  # nothing to check (no_match)
+        return DuplicatesCheckResponse(existing=[])  # nothing to check (no_match)
     after = parked.candidate.album_after
     options = parked.candidate.options
     idx = candidate_index if 0 <= candidate_index < len(options) else 0
@@ -122,7 +121,7 @@ async def bank_item_duplicates(
         mb_albumid=mb_albumid,
         exclude_under=item.folder,
     )
-    return BankDuplicatesResponse(existing=existing)
+    return DuplicatesCheckResponse(existing=existing)
 
 
 @router.post("/bank/{item_id}/search", response_model=BankSearchResponse)

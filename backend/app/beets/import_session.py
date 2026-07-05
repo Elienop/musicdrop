@@ -25,6 +25,7 @@ from beets.importer.session import ImportAbortError, ImportSession
 
 from app.bank import store as bank_store
 from app.bank.fingerprint import folder_fingerprint
+from app.beets.existing_album import to_existing_album
 from app.beets.import_mapping import (
     _confidence,
     _opt_int,
@@ -36,7 +37,7 @@ from app.beets.import_mapping import (
 from app.beets.merge_preview import build_merge_preview
 from app.beets.release_identity import release_identity
 from app.beets.relookup import relookup
-from app.beets.trash import album_folder, album_format_bitrate, trash_album
+from app.beets.trash import album_format_bitrate, trash_album
 from app.models.album import ReleaseIdentity
 from app.models.bank import BankApplyDirective, BankReason
 from app.models.import_models import (
@@ -46,7 +47,6 @@ from app.models.import_models import (
     DuplicateAction,
     DuplicateDecision,
     DuplicatePrompt,
-    ExistingAlbum,
     ImportAction,
     ImportChoice,
     IncomingAlbum,
@@ -431,7 +431,7 @@ class WebImportSession(ImportSession):
         # IncomingAlbum's has_current_art (see _to_incoming_album).
         art_source = self._first_item_art_source(list(task.items or []))
         incoming = self._to_incoming_album(task)
-        existing = [self._to_existing_album(album) for album in found_duplicates]
+        existing = [to_existing_album(self.lib, album) for album in found_duplicates]
         prompt = DuplicatePrompt(
             album_index=index,
             incoming=incoming,
@@ -854,28 +854,6 @@ class WebImportSession(ImportSession):
             folder=self._task_folder(task),
             has_current_art=has_art,
             release=_incoming_release(task, items),
-        )
-
-    def _to_existing_album(self, album: Any) -> ExistingAlbum:
-        """Map one in-library beets Album (a found_duplicate) to the slim view.
-
-        Uses the session's own ``self.lib`` for the folder resolution (never a
-        per-album back-reference). ``self.lib`` is read only when the album has
-        items, so an item-less album resolves to "" without touching it.
-        """
-        items = list(album.items())
-        fmt, bitrate_kbps = album_format_bitrate(items)
-        folder = album_folder(self.lib, items) if items else ""
-        return ExistingAlbum(
-            album_id=int(album.id),
-            album_artist=_opt_str(album.albumartist),
-            album=_opt_str(album.album),
-            year=_opt_int(getattr(album, "year", None)),
-            track_count=len(items),
-            format=fmt,
-            bitrate_kbps=bitrate_kbps,
-            folder=folder,
-            release=release_identity(album, getattr(album, "mb_albumid", None)),
         )
 
     @staticmethod
