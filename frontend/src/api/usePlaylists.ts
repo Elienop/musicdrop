@@ -124,19 +124,42 @@ export function useAddTracks() {
   });
 }
 
-export function useRemoveTrack(id: string) {
+/** Remove one entry (resolved or pending) by its stable per-slot uid. */
+export function useRemoveEntry(id: string) {
   const queryClient = useQueryClient();
-  return useMutation<PlaylistDetail, Error, number>({
-    mutationFn: async (itemId) => {
+  return useMutation<PlaylistDetail, Error, string>({
+    mutationFn: async (entryUid) => {
       const { data, error, response } = await client.DELETE(
-        "/api/playlists/{playlist_id}/tracks/{item_id}",
-        { params: { path: { playlist_id: id, item_id: itemId } } },
+        "/api/playlists/{playlist_id}/entries/{entry_uid}",
+        { params: { path: { playlist_id: id, entry_uid: entryUid } } },
       );
       if (error || !response.ok || !data) throw new Error("Remove failed");
       return data;
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["playlist", id] });
+      void queryClient.invalidateQueries({ queryKey: ["playlists"] });
+    },
+  });
+}
+
+/** Resolve (or re-point) one entry to a library track, keeping its position. */
+export function useResolveEntry(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation<PlaylistDetail, Error, { entryUid: string; itemId: number }>({
+    mutationFn: async ({ entryUid, itemId }) => {
+      const { data, error, response } = await client.PATCH(
+        "/api/playlists/{playlist_id}/entries/{entry_uid}",
+        {
+          params: { path: { playlist_id: id, entry_uid: entryUid } },
+          body: { item_id: itemId },
+        },
+      );
+      if (error || !response.ok || !data) throw new Error("Failed to match the track");
+      return data;
+    },
+    onSuccess: (detail) => {
+      queryClient.setQueryData(["playlist", id], detail);
       void queryClient.invalidateQueries({ queryKey: ["playlists"] });
     },
   });
@@ -166,11 +189,11 @@ export function useSyncPlaylist(id: string) {
 
 export function useReorderTracks(id: string) {
   const queryClient = useQueryClient();
-  return useMutation<PlaylistDetail, Error, number[]>({
-    mutationFn: async (trackIds) => {
+  return useMutation<PlaylistDetail, Error, string[]>({
+    mutationFn: async (entryUids) => {
       const { data, error, response } = await client.PUT("/api/playlists/{playlist_id}/tracks", {
         params: { path: { playlist_id: id } },
-        body: { track_ids: trackIds },
+        body: { entry_uids: entryUids },
       });
       if (error || !response.ok || !data) throw new Error("Reorder failed");
       return data;
