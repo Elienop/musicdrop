@@ -18,6 +18,7 @@ const ITEM = `${O}/api/bank/:itemId`;
 const DECISION = `${O}/api/bank/:itemId/decision`;
 const DUP = `${O}/api/bank/:itemId/duplicates`;
 const SEARCH = `${O}/api/bank/:itemId/search`;
+const RESCAN = `${O}/api/bank/:itemId/rescan`;
 const ACTIVE = `${O}/api/imports/active`;
 const IMPORT_URL = `${O}/api/import`;
 
@@ -463,5 +464,47 @@ describe("BankReviewPage", () => {
     server.use(http.get(ITEM, () => HttpResponse.json({ detail: "Bank item not found" }, { status: 404 })));
     renderRow();
     expect(await screen.findByText(/no longer in the bank/i)).toBeInTheDocument();
+  });
+
+  test("rescues a stale row in place: rescan swaps in a candidate screen", async () => {
+    const staleRow = bankItem({ status: "stale", error: "the folder changed" });
+    // The rescan lands a real needs_review candidate row on the SAME id.
+    const rescued = bankItem({ status: "needs_review" });
+    server.use(
+      http.get(ITEM, () => HttpResponse.json(staleRow)),
+      http.post(RESCAN, () => HttpResponse.json(rescued)),
+    );
+    renderRow();
+    await screen.findByText(/changed after it was banked/i);
+    fireEvent.click(screen.getByRole("button", { name: /rescan folder/i }));
+    // The cache write re-branches the SAME route to the candidate screen.
+    expect((await screen.findAllByText(/after import/i)).length).toBeGreaterThan(0);
+  });
+
+  test("offers rescan on the duplicate-prompt screen", async () => {
+    const duplicateRow = bankItem({
+      reason: "needs_dup_resolution",
+      parked: null,
+      duplicate: duplicatePrompt,
+      recommendation: null,
+      confidence: null,
+    });
+    server.use(http.get(ITEM, () => HttpResponse.json(duplicateRow)));
+    renderRow();
+    await screen.findByRole("heading", { name: /already in your library/i });
+    expect(screen.getByRole("button", { name: /rescan folder/i })).toBeEnabled();
+  });
+
+  test("surfaces a rescan 409 with the backend detail", async () => {
+    server.use(
+      http.get(ITEM, () => HttpResponse.json(bankItem())),
+      http.post(RESCAN, () =>
+        HttpResponse.json({ detail: "no audio files remain in the folder" }, { status: 409 }),
+      ),
+    );
+    renderRow();
+    await screen.findAllByText(/after import/i);
+    fireEvent.click(screen.getByRole("button", { name: /rescan folder/i }));
+    expect(await screen.findByText(/no audio files remain/i)).toBeInTheDocument();
   });
 });

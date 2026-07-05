@@ -8,6 +8,7 @@ import {
   useBankDecision,
   useBankDuplicates,
   useBankItem,
+  useBankRescan,
   useBankSearch,
   useDeleteBankItem,
 } from "@/api/useBank";
@@ -149,6 +150,55 @@ function SearchConflict({ error }: { error: unknown }) {
   );
 }
 
+/** "Rescan folder" — the explicit escape when the user changed the files on
+ * disk (deleted a duplicate track, restored one). Re-reads + re-matches +
+ * refreshes the fingerprint; the cache write re-branches this page to the
+ * row's new state. The hook is hoisted to each screen so its pending state
+ * can busy-gate the screen's other actions. */
+function RescanControl({
+  rescan,
+  disabled,
+  hint = false,
+  variant = "outline",
+}: {
+  rescan: ReturnType<typeof useBankRescan>;
+  disabled: boolean;
+  hint?: boolean;
+  variant?: "outline" | "default";
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-3">
+        <Button
+          variant={variant}
+          size="sm"
+          disabled={disabled || rescan.isPending}
+          onClick={() => rescan.mutate()}
+        >
+          {rescan.isPending ? (
+            <>
+              <Spinner className="animate-spin" aria-hidden="true" /> Rescanning…
+            </>
+          ) : (
+            "Rescan folder"
+          )}
+        </Button>
+        {hint && (
+          <p className="text-muted-foreground text-xs">
+            Re-reads the folder from disk and matches it again.
+          </p>
+        )}
+      </div>
+      <SearchConflict error={rescan.error} />
+      {rescan.isError && !(rescan.error instanceof BankConflictError) && (
+        <p className="text-destructive text-sm" role="alert">
+          Couldn’t rescan the folder — try again.
+        </p>
+      )}
+    </div>
+  );
+}
+
 const NO_HIT_FEEDBACK =
   "No release found for that search — showing your previous matches.";
 
@@ -205,6 +255,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
   // on the selected release; queued/applying/done rows never reach here.
   const decidable = item.status === "needs_review" || item.status === "failed";
   const search = useBankSearch(item.id);
+  const rescan = useBankRescan(item.id);
   // A landed search replaces the payload — reset the switcher to the new top.
   useEffect(() => setSelected(0), [parked?.candidate.search_revision]);
   const dups = useBankDuplicates(item.id, selected, decidable && parked != null);
@@ -249,11 +300,15 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
         <>
           <ReleaseSearchPanel
             onSearch={(s) => search.mutate(s)}
-            busy={search.isPending || decide.isPending}
+            busy={search.isPending || decide.isPending || rescan.isPending}
             feedback={search.data?.found === false ? NO_HIT_FEEDBACK : null}
             error={search.isError && !(search.error instanceof BankConflictError)}
           />
           <SearchConflict error={search.error} />
+          <RescanControl
+            rescan={rescan}
+            disabled={decide.isPending || search.isPending}
+          />
         </>
       )}
       {showDupActions ? (
@@ -286,7 +341,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
             <Button
               variant="ghost"
               size="sm"
-              disabled={decide.isPending || search.isPending}
+              disabled={decide.isPending || search.isPending || rescan.isPending}
               onClick={() => submit({ action: "ignore" })}
             >
               Ignore
@@ -295,7 +350,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
           </div>
           <DuplicateActions
             pending={pendingDup}
-            busy={decide.isPending || search.isPending}
+            busy={decide.isPending || search.isPending || rescan.isPending}
             context="bank"
             onDecide={(action) => {
               setPendingDup(action);
@@ -319,7 +374,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
             <Button
               variant="ghost"
               size="sm"
-              disabled={decide.isPending || search.isPending}
+              disabled={decide.isPending || search.isPending || rescan.isPending}
               onClick={() => submit({ action: "ignore" })}
             >
               Ignore
@@ -327,7 +382,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
             <Button
               variant="outline"
               size="sm"
-              disabled={decide.isPending || checking || search.isPending}
+              disabled={decide.isPending || checking || search.isPending || rescan.isPending}
               aria-describedby="bank-actions-hint"
               onClick={() => submit({ action: "asis" })}
             >
@@ -336,7 +391,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
             <Button
               variant="outline"
               size="sm"
-              disabled={decide.isPending || checking || search.isPending}
+              disabled={decide.isPending || checking || search.isPending || rescan.isPending}
               aria-describedby="bank-actions-hint"
               onClick={() => submit({ action: "astracks" })}
             >
@@ -344,7 +399,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
             </Button>
             <Button
               className="ml-auto"
-              disabled={decide.isPending || checking || search.isPending}
+              disabled={decide.isPending || checking || search.isPending || rescan.isPending}
               onClick={() => submit({ action: "apply", candidate_index: selected })}
             >
               {decide.isPending ? (
@@ -372,6 +427,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
 function BankDuplicateScreen({ item }: { item: BankItem }) {
   const navigate = useNavigate();
   const decide = useBankDecision(item.id);
+  const rescan = useBankRescan(item.id);
   const [pending, setPending] = useState<DuplicateAction | null>(null);
   const prompt = item.duplicate;
   if (!prompt) return null;
@@ -388,11 +444,12 @@ function BankDuplicateScreen({ item }: { item: BankItem }) {
     <div className="flex flex-col gap-6">
       {item.status === "failed" && <FailedBanner error={item.error} />}
       <DuplicateComparison prompt={prompt} incomingCoverUrl={null} />
+      <RescanControl rescan={rescan} disabled={decide.isPending} hint />
       <div className="flex items-center gap-2">
         <Button
           variant="ghost"
           size="sm"
-          disabled={decide.isPending}
+          disabled={decide.isPending || rescan.isPending}
           onClick={() =>
             decide.mutate({ action: "ignore" }, { onSuccess: () => navigate("/review") })
           }
@@ -403,7 +460,7 @@ function BankDuplicateScreen({ item }: { item: BankItem }) {
       </div>
       <DuplicateActions
         pending={pending}
-        busy={decide.isPending}
+        busy={decide.isPending || rescan.isPending}
         onDecide={onDecide}
         context="bank"
       />
@@ -415,6 +472,7 @@ function NoMatchScreen({ item }: { item: BankItem }) {
   const navigate = useNavigate();
   const decide = useBankDecision(item.id);
   const search = useBankSearch(item.id);
+  const rescan = useBankRescan(item.id);
   const [pendingDup, setPendingDup] = useState<DuplicateAction | null>(null);
   const submit = (decision: BankDecision) =>
     decide.mutate(decision, {
@@ -440,14 +498,19 @@ function NoMatchScreen({ item }: { item: BankItem }) {
       </p>
       <ReleaseSearchPanel
         onSearch={(s) => search.mutate(s)}
-        busy={search.isPending || decide.isPending}
+        busy={search.isPending || decide.isPending || rescan.isPending}
         feedback={search.data?.found === false ? NO_HIT_FEEDBACK : null}
         error={search.isError && !(search.error instanceof BankConflictError)}
       />
       <SearchConflict error={search.error} />
+      <RescanControl
+        rescan={rescan}
+        disabled={decide.isPending || search.isPending}
+        hint
+      />
       {item.status === "failed" && (
         <FailedDuplicateStrip
-          busy={decide.isPending || search.isPending}
+          busy={decide.isPending || search.isPending || rescan.isPending}
           pending={pendingDup}
           onDecide={(action) => {
             setPendingDup(action);
@@ -457,13 +520,13 @@ function NoMatchScreen({ item }: { item: BankItem }) {
       )}
       <DecisionError error={decide.error} />
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="ghost" size="sm" disabled={decide.isPending || search.isPending} onClick={() => submit({ action: "ignore" })}>
+        <Button variant="ghost" size="sm" disabled={decide.isPending || search.isPending || rescan.isPending} onClick={() => submit({ action: "ignore" })}>
           Ignore
         </Button>
-        <Button variant="outline" size="sm" disabled={decide.isPending || search.isPending} onClick={() => submit({ action: "astracks" })}>
+        <Button variant="outline" size="sm" disabled={decide.isPending || search.isPending || rescan.isPending} onClick={() => submit({ action: "astracks" })}>
           As tracks
         </Button>
-        <Button className="ml-auto" disabled={decide.isPending || search.isPending} onClick={() => submit({ action: "asis" })}>
+        <Button className="ml-auto" disabled={decide.isPending || search.isPending || rescan.isPending} onClick={() => submit({ action: "asis" })}>
           {decide.isPending ? (
             <>
               <Spinner className="animate-spin" aria-hidden="true" /> Queuing…
@@ -588,9 +651,10 @@ function StaleScreen({ item }: { item: BankItem }) {
   const navigate = useNavigate();
   const start = useStartImport();
   const remove = useDeleteBankItem();
+  const rescan = useBankRescan(item.id);
   const active = useActiveImport();
   const importActive = active.data?.active ?? false;
-  const busy = start.isPending || remove.isPending;
+  const busy = start.isPending || remove.isPending || rescan.isPending;
 
   function reviewNow() {
     start.mutate(
@@ -620,8 +684,8 @@ function StaleScreen({ item }: { item: BankItem }) {
       <StatusBanner tone="warning" icon={Warning}>
         <p className="font-medium">This folder changed after it was banked.</p>
         <p className="text-muted-foreground text-sm">
-          {item.error ?? "The banked candidates no longer match the files."} Re-scan
-          it to review fresh matches — the banked ones are out of date.
+          {item.error ?? "The banked candidates no longer match the files."} Rescan
+          it below to review fresh matches — the banked ones are out of date.
         </p>
       </StatusBanner>
       <p className="text-muted-foreground font-mono text-xs" title={item.folder}>
@@ -632,6 +696,12 @@ function StaleScreen({ item }: { item: BankItem }) {
           {startError}
         </p>
       )}
+      <RescanControl
+        rescan={rescan}
+        disabled={start.isPending || remove.isPending}
+        hint
+        variant="default"
+      />
       <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="outline"
@@ -642,6 +712,8 @@ function StaleScreen({ item }: { item: BankItem }) {
           <Remove aria-hidden="true" /> Remove from bank
         </Button>
         <Button
+          variant="outline"
+          size="sm"
           className="ml-auto"
           disabled={busy || importActive}
           aria-describedby={importActive ? "stale-rescan-hint" : undefined}
