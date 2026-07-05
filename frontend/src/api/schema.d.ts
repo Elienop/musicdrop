@@ -1426,6 +1426,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/bank/{item_id}/rescan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rescan Bank Item
+         * @description Re-read the banked folder from disk and re-match it in place.
+         *
+         *     The explicit "I changed the folder on purpose" gesture (deleted a
+         *     duplicate track, added a missing one): re-reads tags, runs beets' DEFAULT
+         *     first-scan lookup, and REFRESHES the fingerprint — the deliberate
+         *     contrast with search, which treats a changed folder as stale. Also the
+         *     stale row's in-place rescue. Preview-only: no file or library writes.
+         */
+        post: operations["rescan_bank_item_api_bank__item_id__rescan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/bank/{item_id}/decision": {
         parameters: {
             query?: never;
@@ -2532,9 +2558,13 @@ export interface components {
          *     against a user-supplied release id/URL or a forced-non-VA name search and
          *     re-parks (it never resolves the park); ``abort`` stops the whole import (the
          *     session raises beets' ``ImportAbortError``, caught by ``run()``).
+         *
+         *     ``rescan`` re-reads the album's folder from disk (the user changed the
+         *     files on purpose) and re-runs beets' default lookup, re-parking like
+         *     ``search``; it carries no payload.
          * @enum {string}
          */
-        ImportAction: "apply" | "skip" | "asis" | "astracks" | "abort" | "search";
+        ImportAction: "apply" | "skip" | "asis" | "astracks" | "abort" | "search" | "rescan";
         /**
          * ImportAlbumStatus
          * @description Per-album state in the live feed.
@@ -6370,6 +6400,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BankSearchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rescan_bank_item_api_bank__item_id__rescan_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BankItem"];
                 };
             };
             /** @description Validation Error */
