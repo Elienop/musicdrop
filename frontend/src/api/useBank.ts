@@ -176,6 +176,52 @@ export function useBankDuplicates(
   });
 }
 
+/** `POST /api/bank/{id}/search` response (generated contract). */
+export type BankSearchResponse = components["schemas"]["BankSearchResponse"];
+/** Re-lookup parameters (generated; shared with the live import search). */
+export type ImportSearch = components["schemas"]["ImportSearch"];
+
+/**
+ * Re-look-up a banked folder (`POST /api/bank/{id}/search`) — the attended
+ * flow's release search, run offline against the banked files. Success writes
+ * the returned row straight into the item cache (a no_match row re-branches
+ * to the candidate screen without navigation); a 409 (stale flip / status
+ * race) refetches the row so the page lands on the right screen.
+ */
+export function useBankSearch(itemId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (search: ImportSearch): Promise<BankSearchResponse> => {
+      const { data, error, response } = await client.POST(
+        "/api/bank/{item_id}/search",
+        { params: { path: { item_id: itemId } }, body: search },
+      );
+      if (response.status === 409 || response.status === 422) {
+        throw new BankConflictError(
+          detailMessage(error) ?? "This row changed state — go back and reopen it.",
+        );
+      }
+      if (response.status === 404) {
+        throw new BankConflictError("This row is no longer in the bank.");
+      }
+      if (error || !response.ok || !data) {
+        throw new Error("Failed to run the search");
+      }
+      return data;
+    },
+    onSuccess: (res) => {
+      queryClient.setQueryData(["bank", "item", itemId], res.item);
+      void queryClient.invalidateQueries({ queryKey: ["bank", "list"] });
+      void queryClient.invalidateQueries({ queryKey: ["bank", "duplicates", itemId] });
+    },
+    onError: (err) => {
+      if (err instanceof BankConflictError) {
+        void queryClient.invalidateQueries({ queryKey: ["bank", "item", itemId] });
+      }
+    },
+  });
+}
+
 async function decideBankItem(
   itemId: string,
   decision: BankDecision,
