@@ -32,8 +32,8 @@ if TYPE_CHECKING:
     from app.models.import_models import ImportSearch
 
 
-def relookup(task: Any, search: ImportSearch) -> tuple[list[Any], Recommendation]:
-    """Return ``(candidates, recommendation)`` for a user search on a parked album.
+def relookup_items(items: list[Any], search: ImportSearch) -> tuple[list[Any], Recommendation]:
+    """Return ``(candidates, recommendation)`` for a user search over ``items``.
 
     ``search.release_id`` wins when present (va_likely-proof). Otherwise a name
     search: ``force_non_va`` pins ``va_likely=False``; else beets' default path.
@@ -47,7 +47,6 @@ def relookup(task: Any, search: ImportSearch) -> tuple[list[Any], Recommendation
     hit the metadata sources + in-memory items, never the library DB or item
     file paths.
     """
-    items = list(task.items or [])
     if search.release_id and search.release_id.strip():
         _, _, proposal = tag_album(items, search_ids=[search.release_id.strip()])
         return list(proposal.candidates), proposal.recommendation
@@ -61,3 +60,8 @@ def relookup(task: Any, search: ImportSearch) -> tuple[list[Any], Recommendation
         return ranked, _recommendation(ranked)
     _, _, proposal = tag_album(items, artist, album)
     return list(proposal.candidates), proposal.recommendation
+
+
+def relookup(task: Any, search: ImportSearch) -> tuple[list[Any], Recommendation]:
+    """`relookup_items` over a live import task's in-memory items."""
+    return relookup_items(list(task.items or []), search)
