@@ -69,6 +69,11 @@ const PlaylistsPage = lazy(() =>
     default: m.PlaylistsPage,
   })),
 );
+const ImportPlaylistsPage = lazy(() =>
+  import("@/pages/playlists/ImportPlaylistsPage").then((m) => ({
+    default: m.ImportPlaylistsPage,
+  })),
+);
 const ReviewPage = lazy(() =>
   import("@/pages/review/ReviewPage").then((m) => ({ default: m.ReviewPage })),
 );
@@ -168,6 +173,9 @@ const router = createBrowserRouter([
       },
       { path: "/duplicates", element: <DuplicatesPage /> },
       { path: "/playlists", element: <PlaylistsPage /> },
+      // Static segment before the param route: React Router ranks static over
+      // dynamic, but the order keeps "import" unambiguous at a glance.
+      { path: "/playlists/import", element: <ImportPlaylistsPage /> },
       { path: "/playlists/:playlistId", element: <PlaylistDetailPage /> },
       { path: "*", element: <NotFoundPage /> },
         ],

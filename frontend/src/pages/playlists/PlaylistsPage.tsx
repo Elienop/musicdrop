@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { type Playlist, usePlaylists } from "@/api/usePlaylists";
-import { Add, Playlists } from "@/components/icons";
+import { Add, Playlists, Upload } from "@/components/icons";
 import { CreatePlaylistDialog } from "@/components/playlists/CreatePlaylistDialog";
 import { EmptyState } from "@/components/system/EmptyState";
 import { ErrorState } from "@/components/system/ErrorState";
@@ -27,9 +27,16 @@ export function PlaylistsPage() {
             : undefined
         }
         actions={
-          <Button onClick={() => setCreateOpen(true)}>
-            <Add className="size-4" aria-hidden="true" /> New playlist
-          </Button>
+          <>
+            <Button variant="outline" asChild>
+              <Link to="/playlists/import">
+                <Upload className="size-4" aria-hidden="true" /> Import
+              </Link>
+            </Button>
+            <Button onClick={() => setCreateOpen(true)}>
+              <Add className="size-4" aria-hidden="true" /> New playlist
+            </Button>
+          </>
         }
       />
 

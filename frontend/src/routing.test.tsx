@@ -15,6 +15,7 @@ import { DuplicatesPage } from "@/pages/duplicates/DuplicatesPage";
 import { ImportCandidatePage } from "@/pages/import/ImportCandidatePage";
 import { ImportDuplicatePage } from "@/pages/import/ImportDuplicatePage";
 import { ImportPage } from "@/pages/import/ImportPage";
+import { ImportPlaylistsPage } from "@/pages/playlists/ImportPlaylistsPage";
 import { PlaylistDetailPage } from "@/pages/playlists/PlaylistDetailPage";
 import { PlaylistsPage } from "@/pages/playlists/PlaylistsPage";
 import { BankReviewPage } from "@/pages/review/BankReviewPage";
@@ -78,6 +79,7 @@ const routes = [
       },
       { path: "/duplicates", element: <DuplicatesPage /> },
       { path: "/playlists", element: <PlaylistsPage /> },
+      { path: "/playlists/import", element: <ImportPlaylistsPage /> },
       { path: "/playlists/:playlistId", element: <PlaylistDetailPage /> },
       { path: "*", element: <NotFoundPage /> },
     ],
@@ -214,6 +216,10 @@ function appHandlers() {
     http.get(ARTIST_IMAGE_SETTINGS_URL, () =>
       HttpResponse.json({ enabled: false }),
     ),
+    // The import flow lists Plex playlists on mount; keep it empty here.
+    http.get(`${window.location.origin}/api/plex/playlists`, () =>
+      HttpResponse.json({ playlists: [] }),
+    ),
   ];
 }
 
@@ -279,6 +285,15 @@ describe("routing (sidebar IA)", () => {
     // fires no candidate request) — enough to confirm the route resolves here.
     renderAt("/import/albums/1");
     expect(await screen.findByText(/nothing to review/i)).toBeInTheDocument();
+  });
+
+  test("/playlists/import resolves to the import flow, not the detail param route", async () => {
+    // Static segment must out-rank `/playlists/:playlistId` — "import" is a
+    // page, never captured as a playlist id.
+    renderAt("/playlists/import");
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Import playlists" }),
+    ).toBeInTheDocument();
   });
 
   test("an unknown route renders NotFound with the one Overview escape", async () => {
