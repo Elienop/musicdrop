@@ -87,3 +87,32 @@ def test_discover_users_connection_error(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(service.client, "connect", boom)
     with pytest.raises(PlexConnectionError):
         service.discover_users(CONFIG)
+
+
+def test_list_music_sections_returns_artist_titles(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Section:
+        def __init__(self, type_: str, title: str) -> None:
+            self.TYPE = type_
+            self.title = title
+
+    class _Server:
+        library = type(
+            "L",
+            (),
+            {
+                "sections": lambda _self: [
+                    _Section("artist", "Music"),
+                    _Section("movie", "Films"),
+                    _Section("artist", "MusicDrop"),
+                ]
+            },
+        )()
+
+    monkeypatch.setattr(service.client, "connect", lambda url, token: _Server())
+    titles = service.list_music_sections(PlexConfig(base_url="http://p", token="t"))
+    assert titles == ["Music", "MusicDrop"]
+
+
+def test_list_music_sections_requires_config() -> None:
+    with pytest.raises(PlexNotConfigured):
+        service.list_music_sections(PlexConfig())

@@ -28,6 +28,12 @@ from app.plex.errors import PlexConnectionError, PlexNotConfigured
 from app.plex.mapping import PlexTrackSpec, resolve_ordered_tracks
 
 
+def _no_section_error(title: str) -> PlexConnectionError:
+    if title.strip():
+        return PlexConnectionError(f"Plex music section '{title.strip()}' not found.")
+    return PlexConnectionError("No music library found in Plex.")
+
+
 def _find_existing(server: Any, title: str) -> Any | None:
     for playlist in server.playlists():
         if playlist.title == title:
@@ -58,9 +64,9 @@ def sync_playlist(config: PlexConfig, title: str, specs: list[PlexTrackSpec]) ->
         raise PlexNotConfigured("Plex is not configured.")
     try:
         server = client.connect(config.base_url, config.token)
-        section = client.music_section(server)
+        section = client.music_section(server, config.library_section)
         if section is None:
-            raise PlexConnectionError("No music library found in Plex.")
+            raise _no_section_error(config.library_section)
         tracks, missing = resolve_ordered_tracks(section, specs)
         return _reconcile_on(server, title, tracks, missing)
     except PlexConnectionError:
@@ -86,9 +92,9 @@ def sync_playlist_to_targets(
         raise PlexNotConfigured("Plex is not configured.")
     try:
         admin = client.connect(config.base_url, config.token)
-        section = client.music_section(admin)
+        section = client.music_section(admin, config.library_section)
         if section is None:
-            raise PlexConnectionError("No music library found in Plex.")
+            raise _no_section_error(config.library_section)
         tracks, missing = resolve_ordered_tracks(section, specs)
     except PlexConnectionError:
         raise

@@ -26,6 +26,7 @@ class PlexConfig(BaseModel):
     base_url: str = ""
     token: str = ""
     library_path: str = ""  # Plex-visible music root; empty = same mount as the app
+    library_section: str = ""  # section TITLE; empty = first artist section
 
 
 class PlexConfigStore:
@@ -55,12 +56,16 @@ class PlexConfigStore:
         base_url: str | None = None,
         token: str | None = None,
         library_path: str | None = None,
+        library_section: str | None = None,
     ) -> PlexConfig:
         current = self._config
         self._config = PlexConfig(
             base_url=current.base_url if base_url is None else base_url,
             token=current.token if token is None else token,
             library_path=current.library_path if library_path is None else library_path,
+            library_section=(
+                current.library_section if library_section is None else library_section
+            ),
         )
         write_atomic_text(
             self._path,

@@ -59,3 +59,18 @@ def discover_users(config: PlexConfig) -> list[PlexUserInfo]:
         ]
     except (PlexApiException, RequestException) as exc:
         raise PlexConnectionError(_friendly(exc)) from exc
+
+
+def list_music_sections(config: PlexConfig) -> list[str]:
+    """Titles of the server's music (artist-type) sections, in server order."""
+    if not (config.base_url and config.token):
+        raise PlexNotConfigured("Plex is not configured.")
+    try:
+        server = client.connect(config.base_url, config.token)
+        return [
+            str(getattr(section, "title", ""))
+            for section in server.library.sections()
+            if getattr(section, "TYPE", None) == "artist"
+        ]
+    except (PlexApiException, RequestException) as exc:
+        raise PlexConnectionError(_friendly(exc)) from exc
