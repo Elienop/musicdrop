@@ -6,6 +6,7 @@ import type { components } from "@/api/schema";
 export type PlexSettings = components["schemas"]["PlexSettings"];
 export type PlexConnection = components["schemas"]["PlexConnection"];
 export type PlexUserList = components["schemas"]["PlexUserList"];
+export type PlexSectionList = components["schemas"]["PlexSectionList"];
 
 export function usePlexUsers() {
   return useQuery({
@@ -35,6 +36,24 @@ async function fetchPlexSettings(): Promise<PlexSettings> {
 
 export function usePlexSettings() {
   return useQuery({ queryKey: ["plex", "settings"], queryFn: fetchPlexSettings });
+}
+
+/** The Plex server's music (artist-type) section titles, for the settings
+ * dropdown. Only fetched when `enabled` (the panel probes on demand); a 409
+ * (Plex not configured) or a load failure just leaves the list empty — the
+ * panel keeps the current saved value selectable regardless, so a failed fetch
+ * never hides it. */
+export function usePlexSections(enabled = true) {
+  return useQuery({
+    queryKey: ["plex", "sections"],
+    queryFn: async (): Promise<PlexSectionList> => {
+      const { data, error, response } = await client.GET("/api/plex/sections");
+      if (error || !response.ok || !data) throw new Error("Failed to load Plex sections");
+      return data;
+    },
+    enabled,
+    retry: false,
+  });
 }
 
 export function useSavePlexSettings() {

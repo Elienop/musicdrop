@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import {
   type PlexSettings,
+  usePlexSections,
   usePlexSettings,
   useSavePlexSettings,
   useTestPlex,
@@ -47,10 +48,16 @@ export function PlexSettingsPanel() {
 function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
   const save = useSavePlexSettings();
   const test = useTestPlex();
+  // Probe the server's music sections for the dropdown. A 409 (Plex not
+  // configured) or any failure just leaves the list empty (retry: false) — the
+  // current saved value stays selectable regardless, so a failed probe never
+  // hides it.
+  const sections = usePlexSections();
 
   const [baseUrl, setBaseUrl] = useState(initial.base_url);
   const [token, setToken] = useState("");
   const [libraryPath, setLibraryPath] = useState(initial.library_path);
+  const [librarySection, setLibrarySection] = useState(initial.library_section);
   // Drives the single, always-mounted polite live region below. A live region
   // must already exist when its text changes to be reliably announced, so we
   // set this state from the save/test handlers rather than conditionally
@@ -65,8 +72,9 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
   useEffect(() => {
     setBaseUrl(initial.base_url);
     setLibraryPath(initial.library_path);
+    setLibrarySection(initial.library_section);
     setToken("");
-  }, [initial.base_url, initial.library_path, initial.has_token]);
+  }, [initial.base_url, initial.library_path, initial.library_section, initial.has_token]);
 
   // The form differs from what's saved on the server. "Test connection" probes
   // the SAVED config (not the typed-but-unsaved values), so testing a dirty form
@@ -74,12 +82,22 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
   const dirty =
     baseUrl !== initial.base_url ||
     libraryPath !== initial.library_path ||
+    librarySection !== initial.library_section ||
     token.trim().length > 0;
+
+  // Always keep the current saved value selectable, even if the probe failed or
+  // it's no longer among the server's sections.
+  const fetchedSections = sections.data?.sections ?? [];
+  const sectionOptions =
+    librarySection && !fetchedSections.includes(librarySection)
+      ? [librarySection, ...fetchedSections]
+      : fetchedSections;
 
   function handleSave() {
     const body: components["schemas"]["PlexSettingsUpdate"] = {
       base_url: baseUrl,
       library_path: libraryPath,
+      library_section: librarySection,
     };
     // Omit the token unless the user typed a replacement, so a blank field
     // keeps the already-saved one (the API never returns it to prefill).
@@ -152,6 +170,29 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
           />
           <p className="text-muted-foreground text-xs">
             music library path as Plex sees it; leave blank if the same
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label htmlFor="plex-library-section" className="text-sm font-medium">
+            Library section
+          </label>
+          <select
+            id="plex-library-section"
+            className="border-input bg-background h-9 max-w-md rounded-md border px-2 text-sm"
+            value={librarySection}
+            onChange={(e) => setLibrarySection(e.target.value)}
+          >
+            <option value="">Auto — first music library</option>
+            {sectionOptions.map((title) => (
+              <option key={title} value={title}>
+                {title}
+              </option>
+            ))}
+          </select>
+          <p className="text-muted-foreground text-xs">
+            which Plex music library playlists sync into; Auto picks the first
+            one
           </p>
         </div>
       </div>

@@ -7,14 +7,16 @@ import {
   type PlaylistTrack,
   useDeletePlaylist,
   usePlaylist,
-  useRemoveTrack,
+  useRemoveEntry,
   useRenamePlaylist,
   useReorderTracks,
+  useResolveEntry,
   useSetTargets,
   useSyncPlaylist,
 } from "@/api/usePlaylists";
 import { usePlexUsers } from "@/api/usePlex";
 import { BackLink } from "@/components/albums/album-grid";
+import { TrackMatchPicker } from "@/components/playlists/TrackMatchPicker";
 import {
   Close,
   Edit,
@@ -189,13 +191,19 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
   const rename = useRenamePlaylist(playlist.id);
   const remove = useDeletePlaylist();
   const reorder = useReorderTracks(playlist.id);
-  const removeTrack = useRemoveTrack(playlist.id);
+  const removeEntry = useRemoveEntry(playlist.id);
+  const resolve = useResolveEntry(playlist.id);
   const sync = useSyncPlaylist(playlist.id);
   const plexUsers = usePlexUsers();
   const setTargets = useSetTargets(playlist.id);
 
   const [editingName, setEditingName] = useState(false);
   const [draftName, setDraftName] = useState(playlist.name);
+
+  // The one pending entry whose match picker is open (uid), or null. A single
+  // shared picker is driven off this — clicking a row's "Match…" arms it, the
+  // pick resolves that uid and disarms.
+  const [matchUid, setMatchUid] = useState<string | null>(null);
 
   // Local copy of the tracklist so reorder/remove update the UI immediately
   // (optimistic) and keyboard focus can be restored deterministically once the
@@ -273,15 +281,32 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     setStatusMsg(message);
     const dirKey = dir === -1 ? "up" : "down";
     const altKey = dir === -1 ? "down" : "up";
-    requestFocus(`${moved.id}:${dirKey}`, `${moved.id}:${altKey}`);
+    requestFocus(`${moved.uid}:${dirKey}`, `${moved.uid}:${altKey}`);
 
     reorder.mutate(
-      next.map((t) => t.id),
+      next.map((t) => t.uid),
       {
         onSuccess: () => toast.success(message),
         onError: () => setTracks(prev),
       },
     );
+  }
+
+  /** Resolve the armed pending entry to the picked library track, keeping its
+   * position. On success the mutation swaps the detail cache (which reseeds the
+   * local tracklist); the picker disarms either way. */
+  function handlePick(itemId: number) {
+    const entryUid = matchUid;
+    if (entryUid === null) {
+      return;
+    }
+    resolve.mutate(
+      { entryUid, itemId },
+      {
+        onSuccess: () => setStatusMsg("Matched the track to your library"),
+      },
+    );
+    setMatchUid(null);
   }
 
   /** Remove the track at `index`. On success announce + toast it and move
@@ -293,7 +318,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
   function handleRemove(index: number) {
     const removed = tracks[index];
     const afterRemoval = tracks.filter((_, i) => i !== index);
-    removeTrack.mutate(removed.id, {
+    removeEntry.mutate(removed.uid, {
       onSuccess: () => {
         const message = `Removed ${displayTitle(removed)}`;
         setStatusMsg(message);
@@ -303,11 +328,15 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
           requestFocus("empty");
         } else {
           const survivor = afterRemoval[Math.min(index, afterRemoval.length - 1)];
-          requestFocus(`${survivor.id}:remove`);
+          requestFocus(`${survivor.uid}:remove`);
         }
       },
     });
   }
+
+  // Count unmatched (pending) rows from the local tracklist so the header stays
+  // in step with optimistic add/remove/resolve edits, not the last server body.
+  const unmatchedCount = tracks.filter((t) => t.pending).length;
 
   return (
     <section className="flex flex-col gap-6" aria-label="Playlist">
@@ -379,6 +408,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
           )}
           <p className="text-muted-foreground text-sm tabular-nums">
             {tracks.length} {tracks.length === 1 ? "track" : "tracks"}
+            {unmatchedCount > 0 ? ` · ${unmatchedCount} unmatched` : ""}
           </p>
         </div>
 
@@ -477,9 +507,14 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
           Couldn&rsquo;t save the new order. Try again.
         </StatusBanner>
       )}
-      {removeTrack.isError && (
+      {removeEntry.isError && (
         <StatusBanner tone="destructive" icon={ErrorIcon}>
           Couldn&rsquo;t remove the track. Try again.
+        </StatusBanner>
+      )}
+      {resolve.isError && (
+        <StatusBanner tone="destructive" icon={ErrorIcon}>
+          Couldn&rsquo;t match the track. Try again.
         </StatusBanner>
       )}
       {sync.isError &&
@@ -575,7 +610,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
           <TableBody>
             {tracks.map((track, index) => (
               <PlaylistTrackRow
-                key={track.id}
+                key={track.uid}
                 track={track}
                 position={index + 1}
                 isFirst={index === 0}
@@ -583,12 +618,25 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
                 onMoveUp={() => move(index, -1)}
                 onMoveDown={() => move(index, 1)}
                 onRemove={() => handleRemove(index)}
+                onMatch={() => setMatchUid(track.uid)}
                 registerRef={register}
               />
             ))}
           </TableBody>
         </Table>
       )}
+
+      {/* One shared picker for whichever pending row is armed (matchUid). It is
+          playlist-agnostic — it just hands back a library item id, which
+          handlePick resolves onto the armed entry. */}
+      <TrackMatchPicker
+        open={matchUid !== null}
+        onOpenChange={(next) => {
+          if (!next) setMatchUid(null);
+        }}
+        onPick={(picked) => handlePick(picked.item_id)}
+        title="Match to a library track"
+      />
     </section>
   );
 }
@@ -601,6 +649,7 @@ function PlaylistTrackRow({
   onMoveUp,
   onMoveDown,
   onRemove,
+  onMatch,
   registerRef,
 }: {
   track: PlaylistTrack;
@@ -610,11 +659,17 @@ function PlaylistTrackRow({
   onMoveUp: () => void;
   onMoveDown: () => void;
   onRemove: () => void;
+  onMatch: () => void;
   registerRef: (key: string, el: HTMLButtonElement | null) => void;
 }) {
-  // A track whose beets item no longer resolves: keep its slot (so it can be
-  // removed) but grey it and label the gap.
+  // A pending row (an import that didn't match a library track) keeps its slot
+  // with remembered metadata and offers a "Match…" action. A resolved row whose
+  // beets item no longer resolves keeps its slot too, greyed and labelled. Both
+  // read as "not a live library track", so both are dimmed; the metadata line is
+  // shown for the live row and the pending one (it's all we know), but not for a
+  // vanished resolved track (there's nothing left to show).
   const title = displayTitle(track);
+  const showMeta = track.available || track.pending;
   return (
     <TableRow className={track.available ? undefined : "bg-muted/40"}>
       <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
@@ -628,13 +683,19 @@ function PlaylistTrackRow({
             >
               {title}
             </span>
-            {!track.available && (
-              <Badge variant="outline" className="shrink-0 text-xs font-normal">
-                unavailable
+            {track.pending ? (
+              <Badge variant="secondary" className="shrink-0 text-xs font-normal">
+                Pending
               </Badge>
+            ) : (
+              !track.available && (
+                <Badge variant="outline" className="shrink-0 text-xs font-normal">
+                  unavailable
+                </Badge>
+              )
             )}
           </div>
-          {track.available && (
+          {showMeta && (
             <span className="text-muted-foreground truncate text-sm">
               {track.artist}
               {track.album && (
@@ -652,8 +713,19 @@ function PlaylistTrackRow({
       </TableCell>
       <TableCell>
         <div className="flex items-center justify-end gap-1">
+          {track.pending && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="mr-1"
+              onClick={onMatch}
+              aria-label={`Match ${title}`}
+            >
+              Match&hellip;
+            </Button>
+          )}
           <Button
-            ref={(el) => registerRef(`${track.id}:up`, el)}
+            ref={(el) => registerRef(`${track.uid}:up`, el)}
             size="icon-sm"
             variant="ghost"
             onClick={onMoveUp}
@@ -663,7 +735,7 @@ function PlaylistTrackRow({
             <MoveUp className="size-4" aria-hidden="true" />
           </Button>
           <Button
-            ref={(el) => registerRef(`${track.id}:down`, el)}
+            ref={(el) => registerRef(`${track.uid}:down`, el)}
             size="icon-sm"
             variant="ghost"
             onClick={onMoveDown}
@@ -673,7 +745,7 @@ function PlaylistTrackRow({
             <MoveDown className="size-4" aria-hidden="true" />
           </Button>
           <Button
-            ref={(el) => registerRef(`${track.id}:remove`, el)}
+            ref={(el) => registerRef(`${track.uid}:remove`, el)}
             size="icon-sm"
             variant="ghost"
             onClick={onRemove}
