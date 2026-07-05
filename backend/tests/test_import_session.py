@@ -1700,3 +1700,132 @@ def test_attended_astracks_lands_the_singletons_full_pipeline(
     # As-tracks lands the two files as singletons (no album row).
     assert len(list(lib.items())) == 2
     assert len(list(lib.albums())) == 0
+
+
+def test_rescan_choice_rereads_swaps_items_and_reparks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.beets.import_session as session_mod
+
+    match = _build_match(BeetsRec.medium)
+    other = _build_other_match()
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    original_items = task.items
+    new_items = list(other.mapping.keys())  # the fresh read (one file deleted)
+    monkeypatch.setattr(session_mod, "_read_items", lambda p: new_items)
+    monkeypatch.setattr(
+        session_mod,
+        "lookup_items",
+        lambda items, s: ("Radiohead", "Amnesiac", [other], BeetsRec.strong),
+    )
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    first = bridge.get_parked(timeout=2.0)
+    assert first is not None
+    bridge.push_choice(first.album_index, ImportChoice(action=ImportAction.rescan))
+
+    second = bridge.get_parked(timeout=2.0)
+    assert second is not None
+    assert second.candidate.search_revision == 1
+    assert second.candidate.search_feedback is None
+    assert second.candidate.album_after.album == "Amnesiac"
+    assert task.items is new_items  # the swap: asis/astracks now see the fresh read
+    assert task.cur_album == "Amnesiac"
+
+    bridge.push_choice(second.album_index, ImportChoice(action=ImportAction.apply))
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert task.match is other  # apply selects from the NEW candidate list
+    assert original_items is not task.items
+
+
+def test_rescan_with_no_audio_left_keeps_state_and_sets_feedback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.beets.import_session as session_mod
+
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    original_items = task.items
+    monkeypatch.setattr(session_mod, "_read_items", lambda p: [])
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    first = bridge.get_parked(timeout=2.0)
+    assert first is not None
+    bridge.push_choice(first.album_index, ImportChoice(action=ImportAction.rescan))
+
+    second = bridge.get_parked(timeout=2.0)
+    assert second is not None
+    assert second.candidate.search_revision == 1
+    assert second.candidate.search_feedback == (
+        "No audio files remain in the folder — Skip or Abort."
+    )
+    assert task.items is original_items
+    assert second.candidate.album_after.album == "OK Computer"
+
+    bridge.push_choice(second.album_index, ImportChoice(action=ImportAction.skip))
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+
+
+def test_rescan_with_no_candidates_never_half_swaps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.beets.import_session as session_mod
+
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    original_items = task.items
+    monkeypatch.setattr(session_mod, "_read_items", lambda p: [Item(title="x")])
+    monkeypatch.setattr(
+        session_mod, "lookup_items", lambda items, s: (None, None, [], BeetsRec.none)
+    )
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    first = bridge.get_parked(timeout=2.0)
+    assert first is not None
+    bridge.push_choice(first.album_index, ImportChoice(action=ImportAction.rescan))
+
+    second = bridge.get_parked(timeout=2.0)
+    assert second is not None
+    assert second.candidate.search_feedback == (
+        "No release matched the rescanned folder — showing the album as originally scanned."
+    )
+    # NO half-swap: items untouched, previous candidates still apply-able.
+    assert task.items is original_items
+    assert second.candidate.album_after.album == "OK Computer"
+
+    bridge.push_choice(second.album_index, ImportChoice(action=ImportAction.apply))
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert task.match is match  # the original candidate applied
