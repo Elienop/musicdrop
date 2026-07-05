@@ -258,6 +258,32 @@ def test_legacy_track_ids_migrate_to_entries_on_read(tmp_path: Path) -> None:
     assert loaded.resolved_item_ids == [7, 9, 7]
 
 
+def test_legacy_uids_are_stable_across_reads(tmp_path: Path) -> None:
+    """A legacy record must yield IDENTICAL uids on every read (no write-on-read).
+
+    The migration validator mints deterministic uids, so two reads of the same
+    on-disk file agree. Before that fix it minted a fresh ``uuid4`` per read, so
+    a uid captured from one read 404'd on the next (remove/reorder/resolve).
+    """
+    record = store.create_playlist(tmp_path, name="Old")
+    raw = {
+        "id": record.id,
+        "name": "Old",
+        "description": "",
+        "track_ids": [7, 9, 7],
+        "target_plex_users": [],
+        "plex": {},
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+    (tmp_path / f"{record.id}.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    first = store.get_playlist(tmp_path, record.id)
+    second = store.get_playlist(tmp_path, record.id)
+    assert first is not None and second is not None
+    assert [e.uid for e in first.entries] == [e.uid for e in second.entries]
+
+
 def test_add_tracks_creates_uid_entries_at_position(tmp_path: Path) -> None:
     record = store.create_playlist(tmp_path, name="P")
     store.add_tracks(tmp_path, record.id, track_ids=[1, 2], position=None)

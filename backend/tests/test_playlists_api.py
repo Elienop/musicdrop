@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -262,6 +263,33 @@ def test_resolve_entry_endpoint_validates_item(
     assert track["id"] == real_id
     assert track["pending"] is False
     assert track["available"] is True
+
+
+def test_legacy_record_entry_delete_by_uid(client: TestClient) -> None:
+    """End-to-end proof: a legacy on-disk record's detail uids are addressable.
+
+    GET detail exposes per-slot uids; DELETE by one of those uids must land 200
+    (the DELETE handler re-reads the file, and deterministic legacy uids survive
+    that re-read), not 404 as it did while uids were minted randomly per read.
+    """
+    record = store.create_playlist(_dir(), name="Old")
+    raw = {
+        "id": record.id,
+        "name": "Old",
+        "description": "",
+        "track_ids": [7, 9, 7],
+        "target_plex_users": [],
+        "plex": {},
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+    (_dir() / f"{record.id}.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    detail = client.get(f"/api/playlists/{record.id}").json()
+    uid = detail["tracks"][0]["uid"]
+    r = client.delete(f"/api/playlists/{record.id}/entries/{uid}")
+    assert r.status_code == 200
+    assert [t["id"] for t in r.json()["tracks"]] == [9, 7]  # first slot removed
 
 
 def test_export_and_sync_feed_from_resolved_entries_only(

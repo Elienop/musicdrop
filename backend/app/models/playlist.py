@@ -1,8 +1,11 @@
 """Playlist API contract (the owned-playlist read/write models).
 
-Chunk 1 covers identity + naming; ``track_ids`` is always empty until Chunk 2
-adds track operations, and ``target_plex_users`` until Chunk 7. They live on the
-read models from the start so the contract does not churn between chunks.
+Playlists store ordered, uid-keyed entries (a resolved library track or a
+pending one); the read models expose them as ``tracks``. ``track_ids`` survives
+only as the add-tracks *request* field (:class:`PlaylistAddTracksRequest`) and
+as the legacy on-disk record shape, which the store migrates to entries on read.
+``target_plex_users`` lives on the read models from the start so the contract
+does not churn between chunks.
 """
 
 from __future__ import annotations

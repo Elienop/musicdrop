@@ -56,9 +56,21 @@ class StoredPlaylist(BaseModel):
 
     @model_validator(mode="after")
     def _migrate_legacy_track_ids(self) -> StoredPlaylist:
+        # Migrate the pre-entries ``track_ids`` shape to uid-keyed entries.
+        #
+        # The uids MUST be STABLE across reads: ``get_playlist`` never writes
+        # back, so a legacy record is re-migrated on every read. Random uuids
+        # would mint DIFFERENT uids each time, and a uid captured from one read
+        # (GET detail) would 404 on the next (DELETE/reorder/resolve re-read the
+        # file). Deterministic ``legacy-<index>-<item_id>`` uids fix that: the
+        # enumerate index guarantees uniqueness within the record (duplicate
+        # item ids included), and the ``legacy-`` prefix can't collide with the
+        # uuid4-hex uids new entries carry. These uids persist naturally on the
+        # first real mutation — harmless, since uids are opaque handles.
         if self.track_ids and not self.entries:
             self.entries = [
-                StoredEntry(uid=uuid.uuid4().hex, item_id=item_id) for item_id in self.track_ids
+                StoredEntry(uid=f"legacy-{index}-{item_id}", item_id=item_id)
+                for index, item_id in enumerate(self.track_ids)
             ]
         self.track_ids = []
         return self
