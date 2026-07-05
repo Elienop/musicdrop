@@ -628,3 +628,126 @@ def test_research_item_unknown_id_returns_none(tmp_path: Path) -> None:
         )
         is None
     )
+
+
+def test_rescan_item_rescues_a_stale_row(tmp_path: Path) -> None:
+    row = store.create_item(
+        tmp_path, folder="/inbox/x", source="sweep", reason="no_match", fingerprint="f" * 64
+    )
+    store.set_status(tmp_path, row.id, "stale", error="changed")
+    updated = store.rescan_item(
+        tmp_path,
+        row.id,
+        fingerprint="a" * 64,
+        parked=_parked_payload(),
+        artist="A",
+        album="B",
+        recommendation="strong",
+        confidence=90.0,
+    )
+    assert updated is not None
+    assert updated.status == "needs_review"
+    assert updated.reason == "needs_review"
+    assert updated.fingerprint == "a" * 64
+    assert updated.decided is None and updated.error is None
+    assert updated.parked is not None
+
+
+def test_rescan_item_no_candidates_becomes_no_match(tmp_path: Path) -> None:
+    row = store.create_item(
+        tmp_path,
+        folder="/inbox/x",
+        source="sweep",
+        reason="needs_review",
+        fingerprint="f" * 64,
+        parked=_parked_payload(),
+    )
+    updated = store.rescan_item(
+        tmp_path,
+        row.id,
+        fingerprint="a" * 64,
+        parked=None,
+        artist="A",
+        album="B",
+        recommendation="none",
+        confidence=0.0,
+    )
+    assert updated is not None
+    assert updated.reason == "no_match"
+    assert updated.parked is None
+    assert updated.fingerprint == "a" * 64
+    assert updated.status == "needs_review"
+
+
+def test_rescan_item_clears_a_duplicate_prompt(tmp_path: Path) -> None:
+    row = store.create_item(
+        tmp_path,
+        folder="/inbox/x",
+        source="sweep",
+        reason="needs_dup_resolution",
+        fingerprint="f" * 64,
+        duplicate=_dup_prompt(),
+    )
+    updated = store.rescan_item(
+        tmp_path,
+        row.id,
+        fingerprint="a" * 64,
+        parked=_parked_payload(),
+        artist="A",
+        album="B",
+        recommendation="strong",
+        confidence=90.0,
+    )
+    assert updated is not None
+    assert updated.duplicate is None
+    assert updated.reason == "needs_review"
+
+
+def test_rescan_item_preserves_failed_status(tmp_path: Path) -> None:
+    row = store.create_item(
+        tmp_path,
+        folder="/inbox/x",
+        source="sweep",
+        reason="needs_review",
+        fingerprint="f" * 64,
+        parked=_parked_payload(),
+    )
+    store.decide_item(tmp_path, row.id, BankDecision(action="asis"))
+    store.set_status(tmp_path, row.id, "applying")
+    store.set_status(tmp_path, row.id, "failed", error="boom")
+    updated = store.rescan_item(
+        tmp_path,
+        row.id,
+        fingerprint="a" * 64,
+        parked=_parked_payload(),
+        artist="A",
+        album="B",
+        recommendation="strong",
+        confidence=90.0,
+    )
+    assert updated is not None
+    assert updated.status == "failed"
+    assert updated.error == "boom"  # failed rows keep their banner
+
+
+def test_rescan_item_rejects_settled_statuses(tmp_path: Path) -> None:
+    row = store.create_item(
+        tmp_path,
+        folder="/inbox/x",
+        source="sweep",
+        reason="needs_review",
+        fingerprint="f" * 64,
+        parked=_parked_payload(),
+    )
+    store.decide_item(tmp_path, row.id, BankDecision(action="asis"))  # -> queued
+    with pytest.raises(store.InvalidTransitionError):
+        store.rescan_item(
+            tmp_path,
+            row.id,
+            fingerprint="a" * 64,
+            parked=None,
+            artist=None,
+            album=None,
+            recommendation=None,
+            confidence=None,
+        )

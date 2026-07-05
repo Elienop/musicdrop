@@ -340,6 +340,53 @@ def research_item(
         return item
 
 
+# Statuses a rescan may act from — like _SEARCHABLE plus stale: the rescan IS
+# the stale row's in-place rescue (the folder changed; re-read it and bless
+# the new state with a fresh fingerprint).
+_RESCANNABLE: frozenset[str] = frozenset({"needs_review", "failed", "stale"})
+
+
+def rescan_item(
+    bank_dir: Path,
+    item_id: str,
+    *,
+    fingerprint: str,
+    parked: ParkedAlbum | None,
+    artist: str | None,
+    album: str | None,
+    recommendation: str | None,
+    confidence: float | None,
+) -> BankItem | None:
+    """Replace a row's payload AND fingerprint after a deliberate folder rescan.
+
+    ``parked`` None means the default lookup matched nothing — the row
+    honestly becomes a ``no_match`` row. Any old duplicate prompt is cleared
+    (the up-front collision check re-flags it if still real). A ``stale`` row
+    resets to ``needs_review`` with ``decided``/``error`` cleared (the
+    re-bank precedent); ``needs_review``/``failed`` keep their status.
+    """
+    with _LOCK:
+        item = get_item(bank_dir, item_id)
+        if item is None:
+            return None
+        if item.status not in _RESCANNABLE:
+            raise InvalidTransitionError(f"row is {item.status}; a rescan needs an undecided row")
+        item.fingerprint = fingerprint
+        item.parked = parked
+        item.duplicate = None
+        item.reason = "needs_review" if parked is not None else "no_match"
+        item.artist = artist
+        item.album = album
+        item.recommendation = recommendation
+        item.confidence = confidence
+        if item.status == "stale":
+            item.status = "needs_review"
+            item.decided = None
+            item.error = None
+        _write(bank_dir, item)
+        return item
+
+
 def set_status(
     bank_dir: Path,
     item_id: str,
