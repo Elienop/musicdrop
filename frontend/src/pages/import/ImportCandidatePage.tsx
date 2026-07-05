@@ -5,10 +5,12 @@ import type { Candidate, ImportSearch } from "@/api/useImport";
 import {
   importCoverUrl,
   useImportCandidate,
+  useImportDuplicates,
   useSubmitChoice,
 } from "@/api/useImport";
 import { albumOriginFromState, BackLink } from "@/components/albums/album-grid";
 import { Info, Spinner, Success } from "@/components/icons";
+import { AlreadyInLibrary } from "@/components/import/AlreadyInLibrary";
 import { CandidateReview } from "@/components/import/CandidateReview";
 import { ReleaseSearchPanel } from "@/components/import/ReleaseSearchPanel";
 import { EmptyState } from "@/components/system/EmptyState";
@@ -144,6 +146,8 @@ function ReviewScreen({
   const submit = useSubmitChoice(jobId);
   // A landed re-lookup resets the chosen option back to the new top match.
   useEffect(() => setSelected(0), [candidate.search_revision]);
+  const dups = useImportDuplicates(jobId, index, selected, candidate.search_revision);
+  const existing = dups.data?.existing ?? [];
 
   function runSearch(search: ImportSearch) {
     onSearchStart(candidate.search_revision);
@@ -164,6 +168,12 @@ function ReviewScreen({
         selected={selected}
         onSelect={setSelected}
       />
+      {existing.length > 0 && (
+        <AlreadyInLibrary
+          existing={existing}
+          blurb="This album matches one you already have. Applying will ask you to resolve it — Skip new, Keep both, Replace, or Merge — with a per-track comparison."
+        />
+      )}
       <ReleaseSearchPanel
         onSearch={runSearch}
         busy={searching || submit.isPending}

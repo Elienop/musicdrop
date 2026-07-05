@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes } from "react-router";
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
 
 import type { Candidate } from "@/api/useImport";
 import { ImportCandidatePage } from "@/pages/import/ImportCandidatePage";
@@ -12,6 +12,7 @@ import { server } from "@/test/msw-server";
 
 const CANDIDATE_URL = `${window.location.origin}/api/import/job-1/albums/1`;
 const CHOICE_URL = `${window.location.origin}/api/import/job-1/albums/1/choice`;
+const DUPLICATES_URL = `${window.location.origin}/api/import/:jobId/albums/:index/duplicates`;
 
 function makeCandidate(overrides: Partial<Candidate> = {}): Candidate {
   return {
@@ -171,6 +172,15 @@ function renderWithOrigin(state?: unknown) {
 }
 
 describe("ImportCandidatePage", () => {
+  // The candidate screen runs an up-front library-collision check on mount;
+  // default it to "clean" so the existing tests keep passing. Tests that need a
+  // collision override this handler.
+  beforeEach(() => {
+    server.use(
+      http.get(DUPLICATES_URL, () => HttpResponse.json({ existing: [] })),
+    );
+  });
+
   test("renders header, source, what-changes, before/after and the tracklist", async () => {
     server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
     renderAt();
@@ -692,5 +702,41 @@ describe("ImportCandidatePage", () => {
       expect(screen.getByRole("button", { name: /^Search$/ })).toBeEnabled(),
     );
     expect(screen.getByText(/Couldn.t run that search/i)).toBeInTheDocument();
+  });
+
+  test("shows the up-front library collision as a heads-up", async () => {
+    server.use(
+      http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())),
+      http.get(DUPLICATES_URL, () =>
+        HttpResponse.json({
+          existing: [
+            {
+              album_id: 7,
+              album_artist: "David Bowie",
+              album: "Heroes",
+              year: 1977,
+              track_count: 1,
+              format: "MP3",
+              bitrate_kbps: 320,
+              folder: "/library/Bowie/Heroes",
+              release: null,
+              tracks: [
+                { track: 3, disc: 1, title: "Heroes", format: "MP3", bitrate_kbps: 320 },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    renderAt();
+    expect(
+      await screen.findByText(/already in your library/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/1 track\b/)).toBeInTheDocument();
+    // Heads-up only: Apply is still the footer's action, no duplicate buttons.
+    expect(
+      screen.queryByRole("button", { name: /replace old/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /apply/i })).toBeEnabled();
   });
 });

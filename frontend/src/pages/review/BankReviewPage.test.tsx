@@ -31,6 +31,10 @@ const existingAlbum = {
   format: "MP3",
   bitrate_kbps: 320,
   folder: "/library/BoC/MHTRTC",
+  release: null,
+  tracks: [
+    { track: 1, disc: 1, title: "Echoes", format: "FLAC", bitrate_kbps: 987 },
+  ],
 };
 
 /** A complete banked Candidate — the exact generated shape (every field). */
@@ -301,6 +305,12 @@ describe("BankReviewPage", () => {
     // The up-front collision notice + a View link to the existing copy.
     expect(await screen.findByText(/already in your library/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /^view$/i })).toHaveAttribute("href", "/albums/7");
+    // The existing copy's own tracklist is shown so the choice is informed.
+    const section = within(
+      screen.getByRole("region", { name: /already in your library/i }),
+    );
+    expect(section.getByText("Echoes")).toBeInTheDocument();
+    expect(section.getByText(/FLAC · 987 kbps/)).toBeInTheDocument();
     // One click both pins the selected release and resolves the collision.
     await userEvent.click(screen.getByRole("button", { name: /replace old/i }));
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/review"));

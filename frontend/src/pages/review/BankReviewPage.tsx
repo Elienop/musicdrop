@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 
 import { useActiveImport } from "@/api/useActiveImport";
-import type { BankDecision, BankItem, ExistingAlbum } from "@/api/useBank";
+import type { BankDecision, BankItem } from "@/api/useBank";
 import {
   BankConflictError,
   useBankDecision,
@@ -18,6 +18,7 @@ import {
   useStartImport,
 } from "@/api/useImport";
 import { BackLink } from "@/components/albums/album-grid";
+import { AlreadyInLibrary } from "@/components/import/AlreadyInLibrary";
 import { CandidateReview } from "@/components/import/CandidateReview";
 import {
   DuplicateActions,
@@ -258,7 +259,14 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
       {showDupActions ? (
         <>
           {hasCollision ? (
-            <AlreadyInLibraryNotice existing={existing} />
+            <AlreadyInLibrary
+              existing={existing}
+              blurb={
+                existing.length === 1
+                  ? "This album matches one you already have. Choose what to do below — your choice imports the selected release."
+                  : `This album matches ${existing.length} you already have. Choose what to do below — your choice imports the selected release.`
+              }
+            />
           ) : (
             // Error-on-failed fallback: the re-check couldn't run, so we can't
             // list the colliding copies, but the failed-banner already told the
@@ -358,40 +366,6 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
         </div>
       )}
     </div>
-  );
-}
-
-/** The up-front "this already exists" notice on a banked candidate screen —
- * lists each colliding library copy with a View link, above the four duplicate
- * actions. The candidate switcher stays live, so Keep both / Replace / Merge
- * tag the new copy as the SELECTED release. */
-function AlreadyInLibraryNotice({ existing }: { existing: ExistingAlbum[] }) {
-  return (
-    <section aria-label="Already in your library" className="flex flex-col gap-3">
-      <SectionLabel>Already in your library</SectionLabel>
-      <p className="text-muted-foreground text-sm">
-        This album matches{" "}
-        {existing.length === 1 ? "one you already have" : `${existing.length} you already have`}.
-        Choose what to do below — your choice imports the selected release.
-      </p>
-      <ul className="flex flex-col gap-2">
-        {existing.map((album) => (
-          <li
-            key={album.album_id}
-            className="border-border flex items-center justify-between gap-3 rounded-lg border p-3"
-          >
-            <span className="truncate text-sm">
-              <span className="font-medium">{album.album_artist ?? "Unknown artist"}</span>
-              {" — "}
-              {album.album ?? "Unknown album"}
-            </span>
-            <Button variant="outline" size="sm" asChild>
-              <Link to={`/albums/${album.album_id}`}>View</Link>
-            </Button>
-          </li>
-        ))}
-      </ul>
-    </section>
   );
 }
 
