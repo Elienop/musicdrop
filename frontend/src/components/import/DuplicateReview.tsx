@@ -166,7 +166,7 @@ function ActionIcon({
   return <Icon aria-hidden="true" />;
 }
 
-function Panel({
+export function Panel({
   id,
   heading,
   album,

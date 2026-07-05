@@ -1547,6 +1547,70 @@
         }
       }
     },
+    "/api/import/{job_id}/albums/{index}/duplicates": {
+      "get": {
+        "tags": [
+          "import"
+        ],
+        "summary": "Get Import Album Duplicates",
+        "description": "Up-front library-collision check for the SELECTED candidate option.\n\nA heads-up only \u2014 Apply still routes through beets' duplicate prompt.\nPure library read keyed on the option's own identity (the bank check's\nexact posture); never touches the parked worker.",
+        "operationId": "get_import_album_duplicates_api_import__job_id__albums__index__duplicates_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "index",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "title": "Index"
+            }
+          },
+          {
+            "name": "candidate_index",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Candidate Index"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuplicatesCheckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/import/{job_id}/albums/{index}/choice": {
       "post": {
         "tags": [
@@ -3484,7 +3548,60 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BankDuplicatesResponse"
+                  "$ref": "#/components/schemas/DuplicatesCheckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/bank/{item_id}/search": {
+      "post": {
+        "tags": [
+          "bank"
+        ],
+        "summary": "Search Bank Item",
+        "description": "Re-look-up a banked folder against a release id/URL or a name search.\n\nPreview-only (the attended flow's \"enter Id\" rescue, run offline): reads\nthe folder's tags, queries the metadata sources, and replaces the row's\ncandidate payload. Never touches the import slot or the library.",
+        "operationId": "search_bank_item_api_bank__item_id__search_post",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportSearch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BankSearchResponse"
                 }
               }
             }
@@ -4682,23 +4799,6 @@
         "title": "BankDecision",
         "description": "The user's verdict on a banked row.\n\nMirrors the live review dialect (``ImportChoice``): ``apply`` selects a\nranked option by ``candidate_index`` (None = the top candidate);\n``duplicate`` needs the ``duplicate_action`` and may ALSO pin the selected\nrelease by ``candidate_index`` (the \"decide once\" path \u2014 one click both\npicks the release and resolves the collision); the rest stand alone. Fields\nforeign to the chosen action \u2014 known or unknown \u2014 are rejected here so an\nimpossible decision can never be persisted or queued."
       },
-      "BankDuplicatesResponse": {
-        "properties": {
-          "existing": {
-            "items": {
-              "$ref": "#/components/schemas/ExistingAlbum"
-            },
-            "type": "array",
-            "title": "Existing"
-          }
-        },
-        "type": "object",
-        "required": [
-          "existing"
-        ],
-        "title": "BankDuplicatesResponse",
-        "description": "``GET /api/bank/{id}/duplicates``: library albums the selected\ncandidate would collide with (empty = no collision, import is clean)."
-      },
       "BankItem": {
         "properties": {
           "id": {
@@ -5044,6 +5144,24 @@
         ],
         "title": "BankListResponse",
         "description": "``GET /api/bank`` page: summaries + total for pagination."
+      },
+      "BankSearchResponse": {
+        "properties": {
+          "item": {
+            "$ref": "#/components/schemas/BankItem"
+          },
+          "found": {
+            "type": "boolean",
+            "title": "Found"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item",
+          "found"
+        ],
+        "title": "BankSearchResponse",
+        "description": "``POST /api/bank/{id}/search``: the row after a re-lookup.\n\n``found=False`` = the lookup returned nothing; the row is untouched and\nthe client shows its \"no release found\" line."
       },
       "BeetsConfigSnapshot": {
         "properties": {
@@ -6033,6 +6151,23 @@
         "title": "DuplicateTrackState",
         "description": "Per release-position relationship between the library copy and the import.\n\nadded         -> import has it, library does not (merge would fold it in)\nlibrary_only  -> library has it, import does not (kept, untouched)\nupgrade       -> both have it, the import is higher quality (replace wins)\ndowngrade     -> both have it, the import is lower quality\nsame          -> both have it, equal quality\nmissing       -> neither has it (still missing after any action)"
       },
+      "DuplicatesCheckResponse": {
+        "properties": {
+          "existing": {
+            "items": {
+              "$ref": "#/components/schemas/ExistingAlbum"
+            },
+            "type": "array",
+            "title": "Existing"
+          }
+        },
+        "type": "object",
+        "required": [
+          "existing"
+        ],
+        "title": "DuplicatesCheckResponse",
+        "description": "Up-front library-collision check: albums the SELECTED candidate would\nduplicate (empty = clean import). Shared by the bank and live import\nendpoints \u2014 a heads-up, not a resolution surface."
+      },
       "DuplicatesReport": {
         "properties": {
           "mode": {
@@ -6234,6 +6369,14 @@
                 "type": "null"
               }
             ]
+          },
+          "tracks": {
+            "items": {
+              "$ref": "#/components/schemas/ExistingTrack"
+            },
+            "type": "array",
+            "title": "Tracks",
+            "default": []
           }
         },
         "type": "object",
@@ -6249,6 +6392,75 @@
         ],
         "title": "ExistingAlbum",
         "description": "A slim view of one in-library album that the incoming import duplicates.\n\nBuilt from a beets ``Album`` (the ``found_duplicates`` set). ``album_id`` is\nthe library id (so the FE can fetch its cover via ``/api/albums/{id}/cover``\nand so Replace can target it by stable id)."
+      },
+      "ExistingTrack": {
+        "properties": {
+          "track": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track"
+          },
+          "disc": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disc"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format"
+          },
+          "bitrate_kbps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bitrate Kbps"
+          }
+        },
+        "type": "object",
+        "required": [
+          "track",
+          "disc",
+          "title",
+          "format",
+          "bitrate_kbps"
+        ],
+        "title": "ExistingTrack",
+        "description": "One track of an in-library duplicate copy \u2014 the up-front comparison row."
       },
       "FacetValue": {
         "properties": {

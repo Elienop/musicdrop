@@ -30,7 +30,8 @@ from app.models.import_models import (
 
 def _add_album(lib: Library, *, artist: str, album: str, mb: str | None, n: int) -> int:
     items = [
-        Item(album=album, albumartist=artist, title=f"t{i}", mb_albumid=mb or "") for i in range(n)
+        Item(album=album, albumartist=artist, title=f"t{i}", track=i + 1, mb_albumid=mb or "")
+        for i in range(n)
     ]
     al = lib.add_album(items)  # adds items too
     al.store()
@@ -352,3 +353,34 @@ def test_duplicates_endpoint_falls_back_to_album_after_for_legacy_rows(
         r = client.get(f"/api/bank/{row_id}/duplicates", params={"candidate_index": idx})
         assert r.status_code == 200
         assert [e["album_id"] for e in r.json()["existing"]] == [foo_id]
+
+
+# ----- the consolidated ExistingAlbum mapper (tracks + release identity) -----
+
+
+def test_existing_album_carries_tracks_and_release(beets_library: LibraryHandle) -> None:
+    from app.beets.existing_album import to_existing_album
+
+    _add_album(beets_library.lib, artist="2Pac", album="All Eyez on Me", mb="mb-9", n=3)
+    album = next(iter(beets_library.lib.albums()))
+    existing = to_existing_album(beets_library.lib, album)
+    assert existing.track_count == 3
+    assert len(existing.tracks) == 3
+    # disc-then-number order, fields mapped
+    assert [t.track for t in existing.tracks] == sorted(
+        t.track for t in existing.tracks if t.track is not None
+    )
+    assert existing.release is not None  # identity now present on the up-front check
+
+
+def test_upfront_duplicates_response_includes_tracks(
+    client: TestClient, bank_dir: Path, parked_row_in_library: str
+) -> None:
+    r = client.get(f"/api/bank/{parked_row_in_library}/duplicates", params={"candidate_index": 0})
+    assert r.status_code == 200
+    existing = r.json()["existing"]
+    assert len(existing) == 1
+    assert isinstance(existing[0]["tracks"], list)
+    assert len(existing[0]["tracks"]) == 15
+    first = existing[0]["tracks"][0]
+    assert set(first) == {"track", "disc", "title", "format", "bitrate_kbps"}

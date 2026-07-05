@@ -9,7 +9,14 @@ import pytest
 
 from app.bank import store
 from app.models.bank import BankDecision, BankItem
-from app.models.import_models import DuplicatePrompt, IncomingAlbum
+from app.models.import_models import (
+    AlbumChange,
+    Candidate,
+    DuplicatePrompt,
+    IncomingAlbum,
+    ParkedAlbum,
+    Recommendation,
+)
 
 
 def _bank(tmp_path: Path) -> Path:
@@ -485,3 +492,139 @@ def test_reconcile_interrupted_applying(tmp_path: Path) -> None:
     assert item is not None and item.status == "needs_review"
     assert item.error is not None and "interrupted" in item.error
     assert store.reconcile_interrupted(_bank(tmp_path)) == 0
+
+
+def _parked_payload(revision: int = 1) -> ParkedAlbum:
+    change = AlbumChange(artist="A", album="B", year=2000, label=None, country=None, media=None)
+    return ParkedAlbum(
+        album_index=0,
+        folder="/inbox/x",
+        candidate=Candidate(
+            confidence=90.0,
+            recommendation=Recommendation.strong,
+            data_source="MusicBrainz",
+            data_url=None,
+            cover_after_url=None,
+            has_current_art=False,
+            changed_fields=[],
+            album_before=change,
+            album_after=change,
+            tracks=[],
+            missing=[],
+            unmatched=[],
+            options=[],
+            search_revision=revision,
+        ),
+    )
+
+
+def test_research_item_gives_a_no_match_row_its_first_payload(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    row = store.create_item(
+        bank, folder="/inbox/x", source="sweep", reason="no_match", fingerprint="f" * 64
+    )
+    updated = store.research_item(
+        bank,
+        row.id,
+        parked=_parked_payload(),
+        artist="A",
+        album="B",
+        recommendation="strong",
+        confidence=90.0,
+    )
+    assert updated is not None
+    assert updated.reason == "needs_review"
+    assert updated.status == "needs_review"
+    assert updated.parked is not None
+    assert updated.artist == "A"
+    # persisted, not just returned
+    reread = store.get_item(bank, row.id)
+    assert reread is not None and reread.reason == "needs_review"
+
+
+def test_research_item_preserves_failed_status(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    row = store.create_item(
+        bank,
+        folder="/inbox/x",
+        source="sweep",
+        reason="needs_review",
+        fingerprint="f" * 64,
+        parked=_parked_payload(),
+    )
+    store.decide_item(bank, row.id, BankDecision(action="asis"))
+    store.set_status(bank, row.id, "applying")
+    store.set_status(bank, row.id, "failed", error="boom")
+    updated = store.research_item(
+        bank,
+        row.id,
+        parked=_parked_payload(revision=2),
+        artist="A",
+        album="B",
+        recommendation="strong",
+        confidence=90.0,
+    )
+    assert updated is not None
+    assert updated.status == "failed"  # banner stays honest; user re-decides next
+    assert updated.parked is not None
+    assert updated.parked.candidate.search_revision == 2
+
+
+def test_research_item_rejects_undecidable_statuses(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    row = store.create_item(
+        bank,
+        folder="/inbox/x",
+        source="sweep",
+        reason="needs_review",
+        fingerprint="f" * 64,
+        parked=_parked_payload(),
+    )
+    store.decide_item(bank, row.id, BankDecision(action="asis"))  # -> queued
+    with pytest.raises(store.InvalidTransitionError):
+        store.research_item(
+            bank,
+            row.id,
+            parked=_parked_payload(),
+            artist=None,
+            album=None,
+            recommendation=None,
+            confidence=None,
+        )
+
+
+def test_research_item_rejects_dup_resolution_rows(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    row = store.create_item(
+        bank,
+        folder="/inbox/x",
+        source="sweep",
+        reason="needs_dup_resolution",
+        fingerprint="f" * 64,
+        duplicate=_dup_prompt(),
+    )
+    with pytest.raises(store.InvalidTransitionError):
+        store.research_item(
+            bank,
+            row.id,
+            parked=_parked_payload(),
+            artist=None,
+            album=None,
+            recommendation=None,
+            confidence=None,
+        )
+
+
+def test_research_item_unknown_id_returns_none(tmp_path: Path) -> None:
+    assert (
+        store.research_item(
+            _bank(tmp_path),
+            "0" * 32,
+            parked=_parked_payload(),
+            artist=None,
+            album=None,
+            recommendation=None,
+            confidence=None,
+        )
+        is None
+    )

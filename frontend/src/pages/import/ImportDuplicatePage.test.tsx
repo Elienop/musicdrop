@@ -34,6 +34,7 @@ const PROMPT: DuplicatePrompt = {
       format: "MP3",
       bitrate_kbps: 320,
       folder: "/music/Radiohead/In Rainbows",
+      tracks: [],
     },
   ],
 };
@@ -148,6 +149,7 @@ describe("ImportDuplicatePage", () => {
           format: "FLAC",
           bitrate_kbps: 1000,
           folder: "/music/Radiohead/In Rainbows [2]",
+          tracks: [],
         },
       ],
     };

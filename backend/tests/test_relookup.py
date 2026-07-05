@@ -115,3 +115,18 @@ def test_relookup_empty_results(monkeypatch: pytest.MonkeyPatch) -> None:
     cands, rec = rl.relookup(_Task(_items()), ImportSearch(release_id="bad-id"))
     assert cands == []
     assert rec is BeetsRec.none
+
+
+def test_relookup_items_takes_items_directly(monkeypatch: pytest.MonkeyPatch) -> None:
+    items = _items()
+    canned = _match("a1", "Dreams", items)
+
+    def fake_tag_album(
+        items_: Any, search_artist: Any = None, search_name: Any = None, search_ids: Any = None
+    ) -> Any:
+        return ("2 Brothers", "Dreams", Proposal([canned], BeetsRec.strong))
+
+    monkeypatch.setattr(rl, "tag_album", fake_tag_album)
+    cands, rec = rl.relookup_items(items, ImportSearch(release_id="a1"))
+    assert cands == [canned]
+    assert rec is BeetsRec.strong

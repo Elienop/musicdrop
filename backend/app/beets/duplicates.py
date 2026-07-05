@@ -28,6 +28,7 @@ from app.artist_art_jobs.registry import artist_art_backfill_active
 # app.state.beets_swap_lock (genuine mutual exclusion with Apply) and the same
 # lifespan-less TestClient fallback. Both live in the app/beets/ boundary.
 from app.beets.config_editor import _settings, _swap_lock
+from app.beets.existing_album import to_existing_album
 from app.beets.library import (
     LibraryHandle,
     _album_fields,
@@ -142,28 +143,6 @@ def find_duplicate_albums(lib: Library, *, mode: DuplicateMode) -> DuplicatesRep
     )
 
 
-def _to_existing_album(lib: Library, album: Any) -> ExistingAlbum:
-    """Map one in-library beets Album to the slim ExistingAlbum view.
-
-    Mirrors ``WebImportSession._to_existing_album``, lifted to the adapter so the
-    bank-collision check and the live import share one mapping. ``lib`` is read
-    only when the album has items, so an item-less album resolves to "".
-    """
-    items = list(album.items())
-    fmt, bitrate_kbps = album_format_bitrate(items)
-    year = album.get("year")
-    return ExistingAlbum(
-        album_id=int(album.id),
-        album_artist=_coerce_optional_str(album.albumartist),
-        album=_coerce_optional_str(album.album),
-        year=int(year) if year else None,
-        track_count=len(items),
-        format=fmt,
-        bitrate_kbps=bitrate_kbps,
-        folder=album_folder(lib, items) if items else "",
-    )
-
-
 def find_import_duplicates(
     lib: Library,
     *,
@@ -201,7 +180,7 @@ def find_import_duplicates(
                 paths = [os.path.abspath(os.fsdecode(i.path)) for i in items if i.path]
                 if paths and all(p == excl or p.startswith(excl + os.sep) for p in paths):
                     continue
-            out.append(_to_existing_album(lib, album_obj))
+            out.append(to_existing_album(lib, album_obj))
     return out
 
 

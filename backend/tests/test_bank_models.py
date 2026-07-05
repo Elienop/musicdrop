@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from app.models.bank import BankDecision, BankDuplicatesResponse, BankItem
-from app.models.import_models import DuplicateAction
+from app.models.bank import BankDecision, BankItem
+from app.models.import_models import DuplicateAction, DuplicatesCheckResponse
 
 BANKED_AT = datetime(2026, 6, 12, tzinfo=UTC)
 
@@ -40,7 +40,8 @@ def test_candidate_index_still_rejected_on_asis() -> None:
 
 
 def test_bank_duplicates_response_round_trips() -> None:
-    resp = BankDuplicatesResponse(existing=[])
+    # The bank /duplicates endpoint now returns the shared DuplicatesCheckResponse.
+    resp = DuplicatesCheckResponse(existing=[])
     assert resp.existing == []
 
 

@@ -511,6 +511,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/import/{job_id}/albums/{index}/duplicates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Import Album Duplicates
+         * @description Up-front library-collision check for the SELECTED candidate option.
+         *
+         *     A heads-up only — Apply still routes through beets' duplicate prompt.
+         *     Pure library read keyed on the option's own identity (the bank check's
+         *     exact posture); never touches the parked worker.
+         */
+        get: operations["get_import_album_duplicates_api_import__job_id__albums__index__duplicates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/import/{job_id}/albums/{index}/choice": {
         parameters: {
             query?: never;
@@ -1378,6 +1402,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/bank/{item_id}/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Search Bank Item
+         * @description Re-look-up a banked folder against a release id/URL or a name search.
+         *
+         *     Preview-only (the attended flow's "enter Id" rescue, run offline): reads
+         *     the folder's tags, queries the metadata sources, and replaces the row's
+         *     candidate payload. Never touches the import slot or the library.
+         */
+        post: operations["search_bank_item_api_bank__item_id__search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/bank/{item_id}/decision": {
         parameters: {
             query?: never;
@@ -1841,15 +1889,6 @@ export interface components {
             duplicate_action?: components["schemas"]["DuplicateAction"] | null;
         };
         /**
-         * BankDuplicatesResponse
-         * @description ``GET /api/bank/{id}/duplicates``: library albums the selected
-         *     candidate would collide with (empty = no collision, import is clean).
-         */
-        BankDuplicatesResponse: {
-            /** Existing */
-            existing: components["schemas"]["ExistingAlbum"][];
-        };
-        /**
          * BankItem
          * @description One banked album — the full row, candidate payloads included.
          */
@@ -1960,6 +1999,18 @@ export interface components {
             offset: number;
             /** Limit */
             limit: number;
+        };
+        /**
+         * BankSearchResponse
+         * @description ``POST /api/bank/{id}/search``: the row after a re-lookup.
+         *
+         *     ``found=False`` = the lookup returned nothing; the row is untouched and
+         *     the client shows its "no release found" line.
+         */
+        BankSearchResponse: {
+            item: components["schemas"]["BankItem"];
+            /** Found */
+            found: boolean;
         };
         /**
          * BeetsConfigSnapshot
@@ -2345,6 +2396,16 @@ export interface components {
          * @enum {string}
          */
         DuplicateTrackState: "added" | "library_only" | "upgrade" | "downgrade" | "same" | "missing";
+        /**
+         * DuplicatesCheckResponse
+         * @description Up-front library-collision check: albums the SELECTED candidate would
+         *     duplicate (empty = clean import). Shared by the bank and live import
+         *     endpoints — a heads-up, not a resolution surface.
+         */
+        DuplicatesCheckResponse: {
+            /** Existing */
+            existing: components["schemas"]["ExistingAlbum"][];
+        };
         /** DuplicatesReport */
         DuplicatesReport: {
             mode: components["schemas"]["DuplicateMode"];
@@ -2406,6 +2467,27 @@ export interface components {
             /** Folder */
             folder: string;
             release?: components["schemas"]["ReleaseIdentity"] | null;
+            /**
+             * Tracks
+             * @default []
+             */
+            tracks: components["schemas"]["ExistingTrack"][];
+        };
+        /**
+         * ExistingTrack
+         * @description One track of an in-library duplicate copy — the up-front comparison row.
+         */
+        ExistingTrack: {
+            /** Track */
+            track: number | null;
+            /** Disc */
+            disc: number | null;
+            /** Title */
+            title: string | null;
+            /** Format */
+            format: string | null;
+            /** Bitrate Kbps */
+            bitrate_kbps: number | null;
         };
         /**
          * FacetValue
@@ -4758,6 +4840,40 @@ export interface operations {
             };
         };
     };
+    get_import_album_duplicates_api_import__job_id__albums__index__duplicates_get: {
+        parameters: {
+            query?: {
+                candidate_index?: number;
+            };
+            header?: never;
+            path: {
+                job_id: string;
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DuplicatesCheckResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     post_import_choice_api_import__job_id__albums__index__choice_post: {
         parameters: {
             query?: never;
@@ -6218,7 +6334,42 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["BankDuplicatesResponse"];
+                    "application/json": components["schemas"]["DuplicatesCheckResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_bank_item_api_bank__item_id__search_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportSearch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BankSearchResponse"];
                 };
             };
             /** @description Validation Error */

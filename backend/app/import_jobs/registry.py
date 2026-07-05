@@ -464,13 +464,22 @@ class ImportJobRegistry:
 
     def candidate(self, job_id: str, index: int) -> Candidate:
         """Return the full Candidate for the parked album at ``index``."""
+        return self.parked_album(job_id, index).candidate
+
+    def parked_album(self, job_id: str, index: int) -> ParkedAlbum:
+        """The full ParkedAlbum (folder included) parked at ``index``.
+
+        The up-front duplicate check needs the folder for its exclude-under
+        guard; raises KeyError exactly like ``candidate`` when nothing is
+        parked there.
+        """
         self.drain(job_id)
         job = self._require(job_id)
         with self._lock:
             row = job.albums.get(index)
             if row is None or row.parked is None:
                 raise KeyError(index)
-            return row.parked.candidate
+            return row.parked
 
     def candidate_cover(self, job_id: str, index: int) -> tuple[bytes, str] | None:
         """Embedded cover art for the parked album at ``index``, or None.

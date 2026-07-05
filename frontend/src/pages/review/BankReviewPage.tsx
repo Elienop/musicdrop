@@ -1,13 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 
 import { useActiveImport } from "@/api/useActiveImport";
-import type { BankDecision, BankItem, ExistingAlbum } from "@/api/useBank";
+import type { BankDecision, BankItem } from "@/api/useBank";
 import {
   BankConflictError,
   useBankDecision,
   useBankDuplicates,
   useBankItem,
+  useBankSearch,
   useDeleteBankItem,
 } from "@/api/useBank";
 import type { DuplicateAction } from "@/api/useImport";
@@ -17,11 +18,13 @@ import {
   useStartImport,
 } from "@/api/useImport";
 import { BackLink } from "@/components/albums/album-grid";
+import { AlreadyInLibrary } from "@/components/import/AlreadyInLibrary";
 import { CandidateReview } from "@/components/import/CandidateReview";
 import {
   DuplicateActions,
   DuplicateComparison,
 } from "@/components/import/DuplicateReview";
+import { ReleaseSearchPanel } from "@/components/import/ReleaseSearchPanel";
 import { Info, Remove, Spinner, Success, Warning } from "@/components/icons";
 import { EmptyState } from "@/components/system/EmptyState";
 import { PageSkeleton } from "@/components/system/PageSkeleton";
@@ -135,6 +138,20 @@ function DecisionError({ error }: { error: unknown }) {
   );
 }
 
+/** The search's conflict line — a 409's real detail (stale flip, status race).
+ * Non-conflict transport errors render inside the panel instead. */
+function SearchConflict({ error }: { error: unknown }) {
+  if (!(error instanceof BankConflictError)) return null;
+  return (
+    <p className="text-destructive text-sm" role="alert">
+      {error.message}
+    </p>
+  );
+}
+
+const NO_HIT_FEEDBACK =
+  "No release found for that search — showing your previous matches.";
+
 /** The failed-apply banner. role=alert via StatusBanner's destructive tone. */
 function FailedBanner({ error }: { error: string | null | undefined }) {
   return (
@@ -187,6 +204,9 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
   // failed apply (retry) — both run the up-front library-collision check keyed
   // on the selected release; queued/applying/done rows never reach here.
   const decidable = item.status === "needs_review" || item.status === "failed";
+  const search = useBankSearch(item.id);
+  // A landed search replaces the payload — reset the switcher to the new top.
+  useEffect(() => setSelected(0), [parked?.candidate.search_revision]);
   const dups = useBankDuplicates(item.id, selected, decidable && parked != null);
   if (!parked) return null;
 
@@ -225,10 +245,28 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
         selected={selected}
         onSelect={setSelected}
       />
+      {decidable && (
+        <>
+          <ReleaseSearchPanel
+            onSearch={(s) => search.mutate(s)}
+            busy={search.isPending || decide.isPending}
+            feedback={search.data?.found === false ? NO_HIT_FEEDBACK : null}
+            error={search.isError && !(search.error instanceof BankConflictError)}
+          />
+          <SearchConflict error={search.error} />
+        </>
+      )}
       {showDupActions ? (
         <>
           {hasCollision ? (
-            <AlreadyInLibraryNotice existing={existing} />
+            <AlreadyInLibrary
+              existing={existing}
+              blurb={
+                existing.length === 1
+                  ? "This album matches one you already have. Choose what to do below — your choice imports the selected release."
+                  : `This album matches ${existing.length} you already have. Choose what to do below — your choice imports the selected release.`
+              }
+            />
           ) : (
             // Error-on-failed fallback: the re-check couldn't run, so we can't
             // list the colliding copies, but the failed-banner already told the
@@ -248,7 +286,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
             <Button
               variant="ghost"
               size="sm"
-              disabled={decide.isPending}
+              disabled={decide.isPending || search.isPending}
               onClick={() => submit({ action: "ignore" })}
             >
               Ignore
@@ -257,7 +295,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
           </div>
           <DuplicateActions
             pending={pendingDup}
-            busy={decide.isPending}
+            busy={decide.isPending || search.isPending}
             context="bank"
             onDecide={(action) => {
               setPendingDup(action);
@@ -281,7 +319,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
             <Button
               variant="ghost"
               size="sm"
-              disabled={decide.isPending}
+              disabled={decide.isPending || search.isPending}
               onClick={() => submit({ action: "ignore" })}
             >
               Ignore
@@ -289,7 +327,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
             <Button
               variant="outline"
               size="sm"
-              disabled={decide.isPending || checking}
+              disabled={decide.isPending || checking || search.isPending}
               aria-describedby="bank-actions-hint"
               onClick={() => submit({ action: "asis" })}
             >
@@ -298,7 +336,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
             <Button
               variant="outline"
               size="sm"
-              disabled={decide.isPending || checking}
+              disabled={decide.isPending || checking || search.isPending}
               aria-describedby="bank-actions-hint"
               onClick={() => submit({ action: "astracks" })}
             >
@@ -306,7 +344,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
             </Button>
             <Button
               className="ml-auto"
-              disabled={decide.isPending || checking}
+              disabled={decide.isPending || checking || search.isPending}
               onClick={() => submit({ action: "apply", candidate_index: selected })}
             >
               {decide.isPending ? (
@@ -328,40 +366,6 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
         </div>
       )}
     </div>
-  );
-}
-
-/** The up-front "this already exists" notice on a banked candidate screen —
- * lists each colliding library copy with a View link, above the four duplicate
- * actions. The candidate switcher stays live, so Keep both / Replace / Merge
- * tag the new copy as the SELECTED release. */
-function AlreadyInLibraryNotice({ existing }: { existing: ExistingAlbum[] }) {
-  return (
-    <section aria-label="Already in your library" className="flex flex-col gap-3">
-      <SectionLabel>Already in your library</SectionLabel>
-      <p className="text-muted-foreground text-sm">
-        This album matches{" "}
-        {existing.length === 1 ? "one you already have" : `${existing.length} you already have`}.
-        Choose what to do below — your choice imports the selected release.
-      </p>
-      <ul className="flex flex-col gap-2">
-        {existing.map((album) => (
-          <li
-            key={album.album_id}
-            className="border-border flex items-center justify-between gap-3 rounded-lg border p-3"
-          >
-            <span className="truncate text-sm">
-              <span className="font-medium">{album.album_artist ?? "Unknown artist"}</span>
-              {" — "}
-              {album.album ?? "Unknown album"}
-            </span>
-            <Button variant="outline" size="sm" asChild>
-              <Link to={`/albums/${album.album_id}`}>View</Link>
-            </Button>
-          </li>
-        ))}
-      </ul>
-    </section>
   );
 }
 
@@ -410,6 +414,7 @@ function BankDuplicateScreen({ item }: { item: BankItem }) {
 function NoMatchScreen({ item }: { item: BankItem }) {
   const navigate = useNavigate();
   const decide = useBankDecision(item.id);
+  const search = useBankSearch(item.id);
   const [pendingDup, setPendingDup] = useState<DuplicateAction | null>(null);
   const submit = (decision: BankDecision) =>
     decide.mutate(decision, {
@@ -425,16 +430,24 @@ function NoMatchScreen({ item }: { item: BankItem }) {
           No match found
         </h1>
         <p className="text-muted-foreground text-sm">
-          beets couldn&rsquo;t match this folder against MusicBrainz. Import it
-          with its current tags, as standalone tracks, or ignore it.
+          beets couldn&rsquo;t match this folder against MusicBrainz. Search for
+          the right release below, import it with its current tags, as
+          standalone tracks, or ignore it.
         </p>
       </div>
       <p className="text-muted-foreground font-mono text-xs" title={item.folder}>
         {item.folder}
       </p>
+      <ReleaseSearchPanel
+        onSearch={(s) => search.mutate(s)}
+        busy={search.isPending || decide.isPending}
+        feedback={search.data?.found === false ? NO_HIT_FEEDBACK : null}
+        error={search.isError && !(search.error instanceof BankConflictError)}
+      />
+      <SearchConflict error={search.error} />
       {item.status === "failed" && (
         <FailedDuplicateStrip
-          busy={decide.isPending}
+          busy={decide.isPending || search.isPending}
           pending={pendingDup}
           onDecide={(action) => {
             setPendingDup(action);
@@ -444,13 +457,13 @@ function NoMatchScreen({ item }: { item: BankItem }) {
       )}
       <DecisionError error={decide.error} />
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="ghost" size="sm" disabled={decide.isPending} onClick={() => submit({ action: "ignore" })}>
+        <Button variant="ghost" size="sm" disabled={decide.isPending || search.isPending} onClick={() => submit({ action: "ignore" })}>
           Ignore
         </Button>
-        <Button variant="outline" size="sm" disabled={decide.isPending} onClick={() => submit({ action: "astracks" })}>
+        <Button variant="outline" size="sm" disabled={decide.isPending || search.isPending} onClick={() => submit({ action: "astracks" })}>
           As tracks
         </Button>
-        <Button className="ml-auto" disabled={decide.isPending} onClick={() => submit({ action: "asis" })}>
+        <Button className="ml-auto" disabled={decide.isPending || search.isPending} onClick={() => submit({ action: "asis" })}>
           {decide.isPending ? (
             <>
               <Spinner className="animate-spin" aria-hidden="true" /> Queuing…

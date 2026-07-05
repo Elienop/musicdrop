@@ -68,6 +68,9 @@ def _session(bridge: ImportBridge, *, trash_dir: Path | None = None) -> WebImpor
     session._album_index = 0
     session._trash_dir = trash_dir
     session._replace_album_ids = set()
+    # __init__ is skipped, so default the library the shared ExistingAlbum mapper
+    # reads. None is safe: these fakes carry no items, so folder resolves to "".
+    session.lib = None  # type: ignore[assignment]  # fake session never dereferences lib
     # __init__ is skipped, so default the attended flag resolve_duplicate reads.
     session.unattended = False
     # __init__ is skipped, so default the sweep flag + bank dir the unattended
@@ -108,6 +111,11 @@ class _FakeAlbum:
         self.data_source = data_source
         self.mb_albumid = mb_albumid
         self.label = label
+
+    def get(self, key: str, default: Any = None) -> Any:
+        # Mirror beets Album.get so the shared ExistingAlbum mapper's
+        # ``album.get("year")`` works against the fake.
+        return getattr(self, key, default)
 
     def items(self) -> list[Any]:
         return []

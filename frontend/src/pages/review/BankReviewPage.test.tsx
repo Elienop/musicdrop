@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { delay, http, HttpResponse } from "msw";
 import { beforeEach, describe, expect, test, vi } from "vitest";
@@ -17,6 +17,7 @@ const O = window.location.origin;
 const ITEM = `${O}/api/bank/:itemId`;
 const DECISION = `${O}/api/bank/:itemId/decision`;
 const DUP = `${O}/api/bank/:itemId/duplicates`;
+const SEARCH = `${O}/api/bank/:itemId/search`;
 const ACTIVE = `${O}/api/imports/active`;
 const IMPORT_URL = `${O}/api/import`;
 
@@ -30,6 +31,10 @@ const existingAlbum = {
   format: "MP3",
   bitrate_kbps: 320,
   folder: "/library/BoC/MHTRTC",
+  release: null,
+  tracks: [
+    { track: 1, disc: 1, title: "Echoes", format: "FLAC", bitrate_kbps: 987 },
+  ],
 };
 
 /** A complete banked Candidate — the exact generated shape (every field). */
@@ -206,6 +211,85 @@ describe("BankReviewPage", () => {
     await waitFor(() => expect(body).toEqual({ action: "asis" }));
   });
 
+  test("rescues a no-match row: search swaps in a candidate screen", async () => {
+    const noMatchRow = bankItem({
+      reason: "no_match",
+      parked: null,
+      duplicate: null,
+      recommendation: null,
+      confidence: null,
+      album: null,
+      artist: null,
+    });
+    // The search lands a real needs_review row (parked payload) on the SAME id.
+    const rescued = bankItem();
+    server.use(
+      http.get(ITEM, () => HttpResponse.json(noMatchRow)),
+      http.post(SEARCH, () => HttpResponse.json({ item: rescued, found: true })),
+    );
+    renderRow();
+    await screen.findByRole("heading", { name: /no match found/i });
+    fireEvent.change(
+      screen.getByRole("textbox", { name: /release url or id/i }),
+      { target: { value: "https://musicbrainz.org/release/x" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^search$/i }));
+    // The cache write re-branches the SAME route to the candidate screen (the
+    // "After import" panel heading + tracklist column both mark it).
+    expect((await screen.findAllByText(/after import/i)).length).toBeGreaterThan(0);
+  });
+
+  test("shows the no-hit feedback and keeps the screen", async () => {
+    const noMatchRow = bankItem({
+      reason: "no_match",
+      parked: null,
+      duplicate: null,
+      recommendation: null,
+      confidence: null,
+      album: null,
+      artist: null,
+    });
+    server.use(
+      http.get(ITEM, () => HttpResponse.json(noMatchRow)),
+      http.post(SEARCH, () => HttpResponse.json({ item: noMatchRow, found: false })),
+    );
+    renderRow();
+    await screen.findByRole("heading", { name: /no match found/i });
+    fireEvent.change(
+      screen.getByRole("textbox", { name: /release url or id/i }),
+      { target: { value: "bad-id" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^search$/i }));
+    expect(
+      await screen.findByText(/no release found for that search/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /no match found/i }),
+    ).toBeInTheDocument();
+  });
+
+  test("surfaces a 409 search conflict and refetches the row", async () => {
+    server.use(
+      http.get(ITEM, () => HttpResponse.json(bankItem())),
+      http.post(SEARCH, () =>
+        HttpResponse.json(
+          { detail: "the folder changed since it was banked" },
+          { status: 409 },
+        ),
+      ),
+    );
+    renderRow();
+    await screen.findAllByText(/after import/i);
+    fireEvent.change(
+      screen.getByRole("textbox", { name: /release url or id/i }),
+      { target: { value: "x" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^search$/i }));
+    expect(
+      await screen.findByText(/folder changed since it was banked/i),
+    ).toBeInTheDocument();
+  });
+
   test("a detected duplicate shows the up-front resolver and resolves in one decision", async () => {
     let body: unknown = null;
     server.use(
@@ -221,6 +305,12 @@ describe("BankReviewPage", () => {
     // The up-front collision notice + a View link to the existing copy.
     expect(await screen.findByText(/already in your library/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /^view$/i })).toHaveAttribute("href", "/albums/7");
+    // The existing copy's own tracklist is shown so the choice is informed.
+    const section = within(
+      screen.getByRole("region", { name: /already in your library/i }),
+    );
+    expect(section.getByText("Echoes")).toBeInTheDocument();
+    expect(section.getByText(/FLAC · 987 kbps/)).toBeInTheDocument();
     // One click both pins the selected release and resolves the collision.
     await userEvent.click(screen.getByRole("button", { name: /replace old/i }));
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/review"));

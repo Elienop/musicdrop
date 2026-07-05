@@ -213,6 +213,42 @@ export function useImportCandidate(
   });
 }
 
+/** `GET /api/import/{job}/albums/{index}/duplicates` response (generated). */
+export type DuplicatesCheckResponse = components["schemas"]["DuplicatesCheckResponse"];
+
+/**
+ * Up-front library-collision check for the selected candidate option. A
+ * heads-up only — Apply still routes through the duplicate prompt.
+ * `searchRevision` keys the cache so a landed release search re-checks
+ * against the fresh options; 404 (no longer parked) just ends the query.
+ */
+export function useImportDuplicates(
+  jobId: string,
+  index: number,
+  candidateIndex: number,
+  searchRevision: number,
+) {
+  return useQuery({
+    queryKey: ["import", "duplicates", jobId, index, candidateIndex, searchRevision],
+    retry: false,
+    queryFn: async () => {
+      const { data, error, response } = await client.GET(
+        "/api/import/{job_id}/albums/{index}/duplicates",
+        {
+          params: {
+            path: { job_id: jobId, index },
+            query: { candidate_index: candidateIndex },
+          },
+        },
+      );
+      if (error || !response.ok || !data) {
+        throw new Error("Failed to check for duplicates");
+      }
+      return data;
+    },
+  });
+}
+
 /** Arguments to a choice submission: which album, and the decision. */
 export interface SubmitChoiceArgs {
   index: number;

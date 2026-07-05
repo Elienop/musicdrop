@@ -14,7 +14,6 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from app.models.import_models import (
     DuplicateAction,
     DuplicatePrompt,
-    ExistingAlbum,
     ParkedAlbum,
 )
 
@@ -188,8 +187,12 @@ class BankBulkDeleteResponse(BaseModel):
     deleted: int
 
 
-class BankDuplicatesResponse(BaseModel):
-    """``GET /api/bank/{id}/duplicates``: library albums the selected
-    candidate would collide with (empty = no collision, import is clean)."""
+class BankSearchResponse(BaseModel):
+    """``POST /api/bank/{id}/search``: the row after a re-lookup.
 
-    existing: list[ExistingAlbum]
+    ``found=False`` = the lookup returned nothing; the row is untouched and
+    the client shows its "no release found" line.
+    """
+
+    item: BankItem
+    found: bool

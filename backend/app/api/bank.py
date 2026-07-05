@@ -15,8 +15,11 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 
 from app.bank import store
+from app.bank.apply_runner import _STALE_CHANGED_ERROR, _STALE_GONE_ERROR
+from app.bank.fingerprint import folder_fingerprint
 from app.beets.duplicates import find_import_duplicates
 from app.beets.library import LibraryHandle
+from app.beets.research import research_folder
 from app.config import settings
 from app.models.bank import (
     BankBulkDeleteRequest,
@@ -24,12 +27,13 @@ from app.models.bank import (
     BankBulkIgnoreRequest,
     BankBulkIgnoreResponse,
     BankDecision,
-    BankDuplicatesResponse,
     BankItem,
     BankListResponse,
     BankReason,
+    BankSearchResponse,
     BankStatus,
 )
+from app.models.import_models import DuplicatesCheckResponse, ImportSearch, ParkedAlbum
 
 router = APIRouter(tags=["bank"])
 
@@ -80,12 +84,12 @@ async def get_bank_item(item_id: str) -> BankItem:
     return item
 
 
-@router.get("/bank/{item_id}/duplicates", response_model=BankDuplicatesResponse)
+@router.get("/bank/{item_id}/duplicates", response_model=DuplicatesCheckResponse)
 async def bank_item_duplicates(
     item_id: str,
     request: Request,
     candidate_index: Annotated[int, Query(ge=0)] = 0,
-) -> BankDuplicatesResponse:
+) -> DuplicatesCheckResponse:
     """Library albums the selected candidate would collide with — run beets'
     own duplicate query on the matched-release metadata (lazy, fresh)."""
     item = await run_in_threadpool(store.get_item, get_bank_dir(), item_id)
@@ -93,7 +97,7 @@ async def bank_item_duplicates(
         raise HTTPException(status_code=404, detail="Bank item not found")
     parked = item.parked
     if parked is None:
-        return BankDuplicatesResponse(existing=[])  # nothing to check (no_match)
+        return DuplicatesCheckResponse(existing=[])  # nothing to check (no_match)
     after = parked.candidate.album_after
     options = parked.candidate.options
     idx = candidate_index if 0 <= candidate_index < len(options) else 0
@@ -117,7 +121,72 @@ async def bank_item_duplicates(
         mb_albumid=mb_albumid,
         exclude_under=item.folder,
     )
-    return BankDuplicatesResponse(existing=existing)
+    return DuplicatesCheckResponse(existing=existing)
+
+
+@router.post("/bank/{item_id}/search", response_model=BankSearchResponse)
+async def search_bank_item(item_id: str, search: ImportSearch) -> BankSearchResponse:
+    """Re-look-up a banked folder against a release id/URL or a name search.
+
+    Preview-only (the attended flow's "enter Id" rescue, run offline): reads
+    the folder's tags, queries the metadata sources, and replaces the row's
+    candidate payload. Never touches the import slot or the library.
+    """
+    bank_dir = get_bank_dir()
+    item = await run_in_threadpool(store.get_item, bank_dir, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Bank item not found")
+    # Fast-path pre-check only — the store's locked _SEARCHABLE re-check in
+    # research_item is authoritative if this tuple ever drifts.
+    if item.status not in ("needs_review", "failed") or item.reason == "needs_dup_resolution":
+        raise HTTPException(
+            status_code=409,
+            detail=f"row is {item.status}/{item.reason}; a search needs an undecided match row",
+        )
+
+    # A searched payload must describe the banked files: a changed or vanished
+    # folder flips to stale (the apply runner's exact semantics) instead.
+    # The flip below is intentionally unguarded (no expected=): the mismatch is
+    # a fact about the disk, and a decision racing past the pre-check would hit
+    # the apply runner's own fingerprint re-check and land on stale anyway.
+    def _current_fingerprint() -> str | None:
+        try:
+            return folder_fingerprint(Path(item.folder))
+        except FileNotFoundError:
+            return None
+
+    current = await run_in_threadpool(_current_fingerprint)
+    if current is None or current != item.fingerprint:
+        error = _STALE_GONE_ERROR if current is None else _STALE_CHANGED_ERROR
+        await run_in_threadpool(lambda: store.set_status(bank_dir, item_id, "stale", error=error))
+        raise HTTPException(status_code=409, detail=error)
+
+    result = await run_in_threadpool(research_folder, item.folder, search)
+    if result is None:
+        return BankSearchResponse(item=item, found=False)
+    previous_revision = item.parked.candidate.search_revision if item.parked else 0
+    parked = ParkedAlbum(
+        album_index=item.parked.album_index if item.parked else 0,
+        folder=item.folder,
+        candidate=result.candidate.model_copy(update={"search_revision": previous_revision + 1}),
+    )
+    try:
+        updated = await run_in_threadpool(
+            lambda: store.research_item(
+                bank_dir,
+                item_id,
+                parked=parked,
+                artist=result.artist,
+                album=result.album,
+                recommendation=result.recommendation.value,
+                confidence=result.confidence,
+            )
+        )
+    except store.InvalidTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Bank item not found")
+    return BankSearchResponse(item=updated, found=True)
 
 
 @router.post("/bank/{item_id}/decision", response_model=BankItem)
