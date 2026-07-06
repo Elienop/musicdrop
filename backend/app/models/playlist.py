@@ -58,6 +58,10 @@ class PlaylistTrack(BaseModel):
     duration_seconds: float | None
     available: bool
     pending: bool = False
+    # The pending entry's original source text (the raw m3u line / file path /
+    # "plex:<playlist>") — the tooltip identity for a bare-path import. None on
+    # resolved and unavailable rows (there's a real library item behind those).
+    source: str | None = None
 
 
 class PlaylistDetail(Playlist):

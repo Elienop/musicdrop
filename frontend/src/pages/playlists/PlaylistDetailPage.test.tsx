@@ -220,7 +220,9 @@ describe("PlaylistDetailPage", () => {
   test("renders a pending row with its badge and source metadata", async () => {
     server.use(
       http.get(BASE, () =>
-        HttpResponse.json(detail([pendingTrack("u1", "Lost", { artist: "X" })])),
+        HttpResponse.json(
+          detail([pendingTrack("u1", "Lost", { artist: "X", source: "Ghost - Lost" })]),
+        ),
       ),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -230,6 +232,9 @@ describe("PlaylistDetailPage", () => {
     // The remembered metadata renders…
     expect(await screen.findByText("Lost")).toBeInTheDocument();
     expect(screen.getByText("X")).toBeInTheDocument();
+    // …with the original source text carried as a title tooltip (for a bare-path
+    // m3u entry it's the only "it was this" identity).
+    expect(screen.getByTitle("Ghost - Lost")).toBeInTheDocument();
     // …flagged with a "Pending" badge…
     expect(screen.getByText(/pending/i)).toBeInTheDocument();
     // …offering a Match action instead of a playable/linked title (there is no

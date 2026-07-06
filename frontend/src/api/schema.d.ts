@@ -3353,6 +3353,8 @@ export interface components {
              * @default false
              */
             pending: boolean;
+            /** Source */
+            source?: string | null;
         };
         /** PlaylistUpdateRequest */
         PlaylistUpdateRequest: {

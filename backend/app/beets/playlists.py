@@ -83,6 +83,7 @@ def _pending_row(entry: StoredEntry) -> PlaylistTrack:
         duration_seconds=info.duration_seconds if info else None,
         available=False,
         pending=True,
+        source=info.source if info else None,
     )
 
 

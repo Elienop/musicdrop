@@ -676,7 +676,10 @@ function PlaylistTrackRow({
         {position}
       </TableCell>
       <TableCell>
-        <div className="flex min-w-0 flex-col">
+        {/* A pending row carries the original source text (m3u line / file path
+            / "plex:<name>") as a tooltip — for a bare-path entry it's the only
+            "it was this" identity. Resolved rows have no source (title omitted). */}
+        <div className="flex min-w-0 flex-col" title={track.source ?? undefined}>
           <div className="flex items-center gap-2">
             <span
               className={`truncate font-medium ${track.available ? "" : "text-muted-foreground italic"}`}

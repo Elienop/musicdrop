@@ -8476,6 +8476,17 @@
             "type": "boolean",
             "title": "Pending",
             "default": false
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
           }
         },
         "type": "object",
