@@ -369,6 +369,13 @@ function PlaylistReview({
   onUseSuggestion: (position: number, itemId: number) => void;
   onSearch: (position: number) => void;
 }) {
+  // Tallies follow the LIVE resolution state, not the frozen preview counts: a
+  // resolved entry (seeded match or a user pick) has an item_id, the rest are
+  // still unmatched. So "2 ambiguous" doesn't linger after the user resolves them.
+  const matched = playlist.entries.filter(
+    (entry) => resolutionFor(entry.position) !== null,
+  ).length;
+  const unmatched = playlist.entries.length - matched;
   return (
     <Card>
       <details>
@@ -377,11 +384,9 @@ function PlaylistReview({
             {playlist.name}
           </span>
           <span className="text-muted-foreground flex shrink-0 gap-2 text-sm tabular-nums">
-            <span>{playlist.matched_count} matched</span>
+            <span>{matched} matched</span>
             <span aria-hidden="true">·</span>
-            <span>{playlist.ambiguous_count} ambiguous</span>
-            <span aria-hidden="true">·</span>
-            <span>{playlist.unmatched_count} unmatched</span>
+            <span>{unmatched} unmatched</span>
           </span>
         </summary>
         <ul className="flex flex-col border-t">

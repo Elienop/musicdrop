@@ -55,7 +55,7 @@ describe("ImportPlaylistsPage", () => {
     server.use(http.get(PLEX_URL, () => HttpResponse.json({ playlists: [] })));
   });
 
-  test("uploads files, previews, and shows match stats", async () => {
+  test("shows live match stats that follow resolutions", async () => {
     server.use(
       http.post(PREVIEW_URL, () =>
         HttpResponse.json({
@@ -63,8 +63,8 @@ describe("ImportPlaylistsPage", () => {
             {
               name: "Road",
               matched_count: 1,
-              ambiguous_count: 0,
-              unmatched_count: 1,
+              ambiguous_count: 1,
+              unmatched_count: 0,
               entries: [
                 entry({ position: 1, item_id: 7, match: summary({ item_id: 7 }) }),
                 entry({
@@ -73,7 +73,8 @@ describe("ImportPlaylistsPage", () => {
                   artist: "Ghost",
                   title: "Gone",
                   album: "",
-                  status: "unmatched",
+                  status: "ambiguous",
+                  suggestions: [summary({ item_id: 9, title: "Gone (Remaster)" })],
                 }),
               ],
             },
@@ -91,8 +92,15 @@ describe("ImportPlaylistsPage", () => {
       }),
     );
 
+    // Seeded: entry 1 is matched, entry 2 is unresolved.
     expect(await screen.findByText(/1 matched/)).toBeInTheDocument();
     expect(screen.getByText(/1 unmatched/)).toBeInTheDocument();
+
+    // Resolving entry 2's suggestion moves the tallies live (they no longer sit
+    // frozen at the preview's counts).
+    await userEvent.click(screen.getByRole("button", { name: /gone \(remaster\)/i }));
+    expect(await screen.findByText(/2 matched/)).toBeInTheDocument();
+    expect(screen.getByText(/0 unmatched/)).toBeInTheDocument();
   });
 
   test("accepting a suggestion upgrades the entry before commit", async () => {
