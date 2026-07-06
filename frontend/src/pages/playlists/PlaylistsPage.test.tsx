@@ -1,6 +1,8 @@
-import { screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { describe, expect, test } from "vitest";
 
 import { PlaylistsPage } from "@/pages/playlists/PlaylistsPage";
@@ -80,5 +82,27 @@ describe("PlaylistsPage", () => {
     await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
 
     await waitFor(() => expect(screen.getByText("Workout")).toBeInTheDocument());
+  });
+
+  test("the Import button navigates to the import flow", async () => {
+    server.use(http.get(URL, () => HttpResponse.json([])));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/playlists"]}>
+          <Routes>
+            <Route path="/playlists" element={<PlaylistsPage />} />
+            <Route path="/playlists/import" element={<div>Import flow</div>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await screen.findByText(/no playlists yet/i);
+
+    await userEvent.click(screen.getByRole("link", { name: /import/i }));
+
+    expect(await screen.findByText("Import flow")).toBeInTheDocument();
   });
 });

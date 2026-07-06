@@ -28,8 +28,9 @@ class _FakeTrack:
 class _FakeSection:
     TYPE = "artist"
 
-    def __init__(self, tracks: list[_FakeTrack]) -> None:
+    def __init__(self, tracks: list[_FakeTrack], *, title: str = "Music") -> None:
         self._tracks = tracks
+        self.title = title
 
     def searchTracks(self) -> list[_FakeTrack]:
         return self._tracks
@@ -285,3 +286,43 @@ def test_delete_on_targets_isolates_a_failing_account(monkeypatch: pytest.Monkey
 def test_delete_on_targets_not_configured() -> None:
     with pytest.raises(PlexNotConfigured):
         sync.delete_playlist_on_targets(PlexConfig(), {"admin": "500"})
+
+
+class _TwoSectionServer(_FakeServer):
+    """Two artist sections: 'Music' (first) and 'MusicDrop' (second)."""
+
+    def __init__(self, first: _FakeSection, second: _FakeSection) -> None:
+        self._sections = [first, second]
+        self.library = type("L", (), {"sections": lambda _self: [first, second]})()
+        self.created = []
+        self._playlists = []
+
+
+def test_sync_uses_the_configured_section(monkeypatch: pytest.MonkeyPatch) -> None:
+    wanted = _FakeTrack(1, ["/music/a/b/01 x.mp3"], title="x")
+    first = _FakeSection([], title="Music")
+    second = _FakeSection([wanted], title="MusicDrop")
+    server = _TwoSectionServer(first, second)
+    _patch(monkeypatch, server)
+    config = PlexConfig(base_url="http://plex:32400", token="t", library_section="musicdrop")
+    state = sync.sync_playlist(
+        config,
+        "P",
+        [
+            PlexTrackSpec(
+                path="/music/a/b/01 x.mp3", albumartist="", album="", title="x", track=None
+            )
+        ],
+    )
+    assert state.status == "ok"  # resolved against the SECOND (named) section
+
+
+def test_sync_errors_when_the_configured_section_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = _FakeServer([])  # only a section titled "Music"
+    _patch(monkeypatch, server)
+    config = PlexConfig(base_url="http://plex:32400", token="t", library_section="MusicDrop")
+    with pytest.raises(PlexConnectionError) as err:
+        sync.sync_playlist(config, "P", [])
+    assert "Plex music section 'MusicDrop' not found." in str(err.value)

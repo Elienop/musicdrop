@@ -1,6 +1,10 @@
+import json
+import uuid
 from pathlib import Path
 
+from app.models.playlist import PendingTrack
 from app.playlists import store
+from app.playlists.store import StoredEntry
 
 
 def test_create_then_get_round_trip(tmp_path: Path) -> None:
@@ -109,10 +113,10 @@ def test_add_tracks_appends(tmp_path: Path) -> None:
     p = store.create_playlist(tmp_path, name="P")
     updated = store.add_tracks(tmp_path, p.id, track_ids=[1, 2])
     assert updated is not None
-    assert updated.track_ids == [1, 2]
+    assert [e.item_id for e in updated.entries] == [1, 2]
     again = store.add_tracks(tmp_path, p.id, track_ids=[3])
     assert again is not None
-    assert again.track_ids == [1, 2, 3]
+    assert [e.item_id for e in again.entries] == [1, 2, 3]
 
 
 def test_add_tracks_at_position(tmp_path: Path) -> None:
@@ -120,7 +124,7 @@ def test_add_tracks_at_position(tmp_path: Path) -> None:
     store.add_tracks(tmp_path, p.id, track_ids=[1, 2, 3])
     updated = store.add_tracks(tmp_path, p.id, track_ids=[9], position=1)
     assert updated is not None
-    assert updated.track_ids == [1, 9, 2, 3]
+    assert [e.item_id for e in updated.entries] == [1, 9, 2, 3]
 
 
 def test_add_tracks_position_clamps(tmp_path: Path) -> None:
@@ -128,44 +132,41 @@ def test_add_tracks_position_clamps(tmp_path: Path) -> None:
     store.add_tracks(tmp_path, p.id, track_ids=[1, 2])
     high = store.add_tracks(tmp_path, p.id, track_ids=[5], position=99)
     assert high is not None
-    assert high.track_ids == [1, 2, 5]
+    assert [e.item_id for e in high.entries] == [1, 2, 5]
     low = store.add_tracks(tmp_path, p.id, track_ids=[0], position=-3)
     assert low is not None
-    assert low.track_ids == [0, 1, 2, 5]
+    assert [e.item_id for e in low.entries] == [0, 1, 2, 5]
 
 
 def test_add_tracks_missing_playlist(tmp_path: Path) -> None:
     assert store.add_tracks(tmp_path, "0" * 32, track_ids=[1]) is None
 
 
-def test_remove_track_drops_all_occurrences(tmp_path: Path) -> None:
+def test_remove_entry_unknown_uid_is_noop(tmp_path: Path) -> None:
     p = store.create_playlist(tmp_path, name="P")
-    store.add_tracks(tmp_path, p.id, track_ids=[1, 2, 1, 3, 1])
-    updated = store.remove_track(tmp_path, p.id, 1)
+    record = store.add_tracks(tmp_path, p.id, track_ids=[1, 2])
+    assert record is not None
+    before = [e.item_id for e in record.entries]
+    updated = store.remove_entry(tmp_path, p.id, "no-such-uid")
     assert updated is not None
-    assert updated.track_ids == [2, 3]
+    assert [e.item_id for e in updated.entries] == before  # absent uid -> unchanged
 
 
-def test_remove_track_absent_is_noop(tmp_path: Path) -> None:
+def test_set_entry_order_reorders_full_set(tmp_path: Path) -> None:
     p = store.create_playlist(tmp_path, name="P")
-    store.add_tracks(tmp_path, p.id, track_ids=[1, 2])
-    updated = store.remove_track(tmp_path, p.id, 99)
+    record = store.add_tracks(tmp_path, p.id, track_ids=[1, 2, 3])
+    assert record is not None
+    u1, u2, u3 = (e.uid for e in record.entries)
+    updated = store.set_entry_order(tmp_path, p.id, uids=[u3, u1, u2])
     assert updated is not None
-    assert updated.track_ids == [1, 2]
+    assert [e.item_id for e in updated.entries] == [3, 1, 2]
 
 
-def test_set_track_order_replaces(tmp_path: Path) -> None:
-    p = store.create_playlist(tmp_path, name="P")
-    store.add_tracks(tmp_path, p.id, track_ids=[1, 2, 3])
-    updated = store.set_track_order(tmp_path, p.id, track_ids=[3, 1, 2])
-    assert updated is not None
-    assert updated.track_ids == [3, 1, 2]
-
-
-def test_track_ops_on_missing_playlist_return_none(tmp_path: Path) -> None:
+def test_entry_ops_on_missing_playlist_return_none(tmp_path: Path) -> None:
     missing = "0" * 32
-    assert store.remove_track(tmp_path, missing, 1) is None
-    assert store.set_track_order(tmp_path, missing, track_ids=[1]) is None
+    assert store.remove_entry(tmp_path, missing, "uid") is None
+    assert store.set_entry_order(tmp_path, missing, uids=["uid"]) is None
+    assert store.resolve_entry(tmp_path, missing, "uid", item_id=1) is None
 
 
 def test_set_plex_state_records_per_target(tmp_path: Path) -> None:
@@ -232,3 +233,92 @@ def test_patch_target_users_excludes_admin_and_dedupes() -> None:
 
     body = PlaylistUpdateRequest(target_plex_users=["7", "admin", "7", "8"])
     assert body.target_plex_users == ["7", "8"]
+
+
+def test_legacy_track_ids_migrate_to_entries_on_read(tmp_path: Path) -> None:
+    record = store.create_playlist(tmp_path, name="Old")
+    # Write a LEGACY-shaped record directly (pre-entries schema).
+    raw = {
+        "id": record.id,
+        "name": "Old",
+        "description": "",
+        "track_ids": [7, 9, 7],
+        "target_plex_users": [],
+        "plex": {},
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+    (tmp_path / f"{record.id}.json").write_text(json.dumps(raw), encoding="utf-8")
+    loaded = store.get_playlist(tmp_path, record.id)
+    assert loaded is not None
+    assert [e.item_id for e in loaded.entries] == [7, 9, 7]
+    assert loaded.track_ids == []
+    uids = [e.uid for e in loaded.entries]
+    assert len(set(uids)) == 3  # every entry got its own uid (duplicates included)
+    assert loaded.resolved_item_ids == [7, 9, 7]
+
+
+def test_legacy_uids_are_stable_across_reads(tmp_path: Path) -> None:
+    """A legacy record must yield IDENTICAL uids on every read (no write-on-read).
+
+    The migration validator mints deterministic uids, so two reads of the same
+    on-disk file agree. Before that fix it minted a fresh ``uuid4`` per read, so
+    a uid captured from one read 404'd on the next (remove/reorder/resolve).
+    """
+    record = store.create_playlist(tmp_path, name="Old")
+    raw = {
+        "id": record.id,
+        "name": "Old",
+        "description": "",
+        "track_ids": [7, 9, 7],
+        "target_plex_users": [],
+        "plex": {},
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+    (tmp_path / f"{record.id}.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    first = store.get_playlist(tmp_path, record.id)
+    second = store.get_playlist(tmp_path, record.id)
+    assert first is not None and second is not None
+    assert [e.uid for e in first.entries] == [e.uid for e in second.entries]
+
+
+def test_add_tracks_creates_uid_entries_at_position(tmp_path: Path) -> None:
+    record = store.create_playlist(tmp_path, name="P")
+    store.add_tracks(tmp_path, record.id, track_ids=[1, 2], position=None)
+    record2 = store.add_tracks(tmp_path, record.id, track_ids=[3], position=1)
+    assert record2 is not None
+    assert [e.item_id for e in record2.entries] == [1, 3, 2]
+    assert all(e.pending is None for e in record2.entries)
+
+
+def test_remove_entry_by_uid_removes_only_that_entry(tmp_path: Path) -> None:
+    created = store.create_playlist(tmp_path, name="P")
+    record = store.add_tracks(tmp_path, created.id, track_ids=[5, 5], position=None)
+    assert record is not None
+    first_uid = record.entries[0].uid
+    updated = store.remove_entry(tmp_path, created.id, first_uid)
+    assert updated is not None
+    assert [e.item_id for e in updated.entries] == [5]  # the duplicate survives
+
+
+def test_set_entry_order_subset_reorders_and_drops(tmp_path: Path) -> None:
+    created = store.create_playlist(tmp_path, name="P")
+    record = store.add_tracks(tmp_path, created.id, track_ids=[1, 2, 3], position=None)
+    assert record is not None
+    u1, u2, _u3 = (e.uid for e in record.entries)
+    updated = store.set_entry_order(tmp_path, created.id, uids=[u2, u1])
+    assert updated is not None
+    assert [e.item_id for e in updated.entries] == [2, 1]  # 3 dropped, order flipped
+
+
+def test_resolve_entry_sets_item_and_clears_pending(tmp_path: Path) -> None:
+    pending = PendingTrack(artist="A", title="T", source="line")
+    entry = StoredEntry(uid=uuid.uuid4().hex, item_id=None, pending=pending)
+    record = store.create_playlist(tmp_path, name="P", entries=[entry])
+    updated = store.resolve_entry(tmp_path, record.id, entry.uid, item_id=42)
+    assert updated is not None
+    assert updated.entries[0].item_id == 42
+    assert updated.entries[0].pending is None
+    assert updated.entries[0].uid == entry.uid  # identity survives resolution

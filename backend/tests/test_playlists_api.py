@@ -1,10 +1,25 @@
+import json
 import os
+from pathlib import Path
 
 import pytest
 from beets.library import Item
 from fastapi.testclient import TestClient
 
+from app.api.playlists import get_playlists_dir
 from app.beets.library import LibraryHandle
+from app.models.playlist import PendingTrack
+from app.playlists import store
+from app.playlists.store import StoredEntry
+
+
+def _dir() -> Path:
+    """The owned-playlist store dir the API resolves from settings.
+
+    The ``client``/``beets_library`` fixtures monkeypatch ``settings.beets_dir``
+    at the per-test ``tmp_path``, so this returns the same directory the
+    endpoints read/write — letting a test seed the store directly."""
+    return get_playlists_dir()
 
 
 def test_list_empty(client: TestClient) -> None:
@@ -130,7 +145,10 @@ def test_remove_track(client: TestClient, beets_library: LibraryHandle) -> None:
     t2 = _add_track(beets_library, "Beta")
     pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
     client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1, t2]})
-    r = client.delete(f"/api/playlists/{pid}/tracks/{t1}")
+    loaded = store.get_playlist(_dir(), pid)
+    assert loaded is not None
+    uid1 = loaded.entries[0].uid
+    r = client.delete(f"/api/playlists/{pid}/entries/{uid1}")
     assert r.status_code == 200
     assert [t["id"] for t in r.json()["tracks"]] == [t2]
 
@@ -140,18 +158,21 @@ def test_reorder_tracks(client: TestClient, beets_library: LibraryHandle) -> Non
     t2 = _add_track(beets_library, "Beta")
     pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
     client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1, t2]})
-    r = client.put(f"/api/playlists/{pid}/tracks", json={"track_ids": [t2, t1]})
+    loaded = store.get_playlist(_dir(), pid)
+    assert loaded is not None
+    u1, u2 = (e.uid for e in loaded.entries)
+    r = client.put(f"/api/playlists/{pid}/tracks", json={"entry_uids": [u2, u1]})
     assert r.status_code == 200
     assert [t["id"] for t in r.json()["tracks"]] == [t2, t1]
 
 
 def test_reorder_missing_playlist_404(client: TestClient) -> None:
-    r = client.put(f"/api/playlists/{'0' * 32}/tracks", json={"track_ids": [1]})
+    r = client.put(f"/api/playlists/{'0' * 32}/tracks", json={"entry_uids": ["u1"]})
     assert r.status_code == 404
 
 
 def test_remove_track_missing_playlist_404(client: TestClient) -> None:
-    r = client.delete(f"/api/playlists/{'0' * 32}/tracks/1")
+    r = client.delete(f"/api/playlists/{'0' * 32}/entries/u1")
     assert r.status_code == 404
 
 
@@ -160,7 +181,7 @@ def test_reorder_empty_clears_playlist(client: TestClient, beets_library: Librar
     pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
     client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
     # Reorder is a full replacement; an empty list is a valid "clear".
-    r = client.put(f"/api/playlists/{pid}/tracks", json={"track_ids": []})
+    r = client.put(f"/api/playlists/{pid}/tracks", json={"entry_uids": []})
     assert r.status_code == 200
     assert r.json()["tracks"] == []
 
@@ -169,6 +190,139 @@ def test_add_too_many_tracks_422(client: TestClient) -> None:
     pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
     r = client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": list(range(10_001))})
     assert r.status_code == 422
+
+
+def test_detail_carries_uids_pending_and_counts(client: TestClient, tmp_path: Path) -> None:
+    record = store.create_playlist(
+        _dir(),
+        name="Mix",
+        entries=[StoredEntry(uid="u1", pending=PendingTrack(title="Ghost", source="x"))],
+    )
+    body = client.get(f"/api/playlists/{record.id}").json()
+    assert body["track_count"] == 0
+    assert body["pending_count"] == 1
+    assert body["tracks"][0]["uid"] == "u1"
+    assert body["tracks"][0]["pending"] is True
+    assert body["tracks"][0]["id"] is None
+
+
+def test_reorder_takes_entry_uids_subset(client: TestClient, tmp_path: Path) -> None:
+    record = store.create_playlist(_dir(), name="P")
+    store.add_tracks(_dir(), record.id, track_ids=[1, 2, 3])
+    loaded = store.get_playlist(_dir(), record.id)
+    assert loaded is not None
+    u1, _u2, u3 = (e.uid for e in loaded.entries)
+    r = client.put(f"/api/playlists/{record.id}/tracks", json={"entry_uids": [u3, u1]})
+    assert r.status_code == 200
+    reread = store.get_playlist(_dir(), record.id)
+    assert reread is not None
+    assert [e.uid for e in reread.entries] == [u3, u1]
+    # unknown uid -> 422, playlist untouched
+    r = client.put(f"/api/playlists/{record.id}/tracks", json={"entry_uids": ["nope"]})
+    assert r.status_code == 422
+    still = store.get_playlist(_dir(), record.id)
+    assert still is not None
+    assert [e.uid for e in still.entries] == [u3, u1]
+    # duplicate uid -> 422
+    r = client.put(f"/api/playlists/{record.id}/tracks", json={"entry_uids": [u1, u1]})
+    assert r.status_code == 422
+
+
+def test_remove_entry_endpoint(client: TestClient, tmp_path: Path) -> None:
+    record = store.create_playlist(_dir(), name="P")
+    store.add_tracks(_dir(), record.id, track_ids=[1])
+    loaded = store.get_playlist(_dir(), record.id)
+    assert loaded is not None
+    uid = loaded.entries[0].uid
+    assert client.delete(f"/api/playlists/{record.id}/entries/{uid}").status_code == 200
+    assert client.delete(f"/api/playlists/{record.id}/entries/{uid}").status_code == 404
+
+
+def test_resolve_entry_endpoint_validates_item(
+    client: TestClient, beets_library: LibraryHandle, tmp_path: Path
+) -> None:
+    real_id = _add_track(beets_library, "Real")
+    record = store.create_playlist(
+        _dir(), name="P", entries=[StoredEntry(uid="u1", pending=PendingTrack(source="x"))]
+    )
+    # 422: not a library item.
+    assert (
+        client.patch(f"/api/playlists/{record.id}/entries/u1", json={"item_id": 424242}).status_code
+        == 422
+    )
+    # 404: unknown entry uid (entry-existence is checked before item validity).
+    assert (
+        client.patch(f"/api/playlists/{record.id}/entries/zz", json={"item_id": 1}).status_code
+        == 404
+    )
+    # Happy path: the pending row resolves to the real item, keeping its uid.
+    r = client.patch(f"/api/playlists/{record.id}/entries/u1", json={"item_id": real_id})
+    assert r.status_code == 200
+    track = r.json()["tracks"][0]
+    assert track["uid"] == "u1"
+    assert track["id"] == real_id
+    assert track["pending"] is False
+    assert track["available"] is True
+
+
+def test_legacy_record_entry_delete_by_uid(client: TestClient) -> None:
+    """End-to-end proof: a legacy on-disk record's detail uids are addressable.
+
+    GET detail exposes per-slot uids; DELETE by one of those uids must land 200
+    (the DELETE handler re-reads the file, and deterministic legacy uids survive
+    that re-read), not 404 as it did while uids were minted randomly per read.
+    """
+    record = store.create_playlist(_dir(), name="Old")
+    raw = {
+        "id": record.id,
+        "name": "Old",
+        "description": "",
+        "track_ids": [7, 9, 7],
+        "target_plex_users": [],
+        "plex": {},
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+    (_dir() / f"{record.id}.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    detail = client.get(f"/api/playlists/{record.id}").json()
+    uid = detail["tracks"][0]["uid"]
+    r = client.delete(f"/api/playlists/{record.id}/entries/{uid}")
+    assert r.status_code == 200
+    assert [t["id"] for t in r.json()["tracks"]] == [9, 7]  # first slot removed
+
+
+def test_export_and_sync_feed_from_resolved_entries_only(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    t1 = _add_track(beets_library, "Alpha")
+    t2 = _add_track(beets_library, "Gamma")
+    record = store.create_playlist(
+        _dir(),
+        name="Mix",
+        entries=[
+            StoredEntry(uid="u1", item_id=t1),
+            StoredEntry(uid="u2", pending=PendingTrack(title="Ghost", source="x")),
+            StoredEntry(uid="u3", item_id=t2),
+        ],
+    )
+    # A no-op reorder (all three uids) triggers the .m3u8 (re)write.
+    r = client.put(f"/api/playlists/{record.id}/tracks", json={"entry_uids": ["u1", "u2", "u3"]})
+    assert r.status_code == 200
+    # The pending row has no file, so the export carries exactly the 2 resolved.
+    m3u = os.path.join(_export_dir(beets_library), f"{record.id}.m3u8")
+    with open(m3u, encoding="utf-8") as fh:
+        body = fh.read()
+    assert body.count("#EXTINF:") == 2
+    assert "Alpha" in body and "Gamma" in body and "Ghost" not in body
+    # The Plex specs likewise resolve only the 2 real items.
+    from app.api.playlists import _plex_specs_for
+    from app.plex.config import PlexConfig
+
+    reread = store.get_playlist(_dir(), record.id)
+    assert reread is not None
+    specs = _plex_specs_for(reread, beets_library, PlexConfig(base_url="http://x", token="t"))
+    assert len(specs) == 2
 
 
 def _export_dir(handle: LibraryHandle) -> str:

@@ -2897,13 +2897,13 @@
         }
       }
     },
-    "/api/playlists/{playlist_id}/tracks/{item_id}": {
+    "/api/playlists/{playlist_id}/entries/{entry_uid}": {
       "delete": {
         "tags": [
           "playlists"
         ],
-        "summary": "Remove Track Endpoint",
-        "operationId": "remove_track_endpoint_api_playlists__playlist_id__tracks__item_id__delete",
+        "summary": "Remove Entry Endpoint",
+        "operationId": "remove_entry_endpoint_api_playlists__playlist_id__entries__entry_uid__delete",
         "parameters": [
           {
             "name": "playlist_id",
@@ -2915,15 +2915,75 @@
             }
           },
           {
-            "name": "item_id",
+            "name": "entry_uid",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
-              "title": "Item Id"
+              "type": "string",
+              "title": "Entry Uid"
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaylistDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "playlists"
+        ],
+        "summary": "Resolve Entry Endpoint",
+        "description": "Point an entry at a library track \u2014 resolves a pending row (or\nre-points a resolved one) while keeping its position.",
+        "operationId": "resolve_entry_endpoint_api_playlists__playlist_id__entries__entry_uid__patch",
+        "parameters": [
+          {
+            "name": "playlist_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Playlist Id"
+            }
+          },
+          {
+            "name": "entry_uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entry Uid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaylistResolveEntryRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2973,6 +3033,90 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PlaylistDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playlists/import/preview": {
+      "post": {
+        "tags": [
+          "playlists"
+        ],
+        "summary": "Import Preview Endpoint",
+        "description": "Parse/pull the source playlists and match every entry. Read-only:\nnothing is stored; the uploaded content never touches disk.",
+        "operationId": "import_preview_endpoint_api_playlists_import_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaylistImportPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaylistImportPreviewResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playlists/import": {
+      "post": {
+        "tags": [
+          "playlists"
+        ],
+        "summary": "Import Commit Endpoint",
+        "description": "Create the playlists exactly as reviewed \u2014 resolved entries as tracks,\nunresolved ones as position-holding pending rows.",
+        "operationId": "import_commit_endpoint_api_playlists_import_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaylistImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaylistImportResponse"
                 }
               }
             }
@@ -3085,6 +3229,48 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PlexUserList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plex/sections": {
+      "get": {
+        "tags": [
+          "plex"
+        ],
+        "summary": "List Plex Sections",
+        "operationId": "list_plex_sections_api_plex_sections_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlexSectionList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plex/playlists": {
+      "get": {
+        "tags": [
+          "plex"
+        ],
+        "summary": "List Plex Playlists",
+        "operationId": "list_plex_playlists_api_plex_playlists_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlexPlaylistList"
                 }
               }
             }
@@ -6710,6 +6896,140 @@
         "title": "ImportChoice",
         "description": "A user's decision for one parked album, pushed back over the bridge."
       },
+      "ImportEntry": {
+        "properties": {
+          "item_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Id"
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingTrack"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ImportEntry",
+        "description": "One committed entry: a resolved library track OR a pending record."
+      },
+      "ImportEntryPreview": {
+        "properties": {
+          "position": {
+            "type": "integer",
+            "title": "Position"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "artist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "album": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Seconds"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "matched",
+              "ambiguous",
+              "unmatched"
+            ],
+            "title": "Status"
+          },
+          "item_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Id"
+          },
+          "match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrackSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "suggestions": {
+            "items": {
+              "$ref": "#/components/schemas/TrackSummary"
+            },
+            "type": "array",
+            "title": "Suggestions",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "position",
+          "source",
+          "artist",
+          "title",
+          "album",
+          "duration_seconds",
+          "status"
+        ],
+        "title": "ImportEntryPreview",
+        "description": "One source entry with its match verdict."
+      },
       "ImportInboxItemRequest": {
         "properties": {
           "name": {
@@ -7686,6 +8006,62 @@
         "title": "ParkedAlbum",
         "description": "An album whose match is uncertain and is waiting for a user decision.\n\nPushed onto the import bridge's out-queue; ``album_index`` keys the reply."
       },
+      "PendingTrack": {
+        "properties": {
+          "artist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "album": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Seconds"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "PendingTrack",
+        "description": "The remembered identity of a playlist entry that has no library track\nyet (an import that didn't match). ``source`` is the original text the\nentry came from (m3u line / file path / \"plex:<playlist>\")."
+      },
       "Playlist": {
         "properties": {
           "id": {
@@ -7703,6 +8079,10 @@
           "track_count": {
             "type": "integer",
             "title": "Track Count"
+          },
+          "pending_count": {
+            "type": "integer",
+            "title": "Pending Count"
           },
           "target_plex_users": {
             "items": {
@@ -7733,6 +8113,7 @@
           "name",
           "description",
           "track_count",
+          "pending_count",
           "target_plex_users",
           "plex",
           "created_at",
@@ -7804,6 +8185,10 @@
             "type": "integer",
             "title": "Track Count"
           },
+          "pending_count": {
+            "type": "integer",
+            "title": "Pending Count"
+          },
           "target_plex_users": {
             "items": {
               "type": "string"
@@ -7840,6 +8225,7 @@
           "name",
           "description",
           "track_count",
+          "pending_count",
           "target_plex_users",
           "plex",
           "created_at",
@@ -7849,26 +8235,214 @@
         "title": "PlaylistDetail",
         "description": "Single-playlist view with the ordered, resolved tracklist."
       },
-      "PlaylistReorderRequest": {
+      "PlaylistImportFile": {
         "properties": {
-          "track_ids": {
-            "items": {
-              "type": "integer"
-            },
-            "type": "array",
-            "title": "Track Ids"
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
           }
         },
         "type": "object",
         "required": [
-          "track_ids"
+          "name",
+          "content"
         ],
-        "title": "PlaylistReorderRequest"
+        "title": "PlaylistImportFile"
+      },
+      "PlaylistImportPlaylist": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/ImportEntry"
+            },
+            "type": "array",
+            "title": "Entries"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "entries"
+        ],
+        "title": "PlaylistImportPlaylist"
+      },
+      "PlaylistImportPreview": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/ImportEntryPreview"
+            },
+            "type": "array",
+            "title": "Entries"
+          },
+          "matched_count": {
+            "type": "integer",
+            "title": "Matched Count"
+          },
+          "ambiguous_count": {
+            "type": "integer",
+            "title": "Ambiguous Count"
+          },
+          "unmatched_count": {
+            "type": "integer",
+            "title": "Unmatched Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "entries",
+          "matched_count",
+          "ambiguous_count",
+          "unmatched_count"
+        ],
+        "title": "PlaylistImportPreview"
+      },
+      "PlaylistImportPreviewRequest": {
+        "properties": {
+          "files": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PlaylistImportFile"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Files"
+          },
+          "plex_playlists": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plex Playlists"
+          }
+        },
+        "type": "object",
+        "title": "PlaylistImportPreviewRequest",
+        "description": "Exactly one source: uploaded m3u files OR named Plex playlists."
+      },
+      "PlaylistImportPreviewResponse": {
+        "properties": {
+          "playlists": {
+            "items": {
+              "$ref": "#/components/schemas/PlaylistImportPreview"
+            },
+            "type": "array",
+            "title": "Playlists"
+          }
+        },
+        "type": "object",
+        "required": [
+          "playlists"
+        ],
+        "title": "PlaylistImportPreviewResponse"
+      },
+      "PlaylistImportRequest": {
+        "properties": {
+          "playlists": {
+            "items": {
+              "$ref": "#/components/schemas/PlaylistImportPlaylist"
+            },
+            "type": "array",
+            "title": "Playlists"
+          }
+        },
+        "type": "object",
+        "required": [
+          "playlists"
+        ],
+        "title": "PlaylistImportRequest"
+      },
+      "PlaylistImportResponse": {
+        "properties": {
+          "created": {
+            "items": {
+              "$ref": "#/components/schemas/Playlist"
+            },
+            "type": "array",
+            "title": "Created"
+          }
+        },
+        "type": "object",
+        "required": [
+          "created"
+        ],
+        "title": "PlaylistImportResponse"
+      },
+      "PlaylistReorderRequest": {
+        "properties": {
+          "entry_uids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Entry Uids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "entry_uids"
+        ],
+        "title": "PlaylistReorderRequest",
+        "description": "Full replacement: the entries are now exactly this ordered uid list.\n\nA duplicate-free SUBSET of the playlist's current uids \u2014 unlisted entries\nare removed, empty clears. Unknown uids are rejected by the endpoint."
+      },
+      "PlaylistResolveEntryRequest": {
+        "properties": {
+          "item_id": {
+            "type": "integer",
+            "title": "Item Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id"
+        ],
+        "title": "PlaylistResolveEntryRequest"
       },
       "PlaylistTrack": {
         "properties": {
+          "uid": {
+            "type": "string",
+            "title": "Uid"
+          },
           "id": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Id"
           },
           "title": {
@@ -7897,10 +8471,27 @@
           "available": {
             "type": "boolean",
             "title": "Available"
+          },
+          "pending": {
+            "type": "boolean",
+            "title": "Pending",
+            "default": false
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
           }
         },
         "type": "object",
         "required": [
+          "uid",
           "id",
           "title",
           "artist",
@@ -7909,7 +8500,7 @@
           "available"
         ],
         "title": "PlaylistTrack",
-        "description": "A track as shown in a playlist. ``available`` is False when the beets\n``item.id`` no longer resolves (deleted from the library); such entries\nstill occupy their position and can be removed."
+        "description": "A track row in a playlist, ordered by its stable per-slot ``uid``.\n\nA RESOLVED row carries the library ``id`` (``available`` is False when that\nid no longer resolves \u2014 deleted from the library \u2014 but the slot still holds\nits position). A PENDING row (``pending`` True) has ``id`` None: its identity\nis remembered text (artist/title/album) with no library track yet. Either\nway the slot keeps its position and can be removed or resolved."
       },
       "PlaylistUpdateRequest": {
         "properties": {
@@ -7988,6 +8579,58 @@
         ],
         "title": "PlexConnection"
       },
+      "PlexPlaylistInfo": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "track_count": {
+            "type": "integer",
+            "title": "Track Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "track_count"
+        ],
+        "title": "PlexPlaylistInfo",
+        "description": "One audio playlist on the Plex server (import source listing)."
+      },
+      "PlexPlaylistList": {
+        "properties": {
+          "playlists": {
+            "items": {
+              "$ref": "#/components/schemas/PlexPlaylistInfo"
+            },
+            "type": "array",
+            "title": "Playlists"
+          }
+        },
+        "type": "object",
+        "required": [
+          "playlists"
+        ],
+        "title": "PlexPlaylistList"
+      },
+      "PlexSectionList": {
+        "properties": {
+          "sections": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sections"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sections"
+        ],
+        "title": "PlexSectionList",
+        "description": "GET /plex/sections \u2014 the server's music (artist-type) section titles."
+      },
       "PlexSettings": {
         "properties": {
           "base_url": {
@@ -7998,6 +8641,10 @@
             "type": "string",
             "title": "Library Path"
           },
+          "library_section": {
+            "type": "string",
+            "title": "Library Section"
+          },
           "has_token": {
             "type": "boolean",
             "title": "Has Token"
@@ -8007,6 +8654,7 @@
         "required": [
           "base_url",
           "library_path",
+          "library_section",
           "has_token"
         ],
         "title": "PlexSettings",
@@ -8035,6 +8683,17 @@
               }
             ],
             "title": "Library Path"
+          },
+          "library_section": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Library Section"
           },
           "token": {
             "anyOf": [
@@ -9411,6 +10070,47 @@
         ],
         "title": "TrackPathChange",
         "description": "A track whose file would relocate when move is enabled."
+      },
+      "TrackSummary": {
+        "properties": {
+          "item_id": {
+            "type": "integer",
+            "title": "Item Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "artist": {
+            "type": "string",
+            "title": "Artist"
+          },
+          "album": {
+            "type": "string",
+            "title": "Album"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "title",
+          "artist",
+          "album",
+          "duration_seconds"
+        ],
+        "title": "TrackSummary",
+        "description": "A library track offered as a match or suggestion."
       },
       "TrashListing": {
         "properties": {

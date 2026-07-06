@@ -1116,7 +1116,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/playlists/{playlist_id}/tracks/{item_id}": {
+    "/api/playlists/{playlist_id}/entries/{entry_uid}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1126,11 +1126,16 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Remove Track Endpoint */
-        delete: operations["remove_track_endpoint_api_playlists__playlist_id__tracks__item_id__delete"];
+        /** Remove Entry Endpoint */
+        delete: operations["remove_entry_endpoint_api_playlists__playlist_id__entries__entry_uid__delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Resolve Entry Endpoint
+         * @description Point an entry at a library track — resolves a pending row (or
+         *     re-points a resolved one) while keeping its position.
+         */
+        patch: operations["resolve_entry_endpoint_api_playlists__playlist_id__entries__entry_uid__patch"];
         trace?: never;
     };
     "/api/playlists/{playlist_id}/sync": {
@@ -1144,6 +1149,48 @@ export interface paths {
         put?: never;
         /** Sync Playlist Endpoint */
         post: operations["sync_playlist_endpoint_api_playlists__playlist_id__sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/playlists/import/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Preview Endpoint
+         * @description Parse/pull the source playlists and match every entry. Read-only:
+         *     nothing is stored; the uploaded content never touches disk.
+         */
+        post: operations["import_preview_endpoint_api_playlists_import_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/playlists/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Commit Endpoint
+         * @description Create the playlists exactly as reviewed — resolved entries as tracks,
+         *     unresolved ones as position-holding pending rows.
+         */
+        post: operations["import_commit_endpoint_api_playlists_import_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1194,6 +1241,40 @@ export interface paths {
         };
         /** List Plex Users */
         get: operations["list_plex_users_api_plex_users_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plex/sections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Plex Sections */
+        get: operations["list_plex_sections_api_plex_sections_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plex/playlists": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Plex Playlists */
+        get: operations["list_plex_playlists_api_plex_playlists_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2617,6 +2698,46 @@ export interface components {
             search?: components["schemas"]["ImportSearch"] | null;
         };
         /**
+         * ImportEntry
+         * @description One committed entry: a resolved library track OR a pending record.
+         */
+        ImportEntry: {
+            /** Item Id */
+            item_id?: number | null;
+            pending?: components["schemas"]["PendingTrack"] | null;
+        };
+        /**
+         * ImportEntryPreview
+         * @description One source entry with its match verdict.
+         */
+        ImportEntryPreview: {
+            /** Position */
+            position: number;
+            /** Source */
+            source: string;
+            /** Artist */
+            artist: string | null;
+            /** Title */
+            title: string | null;
+            /** Album */
+            album: string | null;
+            /** Duration Seconds */
+            duration_seconds: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "matched" | "ambiguous" | "unmatched";
+            /** Item Id */
+            item_id?: number | null;
+            match?: components["schemas"]["TrackSummary"] | null;
+            /**
+             * Suggestions
+             * @default []
+             */
+            suggestions: components["schemas"]["TrackSummary"][];
+        };
+        /**
          * ImportInboxItemRequest
          * @description Body of ``POST /api/acquisition/inbox/items/import`` — one folder by name.
          */
@@ -3038,6 +3159,27 @@ export interface components {
             candidate: components["schemas"]["Candidate"];
         };
         /**
+         * PendingTrack
+         * @description The remembered identity of a playlist entry that has no library track
+         *     yet (an import that didn't match). ``source`` is the original text the
+         *     entry came from (m3u line / file path / "plex:<playlist>").
+         */
+        PendingTrack: {
+            /** Artist */
+            artist?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Album */
+            album?: string | null;
+            /** Duration Seconds */
+            duration_seconds?: number | null;
+            /**
+             * Source
+             * @default
+             */
+            source: string;
+        };
+        /**
          * Playlist
          * @description Summary view of a playlist (list rows + create/patch responses).
          */
@@ -3050,6 +3192,8 @@ export interface components {
             description: string;
             /** Track Count */
             track_count: number;
+            /** Pending Count */
+            pending_count: number;
             /** Target Plex Users */
             target_plex_users: string[];
             /** Plex */
@@ -3091,6 +3235,8 @@ export interface components {
             description: string;
             /** Track Count */
             track_count: number;
+            /** Pending Count */
+            pending_count: number;
             /** Target Plex Users */
             target_plex_users: string[];
             /** Plex */
@@ -3104,20 +3250,94 @@ export interface components {
             /** Tracks */
             tracks: components["schemas"]["PlaylistTrack"][];
         };
-        /** PlaylistReorderRequest */
+        /** PlaylistImportFile */
+        PlaylistImportFile: {
+            /** Name */
+            name: string;
+            /** Content */
+            content: string;
+        };
+        /** PlaylistImportPlaylist */
+        PlaylistImportPlaylist: {
+            /** Name */
+            name: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Entries */
+            entries: components["schemas"]["ImportEntry"][];
+        };
+        /** PlaylistImportPreview */
+        PlaylistImportPreview: {
+            /** Name */
+            name: string;
+            /** Entries */
+            entries: components["schemas"]["ImportEntryPreview"][];
+            /** Matched Count */
+            matched_count: number;
+            /** Ambiguous Count */
+            ambiguous_count: number;
+            /** Unmatched Count */
+            unmatched_count: number;
+        };
+        /**
+         * PlaylistImportPreviewRequest
+         * @description Exactly one source: uploaded m3u files OR named Plex playlists.
+         */
+        PlaylistImportPreviewRequest: {
+            /** Files */
+            files?: components["schemas"]["PlaylistImportFile"][] | null;
+            /** Plex Playlists */
+            plex_playlists?: string[] | null;
+        };
+        /** PlaylistImportPreviewResponse */
+        PlaylistImportPreviewResponse: {
+            /** Playlists */
+            playlists: components["schemas"]["PlaylistImportPreview"][];
+        };
+        /** PlaylistImportRequest */
+        PlaylistImportRequest: {
+            /** Playlists */
+            playlists: components["schemas"]["PlaylistImportPlaylist"][];
+        };
+        /** PlaylistImportResponse */
+        PlaylistImportResponse: {
+            /** Created */
+            created: components["schemas"]["Playlist"][];
+        };
+        /**
+         * PlaylistReorderRequest
+         * @description Full replacement: the entries are now exactly this ordered uid list.
+         *
+         *     A duplicate-free SUBSET of the playlist's current uids — unlisted entries
+         *     are removed, empty clears. Unknown uids are rejected by the endpoint.
+         */
         PlaylistReorderRequest: {
-            /** Track Ids */
-            track_ids: number[];
+            /** Entry Uids */
+            entry_uids: string[];
+        };
+        /** PlaylistResolveEntryRequest */
+        PlaylistResolveEntryRequest: {
+            /** Item Id */
+            item_id: number;
         };
         /**
          * PlaylistTrack
-         * @description A track as shown in a playlist. ``available`` is False when the beets
-         *     ``item.id`` no longer resolves (deleted from the library); such entries
-         *     still occupy their position and can be removed.
+         * @description A track row in a playlist, ordered by its stable per-slot ``uid``.
+         *
+         *     A RESOLVED row carries the library ``id`` (``available`` is False when that
+         *     id no longer resolves — deleted from the library — but the slot still holds
+         *     its position). A PENDING row (``pending`` True) has ``id`` None: its identity
+         *     is remembered text (artist/title/album) with no library track yet. Either
+         *     way the slot keeps its position and can be removed or resolved.
          */
         PlaylistTrack: {
+            /** Uid */
+            uid: string;
             /** Id */
-            id: number;
+            id: number | null;
             /** Title */
             title: string;
             /** Artist */
@@ -3128,6 +3348,13 @@ export interface components {
             duration_seconds: number | null;
             /** Available */
             available: boolean;
+            /**
+             * Pending
+             * @default false
+             */
+            pending: boolean;
+            /** Source */
+            source?: string | null;
         };
         /** PlaylistUpdateRequest */
         PlaylistUpdateRequest: {
@@ -3148,6 +3375,29 @@ export interface components {
             error?: string | null;
         };
         /**
+         * PlexPlaylistInfo
+         * @description One audio playlist on the Plex server (import source listing).
+         */
+        PlexPlaylistInfo: {
+            /** Name */
+            name: string;
+            /** Track Count */
+            track_count: number;
+        };
+        /** PlexPlaylistList */
+        PlexPlaylistList: {
+            /** Playlists */
+            playlists: components["schemas"]["PlexPlaylistInfo"][];
+        };
+        /**
+         * PlexSectionList
+         * @description GET /plex/sections — the server's music (artist-type) section titles.
+         */
+        PlexSectionList: {
+            /** Sections */
+            sections: string[];
+        };
+        /**
          * PlexSettings
          * @description GET /plex/settings — the token is never returned, only whether one is set.
          */
@@ -3156,6 +3406,8 @@ export interface components {
             base_url: string;
             /** Library Path */
             library_path: string;
+            /** Library Section */
+            library_section: string;
             /** Has Token */
             has_token: boolean;
         };
@@ -3168,6 +3420,8 @@ export interface components {
             base_url?: string | null;
             /** Library Path */
             library_path?: string | null;
+            /** Library Section */
+            library_section?: string | null;
             /** Token */
             token?: string | null;
         };
@@ -3722,6 +3976,22 @@ export interface components {
             old_path: string;
             /** New Path */
             new_path: string;
+        };
+        /**
+         * TrackSummary
+         * @description A library track offered as a match or suggestion.
+         */
+        TrackSummary: {
+            /** Item Id */
+            item_id: number;
+            /** Title */
+            title: string;
+            /** Artist */
+            artist: string;
+            /** Album */
+            album: string;
+            /** Duration Seconds */
+            duration_seconds: number | null;
         };
         /** TrashListing */
         TrashListing: {
@@ -5895,17 +6165,53 @@ export interface operations {
             };
         };
     };
-    remove_track_endpoint_api_playlists__playlist_id__tracks__item_id__delete: {
+    remove_entry_endpoint_api_playlists__playlist_id__entries__entry_uid__delete: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 playlist_id: string;
-                item_id: number;
+                entry_uid: string;
             };
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaylistDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolve_entry_endpoint_api_playlists__playlist_id__entries__entry_uid__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playlist_id: string;
+                entry_uid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaylistResolveEntryRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -5945,6 +6251,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlaylistDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_preview_endpoint_api_playlists_import_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaylistImportPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaylistImportPreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_commit_endpoint_api_playlists_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaylistImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaylistImportResponse"];
                 };
             };
             /** @description Validation Error */
@@ -6047,6 +6419,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlexUserList"];
+                };
+            };
+        };
+    };
+    list_plex_sections_api_plex_sections_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlexSectionList"];
+                };
+            };
+        };
+    };
+    list_plex_playlists_api_plex_playlists_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlexPlaylistList"];
                 };
             };
         };

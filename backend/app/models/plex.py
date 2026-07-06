@@ -10,6 +10,7 @@ class PlexSettings(BaseModel):
 
     base_url: str
     library_path: str
+    library_section: str
     has_token: bool
 
 
@@ -18,7 +19,25 @@ class PlexSettingsUpdate(BaseModel):
 
     base_url: str | None = None
     library_path: str | None = None
+    library_section: str | None = None
     token: str | None = None
+
+
+class PlexSectionList(BaseModel):
+    """GET /plex/sections — the server's music (artist-type) section titles."""
+
+    sections: list[str]
+
+
+class PlexPlaylistInfo(BaseModel):
+    """One audio playlist on the Plex server (import source listing)."""
+
+    name: str
+    track_count: int
+
+
+class PlexPlaylistList(BaseModel):
+    playlists: list[PlexPlaylistInfo]
 
 
 class PlexConnection(BaseModel):

@@ -82,12 +82,15 @@ class Settings(BaseSettings):
 
     # Plex sync (app/plex/). Empty plex_settings_dir = <beets_dir>/plex.
     # base URL + admin token + the music-library path AS PLEX SEES IT (for the
-    # Docker mount difference). All env-seed the persisted JSON config.
-    # (env MUSICDROP_PLEX_URL / MUSICDROP_PLEX_TOKEN / MUSICDROP_PLEX_LIBRARY_PATH)
+    # Docker mount difference) + the Plex music-section TITLE (empty = first
+    # artist section). All env-seed the persisted JSON config.
+    # (env MUSICDROP_PLEX_URL / MUSICDROP_PLEX_TOKEN / MUSICDROP_PLEX_LIBRARY_PATH
+    #  / MUSICDROP_PLEX_LIBRARY_SECTION)
     plex_settings_dir: str = ""
     plex_url: str = ""
     plex_token: str = ""
     plex_library_path: str = ""
+    plex_library_section: str = ""
 
     # Acquisition (app/acquisition/). Where completed downloads land before the
     # unattended import; empty = default to <beets_dir>/inbox, computed at resolve

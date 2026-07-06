@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { delay, http, HttpResponse } from "msw";
 import { beforeEach, describe, expect, test, vi } from "vitest";
@@ -20,22 +20,73 @@ const toastSuccess = vi.mocked(toast.success);
 const ID = "a".repeat(32);
 const BASE = `${window.location.origin}/api/playlists/${ID}`;
 const USERS = `${window.location.origin}/api/plex/users`;
+const SEARCH = `${window.location.origin}/api/search`;
 
-function detail(tracks: unknown[], name = "Late night") {
+function detail(tracks: Array<Record<string, unknown>>, name = "Late night") {
+  const pending = tracks.filter((t) => t.pending).length;
   return {
     id: ID,
     name,
     description: "",
-    track_count: tracks.length,
+    track_count: tracks.length - pending,
+    pending_count: pending,
     target_plex_users: [],
+    plex: {},
     created_at: "2026-06-06T00:00:00+00:00",
     updated_at: "2026-06-06T00:00:00+00:00",
     tracks,
   };
 }
 
+/** A resolved row: carries a library `id` and a stable `uid` (here `u<id>`). */
 function track(id: number, title: string, available = true) {
-  return { id, title, artist: "Artist", album: "Album", duration_seconds: 200, available };
+  return {
+    uid: `u${id}`,
+    id,
+    title,
+    artist: "Artist",
+    album: "Album",
+    duration_seconds: 200,
+    available,
+    pending: false,
+  };
+}
+
+/** A pending (unmatched) entry: no library id, remembered metadata only. */
+function pendingTrack(uid: string, title: string, extra: Record<string, unknown> = {}) {
+  return {
+    uid,
+    id: null,
+    title,
+    artist: "Ghost",
+    album: "",
+    duration_seconds: null,
+    available: false,
+    pending: true,
+    ...extra,
+  };
+}
+
+/** A `TypedSearchPage` (`type=tracks`) carrying the given track hits. */
+function trackSearchPage(
+  hits: Array<{
+    id: number;
+    title: string;
+    artist: string;
+    album: string;
+    album_id: number | null;
+    duration_seconds: number | null;
+  }>,
+) {
+  return {
+    type: "tracks",
+    artists: [],
+    albums: [],
+    tracks: hits,
+    total: hits.length,
+    limit: 20,
+    offset: 0,
+  };
 }
 
 describe("PlaylistDetailPage", () => {
@@ -64,7 +115,7 @@ describe("PlaylistDetailPage", () => {
       http.get(BASE, () =>
         HttpResponse.json(detail(removed ? [track(2, "Beta")] : [track(1, "Alpha"), track(2, "Beta")])),
       ),
-      http.delete(`${BASE}/tracks/1`, () => {
+      http.delete(`${BASE}/entries/u1`, () => {
         removed = true;
         return HttpResponse.json(detail([track(2, "Beta")]));
       }),
@@ -78,12 +129,12 @@ describe("PlaylistDetailPage", () => {
     await waitFor(() => expect(screen.queryByText("Alpha")).not.toBeInTheDocument());
   });
 
-  test("reorders a track down", async () => {
-    let body: number[] | null = null;
+  test("reorder posts entry uids", async () => {
+    let body: string[] | null = null;
     server.use(
       http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
       http.put(`${BASE}/tracks`, async ({ request }) => {
-        body = ((await request.json()) as { track_ids: number[] }).track_ids;
+        body = ((await request.json()) as { entry_uids: string[] }).entry_uids;
         return HttpResponse.json(detail([track(2, "Beta"), track(1, "Alpha")]));
       }),
     );
@@ -93,7 +144,8 @@ describe("PlaylistDetailPage", () => {
     });
     await screen.findByText("Alpha");
     await userEvent.click(screen.getByRole("button", { name: /move alpha down/i }));
-    await waitFor(() => expect(body).toEqual([2, 1]));
+    // The new order is Beta (u2) then Alpha (u1) — sent as the full uid list.
+    await waitFor(() => expect(body).toEqual(["u2", "u1"]));
   });
 
   test("announces a reorder via the status region", async () => {
@@ -115,7 +167,7 @@ describe("PlaylistDetailPage", () => {
   test("announces a removal via the status region", async () => {
     server.use(
       http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
-      http.delete(`${BASE}/tracks/1`, () => HttpResponse.json(detail([track(2, "Beta")]))),
+      http.delete(`${BASE}/entries/u1`, () => HttpResponse.json(detail([track(2, "Beta")]))),
     );
     renderWithProviders(<PlaylistDetailPage />, {
       route: `/playlists/${ID}`,
@@ -143,7 +195,7 @@ describe("PlaylistDetailPage", () => {
   test("surfaces a remove failure", async () => {
     server.use(
       http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
-      http.delete(`${BASE}/tracks/1`, () => new HttpResponse(null, { status: 500 })),
+      http.delete(`${BASE}/entries/u1`, () => new HttpResponse(null, { status: 500 })),
     );
     renderWithProviders(<PlaylistDetailPage />, {
       route: `/playlists/${ID}`,
@@ -161,6 +213,87 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     expect(await screen.findByText(/unavailable/i)).toBeInTheDocument();
+  });
+
+  // ——— Pending (unmatched import) rows ———
+
+  test("renders a pending row with its badge and source metadata", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json(
+          detail([pendingTrack("u1", "Lost", { artist: "X", source: "Ghost - Lost" })]),
+        ),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    // The remembered metadata renders…
+    expect(await screen.findByText("Lost")).toBeInTheDocument();
+    expect(screen.getByText("X")).toBeInTheDocument();
+    // …with the original source text carried as a title tooltip (for a bare-path
+    // m3u entry it's the only "it was this" identity).
+    expect(screen.getByTitle("Ghost - Lost")).toBeInTheDocument();
+    // …flagged with a "Pending" badge…
+    expect(screen.getByText(/pending/i)).toBeInTheDocument();
+    // …offering a Match action instead of a playable/linked title (there is no
+    // library track behind it, so nothing links out).
+    expect(screen.getByRole("button", { name: /match lost/i })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /lost/i })).not.toBeInTheDocument();
+    // The header counts it as unmatched.
+    expect(screen.getByText(/1 unmatched/i)).toBeInTheDocument();
+  });
+
+  test("resolves a pending row via the match picker", async () => {
+    let patchBody: unknown = null;
+    let resolved = false;
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json(
+          resolved
+            ? detail([track(55, "Found")])
+            : detail([pendingTrack("u1", "Lost", { artist: "X" })]),
+        ),
+      ),
+      http.get(SEARCH, () =>
+        HttpResponse.json(
+          trackSearchPage([
+            {
+              id: 55,
+              title: "Found",
+              artist: "Real",
+              album: "Disc",
+              album_id: 3,
+              duration_seconds: 180,
+            },
+          ]),
+        ),
+      ),
+      http.patch(`${BASE}/entries/u1`, async ({ request }) => {
+        patchBody = await request.json();
+        resolved = true;
+        return HttpResponse.json(detail([track(55, "Found")]));
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Lost");
+    await userEvent.click(screen.getByRole("button", { name: /match lost/i }));
+
+    // The picker opens; searching surfaces a library track.
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.type(within(dialog).getByRole("textbox"), "Found");
+    const pick = await within(dialog).findByRole("button", { name: /select found/i });
+    await userEvent.click(pick);
+
+    // The entry is PATCHed to the picked library item id…
+    await waitFor(() => expect(patchBody).toEqual({ item_id: 55 }));
+    // …and the detail cache swaps to the resolved track.
+    expect(await screen.findByText("Found")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("Lost")).not.toBeInTheDocument());
   });
 
   test("syncs to plex, shows the synced state, and announces the real outcome", async () => {
@@ -421,7 +554,7 @@ describe("PlaylistDetailPage", () => {
     const after = [track(1, "Alpha"), track(3, "Gamma")];
     server.use(
       http.get(BASE, () => HttpResponse.json(detail(removed ? after : before))),
-      http.delete(`${BASE}/tracks/2`, () => {
+      http.delete(`${BASE}/entries/u2`, () => {
         removed = true;
         return HttpResponse.json(detail(after));
       }),
@@ -444,7 +577,7 @@ describe("PlaylistDetailPage", () => {
       http.get(BASE, () =>
         HttpResponse.json(detail(removed ? [] : [track(1, "Alpha")])),
       ),
-      http.delete(`${BASE}/tracks/1`, () => {
+      http.delete(`${BASE}/entries/u1`, () => {
         removed = true;
         return HttpResponse.json(detail([]));
       }),
@@ -519,7 +652,7 @@ describe("PlaylistDetailPage", () => {
       http.get(BASE, () =>
         HttpResponse.json(detail(removed ? [track(2, "Beta")] : [track(1, "Alpha"), track(2, "Beta")])),
       ),
-      http.delete(`${BASE}/tracks/1`, () => {
+      http.delete(`${BASE}/entries/u1`, () => {
         removed = true;
         return HttpResponse.json(detail([track(2, "Beta")]));
       }),

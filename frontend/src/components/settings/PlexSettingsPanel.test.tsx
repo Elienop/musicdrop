@@ -1,7 +1,7 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
 
 import { PlexSettingsPanel } from "@/components/settings/PlexSettingsPanel";
 import { renderWithProviders } from "@/test/render";
@@ -9,12 +9,20 @@ import { server } from "@/test/msw-server";
 
 const SETTINGS = `${window.location.origin}/api/plex/settings`;
 const TEST_URL = `${window.location.origin}/api/plex/test`;
+const SECTIONS = `${window.location.origin}/api/plex/sections`;
 
 function settings(overrides: Record<string, unknown> = {}) {
-  return { base_url: "", library_path: "", has_token: false, ...overrides };
+  return { base_url: "", library_path: "", library_section: "", has_token: false, ...overrides };
 }
 
 describe("PlexSettingsPanel", () => {
+  // The editor probes Plex library sections on mount for the section dropdown.
+  // Default to an empty list so tests that don't care never hit an unhandled
+  // request; the section tests register their own /api/plex/sections handler.
+  beforeEach(() => {
+    server.use(http.get(SECTIONS, () => HttpResponse.json({ sections: [] })));
+  });
+
   test("renders a real h2 heading (not a CardTitle div)", async () => {
     server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
     renderWithProviders(<PlexSettingsPanel />);
@@ -67,6 +75,49 @@ describe("PlexSettingsPanel", () => {
     await userEvent.type(input, "9");
     expect(testBtn).toBeDisabled();
     expect(screen.getByText(/save before testing/i)).toBeInTheDocument();
+  });
+
+  test("offers the music sections and saves library_section", async () => {
+    let body: Record<string, unknown> | null = null;
+    let saved = false;
+    server.use(
+      http.get(SETTINGS, () =>
+        HttpResponse.json(saved ? settings({ library_section: "MusicDrop" }) : settings()),
+      ),
+      http.get(SECTIONS, () => HttpResponse.json({ sections: ["Music", "MusicDrop"] })),
+      http.put(SETTINGS, async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        saved = true;
+        return HttpResponse.json(settings({ library_section: "MusicDrop" }));
+      }),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    const select = await screen.findByLabelText(/library section/i);
+    // The server's music sections are offered as options (alongside the
+    // always-present "Auto — first music library" empty option).
+    expect(
+      await within(select).findByRole("option", { name: /musicdrop/i }),
+    ).toBeInTheDocument();
+    await userEvent.selectOptions(select, "MusicDrop");
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(body).not.toBeNull());
+    expect(body!.library_section).toBe("MusicDrop");
+  });
+
+  test("keeps the saved section selectable when the sections fetch fails", async () => {
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings({ library_section: "Vinyl" }))),
+      // The section probe fails (e.g. Plex unreachable) — the current value must
+      // still be present and selected so a failed fetch never hides it.
+      http.get(SECTIONS, () => new HttpResponse(null, { status: 500 })),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    const select = await screen.findByLabelText(/library section/i);
+    expect(within(select).getByRole("option", { name: "Vinyl" })).toBeInTheDocument();
+    expect(select).toHaveValue("Vinyl");
   });
 
   test("tests the connection and shows the server name", async () => {
