@@ -114,11 +114,26 @@ def _make_fetchart_plugin() -> Any:
     ``FetchArtPlugin.__init__`` wires import_stages + a listener iff
     ``config['fetchart']['auto']`` is truthy (default True). Forcing it False
     first keeps the user's import auto-fetch behavior unchanged.
+
+    The False overlay is RESTORED after construction so this fetch doesn't leave
+    a persistent global-config mutation (``fetchart.auto`` reading False for
+    everything after). We restore the user's explicit value if they set one, else
+    the plugin default (True). NOTE: this does not serialize against a concurrent
+    config Apply clearing ``beets.config`` — that rare single-user timing race is
+    a documented residual; removing the persistent overlay is the fix here.
     """
     from beetsplug.fetchart import FetchArtPlugin
 
-    beets.config["fetchart"].set({"auto": False})
-    return FetchArtPlugin()
+    fetchart = beets.config["fetchart"]
+    try:
+        prev_auto: bool | None = fetchart["auto"].get(bool)
+    except confuse.NotFoundError:
+        prev_auto = None  # unset before construction — restore to the default
+    fetchart.set({"auto": False})
+    try:
+        return FetchArtPlugin()
+    finally:
+        fetchart.set({"auto": True if prev_auto is None else prev_auto})
 
 
 def fetch_cover_candidate(lib: Library, *, album_id: int) -> FetchedCover | None:

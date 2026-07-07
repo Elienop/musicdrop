@@ -17,6 +17,18 @@ def _album_id(lib: Library) -> int:
     return int(next(iter(lib.albums())).id)
 
 
+def test_make_fetchart_plugin_restores_auto(edit_lib: Library) -> None:
+    """Building the throwaway plugin must not leave ``fetchart.auto`` mutated."""
+    import beets
+
+    from app.beets import cover as cover_mod
+
+    for user_value in (True, False):
+        beets.config["fetchart"]["auto"].set(user_value)
+        cover_mod._make_fetchart_plugin()
+        assert beets.config["fetchart"]["auto"].get(bool) is user_value
+
+
 def test_install_cover_sets_artpath(edit_lib: Library) -> None:
     from app.beets.cover import install_cover
     from app.beets.library import get_album_cover
