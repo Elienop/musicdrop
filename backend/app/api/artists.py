@@ -138,7 +138,9 @@ async def upload_artist_image_override_endpoint(
     declared = request.headers.get("content-length")
     if declared is not None and declared.isdigit() and int(declared) > MAX_IMAGE_BYTES:
         raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
-    image_bytes = await file.read()
+    # Bounded read: never buffer more than the cap (+1 to detect an exact-cap
+    # overrun) even when Content-Length is absent or understated.
+    image_bytes = await file.read(MAX_IMAGE_BYTES + 1)
     if len(image_bytes) > MAX_IMAGE_BYTES:
         raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
     mime = sniff_image_mime(image_bytes)
