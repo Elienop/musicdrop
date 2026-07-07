@@ -1,40 +1,30 @@
-"""Single-slot, in-memory registry for the artist-art backfill (mirrors lyrics_jobs)."""
+"""Single-slot, in-memory registry for the artist-art backfill (mirrors lyrics_jobs).
+
+The common lifecycle lives in ``app.jobs.SingleSlotRegistry``; this module keeps
+the backfill job fields, the ``record`` counters, and the wire ``state()``.
+"""
 
 from __future__ import annotations
 
-import threading
 import uuid
 from dataclasses import dataclass
 
+from app.jobs import JobState, SingleSlotRegistry
 from app.models.artist_art import ArtistArtBackfillPhase, ArtistArtBackfillStatus, ArtistArtOutcome
 
 
 @dataclass
-class _BackfillJob:
-    id: str
+class _BackfillJob(JobState):
     phase: ArtistArtBackfillPhase = "running"
-    total: int = 0
-    processed: int = 0
     written: int = 0
     skipped: int = 0
     failed: int = 0
-    current: str | None = None
-    error: str | None = None
     artist: str | None = None
     scope_label: str = "library"
     force: bool = False
-    stop_requested: bool = False
 
 
-class ArtistArtBackfillRegistry:
-    def __init__(self) -> None:
-        self._job: _BackfillJob | None = None
-        self._lock = threading.Lock()
-
-    def is_running(self) -> bool:
-        with self._lock:
-            return self._job is not None and self._job.phase == "running"
-
+class ArtistArtBackfillRegistry(SingleSlotRegistry[_BackfillJob]):
     def start(self, *, force: bool, artist: str | None = None, scope_label: str = "library") -> str:
         with self._lock:
             if self._job is not None and self._job.phase == "running":
@@ -44,11 +34,6 @@ class ArtistArtBackfillRegistry:
             )
             self._job = job
             return job.id
-
-    def set_total(self, total: int) -> None:
-        with self._lock:
-            if self._job is not None:
-                self._job.total = total
 
     def record(self, outcome: ArtistArtOutcome) -> None:
         with self._lock:
@@ -62,33 +47,6 @@ class ArtistArtBackfillRegistry:
                 job.failed += 1
             else:  # skipped / no_art / no_folder
                 job.skipped += 1
-
-    def set_current(self, label: str | None) -> None:
-        with self._lock:
-            if self._job is not None:
-                self._job.current = label
-
-    def should_stop(self) -> bool:
-        with self._lock:
-            return self._job is not None and self._job.stop_requested
-
-    def request_stop(self) -> None:
-        with self._lock:
-            if self._job is not None and self._job.phase == "running":
-                self._job.stop_requested = True
-
-    def finish(self, phase: ArtistArtBackfillPhase) -> None:
-        with self._lock:
-            if self._job is not None and self._job.phase == "running":
-                self._job.phase = phase
-                self._job.current = None
-
-    def fail(self, message: str) -> None:
-        with self._lock:
-            if self._job is not None:
-                self._job.phase = "failed"
-                self._job.error = message
-                self._job.current = None
 
     def state(self) -> ArtistArtBackfillStatus:
         with self._lock:
