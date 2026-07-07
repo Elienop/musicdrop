@@ -1,6 +1,7 @@
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -372,6 +373,35 @@ def test_albums_filter_paginates_over_filtered_set(
     assert page2["total"] == 2
     assert len(page2["items"]) == 1
     assert page2["items"][0]["title"] == "Voulez-Vous"
+
+
+def test_list_albums_pages_from_the_browse_cache(
+    temp_library: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The whole-library scan/sort happens ONCE, building the shared BrowseRow
+    # cache; later pages read that cache and load only the page's albums, never
+    # re-scanning lib.albums(). Order + exact artist filter must be preserved.
+    calls = {"n": 0}
+    real = Library.albums
+
+    def counting(self: Library, *args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Library, "albums", counting)
+
+    page, total = list_albums(temp_library, limit=50, offset=0)
+    list_albums(temp_library, limit=1, offset=1)
+    filtered, filtered_total = list_albums(temp_library, limit=50, offset=0, artist="ABBA")
+
+    assert calls["n"] == 1  # ONE scan builds the cache; every page reads it
+    # Stable sort preserved: "a-ha" precedes "ABBA" under codepoint ordering.
+    assert [a.album_artist for a in page] == ["a-ha", "ABBA"]
+    assert total == 2
+    # Exact, case-sensitive artist filter, applied over the cached rows.
+    assert filtered_total == 1
+    assert [a.album_artist for a in filtered] == ["ABBA"]
+    assert filtered[0].title == "Arrival"
 
 
 def test_album_detail_missing_album_returns_404(client: TestClient) -> None:
