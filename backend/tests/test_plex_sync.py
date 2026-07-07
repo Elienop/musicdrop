@@ -301,7 +301,9 @@ def test_delete_on_targets_admin_and_user(monkeypatch: pytest.MonkeyPatch) -> No
     server.switchUser = lambda uid: user7  # type: ignore[attr-defined]
     _patch(monkeypatch, server)
 
-    results = sync.delete_playlist_on_targets(CONFIG, {"admin": "500", "7": "600"})
+    results = sync.delete_playlist_on_targets(
+        CONFIG, {"admin": "500", "7": "600"}, playlist_id="p1"
+    )
     assert results == {"admin": "deleted", "7": "deleted"}
     assert admin_pl.deleted is True
     assert user7_pl.deleted is True
@@ -314,9 +316,26 @@ def test_delete_on_targets_wrong_rating_key_is_absent(monkeypatch: pytest.Monkey
     server = _FakeServer([])
     server._playlists.append(other)
     _patch(monkeypatch, server)
-    results = sync.delete_playlist_on_targets(CONFIG, {"admin": "500"})
+    results = sync.delete_playlist_on_targets(CONFIG, {"admin": "500"}, playlist_id="p1")
     assert results == {"admin": "absent"}
     assert other.deleted is False  # the unrelated same-titled playlist survives
+
+
+def test_delete_falls_back_to_id_marker_when_rating_key_is_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # After a Plex DB rebuild the recorded ratingKey changes, so lookup by the
+    # RECORDED ratingKey ("500") misses. The playlist still carries our id marker,
+    # so we re-find and delete it by marker instead of orphaning the copy.
+    stale = _FakePlaylist("Mix", [_FakeTrack(1, ["/m/a.flac"])])
+    stale.ratingKey = 999  # NOT the recorded 500 (rebuilt DB)
+    stale.summary = "MusicDrop-id:p1"  # but our identity marker survived
+    server = _FakeServer([])
+    server._playlists.append(stale)
+    _patch(monkeypatch, server)
+    results = sync.delete_playlist_on_targets(CONFIG, {"admin": "500"}, playlist_id="p1")
+    assert results == {"admin": "deleted"}
+    assert stale.deleted is True
 
 
 def test_delete_on_targets_none_rating_key_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -324,7 +343,7 @@ def test_delete_on_targets_none_rating_key_is_absent(monkeypatch: pytest.MonkeyP
     # no lookup, nothing to remove.
     server = _FakeServer([])
     _patch(monkeypatch, server)
-    results = sync.delete_playlist_on_targets(CONFIG, {"admin": None})
+    results = sync.delete_playlist_on_targets(CONFIG, {"admin": None}, playlist_id="p1")
     assert results == {"admin": "absent"}
 
 
@@ -340,7 +359,9 @@ def test_delete_on_targets_isolates_a_failing_account(monkeypatch: pytest.Monkey
     server.switchUser = _switch  # type: ignore[attr-defined]
     _patch(monkeypatch, server)
 
-    results = sync.delete_playlist_on_targets(CONFIG, {"admin": "500", "bad": "700"})
+    results = sync.delete_playlist_on_targets(
+        CONFIG, {"admin": "500", "bad": "700"}, playlist_id="p1"
+    )
     assert results["admin"] == "deleted"  # the failing user never aborts the others
     assert results["bad"] == "failed"
     assert admin_pl.deleted is True
@@ -348,7 +369,7 @@ def test_delete_on_targets_isolates_a_failing_account(monkeypatch: pytest.Monkey
 
 def test_delete_on_targets_not_configured() -> None:
     with pytest.raises(PlexNotConfigured):
-        sync.delete_playlist_on_targets(PlexConfig(), {"admin": "500"})
+        sync.delete_playlist_on_targets(PlexConfig(), {"admin": "500"}, playlist_id="p1")
 
 
 class _TwoSectionServer(_FakeServer):

@@ -484,7 +484,9 @@ def test_delete_cascades_to_plex(
 
     captured: list[dict[str, str | None]] = []
 
-    def _record(config: object, rating_keys: dict[str, str | None]) -> dict[str, str]:
+    def _record(
+        config: object, rating_keys: dict[str, str | None], *, playlist_id: str
+    ) -> dict[str, str]:
         captured.append(dict(rating_keys))
         return {}
 
@@ -511,7 +513,9 @@ def test_delete_best_effort_when_plex_errors(
     client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
     client.post(f"/api/playlists/{pid}/sync")
 
-    def boom(config: object, rating_keys: dict[str, str | None]) -> dict[str, str]:
+    def boom(
+        config: object, rating_keys: dict[str, str | None], *, playlist_id: str
+    ) -> dict[str, str]:
         raise RuntimeError("plex down")
 
     monkeypatch.setattr(plex_sync, "delete_playlist_on_targets", boom)
@@ -527,7 +531,9 @@ def test_delete_unconfigured_skips_plex(
 
     called = False
 
-    def _mark(config: object, rating_keys: dict[str, str | None]) -> dict[str, str]:
+    def _mark(
+        config: object, rating_keys: dict[str, str | None], *, playlist_id: str
+    ) -> dict[str, str]:
         nonlocal called
         called = True
         return {}
@@ -660,7 +666,9 @@ def test_sync_cleans_up_detargeted_user(
     client.patch(f"/api/playlists/{pid}", json={"target_plex_users": []})
     captured: list[dict[str, str | None]] = []
 
-    def _record(config: object, rating_keys: dict[str, str | None]) -> dict[str, str]:
+    def _record(
+        config: object, rating_keys: dict[str, str | None], *, playlist_id: str
+    ) -> dict[str, str]:
         captured.append(dict(rating_keys))
         return {}
 

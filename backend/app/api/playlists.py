@@ -122,15 +122,17 @@ async def _remove_export(playlist_id: str, handle: LibraryHandle) -> None:
 
 
 async def _best_effort_plex_delete(
-    config: PlexConfig, rating_keys: dict[str, str | None], ctx: str
+    config: PlexConfig, rating_keys: dict[str, str | None], ctx: str, *, playlist_id: str
 ) -> None:
-    """Remove the playlist (by recorded ratingKey) from the given Plex accounts.
-    Best-effort: a Plex hiccup (or no Plex configured) must never fail the local
-    operation."""
+    """Remove the playlist (by recorded ratingKey, else its id marker) from the
+    given Plex accounts. Best-effort: a Plex hiccup (or no Plex configured) must
+    never fail the local operation."""
     if not (config.base_url and config.token) or not rating_keys:
         return
     try:
-        await run_in_threadpool(plex_sync.delete_playlist_on_targets, config, rating_keys)
+        await run_in_threadpool(
+            plex_sync.delete_playlist_on_targets, config, rating_keys, playlist_id=playlist_id
+        )
     except Exception:  # best-effort cleanup — log and move on, never fail the op
         logger.warning("Plex playlist cleanup failed (%s)", ctx, exc_info=True)
 
@@ -294,7 +296,9 @@ async def sync_playlist_endpoint(
     # the sync. `record` still holds the PRE-sync plex state map.
     removed = sorted(set(record.plex) - {"admin"} - set(record.target_plex_users))
     removed_keys = {uid: record.plex[uid].rating_key for uid in removed}
-    await _best_effort_plex_delete(config, removed_keys, f"de-target {playlist_id}")
+    await _best_effort_plex_delete(
+        config, removed_keys, f"de-target {playlist_id}", playlist_id=record.id
+    )
 
     now = datetime.now(UTC).isoformat()
     states = {key: state.model_copy(update={"synced_at": now}) for key, state in states.items()}
@@ -365,7 +369,9 @@ async def delete_playlist_endpoint(
     await _remove_export(playlist_id, handle)
     if record is not None:
         rating_keys = {target: state.rating_key for target, state in record.plex.items()}
-        await _best_effort_plex_delete(plex_store.get(), rating_keys, f"delete {playlist_id}")
+        await _best_effort_plex_delete(
+            plex_store.get(), rating_keys, f"delete {playlist_id}", playlist_id=record.id
+        )
     return Response(status_code=204)
 
 
