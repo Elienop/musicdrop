@@ -5,13 +5,21 @@ playlist). This module is pure filesystem I/O + the stored record shape; it
 imports neither beets nor Plex. The ``.m3u8`` export (Chunk 3) and Plex sync
 (Chunks 5-7) build on top of this store.
 
-Single-user app: a bool/JSON flip is GIL-atomic and writes go through a
-tmp-then-replace (with fsync) recipe, so no lock is needed.
+The tmp-then-replace (with fsync) write recipe gives crash-safety — a reader
+never sees a torn file. Concurrency is a separate concern: the API runs mutators
+on parallel worker threads, and every mutator is a read-modify-write
+(``get_playlist`` -> mutate -> ``_write_atomic``). Without serialization two
+overlapping mutations both read version V and both write, so the later write
+silently drops the earlier one's change. A process-wide ``_LOCK`` therefore
+serializes the read-modify-write body of every mutator; pure reads
+(``get_playlist``/``list_playlists``) stay lock-free (the atomic replace means a
+read never sees a half-written file).
 """
 
 from __future__ import annotations
 
 import re
+import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,6 +35,11 @@ from app.playlists.atomic import write_atomic_text
 # touches the filesystem, so a hostile ``{playlist_id}`` URL parameter cannot
 # escape the playlists dir via path traversal.
 _VALID_ID = re.compile(r"\A[0-9a-f]{32}\Z")
+
+# Serializes every mutator's read-modify-write so concurrent API worker threads
+# can't drop a mutation (last-writer-wins). Pure reads don't take it — the
+# atomic replace means a read never observes a half-written file.
+_LOCK = threading.Lock()
 
 
 def _is_valid_id(playlist_id: str) -> bool:
@@ -111,7 +124,8 @@ def create_playlist(
         created_at=now,
         updated_at=now,
     )
-    _write_atomic(_record_path(playlists_dir, record.id), record)
+    with _LOCK:
+        _write_atomic(_record_path(playlists_dir, record.id), record)
     return record
 
 
@@ -151,18 +165,19 @@ def update_playlist(
     description: str | None = None,
     target_plex_users: list[str] | None = None,
 ) -> StoredPlaylist | None:
-    record = get_playlist(playlists_dir, playlist_id)
-    if record is None:
-        return None
-    if name is not None:
-        record.name = name
-    if description is not None:
-        record.description = description
-    if target_plex_users is not None:
-        record.target_plex_users = target_plex_users
-    record.updated_at = _now()
-    _write_atomic(_record_path(playlists_dir, playlist_id), record)
-    return record
+    with _LOCK:
+        record = get_playlist(playlists_dir, playlist_id)
+        if record is None:
+            return None
+        if name is not None:
+            record.name = name
+        if description is not None:
+            record.description = description
+        if target_plex_users is not None:
+            record.target_plex_users = target_plex_users
+        record.updated_at = _now()
+        _write_atomic(_record_path(playlists_dir, playlist_id), record)
+        return record
 
 
 def add_tracks(
@@ -172,28 +187,30 @@ def add_tracks(
     track_ids: list[int],
     position: int | None = None,
 ) -> StoredPlaylist | None:
-    record = get_playlist(playlists_dir, playlist_id)
-    if record is None:
-        return None
-    new_entries = [StoredEntry(uid=uuid.uuid4().hex, item_id=item_id) for item_id in track_ids]
-    if position is None:
-        record.entries = [*record.entries, *new_entries]
-    else:
-        index = max(0, min(position, len(record.entries)))
-        record.entries = [*record.entries[:index], *new_entries, *record.entries[index:]]
-    record.updated_at = _now()
-    _write_atomic(_record_path(playlists_dir, playlist_id), record)
-    return record
+    with _LOCK:
+        record = get_playlist(playlists_dir, playlist_id)
+        if record is None:
+            return None
+        new_entries = [StoredEntry(uid=uuid.uuid4().hex, item_id=item_id) for item_id in track_ids]
+        if position is None:
+            record.entries = [*record.entries, *new_entries]
+        else:
+            index = max(0, min(position, len(record.entries)))
+            record.entries = [*record.entries[:index], *new_entries, *record.entries[index:]]
+        record.updated_at = _now()
+        _write_atomic(_record_path(playlists_dir, playlist_id), record)
+        return record
 
 
 def remove_entry(playlists_dir: Path, playlist_id: str, uid: str) -> StoredPlaylist | None:
-    record = get_playlist(playlists_dir, playlist_id)
-    if record is None:
-        return None
-    record.entries = [e for e in record.entries if e.uid != uid]
-    record.updated_at = _now()
-    _write_atomic(_record_path(playlists_dir, playlist_id), record)
-    return record
+    with _LOCK:
+        record = get_playlist(playlists_dir, playlist_id)
+        if record is None:
+            return None
+        record.entries = [e for e in record.entries if e.uid != uid]
+        record.updated_at = _now()
+        _write_atomic(_record_path(playlists_dir, playlist_id), record)
+        return record
 
 
 def set_entry_order(
@@ -201,14 +218,15 @@ def set_entry_order(
 ) -> StoredPlaylist | None:
     """Full replacement: keep exactly ``uids`` in this order (a subset drops
     the rest; empty clears). The API validates the uids BEFORE calling."""
-    record = get_playlist(playlists_dir, playlist_id)
-    if record is None:
-        return None
-    by_uid = {e.uid: e for e in record.entries}
-    record.entries = [by_uid[uid] for uid in uids if uid in by_uid]
-    record.updated_at = _now()
-    _write_atomic(_record_path(playlists_dir, playlist_id), record)
-    return record
+    with _LOCK:
+        record = get_playlist(playlists_dir, playlist_id)
+        if record is None:
+            return None
+        by_uid = {e.uid: e for e in record.entries}
+        record.entries = [by_uid[uid] for uid in uids if uid in by_uid]
+        record.updated_at = _now()
+        _write_atomic(_record_path(playlists_dir, playlist_id), record)
+        return record
 
 
 def resolve_entry(
@@ -216,54 +234,58 @@ def resolve_entry(
 ) -> StoredPlaylist | None:
     """Point the entry at a library track (clears pending; also re-points an
     already-resolved entry in place — 'replace track, keep position')."""
-    record = get_playlist(playlists_dir, playlist_id)
-    if record is None:
-        return None
-    for entry in record.entries:
-        if entry.uid == uid:
-            entry.item_id = item_id
-            entry.pending = None
-            break
-    else:
-        return None
-    record.updated_at = _now()
-    _write_atomic(_record_path(playlists_dir, playlist_id), record)
-    return record
+    with _LOCK:
+        record = get_playlist(playlists_dir, playlist_id)
+        if record is None:
+            return None
+        for entry in record.entries:
+            if entry.uid == uid:
+                entry.item_id = item_id
+                entry.pending = None
+                break
+        else:
+            return None
+        record.updated_at = _now()
+        _write_atomic(_record_path(playlists_dir, playlist_id), record)
+        return record
 
 
 def set_plex_state(
     playlists_dir: Path, playlist_id: str, target: str, state: PlexTargetState
 ) -> StoredPlaylist | None:
-    record = get_playlist(playlists_dir, playlist_id)
-    if record is None:
-        return None
-    # Recording a Plex sync result is bookkeeping, NOT a content edit, so it
-    # must NOT bump ``updated_at`` — otherwise a freshly-synced playlist would
-    # have ``updated_at > synced_at`` and the editor would wrongly read
-    # "out of date" the instant after a successful sync.
-    record.plex[target] = state
-    _write_atomic(_record_path(playlists_dir, playlist_id), record)
-    return record
+    with _LOCK:
+        record = get_playlist(playlists_dir, playlist_id)
+        if record is None:
+            return None
+        # Recording a Plex sync result is bookkeeping, NOT a content edit, so it
+        # must NOT bump ``updated_at`` — otherwise a freshly-synced playlist would
+        # have ``updated_at > synced_at`` and the editor would wrongly read
+        # "out of date" the instant after a successful sync.
+        record.plex[target] = state
+        _write_atomic(_record_path(playlists_dir, playlist_id), record)
+        return record
 
 
 def replace_plex_states(
     playlists_dir: Path, playlist_id: str, states: dict[str, PlexTargetState]
 ) -> StoredPlaylist | None:
-    record = get_playlist(playlists_dir, playlist_id)
-    if record is None:
-        return None
-    # Whole-map replace (a sync recomputes every target's state). Bookkeeping,
-    # NOT a content edit — must not bump updated_at (see set_plex_state).
-    record.plex = states
-    _write_atomic(_record_path(playlists_dir, playlist_id), record)
-    return record
+    with _LOCK:
+        record = get_playlist(playlists_dir, playlist_id)
+        if record is None:
+            return None
+        # Whole-map replace (a sync recomputes every target's state). Bookkeeping,
+        # NOT a content edit — must not bump updated_at (see set_plex_state).
+        record.plex = states
+        _write_atomic(_record_path(playlists_dir, playlist_id), record)
+        return record
 
 
 def delete_playlist(playlists_dir: Path, playlist_id: str) -> bool:
     if not _is_valid_id(playlist_id):
         return False
-    try:
-        _record_path(playlists_dir, playlist_id).unlink()
-        return True
-    except FileNotFoundError:
-        return False
+    with _LOCK:
+        try:
+            _record_path(playlists_dir, playlist_id).unlink()
+            return True
+        except FileNotFoundError:
+            return False

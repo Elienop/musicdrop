@@ -1,10 +1,14 @@
 import json
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import pytest
 
 from app.models.playlist import PendingTrack
 from app.playlists import store
-from app.playlists.store import StoredEntry
+from app.playlists.store import StoredEntry, StoredPlaylist
 
 
 def test_create_then_get_round_trip(tmp_path: Path) -> None:
@@ -322,3 +326,53 @@ def test_resolve_entry_sets_item_and_clears_pending(tmp_path: Path) -> None:
     assert updated.entries[0].item_id == 42
     assert updated.entries[0].pending is None
     assert updated.entries[0].uid == entry.uid  # identity survives resolution
+
+
+def test_concurrent_mutations_do_not_lose_an_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two overlapping add_tracks must BOTH persist — no lost update.
+
+    Deterministically forces the classic read-modify-write interleave: the first
+    thread to reach the write is paused (after it has read) until the second
+    thread's whole mutation lands, then it writes its own copy. Without the
+    store lock, that stale copy overwrites the second thread's entry (the bug).
+    With the lock, the second thread can't even start until the first releases,
+    so the paused write times out harmlessly and both entries survive.
+    """
+    record = store.create_playlist(tmp_path, name="Mix")
+    pid = record.id
+
+    real_write = store._write_atomic
+    other_landed = threading.Event()
+    arrival = threading.Lock()
+    reached = {"count": 0}
+
+    def coordinated_write(path: Path, rec: StoredPlaylist) -> None:
+        with arrival:
+            is_first_writer = reached["count"] == 0
+            reached["count"] += 1
+        if is_first_writer:
+            # Hold our write until the other mutation fully lands. Under the real
+            # store lock the other thread is blocked on us instead, so this times
+            # out (no deadlock) and we simply write first.
+            other_landed.wait(timeout=2.0)
+            real_write(path, rec)
+        else:
+            real_write(path, rec)
+            other_landed.set()
+
+    monkeypatch.setattr(store, "_write_atomic", coordinated_write)
+
+    def add(track_id: int) -> None:
+        store.add_tracks(tmp_path, pid, track_ids=[track_id])
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(add, 101), pool.submit(add, 202)]
+        for future in futures:
+            future.result()
+
+    final = store.get_playlist(tmp_path, pid)
+    assert final is not None
+    ids = final.resolved_item_ids
+    assert 101 in ids and 202 in ids, f"a concurrent mutation was lost: {ids}"
