@@ -5,45 +5,34 @@ second ``start`` raises RuntimeError (the API maps it to 409). Thread-safe — t
 worker thread mutates counters/phase via these methods while API threads read
 ``state()``. In-memory only: a server restart loses the job (the sweep is
 idempotent — skip-existing — so just re-run).
+
+The common lifecycle lives in ``app.jobs.SingleSlotRegistry``; this module keeps
+the backfill job fields, the ``record`` counters, and the wire ``state()``.
 """
 
 from __future__ import annotations
 
-import threading
 import uuid
 from dataclasses import dataclass
 
+from app.jobs import JobState, SingleSlotRegistry
 from app.models.lyrics import ItemLyricsOutcome, LyricsBackfillPhase, LyricsBackfillStatus
 
 
 @dataclass
-class _BackfillJob:
-    id: str
+class _BackfillJob(JobState):
     phase: LyricsBackfillPhase = "running"
-    total: int = 0
-    processed: int = 0
     found: int = 0
     not_found: int = 0
     failed: int = 0
     skipped: int = 0
-    current: str | None = None
     writes_enabled: bool = True
-    error: str | None = None
     album_id: int | None = None
     scope_label: str = "library"
-    stop_requested: bool = False
 
 
-class LyricsBackfillRegistry:
+class LyricsBackfillRegistry(SingleSlotRegistry[_BackfillJob]):
     """Holds the active (or last) backfill job."""
-
-    def __init__(self) -> None:
-        self._job: _BackfillJob | None = None
-        self._lock = threading.Lock()
-
-    def is_running(self) -> bool:
-        with self._lock:
-            return self._job is not None and self._job.phase == "running"
 
     def start(
         self, *, writes_enabled: bool, album_id: int | None = None, scope_label: str = "library"
@@ -60,11 +49,6 @@ class LyricsBackfillRegistry:
             self._job = job
             return job.id
 
-    def set_total(self, total: int) -> None:
-        with self._lock:
-            if self._job is not None:
-                self._job.total = total
-
     def record(self, outcome: ItemLyricsOutcome) -> None:
         with self._lock:
             job = self._job
@@ -79,33 +63,6 @@ class LyricsBackfillRegistry:
                 job.failed += 1
             else:  # skipped_existing / skipped_no_metadata
                 job.skipped += 1
-
-    def set_current(self, label: str | None) -> None:
-        with self._lock:
-            if self._job is not None:
-                self._job.current = label
-
-    def should_stop(self) -> bool:
-        with self._lock:
-            return self._job is not None and self._job.stop_requested
-
-    def request_stop(self) -> None:
-        with self._lock:
-            if self._job is not None and self._job.phase == "running":
-                self._job.stop_requested = True
-
-    def finish(self, phase: LyricsBackfillPhase) -> None:
-        with self._lock:
-            if self._job is not None and self._job.phase == "running":
-                self._job.phase = phase
-                self._job.current = None
-
-    def fail(self, message: str) -> None:
-        with self._lock:
-            if self._job is not None:
-                self._job.phase = "failed"
-                self._job.error = message
-                self._job.current = None
 
     def state(self) -> LyricsBackfillStatus:
         with self._lock:
