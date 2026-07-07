@@ -1,9 +1,11 @@
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from unittest.mock import Mock
 
 import httpx
 import pytest
 import respx
+from fastapi.concurrency import run_in_threadpool as _real_run_in_threadpool
 from fastapi.testclient import TestClient
 
 from app.api.albums import get_library
@@ -184,6 +186,47 @@ def test_integration_real_service_resolves_through_deezer(tmp_path: Path) -> Non
         assert resp.headers["content-type"] == "image/jpeg"
     finally:
         app.dependency_overrides.clear()
+
+
+def test_service_offloads_blocking_work_to_threadpool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # get_artist_image is async so the network resolve stays on the loop, but its
+    # SYNCHRONOUS blocking parts — the cache disk read (up to 10 MB) and the beets
+    # mbid query — must be offloaded. Spy on the service-module run_in_threadpool
+    # (real passthrough) and assert both blocking calls went through it.
+    import asyncio
+
+    import app.artwork.service as service_mod
+    from app.artwork.service import ArtistImageService
+
+    real = _real_run_in_threadpool
+    spy = Mock(side_effect=lambda fn, *a, **k: real(fn, *a, **k))
+    monkeypatch.setattr(service_mod, "run_in_threadpool", spy, raising=False)
+
+    def get_mbid() -> str | None:
+        return None
+
+    class _StubSource:
+        async def resolve(self, name: str, *, mbid: str | None) -> None:
+            return None  # confirmed no-match → store negative → endpoint 404s
+
+    cache = ArtistImageCache(tmp_path)  # empty dir → cache miss → mbid + resolve run
+    service = ArtistImageService(
+        source=_StubSource(),  # type: ignore[arg-type]  # stub implements only resolve()
+        cache=cache,
+        limiter=TokenBucketLimiter(rate_per_sec=1000.0, max_concurrency=2),
+        is_enabled=lambda: True,
+        negative_ttl_seconds=3600,
+        transient_ttl_seconds=600,
+    )
+
+    result = asyncio.run(service.get_artist_image("ABBA", get_mbid=get_mbid))
+    assert result is None
+
+    offloaded = [call.args[0] for call in spy.call_args_list]
+    assert cache.get in offloaded  # the cache disk read
+    assert get_mbid in offloaded  # the beets mbid query
 
 
 def test_endpoint_passes_artist_mbid_to_service() -> None:

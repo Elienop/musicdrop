@@ -1,16 +1,32 @@
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from beets.library import Item, Library
+from fastapi.concurrency import run_in_threadpool as _real_run_in_threadpool
 from fastapi.testclient import TestClient
 
+import app.api.albums as albums_mod
 from app.api.albums import get_library
-from app.beets.library import close_library
+from app.beets.library import close_library, get_album_cover, get_album_detail, list_albums
 from app.config import settings
 from app.main import app
 from tests.conftest import make_test_handle
+
+
+def _threadpool_spy(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Record every callable offloaded via the router's run_in_threadpool while
+    still executing it (real passthrough). Behaviour is preserved; the spy only
+    proves the blocking adapter call left the event loop."""
+    spy = Mock(side_effect=lambda fn, *a, **k: _real_run_in_threadpool(fn, *a, **k))
+    monkeypatch.setattr(albums_mod, "run_in_threadpool", spy, raising=False)
+    return spy
+
+
+def _offloaded_callables(spy: Mock) -> list[object]:
+    return [call.args[0] for call in spy.call_args_list]
 
 
 def _make_item(
@@ -445,6 +461,39 @@ def test_album_detail_exposes_release_identity(temp_library: "Library") -> None:
         "1973 reissue",
     )
     assert r.release_url == "https://musicbrainz.org/release/rel-xyz"
+
+
+def test_list_albums_offloads_scan_to_threadpool(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The async endpoint must not run the full sorted(lib.albums()) scan on the
+    # event loop — it offloads to the threadpool like browse.py.
+    spy = _threadpool_spy(monkeypatch)
+    resp = client.get("/api/albums")
+    assert resp.status_code == 200
+    assert list_albums in _offloaded_callables(spy)
+
+
+def test_album_detail_offloads_load_to_threadpool(
+    client: TestClient, temp_library: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    album_id = int(next(iter(temp_library.albums())).id)
+    spy = _threadpool_spy(monkeypatch)
+    resp = client.get(f"/api/albums/{album_id}")
+    assert resp.status_code == 200
+    assert get_album_detail in _offloaded_callables(spy)
+
+
+def test_album_cover_offloads_read_to_threadpool(
+    client: TestClient, temp_library: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The cover read (blocking file open().read() up to 10 MB / MediaFile parse)
+    # is offloaded even on the 404 path — the fixture albums carry no artpath.
+    album_id = int(next(iter(temp_library.albums())).id)
+    spy = _threadpool_spy(monkeypatch)
+    resp = client.get(f"/api/albums/{album_id}/cover")
+    assert resp.status_code == 404
+    assert get_album_cover in _offloaded_callables(spy)
 
 
 def test_album_detail_track_has_lyrics_flag(temp_library: "Library") -> None:

@@ -1,11 +1,14 @@
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from beets.library import Item, Library
+from fastapi.concurrency import run_in_threadpool as _real_run_in_threadpool
 from fastapi.testclient import TestClient
 
+import app.api.artists as artists_mod
 from app.api.albums import get_library
 from app.beets.library import list_artists
 from app.main import app
@@ -51,6 +54,18 @@ def test_artists_roster_groups_counts_and_sorts(client: TestClient) -> None:
         {"name": "a-ha", "album_count": 1},
         {"name": "ABBA", "album_count": 2},
     ]
+
+
+def test_list_artists_offloads_scan_to_threadpool(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The roster scans every album — it must offload to the threadpool, not run
+    # on the event loop (mirrors browse.py).
+    spy = Mock(side_effect=lambda fn, *a, **k: _real_run_in_threadpool(fn, *a, **k))
+    monkeypatch.setattr(artists_mod, "run_in_threadpool", spy, raising=False)
+    resp = client.get("/api/artists")
+    assert resp.status_code == 200
+    assert list_artists in [call.args[0] for call in spy.call_args_list]
 
 
 def test_artists_roster_excludes_empty_album_artist(tmp_path: Path) -> None:

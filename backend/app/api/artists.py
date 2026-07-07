@@ -2,6 +2,7 @@ from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
+from fastapi.concurrency import run_in_threadpool
 
 from app.api.albums import get_library
 from app.api.http_cache import revalidating_image_response
@@ -77,7 +78,7 @@ def get_artist_art_write_toggle(request: Request) -> ArtistArtWriteToggle:
 async def list_artists_endpoint(
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> list[Artist]:
-    return list_artists(handle.lib)
+    return await run_in_threadpool(list_artists, handle.lib)
 
 
 @router.get(

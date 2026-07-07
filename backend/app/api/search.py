@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.concurrency import run_in_threadpool
 
 from app.api.albums import get_library
 from app.beets.library import LibraryHandle, search, search_typed
@@ -23,5 +24,7 @@ async def search_endpoint(
     type_: Annotated[SearchEntity | None, Query(alias="type")] = None,
 ) -> SearchResults | TypedSearchPage:
     if type_ is None:
-        return search(handle.lib, query=q, limit=limit)
-    return search_typed(handle.lib, query=q, entity=type_, limit=limit, offset=offset)
+        return await run_in_threadpool(search, handle.lib, query=q, limit=limit)
+    return await run_in_threadpool(
+        search_typed, handle.lib, query=q, entity=type_, limit=limit, offset=offset
+    )
