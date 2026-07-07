@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, test } from "vitest";
 
@@ -758,5 +758,28 @@ describe("ImportCandidatePage", () => {
     expect(bodies[0]).toMatchObject({ action: "rescan", candidate_index: null });
     // In-flight: the decision buttons disable until the revision bumps.
     expect(screen.getByRole("button", { name: /apply/i })).toBeDisabled();
+  });
+
+  test("locks out rescan and the release search while an Apply is in flight", async () => {
+    server.use(
+      http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())),
+      // The Apply POST never resolves during the assertion window, so the
+      // decide mutation stays pending.
+      http.post(CHOICE_URL, async () => {
+        await delay("infinite");
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt();
+
+    await user.click(await screen.findByRole("button", { name: /^Apply/i }));
+    // With the Apply in flight, the no-undo relookup controls must lock out —
+    // firing a rescan/search against the same album mid-Apply is an avoidable
+    // concurrent-action window the backend can only swallow.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /rescan folder/i })).toBeDisabled(),
+    );
+    expect(screen.getByLabelText(/release url or id/i)).toBeDisabled();
   });
 });
