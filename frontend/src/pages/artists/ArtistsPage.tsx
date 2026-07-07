@@ -1,4 +1,4 @@
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 
 import { useArtists } from "@/api/useArtists";
 import { GRID_CLASS } from "@/components/albums/album-grid";
@@ -8,20 +8,39 @@ import { EmptyState } from "@/components/system/EmptyState";
 import { ErrorState } from "@/components/system/ErrorState";
 import { PageBody, PageHeader } from "@/components/system/PageHeader";
 import { PageSkeleton } from "@/components/system/PageSkeleton";
+import { PAGE_SIZE, Pagination } from "@/components/system/Pagination";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function ArtistsPage() {
   const { data, isPending, isError, refetch } = useArtists();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Client-side pagination over the full roster (the API returns it whole): at
+  // 10k-library scale rendering every ArtistCard on mount is a needless
+  // render-storm — and each SSE `library:changed` would reconcile the lot. The
+  // page offset lives in the URL so it's bookmarkable and Back works.
+  const artists = !isPending && !isError ? data : [];
+  const offset = Math.max(Number(searchParams.get("offset")) || 0, 0);
+  const pageArtists = artists.slice(offset, offset + PAGE_SIZE);
+
+  const goToOffset = (value: number) => {
+    const next = new URLSearchParams(searchParams);
+    if (value <= 0) next.delete("offset");
+    else next.set("offset", String(value));
+    setSearchParams(next);
+    window.scrollTo({ top: 0 });
+  };
 
   return (
     <PageBody>
       <PageHeader
         title="Artists"
         meta={
-          !isPending && !isError && data.length > 0
-            ? `${data.length.toLocaleString()} ${
-                data.length === 1 ? "artist" : "artists"
+          // Always the FULL roster count, not the current page's size.
+          artists.length > 0
+            ? `${artists.length.toLocaleString()} ${
+                artists.length === 1 ? "artist" : "artists"
               }`
             : undefined
         }
@@ -35,7 +54,7 @@ export function ArtistsPage() {
           message="Couldn’t load artists. Check the backend and try again."
           onRetry={() => void refetch()}
         />
-      ) : data.length === 0 ? (
+      ) : artists.length === 0 ? (
         <EmptyState
           bordered
           icon={Artists}
@@ -47,14 +66,42 @@ export function ArtistsPage() {
             </Button>
           }
         />
+      ) : pageArtists.length === 0 ? (
+        // Roster > 0 but this page is empty → the offset is past the end (the
+        // roster shrank under it). Offer a way back to page 1.
+        <EmptyState
+          bordered
+          icon={Artists}
+          title="This page is empty — the roster changed under it."
+          action={
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => goToOffset(0)}
+            >
+              Back to first page
+            </Button>
+          }
+        />
       ) : (
-        <ul className={GRID_CLASS}>
-          {data.map((artist) => (
-            <li key={artist.name}>
-              <ArtistCard artist={artist} />
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul className={GRID_CLASS}>
+            {pageArtists.map((artist) => (
+              <li key={artist.name}>
+                <ArtistCard artist={artist} />
+              </li>
+            ))}
+          </ul>
+          {artists.length > PAGE_SIZE && (
+            <Pagination
+              total={artists.length}
+              offset={offset}
+              limit={PAGE_SIZE}
+              onOffsetChange={goToOffset}
+            />
+          )}
+        </>
       )}
     </PageBody>
   );
