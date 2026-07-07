@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, HTTPException, Request
 from starlette.responses import StreamingResponse
 
-from app.events.broker import EventBroker
+from app.events.broker import MAX_SUBSCRIBERS, EventBroker
 from app.models.events import LibraryChangedEvent
 
 router = APIRouter(tags=["events"])
@@ -32,6 +32,8 @@ async def events_endpoint(request: Request) -> StreamingResponse:
     broker: EventBroker | None = getattr(request.app.state, "event_broker", None)
     if broker is None:
         raise HTTPException(status_code=503, detail="Event stream not available")
+    if broker.subscriber_count >= MAX_SUBSCRIBERS:
+        raise HTTPException(status_code=503, detail="Too many active event streams")
     queue = broker.subscribe()
 
     async def stream() -> AsyncIterator[str]:
