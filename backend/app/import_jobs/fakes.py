@@ -54,6 +54,10 @@ class FakeImportRunner:
         # real runner; validate_calls records the (path, options) it saw.
         self.validate_error: Exception | None = None
         self.validate_calls: list[tuple[str, ImportOptions | None]] = []
+        # Spawn-failure seam: tests set run_error to make run() raise
+        # SYNCHRONOUSLY (no worker thread, no callback) — modelling the real
+        # runner's threading.Thread(...).start() failing under exhaustion.
+        self.run_error: Exception | None = None
 
     def validate(self, path: str, options: ImportOptions | None = None) -> None:
         self.validate_calls.append((path, options))
@@ -69,6 +73,10 @@ class FakeImportRunner:
         options: ImportOptions | None = None,
         directive: BankApplyDirective | None = None,
     ) -> None:
+        if self.run_error is not None:
+            # Fail like the real runner's synchronous session build /
+            # Thread.start() — the slot is already claimed, no thread spawns.
+            raise self.run_error
         self.received_options = options
         self.received_directive = directive
 
