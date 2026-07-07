@@ -9,6 +9,7 @@ import pytest
 from beets import config
 from beets.library import Item, Library
 
+from app.beets.trash import trash_album
 from app.beets.trash_manage import (
     empty_all,
     empty_one,
@@ -93,6 +94,53 @@ def test_list_groups_per_item_layout_and_multidisc(tmp_path: Path) -> None:
     assert albums["Amnesiac"].folder == "Radiohead"
     assert albums["25"].folder == "Adele - 25"  # multi-disc shares one top dir
     assert albums["25"].track_count == 2
+
+
+def test_trash_album_same_artist_siblings_stay_distinct(tmp_path: Path) -> None:
+    # Two DIFFERENT albums by the SAME album-artist, each sent to Trash via the
+    # per-item primitive (as every duplicate-resolve does). They must remain TWO
+    # reachable listing entries — never collapse under one shared $albumartist top
+    # dir, which the whole-folder DELETE would then wipe out wholesale (the sibling
+    # the user never saw as its own row = silent data loss).
+    lib = _new_library(tmp_path)
+    music = tmp_path / "music"
+    trash = tmp_path / "trash"
+
+    def add_album(album: str, folder: str, titles: list[str]) -> None:
+        items: list[Item] = []
+        base = music / folder
+        base.mkdir(parents=True, exist_ok=True)
+        for i, title in enumerate(titles, start=1):
+            dst = base / f"{i:02d} {title}.flac"
+            shutil.copyfile(SAMPLE, dst)
+            it = Item(
+                album=album, albumartist="Portishead", artist="Portishead", title=title, track=i
+            )
+            it.path = os.fsencode(str(dst))
+            it.write()  # persist tags so list_trashed_albums (Item.from_path) reads them
+            items.append(it)
+        lib.add_album(items).store()
+
+    add_album("Dummy", "Portishead/Dummy", ["Mysterons", "Sour Times"])
+    add_album("Third", "Portishead/Third", ["Silence", "Hunter", "Nylon Smile"])
+    dummy = next(a for a in lib.albums() if a.album == "Dummy")
+    third = next(a for a in lib.albums() if a.album == "Third")
+
+    with lib.transaction():
+        trash_album(lib, dummy, trash_dir=trash)
+    with lib.transaction():
+        trash_album(lib, third, trash_dir=trash)
+
+    albums = list_trashed_albums(trash)
+    by_album = {a.album: a for a in albums}
+    assert set(by_album) == {"Dummy", "Third"}
+    assert len(albums) == 2
+    # Each container is exactly one album's worth of audio — no cross-contamination.
+    assert by_album["Dummy"].track_count == 2
+    assert by_album["Third"].track_count == 3
+    # Two distinct top-level entries (distinct DELETE keys), never a shared folder.
+    folders = {a.folder for a in albums}
+    assert len(folders) == 2
 
 
 def test_list_keeps_same_tagged_siblings_distinct(tmp_path: Path) -> None:

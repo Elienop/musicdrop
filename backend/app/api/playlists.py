@@ -277,6 +277,8 @@ async def sync_playlist_endpoint(
             record.name,
             specs,
             record.target_plex_users,
+            playlist_id=record.id,
+            rating_keys={target: state.rating_key for target, state in record.plex.items()},
         )
     except PlexNotConfigured as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

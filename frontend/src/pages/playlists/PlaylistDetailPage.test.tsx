@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { delay, http, HttpResponse } from "msw";
 import { beforeEach, describe, expect, test, vi } from "vitest";
@@ -406,6 +406,126 @@ describe("PlaylistDetailPage", () => {
     expect(cb).toBeEnabled();
     // A freshly-checked target with no sync state yet reads "Not synced yet".
     expect(await screen.findByText(/not synced yet/i)).toBeInTheDocument();
+  });
+
+  test("collapses rapid target toggles into a single PATCH carrying the final set", async () => {
+    let patchCount = 0;
+    let lastBody: string[] | null = null;
+    let targets: string[] = [];
+    server.use(
+      http.get(USERS, () =>
+        HttpResponse.json({
+          users: [
+            { id: "7", name: "Partner", home: true },
+            { id: "8", name: "Kid", home: true },
+          ],
+        }),
+      ),
+      http.get(BASE, () =>
+        HttpResponse.json({ ...detail([track(1, "Alpha")]), target_plex_users: targets }),
+      ),
+      http.patch(BASE, async ({ request }) => {
+        patchCount += 1;
+        lastBody = ((await request.json()) as { target_plex_users: string[] }).target_plex_users;
+        targets = lastBody;
+        return HttpResponse.json({ ...detail([track(1, "Alpha")]), target_plex_users: targets });
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    // Load under real timers, then take manual control of the debounce clock.
+    // (fireEvent — not userEvent — for the toggles: it uses no timers of its own,
+    // so the debounce is the only fake timer in play and we advance it explicitly.)
+    const partner = await screen.findByRole("checkbox", { name: /partner/i });
+    const kid = screen.getByRole("checkbox", { name: /kid/i });
+
+    vi.useFakeTimers();
+    try {
+      // Tick two targets on in quick succession, INSIDE the debounce window.
+      act(() => void fireEvent.click(partner));
+      act(() => void fireEvent.click(kid));
+      // Nothing sent yet — the burst is still coalescing behind the debounce.
+      expect(patchCount).toBe(0);
+      // Cross the debounce ONCE: exactly one PATCH, carrying BOTH ids.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(400);
+      });
+      expect(patchCount).toBe(1);
+      expect(new Set(lastBody)).toEqual(new Set(["7", "8"]));
+      // Both checkboxes stay checked after the save settles.
+      expect(partner).toBeChecked();
+      expect(kid).toBeChecked();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a settle landing a subset while a newer toggle is pending doesn't drop the newer target", async () => {
+    const patches: string[][] = [];
+    let targets: string[] = [];
+    server.use(
+      http.get(USERS, () =>
+        HttpResponse.json({
+          users: [
+            { id: "7", name: "Partner", home: true },
+            { id: "8", name: "Kid", home: true },
+          ],
+        }),
+      ),
+      http.get(BASE, () =>
+        HttpResponse.json({ ...detail([track(1, "Alpha")]), target_plex_users: targets }),
+      ),
+      http.patch(BASE, async ({ request }) => {
+        const body = ((await request.json()) as { target_plex_users: string[] })
+          .target_plex_users;
+        patches.push(body);
+        targets = body;
+        // Hold the response so the second toggle can land while this PATCH is in
+        // flight — the out-of-order-race window that used to drop a target.
+        await delay(1000);
+        return HttpResponse.json({ ...detail([track(1, "Alpha")]), target_plex_users: targets });
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    const partner = await screen.findByRole("checkbox", { name: /partner/i });
+    const kid = screen.getByRole("checkbox", { name: /kid/i });
+
+    vi.useFakeTimers();
+    try {
+      // 1) Tick Partner and let the debounced PATCH #1 ([7]) go in flight.
+      act(() => void fireEvent.click(partner));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(400);
+      });
+      expect(patches).toEqual([["7"]]);
+      // 2) Tick Kid WHILE PATCH #1 is still in flight (single-flight defers it).
+      act(() => void fireEvent.click(kid));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(400);
+      });
+      // Still only the first PATCH — the second is held behind single-flight.
+      expect(patches).toEqual([["7"]]);
+      // 3) Let PATCH #1 settle. Its refetch reports the SUBSET [7]; the reseed
+      //    must NOT revert Kid (a newer, not-yet-persisted change).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(kid).toBeChecked();
+      // 4) Convergence fires PATCH #2 with the full desired set; let it settle.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(patches).toEqual([["7"], ["7", "8"]]);
+      expect(partner).toBeChecked();
+      expect(kid).toBeChecked();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("a checked target with no sync state reads 'Not synced yet'", async () => {

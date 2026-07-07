@@ -1,16 +1,31 @@
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from beets.library import Item, Library
+from fastapi.concurrency import run_in_threadpool as _real_run_in_threadpool
 from fastapi.testclient import TestClient
 
+import app.api.search as search_mod
 from app.api.albums import get_library
-from app.beets.library import search
+from app.beets.library import search, search_typed
 from app.main import app
 from app.models.search import SearchResults
 from tests.conftest import make_test_handle
+
+
+def _threadpool_spy(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Record every callable offloaded via the router's run_in_threadpool while
+    still executing it (real passthrough)."""
+    spy = Mock(side_effect=lambda fn, *a, **k: _real_run_in_threadpool(fn, *a, **k))
+    monkeypatch.setattr(search_mod, "run_in_threadpool", spy, raising=False)
+    return spy
+
+
+def _offloaded_callables(spy: Mock) -> list[object]:
+    return [call.args[0] for call in spy.call_args_list]
 
 
 def _make_item(directory: Path, *, album: str, albumartist: str, title: str, track: int) -> Item:
@@ -213,6 +228,25 @@ def test_typed_search_malformed_query_does_not_500(client: TestClient) -> None:
 def test_typed_search_invalid_type_is_422(client: TestClient) -> None:
     resp = client.get("/api/search", params={"q": "love", "type": "bogus"})
     assert resp.status_code == 422
+
+
+def test_sectioned_search_offloads_scan_to_threadpool(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The library scan must not run on the event loop — it offloads like browse.py.
+    spy = _threadpool_spy(monkeypatch)
+    resp = client.get("/api/search", params={"q": "love"})
+    assert resp.status_code == 200
+    assert search in _offloaded_callables(spy)
+
+
+def test_typed_search_offloads_scan_to_threadpool(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy = _threadpool_spy(monkeypatch)
+    resp = client.get("/api/search", params={"q": "love", "type": "albums"})
+    assert resp.status_code == 200
+    assert search_typed in _offloaded_callables(spy)
 
 
 def test_default_mode_shape_is_unchanged(client: TestClient) -> None:

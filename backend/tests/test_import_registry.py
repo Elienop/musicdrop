@@ -436,6 +436,28 @@ def test_start_validate_failure_takes_no_slot() -> None:
     assert job_id
 
 
+def test_start_runner_run_failure_frees_the_slot() -> None:
+    # The registry claims the single slot UNDER the lock, then calls runner.run
+    # OUTSIDE it to spawn the worker. If that spawn raises synchronously (the OS
+    # refusing a new thread, a session-build error), the slot must NOT stay
+    # wedged: the exception propagates unchanged AND the slot is freed so a
+    # later import can start. Without the fix the failed job stays installed
+    # with phase=scanning (an active phase) and every future import 409s
+    # forever — the whole import gate deadlocks until a process restart.
+    runner = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
+    runner.run_error = RuntimeError("can't start new thread")
+    reg = ImportJobRegistry(runner=runner)
+    with pytest.raises(RuntimeError, match="can't start new thread"):
+        reg.start("/music/incoming")
+    # The synchronous spawn failure must have released the single slot.
+    assert reg.has_active_job() is False
+    # ...and a subsequent start with a working runner succeeds (returns an id).
+    runner.run_error = None
+    job_id = reg.start("/music/incoming")
+    assert job_id
+    assert reg.has_active_job() is True
+
+
 def test_start_passes_path_and_options_to_validate() -> None:
     runner = FakeImportRunner()
     reg = ImportJobRegistry(runner=runner)

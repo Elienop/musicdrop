@@ -214,14 +214,30 @@ class ImportJobRegistry:
             )
             self._job = job
 
-        runner.run(
-            path,
-            job.bridge,
-            on_finish=lambda: self._on_finish(job.id),
-            on_error=lambda message: self._on_error(job.id, message),
-            options=options,
-            directive=directive,
-        )
+        try:
+            runner.run(
+                path,
+                job.bridge,
+                on_finish=lambda: self._on_finish(job.id),
+                on_error=lambda message: self._on_error(job.id, message),
+                options=options,
+                directive=directive,
+            )
+        except Exception:
+            # ``run`` builds the session and spawns the worker synchronously. If
+            # it raises (a session-build error, or Thread.start() refused under
+            # exhaustion) no worker and no callback will ever fire, so the slot
+            # we just claimed would stay installed at phase=scanning (an active
+            # phase) forever — wedging every future import (the API 409s) and the
+            # acquisition/bank-apply gates. Free it, then re-raise UNCHANGED so
+            # the endpoint's existing error mapping is preserved.
+            with self._lock:
+                # Only clear the slot WE installed — never stomp a job a
+                # concurrent successful start may hold (defensive: single-slot
+                # today, but keep the invariant explicit).
+                if self._job is job:
+                    self._job = None
+            raise
         return job.id
 
     def _on_finish(self, job_id: str) -> None:

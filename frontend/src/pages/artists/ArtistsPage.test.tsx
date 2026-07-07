@@ -167,4 +167,29 @@ describe("ArtistsPage", () => {
     });
     expect(cta).toHaveAttribute("href", "/import");
   });
+
+  test("paginates a roster larger than one page", async () => {
+    // 60 artists > PAGE_SIZE (48): the page must render one slice, not all of
+    // them (the 10k-library render-storm this fixes).
+    const big: Artist[] = Array.from({ length: 60 }, (_, i) => ({
+      name: `Artist ${String(i + 1).padStart(2, "0")}`,
+      album_count: 1,
+    }));
+    server.use(http.get(ARTISTS_URL, () => HttpResponse.json(big)));
+
+    renderWithProviders(<ArtistsPage />);
+
+    // First page: exactly PAGE_SIZE cards, and the last artist isn't on it.
+    await screen.findByText("Artist 01");
+    expect(screen.getAllByRole("listitem")).toHaveLength(48);
+    expect(screen.queryByText("Artist 60")).not.toBeInTheDocument();
+    // The meta line still reports the FULL count, not the page size.
+    expect(screen.getByText("60 artists")).toBeInTheDocument();
+
+    // Advancing to the next page renders the remaining slice (12 artists).
+    await userEvent.click(screen.getByRole("button", { name: /next/i }));
+    await screen.findByText("Artist 60");
+    expect(screen.getAllByRole("listitem")).toHaveLength(12);
+    expect(screen.queryByText("Artist 01")).not.toBeInTheDocument();
+  });
 });

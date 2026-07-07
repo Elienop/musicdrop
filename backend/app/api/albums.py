@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
+from fastapi.concurrency import run_in_threadpool
 
 from app.api.http_cache import revalidating_image_response
 from app.beets.completeness import missing_report_op
@@ -43,7 +44,9 @@ async def list_albums_endpoint(
     artist: Annotated[str | None, Query()] = None,
 ) -> AlbumPage:
     items: list[Album]
-    items, total = list_albums(handle.lib, limit=limit, offset=offset, artist=artist)
+    items, total = await run_in_threadpool(
+        list_albums, handle.lib, limit=limit, offset=offset, artist=artist
+    )
     return AlbumPage(items=items, total=total, limit=limit, offset=offset)
 
 
@@ -52,7 +55,7 @@ async def get_album_detail_endpoint(
     album_id: int,
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> AlbumDetail:
-    detail = get_album_detail(handle.lib, album_id)
+    detail = await run_in_threadpool(get_album_detail, handle.lib, album_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="Album not found")
     return detail
@@ -97,7 +100,7 @@ async def get_album_cover_endpoint(
     request: Request,
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> Response:
-    cover = get_album_cover(handle.lib, album_id)
+    cover = await run_in_threadpool(get_album_cover, handle.lib, album_id)
     if cover is None:
         raise HTTPException(status_code=404, detail="Cover not found")
 

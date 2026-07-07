@@ -17,6 +17,8 @@ Each artist costs at most one network resolution until its marker expires.
 
 from collections.abc import Callable
 
+from fastapi.concurrency import run_in_threadpool
+
 from app.artwork.cache import NEGATIVE, ArtistImageCache, CachedImage
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.source import ArtistImageSource, TransientSourceError
@@ -46,14 +48,18 @@ class ArtistImageService:
         if not self._is_enabled():
             return None
 
-        cached = self._cache.get(name)
+        # The cache read is a blocking disk read (up to 10 MB); offload it so a
+        # cache hit never stalls the event loop. The network resolve below stays
+        # on the loop (it is already async).
+        cached = await run_in_threadpool(self._cache.get, name)
         if isinstance(cached, CachedImage):
             return (cached.data, cached.content_type)
         if cached is NEGATIVE:
             return None
 
-        # Cache miss: resolve the MBID lazily (only now), then resolve under the limiter.
-        mbid = get_mbid() if get_mbid is not None else None
+        # Cache miss: resolve the MBID lazily (only now), then resolve under the
+        # limiter. get_mbid runs a synchronous beets query, so offload it too.
+        mbid = await run_in_threadpool(get_mbid) if get_mbid is not None else None
         try:
             async with self._limiter.slot():
                 resolved = await self._source.resolve(name, mbid=mbid)

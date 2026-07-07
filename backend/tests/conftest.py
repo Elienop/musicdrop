@@ -19,10 +19,11 @@ adapter:
 """
 
 import os
+import socket
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -32,6 +33,25 @@ from app.beets.setup import setup_beets
 
 if TYPE_CHECKING:
     from beets.library import Library
+
+
+@pytest.fixture(autouse=True)
+def _resolve_hosts_public(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve every hostname to a public IP so the SSRF guard is inert by default.
+
+    ``app.artwork.download.assert_public_url`` (added to the artist-image fetch +
+    download paths) calls ``socket.getaddrinfo`` to reject private/loopback/
+    metadata targets. The artwork tests mock the HTTP layer with respx but use
+    synthetic hosts (``img``, ``cdn.test``, ...) that don't resolve offline, so
+    without this the guard would raise on them. Tests that assert the guard
+    actually *blocks* (test_artwork_ssrf) re-stub ``getaddrinfo`` in the test
+    body — that override runs after this fixture and wins.
+    """
+
+    def fake(host: str, port: int, *args: object, **kwargs: object) -> list[Any]:
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake)
 
 
 def make_test_handle(lib: "Library", beets_dir: Path) -> LibraryHandle:
