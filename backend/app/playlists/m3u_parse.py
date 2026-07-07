@@ -11,9 +11,9 @@ import re
 from urllib.parse import unquote, urlparse
 
 from app.models.playlist_import import ParsedPlaylist, SourceEntry
+from app.playlists.stem import filename_stem
 
 _EXTINF = re.compile(r"\A#EXTINF:\s*(-?\d+(?:\.\d+)?)?\s*,\s*(.*)\Z")
-_LEADING_TRACK_NO = re.compile(r"\A\d{1,3}\s*[-._ ]\s*")
 
 
 def _split_artist_title(text: str) -> tuple[str | None, str | None]:
@@ -30,13 +30,6 @@ def _decode_path(line: str) -> str:
     if line.lower().startswith("file://"):
         return unquote(urlparse(line).path)
     return line
-
-
-def _stem_title(path: str) -> str | None:
-    stem = path.replace("\\", "/").rsplit("/", 1)[-1]
-    stem = stem.rsplit(".", 1)[0] if "." in stem else stem
-    stem = _LEADING_TRACK_NO.sub("", stem).strip()
-    return stem or None
 
 
 def parse_m3u(name: str, content: str) -> ParsedPlaylist:
@@ -59,7 +52,7 @@ def parse_m3u(name: str, content: str) -> ParsedPlaylist:
         path = _decode_path(line)
         secs, artist, title = pending_extinf or (None, None, None)
         if title is None:
-            title = _stem_title(path)
+            title = filename_stem(path, strip_track_number=True) or None
         entries.append(
             SourceEntry(
                 position=len(entries),
