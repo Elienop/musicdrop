@@ -297,6 +297,9 @@ def _start(
         delay=delay,
         force=force,
         artist=artist,
+        # Repaint open tabs when the sweep finishes (fired from the daemon
+        # thread; the broker hops onto the main loop via call_soon_threadsafe).
+        on_complete=lambda: emit_art_changed(app),
     )
 
 

@@ -39,6 +39,54 @@ async def test_sweep_records_and_finishes() -> None:
 
 
 @pytest.mark.anyio
+async def test_sweep_fires_on_complete_when_done() -> None:
+    reg = ArtistArtBackfillRegistry()
+    reg.start(force=True)
+    fired: list[bool] = []
+
+    async def fake_fetch(name: str) -> ArtistArtOutcome:
+        return ArtistArtOutcome(artist=name, status="written", written=1, dirs=1)
+
+    await sweep_async(
+        reg,
+        _Lib(),
+        cache_dir=Path("/tmp/x"),
+        settings=settings,
+        delay=0,
+        force=True,
+        names=["A", "B"],
+        fetch_one=fake_fetch,
+        on_complete=lambda: fired.append(True),
+    )
+    assert reg.state().phase == "done"
+    assert fired == [True]  # SSE repaint fired exactly once on completion
+
+
+@pytest.mark.anyio
+async def test_sweep_fires_on_complete_on_failure() -> None:
+    reg = ArtistArtBackfillRegistry()
+    reg.start(force=True)
+    fired: list[bool] = []
+
+    async def boom(name: str) -> ArtistArtOutcome:
+        raise RuntimeError("kaboom")
+
+    await sweep_async(
+        reg,
+        _Lib(),
+        cache_dir=Path("/tmp/x"),
+        settings=settings,
+        delay=0,
+        force=True,
+        names=["A"],
+        fetch_one=boom,
+        on_complete=lambda: fired.append(True),
+    )
+    assert reg.state().phase == "failed"
+    assert fired == [True]  # fires on the fail path too
+
+
+@pytest.mark.anyio
 async def test_sweep_honors_stop() -> None:
     reg = ArtistArtBackfillRegistry()
     reg.start(force=False)
