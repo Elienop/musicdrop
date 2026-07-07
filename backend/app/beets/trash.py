@@ -43,20 +43,41 @@ def album_folder(lib: Library, items: list[Any]) -> str:
     return os.path.dirname(_abs_path(lib, items[0].path))
 
 
+def _trash_container_name(album: Any) -> str:
+    """A readable, filesystem-safe ``"<albumartist> - <album>"`` container name.
+
+    Path separators (``os.sep`` and a literal ``/`` on any OS) are neutralised so
+    the name is a single dir level; both fields empty falls back to ``"album"``
+    (``_unique_trash_dest`` handles that too, but keep the intent explicit here).
+    """
+    artist = _coerce_optional_str(getattr(album, "albumartist", None)) or ""
+    title = _coerce_optional_str(getattr(album, "album", None)) or ""
+    name = f"{artist} - {title}".strip(" -") if (artist or title) else ""
+    for bad in {os.sep, "/"}:
+        name = name.replace(bad, "_")
+    return name or "album"
+
+
 def trash_album(lib: Library, album: Any, *, trash_dir: Path) -> str:
     """Relocate one album's files under ``trash_dir`` and drop it from the library.
 
-    Reversible: ``Album.move(basedir=trash)`` relocates the files by path
-    template (and prunes the vacated source dir), then
-    ``Album.remove(delete=False)`` drops the DB rows while leaving the files in
-    Trash. Returns the album's new Trash folder. Caller controls the
-    transaction (so a batch can be atomic).
+    Reversible: the album is moved into its OWN collision-free container dir
+    directly under ``trash_dir`` (``container/$albumartist/$album/...``) via
+    ``Album.move(basedir=container)``, then ``Album.remove(delete=False)`` drops
+    the DB rows while leaving the files in Trash. The per-container basedir is
+    what keeps two DIFFERENT albums by the SAME album-artist as two distinct
+    top-level Trash entries — sharing ``trash_dir`` as the basedir collapsed them
+    under one ``$albumartist`` folder, which ``list_trashed_albums`` keys on and
+    the whole-folder DELETE then wiped wholesale. Returns the album's new Trash
+    folder. Caller controls the transaction (so a batch can be atomic).
     """
     trash_dir.mkdir(parents=True, exist_ok=True)
-    basedir = bytestring_path(str(trash_dir))
-    album.move(basedir=basedir)  # relocate under Trash + prune source dir
+    container = _unique_trash_dest(trash_dir, _trash_container_name(album))
+    container.mkdir(parents=True, exist_ok=True)
+    basedir = bytestring_path(str(container))
+    album.move(basedir=basedir)  # relocate under the container + prune source dir
     items = list(album.items())
-    trash_path = os.path.dirname(_abs_path(lib, items[0].path)) if items else str(trash_dir)
+    trash_path = os.path.dirname(_abs_path(lib, items[0].path)) if items else str(container)
     album.remove(delete=False)  # drop DB rows; files stay in Trash
     return trash_path
 
