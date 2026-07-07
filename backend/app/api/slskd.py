@@ -118,7 +118,11 @@ async def slskd_webhook(
     # downloads_prefix, or "/" under the default empty prefix) that remaps to the
     # inbox ROOT — a whole-inbox MOVE would sweep in unrelated/still-downloading
     # siblings (and the ledger); only a strict descendant is a valid album target.
-    contained = contain(remapped, inbox_dir, strict=True)
+    # contain (resolve + lstat), coalesce_album_root (parent.iterdir) and enqueue
+    # (resolve + ledger stat) all do blocking filesystem I/O — offload them so the
+    # webhook handler never stalls the event loop (and the SSE stream) on a slow
+    # NAS scan.
+    contained = await run_in_threadpool(contain, remapped, inbox_dir, strict=True)
     if contained is None:
         logger.warning(
             "slskd webhook: %r maps outside the inbox (or to its root); ignored",
@@ -126,6 +130,6 @@ async def slskd_webhook(
         )
         return WebhookAck(status="ignored")
 
-    album = coalesce_album_root(contained, inbox_dir)
-    request.app.state.acquisition_queue.enqueue(album)
+    album = await run_in_threadpool(coalesce_album_root, contained, inbox_dir)
+    await run_in_threadpool(request.app.state.acquisition_queue.enqueue, album)
     return WebhookAck(status="queued")

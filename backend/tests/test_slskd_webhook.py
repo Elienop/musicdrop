@@ -10,9 +10,11 @@ webhook returns; dup/unmappable/ignored are all ``200``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from fastapi.concurrency import run_in_threadpool
 from fastapi.testclient import TestClient
 
 from app.acquisition.ledger import AcquisitionLedger
@@ -86,6 +88,38 @@ def test_webhook_queues_valid_event(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         expected = tmp_path.resolve() / "inbox" / "Artist" / "Album"
         assert probe.status().queued == 1
         assert str(expected) in probe._dedupe
+
+
+def test_webhook_offloads_blocking_fs_io(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # contain / coalesce_album_root / enqueue do blocking FS I/O and must run in
+    # the threadpool, not on the event loop.
+    _write_config(tmp_path)
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    (tmp_path / "inbox" / "Artist" / "Album").mkdir(parents=True)
+    app.dependency_overrides.clear()
+
+    import app.api.slskd as slskd_mod
+
+    offloaded: list[str] = []
+
+    async def spy(func: Callable[..., object], *args: object, **kwargs: object) -> object:
+        offloaded.append(getattr(func, "__name__", repr(func)))
+        return await run_in_threadpool(func, *args, **kwargs)
+
+    monkeypatch.setattr(slskd_mod, "run_in_threadpool", spy)
+    with TestClient(app) as client:
+        monkeypatch.setattr(app.state, "acquisition_queue", _probe_queue(tmp_path))
+        _configure(
+            client,
+            base_url="http://slskd:5030",
+            token="t",
+            downloads_prefix="/downloads",
+            webhook_secret="hook",
+            auto_import=True,
+        )
+        r = client.post("/api/slskd/webhook", headers={"X-API-Key": "hook"}, json=_VALID)
+        assert r.json() == {"status": "queued"}
+    assert {"contain", "coalesce_album_root", "enqueue"} <= set(offloaded)
 
 
 def test_webhook_ignores_non_directory_complete(
