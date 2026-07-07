@@ -3,10 +3,10 @@
 Extracted from ``AcquisitionQueue._gate_clear`` so every background import
 producer (the acquisition drain, the bank apply runner) consumes the same
 gate without importing the api layer (``api.import_.ensure_import_can_start``
-is the HTTP-shaped twin of this check and stays where it is). The backfill
-predicates are imported lazily so this module can never form an import cycle
-with the job packages — and so tests that monkeypatch the source modules'
-attributes keep working (the live binding is read at call time).
+is the HTTP-shaped twin of this check and stays where it is). The four-backfill
+union is delegated to ``app.library_busy.library_job_active`` (the one place it
+lives); that helper reads the live binding at call time so tests that
+monkeypatch the source modules' attributes keep working.
 """
 
 from __future__ import annotations
@@ -24,16 +24,10 @@ def import_gate_clear(import_registry: ImportJobRegistry, swap_lock: asyncio.Loc
         return False
     if swap_lock is not None and swap_lock.locked():
         return False
-    from app.artist_art_jobs.registry import artist_art_backfill_active
-    from app.disk_sync_jobs.registry import disk_sync_active
-    from app.lyrics_jobs.registry import lyrics_backfill_active
-    from app.reorganize_jobs.registry import reorganize_backfill_active
+    from app.library_busy import library_job_active
 
-    if (
-        lyrics_backfill_active()
-        or artist_art_backfill_active()
-        or reorganize_backfill_active()
-        or disk_sync_active()
-    ):
+    # The injected registry is the import slot, checked above; exclude it so the
+    # union covers only the four library backfills.
+    if library_job_active(exclude=("import",)):
         return False
     return True

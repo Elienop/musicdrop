@@ -53,10 +53,8 @@ def test_empty_unknown_folder_404(client: TestClient) -> None:
 def test_restore_409_when_a_library_job_is_active(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class _Active:
-        def has_active_job(self) -> bool:
-            return True
+    from app.import_jobs.registry import get_registry
 
-    monkeypatch.setattr("app.api.trash.get_registry", lambda: _Active())
+    monkeypatch.setattr(get_registry(), "has_active_job", lambda: True)
     r = client.post("/api/trash/restore", json={"folder": "whatever"})
     assert r.status_code == 409

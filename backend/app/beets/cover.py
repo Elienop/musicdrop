@@ -193,21 +193,11 @@ async def install_cover_op(
     from fastapi import HTTPException
     from fastapi.concurrency import run_in_threadpool
 
-    from app.artist_art_jobs.registry import artist_art_backfill_active
     from app.beets.config_editor import _swap_lock
-    from app.disk_sync_jobs.registry import disk_sync_active
-    from app.import_jobs.registry import get_registry
-    from app.lyrics_jobs.registry import lyrics_backfill_active
-    from app.reorganize_jobs.registry import reorganize_backfill_active
+    from app.library_busy import library_job_active
 
     app = request_obj.app
-    if (
-        get_registry().has_active_job()
-        or lyrics_backfill_active()
-        or artist_art_backfill_active()
-        or reorganize_backfill_active()
-        or disk_sync_active()
-    ):
+    if library_job_active():
         raise HTTPException(
             status_code=409,
             detail="A library operation is in progress — cover changes available when it finishes",

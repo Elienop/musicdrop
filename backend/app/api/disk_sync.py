@@ -10,7 +10,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.albums import get_library
-from app.artist_art_jobs.registry import artist_art_backfill_active
 from app.beets.disk_sync import LibraryRootUnavailableError, plan_disk_sync
 from app.beets.library import LibraryHandle
 from app.disk_sync_jobs.registry import (
@@ -19,10 +18,8 @@ from app.disk_sync_jobs.registry import (
 )
 from app.disk_sync_jobs.runner import start_backfill
 from app.events.emit import emit_library_changed
-from app.import_jobs.registry import get_registry
-from app.lyrics_jobs.registry import lyrics_backfill_active
+from app.library_busy import raise_if_library_busy
 from app.models.disk_sync import DiskSyncPlan, DiskSyncStatus
-from app.reorganize_jobs.registry import reorganize_backfill_active
 
 router = APIRouter(tags=["disk-sync"])
 
@@ -30,16 +27,9 @@ _BUSY = "A library operation is in progress — disk sync available when it fini
 
 
 def _gate_busy(app: object) -> None:
-    if (
-        get_registry().has_active_job()
-        or lyrics_backfill_active()
-        or artist_art_backfill_active()
-        or reorganize_backfill_active()
-    ):
-        raise HTTPException(status.HTTP_409_CONFLICT, _BUSY)
-    lock = getattr(app.state, "beets_swap_lock", None)  # type: ignore[attr-defined]  # app is duck-typed (object) so tests can pass a stub
-    if lock is not None and lock.locked():
-        raise HTTPException(status.HTTP_409_CONFLICT, _BUSY)
+    # Excludes disk_sync's own slot — this is disk sync's start-gate; the
+    # single-slot check stays at ``reg.start`` (RuntimeError -> 409).
+    raise_if_library_busy(app, exclude=("disk_sync",), message=_BUSY)
 
 
 @router.get("/disk-sync/preview", response_model=DiskSyncPlan)

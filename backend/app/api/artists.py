@@ -9,7 +9,6 @@ from app.api.csrf import verify_upload_origin
 from app.api.http_cache import revalidating_image_response
 from app.artist_art_jobs.registry import (
     ArtistArtBackfillRegistry,
-    artist_art_backfill_active,
     get_artist_art_backfill,
 )
 from app.artist_art_jobs.runner import start_backfill as start_art_backfill
@@ -23,10 +22,8 @@ from app.beets.delete import delete_artist_op
 from app.beets.library import LibraryHandle, list_artists
 from app.config import resolve_artist_image_cache_dir
 from app.config import settings as _module_settings
-from app.disk_sync_jobs.registry import disk_sync_active
 from app.events.emit import emit_art_changed, emit_library_changed
-from app.import_jobs.registry import get_registry
-from app.lyrics_jobs.registry import lyrics_backfill_active
+from app.library_busy import raise_if_library_busy
 from app.models.artist import (
     Artist,
     ArtistImageOverrideResult,
@@ -35,7 +32,6 @@ from app.models.artist import (
 )
 from app.models.artist_art import ArtistArtBackfillStatus, ArtistArtWriteSettings
 from app.models.delete import DeleteResult
-from app.reorganize_jobs.registry import reorganize_backfill_active
 
 router = APIRouter(tags=["artists"])
 
@@ -191,26 +187,8 @@ async def clear_artist_image_override_endpoint(
 
 
 def _gate_library_busy(app: object) -> None:
-    from fastapi import HTTPException
-    from fastapi import status as st
-
-    if (
-        get_registry().has_active_job()
-        or lyrics_backfill_active()
-        or artist_art_backfill_active()
-        or reorganize_backfill_active()
-        or disk_sync_active()
-    ):
-        raise HTTPException(
-            st.HTTP_409_CONFLICT,
-            "A library operation is in progress — try again when it finishes",
-        )
-    lock = getattr(app.state, "beets_swap_lock", None)  # type: ignore[attr-defined]  # app is duck-typed (object) so tests can pass a stub
-    if lock is not None and lock.locked():
-        raise HTTPException(
-            st.HTTP_409_CONFLICT,
-            "A library operation is in progress — try again when it finishes",
-        )
+    # Full union + swap lock; the default message matches the trash gate's.
+    raise_if_library_busy(app)
 
 
 @router.get("/artists/art/settings", response_model=ArtistArtWriteSettings)
