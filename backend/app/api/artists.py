@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.albums import get_library
+from app.api.csrf import verify_upload_origin
 from app.api.http_cache import revalidating_image_response
 from app.artist_art_jobs.registry import (
     ArtistArtBackfillRegistry,
@@ -126,7 +127,11 @@ async def set_artist_image_settings_endpoint(
     return ArtistImageSettings(enabled=toggle.set_enabled(body.enabled))
 
 
-@router.post("/artists/image/override", response_model=ArtistImageOverrideResult)
+@router.post(
+    "/artists/image/override",
+    response_model=ArtistImageOverrideResult,
+    dependencies=[Depends(verify_upload_origin)],
+)
 async def upload_artist_image_override_endpoint(
     request: Request,
     file: UploadFile,

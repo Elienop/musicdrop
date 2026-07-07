@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
+from app.api.csrf import verify_upload_origin
 from app.api.http_cache import revalidating_image_response
 from app.beets.completeness import missing_report_op
 from app.beets.cover import fetch_cover_op, install_cover_op
@@ -126,7 +127,11 @@ async def fetch_album_cover_endpoint(
     )
 
 
-@router.post("/albums/{album_id}/cover", response_model=CoverInstallResult)
+@router.post(
+    "/albums/{album_id}/cover",
+    response_model=CoverInstallResult,
+    dependencies=[Depends(verify_upload_origin)],
+)
 async def install_album_cover_endpoint(
     album_id: int,
     request: Request,
