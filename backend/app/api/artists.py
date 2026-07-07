@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.albums import get_library
+from app.api.csrf import verify_upload_origin
 from app.api.http_cache import revalidating_image_response
 from app.artist_art_jobs.registry import (
     ArtistArtBackfillRegistry,
@@ -126,7 +127,11 @@ async def set_artist_image_settings_endpoint(
     return ArtistImageSettings(enabled=toggle.set_enabled(body.enabled))
 
 
-@router.post("/artists/image/override", response_model=ArtistImageOverrideResult)
+@router.post(
+    "/artists/image/override",
+    response_model=ArtistImageOverrideResult,
+    dependencies=[Depends(verify_upload_origin)],
+)
 async def upload_artist_image_override_endpoint(
     request: Request,
     file: UploadFile,
@@ -138,7 +143,9 @@ async def upload_artist_image_override_endpoint(
     declared = request.headers.get("content-length")
     if declared is not None and declared.isdigit() and int(declared) > MAX_IMAGE_BYTES:
         raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
-    image_bytes = await file.read()
+    # Bounded read: never buffer more than the cap (+1 to detect an exact-cap
+    # overrun) even when Content-Length is absent or understated.
+    image_bytes = await file.read(MAX_IMAGE_BYTES + 1)
     if len(image_bytes) > MAX_IMAGE_BYTES:
         raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
     mime = sniff_image_mime(image_bytes)
@@ -297,6 +304,9 @@ def _start(
         delay=delay,
         force=force,
         artist=artist,
+        # Repaint open tabs when the sweep finishes (fired from the daemon
+        # thread; the broker hops onto the main loop via call_soon_threadsafe).
+        on_complete=lambda: emit_art_changed(app),
     )
 
 

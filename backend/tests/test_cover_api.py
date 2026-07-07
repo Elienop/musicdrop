@@ -41,6 +41,32 @@ def test_upload_install_sets_cover(cover_client: TestClient, edit_lib: Library) 
     assert cover_client.get(f"/api/albums/{aid}/cover").status_code == 200
 
 
+def test_cover_upload_read_is_size_bounded(
+    cover_client: TestClient, edit_lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The endpoint must read the upload with a size cap (never an unbounded
+    # read-all) so a spoofed/absent Content-Length can't buffer a huge body.
+    import starlette.datastructures as sds
+
+    from app.api.albums import _MAX_COVER_BYTES
+
+    sizes: list[int] = []
+    orig = sds.UploadFile.read
+
+    async def spy(self: sds.UploadFile, size: int = -1) -> bytes:
+        sizes.append(size)
+        return await orig(self, size)
+
+    monkeypatch.setattr(sds.UploadFile, "read", spy)
+    aid = _aid(edit_lib)
+    r = cover_client.post(
+        f"/api/albums/{aid}/cover",
+        files={"file": ("cover.png", PNG.read_bytes(), "image/png")},
+    )
+    assert r.status_code == 200
+    assert _MAX_COVER_BYTES + 1 in sizes  # bounded read, not read-all (-1)
+
+
 def test_upload_rejects_non_image(cover_client: TestClient, edit_lib: Library) -> None:
     aid = _aid(edit_lib)
     r = cover_client.post(
@@ -100,6 +126,51 @@ def test_upload_rejects_oversize_via_content_length(
     )
     assert r.status_code == 422
     assert "too large" in r.json()["detail"].lower()
+
+
+def test_cross_origin_upload_rejected(cover_client: TestClient, edit_lib: Library) -> None:
+    # multipart/form-data is a CORS "simple" content type, so a cross-origin page
+    # can POST it WITHOUT a preflight. A CSRF'd browser must not be able to
+    # overwrite a cover: an Origin whose authority differs from Host is rejected 403.
+    aid = _aid(edit_lib)
+    r = cover_client.post(
+        f"/api/albums/{aid}/cover",
+        files={"file": ("cover.png", PNG.read_bytes(), "image/png")},
+        headers={"Origin": "http://evil.test"},
+    )
+    assert r.status_code == 403
+
+
+def test_same_origin_upload_allowed(cover_client: TestClient, edit_lib: Library) -> None:
+    aid = _aid(edit_lib)
+    r = cover_client.post(
+        f"/api/albums/{aid}/cover",
+        files={"file": ("cover.png", PNG.read_bytes(), "image/png")},
+        headers={"Origin": "http://testserver"},  # authority matches the TestClient Host
+    )
+    assert r.status_code == 200
+
+
+def test_no_origin_upload_allowed(cover_client: TestClient, edit_lib: Library) -> None:
+    # A non-browser client (curl, LAN tooling) sends no Origin — allowed.
+    aid = _aid(edit_lib)
+    r = cover_client.post(
+        f"/api/albums/{aid}/cover",
+        files={"file": ("cover.png", PNG.read_bytes(), "image/png")},
+    )
+    assert r.status_code == 200
+
+
+def test_dev_frontend_origin_upload_allowed(cover_client: TestClient, edit_lib: Library) -> None:
+    # The Vite dev server is served from a different origin than the API but is on
+    # the CORS allowlist, so its uploads are allowed.
+    aid = _aid(edit_lib)
+    r = cover_client.post(
+        f"/api/albums/{aid}/cover",
+        files={"file": ("cover.png", PNG.read_bytes(), "image/png")},
+        headers={"Origin": "http://localhost:5173"},
+    )
+    assert r.status_code == 200
 
 
 def test_fetch_404_when_no_art(

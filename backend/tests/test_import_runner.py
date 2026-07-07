@@ -74,6 +74,47 @@ def test_beets_runner_crash_routes_to_on_error(
     assert errored["message"] == "kaboom"
 
 
+def test_post_import_trash_failure_still_reports_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A committed import reports success even if post-run Trash cleanup raises.
+
+    The album is in the library the moment ``session.run()`` returns; a failure
+    while moving a Replace-superseded copy to Trash must annotate (log), never
+    flip the job to failed (which would re-trigger duplicate detection on retry).
+    """
+    import app.beets.import_session as import_session_mod
+
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path))
+
+    # run() succeeds (the album is imported); the post-run cleanup then blows up.
+    monkeypatch.setattr(WebImportSession, "run", lambda self: None)
+
+    def boom(session: WebImportSession) -> None:
+        raise RuntimeError("trash move failed")
+
+    monkeypatch.setattr(import_session_mod, "_trash_replaced_albums", boom)
+
+    finished = threading.Event()
+    errored: dict[str, str] = {}
+
+    def on_finish() -> None:
+        finished.set()
+
+    def on_error(message: str) -> None:
+        errored["message"] = message
+        finished.set()
+
+    BeetsImportRunner(lib).run(
+        str(tmp_path / "incoming"),
+        ImportBridge(),
+        on_finish=on_finish,
+        on_error=on_error,
+    )
+    assert finished.wait(timeout=2.0)
+    assert errored == {}  # cleanup failure must NOT fail the committed import
+
+
 def test_runner_passes_trash_dir_to_session(monkeypatch: pytest.MonkeyPatch) -> None:
     from pathlib import Path
 

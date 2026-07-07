@@ -7,13 +7,13 @@ from typing import cast
 
 import httpx
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from starlette.responses import StreamingResponse
 
 from app.api import events as events_module
 from app.api.events import events_endpoint
 from app.api.events import router as events_router
-from app.events.broker import EventBroker
+from app.events.broker import MAX_SUBSCRIBERS, EventBroker
 
 
 def _request_with(broker: EventBroker) -> Request:
@@ -70,6 +70,19 @@ async def test_disconnect_unsubscribes() -> None:
     await asyncio.wait_for(anext(agen), 1.0)  # advance into the loop's try block
     await agen.aclose()  # client disconnect closes the generator -> finally unsubscribes
     assert broker.subscriber_count == 0
+
+
+@pytest.mark.anyio
+async def test_caps_concurrent_subscribers() -> None:
+    # Beyond MAX_SUBSCRIBERS active streams the endpoint 503s instead of
+    # subscribing (so a client can't open unbounded streams and exhaust memory).
+    broker = EventBroker(asyncio.get_running_loop())
+    for _ in range(MAX_SUBSCRIBERS):
+        broker.subscribe()
+    with pytest.raises(HTTPException) as ei:
+        await events_endpoint(_request_with(broker))
+    assert ei.value.status_code == 503
+    assert broker.subscriber_count == MAX_SUBSCRIBERS  # the rejected one didn't subscribe
 
 
 @pytest.mark.anyio

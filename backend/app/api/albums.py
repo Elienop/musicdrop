@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
+from app.api.csrf import verify_upload_origin
 from app.api.http_cache import revalidating_image_response
 from app.beets.completeness import missing_report_op
 from app.beets.cover import fetch_cover_op, install_cover_op
@@ -126,7 +127,11 @@ async def fetch_album_cover_endpoint(
     )
 
 
-@router.post("/albums/{album_id}/cover", response_model=CoverInstallResult)
+@router.post(
+    "/albums/{album_id}/cover",
+    response_model=CoverInstallResult,
+    dependencies=[Depends(verify_upload_origin)],
+)
 async def install_album_cover_endpoint(
     album_id: int,
     request: Request,
@@ -140,7 +145,9 @@ async def install_album_cover_endpoint(
     declared = request.headers.get("content-length")
     if declared is not None and declared.isdigit() and int(declared) > _MAX_COVER_BYTES:
         raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
-    image_bytes = await file.read()
+    # Bounded read: never buffer more than the cap (+1 to detect an exact-cap
+    # overrun) even when Content-Length is absent or understated.
+    image_bytes = await file.read(_MAX_COVER_BYTES + 1)
     if len(image_bytes) > _MAX_COVER_BYTES:
         raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
     result = await install_cover_op(request, album_id, image_bytes)

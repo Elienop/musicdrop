@@ -1,7 +1,9 @@
 """GET /api/import/{job}/albums/{index}/duplicates — the live up-front check."""
 
 import threading
+from typing import Any
 
+import pytest
 from beets.library import Item, Library
 from fastapi.testclient import TestClient
 
@@ -128,3 +130,73 @@ def test_live_upfront_check_out_of_range_candidate_falls_back_to_top(
     r = client.get(f"/api/import/{job_id}/albums/0/duplicates", params={"candidate_index": 99})
     assert r.status_code == 200
     assert len(r.json()["existing"]) == 1
+
+
+def _bare_option(index: int, release_id: str) -> CandidateOption:
+    """An option with a release_id but NO per-option album_artist/album/year."""
+    return CandidateOption(
+        index=index,
+        confidence=80.0,
+        data_source="MusicBrainz",
+        disambiguation=None,
+        release_id=release_id,
+    )
+
+
+def _parked_two_bare_options(index: int = 0) -> ParkedAlbum:
+    change = AlbumChange(
+        artist="The Band", album="Foo", year=1995, label=None, country=None, media=None
+    )
+    candidate = Candidate(
+        confidence=80.0,
+        recommendation=Recommendation.medium,
+        data_source="MusicBrainz",
+        data_url=None,
+        cover_after_url=None,
+        has_current_art=False,
+        changed_fields=[],
+        album_before=change,
+        album_after=change,
+        tracks=[],
+        missing=[],
+        unmatched=[],
+        options=[_bare_option(0, "mb-foo"), _bare_option(1, "mb-dlx")],
+    )
+    return ParkedAlbum(album_index=index, folder="/inbox/x", candidate=candidate)
+
+
+def test_upfront_non_top_option_uses_only_its_own_identity(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A non-top selected option must NOT borrow the top match's artist/album:
+    # querying beets with the TOP match's identity but the SELECTED option's
+    # release_id shows a heads-up for the WRONG release. Only the top option
+    # (idx == 0, where album_after IS the selection) keeps the album_after
+    # fallback for fields the option lacks.
+    import app.api.import_ as import_mod
+
+    calls: list[dict[str, Any]] = []
+
+    def spy(lib: object, **kwargs: Any) -> list[Any]:
+        calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr(import_mod, "find_import_duplicates", spy)
+    job_id = _start_and_wait(client, [_parked_two_bare_options()])
+
+    # Non-top (idx 1): its own fields only — album_artist absent -> None, NOT
+    # after.artist; release_id carries the identity.
+    r1 = client.get(f"/api/import/{job_id}/albums/0/duplicates", params={"candidate_index": 1})
+    assert r1.status_code == 200
+    assert calls[-1]["albumartist"] is None
+    assert calls[-1]["album"] is None
+    assert calls[-1]["year"] is None
+    assert calls[-1]["mb_albumid"] == "mb-dlx"
+
+    # Top (idx 0): the album_after fallback still fills the fields the bare
+    # option lacks.
+    r0 = client.get(f"/api/import/{job_id}/albums/0/duplicates", params={"candidate_index": 0})
+    assert r0.status_code == 200
+    assert calls[-1]["albumartist"] == "The Band"
+    assert calls[-1]["album"] == "Foo"
+    assert calls[-1]["mb_albumid"] == "mb-foo"

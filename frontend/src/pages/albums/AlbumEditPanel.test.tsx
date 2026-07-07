@@ -326,4 +326,37 @@ describe("AlbumEditPanel", () => {
     );
     await waitFor(() => expect(screen.getByLabelText(/album title/i)).not.toBeDisabled());
   });
+
+  it("does not crash when a live refetch adds a track not in the seeded draft", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <AlbumEditPanel album={album} onClose={() => {}} />
+      </QueryClientProvider>,
+    );
+    // The seeded rows render.
+    expect(screen.getByLabelText(/title of track 1/i)).toBeInTheDocument();
+
+    // An SSE library:changed refetch changes THIS album's track membership: a
+    // new item id (3) appears that the once-seeded draft has no entry for.
+    const withExtra = {
+      ...album,
+      tracks: [
+        ...album.tracks,
+        { id: 3, title: "Nude", track: 3, disc: 1, duration_seconds: 200, artist: "Radiohead" },
+      ],
+    } as unknown as AlbumDetail;
+    expect(() =>
+      rerender(
+        <QueryClientProvider client={qc}>
+          <AlbumEditPanel album={withExtra} onClose={() => {}} />
+        </QueryClientProvider>,
+      ),
+    ).not.toThrow();
+
+    // The un-drafted row is skipped until the draft reseeds — the seeded rows
+    // stay editable and nothing throws.
+    expect(screen.getByLabelText(/title of track 1/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/title of track 3/i)).not.toBeInTheDocument();
+  });
 });

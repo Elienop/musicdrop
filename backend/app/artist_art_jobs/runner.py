@@ -58,8 +58,13 @@ async def sweep_async(
     artist: str | None = None,
     names: list[str] | None = None,
     fetch_one: Callable[[str], Awaitable[ArtistArtOutcome]] | None = None,
+    on_complete: Callable[[], None] | None = None,
 ) -> None:
-    """Run the (library- or single-artist-scoped) sweep to completion. Never raises."""
+    """Run the (library- or single-artist-scoped) sweep to completion. Never raises.
+
+    ``on_complete`` fires once on termination (done/stopped/fail) so open tabs
+    repaint the just-written artist art — same contract as reorganize's sweep.
+    """
     try:
         if names is None:
             names = (
@@ -96,6 +101,11 @@ async def sweep_async(
             await _run_loop(reg, names, real, delay)
     except Exception as exc:  # any crash becomes a failed job, never a lost thread
         reg.fail(str(exc) or exc.__class__.__name__)
+    finally:
+        # Fire once on termination (done/stopped/fail) so open tabs repaint the
+        # just-written artist art — same contract as the reorganize sweep.
+        if on_complete is not None:
+            on_complete()
 
 
 async def _run_loop(
@@ -124,6 +134,7 @@ def start_backfill(
     delay: float,
     force: bool,
     artist: str | None = None,
+    on_complete: Callable[[], None] | None = None,
 ) -> None:
     """Spawn the sweep on a daemon thread that owns its event loop (non-blocking)."""
     threading.Thread(
@@ -136,6 +147,7 @@ def start_backfill(
                 delay=delay,
                 force=force,
                 artist=artist,
+                on_complete=on_complete,
             )
         ),
         name="musicdrop-artist-art-backfill",

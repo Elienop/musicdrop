@@ -14,6 +14,7 @@ from app.beets.browse import invalidate_browse_cache
 from app.models.events import LibraryChangedEvent
 
 MAX_QUEUE = 64  # bounded; a stuck tab drops events instead of growing unbounded
+MAX_SUBSCRIBERS = 32  # cap concurrent SSE streams so a client can't exhaust memory
 
 
 class EventBroker:

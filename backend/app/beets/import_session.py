@@ -11,6 +11,7 @@ beets imports are allowed here (inside app/beets/, CLAUDE.md rule 3).
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import threading
@@ -58,6 +59,8 @@ from app.models.import_models import (
 
 if TYPE_CHECKING:
     from beets.importer.tasks import ImportTask
+
+logger = logging.getLogger(__name__)
 
 
 class InLibraryCopyError(ValueError):
@@ -1016,7 +1019,14 @@ def run_import_worker(
         config["import"]["resume"] = orig_resume
         config["import"]["singletons"] = orig_singletons
         config["import"]["search_ids"] = orig_search_ids
-    _trash_replaced_albums(session)
+    # The album is in the library the moment session.run() returns; a failure
+    # moving a Replace-superseded copy to Trash must annotate, not invalidate.
+    # Reporting a committed import as failed would re-trigger duplicate
+    # detection against the just-imported album on retry.
+    try:
+        _trash_replaced_albums(session)
+    except Exception:
+        logger.exception("post-import Trash cleanup failed; the old copy stayed in place")
 
 
 def _trash_replaced_albums(session: WebImportSession) -> None:

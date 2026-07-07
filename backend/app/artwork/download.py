@@ -82,6 +82,27 @@ def assert_public_url(url: str) -> None:
             raise ValueError(_GENERIC_FETCH_ERROR)
 
 
+class _ResponseTooLarge(Exception):
+    """The streamed body passed ``MAX_IMAGE_BYTES`` before completing."""
+
+
+async def _read_capped(response: httpx.Response) -> bytes:
+    """Accumulate a STREAMED response body, aborting once it passes the cap.
+
+    Streaming (over ``response.content``) means a missing or understated
+    ``Content-Length`` can't make us buffer an unbounded body — we stop reading
+    the moment the running total exceeds ``MAX_IMAGE_BYTES``.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        total += len(chunk)
+        if total > MAX_IMAGE_BYTES:
+            raise _ResponseTooLarge
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 async def download_image(
     client: httpx.AsyncClient,
     url: str,
@@ -93,32 +114,33 @@ async def download_image(
         # initial URL and the final URL after the redirect chain so a compromised
         # or misconfigured source can't redirect us into an internal address.
         await run_in_threadpool(assert_public_url, url)
-        response = await client.get(url, follow_redirects=True)
-        response.raise_for_status()
-        await run_in_threadpool(assert_public_url, str(response.url))
+        async with client.stream("GET", url, follow_redirects=True) as response:
+            response.raise_for_status()
+            await run_in_threadpool(assert_public_url, str(response.url))
+
+            # A known "no image" placeholder is a confirmed no-match, not a
+            # failure: e.g. Deezer 302-redirects a no-photo artist to its
+            # blank-avatar URL (hash = MD5 of the empty string), so the final URL
+            # — not the original — carries the tell.
+            final_url = str(response.url)
+            if any(token in final_url for token in reject_url_substrings):
+                return None
+
+            declared = response.headers.get("content-length")
+            if declared is not None and declared.isdigit() and int(declared) > MAX_IMAGE_BYTES:
+                raise TransientSourceError("image exceeds size limit (Content-Length)")
+
+            content_type = response.headers.get("content-type", "")
+            if not content_type.lower().startswith("image/"):
+                raise TransientSourceError(f"download was not an image: {content_type!r}")
+
+            data = await _read_capped(response)
     except ValueError as exc:
         raise TransientSourceError(f"image download blocked: {exc}") from exc
+    except _ResponseTooLarge:
+        raise TransientSourceError("image exceeds size limit") from None
     except httpx.HTTPError as exc:
         raise TransientSourceError(f"image download failed: {exc}") from exc
-
-    # A known "no image" placeholder is a confirmed no-match, not a failure: e.g.
-    # Deezer 302-redirects a no-photo artist to its blank-avatar URL (hash = MD5
-    # of the empty string), so the final URL — not the original — carries the tell.
-    final_url = str(response.url)
-    if any(token in final_url for token in reject_url_substrings):
-        return None
-
-    declared = response.headers.get("content-length")
-    if declared is not None and declared.isdigit() and int(declared) > MAX_IMAGE_BYTES:
-        raise TransientSourceError("image exceeds size limit (Content-Length)")
-
-    content_type = response.headers.get("content-type", "")
-    if not content_type.lower().startswith("image/"):
-        raise TransientSourceError(f"download was not an image: {content_type!r}")
-
-    data = response.content
-    if len(data) > MAX_IMAGE_BYTES:
-        raise TransientSourceError("image exceeds size limit")
 
     return ResolvedImage(data=data, content_type=content_type)
 
@@ -141,25 +163,23 @@ async def fetch_image_bytes(client: httpx.AsyncClient, url: str) -> bytes:
     for _ in range(_MAX_REDIRECT_HOPS + 1):
         await run_in_threadpool(assert_public_url, current)
         try:
-            response = await client.get(current, follow_redirects=False, timeout=10.0)
+            async with client.stream(
+                "GET", current, follow_redirects=False, timeout=10.0
+            ) as response:
+                if response.status_code in _REDIRECT_STATUS:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise ValueError(_GENERIC_FETCH_ERROR)
+                    current = urljoin(current, location)
+                    continue
+                response.raise_for_status()
+                declared = response.headers.get("content-length")
+                if declared is not None and declared.isdigit() and int(declared) > MAX_IMAGE_BYTES:
+                    raise ValueError("image is too large (max 10 MB)")
+                return await _read_capped(response)
+        except _ResponseTooLarge as exc:
+            raise ValueError("image is too large (max 10 MB)") from exc
         except httpx.HTTPError as exc:
             raise ValueError(_GENERIC_FETCH_ERROR) from exc
-        if response.status_code in _REDIRECT_STATUS:
-            location = response.headers.get("location")
-            if not location:
-                raise ValueError(_GENERIC_FETCH_ERROR)
-            current = urljoin(current, location)
-            continue
-        try:
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise ValueError(_GENERIC_FETCH_ERROR) from exc
-        declared = response.headers.get("content-length")
-        if declared is not None and declared.isdigit() and int(declared) > MAX_IMAGE_BYTES:
-            raise ValueError("image is too large (max 10 MB)")
-        data = response.content
-        if len(data) > MAX_IMAGE_BYTES:
-            raise ValueError("image is too large (max 10 MB)")
-        return data
     # More than _MAX_REDIRECT_HOPS redirects: treat as unreachable, don't leak.
     raise ValueError(_GENERIC_FETCH_ERROR)

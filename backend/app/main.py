@@ -33,6 +33,7 @@ from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
 from app.bank.store import reconcile_interrupted
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
+from app.body_limit import BodySizeLimitMiddleware
 from app.config import resolve_artist_image_cache_dir, settings
 from app.static_files import mount_static
 
@@ -224,6 +225,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Added last so it wraps OUTERMOST (Starlette applies middleware in reverse add
+# order): an oversize body is refused before CORS or any route touches it.
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_body_bytes)
 
 app.include_router(health_router, prefix="/api")
 app.include_router(events_router, prefix="/api")

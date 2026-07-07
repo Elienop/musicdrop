@@ -17,6 +17,25 @@ import { toast } from "sonner";
 
 const toastSuccess = vi.mocked(toast.success);
 
+// Per-test override for the remove mutation. Null (the default) passes through
+// to the real msw-backed hook, so every other test is unaffected. The
+// rapid-remove race test swaps in a fake whose mutate() records each call's
+// onSuccess — letting both run against the same render, the concurrency a
+// single shared TanStack observer would otherwise collapse to the last call
+// (hiding the resurrection this fix targets).
+const removeOverride = vi.hoisted(() => ({ current: null as null | (() => unknown) }));
+
+vi.mock("@/api/usePlaylists", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/usePlaylists")>();
+  return {
+    ...actual,
+    useRemoveEntry: ((id: string) =>
+      removeOverride.current
+        ? removeOverride.current()
+        : actual.useRemoveEntry(id)) as typeof actual.useRemoveEntry,
+  };
+});
+
 const ID = "a".repeat(32);
 const BASE = `${window.location.origin}/api/playlists/${ID}`;
 const USERS = `${window.location.origin}/api/plex/users`;
@@ -204,6 +223,41 @@ describe("PlaylistDetailPage", () => {
     await screen.findByText("Alpha");
     await userEvent.click(screen.getByRole("button", { name: /remove alpha/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t remove the track/i);
+  });
+
+  test("two rapid removes drop both rows without resurrecting the first-removed", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")])),
+      ),
+    );
+    // Capture each remove's onSuccess so BOTH run against the same render — the
+    // window where a closure-captured array re-adds the first-removed row.
+    const pending: Array<() => void> = [];
+    removeOverride.current = () => ({
+      mutate: (_uid: string, opts?: { onSuccess?: () => void }) => {
+        if (opts?.onSuccess) pending.push(opts.onSuccess);
+      },
+      isError: false,
+    });
+    try {
+      renderWithProviders(<PlaylistDetailPage />, {
+        route: `/playlists/${ID}`,
+        path: "/playlists/:playlistId",
+      });
+      await screen.findByText("Alpha");
+      // Fire both removes off the SAME render (onSuccess deferred to `pending`).
+      fireEvent.click(screen.getByRole("button", { name: /remove alpha/i }));
+      fireEvent.click(screen.getByRole("button", { name: /remove beta/i }));
+      expect(pending).toHaveLength(2);
+      // Run both onSuccess: each must drop only its OWN uid from the latest
+      // list, so both rows are gone — the buggy closure array resurrects one.
+      act(() => pending.forEach((cb) => cb()));
+      expect(screen.queryByText("Alpha")).not.toBeInTheDocument();
+      expect(screen.queryByText("Beta")).not.toBeInTheDocument();
+    } finally {
+      removeOverride.current = null;
+    }
   });
 
   test("shows unavailable tracks as such", async () => {

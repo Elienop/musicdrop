@@ -71,8 +71,9 @@ def sweep(
                     vacated.append(Path(outcome.source_dir))
                 if delay:
                     time.sleep(delay)
+            stopped = False
             if trash_dir is not None:
-                _sweep_orphans(
+                stopped = _sweep_orphans(
                     reg,
                     scope=scope,
                     music_dir=Path(os.fsdecode(handle.lib.directory)),
@@ -80,7 +81,7 @@ def sweep(
                     vacated=vacated,
                     ignore_dirs=ignore_dirs,
                 )
-            reg.finish("done")
+            reg.finish("stopped" if stopped else "done")
     except Exception as exc:  # any crash becomes a failed job, never a lost thread
         reg.fail(str(exc) or exc.__class__.__name__)
     finally:
@@ -96,21 +97,23 @@ def _sweep_orphans(
     trash_dir: Path,
     vacated: list[Path],
     ignore_dirs: tuple[Path, ...],
-) -> None:
+) -> bool:
     """Move audio-empty husks to Trash. Library scope scans the whole root; a
     narrower scope seeds from the dirs this run vacated. Per-folder failures are
-    isolated so one bad move never aborts the job."""
+    isolated so one bad move never aborts the job. Returns True if it broke early
+    on a Stop request (so the caller finishes ``stopped``, not ``done``)."""
     seeds = None if scope == "library" else vacated
     for folder in find_orphan_folders(
         music_dir, seeds=seeds, trash_dir=trash_dir, ignore_dirs=ignore_dirs
     ):
         if reg.should_stop():
-            break
+            return True
         try:
             trash_folder(folder, trash_dir=trash_dir)
             reg.record_orphans(1)
         except OSError:
             continue
+    return False
 
 
 def start_backfill(

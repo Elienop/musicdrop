@@ -53,6 +53,18 @@ def test_upload_writes_override(client: TestClient, cache: ArtistImageCache) -> 
     assert cached.data == PNG.read_bytes()
 
 
+def test_cross_origin_upload_rejected(client: TestClient) -> None:
+    # A cross-origin browser POST (multipart is preflight-exempt) must not be able
+    # to overwrite an artist image via CSRF — a foreign Origin is rejected 403.
+    resp = client.post(
+        "/api/artists/image/override",
+        params={"name": "ABBA"},
+        files={"file": ("p.png", PNG.read_bytes(), "image/png")},
+        headers={"Origin": "http://evil.test"},
+    )
+    assert resp.status_code == 403
+
+
 def test_upload_rejects_non_image(client: TestClient) -> None:
     resp = client.post(
         "/api/artists/image/override",

@@ -103,6 +103,36 @@ async def test_public_host_returns_bytes(
 
 @pytest.mark.anyio
 @respx.mock
+async def test_fetch_streams_the_body(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The body is read via client.stream() (capped as it arrives), never the
+    # buffer-everything client.get(), so a lying Content-Length can't OOM us.
+    monkeypatch.setattr(socket, "getaddrinfo", _resolver({"cdn.test": "93.184.216.34"}))
+    respx.get("https://cdn.test/a.jpg").mock(
+        return_value=httpx.Response(200, content=b"IMG", headers={"content-type": "image/jpeg"})
+    )
+    used = {"stream": 0, "get": 0}
+    real_stream = client.stream
+    real_get = client.get
+
+    def stream_spy(*a: object, **k: object) -> object:
+        used["stream"] += 1
+        return real_stream(*a, **k)  # type: ignore[arg-type]
+
+    async def get_spy(*a: object, **k: object) -> object:
+        used["get"] += 1
+        return await real_get(*a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(client, "stream", stream_spy)
+    monkeypatch.setattr(client, "get", get_spy)
+    assert await fetch_image_bytes(client, "https://cdn.test/a.jpg") == b"IMG"
+    assert used["stream"] >= 1
+    assert used["get"] == 0
+
+
+@pytest.mark.anyio
+@respx.mock
 async def test_public_redirect_is_followed(
     client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

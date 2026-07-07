@@ -79,3 +79,14 @@ def test_nothing_matches_nothing(beets_library: LibraryHandle) -> None:
     index = build_match_index(beets_library.lib)
     (result,) = match_entries(index, [_entry(title="Ghost Song", artist="Nobody")])
     assert result.status == "unmatched" and result.suggestions == []
+
+
+def test_interlude_title_normalizing_to_empty_still_matches(beets_library: LibraryHandle) -> None:
+    # A title like "(Intro)" normalizes to "" (parentheticals are stripped), which
+    # would guard it out of the index AND out of every lookup — leaving it unmatched
+    # with zero suggestions even when the exact track exists. The raw-title fallback
+    # rescues it.
+    item_id = _seed(beets_library.lib, title="(Intro)", artist="X", filename="00 intro")
+    index = build_match_index(beets_library.lib)
+    (result,) = match_entries(index, [_entry(artist="X", title="(Intro)")])
+    assert result.status == "matched" and result.item_id == item_id

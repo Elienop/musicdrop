@@ -152,7 +152,15 @@ class BankApplyRunner:
 
     def _drain(self) -> None:
         while not self._stop.is_set():
-            item = bank_store.next_queued(self._bank_dir)
+            try:
+                item = bank_store.next_queued(self._bank_dir)
+            # A raise from the pick itself has no row to annotate; log and keep
+            # the drain alive. A dead thread would strand every queued row until
+            # a process restart. Back off so a persistent fault can't tight-spin.
+            except Exception:
+                logger.exception("bank apply: reading the next queued row failed")
+                self._stop.wait(self._busy_backoff)
+                continue
             if item is None:
                 self._wake.wait(self._idle_poll)
                 self._wake.clear()

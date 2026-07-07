@@ -47,6 +47,14 @@ def _stem(path: str) -> str:
     return name.rsplit(".", 1)[0] if "." in name else name
 
 
+def _title_key(title: str) -> str:
+    """The title lookup key. Falls back to the raw casefolded title when the
+    normalized form is empty, so an all-parenthetical interlude like "(Intro)"
+    (which ``normalize`` strips to "") is still indexed and looked up rather than
+    silently guarded out — a no-op for normal titles (``normalize`` is non-empty)."""
+    return normalize(title) or title.casefold().strip()
+
+
 def build_match_index(lib: Library) -> MatchIndex:
     """ONE library scan -> the three lookup maps."""
     index = MatchIndex()
@@ -62,7 +70,7 @@ def build_match_index(lib: Library) -> MatchIndex:
             key = normalize(_stem(os.fsdecode(item.path)))
             if key:
                 index.by_filename.setdefault(key, []).append(track)
-        title_key = normalize(track.title)
+        title_key = _title_key(track.title)
         if title_key:
             index.by_title.setdefault(title_key, []).append(track)
             artist_key = normalize(track.artist)
@@ -132,7 +140,7 @@ def _match_one(index: MatchIndex, entry: SourceEntry) -> ImportEntryPreview:
         leftovers.extend(hits)  # non-unique T1 candidates become suggestions
     # T2 - unique normalized artist+title (duration may break a tie).
     if entry.artist and entry.title:
-        key2 = (normalize(entry.artist), normalize(entry.title))
+        key2 = (normalize(entry.artist), _title_key(entry.title))
         hits = index.by_artist_title.get(key2, [])
         if len(hits) == 1:
             return _preview(entry, "matched", match=hits[0])
@@ -143,6 +151,6 @@ def _match_one(index: MatchIndex, entry: SourceEntry) -> ImportEntryPreview:
             return _preview(entry, "ambiguous", suggestions=hits + leftovers)
     # T3 - suggestions only.
     if entry.title:
-        leftovers.extend(index.by_title.get(normalize(entry.title), []))
+        leftovers.extend(index.by_title.get(_title_key(entry.title), []))
     deduped: dict[int, _IndexedTrack] = {t.item_id: t for t in leftovers}
     return _preview(entry, "unmatched", suggestions=list(deduped.values()))

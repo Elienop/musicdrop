@@ -162,6 +162,21 @@ function isPlexNotConfigured(err: unknown): boolean {
  * save (so a flurry of checkbox clicks collapses to a single PATCH). */
 const TARGET_SAVE_DEBOUNCE_MS = 350;
 
+/** Swap the row identified by `uid` with its neighbor in `dir` (-1 up / +1
+ * down), keyed by uid rather than a captured index so it composes with a
+ * background reseed that landed between the click and the state update. A no-op
+ * when the row or its neighbor is no longer present. */
+function swapByUid(list: PlaylistTrack[], uid: string, dir: -1 | 1): PlaylistTrack[] {
+  const i = list.findIndex((t) => t.uid === uid);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= list.length) {
+    return list;
+  }
+  const next = [...list];
+  [next[i], next[j]] = [next[j], next[i]];
+  return next;
+}
+
 /** Set equality by membership (order-independent) — tells whether the persisted
  * target set has caught up with the latest desired one. */
 function sameSet(a: Set<string>, b: Set<string>): boolean {
@@ -355,19 +370,18 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
       return;
     }
     const prev = tracks;
-    const next = [...tracks];
-    [next[index], next[target]] = [next[target], next[index]];
-    setTracks(next);
-
-    const moved = next[target];
+    const moved = tracks[index];
     const message = `Moved ${displayTitle(moved)} to position ${target + 1}`;
     setStatusMsg(message);
     const dirKey = dir === -1 ? "up" : "down";
     const altKey = dir === -1 ? "down" : "up";
     requestFocus(`${moved.uid}:${dirKey}`, `${moved.uid}:${altKey}`);
 
+    // Apply the swap by uid against the LATEST state so a background reseed
+    // arriving mid-move can't be clobbered by a stale closure array.
+    setTracks((cur) => swapByUid(cur, moved.uid, dir));
     reorder.mutate(
-      next.map((t) => t.uid),
+      swapByUid(tracks, moved.uid, dir).map((t) => t.uid),
       {
         onSuccess: () => toast.success(message),
         onError: () => setTracks(prev),
@@ -400,13 +414,18 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
    * lands later and is a no-op for focus). */
   function handleRemove(index: number) {
     const removed = tracks[index];
-    const afterRemoval = tracks.filter((_, i) => i !== index);
+    // Focus survivor from the render's tracklist (accurate for the single-action
+    // case the focus tests pin); the state itself is dropped by uid below.
+    const afterRemoval = tracks.filter((t) => t.uid !== removed.uid);
     removeEntry.mutate(removed.uid, {
       onSuccess: () => {
         const message = `Removed ${displayTitle(removed)}`;
         setStatusMsg(message);
         toast.success(message);
-        setTracks(afterRemoval);
+        // Drop THIS uid from the LATEST state: two rapid removes each remove
+        // their own row, so neither resurrects the other's (a stale array
+        // captured from the render would re-add the first-removed row).
+        setTracks((cur) => cur.filter((t) => t.uid !== removed.uid));
         if (afterRemoval.length === 0) {
           requestFocus("empty");
         } else {

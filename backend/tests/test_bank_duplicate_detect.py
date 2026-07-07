@@ -330,11 +330,12 @@ def test_duplicates_endpoint_follows_the_selected_option_metadata(
     assert [e["album_id"] for e in deluxe.json()["existing"]] == [deluxe_id]
 
 
-def test_duplicates_endpoint_falls_back_to_album_after_for_legacy_rows(
+def test_duplicates_endpoint_top_option_falls_back_to_album_after(
     client: TestClient, bank_dir: Path, beets_library: LibraryHandle
 ) -> None:
     # A legacy banked row whose options predate the per-option metadata fields
-    # (album_artist/album/year all None) must still detect via album_after.
+    # (album_artist/album/year all None): the TOP option (idx 0) still detects
+    # via album_after, since album_after IS the top match.
     lib = beets_library.lib
     foo_id = _add_album(lib, artist="The Band", album="Foo", mb="mb-foo", n=10)
     _add_album(lib, artist="The Band", album="Foo (Deluxe)", mb="mb-dlx", n=14)
@@ -348,11 +349,79 @@ def test_duplicates_endpoint_falls_back_to_album_after_for_legacy_rows(
     )
     row_id = _bank_row(bank_dir, candidate)
 
-    # Both indices fall back to album_after ("Foo") -> the plain "Foo" album.
-    for idx in (0, 1):
-        r = client.get(f"/api/bank/{row_id}/duplicates", params={"candidate_index": idx})
-        assert r.status_code == 200
-        assert [e["album_id"] for e in r.json()["existing"]] == [foo_id]
+    r = client.get(f"/api/bank/{row_id}/duplicates", params={"candidate_index": 0})
+    assert r.status_code == 200
+    assert [e["album_id"] for e in r.json()["existing"]] == [foo_id]
+
+
+def test_duplicates_endpoint_non_top_bare_option_uses_only_its_own_identity(
+    client: TestClient, bank_dir: Path, beets_library: LibraryHandle
+) -> None:
+    # A non-top option that lacks its own album_artist/album must NOT borrow the
+    # top match's identity: mixing the top match's artist/album with a different
+    # option's release_id would show a heads-up for the WRONG release. With no
+    # album_artist of its own, the check keys on the release_id alone (beets'
+    # own no-artist guard then yields nothing rather than a wrong-release hit).
+    lib = beets_library.lib
+    _add_album(lib, artist="The Band", album="Foo", mb="mb-foo", n=10)
+    _add_album(lib, artist="The Band", album="Foo (Deluxe)", mb="mb-dlx", n=14)
+    candidate = _candidate_with_options(
+        artist="The Band",
+        album="Foo",
+        options=[
+            _option(index=0, release_id="mb-foo"),
+            _option(index=1, release_id="mb-dlx"),
+        ],
+    )
+    row_id = _bank_row(bank_dir, candidate)
+
+    r = client.get(f"/api/bank/{row_id}/duplicates", params={"candidate_index": 1})
+    assert r.status_code == 200
+    # No album_artist on the option -> no borrowed "The Band"/"Foo" identity ->
+    # the top match's "Foo" album is NOT wrongly reported for the deluxe option.
+    assert r.json()["existing"] == []
+
+
+def test_bank_duplicates_non_top_option_spies_only_its_own_fields(
+    client: TestClient,
+    bank_dir: Path,
+    beets_library: LibraryHandle,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Spy the query args directly (parity with the import endpoint test): a
+    # non-top bare option is queried with albumartist=None and its OWN
+    # release_id, never the top match's artist.
+    import app.api.bank as bank_mod
+
+    calls: list[dict[str, object]] = []
+
+    def spy(lib: object, **kwargs: object) -> list[object]:
+        calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr(bank_mod, "find_import_duplicates", spy)
+    candidate = _candidate_with_options(
+        artist="The Band",
+        album="Foo",
+        options=[
+            _option(index=0, release_id="mb-foo"),
+            _option(index=1, release_id="mb-dlx"),
+        ],
+    )
+    row_id = _bank_row(bank_dir, candidate)
+
+    client.get(f"/api/bank/{row_id}/duplicates", params={"candidate_index": 1})
+    non_top = calls[-1]
+    assert non_top["albumartist"] is None
+    assert non_top["album"] is None
+    assert non_top["year"] is None
+    assert non_top["mb_albumid"] == "mb-dlx"
+
+    client.get(f"/api/bank/{row_id}/duplicates", params={"candidate_index": 0})
+    top = calls[-1]
+    assert top["albumartist"] == "The Band"
+    assert top["album"] == "Foo"
+    assert top["mb_albumid"] == "mb-foo"
 
 
 # ----- the consolidated ExistingAlbum mapper (tracks + release identity) -----

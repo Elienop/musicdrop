@@ -141,9 +141,17 @@ function ReviewScreen({
   onSearchStart: (baseline: number) => void;
   onSearchError: () => void;
 }) {
+  const navigate = useNavigate();
   // The candidate index the user will Apply — defaults to the top match (0).
   const [selected, setSelected] = useState(0);
+  // Two independent choice mutations on the same album: `submit` drives the
+  // no-revision-bump relookups (search / rescan); `applySubmit` drives the
+  // terminal decide (apply / skip / as-is). Keeping the decide mutation here —
+  // not inside ReviewActions — lets the relookup controls see when an Apply is
+  // in flight and lock out, closing the concurrent-action window on this
+  // no-undo endpoint.
   const submit = useSubmitChoice(jobId);
+  const applySubmit = useSubmitChoice(jobId);
   // A landed re-lookup resets the chosen option back to the new top match.
   useEffect(() => setSelected(0), [candidate.search_revision]);
   const dups = useImportDuplicates(jobId, index, selected, candidate.search_revision);
@@ -171,6 +179,23 @@ function ReviewScreen({
     );
   }
 
+  function decide(action: "apply" | "skip" | "asis" | "astracks") {
+    applySubmit.mutate(
+      {
+        index,
+        choice: {
+          action,
+          candidate_index: action === "apply" ? selected : null,
+        },
+      },
+      { onSuccess: () => navigate(backTo) },
+    );
+  }
+
+  // A relookup (search / rescan) is busy while it's in flight OR while an Apply
+  // is — both mutate the same parked album, so they lock each other out.
+  const relookupBusy = searching || submit.isPending || applySubmit.isPending;
+
   return (
     <div className="flex flex-col gap-6">
       <CandidateReview
@@ -187,7 +212,7 @@ function ReviewScreen({
       )}
       <ReleaseSearchPanel
         onSearch={runSearch}
-        busy={searching || submit.isPending}
+        busy={relookupBusy}
         feedback={candidate.search_feedback ?? null}
         error={submit.isError}
       />
@@ -195,7 +220,7 @@ function ReviewScreen({
         <Button
           variant="outline"
           size="sm"
-          disabled={searching || submit.isPending}
+          disabled={relookupBusy}
           onClick={runRescan}
         >
           Rescan folder
@@ -205,54 +230,39 @@ function ReviewScreen({
         </p>
       </div>
       <ReviewActions
-        jobId={jobId}
-        index={index}
-        selected={selected}
-        backTo={backTo}
-        disabled={searching}
+        onDecide={decide}
+        applyPending={applySubmit.isPending}
+        applyError={applySubmit.isError}
+        // Apply is blocked while a search/rescan is running too, keeping the
+        // mutual exclusion symmetric.
+        disabled={searching || submit.isPending}
       />
     </div>
   );
 }
 
-/** The beets choose_match actions, in a sticky bottom bar. Apply uses the
- * selected candidate index; on success we return to the feed (the worker
- * advances to the next album). */
+/** The beets choose_match actions, in a sticky bottom bar. Presentational: the
+ * decide mutation lives in ReviewScreen so the relookup controls can lock out
+ * while an Apply is in flight. `disabled` covers a search/rescan running;
+ * `applyPending` covers the Apply itself. */
 function ReviewActions({
-  jobId,
-  index,
-  selected,
-  backTo,
+  onDecide,
+  applyPending,
+  applyError,
   disabled,
 }: {
-  jobId: string;
-  index: number;
-  selected: number;
-  backTo: string;
+  onDecide: (action: "apply" | "skip" | "asis" | "astracks") => void;
+  applyPending: boolean;
+  applyError: boolean;
   disabled: boolean;
 }) {
-  const navigate = useNavigate();
-  const submit = useSubmitChoice(jobId);
-
-  function decide(action: "apply" | "skip" | "asis" | "astracks") {
-    submit.mutate(
-      {
-        index,
-        choice: {
-          action,
-          candidate_index: action === "apply" ? selected : null,
-        },
-      },
-      { onSuccess: () => navigate(backTo) },
-    );
-  }
-
+  const busy = applyPending || disabled;
   return (
     <div className="bg-background/80 sticky bottom-0 z-10 -mx-2 flex flex-col gap-1.5 border-t px-2 py-3 backdrop-blur">
       {/* useSubmitChoice swallows 404/409 (already-advanced, navigates anyway);
           a genuine transport error surfaces here instead of silently re-enabling
           the button. */}
-      {submit.isError && (
+      {applyError && (
         <p className="text-destructive text-sm" role="alert">
           Couldn&rsquo;t submit that choice — try again.
         </p>
@@ -261,17 +271,17 @@ function ReviewActions({
         <Button
           variant="ghost"
           size="sm"
-          disabled={submit.isPending || disabled}
-          onClick={() => decide("skip")}
+          disabled={busy}
+          onClick={() => onDecide("skip")}
         >
           Skip
         </Button>
         <Button
           variant="outline"
           size="sm"
-          disabled={submit.isPending || disabled}
+          disabled={busy}
           aria-describedby="review-actions-hint"
-          onClick={() => decide("asis")}
+          onClick={() => onDecide("asis")}
         >
           Use as-is
         </Button>
@@ -279,19 +289,15 @@ function ReviewActions({
           <Button
             variant="outline"
             size="sm"
-            disabled={submit.isPending || disabled}
+            disabled={busy}
             aria-describedby="review-actions-hint"
-            onClick={() => decide("astracks")}
+            onClick={() => onDecide("astracks")}
           >
             As tracks
           </Button>
         )}
-        <Button
-          className="ml-auto"
-          disabled={submit.isPending || disabled}
-          onClick={() => decide("apply")}
-        >
-          {submit.isPending ? (
+        <Button className="ml-auto" disabled={busy} onClick={() => onDecide("apply")}>
+          {applyPending ? (
             <>
               <Spinner className="animate-spin" aria-hidden="true" /> Applying…
             </>
