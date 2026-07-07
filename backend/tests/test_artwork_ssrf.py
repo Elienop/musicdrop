@@ -162,6 +162,32 @@ async def test_generic_message_is_same_for_blocked_and_connect_refused(
 
 
 @pytest.mark.anyio
+@respx.mock
+async def test_ssrf_check_runs_in_threadpool(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The blocking DNS resolve (assert_public_url -> socket.getaddrinfo) must be
+    # offloaded to the threadpool so a slow resolver can't stall the event loop.
+    # Spy on the module-level run_in_threadpool (a real passthrough) and confirm
+    # the guard is dispatched THROUGH it, not called inline on the loop.
+    import app.artwork.download as download
+
+    calls: list[Callable[..., object]] = []
+
+    async def _spy(func: Callable[..., object], *args: object, **kwargs: object) -> object:
+        calls.append(func)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(download, "run_in_threadpool", _spy, raising=False)
+    monkeypatch.setattr(socket, "getaddrinfo", _resolver({"cdn.test": "93.184.216.34"}))
+    respx.get("https://cdn.test/a.jpg").mock(
+        return_value=httpx.Response(200, content=b"IMG", headers={"content-type": "image/jpeg"})
+    )
+    assert await fetch_image_bytes(client, "https://cdn.test/a.jpg") == b"IMG"
+    assert download.assert_public_url in calls  # the guard was dispatched via the threadpool
+
+
+@pytest.mark.anyio
 async def test_assert_public_url_rejects_each_disallowed_class(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

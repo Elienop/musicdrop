@@ -15,6 +15,7 @@ import socket
 from urllib.parse import urljoin, urlsplit
 
 import httpx
+from fastapi.concurrency import run_in_threadpool
 
 from app.artwork.images import MAX_IMAGE_BYTES
 from app.artwork.source import ResolvedImage, TransientSourceError
@@ -91,10 +92,10 @@ async def download_image(
         # Defense-in-depth: these are trusted public CDNs, but validate the
         # initial URL and the final URL after the redirect chain so a compromised
         # or misconfigured source can't redirect us into an internal address.
-        assert_public_url(url)
+        await run_in_threadpool(assert_public_url, url)
         response = await client.get(url, follow_redirects=True)
         response.raise_for_status()
-        assert_public_url(str(response.url))
+        await run_in_threadpool(assert_public_url, str(response.url))
     except ValueError as exc:
         raise TransientSourceError(f"image download blocked: {exc}") from exc
     except httpx.HTTPError as exc:
@@ -138,7 +139,7 @@ async def fetch_image_bytes(client: httpx.AsyncClient, url: str) -> bytes:
     """
     current = url
     for _ in range(_MAX_REDIRECT_HOPS + 1):
-        assert_public_url(current)
+        await run_in_threadpool(assert_public_url, current)
         try:
             response = await client.get(current, follow_redirects=False, timeout=10.0)
         except httpx.HTTPError as exc:
