@@ -132,6 +132,11 @@ export function AlbumEditPanel({ album, onClose }: { album: AlbumDetail; onClose
         <TableBody>
           {album.tracks.map((t, i) => {
             const td = draft.tracks[t.id];
+            // A live refetch (SSE library:changed) can change this album's track
+            // membership while the panel is open, surfacing an id the once-seeded
+            // draft has no entry for. Skip that row until the draft reseeds rather
+            // than dereference an undefined draft entry (which crashes the page).
+            if (!td) return null;
             const set = (k: "title" | "track" | "artist", v: string) =>
               editDraft((d) => ({ ...d, tracks: { ...d.tracks, [t.id]: { ...d.tracks[t.id], [k]: v } } }));
             // Label by the track's position/title, not the beets item id.
