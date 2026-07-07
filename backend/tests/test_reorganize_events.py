@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pathlib
 import tempfile
+from collections.abc import Iterator
 
+import pytest
 from beets.library import Library
 
 from app.models.reorganize import ReorganizeOutcome
@@ -47,3 +49,25 @@ def test_sweep_on_complete_fires_on_failure(reorganize_lib: Library) -> None:
 
     assert calls["n"] == 1
     assert reg.state().phase == "failed"
+
+
+def test_sweep_stop_during_orphan_pass_reports_stopped(
+    reorganize_lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Stop hit during the post-move orphan sweep finishes 'stopped', not 'done'."""
+    from app.reorganize_jobs import runner as reorg_runner
+    from tests.conftest import make_test_handle
+
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    handle = make_test_handle(reorganize_lib, tmp)
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+
+    def fake_orphans(*_a: object, **_k: object) -> Iterator[pathlib.Path]:
+        reg.request_stop()  # user hits Stop as the orphan pass begins
+        yield tmp / "husk"
+
+    monkeypatch.setattr(reorg_runner, "find_orphan_folders", fake_orphans)
+    sweep(reg, handle, scope="library", trash_dir=tmp / "trash")
+
+    assert reg.state().phase == "stopped"
