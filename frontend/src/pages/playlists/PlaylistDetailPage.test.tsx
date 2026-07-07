@@ -314,6 +314,43 @@ describe("PlaylistDetailPage", () => {
     }
   });
 
+  test("two rapid removes emptying the list focus the empty state, not a vanished survivor", async () => {
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
+    );
+    // Defer both removes' onSuccess so they run against the SAME render — the
+    // window where each afterRemoval snapshot (render list minus only its own
+    // uid) still shows one survivor, so neither would see length 0.
+    const pending: Array<() => void> = [];
+    removeOverride.current = () => ({
+      mutate: (_uid: string, opts?: { onSuccess?: () => void }) => {
+        if (opts?.onSuccess) pending.push(opts.onSuccess);
+      },
+      isError: false,
+    });
+    try {
+      renderWithProviders(<PlaylistDetailPage />, {
+        route: `/playlists/${ID}`,
+        path: "/playlists/:playlistId",
+      });
+      await screen.findByText("Alpha");
+      fireEvent.click(screen.getByRole("button", { name: /remove alpha/i }));
+      fireEvent.click(screen.getByRole("button", { name: /remove beta/i }));
+      expect(pending).toHaveLength(2);
+      // Run both onSuccess: the post-removal state empties, so the LAST focus
+      // request must land on the empty state. Deciding survivor/empty off the
+      // stale render list leaves focus stranded (the requested survivor row is
+      // now unmounted), so the empty copy never takes focus.
+      act(() => pending.forEach((cb) => cb()));
+      await waitFor(() => {
+        const active = document.activeElement as HTMLElement | null;
+        expect(active?.textContent ?? "").toContain("No tracks yet");
+      });
+    } finally {
+      removeOverride.current = null;
+    }
+  });
+
   test("shows unavailable tracks as such", async () => {
     server.use(http.get(BASE, () => HttpResponse.json(detail([track(9, "Gone", false)]))));
     renderWithProviders(<PlaylistDetailPage />, {
