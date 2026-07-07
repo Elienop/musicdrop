@@ -37,9 +37,10 @@ class _FakeSection:
 
 
 class _FakePlaylist:
-    def __init__(self, title: str, items: list[_FakeTrack]) -> None:
+    def __init__(self, title: str, items: list[_FakeTrack], rating_key: int = 500) -> None:
         self.title = title
-        self.ratingKey = 500
+        self.ratingKey = rating_key
+        self.summary = ""
         self._items = list(items)
         self.deleted = False
 
@@ -51,6 +52,9 @@ class _FakePlaylist:
 
     def removeItems(self, tracks: list[_FakeTrack]) -> None:
         self._items = [t for t in self._items if t not in tracks]
+
+    def editSummary(self, summary: str) -> None:
+        self.summary = summary
 
     def delete(self) -> None:
         self._items = []
@@ -64,12 +68,14 @@ class _FakeServer:
         self._section = section
         self.created: list[_FakePlaylist] = []
         self._playlists: list[_FakePlaylist] = []
+        self._next_key = 500
 
     def playlists(self) -> list[_FakePlaylist]:
         return self._playlists
 
     def createPlaylist(self, title: str, items: list[_FakeTrack]) -> _FakePlaylist:
-        pl = _FakePlaylist(title, items)
+        pl = _FakePlaylist(title, items, self._next_key)
+        self._next_key += 1  # every created playlist gets a distinct ratingKey
         self.created.append(pl)
         self._playlists.append(pl)
         return pl
@@ -90,46 +96,63 @@ def _p(path: str) -> PlexTrackSpec:
 def test_creates_playlist_with_matched_tracks(monkeypatch: pytest.MonkeyPatch) -> None:
     server = _FakeServer([_FakeTrack(10, ["/m/a.flac"]), _FakeTrack(20, ["/m/b.flac"])])
     _patch(monkeypatch, server)
-    state = sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac"), _p("/m/b.flac")])
+    state = sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac"), _p("/m/b.flac")], playlist_id="p1")
     assert state.status == "ok"
     assert state.missing == 0
     assert state.rating_key == "500"
     assert [t.ratingKey for t in server.created[0].items()] == [10, 20]
+    assert server.created[0].summary == "MusicDrop-id:p1"  # stamped for later identity
 
 
 def test_partial_when_some_paths_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     server = _FakeServer([_FakeTrack(10, ["/m/a.flac"])])
     _patch(monkeypatch, server)
-    state = sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac"), _p("/m/gone.flac")])
+    state = sync.sync_playlist(
+        CONFIG, "Mix", [_p("/m/a.flac"), _p("/m/gone.flac")], playlist_id="p1"
+    )
     assert state.status == "partial"
     assert state.missing == 1
 
 
-def test_reconciles_existing_playlist(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reconciles_existing_playlist_by_marker(monkeypatch: pytest.MonkeyPatch) -> None:
     server = _FakeServer([_FakeTrack(10, ["/m/a.flac"]), _FakeTrack(20, ["/m/b.flac"])])
     existing = _FakePlaylist("Mix", [_FakeTrack(99, ["/m/old.flac"])])
+    existing.summary = "MusicDrop-id:p1"  # our marker — found by identity, NOT title
     server._playlists.append(existing)
     _patch(monkeypatch, server)
-    state = sync.sync_playlist(CONFIG, "Mix", [_p("/m/b.flac")])
-    # An existing playlist of this title is DELETED then recreated fresh (so we
-    # never rely on Plex's emptied-playlist behaviour).
-    assert existing.items() == []  # deleted
+    sync.sync_playlist(CONFIG, "Mix", [_p("/m/b.flac")], playlist_id="p1")
+    # The marked playlist is DELETED then recreated fresh (so we never rely on
+    # Plex's emptied-playlist behaviour), and re-stamped with the id marker.
+    assert existing.deleted is True
     assert len(server.created) == 1
     assert [t.ratingKey for t in server.created[0].items()] == [20]
+    assert server.created[0].summary == "MusicDrop-id:p1"
+
+
+def test_leaves_same_titled_stranger_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A same-titled Plex playlist that is NOT ours (no marker, unknown ratingKey)
+    # must survive — reconcile creates a fresh copy instead of stomping it.
+    server = _FakeServer([_FakeTrack(20, ["/m/b.flac"])])
+    stranger = _FakePlaylist("Mix", [_FakeTrack(99, ["/m/old.flac"])], rating_key=42)
+    server._playlists.append(stranger)
+    _patch(monkeypatch, server)
+    state = sync.sync_playlist(CONFIG, "Mix", [_p("/m/b.flac")], playlist_id="p1")
+    assert stranger.deleted is False  # the unrelated same-titled playlist is untouched
+    assert len(server.created) == 1
     assert state.rating_key == "500"
 
 
 def test_empty_when_no_tracks(monkeypatch: pytest.MonkeyPatch) -> None:
     server = _FakeServer([])
     _patch(monkeypatch, server)
-    state = sync.sync_playlist(CONFIG, "Mix", [_p("/m/gone.flac")])
+    state = sync.sync_playlist(CONFIG, "Mix", [_p("/m/gone.flac")], playlist_id="p1")
     assert state.status == "empty"
     assert state.rating_key is None
 
 
 def test_not_configured() -> None:
     with pytest.raises(PlexNotConfigured):
-        sync.sync_playlist(PlexConfig(), "Mix", [_p("/m/a.flac")])
+        sync.sync_playlist(PlexConfig(), "Mix", [_p("/m/a.flac")], playlist_id="p1")
 
 
 def test_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -140,7 +163,7 @@ def test_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(sync.client, "connect", boom)
     with pytest.raises(PlexConnectionError):
-        sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")])
+        sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1")
 
 
 def test_unexpected_error_translated(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -150,7 +173,7 @@ def test_unexpected_error_translated(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(sync.client, "connect", boom)
     with pytest.raises(PlexConnectionError):
-        sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")])
+        sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1")
 
 
 def test_fan_out_to_admin_and_users(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -167,12 +190,15 @@ def test_fan_out_to_admin_and_users(monkeypatch: pytest.MonkeyPatch) -> None:
     server.switchUser = _switch  # type: ignore[attr-defined]
     _patch(monkeypatch, server)
 
-    states = sync.sync_playlist_to_targets(CONFIG, "Mix", [_p("/m/a.flac")], ["7", "8"])
+    states = sync.sync_playlist_to_targets(
+        CONFIG, "Mix", [_p("/m/a.flac")], ["7", "8"], playlist_id="p1", rating_keys={}
+    )
     assert set(states) == {"admin", "7", "8"}
     assert states["admin"].status == "ok"
     assert states["7"].status == "ok"
-    # each user server actually got a playlist created
+    # each user server actually got a playlist created, stamped with our marker
     assert len(user_servers["7"].created) == 1
+    assert user_servers["7"].created[0].summary == "MusicDrop-id:p1"
 
 
 def test_fan_out_isolates_a_failing_user(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -186,7 +212,9 @@ def test_fan_out_isolates_a_failing_user(monkeypatch: pytest.MonkeyPatch) -> Non
     server.switchUser = _switch  # type: ignore[attr-defined]
     _patch(monkeypatch, server)
 
-    states = sync.sync_playlist_to_targets(CONFIG, "Mix", [_p("/m/a.flac")], ["bad", "ok"])
+    states = sync.sync_playlist_to_targets(
+        CONFIG, "Mix", [_p("/m/a.flac")], ["bad", "ok"], playlist_id="p1", rating_keys={}
+    )
     assert states["admin"].status == "ok"
     assert states["bad"].status == "failed"
     assert states["bad"].error
@@ -195,7 +223,9 @@ def test_fan_out_isolates_a_failing_user(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_fan_out_not_configured() -> None:
     with pytest.raises(PlexNotConfigured):
-        sync.sync_playlist_to_targets(PlexConfig(), "Mix", [_p("/m/a.flac")], ["7"])
+        sync.sync_playlist_to_targets(
+            PlexConfig(), "Mix", [_p("/m/a.flac")], ["7"], playlist_id="p1", rating_keys={}
+        )
 
 
 def test_sync_metadata_fallback_populates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -217,7 +247,7 @@ def test_sync_metadata_fallback_populates(monkeypatch: pytest.MonkeyPatch) -> No
         title="Daydreamer",
         track=1,
     )
-    state = sync.sync_playlist(CONFIG, "Mix", [spec])
+    state = sync.sync_playlist(CONFIG, "Mix", [spec], playlist_id="p1")
     assert state.status == "ok"
     assert state.missing == 0
     assert [t.ratingKey for t in server.created[0].items()] == [42]
@@ -296,6 +326,7 @@ class _TwoSectionServer(_FakeServer):
         self.library = type("L", (), {"sections": lambda _self: [first, second]})()
         self.created = []
         self._playlists = []
+        self._next_key = 500
 
 
 def test_sync_uses_the_configured_section(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -313,6 +344,7 @@ def test_sync_uses_the_configured_section(monkeypatch: pytest.MonkeyPatch) -> No
                 path="/music/a/b/01 x.mp3", albumartist="", album="", title="x", track=None
             )
         ],
+        playlist_id="p1",
     )
     assert state.status == "ok"  # resolved against the SECOND (named) section
 
@@ -324,5 +356,44 @@ def test_sync_errors_when_the_configured_section_is_missing(
     _patch(monkeypatch, server)
     config = PlexConfig(base_url="http://plex:32400", token="t", library_section="MusicDrop")
     with pytest.raises(PlexConnectionError) as err:
-        sync.sync_playlist(config, "P", [])
+        sync.sync_playlist(config, "P", [], playlist_id="p1")
     assert "Plex music section 'MusicDrop' not found." in str(err.value)
+
+
+def test_same_title_playlists_do_not_clobber(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Two DIFFERENT MusicDrop playlists share the title "Road Trip". Syncing them
+    # against the same Plex account must produce two INDEPENDENT Plex playlists,
+    # each reconciled against its own identity — never by title.
+    server = _FakeServer([_FakeTrack(10, ["/m/a.flac"]), _FakeTrack(20, ["/m/b.flac"])])
+    _patch(monkeypatch, server)
+
+    # Playlist A syncs first (no recorded ratingKey) -> creates Plex #1 w/ A's marker.
+    states_a = sync.sync_playlist_to_targets(
+        CONFIG, "Road Trip", [_p("/m/a.flac")], [], playlist_id="A", rating_keys={}
+    )
+    plex_a = server.created[0]
+    assert plex_a.summary == "MusicDrop-id:A"
+
+    # Playlist B (same title, different id, no recorded key) -> a SECOND distinct
+    # Plex playlist; A's copy is NOT deleted.
+    states_b = sync.sync_playlist_to_targets(
+        CONFIG, "Road Trip", [_p("/m/b.flac")], [], playlist_id="B", rating_keys={}
+    )
+    plex_b = server.created[1]
+    assert plex_a.deleted is False  # B did not clobber A
+    assert plex_b.summary == "MusicDrop-id:B"
+    assert states_a["admin"].rating_key != states_b["admin"].rating_key
+
+    # Re-syncing A (now WITH its recorded ratingKey) rebuilds A's OWN playlist
+    # (found by ratingKey) and never touches B's.
+    sync.sync_playlist_to_targets(
+        CONFIG,
+        "Road Trip",
+        [_p("/m/a.flac")],
+        [],
+        playlist_id="A",
+        rating_keys={"admin": states_a["admin"].rating_key},
+    )
+    assert plex_a.deleted is True  # A's own copy was rebuilt
+    assert plex_b.deleted is False  # B's copy was left alone
+    assert server.created[2].summary == "MusicDrop-id:A"

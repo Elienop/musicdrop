@@ -1,12 +1,17 @@
 """Reconcile a MusicDrop playlist into a Plex account.
 
-Finds the Plex playlist by title and rebuilds it from the resolved, ordered
-tracks: an existing playlist is **deleted and recreated** (rather than emptied
-in place) so we never depend on Plex's behaviour for a playlist whose items were
-all removed — some servers auto-delete an emptied playlist, which would make a
-subsequent ``addItems`` fail. Resolution is one library scan
-(``resolve_ordered_tracks``). The caller passes ``PlexTrackSpec``s whose paths
-are already translated to Plex's view.
+Identifies the target Plex playlist by IDENTITY — never by bare title — and
+rebuilds it from the resolved, ordered tracks. MusicDrop playlist names are not
+unique, so title matching would let two same-named playlists clobber each
+other. The existing Plex playlist to replace is found by (in order) the recorded
+``rating_key``, else a ``MusicDrop-id:{playlist_id}`` marker stamped into the
+Plex playlist's ``summary``; if neither matches we create a fresh one. The found
+playlist is **deleted and recreated** (rather than emptied in place) so we never
+depend on Plex's behaviour for a playlist whose items were all removed — some
+servers auto-delete an emptied playlist, which would make a subsequent
+``addItems`` fail; the recreated playlist is re-stamped with the id marker.
+Resolution is one library scan (``resolve_ordered_tracks``). The caller passes
+``PlexTrackSpec``s whose paths are already translated to Plex's view.
 
 Exception contract — raises ONLY:
 - ``PlexNotConfigured`` when no URL/token is set, or
@@ -34,32 +39,59 @@ def _no_section_error(title: str) -> PlexConnectionError:
     return PlexConnectionError("No music library found in Plex.")
 
 
-def _find_existing(server: Any, title: str) -> Any | None:
+def _summary_marker(playlist_id: str) -> str:
+    """The MusicDrop identity stamp embedded in a synced Plex playlist's summary."""
+    return f"MusicDrop-id:{playlist_id}"
+
+
+def _find_by_summary_marker(server: Any, playlist_id: str) -> Any | None:
+    marker = _summary_marker(playlist_id)
     for playlist in server.playlists():
-        if playlist.title == title:
+        if marker in (getattr(playlist, "summary", "") or ""):
             return playlist
     return None
 
 
-def _reconcile_on(server: Any, title: str, tracks: list[Any], missing: int) -> PlexTargetState:
-    """Rebuild the playlist ``title`` on ``server``: delete any existing one of
-    that title, then recreate it from ``tracks`` (or leave it absent if empty).
+def _reconcile_on(
+    server: Any,
+    title: str,
+    tracks: list[Any],
+    missing: int,
+    *,
+    playlist_id: str,
+    rating_key: str | None,
+) -> PlexTargetState:
+    """Rebuild this MusicDrop playlist on ``server``: find its existing Plex copy
+    by IDENTITY (recorded ``rating_key`` first, else the ``playlist_id`` summary
+    marker), delete it, then recreate from ``tracks`` (or leave it absent if
+    empty) and stamp the id marker onto the new playlist.
 
+    Never matches by title — same-named playlists must not clobber each other.
     Delete-then-recreate (rather than emptying in place) keeps the result a clean
     rebuild in either branch — no reliance on Plex's emptied-playlist behaviour.
     """
-    existing = _find_existing(server, title)
+    existing = _find_by_rating_key(server, rating_key) if rating_key is not None else None
+    if existing is None:
+        existing = _find_by_summary_marker(server, playlist_id)
     if existing is not None:
         existing.delete()
     if not tracks:
         return PlexTargetState(rating_key=None, status="empty", missing=missing)
     playlist = server.createPlaylist(title, items=tracks)
+    playlist.editSummary(_summary_marker(playlist_id))
     status = "ok" if missing == 0 else "partial"
     return PlexTargetState(rating_key=str(playlist.ratingKey), status=status, missing=missing)
 
 
-def sync_playlist(config: PlexConfig, title: str, specs: list[PlexTrackSpec]) -> PlexTargetState:
-    """Create/reconcile the playlist on the admin account only."""
+def sync_playlist(
+    config: PlexConfig,
+    title: str,
+    specs: list[PlexTrackSpec],
+    *,
+    playlist_id: str,
+    rating_key: str | None = None,
+) -> PlexTargetState:
+    """Create/reconcile the playlist on the admin account only, by identity."""
     if not (config.base_url and config.token):
         raise PlexNotConfigured("Plex is not configured.")
     try:
@@ -68,7 +100,9 @@ def sync_playlist(config: PlexConfig, title: str, specs: list[PlexTrackSpec]) ->
         if section is None:
             raise _no_section_error(config.library_section)
         tracks, missing = resolve_ordered_tracks(section, specs)
-        return _reconcile_on(server, title, tracks, missing)
+        return _reconcile_on(
+            server, title, tracks, missing, playlist_id=playlist_id, rating_key=rating_key
+        )
     except PlexConnectionError:
         raise  # already our type (e.g. no music section) — don't re-wrap
     except Exception as exc:
@@ -79,7 +113,13 @@ def sync_playlist(config: PlexConfig, title: str, specs: list[PlexTrackSpec]) ->
 
 
 def sync_playlist_to_targets(
-    config: PlexConfig, title: str, specs: list[PlexTrackSpec], target_user_ids: list[str]
+    config: PlexConfig,
+    title: str,
+    specs: list[PlexTrackSpec],
+    target_user_ids: list[str],
+    *,
+    playlist_id: str,
+    rating_keys: dict[str, str | None],
 ) -> dict[str, PlexTargetState]:
     """Reconcile the playlist on the admin account AND each target user.
 
@@ -87,6 +127,11 @@ def sync_playlist_to_targets(
     ``switchUser`` and ISOLATED — one user's failure marks only that user
     ``failed`` and never aborts the others. Tracks are resolved once (the admin
     library scan) and reused for every target (ratingKeys are library-global).
+
+    ``rating_keys`` maps a state-map key ("admin" or a uid) -> the playlist's
+    recorded Plex ratingKey on that account, so each target reconciles against
+    its OWN copy by identity; a missing/``None`` key means create fresh (the
+    ``playlist_id`` summary marker still guards against title collisions).
     """
     if not (config.base_url and config.token):
         raise PlexNotConfigured("Plex is not configured.")
@@ -101,13 +146,18 @@ def sync_playlist_to_targets(
     except Exception as exc:
         raise PlexConnectionError("Plex sync failed.") from exc
 
+    def _reconcile_for(server: Any, key: str) -> PlexTargetState:
+        return _reconcile_on(
+            server, title, tracks, missing, playlist_id=playlist_id, rating_key=rating_keys.get(key)
+        )
+
     # Bind each target id through a factory call so the closure captures the
     # current uid per iteration — sidesteps the late-binding-loop-variable trap.
     def _run_for(uid: str) -> Callable[[], PlexTargetState]:
-        return lambda: _reconcile_on(admin.switchUser(uid), title, tracks, missing)
+        return lambda: _reconcile_for(admin.switchUser(uid), uid)
 
     results: dict[str, PlexTargetState] = {}
-    results["admin"] = _safe_reconcile(lambda: _reconcile_on(admin, title, tracks, missing))
+    results["admin"] = _safe_reconcile(lambda: _reconcile_for(admin, "admin"))
     for uid in target_user_ids:
         results[uid] = _safe_reconcile(_run_for(uid))
     return results

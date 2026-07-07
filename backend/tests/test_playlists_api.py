@@ -379,6 +379,7 @@ class _SyncPlaylist:
     def __init__(self, title: str, items: list[_SyncTrack]) -> None:
         self.title = title
         self.ratingKey = 777
+        self.summary = ""
         self._items = list(items)
 
     def items(self) -> list[_SyncTrack]:
@@ -389,6 +390,9 @@ class _SyncPlaylist:
 
     def removeItems(self, tracks: list[_SyncTrack]) -> None:
         self._items = []
+
+    def editSummary(self, summary: str) -> None:
+        self.summary = summary
 
     def delete(self) -> None:
         self._items = []
@@ -554,6 +558,7 @@ def test_sync_fans_out_to_targets(
         def __init__(self) -> None:
             self.title = "Mix"
             self.ratingKey = 1
+            self.summary = ""
             self._i: list[object] = []
 
         def items(self) -> list[object]:
@@ -564,6 +569,9 @@ def test_sync_fans_out_to_targets(
 
         def removeItems(self, t: list[object]) -> None:
             self._i = []
+
+        def editSummary(self, summary: str) -> None:
+            self.summary = summary
 
         def delete(self) -> None:
             self._i = []
@@ -625,7 +633,17 @@ def test_sync_cleans_up_detargeted_user(
             return []
 
         def createPlaylist(self, title: str, items: list[object]) -> object:
-            return type("PL", (), {"title": title, "ratingKey": 1, "items": lambda _s: items})()
+            return type(
+                "PL",
+                (),
+                {
+                    "title": title,
+                    "ratingKey": 1,
+                    "summary": "",
+                    "items": lambda _s: items,
+                    "editSummary": lambda _s, summary: None,
+                },
+            )()
 
         def switchUser(self, uid: str) -> "_Srv":
             return _Srv()
