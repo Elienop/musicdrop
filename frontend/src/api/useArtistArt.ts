@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
+import { unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 export type ArtistArtWriteSettings = components["schemas"]["ArtistArtWriteSettings"];
@@ -12,22 +13,22 @@ const STATUS_KEY = ["artist-art", "backfill"] as const;
 export function useArtistArtSettings() {
   return useQuery({
     queryKey: ARTIST_ART_SETTINGS_KEY,
-    queryFn: async (): Promise<ArtistArtWriteSettings> => {
-      const { data, error } = await client.GET("/api/artists/art/settings");
-      if (error || !data) throw new Error("Failed to load artist-art settings");
-      return data;
-    },
+    queryFn: async (): Promise<ArtistArtWriteSettings> =>
+      unwrap(
+        await client.GET("/api/artists/art/settings"),
+        "Failed to load artist-art settings",
+      ),
   });
 }
 
 export function useSetArtistArtSettings() {
   const qc = useQueryClient();
   return useMutation<ArtistArtWriteSettings, Error, boolean>({
-    mutationFn: async (enabled) => {
-      const { data, error } = await client.PUT("/api/artists/art/settings", { body: { enabled } });
-      if (error || !data) throw new Error("Failed to update artist-art settings");
-      return data;
-    },
+    mutationFn: async (enabled) =>
+      unwrap(
+        await client.PUT("/api/artists/art/settings", { body: { enabled } }),
+        "Failed to update artist-art settings",
+      ),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ARTIST_ART_SETTINGS_KEY }),
   });
 }
@@ -35,11 +36,11 @@ export function useSetArtistArtSettings() {
 export function useArtistArtBackfillStatus() {
   return useQuery({
     queryKey: STATUS_KEY,
-    queryFn: async (): Promise<ArtistArtBackfillStatus> => {
-      const { data, error } = await client.GET("/api/artists/art/backfill");
-      if (error || !data) throw new Error("Failed to load artist-art status");
-      return data;
-    },
+    queryFn: async (): Promise<ArtistArtBackfillStatus> =>
+      unwrap(
+        await client.GET("/api/artists/art/backfill"),
+        "Failed to load artist-art status",
+      ),
     refetchInterval: (q) => (q.state.data?.phase === "running" ? 1000 : false),
   });
 }
@@ -77,11 +78,11 @@ export function useStartArtistArtBackfill() {
 export function useStopArtistArtBackfill() {
   const qc = useQueryClient();
   return useMutation<ArtistArtBackfillStatus, Error, void>({
-    mutationFn: async () => {
-      const { data, error } = await client.POST("/api/artists/art/backfill/stop");
-      if (error || !data) throw new Error("Failed to stop");
-      return data;
-    },
+    mutationFn: async () =>
+      unwrap(
+        await client.POST("/api/artists/art/backfill/stop"),
+        "Failed to stop",
+      ),
     onSuccess: () => void qc.invalidateQueries({ queryKey: STATUS_KEY }),
   });
 }

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
-import { apiUrl, errorDetail } from "@/api/lib";
+import { apiUrl, errorDetail, unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 export type ArtistImageSettings = components["schemas"]["ArtistImageSettings"];
@@ -14,9 +14,10 @@ export const ARTIST_IMAGE_SETTINGS_KEY = ["artist-image", "settings"] as const;
 const OVERRIDE_ERROR = "Couldn’t update the artist image";
 
 async function fetchSettings(): Promise<ArtistImageSettings> {
-  const { data, error } = await client.GET("/api/artists/image/settings");
-  if (error || !data) throw new Error("Failed to load artist-image settings");
-  return data;
+  return unwrap(
+    await client.GET("/api/artists/image/settings"),
+    "Failed to load artist-image settings",
+  );
 }
 
 export function useArtistImageSettings() {
@@ -26,13 +27,11 @@ export function useArtistImageSettings() {
 export function useSetArtistImageSettings() {
   const queryClient = useQueryClient();
   return useMutation<ArtistImageSettings, Error, boolean>({
-    mutationFn: async (enabled) => {
-      const { data, error } = await client.PUT("/api/artists/image/settings", {
-        body: { enabled },
-      });
-      if (error || !data) throw new Error("Failed to update artist-image settings");
-      return data;
-    },
+    mutationFn: async (enabled) =>
+      unwrap(
+        await client.PUT("/api/artists/image/settings", { body: { enabled } }),
+        "Failed to update artist-image settings",
+      ),
     onSuccess: () => {
       // Every ArtistImage consults this query, so they all re-evaluate enabled.
       void queryClient.invalidateQueries({ queryKey: ARTIST_IMAGE_SETTINGS_KEY });

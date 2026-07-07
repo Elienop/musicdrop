@@ -1,10 +1,15 @@
 import { describe, expect, test } from "vitest";
 
-import { detailMessage, errorDetail } from "@/api/lib";
+import { detailMessage, errorDetail, unwrap } from "@/api/lib";
 
 /** A minimal Response-like whose `json()` yields `body`. */
 function jsonRes(body: unknown): Response {
   return { json: async () => body } as unknown as Response;
+}
+
+/** A Response-like carrying only the `ok` flag `unwrap` reads. */
+function okRes(ok: boolean): Response {
+  return { ok } as unknown as Response;
 }
 
 /** A Response-like whose body isn't JSON (mirrors a non-JSON error page). */
@@ -82,5 +87,37 @@ describe("errorDetail", () => {
   test("falls back when the detail has no usable message", async () => {
     expect(await errorDetail(jsonRes({ detail: { recovery: "x" } }), "generic")).toBe("generic");
     expect(await errorDetail(jsonRes({ nope: true }), "generic")).toBe("generic");
+  });
+});
+
+describe("unwrap", () => {
+  test("returns the data on a 2xx result", () => {
+    const value = { id: 7 };
+    expect(unwrap({ data: value, response: okRes(true) }, "boom")).toBe(value);
+  });
+
+  test("throws the message on a transport error", () => {
+    expect(() =>
+      unwrap({ error: { detail: "nope" }, response: okRes(true) }, "boom"),
+    ).toThrow("boom");
+  });
+
+  test("throws on a non-2xx even when a body IS present", () => {
+    // The correctness fix: a non-2xx that still parsed a body must throw, not
+    // return the body as if it were success data.
+    expect(() =>
+      unwrap({ data: { id: 1 }, response: okRes(false) }, "boom"),
+    ).toThrow("boom");
+  });
+
+  test("throws on a non-2xx with no body (bodyless 5xx)", () => {
+    expect(() => unwrap({ response: okRes(false) }, "boom")).toThrow("boom");
+  });
+
+  test("throws when data is missing on a 2xx", () => {
+    expect(() => unwrap({ data: undefined, response: okRes(true) }, "boom")).toThrow(
+      "boom",
+    );
+    expect(() => unwrap({ data: null, response: okRes(true) }, "boom")).toThrow("boom");
   });
 });

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
+import { unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 export type LyricsCoverage = components["schemas"]["LyricsCoverage"];
@@ -10,11 +11,8 @@ export type LyricsBackfillStatus = components["schemas"]["LyricsBackfillStatus"]
 export function useLyricsCoverage() {
   return useQuery({
     queryKey: ["lyrics", "coverage"],
-    queryFn: async (): Promise<LyricsCoverage> => {
-      const { data, response } = await client.GET("/api/lyrics/coverage");
-      if (!response.ok || !data) throw new Error("Failed to load coverage");
-      return data;
-    },
+    queryFn: async (): Promise<LyricsCoverage> =>
+      unwrap(await client.GET("/api/lyrics/coverage"), "Failed to load coverage"),
     retry: false,
   });
 }
@@ -62,11 +60,11 @@ export function useStartLyricsBackfill() {
 export function useStopLyricsBackfill() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (): Promise<LyricsBackfillStatus> => {
-      const { data, response } = await client.POST("/api/lyrics/backfill/stop");
-      if (!response.ok || !data) throw new Error("Failed to stop backfill");
-      return data;
-    },
+    mutationFn: async (): Promise<LyricsBackfillStatus> =>
+      unwrap(
+        await client.POST("/api/lyrics/backfill/stop"),
+        "Failed to stop backfill",
+      ),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["lyrics", "backfill"] });
       // A stop is a terminal transition — the % a backfill already wrote is stale.

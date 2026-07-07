@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
-import { detailMessage } from "@/api/lib";
+import { detailMessage, unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 /** Job state + live feed as returned by `GET /api/import/{job_id}` (generated). */
@@ -183,14 +183,12 @@ export function useImportJob(jobId: string | undefined) {
 }
 
 async function fetchCandidate(jobId: string, index: number): Promise<Candidate> {
-  const { data, error } = await client.GET(
-    "/api/import/{job_id}/albums/{index}",
-    { params: { path: { job_id: jobId, index } } },
+  return unwrap(
+    await client.GET("/api/import/{job_id}/albums/{index}", {
+      params: { path: { job_id: jobId, index } },
+    }),
+    "Failed to load candidate",
   );
-  if (error || !data) {
-    throw new Error("Failed to load candidate");
-  }
-  return data;
 }
 
 /**
@@ -231,21 +229,16 @@ export function useImportDuplicates(
   return useQuery({
     queryKey: ["import", "duplicates", jobId, index, candidateIndex, searchRevision],
     retry: false,
-    queryFn: async () => {
-      const { data, error, response } = await client.GET(
-        "/api/import/{job_id}/albums/{index}/duplicates",
-        {
+    queryFn: async () =>
+      unwrap(
+        await client.GET("/api/import/{job_id}/albums/{index}/duplicates", {
           params: {
             path: { job_id: jobId, index },
             query: { candidate_index: candidateIndex },
           },
-        },
-      );
-      if (error || !response.ok || !data) {
-        throw new Error("Failed to check for duplicates");
-      }
-      return data;
-    },
+        }),
+        "Failed to check for duplicates",
+      ),
   });
 }
 

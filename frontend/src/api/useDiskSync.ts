@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { components } from "./schema";
 import { client } from "./client";
+import { unwrap } from "./lib";
 
 export type DiskSyncPlan = components["schemas"]["DiskSyncPlan"];
 export type DiskSyncStatus = components["schemas"]["DiskSyncStatus"];
@@ -55,11 +56,8 @@ export function useStartDiskSync() {
 export function useStopDiskSync() {
   const qc = useQueryClient();
   return useMutation<DiskSyncStatus, Error, void>({
-    mutationFn: async (): Promise<DiskSyncStatus> => {
-      const { data, response } = await client.POST("/api/disk-sync/stop");
-      if (!response.ok || !data) throw new Error("Failed to stop the sync");
-      return data;
-    },
+    mutationFn: async (): Promise<DiskSyncStatus> =>
+      unwrap(await client.POST("/api/disk-sync/stop"), "Failed to stop the sync"),
     onSuccess: (s) => qc.setQueryData(DISK_SYNC_STATUS_KEY, s),
   });
 }

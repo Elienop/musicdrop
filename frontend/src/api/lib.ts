@@ -10,6 +10,21 @@ export function apiUrl(path: string): string {
   return `${origin}${path}`;
 }
 
+/** Unwrap an openapi-fetch result: throw `message` on a transport error, a
+ * non-2xx (some endpoints send a bodyless 5xx — `data` is undefined then), or
+ * missing data; otherwise return the typed data. The param is the minimal shape
+ * of openapi-fetch's `FetchResponse` union so the awaited `client.GET/POST/...`
+ * result passes straight through without a cast. */
+export function unwrap<T>(
+  result: { data?: T; error?: unknown; response: Response },
+  message: string,
+): T {
+  if (result.error || !result.response.ok || result.data == null) {
+    throw new Error(message);
+  }
+  return result.data;
+}
+
 /** Read FastAPI's `{ "detail": ... }` error body, falling back to the
  * caller's generic message when the response has no usable detail. Delegates
  * to `detailMessage` so both helpers unwrap the same shapes (string, the 422

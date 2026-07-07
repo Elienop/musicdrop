@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
+import { unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 /** Available filter values + counts (`GET /api/browse/facets`, generated). */
@@ -29,11 +30,8 @@ export type BrowseSort = "artist" | "added";
 export function useBrowseFacets() {
   return useQuery<BrowseFacets>({
     queryKey: ["browse", "facets"],
-    queryFn: async () => {
-      const { data, error, response } = await client.GET("/api/browse/facets");
-      if (error || !response.ok || !data) throw new Error("Failed to load facets");
-      return data;
-    },
+    queryFn: async () =>
+      unwrap(await client.GET("/api/browse/facets"), "Failed to load facets"),
     staleTime: 60_000,
   });
 }
@@ -47,27 +45,27 @@ export function useBrowseAlbums(
 ) {
   return useQuery<AlbumPage>({
     queryKey: ["browse", "albums", filters, sort, limit, offset],
-    queryFn: async () => {
-      const { data, error, response } = await client.GET("/api/browse/albums", {
-        params: {
-          query: {
-            genre: filters.genre,
-            decade: filters.decade,
-            format: filters.format,
-            album_type: filters.album_type,
-            media: filters.media,
-            country: filters.country,
-            source: filters.source,
-            lyrics: filters.lyrics,
-            sort,
-            limit,
-            offset,
+    queryFn: async () =>
+      unwrap(
+        await client.GET("/api/browse/albums", {
+          params: {
+            query: {
+              genre: filters.genre,
+              decade: filters.decade,
+              format: filters.format,
+              album_type: filters.album_type,
+              media: filters.media,
+              country: filters.country,
+              source: filters.source,
+              lyrics: filters.lyrics,
+              sort,
+              limit,
+              offset,
+            },
           },
-        },
-      });
-      if (error || !response.ok || !data) throw new Error("Failed to load albums");
-      return data;
-    },
+        }),
+        "Failed to load albums",
+      ),
     // Keep the current grid visible while a filter toggle refetches.
     placeholderData: (prev) => prev,
   });

@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { client } from "@/api/client";
+import { unwrap } from "@/api/lib";
 import { invalidateLibraryContent } from "@/api/useEventStream";
 import type { components } from "@/api/schema";
 
@@ -9,15 +10,14 @@ type AlbumEditResult = components["schemas"]["AlbumEditResult"];
 
 export function usePreviewAlbumEdit(albumId: number) {
   return useMutation<AlbumEditPreview, Error, AlbumEditRequest>({
-    mutationFn: async (body) => {
-      const { data, error, response } = await client.POST("/api/albums/{album_id}/edit/preview", {
-        params: { path: { album_id: albumId } },
-        body,
-      });
-      // Guard on !response.ok: a bodyless 5xx leaves openapi-fetch's `error` undefined.
-      if (error || !response.ok || !data) throw new Error("Preview failed");
-      return data;
-    },
+    mutationFn: async (body) =>
+      unwrap(
+        await client.POST("/api/albums/{album_id}/edit/preview", {
+          params: { path: { album_id: albumId } },
+          body,
+        }),
+        "Preview failed",
+      ),
   });
 }
 
