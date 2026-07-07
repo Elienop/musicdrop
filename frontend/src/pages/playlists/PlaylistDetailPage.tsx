@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 
@@ -158,6 +158,24 @@ function isPlexNotConfigured(err: unknown): boolean {
   return err instanceof Error && (err as { status?: number }).status === 409;
 }
 
+/** Debounce window for coalescing a rapid burst of Plex target toggles into one
+ * save (so a flurry of checkbox clicks collapses to a single PATCH). */
+const TARGET_SAVE_DEBOUNCE_MS = 350;
+
+/** Set equality by membership (order-independent) — tells whether the persisted
+ * target set has caught up with the latest desired one. */
+function sameSet(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) {
+    return false;
+  }
+  for (const value of a) {
+    if (!b.has(value)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function PlaylistDetailPage() {
   const { playlistId } = useParams<{ playlistId: string }>();
   const id = playlistId ?? "";
@@ -217,12 +235,40 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
   // Optimistic copy of the fan-out target set so a toggled checkbox reflects
   // intent immediately (no wait on the PATCH round-trip) and stays ENABLED while
   // the save is in flight — disabling it on a shared `isPending` would strand
-  // keyboard focus and block every other checkbox. Re-seeded from the server on
-  // settle (the refetch reverts the optimistic state if the save failed).
+  // keyboard focus and block every other checkbox.
   const [targetIds, setTargetIds] = useState(() => new Set(playlist.target_plex_users));
+  // The latest DESIRED set (updated synchronously on every toggle) plus the
+  // plumbing that guarantees at most ONE target PATCH is ever in flight, always
+  // carrying the final set. Without this, a rapid A-then-B burst fires two
+  // concurrent full-list PATCHes ([A] then [A,B]); if the backend settles them
+  // out of order the server lands on a subset and the settle-refetch reseeds the
+  // checkboxes to it — silently dropping the target the user just enabled.
+  const desiredTargets = useRef(new Set(playlist.target_plex_users));
+  const targetsDirty = useRef(false); // a change is scheduled or mid-save
+  const targetsInFlight = useRef(false); // a PATCH is currently running
+  const targetsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Re-seed the optimistic set from the server ONLY when we've no change of our
+  // own outstanding. Otherwise a settle/refetch that lands a stale subset would
+  // revert a checkbox the user just toggled (the dropped-target bug). Once our
+  // save is fully persisted (targetsDirty cleared) the next refetch reseeds.
   useEffect(() => {
-    setTargetIds(new Set(playlist.target_plex_users));
+    if (targetsDirty.current) {
+      return;
+    }
+    const fromServer = new Set(playlist.target_plex_users);
+    desiredTargets.current = fromServer;
+    setTargetIds(fromServer);
   }, [playlist.target_plex_users]);
+
+  // Drop any pending debounce on unmount.
+  useEffect(() => {
+    return () => {
+      if (targetsTimer.current) {
+        clearTimeout(targetsTimer.current);
+      }
+    };
+  }, []);
 
   // Single polite live region for reorder/remove announcements (kept alongside
   // the sonner toasts — the toast layer is the sighted-user channel, this
@@ -243,24 +289,61 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     rename.mutate({ name: next }, { onSuccess: () => setEditingName(false) });
   }
 
+  /** Persist the latest desired target set. Single-flight: if a PATCH is already
+   * running we do nothing (this re-fires on settle); if the desired set moved on
+   * while the PATCH was in flight we save again until the server matches it — so
+   * the last write always wins regardless of completion order. */
+  function flushTargets() {
+    if (targetsInFlight.current) {
+      return;
+    }
+    const sending = [...desiredTargets.current];
+    targetsInFlight.current = true;
+    setTargets.mutate(sending, {
+      onSettled: () => {
+        targetsInFlight.current = false;
+        if (sameSet(desiredTargets.current, new Set(sending))) {
+          targetsDirty.current = false; // server caught up — reseed may resume
+        } else {
+          flushTargets(); // desired moved on mid-flight — converge with another save
+        }
+      },
+    });
+  }
+
+  /** Debounce the save so a burst of toggles collapses into one PATCH carrying
+   * the final set. Marks the target set dirty up front so the reseed effect
+   * won't clobber the in-progress change. */
+  function scheduleTargetSave() {
+    targetsDirty.current = true;
+    if (targetsTimer.current) {
+      clearTimeout(targetsTimer.current);
+    }
+    targetsTimer.current = setTimeout(() => {
+      targetsTimer.current = null;
+      flushTargets();
+    }, TARGET_SAVE_DEBOUNCE_MS);
+  }
+
   /** Add/remove a Plex Home user from this playlist's fan-out targets. Updates
-   * the optimistic set immediately, then PATCHes the new full list. Announces the
-   * specific action (so consecutive saves re-announce) via the live region. A
-   * newly-added account reads "Not synced yet" until the next sync pushes its
-   * copy. */
+   * the optimistic set + latest-desired ref immediately, then schedules a
+   * debounced, single-flight PATCH of the new full list. Announces the specific
+   * action (so consecutive saves re-announce) via the live region. A newly-added
+   * account reads "Not synced yet" until the next sync pushes its copy. */
   function toggleTarget(user: { id: string; name: string }) {
-    const checked = targetIds.has(user.id);
-    const next = new Set(targetIds);
+    const checked = desiredTargets.current.has(user.id);
+    const next = new Set(desiredTargets.current);
     if (checked) {
       next.delete(user.id);
     } else {
       next.add(user.id);
     }
+    desiredTargets.current = next;
     setTargetIds(next);
     setStatusMsg(
       `${checked ? "Removed" : "Added"} ${user.name} ${checked ? "from" : "to"} Plex sync`,
     );
-    setTargets.mutate([...next]);
+    scheduleTargetSave();
   }
 
   /** Move the track at `index` one slot in `dir`: reorder locally for instant
