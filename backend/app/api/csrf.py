@@ -9,7 +9,8 @@ overwrite a cover / artist image. (The JSON endpoints are already safe:
 ``verify_upload_origin`` closes that gap by checking the ``Origin`` header: a
 browser always sends it on a cross-origin (and same-origin) POST, while non-browser
 clients (curl, LAN tooling) send none. We allow a missing Origin, a same-origin
-request (Origin authority == Host), and the dev frontend; anything else is 403.
+request (Origin authority == Host, or == X-Forwarded-Host behind a Host-rewriting
+reverse proxy), and the dev frontend; anything else is 403.
 """
 
 from __future__ import annotations
@@ -26,9 +27,17 @@ def verify_upload_origin(request: Request) -> None:
     origin = request.headers.get("origin")
     if origin is None:
         return  # non-browser client (curl, trusted LAN tooling) — allow
-    host = request.headers.get("host")
-    if host is not None and origin.split("://", 1)[-1] == host:
-        return  # same-origin (Origin authority == Host)
+    authority = origin.split("://", 1)[-1]
+    # Same-origin: the Origin authority matches the host the app sees. Behind a
+    # reverse proxy that REWRITES Host to the upstream, the public host arrives in
+    # X-Forwarded-Host instead, so accept a match against either header. This is
+    # still safe against the CSRF vector: a browser cannot set X-Forwarded-Host on
+    # a cross-origin `fetch` without making the request non-simple, which forces a
+    # CORS preflight that the strict allowlist rejects.
+    for header in ("host", "x-forwarded-host"):
+        value = request.headers.get(header)
+        if value is not None and authority == value:
+            return
     if origin == _DEV_FRONTEND_ORIGIN:
         return  # the dev frontend (matches the CORS allowlist)
     raise HTTPException(status_code=403, detail="cross-origin upload rejected")
