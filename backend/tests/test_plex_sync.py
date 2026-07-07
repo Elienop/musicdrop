@@ -114,6 +114,39 @@ def test_partial_when_some_paths_missing(monkeypatch: pytest.MonkeyPatch) -> Non
     assert state.missing == 1
 
 
+class _StampFailPlaylist(_FakePlaylist):
+    """A playlist whose id-marker stamp (a separate Plex PUT) fails transiently."""
+
+    def editSummary(self, summary: str) -> None:
+        raise Exception("transient stamp failure")
+
+
+class _StampFailServer(_FakeServer):
+    def createPlaylist(self, title: str, items: list[_FakeTrack]) -> _FakePlaylist:
+        pl = _StampFailPlaylist(title, items, self._next_key)
+        self._next_key += 1
+        self.created.append(pl)
+        self._playlists.append(pl)
+        return pl
+
+
+def test_stamp_failure_does_not_orphan_the_playlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    # editSummary is a SEPARATE Plex PUT after createPlaylist; a transient failure
+    # there must NOT fail the whole reconcile. The playlist exists and its
+    # ratingKey is returned, so the next sync re-finds it by ratingKey. Failing
+    # here (status "failed", rating_key None) would orphan the just-created
+    # playlist and duplicate it on every subsequent sync — the very thing the
+    # identity marker is meant to prevent.
+    server = _StampFailServer([_FakeTrack(10, ["/m/a.flac"])])
+    _patch(monkeypatch, server)
+    states = sync.sync_playlist_to_targets(
+        CONFIG, "Mix", [_p("/m/a.flac")], [], playlist_id="p1", rating_keys={}
+    )
+    assert states["admin"].status == "ok"
+    assert states["admin"].rating_key == "500"
+    assert len(server.created) == 1  # created exactly once — not orphaned and re-made
+
+
 def test_reconciles_existing_playlist_by_marker(monkeypatch: pytest.MonkeyPatch) -> None:
     server = _FakeServer([_FakeTrack(10, ["/m/a.flac"]), _FakeTrack(20, ["/m/b.flac"])])
     existing = _FakePlaylist("Mix", [_FakeTrack(99, ["/m/old.flac"])])

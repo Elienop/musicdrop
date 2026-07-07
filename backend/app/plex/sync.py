@@ -78,7 +78,15 @@ def _reconcile_on(
     if not tracks:
         return PlexTargetState(rating_key=None, status="empty", missing=missing)
     playlist = server.createPlaylist(title, items=tracks)
-    playlist.editSummary(_summary_marker(playlist_id))
+    try:
+        playlist.editSummary(_summary_marker(playlist_id))
+    except Exception:
+        # Best-effort stamp: editSummary is a SEPARATE Plex PUT that can fail
+        # transiently. We still return the real ratingKey, so the next sync
+        # re-finds this playlist by ratingKey even if the marker never landed.
+        # Failing the whole reconcile here would record no ratingKey and orphan
+        # the just-created playlist, duplicating it on the next sync.
+        pass
     status = "ok" if missing == 0 else "partial"
     return PlexTargetState(rating_key=str(playlist.ratingKey), status=status, missing=missing)
 
