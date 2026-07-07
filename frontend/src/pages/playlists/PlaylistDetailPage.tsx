@@ -369,7 +369,6 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     if (target < 0 || target >= tracks.length) {
       return;
     }
-    const prev = tracks;
     const moved = tracks[index];
     const message = `Moved ${displayTitle(moved)} to position ${target + 1}`;
     setStatusMsg(message);
@@ -377,11 +376,17 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     const altKey = dir === -1 ? "down" : "up";
     requestFocus(`${moved.uid}:${dirKey}`, `${moved.uid}:${altKey}`);
 
-    // Apply the swap by uid against the LATEST state so a background reseed
-    // arriving mid-move can't be clobbered by a stale closure array.
-    setTracks((cur) => swapByUid(cur, moved.uid, dir));
+    // Derive the optimistic order AND the PUT body from one snapshot (this
+    // render's tracklist) so they can't diverge. A move is a single deliberate
+    // action, so the click-time order is the intent; a background reseed that
+    // lands between render and click self-heals on the next refetch. (The
+    // rapid-edit resurrection guard that must stay uid-keyed lives on the
+    // remove path, not here.)
+    const prev = tracks;
+    const next = swapByUid(tracks, moved.uid, dir);
+    setTracks(next);
     reorder.mutate(
-      swapByUid(tracks, moved.uid, dir).map((t) => t.uid),
+      next.map((t) => t.uid),
       {
         onSuccess: () => toast.success(message),
         onError: () => setTracks(prev),
