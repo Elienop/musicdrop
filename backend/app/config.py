@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # (env MUSICDROP_LYRICS_BACKFILL_DELAY_SECONDS)
     lyrics_backfill_delay_seconds: float = 0.2
 
+    # Max request-body size the API accepts (413 above it) — bounds the JSON/YAML/
+    # m3u parse endpoints and uploads. (env MUSICDROP_MAX_BODY_BYTES)
+    max_body_bytes: int = 25 * 1024 * 1024
+
     # Duplicate resolution moves the non-kept copies here (a reversible Trash).
     # Empty string = default to <beets_dir>/trash, computed at resolve time from
     # the live library handle (already an absolute path), which sidesteps the
