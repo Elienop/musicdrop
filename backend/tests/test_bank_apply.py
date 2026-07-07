@@ -724,6 +724,40 @@ def test_claim_race_skips_rebanked_row(tmp_path: Path, monkeypatch: pytest.Monke
         runner.stop()
 
 
+def test_drain_survives_next_queued_raise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A raise from the FIFO pick itself (next_queued) must not kill the drain
+    # daemon. There is no row to attach an error to, so the drain logs and keeps
+    # going; a queued row still applies on a later pass. Before the fix the raise
+    # escaped _drain and every queued row was stranded until a process restart.
+    fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.applied, album_id=42)])
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    item_id = _seed_queued(bank, _folder(tmp_path))
+
+    real_next_queued = store.next_queued
+    raised = {"done": False}
+
+    def flaky_next_queued(bank_dir: Path) -> BankItem | None:
+        if not raised["done"]:
+            raised["done"] = True
+            raise RuntimeError("transient store read failure")
+        return real_next_queued(bank_dir)
+
+    monkeypatch.setattr(store, "next_queued", flaky_next_queued)
+
+    runner = _make_runner(bank, reg)
+    runner.start()
+    try:
+        item = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status == "done",
+        )
+        assert raised["done"]  # the faulty pick actually fired
+        assert item is not None and item.status == "done"  # the drain survived it
+    finally:
+        runner.stop()
+
+
 def test_stop_is_idempotent(tmp_path: Path) -> None:
     runner = _make_runner(_bank(tmp_path), ImportJobRegistry(runner=FakeImportRunner()))
     runner.start()
