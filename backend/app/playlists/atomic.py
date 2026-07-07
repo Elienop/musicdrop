@@ -22,7 +22,12 @@ def write_atomic_text(path: Path, text: str, *, mode: int = 0o644) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / f".{path.name}.tmp"
     try:
-        with open(tmp, "w", encoding="utf-8") as handle:
+        # Create the tempfile with the final mode UP FRONT (not a default-mode
+        # create then chmod), so a secret written with mode=0o600 is never even
+        # briefly world-readable in the create->chmod window. The chmod that
+        # follows only pins the exact mode (os.open honours umask; chmod doesn't).
+        fd = os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
