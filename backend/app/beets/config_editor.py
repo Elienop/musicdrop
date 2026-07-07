@@ -26,6 +26,7 @@ import hashlib
 import os
 import re
 import shutil
+import threading
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
@@ -376,6 +377,13 @@ def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
                 tmp.unlink()
 
 
+# Serializes the read-SHA -> compare -> atomic-write of ``save``/``save_naming``
+# (both run sync via run_in_threadpool). Without it two concurrent saves that
+# loaded the same base both pass the CAS and both write, silently losing one; the
+# lock makes the second re-read the now-updated bytes so its CAS correctly 409s.
+_SAVE_LOCK = threading.Lock()
+
+
 def save(handle: LibraryHandle, req: SaveRequest) -> BeetsConfigSnapshot:
     """Persist ``req.yaml_text`` to ``handle.config_path``, returning the new snapshot.
 
@@ -436,32 +444,35 @@ def save(handle: LibraryHandle, req: SaveRequest) -> BeetsConfigSnapshot:
 
     # 3. SHA-256 CAS. Read the bytes once and reuse them for both the hash
     # and the (possible) 409 payload + the secret-preserve re-parse below.
-    on_disk_bytes = handle.config_path.read_bytes()
-    on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
-    if on_disk_sha != req.base_sha256:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "detail": "File changed on disk",
-                "current_yaml_text": on_disk_bytes.decode("utf-8"),
-                "current_sha256": on_disk_sha,
-            },
-        )
+    # The CAS read → merge → write runs under _SAVE_LOCK so a concurrent save
+    # can't pass the same-base check and clobber this one (last-writer-wins).
+    with _SAVE_LOCK:
+        on_disk_bytes = handle.config_path.read_bytes()
+        on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
+        if on_disk_sha != req.base_sha256:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "detail": "File changed on disk",
+                    "current_yaml_text": on_disk_bytes.decode("utf-8"),
+                    "current_sha256": on_disk_sha,
+                },
+            )
 
-    # 4. Secret-preserve merge. ``find_redacted_paths`` walks the on-disk
-    # CommentedMap so paths line up with what the user saw via the GET snapshot.
-    # The widening to ``list[tuple[str | int, ...]]`` is a no-op at runtime —
-    # ``find_redacted_paths`` only ever emits string keys (per its docstring,
-    # list/dict descent does not extend the path with an index) — but mypy's
-    # list invariance won't let ``list[tuple[str, ...]]`` flow into
-    # ``merge_preserve_secrets``'s ``list[tuple[str | int, ...]]`` parameter
-    # directly, so we copy through a comprehension.
-    on_disk_map = parse_yaml(on_disk_bytes.decode("utf-8"))
-    redacted: list[tuple[str | int, ...]] = [tuple(p) for p in find_redacted_paths(on_disk_map)]
-    merge_preserve_secrets(new_map, on_disk_map, redacted_paths=redacted)
+        # 4. Secret-preserve merge. ``find_redacted_paths`` walks the on-disk
+        # CommentedMap so paths line up with what the user saw via the GET snapshot.
+        # The widening to ``list[tuple[str | int, ...]]`` is a no-op at runtime —
+        # ``find_redacted_paths`` only ever emits string keys (per its docstring,
+        # list/dict descent does not extend the path with an index) — but mypy's
+        # list invariance won't let ``list[tuple[str, ...]]`` flow into
+        # ``merge_preserve_secrets``'s ``list[tuple[str | int, ...]]`` parameter
+        # directly, so we copy through a comprehension.
+        on_disk_map = parse_yaml(on_disk_bytes.decode("utf-8"))
+        redacted: list[tuple[str | int, ...]] = [tuple(p) for p in find_redacted_paths(on_disk_map)]
+        merge_preserve_secrets(new_map, on_disk_map, redacted_paths=redacted)
 
-    # 5. Atomic write.
-    atomic_write(handle.config_path, new_map, yaml)
+        # 5. Atomic write.
+        atomic_write(handle.config_path, new_map, yaml)
 
     # 6. Return the new snapshot. apply_pending will be True because mtime
     # advanced past handle.file_mtime_at_load — Task 8's Apply endpoint clears it.
@@ -621,34 +632,36 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
     if bad:
         raise HTTPException(status_code=422, detail=bad)
 
-    # 2. CAS.
-    on_disk_bytes = handle.config_path.read_bytes()
-    on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
-    if on_disk_sha != req.base_sha256:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "detail": "File changed on disk",
-                "current_yaml_text": on_disk_bytes.decode("utf-8"),
-                "current_sha256": on_disk_sha,
-            },
-        )
+    # 2. CAS. Read → compare → merge → write under _SAVE_LOCK so a concurrent
+    # save can't pass the same-base check and clobber this one.
+    with _SAVE_LOCK:
+        on_disk_bytes = handle.config_path.read_bytes()
+        on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
+        if on_disk_sha != req.base_sha256:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "detail": "File changed on disk",
+                    "current_yaml_text": on_disk_bytes.decode("utf-8"),
+                    "current_sha256": on_disk_sha,
+                },
+            )
 
-    # 3. Round-trip merge — only the two nodes change.
-    doc = parse_yaml(on_disk_bytes.decode("utf-8"))
-    paths = _naming_map(req.rules)
-    if paths:
-        doc["paths"] = paths
-    else:
-        doc.pop("paths", None)
-    replace = _replace_map(req.replace)
-    if replace:
-        doc["replace"] = replace
-    else:
-        doc.pop("replace", None)
+        # 3. Round-trip merge — only the two nodes change.
+        doc = parse_yaml(on_disk_bytes.decode("utf-8"))
+        paths = _naming_map(req.rules)
+        if paths:
+            doc["paths"] = paths
+        else:
+            doc.pop("paths", None)
+        replace = _replace_map(req.replace)
+        if replace:
+            doc["replace"] = replace
+        else:
+            doc.pop("replace", None)
 
-    # 4. Atomic write + snapshot.
-    atomic_write(handle.config_path, doc, yaml)
+        # 4. Atomic write + snapshot.
+        atomic_write(handle.config_path, doc, yaml)
     return build_config_snapshot(handle)
 
 

@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from app.beets.config_editor import (
     _beets_default_naming,
     read_naming,
+    save,
     save_naming,
 )
 from app.beets.library import LibraryHandle
@@ -15,11 +16,38 @@ from app.models.config_editor import (
     NamingRuleInput,
     ReplaceRuleInput,
     SaveNamingRequest,
+    SaveRequest,
 )
 
 
 def _sha(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def test_config_saves_hold_the_save_lock_during_write(
+    beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """save/save_naming must run their CAS read->write under _SAVE_LOCK so a
+    concurrent save can't pass the same-base check and clobber the other."""
+    import app.beets.config_editor as ce
+
+    cfg_path = beets_library.config_path
+    cfg_path.write_text("directory: /tmp/music\nlibrary: library.db\n")
+    orig = ce.atomic_write
+    locked_during: list[bool] = []
+
+    def spy(*args: object, **kwargs: object) -> None:
+        locked_during.append(ce._SAVE_LOCK.locked())
+        orig(*args, **kwargs)  # type: ignore[arg-type]  # transparent spy passthrough
+
+    monkeypatch.setattr(ce, "atomic_write", spy)
+
+    save_naming(beets_library, SaveNamingRequest(rules=[], replace=[], base_sha256=_sha(cfg_path)))
+    save(
+        beets_library,
+        SaveRequest(yaml_text=cfg_path.read_text() + "\n# x\n", base_sha256=_sha(cfg_path)),
+    )
+    assert locked_during == [True, True]  # both writes ran under the lock
 
 
 def test_read_naming_splits_keys(beets_library: LibraryHandle) -> None:
