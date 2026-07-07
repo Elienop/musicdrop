@@ -8235,6 +8235,25 @@
         "title": "PlaylistDetail",
         "description": "Single-playlist view with the ordered, resolved tracklist."
       },
+      "PlaylistImportFailure": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "error"
+        ],
+        "title": "PlaylistImportFailure",
+        "description": "One playlist that couldn't be created during a multi-playlist import."
+      },
       "PlaylistImportFile": {
         "properties": {
           "name": {
@@ -8390,6 +8409,14 @@
             },
             "type": "array",
             "title": "Created"
+          },
+          "failed": {
+            "items": {
+              "$ref": "#/components/schemas/PlaylistImportFailure"
+            },
+            "type": "array",
+            "title": "Failed",
+            "default": []
           }
         },
         "type": "object",

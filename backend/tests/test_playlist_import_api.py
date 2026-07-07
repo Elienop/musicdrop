@@ -121,6 +121,35 @@ def test_commit_creates_playlists_with_pending_and_suffixes_collisions(
     assert record.entries[1].pending is not None and record.entries[1].pending.title == "Lost"
 
 
+def test_commit_partial_success_when_one_playlist_fails(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mid-loop store failure must not strand the already-created playlists nor
+    500 the request — the first is created and the second is reported failed."""
+    item_id = _seed(beets_library.lib, title="Real", artist="A")
+    real_create = store.create_playlist
+
+    def flaky_create(playlists_dir: Path, **kwargs: Any) -> Any:
+        if kwargs.get("name") == "Second":
+            raise OSError("disk full")
+        return real_create(playlists_dir, **kwargs)
+
+    monkeypatch.setattr("app.api.playlists.store.create_playlist", flaky_create)
+    body = {
+        "playlists": [
+            {"name": "First", "entries": [{"item_id": item_id}]},
+            {"name": "Second", "entries": [{"item_id": item_id}]},
+        ]
+    }
+    r = client.post("/api/playlists/import", json=body)
+    assert r.status_code == 200
+    payload = r.json()
+    assert [p["name"] for p in payload["created"]] == ["First"]
+    assert [f["name"] for f in payload["failed"]] == ["Second"]
+    # the first playlist really persisted despite the second failing
+    assert any(rec.name == "First" for rec in store.list_playlists(_dir()))
+
+
 def test_commit_rejects_unknown_item_ids(client: TestClient, beets_library: LibraryHandle) -> None:
     body = {"playlists": [{"name": "P", "entries": [{"item_id": 987654}]}]}
     r = client.post("/api/playlists/import", json=body)
