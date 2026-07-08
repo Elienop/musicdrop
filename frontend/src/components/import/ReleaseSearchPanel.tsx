@@ -1,9 +1,14 @@
 import { useState } from "react";
 
 import type { ImportSearch } from "@/api/useImport";
-import { Spinner } from "@/components/icons";
+import { Info, Spinner } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 
 /** "Search for a different release" — a release URL/ID (the reliable escape from
  * beets' Various-Artists filter) or a forced-non-VA artist+album name search.
@@ -49,12 +54,30 @@ export function ReleaseSearchPanel({
       onSubmit={submit}
       className="border-border flex flex-col gap-3 rounded-xl border p-4"
     >
-      <p className="text-sm font-medium">Search for a different release</p>
+      <div className="flex items-center gap-1.5">
+        <p className="text-sm font-medium">Search for a different release</p>
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="text-muted-foreground size-6"
+              aria-label="Why paste a URL?"
+            >
+              <Info aria-hidden="true" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-80 text-sm">
+            When a single-artist album keeps matching a Various-Artists
+            compilation, paste the exact release&rsquo;s MusicBrainz URL —
+            artist URLs won&rsquo;t work; open the specific release and copy
+            its link.
+          </PopoverContent>
+        </Popover>
+      </div>
       <p className="text-muted-foreground text-xs">
-        Paste a MusicBrainz <strong>release</strong> URL/ID (or a Deezer album
-        URL) to pin it — the reliable fix when a single-artist album only matches
-        Various-Artists compilations. An artist URL won’t work; open the specific
-        release on MusicBrainz and copy that.
+        Paste a MusicBrainz release URL/ID or a Deezer album URL.
       </p>
       <Input
         value={releaseId}
