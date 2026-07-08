@@ -82,8 +82,11 @@ describe("BrowsePage", () => {
     expect(rail.className).toContain("md:sticky");
     expect(rail.className).toContain("md:top-24");
     expect(rail.className).toContain("md:max-h-[calc(100vh-7.5rem)]");
-    // A right gutter so the rail's scrollbar doesn't sit on the facet counts.
-    expect(rail.className).toContain("pr-2");
+    // A real right gutter — content, then empty space, then a slim themed
+    // bar — so the scrollbar never crowds the facet counts.
+    expect(rail.className).toContain("pr-4");
+    expect(rail.className).toContain("thin-scrollbar");
+    expect(rail.className).toContain("md:w-60");
   });
 
   test("toggling a genre puts it in the query and refetches", async () => {
