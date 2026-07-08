@@ -12,7 +12,13 @@ import {
   AlbumsGridSkeleton,
   GRID_CLASS,
 } from "@/components/albums/album-grid";
-import { Albums, Browse, Close, MusicFallback } from "@/components/icons";
+import {
+  Albums,
+  Browse,
+  Close,
+  Expand,
+  MusicFallback,
+} from "@/components/icons";
 import { EmptyState } from "@/components/system/EmptyState";
 import { ErrorState } from "@/components/system/ErrorState";
 import { PageBody, PageHeader } from "@/components/system/PageHeader";
@@ -282,17 +288,25 @@ export function BrowsePage() {
               )}
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-2">
-              <select
-                aria-label="Sort albums"
-                className="border-input bg-background h-8 shrink-0 rounded-md border px-2 text-sm"
-                value={sort}
-                onChange={(e) =>
-                  setSort(e.target.value === "added" ? "added" : "artist")
-                }
-              >
-                <option value="artist">A–Z (artist)</option>
-                <option value="added">Recently added</option>
-              </select>
+              {/* Same caret anatomy as PageSizeSelect: the UA arrow sits
+                  flush against the edge, so draw our own with real inset. */}
+              <span className="relative shrink-0">
+                <select
+                  aria-label="Sort albums"
+                  className="border-input bg-background h-8 appearance-none rounded-md border px-2 pr-7 text-sm"
+                  value={sort}
+                  onChange={(e) =>
+                    setSort(e.target.value === "added" ? "added" : "artist")
+                  }
+                >
+                  <option value="artist">A–Z (artist)</option>
+                  <option value="added">Recently added</option>
+                </select>
+                <Expand
+                  className="text-muted-foreground pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2"
+                  aria-hidden="true"
+                />
+              </span>
               {total > PAGE_SIZE_OPTIONS[0] && (
                 <PageSizeSelect value={pageSize} onChange={setPageSize} />
               )}

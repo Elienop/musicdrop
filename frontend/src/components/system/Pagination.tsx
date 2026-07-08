@@ -1,4 +1,4 @@
-import { Back, Forward, Spinner } from "@/components/icons";
+import { Back, Expand, Forward, Spinner } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 
 /** The default library page size — surfaces without a size selector use it. */
@@ -153,17 +153,26 @@ export function PageSizeSelect({
   onChange: (n: PageSize) => void;
 }) {
   return (
-    <select
-      aria-label="Results per page"
-      className="border-input bg-background h-8 shrink-0 rounded-md border px-2 text-sm"
-      value={value}
-      onChange={(e) => onChange(Number(e.target.value) as PageSize)}
-    >
-      {PAGE_SIZE_OPTIONS.map((n) => (
-        <option key={n} value={n}>
-          {n} per page
-        </option>
-      ))}
-    </select>
+    // The CandidateReview select anatomy: appearance-none + reserved right
+    // padding + our own caret, because Blink draws the UA arrow flush
+    // against the edge (cramped at toolbar size).
+    <span className="relative shrink-0">
+      <select
+        aria-label="Results per page"
+        className="border-input bg-background h-8 appearance-none rounded-md border px-2 pr-7 text-sm"
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value) as PageSize)}
+      >
+        {PAGE_SIZE_OPTIONS.map((n) => (
+          <option key={n} value={n}>
+            {n} per page
+          </option>
+        ))}
+      </select>
+      <Expand
+        className="text-muted-foreground pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2"
+        aria-hidden="true"
+      />
+    </span>
   );
 }
