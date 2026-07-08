@@ -293,7 +293,7 @@ export function BrowsePage() {
               <span className="relative shrink-0">
                 <select
                   aria-label="Sort albums"
-                  className="border-input bg-background h-8 appearance-none rounded-md border px-2 pr-7 text-sm"
+                  className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-8 appearance-none rounded-md border px-2 pr-7 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
                   value={sort}
                   onChange={(e) =>
                     setSort(e.target.value === "added" ? "added" : "artist")
