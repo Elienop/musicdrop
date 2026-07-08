@@ -54,10 +54,11 @@ def test_get_rejects_traversal_ids(tmp_path: Path) -> None:
 
 def test_list_paginates_and_filters(tmp_path: Path) -> None:
     ids = [_create(tmp_path, folder=f"/library/A/{i}") for i in range(5)]
+    newest_first = list(reversed(ids))
     page = store.list_items(_bank(tmp_path), offset=0, limit=3)
-    assert [i.id for i in page] == ids[:3]  # banked_at ascending = FIFO review
+    assert [i.id for i in page] == newest_first[:3]  # newest banked first = display order
     rest = store.list_items(_bank(tmp_path), offset=3, limit=3)
-    assert [i.id for i in rest] == ids[3:]
+    assert [i.id for i in rest] == newest_first[3:]
     assert store.count_items(_bank(tmp_path)) == 5
     assert store.list_items(_bank(tmp_path), status="ignored") == []
     assert store.count_items(_bank(tmp_path), status="needs_review") == 5
@@ -402,7 +403,7 @@ def test_list_page_reports_total_and_total_all(tmp_path: Path) -> None:
 def test_list_page_reason_filter(tmp_path: Path) -> None:
     bank = _bank(tmp_path)
     a = _create(tmp_path, folder="/l/a", reason="no_match")
-    _create(tmp_path, folder="/l/b", reason="no_match")
+    b = _create(tmp_path, folder="/l/b", reason="no_match")
     dup = store.create_item(
         bank,
         folder="/l/dup",
@@ -412,7 +413,7 @@ def test_list_page_reason_filter(tmp_path: Path) -> None:
         duplicate=_dup_prompt(),
     )
     page, total, total_all = store.list_page(bank, reason="no_match", offset=0, limit=50)
-    assert {s.id for s in page} == {a, page[1].id}
+    assert {s.id for s in page} == {a, b}
     assert total == 2
     assert total_all == 3
     dup_page, dup_total, _ = store.list_page(
@@ -450,14 +451,18 @@ def test_list_page_reason_ands_with_active_only(tmp_path: Path) -> None:
     assert total_all == 3
 
 
-def test_list_page_preserves_fifo_and_paging(tmp_path: Path) -> None:
+def test_list_page_newest_banked_first_and_paging(tmp_path: Path) -> None:
+    """Display order is newest banked first (the Review page reads top-down);
+    the APPLY order stays oldest-decided-first via next_queued — separate path.
+    """
     ids = [_create(tmp_path, folder=f"/l/{i}") for i in range(5)]
+    newest_first = list(reversed(ids))
     first, total, total_all = store.list_page(tmp_path / "bank", offset=0, limit=2)
-    assert [s.id for s in first] == ids[:2]
+    assert [s.id for s in first] == newest_first[:2]
     assert total == 5
     assert total_all == 5
     rest, _, _ = store.list_page(tmp_path / "bank", offset=2, limit=10)
-    assert [s.id for s in rest] == ids[2:]
+    assert [s.id for s in rest] == newest_first[2:]
 
 
 def test_reset_bank_index_reveals_externally_written_row(tmp_path: Path) -> None:
