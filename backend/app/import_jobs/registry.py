@@ -23,6 +23,7 @@ from app.import_jobs.runner import BeetsImportRunner, ImportRunner
 from app.models.bank import BankApplyDirective
 from app.models.import_api import (
     ActiveImportStatus,
+    FinishedSweep,
     ImportAlbumStatus,
     ImportAlbumSummary,
     ImportJobState,
@@ -644,8 +645,10 @@ class ImportJobRegistry:
         with self._lock:
             job = self._job
             job_id = job.id if job is not None and job.phase in _ACTIVE_PHASES else None
-        if job_id is None:
-            return ActiveImportStatus(active=False, job_id=None)
+            if job_id is None:
+                return ActiveImportStatus(
+                    active=False, job_id=None, last_sweep=self._last_sweep_locked()
+                )
         try:
             self.drain(job_id)  # refresh the feed (acquires the lock itself)
         except KeyError:
@@ -654,11 +657,16 @@ class ImportJobRegistry:
             # the slot), so the captured job_id no longer resolves and drain()
             # raises KeyError. Report idle rather than 500 a frequently-polled
             # probe — same outcome as the post-drain re-check below.
-            return ActiveImportStatus(active=False, job_id=None)
+            with self._lock:
+                return ActiveImportStatus(
+                    active=False, job_id=None, last_sweep=self._last_sweep_locked()
+                )
         with self._lock:
             job = self._job
             if job is None or job.id != job_id or job.phase not in _ACTIVE_PHASES:
-                return ActiveImportStatus(active=False, job_id=None)
+                return ActiveImportStatus(
+                    active=False, job_id=None, last_sweep=self._last_sweep_locked()
+                )
             set_aside = sum(1 for a in job.albums.values() if a.status in _SET_ASIDE_STATUSES)
             return ActiveImportStatus(
                 active=True,
@@ -667,6 +675,32 @@ class ImportJobRegistry:
                 needs_review_count=set_aside,
                 sweep=job.sweep.model_copy() if job.sweep is not None else None,
             )
+
+    def _last_sweep_locked(self) -> FinishedSweep | None:
+        """The slot's finished-sweep recap (caller holds ``self._lock``).
+
+        Non-None exactly when the held job is a DONE sweep — the Review
+        page's recap strip. Failed sweeps and non-sweep jobs surface
+        nothing; a new start replaces the slot, so the recap and the run
+        page expire together.
+        """
+        job = self._job
+        if (
+            job is None
+            or job.origin != "sweep"
+            or job.phase is not ImportPhase.done
+            or job.sweep is None
+        ):
+            return None
+        s = job.sweep
+        return FinishedSweep(
+            job_id=job.id,
+            processed=s.processed,
+            auto_applied=s.auto_applied,
+            banked=s.banked,
+            skipped_known=s.skipped_known,
+            paused=s.paused,
+        )
 
     # ----- helpers -----
 

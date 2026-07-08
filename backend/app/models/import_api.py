@@ -142,6 +142,25 @@ class SweepStatus(BaseModel):
     paused: bool = False
 
 
+class FinishedSweep(BaseModel):
+    """The last finished sweep's recap — ``ActiveImportStatus.last_sweep``.
+
+    Populated only while the registry's single slot still holds a DONE
+    sweep-origin job: a new import replaces the slot (and this recap with
+    it), and failed sweeps surface nothing. ``job_id`` targets the run page
+    (``/import?job=…``), which lives exactly as long as this block does, so
+    the link can never dangle. ``paused`` distinguishes a paused sweep (it
+    ends ``phase=done`` with the flag set) from a completed one.
+    """
+
+    job_id: str
+    processed: int
+    auto_applied: int
+    banked: int
+    skipped_known: int
+    paused: bool
+
+
 class ImportJobState(BaseModel):
     """Response of ``GET /api/import/{job}``: phase + progress + the live feed."""
 
@@ -194,3 +213,7 @@ class ActiveImportStatus(BaseModel):
     # The active sweep's counters (None when the active job is not a sweep, or
     # idle) — the FE sweep banner reads this off the existing probe.
     sweep: SweepStatus | None = None
+    # The last finished sweep's recap (None while any job runs, when the slot
+    # holds a non-sweep or failed job, or after a backend restart) — the
+    # Review page's post-sweep summary strip reads this off the same probe.
+    last_sweep: FinishedSweep | None = None
