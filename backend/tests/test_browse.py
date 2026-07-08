@@ -43,6 +43,8 @@ def _add(
     original_year: int | None = None,
     lyrics_on: int = 0,
     added: float | None = None,
+    tracktotal: int = 0,
+    discs: int = 1,
 ) -> None:
     items = []
     for i in range(1, tracks + 1):
@@ -54,6 +56,12 @@ def _add(
             it.format = fmt
         if i <= lyrics_on:
             it.lyrics = "la la la"
+        if tracktotal:
+            it.tracktotal = tracktotal
+        if discs > 1:
+            # spread items round-robin across discs; each carries the same
+            # per-disc tracktotal
+            it.disc = ((i - 1) % discs) + 1
         items.append(it)
     al = lib.add_album(items)
     if genre is not None:
@@ -71,6 +79,8 @@ def _add(
         al.original_year = original_year
     if added is not None:
         al.added = added
+    if discs > 1:
+        al.disctotal = discs
     al.store()
 
 
@@ -413,3 +423,96 @@ def test_browse_albums_endpoint_new_filters_and_sort(client: TestClient) -> None
 
 def test_browse_albums_endpoint_rejects_junk_sort(client: TestClient) -> None:
     assert client.get("/api/browse/albums", params={"sort": "loudness"}).status_code == 422
+
+
+# ----- tracks completeness facet -----
+
+
+def test_tracks_facet_buckets(tmp_path: Path) -> None:
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    # complete: 3 of 3
+    _add(lib, tmp_path, artist="A", album="Full", tracks=3, tracktotal=3)
+    # incomplete: 2 of 12
+    _add(lib, tmp_path, artist="B", album="Partial", tracks=2, tracktotal=12)
+    # unknown: as-is import, no tracktotal
+    _add(lib, tmp_path, artist="C", album="AsIs", tracks=2)
+    facets = browse_facets(lib)
+    assert {(v.value, v.count) for v in facets.tracks} == {
+        ("Complete", 1),
+        ("Incomplete", 1),
+        ("Unknown", 1),
+    }
+
+
+def test_tracks_facet_multi_disc_per_disc_numbering(tmp_path: Path) -> None:
+    """With per_disc_numbering, expected = one tracktotal per distinct disc."""
+    from beets import config as beets_config
+
+    beets_config["per_disc_numbering"] = True
+    try:
+        lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+        # 2 discs x 2 expected each = 4 expected, 4 present -> Complete
+        _add(lib, tmp_path, artist="D", album="Box", tracks=4, tracktotal=2, discs=2)
+        # 2 discs x 3 expected each = 6 expected, 4 present -> Incomplete
+        _add(lib, tmp_path, artist="E", album="HalfBox", tracks=4, tracktotal=3, discs=2)
+        facets = browse_facets(lib)
+        by_value = {v.value: v.count for v in facets.tracks}
+        assert by_value.get("Complete") == 1
+        assert by_value.get("Incomplete") == 1
+    finally:
+        beets_config["per_disc_numbering"] = False
+
+
+def test_tracks_facet_whole_missing_disc_undercounts(tmp_path: Path) -> None:
+    """DOCUMENTED LIMITATION (inherited from beets' missing plugin): when an
+    ENTIRE disc is absent, no item carries that disc's tracktotal, so the
+    expected total undercounts and the album reads Complete."""
+    from beets import config as beets_config
+
+    beets_config["per_disc_numbering"] = True
+    try:
+        lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+        # A 2-disc release where all of disc 2 is missing: only disc-1 items
+        # exist (2 of 2 for that disc), disctotal says 2 discs — expected
+        # collapses to disc 1's total, so the bucket is Complete, not
+        # Incomplete. This test pins the behavior so a future fix flips it
+        # deliberately.
+        _add(lib, tmp_path, artist="F", album="LostDisc", tracks=2, tracktotal=2, discs=1)
+        al = lib.albums("album:LostDisc").get()
+        assert al is not None
+        al.disctotal = 2
+        al.store()
+        facets = browse_facets(lib)
+        by_value = {v.value: v.count for v in facets.tracks}
+        assert by_value.get("Complete") == 1
+    finally:
+        beets_config["per_disc_numbering"] = False
+
+
+def test_browse_filters_by_tracks_bucket(tmp_path: Path) -> None:
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    _add(lib, tmp_path, artist="A", album="Full", tracks=3, tracktotal=3)
+    _add(lib, tmp_path, artist="B", album="Partial", tracks=2, tracktotal=12)
+    albums, total = browse_albums(
+        lib,
+        genres=[],
+        decades=[],
+        formats=[],
+        tracks=["Incomplete"],
+        limit=50,
+        offset=0,
+    )
+    assert total == 1
+    assert _names(albums) == {"Partial"}
+
+
+def test_browse_albums_endpoint_tracks_param(client: TestClient) -> None:
+    # browse_lib albums are seeded WITHOUT tracktotal -> every album is Unknown.
+    everything = client.get("/api/browse/albums").json()
+    unknown = client.get("/api/browse/albums", params={"tracks": ["Unknown"]})
+    assert unknown.status_code == 200
+    assert unknown.json()["total"] == everything["total"]
+    complete = client.get("/api/browse/albums", params={"tracks": ["Complete"]})
+    assert complete.json()["total"] == 0
+    facets = client.get("/api/browse/facets").json()
+    assert "tracks" in facets

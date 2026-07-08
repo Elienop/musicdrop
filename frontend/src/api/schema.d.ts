@@ -2171,6 +2171,8 @@ export interface components {
             countries: components["schemas"]["FacetValue"][];
             /** Lyrics */
             lyrics: components["schemas"]["FacetValue"][];
+            /** Tracks */
+            tracks: components["schemas"]["FacetValue"][];
         };
         /**
          * Candidate
@@ -4943,6 +4945,7 @@ export interface operations {
                 media?: string[] | null;
                 country?: string[] | null;
                 lyrics?: string[] | null;
+                tracks?: string[] | null;
                 sort?: "artist" | "added";
                 limit?: number;
                 offset?: number;

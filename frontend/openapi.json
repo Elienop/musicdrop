@@ -1184,6 +1184,25 @@
             }
           },
           {
+            "name": "tracks",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tracks"
+            }
+          },
+          {
             "name": "sort",
             "in": "query",
             "required": false,
@@ -5525,6 +5544,13 @@
             },
             "type": "array",
             "title": "Lyrics"
+          },
+          "tracks": {
+            "items": {
+              "$ref": "#/components/schemas/FacetValue"
+            },
+            "type": "array",
+            "title": "Tracks"
           }
         },
         "type": "object",
@@ -5536,7 +5562,8 @@
           "sources",
           "media",
           "countries",
-          "lyrics"
+          "lyrics",
+          "tracks"
         ],
         "title": "BrowseFacets",
         "description": "Available filter values for the Browse page."

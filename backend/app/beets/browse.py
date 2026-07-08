@@ -1,6 +1,6 @@
 """Faceted Browse over an in-process library cache.
 
-One small ``BrowseRow`` per album (sort keys + eight representative facet
+One small ``BrowseRow`` per album (sort keys + nine representative facet
 values), built by ONE full scan and kept until ``invalidate_browse_cache()``.
 Invalidation is wired into ``app.events.emit.emit_library_changed`` — the same
 choke point every mutation path already calls for SSE — so the cache inherits
@@ -21,11 +21,13 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
+from beets import config
 from beets.library import Album as BeetsAlbum
 from beets.library import Library
 
 from app.beets.library import (
     _album_genre,
+    _coerce_int,
     _coerce_optional_str,
     _coerce_str,
     _coerce_year,
@@ -53,6 +55,7 @@ class BrowseRow(NamedTuple):
     media: str
     country: str
     lyrics: str
+    tracks: str
 
 
 _LOCK = threading.Lock()
@@ -100,6 +103,36 @@ def _album_lyrics_bucket(items: list[Any]) -> str:
     return "Complete" if have == len(items) else "Partial"
 
 
+def _album_tracks_bucket(album: BeetsAlbum, items: list[Any]) -> str:
+    """Complete / Incomplete / Unknown vs the matched release's track count.
+
+    Mirrors beets' ``Album.albumtotal`` (the ``missing`` plugin's completeness
+    source): expected = ``items[0].tracktotal`` for single-disc / non-per-disc
+    numbering, else one ``tracktotal`` per distinct disc — computed from the
+    items already in hand so the cache scan issues no extra queries. As-is /
+    unmatched imports carry no ``tracktotal`` -> ``Unknown``. Inherited beets
+    caveat: an album missing an ENTIRE disc undercounts ``expected`` (no item
+    exists to carry that disc's total).
+    """
+    if not items:
+        return "Unknown"
+    disctotal = _coerce_int(album.get("disctotal"))
+    if disctotal <= 1 or not bool(config["per_disc_numbering"].get(bool)):
+        expected = _coerce_int(items[0].get("tracktotal"))
+    else:
+        seen: set[int] = set()
+        expected = 0
+        for it in items:
+            disc = _coerce_int(it.get("disc"))
+            if disc in seen:
+                continue
+            seen.add(disc)
+            expected += _coerce_int(it.get("tracktotal"))
+    if expected <= 0:
+        return "Unknown"
+    return "Complete" if len(items) >= expected else "Incomplete"
+
+
 def _coerce_added(value: object) -> float:
     try:
         return float(value)  # type: ignore[arg-type]  # beets value is untyped
@@ -126,6 +159,7 @@ def _build_row(album: BeetsAlbum) -> BrowseRow:
         media=_facet_str(album.get("media")),
         country=_facet_str(album.get("country")),
         lyrics=_album_lyrics_bucket(items),
+        tracks=_album_tracks_bucket(album, items),
     )
 
 
@@ -182,6 +216,7 @@ def browse_facets(lib: Library) -> BrowseFacets:
             "media",
             "country",
             "lyrics",
+            "tracks",
         )
     }
     for row in _rows(lib):
@@ -196,6 +231,7 @@ def browse_facets(lib: Library) -> BrowseFacets:
         media=_facet_values_by_count(counters["media"]),
         countries=_facet_values_by_count(counters["country"]),
         lyrics=_facet_values_by_count(counters["lyrics"]),
+        tracks=_facet_values_by_count(counters["tracks"]),
     )
 
 
@@ -210,6 +246,7 @@ def browse_albums(
     medias: list[str] | None = None,
     countries: list[str] | None = None,
     lyrics: list[str] | None = None,
+    tracks: list[str] | None = None,
     sort: Literal["artist", "added"] = "artist",
     limit: int,
     offset: int,
@@ -228,6 +265,7 @@ def browse_albums(
         ("media", set(medias or [])),
         ("country", set(countries or [])),
         ("lyrics", set(lyrics or [])),
+        ("tracks", set(tracks or [])),
     ]
     matched = [
         row

@@ -25,3 +25,4 @@ class BrowseFacets(BaseModel):
     media: list[FacetValue]
     countries: list[FacetValue]
     lyrics: list[FacetValue]
+    tracks: list[FacetValue]

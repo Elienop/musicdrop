@@ -205,7 +205,8 @@ def _all_items(bank_dir: Path) -> list[BankItem]:
             items.append(BankItem.model_validate_json(child.read_text(encoding="utf-8")))
         except (OSError, ValueError):
             continue  # unreadable/corrupt rows never break the listing
-    # FIFO review order: oldest banked first; id breaks timestamp ties.
+    # Deterministic order for index building; the DISPLAY order (newest banked
+    # first) is applied in list_page.
     items.sort(key=lambda item: (item.banked_at, item.id))
     return items
 
@@ -228,8 +229,10 @@ def list_page(
     """
     with _LOCK:
         by_id, _ = _ensure_index(bank_dir)
-        # FIFO review order: oldest banked first; id breaks timestamp ties.
-        rows = sorted(by_id.values(), key=lambda s: (s.banked_at, s.id))
+        # Display order: newest banked first (the Review page reads top-down);
+        # id breaks timestamp ties. The APPLY order is next_queued's
+        # oldest-decided FIFO — a queue, not this display sort.
+        rows = sorted(by_id.values(), key=lambda s: (s.banked_at, s.id), reverse=True)
         total_all = len(rows)
         if status is not None:
             rows = [s for s in rows if s.status == status]

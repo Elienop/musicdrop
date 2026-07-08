@@ -40,6 +40,7 @@ const FACETS_BODY = {
   media: [{ value: "CD", count: 3 }],
   countries: [{ value: "US", count: 3 }],
   lyrics: [{ value: "Missing", count: 3 }],
+  tracks: [{ value: "Incomplete", count: 2 }],
 };
 
 describe("BrowsePage", () => {
@@ -67,6 +68,19 @@ describe("BrowsePage", () => {
     expect(within(genre).getByText("2")).toBeInTheDocument(); // Rock count
     expect(screen.getByRole("group", { name: "Decade" })).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Format" })).toBeInTheDocument();
+  });
+
+  test("filter rail is its own always-in-viewport scroll box under the sticky topbar", async () => {
+    renderWithProviders(<BrowsePage />, { route: "/browse" });
+    const rail = await screen.findByRole("complementary", { name: /filters/i });
+    // jsdom has no real scroll geometry, so lock the class contract instead:
+    // the rail must be an internal scroller (overflow-y-auto) pinned BELOW the
+    // 4.5rem sticky topbar (top-24 = 6rem = topbar + main py-6) and sized to
+    // always fit the viewport (100vh - 6rem top - 1.5rem bottom gap).
+    expect(rail.className).toContain("overflow-y-auto");
+    expect(rail.className).toContain("md:sticky");
+    expect(rail.className).toContain("md:top-24");
+    expect(rail.className).toContain("md:max-h-[calc(100vh-7.5rem)]");
   });
 
   test("toggling a genre puts it in the query and refetches", async () => {
@@ -219,6 +233,17 @@ describe("BrowsePage", () => {
     await userEvent.click(await screen.findByRole("checkbox", { name: /single/i }));
     await waitFor(() =>
       expect(lastQuery.getAll("album_type")).toEqual(["single"]),
+    );
+  });
+
+  test("renders the Tracks facet group and filters by it", async () => {
+    renderWithProviders(<BrowsePage />, { route: "/browse" });
+    const group = await screen.findByRole("group", { name: "Tracks" });
+    await userEvent.click(
+      within(group).getByRole("checkbox", { name: /incomplete/i }),
+    );
+    await waitFor(() =>
+      expect(lastQuery.getAll("tracks")).toEqual(["Incomplete"]),
     );
   });
 
