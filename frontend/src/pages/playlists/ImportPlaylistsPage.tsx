@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
+import { toast } from "sonner";
 
 import {
   type ImportEntryPreview,
@@ -166,7 +167,21 @@ export function ImportPlaylistsPage() {
   function commit() {
     if (!preview) return;
     commitMutation.mutate(buildRequest(preview), {
-      onSuccess: () => navigate("/playlists"),
+      onSuccess: (response) => {
+        // Surface a partial-import failure — the server creates what it can and
+        // returns the rest in `failed`, so without this a dropped playlist would
+        // vanish silently. (`?? []` guards a response that predates the field.)
+        const failed = response.failed ?? [];
+        if (failed.length > 0) {
+          const names = failed.map((f) => f.name).join(", ");
+          const total = response.created.length + failed.length;
+          toast.error(`Imported ${response.created.length} of ${total} — couldn't create: ${names}`);
+        } else if (response.created.length > 0) {
+          const n = response.created.length;
+          toast.success(`Imported ${n} ${n === 1 ? "playlist" : "playlists"}`);
+        }
+        navigate("/playlists");
+      },
     });
   }
 
