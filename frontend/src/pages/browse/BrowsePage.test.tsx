@@ -40,6 +40,7 @@ const FACETS_BODY = {
   media: [{ value: "CD", count: 3 }],
   countries: [{ value: "US", count: 3 }],
   lyrics: [{ value: "Missing", count: 3 }],
+  tracks: [{ value: "Incomplete", count: 2 }],
 };
 
 describe("BrowsePage", () => {
@@ -232,6 +233,17 @@ describe("BrowsePage", () => {
     await userEvent.click(await screen.findByRole("checkbox", { name: /single/i }));
     await waitFor(() =>
       expect(lastQuery.getAll("album_type")).toEqual(["single"]),
+    );
+  });
+
+  test("renders the Tracks facet group and filters by it", async () => {
+    renderWithProviders(<BrowsePage />, { route: "/browse" });
+    const group = await screen.findByRole("group", { name: "Tracks" });
+    await userEvent.click(
+      within(group).getByRole("checkbox", { name: /incomplete/i }),
+    );
+    await waitFor(() =>
+      expect(lastQuery.getAll("tracks")).toEqual(["Incomplete"]),
     );
   });
 

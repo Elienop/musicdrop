@@ -32,14 +32,16 @@ const FACET_FIELDS = [
   { param: "country", facetKey: "countries", label: "Country" },
   { param: "source", facetKey: "sources", label: "Source" },
   { param: "lyrics", facetKey: "lyrics", label: "Lyrics" },
+  { param: "tracks", facetKey: "tracks", label: "Tracks" },
 ] as const;
 const FACET_PREVIEW_COUNT = 8;
 
 type FacetParam = (typeof FACET_FIELDS)[number]["param"];
 
 /**
- * Browse — slice the whole library across eight facets (genre, decade, format,
- * type, media, country, source, lyrics) with an optional artist/added sort.
+ * Browse — slice the whole library across nine facets (genre, decade, format,
+ * type, media, country, source, lyrics, tracks) with an optional artist/added
+ * sort.
  *
  * A filter rail (checkbox groups + counts) beside the filtered album grid. All
  * state lives in the URL (`?genre=Rock&decade=2010s&sort=added&offset=48`), so
@@ -59,6 +61,7 @@ export function BrowsePage() {
     country: searchParams.getAll("country"),
     source: searchParams.getAll("source"),
     lyrics: searchParams.getAll("lyrics"),
+    tracks: searchParams.getAll("tracks"),
   };
   const sort: BrowseSort =
     searchParams.get("sort") === "added" ? "added" : "artist";

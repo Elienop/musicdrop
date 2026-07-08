@@ -21,6 +21,7 @@ export interface BrowseFilters {
   country: string[];
   source: string[];
   lyrics: string[];
+  tracks: string[];
 }
 
 /** Album ordering for the browse grid. */
@@ -58,6 +59,7 @@ export function useBrowseAlbums(
               country: filters.country,
               source: filters.source,
               lyrics: filters.lyrics,
+              tracks: filters.tracks,
               sort,
               limit,
               offset,
