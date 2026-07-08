@@ -1720,6 +1720,7 @@ export interface components {
              */
             needs_review_count: number;
             sweep?: components["schemas"]["SweepStatus"] | null;
+            last_sweep?: components["schemas"]["FinishedSweep"] | null;
         };
         /** Album */
         Album: {
@@ -2607,6 +2608,31 @@ export interface components {
             value: string;
             /** Count */
             count: number;
+        };
+        /**
+         * FinishedSweep
+         * @description The last finished sweep's recap — ``ActiveImportStatus.last_sweep``.
+         *
+         *     Populated only while the registry's single slot still holds a DONE
+         *     sweep-origin job: a new import replaces the slot (and this recap with
+         *     it), and failed sweeps surface nothing. ``job_id`` targets the run page
+         *     (``/import?job=…``), which lives exactly as long as this block does, so
+         *     the link can never dangle. ``paused`` distinguishes a paused sweep (it
+         *     ends ``phase=done`` with the flag set) from a completed one.
+         */
+        FinishedSweep: {
+            /** Job Id */
+            job_id: string;
+            /** Processed */
+            processed: number;
+            /** Auto Applied */
+            auto_applied: number;
+            /** Banked */
+            banked: number;
+            /** Skipped Known */
+            skipped_known: number;
+            /** Paused */
+            paused: boolean;
         };
         /**
          * GroupDecision

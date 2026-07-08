@@ -38,6 +38,8 @@ export type MergePreview = components["schemas"]["MergePreview"];
 export type DuplicateTrackRow = components["schemas"]["DuplicateTrackRow"];
 /** Live sweep counters on a sweep-origin job/probe (generated contract). */
 export type SweepStatus = components["schemas"]["SweepStatus"];
+/** The last finished sweep's recap on the active probe (generated contract). */
+export type FinishedSweep = components["schemas"]["FinishedSweep"];
 
 /** Humanized labels for beets' recommendation levels (shared by the feed +
  * the review screen). Keeps the raw enum ("strong"/"none") out of the UI. */

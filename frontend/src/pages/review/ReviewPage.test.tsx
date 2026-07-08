@@ -820,4 +820,97 @@ describe("ReviewPage", () => {
     renderWithProviders(<ReviewPage />);
     expect(await screen.findByText(/3 awaiting a decision/i)).toBeInTheDocument();
   });
+
+  describe("sweep recap", () => {
+    const doneSweep = {
+      active: false,
+      origin: "manual",
+      needs_review_count: 0,
+      last_sweep: {
+        job_id: "s9",
+        processed: 12,
+        auto_applied: 9,
+        banked: 3,
+        skipped_known: 2,
+        paused: false,
+      },
+    };
+
+    beforeEach(() => {
+      localStorage.clear();
+    });
+
+    test("a finished sweep leaves a recap strip with the imported count", async () => {
+      server.use(http.get(ACTIVE, () => HttpResponse.json(doneSweep)));
+      renderWithProviders(<ReviewPage />);
+      const strip = await screen.findByText(/sweep finished/i);
+      expect(strip).toHaveTextContent(
+        "Sweep finished — 12 processed · 9 imported · 3 banked · 2 already known.",
+      );
+      expect(screen.getByRole("link", { name: /view run/i })).toHaveAttribute(
+        "href",
+        "/import?job=s9",
+      );
+    });
+
+    test("zero already-known drops that segment; a paused sweep says so", async () => {
+      server.use(
+        http.get(ACTIVE, () =>
+          HttpResponse.json({
+            ...doneSweep,
+            last_sweep: { ...doneSweep.last_sweep, skipped_known: 0, paused: true },
+          }),
+        ),
+      );
+      renderWithProviders(<ReviewPage />);
+      const strip = await screen.findByText(/sweep paused/i);
+      expect(strip).toHaveTextContent("Sweep paused — 12 processed · 9 imported · 3 banked.");
+      expect(strip).not.toHaveTextContent(/already known/i);
+      expect(strip).toHaveTextContent(/resume by sweeping the same folder again/i);
+    });
+
+    test("dismiss hides the recap and persists across remounts", async () => {
+      server.use(http.get(ACTIVE, () => HttpResponse.json(doneSweep)));
+      const first = renderWithProviders(<ReviewPage />);
+      await screen.findByText(/sweep finished/i);
+      await userEvent.click(screen.getByRole("button", { name: /dismiss sweep recap/i }));
+      expect(screen.queryByText(/sweep finished/i)).not.toBeInTheDocument();
+      first.unmount();
+      renderWithProviders(<ReviewPage />);
+      // The page settles without the recap returning (same job id).
+      await screen.findByText(/awaiting a decision/i);
+      expect(screen.queryByText(/sweep finished/i)).not.toBeInTheDocument();
+    });
+
+    test("a NEW sweep's recap shows despite an older dismissal", async () => {
+      localStorage.setItem("musicdrop.sweepRecapDismissed", "s8");
+      server.use(http.get(ACTIVE, () => HttpResponse.json(doneSweep)));
+      renderWithProviders(<ReviewPage />);
+      expect(await screen.findByText(/sweep finished/i)).toBeInTheDocument();
+    });
+
+    test("while a sweep RUNS the live banner owns the slot — no recap", async () => {
+      server.use(
+        http.get(ACTIVE, () =>
+          HttpResponse.json({
+            active: true,
+            job_id: "s1",
+            origin: "sweep",
+            needs_review_count: 0,
+            sweep: {
+              processed: 7,
+              auto_applied: 5,
+              banked: 2,
+              skipped_known: 0,
+              current_folder: null,
+              paused: false,
+            },
+          }),
+        ),
+      );
+      renderWithProviders(<ReviewPage />);
+      await screen.findByText(/7 processed/);
+      expect(screen.queryByText(/sweep finished/i)).not.toBeInTheDocument();
+    });
+  });
 });
