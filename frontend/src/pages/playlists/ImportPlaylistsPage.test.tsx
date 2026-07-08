@@ -135,6 +135,62 @@ describe("ImportPlaylistsPage", () => {
     expect(screen.getByText(/0 unmatched/)).toBeInTheDocument();
   });
 
+  test("an entry leads with its own track identity, not just the origin string", async () => {
+    server.use(
+      http.post(PREVIEW_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            {
+              name: "UK Pop Fever",
+              matched_count: 0,
+              ambiguous_count: 0,
+              unmatched_count: 2,
+              entries: [
+                // A Plex pull: every entry's source is just "plex:<playlist>",
+                // so without the title/artist line the user can't tell WHAT
+                // track failed to match (or what to search for).
+                entry({
+                  position: 1,
+                  source: "plex:UK Pop Fever",
+                  artist: "Erasure",
+                  title: "Chains of Love",
+                  album: "The Innocents",
+                  duration_seconds: 170,
+                  status: "unmatched",
+                }),
+                // A bare-path m3u line (no EXTINF): the source IS the identity.
+                entry({
+                  position: 2,
+                  source: "Music/one.mp3",
+                  artist: null,
+                  title: null,
+                  album: null,
+                  duration_seconds: null,
+                  status: "unmatched",
+                }),
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    renderImport();
+
+    await userEvent.upload(
+      screen.getByLabelText(/upload playlist files/i),
+      new File(["#EXTM3U\n"], "UK Pop Fever.m3u8"),
+    );
+
+    // Titled entry: title · artist · duration visible; origin demoted to tooltip.
+    expect(await screen.findByText("Chains of Love")).toBeInTheDocument();
+    expect(screen.getByText(/Erasure/)).toBeInTheDocument();
+    expect(screen.getByText(/2:50/)).toBeInTheDocument();
+    expect(screen.getByTitle("plex:UK Pop Fever")).toBeInTheDocument();
+    expect(screen.queryByText("plex:UK Pop Fever")).not.toBeInTheDocument();
+    // Untitled entry still falls back to its raw source line.
+    expect(screen.getByText("Music/one.mp3")).toBeInTheDocument();
+  });
+
   test("accepting a suggestion upgrades the entry before commit", async () => {
     server.use(
       http.post(PREVIEW_URL, () =>
