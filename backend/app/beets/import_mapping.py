@@ -71,6 +71,17 @@ def _opt_str(value: Any) -> str | None:
     return text or None
 
 
+def _clean_disambig(value: Any) -> str | None:
+    """beets' ``Match.disambig_string`` str()-joins its disambiguation fields,
+    so missing values become literal ``"None"`` segments. Drop them (and
+    blanks); an all-dropped string collapses to ``None``."""
+    text = _opt_str(value)
+    if text is None:
+        return None
+    parts = [p for p in (s.strip() for s in text.split(",")) if p and p != "None"]
+    return ", ".join(parts) or None
+
+
 def embedded_art(path: str) -> tuple[bytes, str] | None:
     """The first embedded cover image ``(bytes, mime)`` for a media file, or None.
 
@@ -204,7 +215,7 @@ def map_candidate_options(
                 index=index,
                 confidence=_confidence(match.distance),
                 data_source=data_source,
-                disambiguation=_opt_str(match.disambig_string),
+                disambiguation=_clean_disambig(match.disambig_string),
                 release_id=album_id,
                 # Per-option identity, derived EXACTLY as album_after is
                 # (_album_change_from_info), so the bank's duplicate check on a
