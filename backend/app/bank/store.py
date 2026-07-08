@@ -205,7 +205,8 @@ def _all_items(bank_dir: Path) -> list[BankItem]:
             items.append(BankItem.model_validate_json(child.read_text(encoding="utf-8")))
         except (OSError, ValueError):
             continue  # unreadable/corrupt rows never break the listing
-    # FIFO review order: oldest banked first; id breaks timestamp ties.
+    # Deterministic order for index building; the DISPLAY order (newest banked
+    # first) is applied in list_page.
     items.sort(key=lambda item: (item.banked_at, item.id))
     return items
 
