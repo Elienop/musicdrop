@@ -10,6 +10,25 @@ import { server } from "./msw-server";
 // change). Stub it so those code paths run cleanly under tests.
 vi.stubGlobal("scrollTo", vi.fn());
 
+// jsdom has no matchMedia. Hooks that branch on a media query call it inside
+// their effect (e.g. useRailMaxHeight's md+ check), so provide a stand-in.
+// Tests that assert on the result spy on window.matchMedia and return their own
+// MediaQueryList; this default reports "no match" with no-op listeners.
+vi.stubGlobal(
+  "matchMedia",
+  (query: string) =>
+    ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }) as MediaQueryList,
+);
+
 // jsdom has no EventSource. The app's useEventStream opens one at the shell, so
 // every App-rendering test needs a stand-in. A no-op class is enough here; the
 // dedicated useEventStream test installs its own capturing mock.

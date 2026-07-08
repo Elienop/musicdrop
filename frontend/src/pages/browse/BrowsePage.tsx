@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { usePageSize } from "@/lib/usePageSize";
+import { useRailMaxHeight } from "@/lib/useRailMaxHeight";
 import { cn } from "@/lib/utils";
 
 const FACET_FIELDS = [
@@ -109,6 +110,8 @@ export function BrowsePage() {
   // Post-page-change contract (spec §6): plain scroll to top + move focus to
   // the always-mounted count line in the PageHeader meta region.
   const countRef = useRef<HTMLSpanElement>(null);
+  const railRef = useRef<HTMLElement>(null);
+  useRailMaxHeight(railRef);
   const goToOffset = (value: number) => {
     const next = new URLSearchParams(searchParams);
     if (value <= 0) next.delete("offset");
@@ -151,8 +154,15 @@ export function BrowsePage() {
             (top-24) and must cap at 100vh - 6rem - 1.5rem bottom gap so the
             whole scroll box always fits the viewport and wheel-over-rail
             scrolls the FILTERS, not the page. Change the topbar's height and
-            these two constants move with it. */}
+            these two constants move with it.
+            The static max-h is only correct once the sticky PINS; before
+            that (page at top, header in view) the rail starts lower and the
+            static value would push its bottom — and the last facet group —
+            below the viewport. useRailMaxHeight measures the real top and
+            tightens max-height pre-pin; the class stays as the no-JS /
+            first-paint fallback. */}
         <aside
+          ref={railRef}
           className="thin-scrollbar max-h-72 shrink-0 overflow-y-auto pr-4 md:sticky md:top-24 md:max-h-[calc(100vh-7.5rem)] md:w-60 md:self-start"
           aria-label="Filters"
         >
