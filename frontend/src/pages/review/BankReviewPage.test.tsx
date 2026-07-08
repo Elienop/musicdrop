@@ -534,4 +534,20 @@ describe("BankReviewPage", () => {
       screen.getByRole("option", { name: "64% · MusicBrainz · Deezer, 2024, Hit Wave Music" }),
     ).toBeInTheDocument();
   });
+
+  test("rescan folder rides the top toolbar; the inline hint became its tooltip", async () => {
+    server.use(http.get(ITEM, () => HttpResponse.json(bankItem())));
+    renderRow();
+    const h1 = await screen.findByRole("heading", { name: /Music Has the Right to Children/ });
+    const button = screen.getByRole("button", { name: /rescan folder/i });
+    // Top chrome: the button precedes the h1 in DOM order (old spot was
+    // below the tracklist, after it).
+    expect(
+      button.compareDocumentPosition(h1) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(button).toHaveAttribute(
+      "title",
+      "Re-reads the folder from disk and matches it again.",
+    );
+  });
 });
