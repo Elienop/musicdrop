@@ -507,4 +507,31 @@ describe("BankReviewPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /rescan folder/i }));
     expect(await screen.findByText(/no audio files remain/i)).toBeInTheDocument();
   });
+
+  test("filters legacy 'None' segments out of candidate switcher labels", async () => {
+    // Rows banked before the adapter-side fix carry beets' raw
+    // "Deezer, None, 2024, …" disambig string forever — display-side guard.
+    const legacy = {
+      ...candidate,
+      options: [
+        candidate.options[0],
+        {
+          ...candidate.options[1],
+          disambiguation: "Deezer, None, 2024, None, Hit Wave Music, None",
+        },
+      ],
+    };
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(
+          bankItem({ parked: { album_index: 0, folder: "/inbox/BoC", candidate: legacy } }),
+        ),
+      ),
+    );
+    renderRow();
+    await screen.findAllByText(/after import/i);
+    expect(
+      screen.getByRole("option", { name: "64% · MusicBrainz · Deezer, 2024, Hit Wave Music" }),
+    ).toBeInTheDocument();
+  });
 });
