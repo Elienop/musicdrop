@@ -173,6 +173,32 @@ def test_dev_frontend_origin_upload_allowed(cover_client: TestClient, edit_lib: 
     assert r.status_code == 200
 
 
+def test_proxy_forwarded_host_upload_allowed(cover_client: TestClient, edit_lib: Library) -> None:
+    # Behind a reverse proxy that rewrites Host to the upstream, the public host
+    # the browser used arrives in X-Forwarded-Host. A same-origin upload (Origin
+    # authority == X-Forwarded-Host) must be allowed even though it != Host.
+    aid = _aid(edit_lib)
+    r = cover_client.post(
+        f"/api/albums/{aid}/cover",
+        files={"file": ("cover.png", PNG.read_bytes(), "image/png")},
+        headers={"Origin": "http://public.example", "X-Forwarded-Host": "public.example"},
+    )
+    assert r.status_code == 200
+
+
+def test_spoofed_forwarded_host_still_rejected(cover_client: TestClient, edit_lib: Library) -> None:
+    # A cross-origin attacker can't set X-Forwarded-Host to match its own Origin
+    # without making the request non-simple (a preflight the CORS policy rejects),
+    # so an Origin that matches neither Host nor X-Forwarded-Host is still 403.
+    aid = _aid(edit_lib)
+    r = cover_client.post(
+        f"/api/albums/{aid}/cover",
+        files={"file": ("cover.png", PNG.read_bytes(), "image/png")},
+        headers={"Origin": "http://evil.test", "X-Forwarded-Host": "public.example"},
+    )
+    assert r.status_code == 403
+
+
 def test_fetch_404_when_no_art(
     cover_client: TestClient, edit_lib: Library, monkeypatch: pytest.MonkeyPatch
 ) -> None:

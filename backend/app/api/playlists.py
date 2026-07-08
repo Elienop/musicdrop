@@ -39,6 +39,7 @@ from app.models.playlist import (
     PlaylistUpdateRequest,
 )
 from app.models.playlist_import import (
+    PlaylistImportFailure,
     PlaylistImportPreview,
     PlaylistImportPreviewRequest,
     PlaylistImportPreviewResponse,
@@ -450,20 +451,29 @@ async def import_commit_endpoint(
     existing = await run_in_threadpool(store.list_playlists, playlists_dir)
     taken = {record.name for record in existing}
     created: list[Playlist] = []
+    failed: list[PlaylistImportFailure] = []
     for playlist in body.playlists:
         name = _unique_name(playlist.name.strip() or "Imported playlist", taken)
-        taken.add(name)
+        taken.add(name)  # reserve the name even on failure so siblings stay distinct
         entries = [
             StoredEntry(uid=uuid.uuid4().hex, item_id=e.item_id, pending=e.pending)
             for e in playlist.entries
         ]
-        record = await run_in_threadpool(
-            store.create_playlist,
-            playlists_dir,
-            name=name,
-            description=playlist.description,
-            entries=entries,
-        )
+        try:
+            record = await run_in_threadpool(
+                store.create_playlist,
+                playlists_dir,
+                name=name,
+                description=playlist.description,
+                entries=entries,
+            )
+        except Exception:
+            # One playlist failing (e.g. a store write error) must not strand the
+            # ones already created nor 500 the request — report it and continue,
+            # so a retry doesn't re-mint "Name (2)" duplicates of the successes.
+            logger.warning("Playlist import failed for %r", name, exc_info=True)
+            failed.append(PlaylistImportFailure(name=name, error="Couldn't save this playlist."))
+            continue
         await _export_playlist(record, handle)
         created.append(_to_playlist(record))
-    return PlaylistImportResponse(created=created)
+    return PlaylistImportResponse(created=created, failed=failed)

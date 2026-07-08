@@ -41,6 +41,9 @@ class BrowseRow(NamedTuple):
     album_id: int
     artist_key: str
     album_key: str
+    # Raw (non-casefolded) album artist, for ``list_albums``' exact,
+    # case-sensitive ``?artist=`` filter. ``artist_key`` is its casefold.
+    albumartist: str
     added: float
     genre: str
     decade: str
@@ -106,10 +109,12 @@ def _coerce_added(value: object) -> float:
 
 def _build_row(album: BeetsAlbum) -> BrowseRow:
     items = list(album.items())
+    albumartist = _coerce_str(album.albumartist)
     return BrowseRow(
         album_id=int(album.id),
-        artist_key=_coerce_str(album.albumartist).casefold(),
+        artist_key=albumartist.casefold(),
         album_key=_coerce_str(album.album).casefold(),
+        albumartist=albumartist,
         added=_coerce_added(album.get("added")),
         genre=_album_genre(album, items) or "Unknown",
         # "80s" means the music's era: original release year, falling back to

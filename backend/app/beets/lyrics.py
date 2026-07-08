@@ -347,32 +347,16 @@ async def start_album_lyrics_op(
     from fastapi import HTTPException
     from fastapi import status as http_status
 
-    from app.artist_art_jobs.registry import artist_art_backfill_active
-    from app.disk_sync_jobs.registry import disk_sync_active
-    from app.import_jobs.registry import get_registry
-    from app.lyrics_jobs.registry import get_lyrics_backfill, lyrics_backfill_active
+    from app.library_busy import raise_if_library_busy
+    from app.lyrics_jobs.registry import get_lyrics_backfill
     from app.lyrics_jobs.runner import start_backfill
-    from app.reorganize_jobs.registry import reorganize_backfill_active
 
     app = request_obj.app
     reg = get_lyrics_backfill()
-    if (
-        get_registry().has_active_job()
-        or lyrics_backfill_active()
-        or artist_art_backfill_active()
-        or reorganize_backfill_active()
-        or disk_sync_active()
-    ):
-        raise HTTPException(
-            status_code=http_status.HTTP_409_CONFLICT,
-            detail="A library operation is in progress — lyrics fetch available when it finishes",
-        )
-    lock = getattr(app.state, "beets_swap_lock", None)
-    if lock is not None and lock.locked():
-        raise HTTPException(
-            status_code=http_status.HTTP_409_CONFLICT,
-            detail="A library operation is in progress — lyrics fetch available when it finishes",
-        )
+    raise_if_library_busy(
+        app,
+        message="A library operation is in progress — lyrics fetch available when it finishes",
+    )
     handle = app.state.beets_library
     try:
         label = _album_scope_label(handle.lib, album_id)

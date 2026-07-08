@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
+import { unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 export type Playlist = components["schemas"]["Playlist"];
@@ -8,9 +9,7 @@ export type PlaylistDetail = components["schemas"]["PlaylistDetail"];
 export type PlaylistTrack = components["schemas"]["PlaylistTrack"];
 
 async function fetchPlaylists(): Promise<Playlist[]> {
-  const { data, error, response } = await client.GET("/api/playlists");
-  if (error || !response.ok || !data) throw new Error("Failed to load playlists");
-  return data;
+  return unwrap(await client.GET("/api/playlists"), "Failed to load playlists");
 }
 
 /** All playlists (summaries). */
@@ -23,11 +22,12 @@ export function usePlaylists() {
 }
 
 async function fetchPlaylist(id: string): Promise<PlaylistDetail> {
-  const { data, error, response } = await client.GET("/api/playlists/{playlist_id}", {
-    params: { path: { playlist_id: id } },
-  });
-  if (error || !response.ok || !data) throw new Error("Failed to load playlist");
-  return data;
+  return unwrap(
+    await client.GET("/api/playlists/{playlist_id}", {
+      params: { path: { playlist_id: id } },
+    }),
+    "Failed to load playlist",
+  );
 }
 
 /** A single playlist with its resolved tracklist. */
@@ -42,13 +42,13 @@ export function usePlaylist(id: string) {
 export function useCreatePlaylist() {
   const queryClient = useQueryClient();
   return useMutation<Playlist, Error, { name: string; description?: string }>({
-    mutationFn: async (body) => {
-      const { data, error, response } = await client.POST("/api/playlists", {
-        body: { name: body.name, description: body.description ?? "" },
-      });
-      if (error || !response.ok || !data) throw new Error("Create failed");
-      return data;
-    },
+    mutationFn: async (body) =>
+      unwrap(
+        await client.POST("/api/playlists", {
+          body: { name: body.name, description: body.description ?? "" },
+        }),
+        "Create failed",
+      ),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["playlists"] });
     },
@@ -58,14 +58,14 @@ export function useCreatePlaylist() {
 export function useRenamePlaylist(id: string) {
   const queryClient = useQueryClient();
   return useMutation<Playlist, Error, { name: string }>({
-    mutationFn: async (body) => {
-      const { data, error, response } = await client.PATCH("/api/playlists/{playlist_id}", {
-        params: { path: { playlist_id: id } },
-        body,
-      });
-      if (error || !response.ok || !data) throw new Error("Rename failed");
-      return data;
-    },
+    mutationFn: async (body) =>
+      unwrap(
+        await client.PATCH("/api/playlists/{playlist_id}", {
+          params: { path: { playlist_id: id } },
+          body,
+        }),
+        "Rename failed",
+      ),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["playlist", id] });
       void queryClient.invalidateQueries({ queryKey: ["playlists"] });
@@ -76,14 +76,14 @@ export function useRenamePlaylist(id: string) {
 export function useSetTargets(id: string) {
   const queryClient = useQueryClient();
   return useMutation<Playlist, Error, string[]>({
-    mutationFn: async (targetPlexUsers) => {
-      const { data, error, response } = await client.PATCH("/api/playlists/{playlist_id}", {
-        params: { path: { playlist_id: id } },
-        body: { target_plex_users: targetPlexUsers },
-      });
-      if (error || !response.ok || !data) throw new Error("Failed to save targets");
-      return data;
-    },
+    mutationFn: async (targetPlexUsers) =>
+      unwrap(
+        await client.PATCH("/api/playlists/{playlist_id}", {
+          params: { path: { playlist_id: id } },
+          body: { target_plex_users: targetPlexUsers },
+        }),
+        "Failed to save targets",
+      ),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["playlist", id] });
       void queryClient.invalidateQueries({ queryKey: ["playlists"] });
@@ -109,14 +109,14 @@ export function useDeletePlaylist() {
 export function useAddTracks() {
   const queryClient = useQueryClient();
   return useMutation<PlaylistDetail, Error, { playlistId: string; trackIds: number[] }>({
-    mutationFn: async ({ playlistId, trackIds }) => {
-      const { data, error, response } = await client.POST("/api/playlists/{playlist_id}/tracks", {
-        params: { path: { playlist_id: playlistId } },
-        body: { track_ids: trackIds },
-      });
-      if (error || !response.ok || !data) throw new Error("Add failed");
-      return data;
-    },
+    mutationFn: async ({ playlistId, trackIds }) =>
+      unwrap(
+        await client.POST("/api/playlists/{playlist_id}/tracks", {
+          params: { path: { playlist_id: playlistId } },
+          body: { track_ids: trackIds },
+        }),
+        "Add failed",
+      ),
     onSettled: (_data, _err, vars) => {
       void queryClient.invalidateQueries({ queryKey: ["playlist", vars.playlistId] });
       void queryClient.invalidateQueries({ queryKey: ["playlists"] });
@@ -128,14 +128,13 @@ export function useAddTracks() {
 export function useRemoveEntry(id: string) {
   const queryClient = useQueryClient();
   return useMutation<PlaylistDetail, Error, string>({
-    mutationFn: async (entryUid) => {
-      const { data, error, response } = await client.DELETE(
-        "/api/playlists/{playlist_id}/entries/{entry_uid}",
-        { params: { path: { playlist_id: id, entry_uid: entryUid } } },
-      );
-      if (error || !response.ok || !data) throw new Error("Remove failed");
-      return data;
-    },
+    mutationFn: async (entryUid) =>
+      unwrap(
+        await client.DELETE("/api/playlists/{playlist_id}/entries/{entry_uid}", {
+          params: { path: { playlist_id: id, entry_uid: entryUid } },
+        }),
+        "Remove failed",
+      ),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["playlist", id] });
       void queryClient.invalidateQueries({ queryKey: ["playlists"] });
@@ -147,17 +146,14 @@ export function useRemoveEntry(id: string) {
 export function useResolveEntry(id: string) {
   const queryClient = useQueryClient();
   return useMutation<PlaylistDetail, Error, { entryUid: string; itemId: number }>({
-    mutationFn: async ({ entryUid, itemId }) => {
-      const { data, error, response } = await client.PATCH(
-        "/api/playlists/{playlist_id}/entries/{entry_uid}",
-        {
+    mutationFn: async ({ entryUid, itemId }) =>
+      unwrap(
+        await client.PATCH("/api/playlists/{playlist_id}/entries/{entry_uid}", {
           params: { path: { playlist_id: id, entry_uid: entryUid } },
           body: { item_id: itemId },
-        },
-      );
-      if (error || !response.ok || !data) throw new Error("Failed to match the track");
-      return data;
-    },
+        }),
+        "Failed to match the track",
+      ),
     onSuccess: (detail) => {
       queryClient.setQueryData(["playlist", id], detail);
       void queryClient.invalidateQueries({ queryKey: ["playlists"] });
@@ -190,14 +186,14 @@ export function useSyncPlaylist(id: string) {
 export function useReorderTracks(id: string) {
   const queryClient = useQueryClient();
   return useMutation<PlaylistDetail, Error, string[]>({
-    mutationFn: async (entryUids) => {
-      const { data, error, response } = await client.PUT("/api/playlists/{playlist_id}/tracks", {
-        params: { path: { playlist_id: id } },
-        body: { entry_uids: entryUids },
-      });
-      if (error || !response.ok || !data) throw new Error("Reorder failed");
-      return data;
-    },
+    mutationFn: async (entryUids) =>
+      unwrap(
+        await client.PUT("/api/playlists/{playlist_id}/tracks", {
+          params: { path: { playlist_id: id } },
+          body: { entry_uids: entryUids },
+        }),
+        "Reorder failed",
+      ),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["playlist", id] });
     },

@@ -1,14 +1,19 @@
 """Single-slot, in-memory registry for the disk-sync job (clone of
 reorganize_jobs). At most one sync runs at a time; a second ``start`` raises
 RuntimeError (the API maps it to 409). Thread-safe; in-memory only (a restart
-loses the job; the sync is idempotent — just re-run)."""
+loses the job; the sync is idempotent — just re-run).
+
+The common lifecycle lives in ``app.jobs.SingleSlotRegistry``; this module keeps
+the disk-sync job fields, the ``record`` counters, the emptied-album tally, and
+the wire ``state()``. Note ``record`` sets ``current`` inline (rather than via
+``set_current``), so the just-processed folder shows on the live status."""
 
 from __future__ import annotations
 
-import threading
 import uuid
 from dataclasses import dataclass, field
 
+from app.jobs import JobState, SingleSlotRegistry
 from app.models.disk_sync import (
     DiskSyncOutcome,
     DiskSyncPhase,
@@ -21,32 +26,18 @@ FAILURE_ROW_CAP = 10
 
 
 @dataclass
-class _DiskSyncJob:
-    id: str
+class _DiskSyncJob(JobState):
     phase: DiskSyncPhase = "running"
-    total: int = 0
-    processed: int = 0
     removed: int = 0
     updated: int = 0
     unchanged: int = 0
     read_errors: int = 0
     emptied_albums: int = 0
-    current: str | None = None
-    error: str | None = None
     failures: list[DiskSyncReadError] = field(default_factory=list)
-    stop_requested: bool = False
 
 
-class DiskSyncRegistry:
+class DiskSyncRegistry(SingleSlotRegistry[_DiskSyncJob]):
     """Holds the active (or last) disk-sync job."""
-
-    def __init__(self) -> None:
-        self._job: _DiskSyncJob | None = None
-        self._lock = threading.Lock()
-
-    def is_running(self) -> bool:
-        with self._lock:
-            return self._job is not None and self._job.phase == "running"
 
     def start(self) -> str:
         with self._lock:
@@ -55,11 +46,6 @@ class DiskSyncRegistry:
             job = _DiskSyncJob(id=uuid.uuid4().hex)
             self._job = job
             return job.id
-
-    def set_total(self, total: int) -> None:
-        with self._lock:
-            if self._job is not None:
-                self._job.total = total
 
     def record(self, outcome: DiskSyncOutcome) -> None:
         with self._lock:
@@ -85,28 +71,6 @@ class DiskSyncRegistry:
         with self._lock:
             if self._job is not None:
                 self._job.emptied_albums += n
-
-    def should_stop(self) -> bool:
-        with self._lock:
-            return self._job is not None and self._job.stop_requested
-
-    def request_stop(self) -> None:
-        with self._lock:
-            if self._job is not None and self._job.phase == "running":
-                self._job.stop_requested = True
-
-    def finish(self, phase: DiskSyncPhase) -> None:
-        with self._lock:
-            if self._job is not None and self._job.phase == "running":
-                self._job.phase = phase
-                self._job.current = None
-
-    def fail(self, message: str) -> None:
-        with self._lock:
-            if self._job is not None:
-                self._job.phase = "failed"
-                self._job.error = message
-                self._job.current = None
 
     def state(self) -> DiskSyncStatus:
         with self._lock:

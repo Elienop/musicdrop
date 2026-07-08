@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
+import { unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 /** Global search results across artists/albums/tracks (generated contract). */
@@ -21,13 +22,14 @@ export function parseSearchType(value: string | null): SearchType | null {
 }
 
 async function fetchSearch(q: string): Promise<SearchResults> {
-  const { data, error } = await client.GET("/api/search", {
-    params: { query: { q } },
-  });
+  const data = unwrap(
+    await client.GET("/api/search", { params: { query: { q } } }),
+    "Search failed",
+  );
   // `"type" in data` discriminates the typed (paged) shape, which a request
   // WITHOUT the `type` param never returns — this narrows the generated
   // union for tsc and is unreachable at runtime.
-  if (error || !data || "type" in data) {
+  if ("type" in data) {
     throw new Error("Search failed");
   }
   return data;
@@ -39,12 +41,13 @@ async function fetchTypedSearch(query: {
   limit: number;
   offset: number;
 }): Promise<TypedSearchPage> {
-  const { data, error } = await client.GET("/api/search", {
-    params: { query },
-  });
+  const data = unwrap(
+    await client.GET("/api/search", { params: { query } }),
+    "Search failed",
+  );
   // The mirror narrowing: a request WITH `type` always returns the typed
   // (paged) shape, so a missing `type` key is unreachable at runtime.
-  if (error || !data || !("type" in data)) {
+  if (!("type" in data)) {
     throw new Error("Search failed");
   }
   return data;

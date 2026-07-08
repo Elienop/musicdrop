@@ -3250,6 +3250,16 @@ export interface components {
             /** Tracks */
             tracks: components["schemas"]["PlaylistTrack"][];
         };
+        /**
+         * PlaylistImportFailure
+         * @description One playlist that couldn't be created during a multi-playlist import.
+         */
+        PlaylistImportFailure: {
+            /** Name */
+            name: string;
+            /** Error */
+            error: string;
+        };
         /** PlaylistImportFile */
         PlaylistImportFile: {
             /** Name */
@@ -3306,6 +3316,11 @@ export interface components {
         PlaylistImportResponse: {
             /** Created */
             created: components["schemas"]["Playlist"][];
+            /**
+             * Failed
+             * @default []
+             */
+            failed: components["schemas"]["PlaylistImportFailure"][];
         };
         /**
          * PlaylistReorderRequest

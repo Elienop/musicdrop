@@ -4,14 +4,18 @@ At most one reorganize runs at a time; a second ``start`` raises RuntimeError
 (the API maps it to 409). Thread-safe — the worker thread mutates counters/phase
 while API threads read ``state()``. In-memory only (a restart loses the job; the
 sweep is idempotent — skip-already-organized — so just re-run).
+
+The common lifecycle (start/stop/finish/fail/counters) lives in
+``app.jobs.SingleSlotRegistry``; this module keeps only the reorganize-specific
+job fields, ``record`` counters, the orphan tally, and the wire ``state()``.
 """
 
 from __future__ import annotations
 
-import threading
 import uuid
 from dataclasses import dataclass, field
 
+from app.jobs import JobState, SingleSlotRegistry
 from app.models.reorganize import (
     ReorganizeBackfillStatus,
     ReorganizeOutcome,
@@ -25,35 +29,21 @@ FAILURE_ROW_CAP = 10
 
 
 @dataclass
-class _ReorganizeJob:
-    id: str
-    scope: ReorganizeScope = "library"
+class _ReorganizeJob(JobState):
     phase: ReorganizePhase = "running"
-    total: int = 0
-    processed: int = 0
+    scope: ReorganizeScope = "library"
     moved: int = 0
     skipped: int = 0
     failed: int = 0
-    current: str | None = None
-    error: str | None = None
     artist: str | None = None
     album_id: int | None = None
     scope_label: str = "library"
-    stop_requested: bool = False
     orphans_trashed: int = 0
     failures: list[ReorganizeUnitFailure] = field(default_factory=list)
 
 
-class ReorganizeRegistry:
+class ReorganizeRegistry(SingleSlotRegistry[_ReorganizeJob]):
     """Holds the active (or last) reorganize job."""
-
-    def __init__(self) -> None:
-        self._job: _ReorganizeJob | None = None
-        self._lock = threading.Lock()
-
-    def is_running(self) -> bool:
-        with self._lock:
-            return self._job is not None and self._job.phase == "running"
 
     def start(
         self,
@@ -76,11 +66,6 @@ class ReorganizeRegistry:
             self._job = job
             return job.id
 
-    def set_total(self, total: int) -> None:
-        with self._lock:
-            if self._job is not None:
-                self._job.total = total
-
     def record(self, outcome: ReorganizeOutcome) -> None:
         with self._lock:
             job = self._job
@@ -102,33 +87,6 @@ class ReorganizeRegistry:
         with self._lock:
             if self._job is not None:
                 self._job.orphans_trashed += n
-
-    def set_current(self, label: str | None) -> None:
-        with self._lock:
-            if self._job is not None:
-                self._job.current = label
-
-    def should_stop(self) -> bool:
-        with self._lock:
-            return self._job is not None and self._job.stop_requested
-
-    def request_stop(self) -> None:
-        with self._lock:
-            if self._job is not None and self._job.phase == "running":
-                self._job.stop_requested = True
-
-    def finish(self, phase: ReorganizePhase) -> None:
-        with self._lock:
-            if self._job is not None and self._job.phase == "running":
-                self._job.phase = phase
-                self._job.current = None
-
-    def fail(self, message: str) -> None:
-        with self._lock:
-            if self._job is not None:
-                self._job.phase = "failed"
-                self._job.error = message
-                self._job.current = None
 
     def state(self) -> ReorganizeBackfillStatus:
         with self._lock:

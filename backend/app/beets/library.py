@@ -359,20 +359,27 @@ def list_albums(
     so pagination is deterministic regardless of beets' default sort. When
     ``artist`` is set, albums are filtered to that exact ``albumartist`` BEFORE
     paginating, so ``total`` reflects the filtered count.
+
+    Sorting/filtering/paging run over the shared in-memory ``BrowseRow`` cache
+    (ONE full scan, invalidated on every ``emit_library_changed``); only the
+    page's albums (<= ``limit``) are loaded from beets, not the whole library.
     """
-    all_albums = sorted(
-        lib.albums(),
-        key=lambda a: (
-            _coerce_str(a.albumartist).casefold(),
-            _coerce_str(a.album).casefold(),
-            int(a.id),
-        ),
-    )
+    # Imported lazily: browse.py imports helpers from this module at import
+    # time, so a top-level import back would form a cycle.
+    from app.beets.browse import _rows
+
+    rows = sorted(_rows(lib), key=lambda r: (r.artist_key, r.album_key, r.album_id))
     if artist is not None:
-        all_albums = [a for a in all_albums if _coerce_str(a.albumartist) == artist]
-    total = len(all_albums)
-    page = all_albums[offset : offset + limit]
-    return [_to_album(a) for a in page], total
+        rows = [r for r in rows if r.albumartist == artist]
+    total = len(rows)
+    albums: list[Album] = []
+    for row in rows[offset : offset + limit]:
+        album = lib.get_album(row.album_id)
+        # Vanished between cache build and load — skip defensively; the cache
+        # invalidates on every mutation, so this is belt-and-suspenders.
+        if album is not None:
+            albums.append(_to_album(album))
+    return albums, total
 
 
 def _abs_path(lib: Library, stored: bytes) -> str:

@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
+import { unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 /** The release-completeness report for an album (generated contract). */
@@ -9,13 +10,12 @@ export type AlbumMissingReport = components["schemas"]["AlbumMissingReport"];
 export type MissingReleaseTrack = components["schemas"]["MissingReleaseTrack"];
 
 async function fetchAlbumMissing(albumId: number): Promise<AlbumMissingReport> {
-  const { data, error } = await client.GET("/api/albums/{album_id}/missing", {
-    params: { path: { album_id: albumId } },
-  });
-  if (error || !data) {
-    throw new Error("Failed to load missing tracks");
-  }
-  return data;
+  return unwrap(
+    await client.GET("/api/albums/{album_id}/missing", {
+      params: { path: { album_id: albumId } },
+    }),
+    "Failed to load missing tracks",
+  );
 }
 
 /**

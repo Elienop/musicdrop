@@ -369,7 +369,6 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     if (target < 0 || target >= tracks.length) {
       return;
     }
-    const prev = tracks;
     const moved = tracks[index];
     const message = `Moved ${displayTitle(moved)} to position ${target + 1}`;
     setStatusMsg(message);
@@ -377,11 +376,17 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     const altKey = dir === -1 ? "down" : "up";
     requestFocus(`${moved.uid}:${dirKey}`, `${moved.uid}:${altKey}`);
 
-    // Apply the swap by uid against the LATEST state so a background reseed
-    // arriving mid-move can't be clobbered by a stale closure array.
-    setTracks((cur) => swapByUid(cur, moved.uid, dir));
+    // Derive the optimistic order AND the PUT body from one snapshot (this
+    // render's tracklist) so they can't diverge. A move is a single deliberate
+    // action, so the click-time order is the intent; a background reseed that
+    // lands between render and click self-heals on the next refetch. (The
+    // rapid-edit resurrection guard that must stay uid-keyed lives on the
+    // remove path, not here.)
+    const prev = tracks;
+    const next = swapByUid(tracks, moved.uid, dir);
+    setTracks(next);
     reorder.mutate(
-      swapByUid(tracks, moved.uid, dir).map((t) => t.uid),
+      next.map((t) => t.uid),
       {
         onSuccess: () => toast.success(message),
         onError: () => setTracks(prev),
@@ -414,24 +419,31 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
    * lands later and is a no-op for focus). */
   function handleRemove(index: number) {
     const removed = tracks[index];
-    // Focus survivor from the render's tracklist (accurate for the single-action
-    // case the focus tests pin); the state itself is dropped by uid below.
-    const afterRemoval = tracks.filter((t) => t.uid !== removed.uid);
     removeEntry.mutate(removed.uid, {
       onSuccess: () => {
         const message = `Removed ${displayTitle(removed)}`;
         setStatusMsg(message);
         toast.success(message);
-        // Drop THIS uid from the LATEST state: two rapid removes each remove
-        // their own row, so neither resurrects the other's (a stale array
-        // captured from the render would re-add the first-removed row).
-        setTracks((cur) => cur.filter((t) => t.uid !== removed.uid));
-        if (afterRemoval.length === 0) {
-          requestFocus("empty");
-        } else {
-          const survivor = afterRemoval[Math.min(index, afterRemoval.length - 1)];
-          requestFocus(`${survivor.uid}:remove`);
-        }
+        // Drop THIS uid from the LATEST state AND choose the focus target from
+        // that same post-removal list. Two rapid removes each remove their own
+        // row, so neither resurrects the other's; and because the empty/survivor
+        // decision reads the post-removal length, two removes-to-empty let the
+        // last one see length 0 and land on the empty state (a decision off the
+        // stale render list would leave neither seeing 0). requestFocus only
+        // stores the key, so it's safe to call from the updater.
+        setTracks((cur) => {
+          const at = cur.findIndex((t) => t.uid === removed.uid);
+          if (at < 0) {
+            return cur; // already gone (e.g. a double-fire) — leave focus be
+          }
+          const nextList = cur.filter((t) => t.uid !== removed.uid);
+          if (nextList.length === 0) {
+            requestFocus("empty");
+          } else {
+            requestFocus(`${nextList[Math.min(at, nextList.length - 1)].uid}:remove`);
+          }
+          return nextList;
+        });
       },
     });
   }

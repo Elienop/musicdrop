@@ -119,5 +119,13 @@ class PlaylistImportRequest(BaseModel):
         return self
 
 
+class PlaylistImportFailure(BaseModel):
+    """One playlist that couldn't be created during a multi-playlist import."""
+
+    name: str
+    error: str
+
+
 class PlaylistImportResponse(BaseModel):
     created: list[Playlist]
+    failed: list[PlaylistImportFailure] = []

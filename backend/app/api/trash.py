@@ -15,7 +15,6 @@ from typing import Annotated, Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 
-from app.artist_art_jobs.registry import artist_art_backfill_active
 from app.beets.config_editor import _settings, _swap_lock
 from app.beets.library import LibraryHandle
 from app.beets.trash import resolve_trash_dir
@@ -26,25 +25,16 @@ from app.beets.trash_manage import (
     resolve_trash_child,
     restore_album,
 )
-from app.disk_sync_jobs.registry import disk_sync_active
 from app.events.emit import emit_library_changed
-from app.import_jobs.registry import get_registry
-from app.lyrics_jobs.registry import lyrics_backfill_active
+from app.library_busy import library_job_active
 from app.models.trash import EmptyResult, RestoreRequest, RestoreResult, TrashListing
-from app.reorganize_jobs.registry import reorganize_backfill_active
 
 router = APIRouter(tags=["trash"])
 
 
 def _gate() -> None:
     """Refuse (409) while any library-mutating job runs (mirrors delete._gate)."""
-    if (
-        get_registry().has_active_job()
-        or lyrics_backfill_active()
-        or artist_art_backfill_active()
-        or reorganize_backfill_active()
-        or disk_sync_active()
-    ):
+    if library_job_active():
         raise HTTPException(
             status_code=409,
             detail="A library operation is in progress — try again when it finishes",

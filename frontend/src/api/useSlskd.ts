@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
+import { unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 export type SlskdSettings = components["schemas"]["SlskdSettings"];
@@ -10,9 +11,7 @@ export type ReviewInboxResponse =
   components["schemas"]["ReviewInboxResponse"];
 
 async function fetchSlskdSettings(): Promise<SlskdSettings> {
-  const { data, error, response } = await client.GET("/api/slskd/settings");
-  if (error || !response.ok || !data) throw new Error("Failed to load slskd settings");
-  return data;
+  return unwrap(await client.GET("/api/slskd/settings"), "Failed to load slskd settings");
 }
 
 export function useSlskdSettings() {
@@ -22,22 +21,16 @@ export function useSlskdSettings() {
 export function useSaveSlskdSettings() {
   const qc = useQueryClient();
   return useMutation<SlskdSettings, Error, SlskdSettingsUpdate>({
-    mutationFn: async (body) => {
-      const { data, error, response } = await client.PUT("/api/slskd/settings", { body });
-      if (error || !response.ok || !data) throw new Error("Save failed");
-      return data;
-    },
+    mutationFn: async (body) =>
+      unwrap(await client.PUT("/api/slskd/settings", { body }), "Save failed"),
     onSettled: () => void qc.invalidateQueries({ queryKey: ["slskd", "settings"] }),
   });
 }
 
 export function useTestSlskd() {
   return useMutation<SlskdConnection, Error, void>({
-    mutationFn: async () => {
-      const { data, error, response } = await client.POST("/api/slskd/test");
-      if (error || !response.ok || !data) throw new Error("Test failed");
-      return data;
-    },
+    mutationFn: async () =>
+      unwrap(await client.POST("/api/slskd/test"), "Test failed"),
   });
 }
 
@@ -50,14 +43,11 @@ export function useTestSlskd() {
 export function useReviewInbox() {
   const qc = useQueryClient();
   return useMutation<ReviewInboxResponse, Error, void>({
-    mutationFn: async () => {
-      const { data, error, response } = await client.POST(
-        "/api/acquisition/review-inbox",
-      );
-      if (error || !response.ok || !data)
-        throw new Error("Failed to start inbox review");
-      return data;
-    },
+    mutationFn: async () =>
+      unwrap(
+        await client.POST("/api/acquisition/review-inbox"),
+        "Failed to start inbox review",
+      ),
     // Refresh the backlog + the import gate whatever the outcome (a start changed
     // the inbox; an empty result / 409 should re-sync the list and the gate).
     onSettled: () => {

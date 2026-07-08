@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
+import { unwrap } from "@/api/lib";
 import { invalidateLibraryContent } from "@/api/useEventStream";
 import type { components } from "@/api/schema";
 
@@ -33,14 +34,10 @@ function duplicatesOpError(message: string, status: number, body: unknown): Dupl
 }
 
 async function fetchDuplicates(mode: DuplicateMode): Promise<DuplicatesReport> {
-  const { data, error, response } = await client.GET("/api/duplicates", {
-    params: { query: { mode } },
-  });
-  // Guard on !response.ok: a bodyless 5xx leaves openapi-fetch's `error` undefined.
-  if (error || !response.ok || !data) {
-    throw new Error("Failed to load duplicates");
-  }
-  return data;
+  return unwrap(
+    await client.GET("/api/duplicates", { params: { query: { mode } } }),
+    "Failed to load duplicates",
+  );
 }
 
 /** Fetch the duplicate-album report for a mode. Keyed by mode so strict/fuzzy

@@ -15,15 +15,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.albums import get_library
-from app.artist_art_jobs.registry import artist_art_backfill_active
 from app.beets.config_editor import _settings
 from app.beets.library import LibraryHandle, album_exists
 from app.beets.reorganize import album_scope_label, plan_reorganize
 from app.beets.trash import resolve_trash_dir
-from app.disk_sync_jobs.registry import disk_sync_active
 from app.events.emit import emit_library_changed
-from app.import_jobs.registry import get_registry
-from app.lyrics_jobs.registry import lyrics_backfill_active
+from app.library_busy import raise_if_library_busy
 from app.models.reorganize import ReorganizeBackfillStatus, ReorganizePlan, ReorganizeScope
 from app.reorganize_jobs.registry import (
     ReorganizeRegistry,
@@ -37,16 +34,9 @@ _BUSY = "A library operation is in progress — reorganize available when it fin
 
 
 def _gate_busy(app: object) -> None:
-    if (
-        get_registry().has_active_job()
-        or lyrics_backfill_active()
-        or artist_art_backfill_active()
-        or disk_sync_active()
-    ):
-        raise HTTPException(status.HTTP_409_CONFLICT, _BUSY)
-    lock = getattr(app.state, "beets_swap_lock", None)  # type: ignore[attr-defined]  # app is duck-typed (object) so tests can pass a stub
-    if lock is not None and lock.locked():
-        raise HTTPException(status.HTTP_409_CONFLICT, _BUSY)
+    # Excludes reorganize's own slot — this is reorganize's start-gate; the
+    # single-slot check stays at ``reg.start`` (RuntimeError -> 409).
+    raise_if_library_busy(app, exclude=("reorganize",), message=_BUSY)
 
 
 def _trash_dir(app: object) -> Path:

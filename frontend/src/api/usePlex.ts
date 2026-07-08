@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
+import { unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 export type PlexSettings = components["schemas"]["PlexSettings"];
@@ -29,9 +30,7 @@ export function usePlexUsers() {
 }
 
 async function fetchPlexSettings(): Promise<PlexSettings> {
-  const { data, error, response } = await client.GET("/api/plex/settings");
-  if (error || !response.ok || !data) throw new Error("Failed to load Plex settings");
-  return data;
+  return unwrap(await client.GET("/api/plex/settings"), "Failed to load Plex settings");
 }
 
 export function usePlexSettings() {
@@ -46,11 +45,8 @@ export function usePlexSettings() {
 export function usePlexSections(enabled = true) {
   return useQuery({
     queryKey: ["plex", "sections"],
-    queryFn: async (): Promise<PlexSectionList> => {
-      const { data, error, response } = await client.GET("/api/plex/sections");
-      if (error || !response.ok || !data) throw new Error("Failed to load Plex sections");
-      return data;
-    },
+    queryFn: async (): Promise<PlexSectionList> =>
+      unwrap(await client.GET("/api/plex/sections"), "Failed to load Plex sections"),
     enabled,
     retry: false,
   });
@@ -59,21 +55,15 @@ export function usePlexSections(enabled = true) {
 export function useSavePlexSettings() {
   const qc = useQueryClient();
   return useMutation<PlexSettings, Error, components["schemas"]["PlexSettingsUpdate"]>({
-    mutationFn: async (body) => {
-      const { data, error, response } = await client.PUT("/api/plex/settings", { body });
-      if (error || !response.ok || !data) throw new Error("Save failed");
-      return data;
-    },
+    mutationFn: async (body) =>
+      unwrap(await client.PUT("/api/plex/settings", { body }), "Save failed"),
     onSettled: () => void qc.invalidateQueries({ queryKey: ["plex", "settings"] }),
   });
 }
 
 export function useTestPlex() {
   return useMutation<PlexConnection, Error, void>({
-    mutationFn: async () => {
-      const { data, error, response } = await client.POST("/api/plex/test");
-      if (error || !response.ok || !data) throw new Error("Test failed");
-      return data;
-    },
+    mutationFn: async () =>
+      unwrap(await client.POST("/api/plex/test"), "Test failed"),
   });
 }

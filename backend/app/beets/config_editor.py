@@ -40,8 +40,6 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.error import YAMLError
 
-from app.artist_art_jobs.registry import artist_art_backfill_active
-
 # Re-exported from config_snapshot so save() can import both the masking
 # sentinel and the path discoverer from one module. ``build_config_snapshot``
 # is used by save() to return the post-write snapshot.
@@ -57,9 +55,7 @@ from app.beets.library import LibraryHandle
 from app.beets.setup import reset_beets_globals, setup_beets
 from app.config import Settings
 from app.config import settings as _module_settings
-from app.disk_sync_jobs.registry import disk_sync_active
-from app.import_jobs.registry import get_registry
-from app.lyrics_jobs.registry import lyrics_backfill_active
+from app.library_busy import library_job_active
 from app.models.config_api import BeetsConfigSnapshot
 from app.models.config_editor import (
     KnownKeysSchema,
@@ -71,7 +67,6 @@ from app.models.config_editor import (
     ValidationErrorItem,
     loc_to_dot_sep,
 )
-from app.reorganize_jobs.registry import reorganize_backfill_active
 
 __all__ = [
     "REDACTED_TOMBSTONE",
@@ -727,8 +722,9 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
     1. **Import gate** — refuse with 409 if an import is currently active.
        Reset_beets_globals tears down the SQLite connection the import worker
        holds; doing that mid-import would corrupt the in-flight ImportSession.
-       ``get_registry()`` (not a module-import) reads the LIVE registry
-       binding — ``conftest.reset_import_registry`` swaps it between tests.
+       ``library_job_active`` calls ``get_registry()`` (not a module-import)
+       so it reads the LIVE registry binding — ``conftest.reset_import_registry``
+       swaps it between tests.
     2. **Per-app lock** — serialise concurrent Apply requests. Two threads
        racing through ``reset_beets_globals`` + ``setup_beets`` would leave
        ``app.state.beets_library`` non-deterministic and could close the
@@ -755,13 +751,7 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
     # Pulling the gate inside the asyncio.Lock would block Apply behind
     # any concurrent Apply request even when no import is active, which is
     # worse UX for the single-user case this product targets.
-    if (
-        get_registry().has_active_job()
-        or lyrics_backfill_active()
-        or artist_art_backfill_active()
-        or reorganize_backfill_active()
-        or disk_sync_active()
-    ):
+    if library_job_active():
         raise HTTPException(
             status_code=409,
             detail="Import in progress — Apply available when it finishes / lyrics backfill",

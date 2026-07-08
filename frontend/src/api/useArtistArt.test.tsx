@@ -21,7 +21,11 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("useArtistArtSettings", () => {
   it("returns the enabled flag from the typed client", async () => {
-    vi.spyOn(client, "GET").mockResolvedValue({ data: { enabled: true }, error: undefined } as never);
+    vi.spyOn(client, "GET").mockResolvedValue({
+      data: { enabled: true },
+      error: undefined,
+      response: { ok: true },
+    } as never);
     const { result } = renderHook(() => useArtistArtSettings(), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.data).toEqual({ enabled: true }));
   });
@@ -29,9 +33,11 @@ describe("useArtistArtSettings", () => {
 
 describe("useSetArtistArtSettings", () => {
   it("PUTs the new value", async () => {
-    const put = vi
-      .spyOn(client, "PUT")
-      .mockResolvedValue({ data: { enabled: true }, error: undefined } as never);
+    const put = vi.spyOn(client, "PUT").mockResolvedValue({
+      data: { enabled: true },
+      error: undefined,
+      response: { ok: true },
+    } as never);
     const { result } = renderHook(() => useSetArtistArtSettings(), { wrapper: wrapper() });
     await result.current.mutateAsync(true);
     expect(put).toHaveBeenCalledWith("/api/artists/art/settings", { body: { enabled: true } });

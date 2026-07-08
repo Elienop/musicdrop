@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
+import { unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 /** Page of albums as returned by `GET /api/albums` (generated contract). */
@@ -20,13 +21,12 @@ async function fetchAlbums({
   offset,
   artist,
 }: UseAlbumsParams): Promise<AlbumPage> {
-  const { data, error } = await client.GET("/api/albums", {
-    params: { query: { limit, offset, artist } },
-  });
-  if (error || !data) {
-    throw new Error("Failed to load albums");
-  }
-  return data;
+  return unwrap(
+    await client.GET("/api/albums", {
+      params: { query: { limit, offset, artist } },
+    }),
+    "Failed to load albums",
+  );
 }
 
 /** Fetch a page of albums. `keepPreviousData`-style placeholder keeps the

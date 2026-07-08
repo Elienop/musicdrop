@@ -25,6 +25,13 @@ const toastSuccess = vi.mocked(toast.success);
 // (hiding the resurrection this fix targets).
 const removeOverride = vi.hoisted(() => ({ current: null as null | (() => unknown) }));
 
+// Per-test override for the reorder mutation. Null (the default) passes through
+// to the real msw-backed hook. The same-snapshot test swaps in a fake whose
+// mutate() records each PUT body WITHOUT settling — no refetch reseeds the
+// optimistic tracklist, so the rendered order stays exactly what the optimistic
+// update produced when we compare it against the last recorded body.
+const reorderOverride = vi.hoisted(() => ({ current: null as null | (() => unknown) }));
+
 vi.mock("@/api/usePlaylists", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/usePlaylists")>();
   return {
@@ -33,6 +40,10 @@ vi.mock("@/api/usePlaylists", async (importOriginal) => {
       removeOverride.current
         ? removeOverride.current()
         : actual.useRemoveEntry(id)) as typeof actual.useRemoveEntry,
+    useReorderTracks: ((id: string) =>
+      reorderOverride.current
+        ? reorderOverride.current()
+        : actual.useReorderTracks(id)) as typeof actual.useReorderTracks,
   };
 });
 
@@ -167,6 +178,49 @@ describe("PlaylistDetailPage", () => {
     await waitFor(() => expect(body).toEqual(["u2", "u1"]));
   });
 
+  test("the reorder PUT body derives from the same snapshot as the optimistic order", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta"), track(3, "Gamma")])),
+      ),
+    );
+    const bodies: string[][] = [];
+    reorderOverride.current = () => ({
+      mutate: (uids: string[]) => bodies.push(uids),
+      isError: false,
+    });
+    try {
+      renderWithProviders(<PlaylistDetailPage />, {
+        route: `/playlists/${ID}`,
+        path: "/playlists/:playlistId",
+      });
+      await screen.findByText("Alpha");
+      // Two "move Alpha down" clicks in ONE commit (native .click, no act flush
+      // between them, so both hit the same render's handler). The buggy build
+      // applied both swaps to the optimistic state (functional updater) but
+      // computed each PUT body from the stale render snapshot — the last body
+      // then lagged the visible order by a move.
+      const down = screen.getByRole("button", { name: /move alpha down/i });
+      act(() => {
+        down.click();
+        down.click();
+      });
+      // Read the optimistic order off the DOM and map it back to uids.
+      const uidByTitle: Record<string, string> = { Alpha: "u1", Beta: "u2", Gamma: "u3" };
+      const rows = screen.getAllByRole("row").slice(1); // drop the header row
+      const domOrder = rows.map(
+        (row) =>
+          uidByTitle[
+            (["Alpha", "Beta", "Gamma"].find((t) => within(row).queryByText(t)) ?? "") as string
+          ],
+      );
+      // The order the server would persist must equal the order on screen.
+      expect(bodies.at(-1)).toEqual(domOrder);
+    } finally {
+      reorderOverride.current = null;
+    }
+  });
+
   test("announces a reorder via the status region", async () => {
     server.use(
       http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
@@ -255,6 +309,43 @@ describe("PlaylistDetailPage", () => {
       act(() => pending.forEach((cb) => cb()));
       expect(screen.queryByText("Alpha")).not.toBeInTheDocument();
       expect(screen.queryByText("Beta")).not.toBeInTheDocument();
+    } finally {
+      removeOverride.current = null;
+    }
+  });
+
+  test("two rapid removes emptying the list focus the empty state, not a vanished survivor", async () => {
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
+    );
+    // Defer both removes' onSuccess so they run against the SAME render — the
+    // window where each afterRemoval snapshot (render list minus only its own
+    // uid) still shows one survivor, so neither would see length 0.
+    const pending: Array<() => void> = [];
+    removeOverride.current = () => ({
+      mutate: (_uid: string, opts?: { onSuccess?: () => void }) => {
+        if (opts?.onSuccess) pending.push(opts.onSuccess);
+      },
+      isError: false,
+    });
+    try {
+      renderWithProviders(<PlaylistDetailPage />, {
+        route: `/playlists/${ID}`,
+        path: "/playlists/:playlistId",
+      });
+      await screen.findByText("Alpha");
+      fireEvent.click(screen.getByRole("button", { name: /remove alpha/i }));
+      fireEvent.click(screen.getByRole("button", { name: /remove beta/i }));
+      expect(pending).toHaveLength(2);
+      // Run both onSuccess: the post-removal state empties, so the LAST focus
+      // request must land on the empty state. Deciding survivor/empty off the
+      // stale render list leaves focus stranded (the requested survivor row is
+      // now unmounted), so the empty copy never takes focus.
+      act(() => pending.forEach((cb) => cb()));
+      await waitFor(() => {
+        const active = document.activeElement as HTMLElement | null;
+        expect(active?.textContent ?? "").toContain("No tracks yet");
+      });
     } finally {
       removeOverride.current = null;
     }

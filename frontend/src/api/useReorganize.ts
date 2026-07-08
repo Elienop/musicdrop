@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { components } from "./schema";
 import { client } from "./client";
+import { unwrap } from "./lib";
 
 export type ReorganizePlan = components["schemas"]["ReorganizePlan"];
 export type ReorganizeMove = components["schemas"]["ReorganizeMove"];
@@ -83,11 +84,8 @@ export function useStartReorganize() {
 export function useStopReorganize() {
   const qc = useQueryClient();
   return useMutation<ReorganizeBackfillStatus, Error, void>({
-    mutationFn: async (): Promise<ReorganizeBackfillStatus> => {
-      const { data, response } = await client.POST("/api/reorganize/stop");
-      if (!response.ok || !data) throw new Error("Failed to stop");
-      return data;
-    },
+    mutationFn: async (): Promise<ReorganizeBackfillStatus> =>
+      unwrap(await client.POST("/api/reorganize/stop"), "Failed to stop"),
     onSuccess: () => void qc.invalidateQueries({ queryKey: REORGANIZE_STATUS_KEY }),
   });
 }

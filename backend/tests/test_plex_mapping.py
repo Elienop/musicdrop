@@ -1,4 +1,7 @@
+import pytest
+
 from app.plex.client import music_section
+from app.plex.errors import PlexConnectionError
 from app.plex.mapping import PlexTrackSpec, resolve_ordered_tracks
 
 
@@ -57,6 +60,32 @@ def test_music_section_picks_artist_type() -> None:
 def test_music_section_none_when_absent() -> None:
     server = _FakeServer([_FakeOtherSection()])
     assert music_section(server) is None
+
+
+class _NamedSection:
+    def __init__(self, title: str, type_: str = "artist") -> None:
+        self.TYPE = type_
+        self.title = title
+
+
+def test_music_section_empty_title_ambiguous_when_multiple_artist_sections() -> None:
+    # Two music libraries + no configured section: silently taking the first would
+    # land on the wrong one, so refuse and tell the user to pick a section.
+    server = _FakeServer([_NamedSection("Music"), _NamedSection("MusicDrop")])
+    with pytest.raises(PlexConnectionError):
+        music_section(server, "")
+
+
+def test_music_section_empty_title_ok_with_single_artist_section() -> None:
+    only = _NamedSection("Music")
+    server = _FakeServer([only, _NamedSection("Films", type_="movie")])
+    assert music_section(server, "") is only
+
+
+def test_music_section_named_title_matches_even_with_multiple() -> None:
+    music, drop = _NamedSection("Music"), _NamedSection("MusicDrop")
+    server = _FakeServer([music, drop])
+    assert music_section(server, "musicdrop") is drop  # case-insensitive, unambiguous
 
 
 def _spec(path: str, **meta: object) -> PlexTrackSpec:

@@ -139,6 +139,31 @@ function DecisionError({ error }: { error: unknown }) {
   );
 }
 
+/** The standalone Ignore + decision-error strip shared by the bank screens
+ * whose Ignore action sits on its own row (the candidate-collision fold and
+ * the duplicate screen). Screens that interleave Ignore with other actions in
+ * a single flex row (no-match, the candidate apply footer) keep their own
+ * markup — their `ml-auto` pin needs every button in one container. Each
+ * caller passes its own busy expression and ignore handler. */
+function BankDecisionFooter({
+  busy,
+  onIgnore,
+  error,
+}: {
+  busy: boolean;
+  onIgnore: () => void;
+  error: unknown;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <Button variant="ghost" size="sm" disabled={busy} onClick={onIgnore}>
+        Ignore
+      </Button>
+      <DecisionError error={error} />
+    </div>
+  );
+}
+
 /** The search's conflict line — a 409's real detail (stale flip, status race).
  * Non-conflict transport errors render inside the panel instead. */
 function SearchConflict({ error }: { error: unknown }) {
@@ -337,17 +362,11 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
               </p>
             </section>
           )}
-          <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={decide.isPending || search.isPending || rescan.isPending}
-              onClick={() => submit({ action: "ignore" })}
-            >
-              Ignore
-            </Button>
-            <DecisionError error={decide.error} />
-          </div>
+          <BankDecisionFooter
+            busy={decide.isPending || search.isPending || rescan.isPending}
+            onIgnore={() => submit({ action: "ignore" })}
+            error={decide.error}
+          />
           <DuplicateActions
             pending={pendingDup}
             busy={decide.isPending || search.isPending || rescan.isPending}
@@ -445,19 +464,13 @@ function BankDuplicateScreen({ item }: { item: BankItem }) {
       {item.status === "failed" && <FailedBanner error={item.error} />}
       <DuplicateComparison prompt={prompt} incomingCoverUrl={null} />
       <RescanControl rescan={rescan} disabled={decide.isPending} hint />
-      <div className="flex items-center gap-2">
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={decide.isPending || rescan.isPending}
-          onClick={() =>
-            decide.mutate({ action: "ignore" }, { onSuccess: () => navigate("/review") })
-          }
-        >
-          Ignore
-        </Button>
-        <DecisionError error={decide.error} />
-      </div>
+      <BankDecisionFooter
+        busy={decide.isPending || rescan.isPending}
+        onIgnore={() =>
+          decide.mutate({ action: "ignore" }, { onSuccess: () => navigate("/review") })
+        }
+        error={decide.error}
+      />
       <DuplicateActions
         pending={pending}
         busy={decide.isPending || rescan.isPending}

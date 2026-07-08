@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { components } from "./schema";
 import { client } from "./client";
+import { unwrap } from "./lib";
 
 export type NamingConfig = components["schemas"]["NamingConfig"];
 export type NamingRuleInput = components["schemas"]["NamingRuleInput"];
@@ -23,27 +24,18 @@ export interface NamingDraft {
 export function useNaming() {
   return useQuery({
     queryKey: NAMING_KEY,
-    queryFn: async (): Promise<NamingConfig> => {
-      const { data, response } = await client.GET("/api/config/naming");
-      if (!response.ok || !data)
-        throw new Error("Failed to load naming config");
-      return data;
-    },
+    queryFn: async (): Promise<NamingConfig> =>
+      unwrap(await client.GET("/api/config/naming"), "Failed to load naming config"),
   });
 }
 
 export function usePreviewNaming() {
   return useMutation<NamingPreviewResponse, Error, NamingDraft>({
-    mutationFn: async (body): Promise<NamingPreviewResponse> => {
-      const { data, response } = await client.POST(
-        "/api/config/naming/preview",
-        {
-          body,
-        },
-      );
-      if (!response.ok || !data) throw new Error("Preview failed");
-      return data;
-    },
+    mutationFn: async (body): Promise<NamingPreviewResponse> =>
+      unwrap(
+        await client.POST("/api/config/naming/preview", { body }),
+        "Preview failed",
+      ),
   });
 }
 

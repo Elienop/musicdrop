@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
-import { detailMessage } from "@/api/lib";
+import { detailMessage, unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 /** One bank list row (generated contract — no candidate payloads). */
@@ -70,22 +70,21 @@ export interface BankListParams {
 async function fetchBankList(
   params: BankListParams,
 ): Promise<BankListResponse> {
-  const { data, error, response } = await client.GET("/api/bank", {
-    params: {
-      query: {
-        // undefined omits the param (unfiltered); the API treats absent as All.
-        status: params.status,
-        view: params.view,
-        reason: params.reason,
-        offset: params.offset,
-        limit: params.limit,
+  return unwrap(
+    await client.GET("/api/bank", {
+      params: {
+        query: {
+          // undefined omits the param (unfiltered); the API treats absent as All.
+          status: params.status,
+          view: params.view,
+          reason: params.reason,
+          offset: params.offset,
+          limit: params.limit,
+        },
       },
-    },
-  });
-  if (error || !response.ok || !data) {
-    throw new Error("Failed to load the bank");
-  }
-  return data;
+    }),
+    "Failed to load the bank",
+  );
 }
 
 /** One page of bank rows. `placeholderData` keeps the previous page visible
@@ -158,21 +157,16 @@ export function useBankDuplicates(
   return useQuery({
     queryKey: ["bank", "duplicates", itemId, candidateIndex],
     enabled,
-    queryFn: async () => {
-      const { data, error, response } = await client.GET(
-        "/api/bank/{item_id}/duplicates",
-        {
+    queryFn: async () =>
+      unwrap(
+        await client.GET("/api/bank/{item_id}/duplicates", {
           params: {
             path: { item_id: itemId },
             query: { candidate_index: candidateIndex },
           },
-        },
-      );
-      if (error || !response.ok || !data) {
-        throw new Error("Failed to check for duplicates");
-      }
-      return data;
-    },
+        }),
+        "Failed to check for duplicates",
+      ),
   });
 }
 
@@ -353,13 +347,10 @@ export function useDeleteBankItem() {
 async function bulkIgnoreBank(
   ids: string[],
 ): Promise<components["schemas"]["BankBulkIgnoreResponse"]> {
-  const { data, error, response } = await client.POST("/api/bank/bulk-ignore", {
-    body: { ids },
-  });
-  if (error || !response.ok || !data) {
-    throw new Error("Failed to ignore the selected rows");
-  }
-  return data;
+  return unwrap(
+    await client.POST("/api/bank/bulk-ignore", { body: { ids } }),
+    "Failed to ignore the selected rows",
+  );
 }
 
 /** Bulk-ignore (`POST /api/bank/bulk-ignore`). The backend skips ids that are
@@ -377,13 +368,10 @@ export function useBulkIgnoreBank() {
 async function bulkDeleteBank(
   ids: string[],
 ): Promise<components["schemas"]["BankBulkDeleteResponse"]> {
-  const { data, error, response } = await client.POST("/api/bank/bulk-delete", {
-    body: { ids },
-  });
-  if (error || !response.ok || !data) {
-    throw new Error("Failed to remove the selected rows");
-  }
-  return data;
+  return unwrap(
+    await client.POST("/api/bank/bulk-delete", { body: { ids } }),
+    "Failed to remove the selected rows",
+  );
 }
 
 /** Bulk-delete (`POST /api/bank/bulk-delete`). The backend skips `applying`

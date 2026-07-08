@@ -19,6 +19,7 @@ from beets.library import Library
 from app.beets.duplicates import normalize
 from app.beets.library import _coerce_duration, _coerce_str
 from app.models.playlist_import import ImportEntryPreview, SourceEntry, TrackSummary
+from app.playlists.stem import filename_stem
 
 _DURATION_TOLERANCE_S = 3.0
 _MAX_SUGGESTIONS = 3
@@ -42,11 +43,6 @@ class MatchIndex:
     by_title: dict[str, list[_IndexedTrack]] = field(default_factory=dict)
 
 
-def _stem(path: str) -> str:
-    name = path.replace("\\", "/").rsplit("/", 1)[-1]
-    return name.rsplit(".", 1)[0] if "." in name else name
-
-
 def _title_key(title: str) -> str:
     """The title lookup key. Falls back to the raw casefolded title when the
     normalized form is empty, so an all-parenthetical interlude like "(Intro)"
@@ -67,7 +63,7 @@ def build_match_index(lib: Library) -> MatchIndex:
             duration_seconds=_coerce_duration(item.length),
         )
         if item.path:
-            key = normalize(_stem(os.fsdecode(item.path)))
+            key = normalize(filename_stem(os.fsdecode(item.path)))
             if key:
                 index.by_filename.setdefault(key, []).append(track)
         title_key = _title_key(track.title)
@@ -133,7 +129,7 @@ def _match_one(index: MatchIndex, entry: SourceEntry) -> ImportEntryPreview:
     leftovers: list[_IndexedTrack] = []
     # T1 - unique normalized filename.
     if entry.path:
-        key = normalize(_stem(entry.path))
+        key = normalize(filename_stem(entry.path))
         hits = index.by_filename.get(key, []) if key else []
         if len(hits) == 1:
             return _preview(entry, "matched", match=hits[0])

@@ -1,7 +1,11 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+
+// The page toasts the import outcome; no Toaster is mounted in unit tests.
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+import { toast } from "sonner";
 
 import { ImportPlaylistsPage } from "@/pages/playlists/ImportPlaylistsPage";
 import { renderWithProviders } from "@/test/render";
@@ -53,6 +57,34 @@ describe("ImportPlaylistsPage", () => {
   // empty list so the file-upload tests don't hit an unhandled request.
   beforeEach(() => {
     server.use(http.get(PLEX_URL, () => HttpResponse.json({ playlists: [] })));
+    vi.mocked(toast.error).mockClear();
+    vi.mocked(toast.success).mockClear();
+  });
+
+  test("surfaces a partial-import failure via a toast instead of dropping it silently", async () => {
+    server.use(
+      http.post(PREVIEW_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            { name: "Road", matched_count: 1, ambiguous_count: 0, unmatched_count: 0, entries: [entry()] },
+          ],
+        }),
+      ),
+      http.post(COMMIT_URL, () =>
+        HttpResponse.json({ created: [], failed: [{ name: "Road", error: "store write failed" }] }),
+      ),
+    );
+    renderImport();
+
+    await userEvent.upload(
+      screen.getByLabelText(/upload playlist files/i),
+      new File(["#EXTM3U\nBand - Alpha\n"], "Road.m3u8"),
+    );
+    await userEvent.click(await screen.findByRole("button", { name: /import 1 playlist/i }));
+
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalled());
+    expect(vi.mocked(toast.error).mock.calls[0][0]).toContain("Road");
+    expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
   });
 
   test("shows live match stats that follow resolutions", async () => {

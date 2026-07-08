@@ -25,7 +25,11 @@ describe("useAlbumMissing", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("fetches the report when an mbid is present", async () => {
-    (client.GET as ReturnType<typeof vi.fn>).mockResolvedValue({ data: report, error: undefined });
+    (client.GET as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: report,
+      error: undefined,
+      response: { ok: true },
+    });
     const { result } = renderHook(() => useAlbumMissing(7, "rel-1"), { wrapper });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).toEqual(report);
