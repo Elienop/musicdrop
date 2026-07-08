@@ -69,6 +69,19 @@ describe("BrowsePage", () => {
     expect(screen.getByRole("group", { name: "Format" })).toBeInTheDocument();
   });
 
+  test("filter rail is its own always-in-viewport scroll box under the sticky topbar", async () => {
+    renderWithProviders(<BrowsePage />, { route: "/browse" });
+    const rail = await screen.findByRole("complementary", { name: /filters/i });
+    // jsdom has no real scroll geometry, so lock the class contract instead:
+    // the rail must be an internal scroller (overflow-y-auto) pinned BELOW the
+    // 4.5rem sticky topbar (top-24 = 6rem = topbar + main py-6) and sized to
+    // always fit the viewport (100vh - 6rem top - 1.5rem bottom gap).
+    expect(rail.className).toContain("overflow-y-auto");
+    expect(rail.className).toContain("md:sticky");
+    expect(rail.className).toContain("md:top-24");
+    expect(rail.className).toContain("md:max-h-[calc(100vh-7.5rem)]");
+  });
+
   test("toggling a genre puts it in the query and refetches", async () => {
     renderWithProviders(<BrowsePage />, { route: "/browse" });
     const rock = await screen.findByRole("checkbox", { name: /rock/i });

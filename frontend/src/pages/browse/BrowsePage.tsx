@@ -136,9 +136,15 @@ export function BrowsePage() {
 
       <div className="flex flex-col gap-6 md:flex-row">
         {/* NO-JUMP INVARIANT: the rail is sticky and self-contained — it never
-            moves when the grid beside it changes height. */}
+            moves when the grid beside it changes height.
+            GEOMETRY: the topbar is sticky and 4.5rem tall (Topbar.tsx: py-3 +
+            h-12), and <main> pads 1.5rem (py-6) — so the rail rests at 6rem
+            (top-24) and must cap at 100vh - 6rem - 1.5rem bottom gap so the
+            whole scroll box always fits the viewport and wheel-over-rail
+            scrolls the FILTERS, not the page. Change the topbar's height and
+            these two constants move with it. */}
         <aside
-          className="max-h-72 shrink-0 overflow-y-auto md:sticky md:top-6 md:max-h-[calc(100vh-3rem)] md:w-56 md:self-start"
+          className="max-h-72 shrink-0 overflow-y-auto md:sticky md:top-24 md:max-h-[calc(100vh-7.5rem)] md:w-56 md:self-start"
           aria-label="Filters"
         >
           {facetsQuery.isPending ? (
