@@ -1,14 +1,24 @@
 import { Back, Forward, Spinner } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 
-/** The one library page size — every paginated surface uses it. */
+/** The default library page size — surfaces without a size selector use it. */
 export const PAGE_SIZE = 48;
+
+/** Selectable page sizes (multiples of the default; 192 < backend's 200 cap). */
+export const PAGE_SIZE_OPTIONS = [48, 96, 192] as const;
+
+/** One of the selectable page sizes. */
+export type PageSize = (typeof PAGE_SIZE_OPTIONS)[number];
 
 /**
  * The single pagination control. Buttons disable at BOUNDS only — never
  * while busy (disabling mid-flight strands keyboard focus on <body>);
  * instead re-clicks are ignored while `busy`, and the page readout swaps
  * for the spinner under `aria-busy`.
+ *
+ * `compact` is the toolbar form: icon-only buttons and a terse `2 / 67`
+ * readout, for the row above the grid. `label` disambiguates the landmark
+ * when a page mounts two pagers (e.g. "Pagination (top)").
  *
  * Deliberately NO scrolling or focus management here: callers own what
  * happens after a page change (scroll-to-top, focus the results region),
@@ -20,12 +30,16 @@ export function Pagination({
   limit,
   onOffsetChange,
   busy = false,
+  compact = false,
+  label = "Pagination",
 }: {
   total: number;
   offset: number;
   limit: number;
   onOffsetChange: (o: number) => void;
   busy?: boolean;
+  compact?: boolean;
+  label?: string;
 }) {
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const page = Math.min(totalPages, Math.floor(offset / limit) + 1);
@@ -37,9 +51,56 @@ export function Pagination({
     onOffsetChange(next);
   };
 
+  if (compact) {
+    return (
+      <nav
+        aria-label={label}
+        aria-busy={busy}
+        className="flex shrink-0 items-center gap-1"
+      >
+        <Button
+          type="button"
+          variant="outline"
+          size="icon-sm"
+          disabled={!canPrev}
+          aria-label="Previous page"
+          onClick={() => go(Math.max(0, offset - limit))}
+        >
+          <Back aria-hidden="true" />
+        </Button>
+        <span className="text-muted-foreground min-w-12 text-center text-sm tabular-nums">
+          {busy ? (
+            <>
+              <Spinner
+                className="inline size-4 animate-spin"
+                aria-hidden="true"
+              />
+              <span className="sr-only">Loading page&hellip;</span>
+            </>
+          ) : (
+            <>
+              <span className="sr-only">Page </span>
+              {page} / {totalPages}
+            </>
+          )}
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon-sm"
+          disabled={!canNext}
+          aria-label="Next page"
+          onClick={() => go(offset + limit)}
+        >
+          <Forward aria-hidden="true" />
+        </Button>
+      </nav>
+    );
+  }
+
   return (
     <nav
-      aria-label="Pagination"
+      aria-label={label}
       aria-busy={busy}
       className="flex items-center justify-between gap-4"
     >
@@ -76,5 +137,33 @@ export function Pagination({
         <Forward aria-hidden="true" />
       </Button>
     </nav>
+  );
+}
+
+/**
+ * Page-size picker for the paginated grids — a native select (matches the
+ * Browse sort select's anatomy) over PAGE_SIZE_OPTIONS. The caller persists
+ * the choice (see usePageSize); this is a controlled dumb control.
+ */
+export function PageSizeSelect({
+  value,
+  onChange,
+}: {
+  value: PageSize;
+  onChange: (n: PageSize) => void;
+}) {
+  return (
+    <select
+      aria-label="Results per page"
+      className="border-input bg-background h-8 shrink-0 rounded-md border px-2 text-sm"
+      value={value}
+      onChange={(e) => onChange(Number(e.target.value) as PageSize)}
+    >
+      {PAGE_SIZE_OPTIONS.map((n) => (
+        <option key={n} value={n}>
+          {n} per page
+        </option>
+      ))}
+    </select>
   );
 }
