@@ -86,7 +86,11 @@ export function TrackMatchPicker({
             Search your library and pick the track this entry should point to.
           </DialogDescription>
         </DialogHeader>
-        <div className="flex flex-col gap-3">
+        {/* min-w-0: DialogContent is a single-column grid, and a grid item's
+            min-width defaults to its content — without this the nowrap
+            (truncate) rows below set the column's minimum and push everything
+            w-full inside it (the input included) wider than the dialog box. */}
+        <div className="flex min-w-0 flex-col gap-3">
           <Input
             aria-label="Search library tracks"
             placeholder="Search by title, artist, or album…"
@@ -94,7 +98,8 @@ export function TrackMatchPicker({
             onChange={(e) => setQuery(e.target.value)}
             autoFocus
           />
-          <div className="max-h-72 overflow-y-auto">
+          {/* pr-2: a gutter so the scrollbar doesn't sit on the Select buttons. */}
+          <div className="max-h-72 overflow-y-auto pr-2">
             {trimmed.length === 0 ? (
               <p className="text-muted-foreground py-6 text-center text-sm">
                 Start typing to search your library.

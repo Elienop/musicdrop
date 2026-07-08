@@ -147,7 +147,7 @@ export function BrowsePage() {
             scrolls the FILTERS, not the page. Change the topbar's height and
             these two constants move with it. */}
         <aside
-          className="max-h-72 shrink-0 overflow-y-auto md:sticky md:top-24 md:max-h-[calc(100vh-7.5rem)] md:w-56 md:self-start"
+          className="max-h-72 shrink-0 overflow-y-auto pr-2 md:sticky md:top-24 md:max-h-[calc(100vh-7.5rem)] md:w-56 md:self-start"
           aria-label="Filters"
         >
           {facetsQuery.isPending ? (

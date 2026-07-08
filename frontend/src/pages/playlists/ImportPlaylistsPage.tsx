@@ -442,12 +442,34 @@ function EntryRow({
         <span className="text-muted-foreground w-6 shrink-0 text-right text-sm tabular-nums">
           {entry.position}
         </span>
-        <span
-          className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-xs"
-          title={entry.source}
-        >
-          {entry.source}
-        </span>
+        {entry.title ? (
+          // Lead with what the track IS — title · artist · duration, the thing
+          // the user would search for — and demote the origin string to the
+          // tooltip: on a Plex pull the source is just "plex:<playlist>" on
+          // every row, which identifies nothing.
+          <span className="min-w-0 flex-1 truncate text-sm" title={entry.source}>
+            <span className="font-medium">{entry.title}</span>
+            {entry.artist && (
+              <span className="text-muted-foreground">
+                <span aria-hidden="true"> &middot; </span>
+                {entry.artist}
+              </span>
+            )}
+            {entry.duration_seconds != null && (
+              <span className="text-muted-foreground tabular-nums">
+                <span aria-hidden="true"> &middot; </span>
+                {formatDuration(entry.duration_seconds)}
+              </span>
+            )}
+          </span>
+        ) : (
+          <span
+            className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-xs"
+            title={entry.source}
+          >
+            {entry.source}
+          </span>
+        )}
         <Badge variant={STATUS_VARIANT[entry.status]} className="shrink-0 capitalize">
           {entry.status}
         </Badge>
