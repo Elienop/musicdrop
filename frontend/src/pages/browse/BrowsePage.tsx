@@ -12,15 +12,27 @@ import {
   AlbumsGridSkeleton,
   GRID_CLASS,
 } from "@/components/albums/album-grid";
-import { Albums, Browse, Close, MusicFallback } from "@/components/icons";
+import {
+  Albums,
+  Browse,
+  Close,
+  Expand,
+  MusicFallback,
+} from "@/components/icons";
 import { EmptyState } from "@/components/system/EmptyState";
 import { ErrorState } from "@/components/system/ErrorState";
 import { PageBody, PageHeader } from "@/components/system/PageHeader";
 import { PageSkeleton } from "@/components/system/PageSkeleton";
-import { PAGE_SIZE, Pagination } from "@/components/system/Pagination";
+import {
+  PAGE_SIZE_OPTIONS,
+  PageSizeSelect,
+  Pagination,
+} from "@/components/system/Pagination";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
+import { usePageSize } from "@/lib/usePageSize";
+import { useRailMaxHeight } from "@/lib/useRailMaxHeight";
 import { cn } from "@/lib/utils";
 
 const FACET_FIELDS = [
@@ -51,6 +63,7 @@ type FacetParam = (typeof FACET_FIELDS)[number]["param"];
  */
 export function BrowsePage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const { pageSize, setPageSize } = usePageSize();
 
   const filters: BrowseFilters = {
     genre: searchParams.getAll("genre"),
@@ -72,7 +85,7 @@ export function BrowsePage() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const facetsQuery = useBrowseFacets();
-  const albumsQuery = useBrowseAlbums(filters, sort, PAGE_SIZE, offset);
+  const albumsQuery = useBrowseAlbums(filters, sort, pageSize, offset);
 
   const toggle = (param: FacetParam, value: string) => {
     const next = new URLSearchParams(searchParams);
@@ -103,6 +116,8 @@ export function BrowsePage() {
   // Post-page-change contract (spec §6): plain scroll to top + move focus to
   // the always-mounted count line in the PageHeader meta region.
   const countRef = useRef<HTMLSpanElement>(null);
+  const railRef = useRef<HTMLElement>(null);
+  useRailMaxHeight(railRef);
   const goToOffset = (value: number) => {
     const next = new URLSearchParams(searchParams);
     if (value <= 0) next.delete("offset");
@@ -145,9 +160,16 @@ export function BrowsePage() {
             (top-24) and must cap at 100vh - 6rem - 1.5rem bottom gap so the
             whole scroll box always fits the viewport and wheel-over-rail
             scrolls the FILTERS, not the page. Change the topbar's height and
-            these two constants move with it. */}
+            these two constants move with it.
+            The static max-h is only correct once the sticky PINS; before
+            that (page at top, header in view) the rail starts lower and the
+            static value would push its bottom — and the last facet group —
+            below the viewport. useRailMaxHeight measures the real top and
+            tightens max-height pre-pin; the class stays as the no-JS /
+            first-paint fallback. */}
         <aside
-          className="max-h-72 shrink-0 overflow-y-auto pr-2 md:sticky md:top-24 md:max-h-[calc(100vh-7.5rem)] md:w-56 md:self-start"
+          ref={railRef}
+          className="thin-scrollbar max-h-72 shrink-0 overflow-y-auto pr-4 md:sticky md:top-24 md:max-h-[calc(100vh-7.5rem)] md:w-60 md:self-start"
           aria-label="Filters"
         >
           {facetsQuery.isPending ? (
@@ -232,7 +254,7 @@ export function BrowsePage() {
               reserved min-h-8, so applying the FIRST filter fills it instead
               of inserting a new row that shoves the grid down. Chips wrap on
               the left; the sort select stays pinned right and always visible. */}
-          <div className="flex min-h-8 items-center gap-2">
+          <div className="flex min-h-8 flex-wrap items-center gap-2">
             <div className="flex flex-1 flex-wrap items-center gap-2">
               {hasFilters ? (
                 <>
@@ -265,17 +287,41 @@ export function BrowsePage() {
                 </span>
               )}
             </div>
-            <select
-              aria-label="Sort albums"
-              className="border-input bg-background ml-auto h-8 shrink-0 rounded-md border px-2 text-sm"
-              value={sort}
-              onChange={(e) =>
-                setSort(e.target.value === "added" ? "added" : "artist")
-              }
-            >
-              <option value="artist">A–Z (artist)</option>
-              <option value="added">Recently added</option>
-            </select>
+            <div className="ml-auto flex shrink-0 items-center gap-2">
+              {/* Same caret anatomy as PageSizeSelect: the UA arrow sits
+                  flush against the edge, so draw our own with real inset. */}
+              <span className="relative shrink-0">
+                <select
+                  aria-label="Sort albums"
+                  className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-8 appearance-none rounded-md border px-2 pr-7 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
+                  value={sort}
+                  onChange={(e) =>
+                    setSort(e.target.value === "added" ? "added" : "artist")
+                  }
+                >
+                  <option value="artist">A–Z (artist)</option>
+                  <option value="added">Recently added</option>
+                </select>
+                <Expand
+                  className="text-muted-foreground pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2"
+                  aria-hidden="true"
+                />
+              </span>
+              {total > PAGE_SIZE_OPTIONS[0] && (
+                <PageSizeSelect value={pageSize} onChange={setPageSize} />
+              )}
+              {total > pageSize && (
+                <Pagination
+                  compact
+                  label="Pagination (top)"
+                  total={total}
+                  offset={offset}
+                  limit={pageSize}
+                  busy={isFetching}
+                  onOffsetChange={goToOffset}
+                />
+              )}
+            </div>
           </div>
           {/* NO-JUMP INVARIANT: reserved results height — filter flips never
               collapse the column under the sticky rail. */}
@@ -287,7 +333,7 @@ export function BrowsePage() {
               />
             ) : albumsQuery.isPending ? (
               <PageSkeleton announce="Loading albums…">
-                <AlbumsGridSkeleton count={Math.min(PAGE_SIZE, 12)} />
+                <AlbumsGridSkeleton count={Math.min(pageSize, 12)} />
               </PageSkeleton>
             ) : total === 0 ? (
               hasFilters ? (
@@ -346,12 +392,12 @@ export function BrowsePage() {
                     </li>
                   ))}
                 </ul>
-                {total > PAGE_SIZE && (
+                {total > pageSize && (
                   <div className="mt-6">
                     <Pagination
                       total={total}
                       offset={offset}
-                      limit={PAGE_SIZE}
+                      limit={pageSize}
                       busy={isFetching}
                       onOffsetChange={goToOffset}
                     />

@@ -45,6 +45,7 @@ const FACETS_BODY = {
 
 describe("BrowsePage", () => {
   beforeEach(() => {
+    localStorage.clear();
     lastQuery = new URLSearchParams();
     server.use(
       http.get(FACETS, () => HttpResponse.json(FACETS_BODY)),
@@ -81,8 +82,11 @@ describe("BrowsePage", () => {
     expect(rail.className).toContain("md:sticky");
     expect(rail.className).toContain("md:top-24");
     expect(rail.className).toContain("md:max-h-[calc(100vh-7.5rem)]");
-    // A right gutter so the rail's scrollbar doesn't sit on the facet counts.
-    expect(rail.className).toContain("pr-2");
+    // A real right gutter — content, then empty space, then a slim themed
+    // bar — so the scrollbar never crowds the facet counts.
+    expect(rail.className).toContain("pr-4");
+    expect(rail.className).toContain("thin-scrollbar");
+    expect(rail.className).toContain("md:w-60");
   });
 
   test("toggling a genre puts it in the query and refetches", async () => {
@@ -155,7 +159,7 @@ describe("BrowsePage", () => {
       }),
     );
     renderWithProviders(<BrowsePage />, { route: "/browse" });
-    await userEvent.click(await screen.findByRole("button", { name: /next/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Next" }));
     await waitFor(() => expect(lastQuery.get("offset")).toBe("48"));
   });
 
@@ -186,7 +190,7 @@ describe("BrowsePage", () => {
     );
     renderWithProviders(<BrowsePage />, { route: "/browse" });
 
-    await userEvent.click(await screen.findByRole("button", { name: /next/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Next" }));
 
     await waitFor(() => expect(lastQuery.get("offset")).toBe("48"));
     expect(screen.getByText(/60 albums in your library\./)).toHaveFocus();
@@ -296,5 +300,61 @@ describe("BrowsePage", () => {
       expect(lastQuery.getAll("genre")).toEqual([]);
       expect(lastQuery.get("sort")).toBe("added");
     });
+  });
+
+  test("size selector and top pager appear when the library outgrows a page", async () => {
+    server.use(
+      http.get(ALBUMS, ({ request }) => {
+        lastQuery = new URL(request.url).searchParams;
+        return HttpResponse.json({
+          items: [album(1, "First"), album(2, "Second")],
+          total: 300,
+          limit: 48,
+          offset: 0,
+        });
+      }),
+    );
+    renderWithProviders(<BrowsePage />, { route: "/browse" });
+    await screen.findByText("First");
+    // Two pagers: the compact one in the toolbar plus the one under the grid.
+    expect(
+      screen.getByRole("navigation", { name: "Pagination (top)" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("navigation", { name: "Pagination" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("combobox", { name: "Results per page" }),
+    ).toBeInTheDocument();
+  });
+
+  test("choosing a page size drives the albums query and the URL", async () => {
+    server.use(
+      http.get(ALBUMS, ({ request }) => {
+        lastQuery = new URL(request.url).searchParams;
+        return HttpResponse.json({
+          items: [album(1, "First")],
+          total: 300,
+          limit: 48,
+          offset: 0,
+        });
+      }),
+    );
+    renderWithProviders(<BrowsePage />, { route: "/browse" });
+    await screen.findByText("First");
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: "Results per page" }),
+      "96",
+    );
+    await waitFor(() => expect(lastQuery.get("limit")).toBe("96"));
+  });
+
+  test("neither pager nor size selector renders for a one-page library", async () => {
+    renderWithProviders(<BrowsePage />, { route: "/browse" });
+    await screen.findByText("First"); // default handler: total 2
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("combobox", { name: "Results per page" }),
+    ).not.toBeInTheDocument();
   });
 });

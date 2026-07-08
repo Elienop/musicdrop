@@ -187,9 +187,55 @@ describe("ArtistsPage", () => {
     expect(screen.getByText("60 artists")).toBeInTheDocument();
 
     // Advancing to the next page renders the remaining slice (12 artists).
-    await userEvent.click(screen.getByRole("button", { name: /next/i }));
+    // Exact "Next" targets the bottom pager only — the compact top pager's
+    // button is named "Next page", which /next/i would also match.
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
     await screen.findByText("Artist 60");
     expect(screen.getAllByRole("listitem")).toHaveLength(12);
     expect(screen.queryByText("Artist 01")).not.toBeInTheDocument();
+  });
+
+  test("a big roster gets a top toolbar: size selector + compact pager", async () => {
+    localStorage.clear();
+    const big: Artist[] = Array.from({ length: 60 }, (_, i) => ({
+      name: `Artist ${String(i).padStart(2, "0")}`,
+      album_count: 1,
+    }));
+    server.use(http.get(ARTISTS_URL, () => HttpResponse.json(big)));
+
+    renderWithProviders(<ArtistsPage />);
+
+    await screen.findByText("Artist 00");
+    // Default page size 48: the 49th artist is on page 2.
+    expect(screen.queryByText("Artist 48")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("navigation", { name: "Pagination (top)" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("navigation", { name: "Pagination" }),
+    ).toBeInTheDocument();
+
+    // Switching to 96 per page shows the whole roster and drops the pagers
+    // (60 < 96) while the selector stays (60 > 48).
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: "Results per page" }),
+      "96",
+    );
+    expect(await screen.findByText("Artist 59")).toBeInTheDocument();
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("combobox", { name: "Results per page" }),
+    ).toBeInTheDocument();
+  });
+
+  test("a small roster gets no toolbar at all", async () => {
+    localStorage.clear();
+    server.use(http.get(ARTISTS_URL, () => HttpResponse.json(ROSTER)));
+    renderWithProviders(<ArtistsPage />);
+    await screen.findByText("Radiohead");
+    expect(
+      screen.queryByRole("combobox", { name: "Results per page" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
   });
 });

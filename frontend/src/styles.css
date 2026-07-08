@@ -193,14 +193,16 @@
   }
 }
 
-/* Slim horizontal scrollbar for inline overflow-x cells (e.g. the duplicate
- * folder paths) so the scroll affordance doesn't bloat the row height. Firefox
- * uses `scrollbar-width: thin`; WebKit/Blink get a 6px track styled with our
- * border token. */
+/* Slim scrollbar for inline overflow-x cells (e.g. the duplicate folder
+ * paths) and self-scrolling panels (the browse filter rail) so the scroll
+ * affordance doesn't bloat rows or crowd content. Firefox uses
+ * `scrollbar-width: thin`; WebKit/Blink get a 6px track styled with our
+ * border token — `height` governs horizontal bars, `width` vertical ones. */
 @utility thin-scrollbar {
   scrollbar-width: thin;
   scrollbar-color: var(--color-border) transparent;
   &::-webkit-scrollbar {
+    width: 6px;
     height: 6px;
   }
   &::-webkit-scrollbar-thumb {
