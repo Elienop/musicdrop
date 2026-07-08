@@ -362,6 +362,7 @@ def test_active_probe_false_when_no_job() -> None:
         "origin": "manual",
         "needs_review_count": 0,
         "sweep": None,
+        "last_sweep": None,
     }
 
 
@@ -577,3 +578,75 @@ def test_sweep_start_pause_and_summary_flow() -> None:
     assert release.status_code == 204
     state = _poll(client, job_id, lambda s: s["phase"] == "done")
     assert "paused" in (state["summary"] or "")
+
+
+def test_active_status_last_sweep_defaults_none() -> None:
+    assert ActiveImportStatus(active=False).last_sweep is None
+
+
+def test_active_status_carries_last_sweep_recap_when_done() -> None:
+    # A DONE sweep still holds the single slot — the idle probe carries its
+    # recap so the Review page can show "Sweep finished" after the live
+    # banner dies. paused passes through (a paused sweep ends phase=done).
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob, ImportJobRegistry
+    from app.models.import_api import SweepStatus
+
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(
+        id="s-done",
+        bridge=ImportBridge(),
+        phase=ImportPhase.done,
+        origin="sweep",
+        sweep=SweepStatus(processed=12, auto_applied=9, banked=3, skipped_known=2, paused=True),
+    )
+    s = reg.active_status()
+    assert s.active is False
+    assert s.job_id is None
+    assert s.last_sweep is not None
+    assert s.last_sweep.job_id == "s-done"
+    assert (
+        s.last_sweep.processed,
+        s.last_sweep.auto_applied,
+        s.last_sweep.banked,
+        s.last_sweep.skipped_known,
+        s.last_sweep.paused,
+    ) == (12, 9, 3, 2, True)
+
+
+def test_active_status_last_sweep_none_while_sweep_runs() -> None:
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob, ImportJobRegistry
+    from app.models.import_api import SweepStatus
+
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(
+        id="s-run",
+        bridge=ImportBridge(),
+        phase=ImportPhase.scanning,
+        origin="sweep",
+        sweep=SweepStatus(),
+    )
+    s = reg.active_status()
+    assert s.active is True
+    assert s.last_sweep is None
+
+
+def test_active_status_last_sweep_none_for_manual_done_and_failed_sweep() -> None:
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob, ImportJobRegistry
+    from app.models.import_api import SweepStatus
+
+    reg = ImportJobRegistry()
+    # A finished MANUAL job leaves no sweep recap…
+    reg._job = ImportJob(id="m1", bridge=ImportBridge(), phase=ImportPhase.done, origin="manual")
+    assert reg.active_status().last_sweep is None
+    # …and a FAILED sweep surfaces nothing (spec: done only).
+    reg._job = ImportJob(
+        id="s-fail",
+        bridge=ImportBridge(),
+        phase=ImportPhase.failed,
+        origin="sweep",
+        sweep=SweepStatus(processed=2),
+    )
+    assert reg.active_status().last_sweep is None

@@ -11,6 +11,7 @@ import {
   RECOMMENDATION_LABEL,
   useImportJob,
   usePauseSweep,
+  type FinishedSweep,
   type ImportAlbumSummary,
   type SweepStatus,
 } from "@/api/useImport";
@@ -21,7 +22,7 @@ import {
 } from "@/api/useInbox";
 import { useReviewInbox } from "@/api/useSlskd";
 import type { AlbumOrigin } from "@/components/albums/album-grid";
-import { Pause, Spinner, Warning } from "@/components/icons";
+import { Close, Pause, Spinner, Success, Warning } from "@/components/icons";
 import { AlbumRow } from "@/components/system/AlbumRow";
 import { PageBody, PageHeader } from "@/components/system/PageHeader";
 import { SectionLabel } from "@/components/system/SectionLabel";
@@ -101,6 +102,13 @@ export function ReviewPage() {
       {/* Sweep banner — counters ride the active probe's 5s cadence. */}
       {active?.active && active.origin === "sweep" && active.sweep && active.job_id && (
         <SweepBanner jobId={active.job_id} sweep={active.sweep} />
+      )}
+
+      {/* Post-sweep recap — the live banner's terminal counterpart. Idle
+          probe only: while a sweep runs, active=true and the banner above
+          owns the slot. */}
+      {active && !active.active && active.last_sweep && (
+        <SweepRecap recap={active.last_sweep} />
       )}
 
       {decisions.length > 0 && active?.job_id && (
@@ -425,6 +433,59 @@ function SweepBanner({ jobId, sweep }: { jobId: string; sweep: SweepStatus }) {
             </span>
           )}
         </span>
+      </p>
+    </StatusBanner>
+  );
+}
+
+/** localStorage key remembering the dismissed recap's job id (the
+ * `musicdrop.pageSize` naming convention). A NEW sweep has a new job id, so
+ * dismissing one recap never hides the next. */
+const RECAP_DISMISSED_KEY = "musicdrop.sweepRecapDismissed";
+
+/** Post-sweep recap — renders from the probe's `last_sweep`, so it survives
+ * reloads and other tabs until a new import replaces the registry slot (the
+ * "View run" target expires in the same moment, so the link never dangles).
+ * Dismiss is per-browser. A PAUSED sweep ends phase=done with the flag set —
+ * it reads "Sweep paused" plus the resume hint. */
+function SweepRecap({ recap }: { recap: FinishedSweep }) {
+  const [dismissedId, setDismissedId] = useState<string | null>(() =>
+    localStorage.getItem(RECAP_DISMISSED_KEY),
+  );
+  if (dismissedId === recap.job_id) return null;
+  return (
+    <StatusBanner
+      tone="neutral"
+      icon={Success}
+      action={
+        <div className="flex shrink-0 items-center gap-2">
+          <Button variant="ghost" size="sm" asChild>
+            <Link to={`/import?job=${recap.job_id}`}>View run</Link>
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Dismiss sweep recap"
+            onClick={() => {
+              localStorage.setItem(RECAP_DISMISSED_KEY, recap.job_id);
+              setDismissedId(recap.job_id);
+            }}
+          >
+            <Close aria-hidden="true" />
+          </Button>
+        </div>
+      }
+    >
+      <p className="min-w-0 font-medium">
+        {recap.paused ? "Sweep paused" : "Sweep finished"} — {recap.processed}{" "}
+        processed · {recap.auto_applied} imported · {recap.banked} banked
+        {recap.skipped_known > 0 ? ` · ${recap.skipped_known} already known` : ""}.
+        {recap.paused && (
+          <span className="text-muted-foreground font-normal">
+            {" "}
+            Resume by sweeping the same folder again.
+          </span>
+        )}
       </p>
     </StatusBanner>
   );

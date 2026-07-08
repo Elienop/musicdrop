@@ -4240,6 +4240,16 @@
                 "type": "null"
               }
             ]
+          },
+          "last_sweep": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FinishedSweep"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -6736,6 +6746,45 @@
         ],
         "title": "FacetValue",
         "description": "One facet option + how many albums carry it (whole-library count)."
+      },
+      "FinishedSweep": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "processed": {
+            "type": "integer",
+            "title": "Processed"
+          },
+          "auto_applied": {
+            "type": "integer",
+            "title": "Auto Applied"
+          },
+          "banked": {
+            "type": "integer",
+            "title": "Banked"
+          },
+          "skipped_known": {
+            "type": "integer",
+            "title": "Skipped Known"
+          },
+          "paused": {
+            "type": "boolean",
+            "title": "Paused"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_id",
+          "processed",
+          "auto_applied",
+          "banked",
+          "skipped_known",
+          "paused"
+        ],
+        "title": "FinishedSweep",
+        "description": "The last finished sweep's recap \u2014 ``ActiveImportStatus.last_sweep``.\n\nPopulated only while the registry's single slot still holds a DONE\nsweep-origin job: a new import replaces the slot (and this recap with\nit), and failed sweeps surface nothing. ``job_id`` targets the run page\n(``/import?job=\u2026``), which lives exactly as long as this block does, so\nthe link can never dangle. ``paused`` distinguishes a paused sweep (it\nends ``phase=done`` with the flag set) from a completed one."
       },
       "GroupDecision": {
         "properties": {

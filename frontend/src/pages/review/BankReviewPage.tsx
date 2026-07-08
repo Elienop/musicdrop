@@ -26,7 +26,7 @@ import {
   DuplicateComparison,
 } from "@/components/import/DuplicateReview";
 import { ReleaseSearchPanel } from "@/components/import/ReleaseSearchPanel";
-import { Info, Remove, Spinner, Success, Warning } from "@/components/icons";
+import { Info, Refresh, Remove, Spinner, Success, Warning } from "@/components/icons";
 import { EmptyState } from "@/components/system/EmptyState";
 import { PageSkeleton } from "@/components/system/PageSkeleton";
 import { SectionLabel } from "@/components/system/SectionLabel";
@@ -83,18 +83,24 @@ export function BankReviewPage() {
       </Shell>
     );
   }
-  return (
-    <Shell>
-      <BankScreen item={data} />
-    </Shell>
-  );
+  return <BankScreen item={data} />;
 }
 
-/** Page chrome: bank rows are always entered from Review — fixed up-link. */
-function Shell({ children }: { children: React.ReactNode }) {
+/** Page chrome: bank rows are always entered from Review — fixed up-link.
+ * `toolbar` (the screens' Rescan control) rides the back-link row, top-right. */
+function Shell({
+  toolbar,
+  children,
+}: {
+  toolbar?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <section className="flex flex-col gap-6" aria-label="Review banked album">
-      <BackLink to="/review" label="Review" />
+      <div className="flex items-start justify-between gap-4">
+        <BackLink to="/review" label="Review" />
+        {toolbar}
+      </div>
       {children}
     </section>
   );
@@ -178,42 +184,37 @@ function SearchConflict({ error }: { error: unknown }) {
 /** "Rescan folder" — the explicit escape when the user changed the files on
  * disk (deleted a duplicate track, restored one). Re-reads + re-matches +
  * refreshes the fingerprint; the cache write re-branches this page to the
- * row's new state. The hook is hoisted to each screen so its pending state
- * can busy-gate the screen's other actions. */
+ * row's new state. Rendered in the Shell's top-right toolbar; the hook is
+ * hoisted to each screen so its pending state can busy-gate the screen's
+ * other actions. */
 function RescanControl({
   rescan,
   disabled,
-  hint = false,
   variant = "outline",
 }: {
   rescan: ReturnType<typeof useBankRescan>;
   disabled: boolean;
-  hint?: boolean;
   variant?: "outline" | "default";
 }) {
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-center gap-3">
-        <Button
-          variant={variant}
-          size="sm"
-          disabled={disabled || rescan.isPending}
-          onClick={() => rescan.mutate()}
-        >
-          {rescan.isPending ? (
-            <>
-              <Spinner className="animate-spin" aria-hidden="true" /> Rescanning…
-            </>
-          ) : (
-            "Rescan folder"
-          )}
-        </Button>
-        {hint && (
-          <p className="text-muted-foreground text-xs">
-            Re-reads the folder from disk and matches it again.
-          </p>
+    <div className="flex shrink-0 flex-col items-end gap-1.5">
+      <Button
+        variant={variant}
+        size="sm"
+        disabled={disabled || rescan.isPending}
+        title="Re-reads the folder from disk and matches it again."
+        onClick={() => rescan.mutate()}
+      >
+        {rescan.isPending ? (
+          <>
+            <Spinner className="animate-spin" aria-hidden="true" /> Rescanning…
+          </>
+        ) : (
+          <>
+            <Refresh aria-hidden="true" /> Rescan folder
+          </>
         )}
-      </div>
+      </Button>
       <SearchConflict error={rescan.error} />
       {rescan.isError && !(rescan.error instanceof BankConflictError) && (
         <p className="text-destructive text-sm" role="alert">
@@ -310,6 +311,14 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
     });
 
   return (
+    <Shell
+      toolbar={
+        <RescanControl
+          rescan={rescan}
+          disabled={decide.isPending || search.isPending}
+        />
+      }
+    >
     <div className="flex flex-col gap-6">
       {item.status === "failed" && <FailedBanner error={item.error} />}
       <CandidateReview
@@ -330,10 +339,6 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
             error={search.isError && !(search.error instanceof BankConflictError)}
           />
           <SearchConflict error={search.error} />
-          <RescanControl
-            rescan={rescan}
-            disabled={decide.isPending || search.isPending}
-          />
         </>
       )}
       {showDupActions ? (
@@ -440,6 +445,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
         </div>
       )}
     </div>
+    </Shell>
   );
 }
 
@@ -460,10 +466,10 @@ function BankDuplicateScreen({ item }: { item: BankItem }) {
   }
 
   return (
+    <Shell toolbar={<RescanControl rescan={rescan} disabled={decide.isPending} />}>
     <div className="flex flex-col gap-6">
       {item.status === "failed" && <FailedBanner error={item.error} />}
       <DuplicateComparison prompt={prompt} incomingCoverUrl={null} />
-      <RescanControl rescan={rescan} disabled={decide.isPending} hint />
       <BankDecisionFooter
         busy={decide.isPending || rescan.isPending}
         onIgnore={() =>
@@ -478,6 +484,7 @@ function BankDuplicateScreen({ item }: { item: BankItem }) {
         context="bank"
       />
     </div>
+    </Shell>
   );
 }
 
@@ -494,6 +501,14 @@ function NoMatchScreen({ item }: { item: BankItem }) {
     });
 
   return (
+    <Shell
+      toolbar={
+        <RescanControl
+          rescan={rescan}
+          disabled={decide.isPending || search.isPending}
+        />
+      }
+    >
     <div className="flex flex-col gap-6">
       {item.status === "failed" && <FailedBanner error={item.error} />}
       <div className="flex flex-col gap-1">
@@ -516,11 +531,6 @@ function NoMatchScreen({ item }: { item: BankItem }) {
         error={search.isError && !(search.error instanceof BankConflictError)}
       />
       <SearchConflict error={search.error} />
-      <RescanControl
-        rescan={rescan}
-        disabled={decide.isPending || search.isPending}
-        hint
-      />
       {item.status === "failed" && (
         <FailedDuplicateStrip
           busy={decide.isPending || search.isPending || rescan.isPending}
@@ -550,6 +560,7 @@ function NoMatchScreen({ item }: { item: BankItem }) {
         </Button>
       </div>
     </div>
+    </Shell>
   );
 }
 
@@ -559,37 +570,41 @@ function NoMatchScreen({ item }: { item: BankItem }) {
 function PendingNotice({ item }: { item: BankItem }) {
   const applying = item.status === "applying";
   return (
-    <EmptyState
-      bordered
-      icon={Info}
-      title={applying ? "Applying now" : "Queued to apply"}
-      body={
-        applying
-          ? "beets is importing this folder — this page updates when it lands."
-          : "This decision waits for the import slot. Files move automatically; no further action needed."
-      }
-    />
+    <Shell>
+      <EmptyState
+        bordered
+        icon={Info}
+        title={applying ? "Applying now" : "Queued to apply"}
+        body={
+          applying
+            ? "beets is importing this folder — this page updates when it lands."
+            : "This decision waits for the import slot. Files move automatically; no further action needed."
+        }
+      />
+    </Shell>
   );
 }
 
 function DoneNotice({ item }: { item: BankItem }) {
   const { title, body } = doneOutcome(item);
   return (
-    <EmptyState
-      bordered
-      icon={Success}
-      title={title}
-      body={body}
-      action={
-        item.album_id != null ? (
-          <Button size="sm" asChild>
-            <Link to={`/albums/${item.album_id}`}>View album</Link>
-          </Button>
-        ) : (
-          <RemoveRowButton itemId={item.id} />
-        )
-      }
-    />
+    <Shell>
+      <EmptyState
+        bordered
+        icon={Success}
+        title={title}
+        body={body}
+        action={
+          item.album_id != null ? (
+            <Button size="sm" asChild>
+              <Link to={`/albums/${item.album_id}`}>View album</Link>
+            </Button>
+          ) : (
+            <RemoveRowButton itemId={item.id} />
+          )
+        }
+      />
+    </Shell>
   );
 }
 
@@ -621,13 +636,15 @@ function doneOutcome(item: BankItem): { title: string; body: string } {
 
 function IgnoredNotice({ item }: { item: BankItem }) {
   return (
-    <EmptyState
-      bordered
-      icon={Info}
-      title="Ignored"
-      body="This folder was left as-is. Remove the row to clear it from the list — the files are untouched."
-      action={<RemoveRowButton itemId={item.id} />}
-    />
+    <Shell>
+      <EmptyState
+        bordered
+        icon={Info}
+        title="Ignored"
+        body="This folder was left as-is. Remove the row to clear it from the list — the files are untouched."
+        action={<RemoveRowButton itemId={item.id} />}
+      />
+    </Shell>
   );
 }
 
@@ -693,12 +710,21 @@ function StaleScreen({ item }: { item: BankItem }) {
           : null;
 
   return (
+    <Shell
+      toolbar={
+        <RescanControl
+          rescan={rescan}
+          disabled={start.isPending || remove.isPending}
+          variant="default"
+        />
+      }
+    >
     <div className="flex flex-col gap-6">
       <StatusBanner tone="warning" icon={Warning}>
         <p className="font-medium">This folder changed after it was banked.</p>
         <p className="text-muted-foreground text-sm">
           {item.error ?? "The banked candidates no longer match the files."} Rescan
-          it below to review fresh matches — the banked ones are out of date.
+          the folder to review fresh matches — the banked ones are out of date.
         </p>
       </StatusBanner>
       <p className="text-muted-foreground font-mono text-xs" title={item.folder}>
@@ -709,12 +735,6 @@ function StaleScreen({ item }: { item: BankItem }) {
           {startError}
         </p>
       )}
-      <RescanControl
-        rescan={rescan}
-        disabled={start.isPending || remove.isPending}
-        hint
-        variant="default"
-      />
       <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="outline"
@@ -748,6 +768,7 @@ function StaleScreen({ item }: { item: BankItem }) {
         </p>
       )}
     </div>
+    </Shell>
   );
 }
 

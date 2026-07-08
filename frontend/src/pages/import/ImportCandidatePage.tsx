@@ -9,7 +9,7 @@ import {
   useSubmitChoice,
 } from "@/api/useImport";
 import { albumOriginFromState, BackLink } from "@/components/albums/album-grid";
-import { Info, Spinner, Success } from "@/components/icons";
+import { Info, Refresh, Spinner, Success } from "@/components/icons";
 import { AlreadyInLibrary } from "@/components/import/AlreadyInLibrary";
 import { CandidateReview } from "@/components/import/CandidateReview";
 import { ReleaseSearchPanel } from "@/components/import/ReleaseSearchPanel";
@@ -92,33 +92,38 @@ export function ImportCandidatePage() {
   }
 
   return (
-    <Shell backTo={backTo} backLabel={backLabel}>
-      <ReviewScreen
-        candidate={data}
-        jobId={jobId as string}
-        index={index}
-        backTo={backTo}
-        searching={searching !== null}
-        onSearchStart={(baseline) => setSearching({ baseline })}
-        onSearchError={() => setSearching(null)}
-      />
-    </Shell>
+    <ReviewScreen
+      candidate={data}
+      jobId={jobId as string}
+      index={index}
+      backTo={backTo}
+      backLabel={backLabel}
+      searching={searching !== null}
+      onSearchStart={(baseline) => setSearching({ baseline })}
+      onSearchError={() => setSearching(null)}
+    />
   );
 }
 
-/** Page chrome: the up-link to wherever the user came from. */
+/** Page chrome: the up-link to wherever the user came from. `toolbar` (the
+ * ReviewScreen's Rescan button) rides the back-link row, top-right. */
 function Shell({
   backTo,
   backLabel,
+  toolbar,
   children,
 }: {
   backTo: string;
   backLabel: string;
+  toolbar?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <section className="flex flex-col gap-6" aria-label="Review album">
-      <BackLink to={backTo} label={backLabel} />
+      <div className="flex items-start justify-between gap-4">
+        <BackLink to={backTo} label={backLabel} />
+        {toolbar}
+      </div>
       {children}
     </section>
   );
@@ -129,6 +134,7 @@ function ReviewScreen({
   jobId,
   index,
   backTo,
+  backLabel,
   searching,
   onSearchStart,
   onSearchError,
@@ -137,6 +143,7 @@ function ReviewScreen({
   jobId: string;
   index: number;
   backTo: string;
+  backLabel: string;
   searching: boolean;
   onSearchStart: (baseline: number) => void;
   onSearchError: () => void;
@@ -197,47 +204,51 @@ function ReviewScreen({
   const relookupBusy = searching || submit.isPending || applySubmit.isPending;
 
   return (
-    <div className="flex flex-col gap-6">
-      <CandidateReview
-        candidate={candidate}
-        nowCoverUrl={candidate.has_current_art ? importCoverUrl(jobId, index) : null}
-        selected={selected}
-        onSelect={setSelected}
-      />
-      {existing.length > 0 && (
-        <AlreadyInLibrary
-          existing={existing}
-          blurb="This album matches one you already have. Applying will ask you to resolve it — Skip new, Keep both, Replace, or Merge — with a per-track comparison."
-        />
-      )}
-      <ReleaseSearchPanel
-        onSearch={runSearch}
-        busy={relookupBusy}
-        feedback={candidate.search_feedback ?? null}
-        error={submit.isError}
-      />
-      <div className="flex items-center gap-3">
+    <Shell
+      backTo={backTo}
+      backLabel={backLabel}
+      toolbar={
         <Button
           variant="outline"
           size="sm"
+          className="shrink-0"
           disabled={relookupBusy}
+          title="Re-reads the folder from disk and matches it again."
           onClick={runRescan}
         >
-          Rescan folder
+          <Refresh aria-hidden="true" /> Rescan folder
         </Button>
-        <p className="text-muted-foreground text-xs">
-          Changed the files on disk? Re-reads the folder and matches it again.
-        </p>
+      }
+    >
+      <div className="flex flex-col gap-6">
+        <CandidateReview
+          candidate={candidate}
+          nowCoverUrl={candidate.has_current_art ? importCoverUrl(jobId, index) : null}
+          selected={selected}
+          onSelect={setSelected}
+        />
+        {existing.length > 0 && (
+          <AlreadyInLibrary
+            existing={existing}
+            blurb="This album matches one you already have. Applying will ask you to resolve it — Skip new, Keep both, Replace, or Merge — with a per-track comparison."
+          />
+        )}
+        <ReleaseSearchPanel
+          onSearch={runSearch}
+          busy={relookupBusy}
+          feedback={candidate.search_feedback ?? null}
+          error={submit.isError}
+        />
+        <ReviewActions
+          onDecide={decide}
+          applyPending={applySubmit.isPending}
+          applyError={applySubmit.isError}
+          // Apply is blocked while a search/rescan is running too, keeping the
+          // mutual exclusion symmetric.
+          disabled={searching || submit.isPending}
+        />
       </div>
-      <ReviewActions
-        onDecide={decide}
-        applyPending={applySubmit.isPending}
-        applyError={applySubmit.isError}
-        // Apply is blocked while a search/rescan is running too, keeping the
-        // mutual exclusion symmetric.
-        disabled={searching || submit.isPending}
-      />
-    </div>
+    </Shell>
   );
 }
 

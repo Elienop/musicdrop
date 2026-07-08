@@ -158,6 +158,17 @@ function MatchHeader({
   );
 }
 
+/** Strip beets' literal "None" segments from a stored disambiguation — rows
+ * banked before the adapter-side sanitizer keep the raw string forever. */
+function cleanDisambiguation(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const parts = value
+    .split(",")
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0 && p !== "None");
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
 /** Pick a different ranked release. Selecting one both re-pins what Apply
  * imports AND re-renders the whole preview above for that release (via
  * `resolveSelected`). A native <select> styled as a control — the option text
@@ -181,12 +192,15 @@ function CandidateSwitcher({
           aria-label="Candidate release"
           className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full appearance-none rounded-md border px-3 py-2 pr-9 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
         >
-          {options.map((opt) => (
-            <option key={opt.index} value={opt.index}>
-              {Math.round(opt.confidence)}% · {opt.data_source ?? "?"}
-              {opt.disambiguation ? ` · ${opt.disambiguation}` : ""}
-            </option>
-          ))}
+          {options.map((opt) => {
+            const disambig = cleanDisambiguation(opt.disambiguation);
+            return (
+              <option key={opt.index} value={opt.index}>
+                {Math.round(opt.confidence)}% · {opt.data_source ?? "?"}
+                {disambig ? ` · ${disambig}` : ""}
+              </option>
+            );
+          })}
         </select>
         <Expand
           className="text-muted-foreground pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2"

@@ -782,4 +782,19 @@ describe("ImportCandidatePage", () => {
     );
     expect(screen.getByLabelText(/release url or id/i)).toBeDisabled();
   });
+
+  test("rescan folder rides the top toolbar; the inline hint is gone", async () => {
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
+    renderAt();
+    const rescanButton = await screen.findByRole("button", { name: /rescan folder/i });
+    const h1 = screen.getByRole("heading", { level: 1 });
+    expect(
+      rescanButton.compareDocumentPosition(h1) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(rescanButton).toHaveAttribute(
+      "title",
+      "Re-reads the folder from disk and matches it again.",
+    );
+    expect(screen.queryByText(/changed the files on disk\?/i)).not.toBeInTheDocument();
+  });
 });

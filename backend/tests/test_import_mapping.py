@@ -256,3 +256,27 @@ def test_map_unmatched_local_file_is_reported() -> None:
     assert candidate.unmatched[0].track == 3
     # beets flags the surplus local file as an "unmatched tracks" penalty.
     assert "unmatched tracks" in candidate.changed_fields
+
+
+def test_clean_disambig_drops_none_segments() -> None:
+    # beets' Match.disambig_string str()-joins its disambig fields, so missing
+    # values arrive as literal "None" segments — the FE dropdown showed
+    # "Deezer, None, 2024, None, …". The adapter strips them.
+    from app.beets.import_mapping import _clean_disambig
+
+    assert (
+        _clean_disambig("Deezer, None, 2024, None, Hit Wave Music, None")
+        == "Deezer, 2024, Hit Wave Music"
+    )
+    assert _clean_disambig("None, None") is None
+    assert _clean_disambig("2024, CD") == "2024, CD"
+    assert _clean_disambig("") is None
+    assert _clean_disambig(None) is None
+
+
+def test_candidate_options_disambiguation_never_carries_none_segments() -> None:
+    from app.beets.import_mapping import map_candidate_options
+
+    options = map_candidate_options([_perfect_match(), _diff_match()])
+    for option in options:
+        assert "None" not in (option.disambiguation or "")

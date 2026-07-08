@@ -507,4 +507,47 @@ describe("BankReviewPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /rescan folder/i }));
     expect(await screen.findByText(/no audio files remain/i)).toBeInTheDocument();
   });
+
+  test("filters legacy 'None' segments out of candidate switcher labels", async () => {
+    // Rows banked before the adapter-side fix carry beets' raw
+    // "Deezer, None, 2024, …" disambig string forever — display-side guard.
+    const legacy = {
+      ...candidate,
+      options: [
+        candidate.options[0],
+        {
+          ...candidate.options[1],
+          disambiguation: "Deezer, None, 2024, None, Hit Wave Music, None",
+        },
+      ],
+    };
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(
+          bankItem({ parked: { album_index: 0, folder: "/inbox/BoC", candidate: legacy } }),
+        ),
+      ),
+    );
+    renderRow();
+    await screen.findAllByText(/after import/i);
+    expect(
+      screen.getByRole("option", { name: "64% · MusicBrainz · Deezer, 2024, Hit Wave Music" }),
+    ).toBeInTheDocument();
+  });
+
+  test("rescan folder rides the top toolbar; the inline hint became its tooltip", async () => {
+    server.use(http.get(ITEM, () => HttpResponse.json(bankItem())));
+    renderRow();
+    const h1 = await screen.findByRole("heading", { name: /Music Has the Right to Children/ });
+    const button = screen.getByRole("button", { name: /rescan folder/i });
+    // Top chrome: the button precedes the h1 in DOM order (old spot was
+    // below the tracklist, after it).
+    expect(
+      button.compareDocumentPosition(h1) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(button).toHaveAttribute(
+      "title",
+      "Re-reads the folder from disk and matches it again.",
+    );
+  });
 });
