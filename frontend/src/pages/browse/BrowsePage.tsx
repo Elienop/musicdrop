@@ -17,10 +17,15 @@ import { EmptyState } from "@/components/system/EmptyState";
 import { ErrorState } from "@/components/system/ErrorState";
 import { PageBody, PageHeader } from "@/components/system/PageHeader";
 import { PageSkeleton } from "@/components/system/PageSkeleton";
-import { PAGE_SIZE, Pagination } from "@/components/system/Pagination";
+import {
+  PAGE_SIZE_OPTIONS,
+  PageSizeSelect,
+  Pagination,
+} from "@/components/system/Pagination";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
+import { usePageSize } from "@/lib/usePageSize";
 import { cn } from "@/lib/utils";
 
 const FACET_FIELDS = [
@@ -51,6 +56,7 @@ type FacetParam = (typeof FACET_FIELDS)[number]["param"];
  */
 export function BrowsePage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const { pageSize, setPageSize } = usePageSize();
 
   const filters: BrowseFilters = {
     genre: searchParams.getAll("genre"),
@@ -72,7 +78,7 @@ export function BrowsePage() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const facetsQuery = useBrowseFacets();
-  const albumsQuery = useBrowseAlbums(filters, sort, PAGE_SIZE, offset);
+  const albumsQuery = useBrowseAlbums(filters, sort, pageSize, offset);
 
   const toggle = (param: FacetParam, value: string) => {
     const next = new URLSearchParams(searchParams);
@@ -232,7 +238,7 @@ export function BrowsePage() {
               reserved min-h-8, so applying the FIRST filter fills it instead
               of inserting a new row that shoves the grid down. Chips wrap on
               the left; the sort select stays pinned right and always visible. */}
-          <div className="flex min-h-8 items-center gap-2">
+          <div className="flex min-h-8 flex-wrap items-center gap-2">
             <div className="flex flex-1 flex-wrap items-center gap-2">
               {hasFilters ? (
                 <>
@@ -265,17 +271,33 @@ export function BrowsePage() {
                 </span>
               )}
             </div>
-            <select
-              aria-label="Sort albums"
-              className="border-input bg-background ml-auto h-8 shrink-0 rounded-md border px-2 text-sm"
-              value={sort}
-              onChange={(e) =>
-                setSort(e.target.value === "added" ? "added" : "artist")
-              }
-            >
-              <option value="artist">A–Z (artist)</option>
-              <option value="added">Recently added</option>
-            </select>
+            <div className="ml-auto flex shrink-0 items-center gap-2">
+              <select
+                aria-label="Sort albums"
+                className="border-input bg-background h-8 shrink-0 rounded-md border px-2 text-sm"
+                value={sort}
+                onChange={(e) =>
+                  setSort(e.target.value === "added" ? "added" : "artist")
+                }
+              >
+                <option value="artist">A–Z (artist)</option>
+                <option value="added">Recently added</option>
+              </select>
+              {total > PAGE_SIZE_OPTIONS[0] && (
+                <PageSizeSelect value={pageSize} onChange={setPageSize} />
+              )}
+              {total > pageSize && (
+                <Pagination
+                  compact
+                  label="Pagination (top)"
+                  total={total}
+                  offset={offset}
+                  limit={pageSize}
+                  busy={isFetching}
+                  onOffsetChange={goToOffset}
+                />
+              )}
+            </div>
           </div>
           {/* NO-JUMP INVARIANT: reserved results height — filter flips never
               collapse the column under the sticky rail. */}
@@ -287,7 +309,7 @@ export function BrowsePage() {
               />
             ) : albumsQuery.isPending ? (
               <PageSkeleton announce="Loading albums…">
-                <AlbumsGridSkeleton count={Math.min(PAGE_SIZE, 12)} />
+                <AlbumsGridSkeleton count={Math.min(pageSize, 12)} />
               </PageSkeleton>
             ) : total === 0 ? (
               hasFilters ? (
@@ -346,12 +368,12 @@ export function BrowsePage() {
                     </li>
                   ))}
                 </ul>
-                {total > PAGE_SIZE && (
+                {total > pageSize && (
                   <div className="mt-6">
                     <Pagination
                       total={total}
                       offset={offset}
-                      limit={PAGE_SIZE}
+                      limit={pageSize}
                       busy={isFetching}
                       onOffsetChange={goToOffset}
                     />
