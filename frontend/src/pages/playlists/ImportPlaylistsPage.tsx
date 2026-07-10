@@ -523,7 +523,12 @@ function EntryRow({
           <span className="text-muted-foreground min-w-0 shrink truncate text-sm">
             <span aria-hidden="true">→ </span>
             <span className="text-foreground font-medium">{chosen.title}</span>
-            {chosen.artist && ` · ${chosen.artist}`}
+            {chosen.artist && (
+              <span>
+                <span aria-hidden="true"> · </span>
+                {chosen.artist}
+              </span>
+            )}
           </span>
         )}
         {!hasSuggestions && (
