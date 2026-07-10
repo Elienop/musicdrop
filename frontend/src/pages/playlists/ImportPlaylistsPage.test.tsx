@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { beforeEach, describe, expect, test, vi } from "vitest";
@@ -452,5 +452,117 @@ describe("ImportPlaylistsPage", () => {
 
     await waitFor(() => expect(previewBody).not.toBeNull());
     expect(previewBody).toEqual({ plex_playlists: ["Road"] });
+  });
+
+  test("positions render 1-based even though the backend sends 0-based", async () => {
+    server.use(
+      http.post(PREVIEW_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            {
+              name: "Road",
+              matched_count: 0,
+              ambiguous_count: 0,
+              unmatched_count: 1,
+              entries: [entry({ position: 0, status: "unmatched" })],
+            },
+          ],
+        }),
+      ),
+    );
+    renderImport();
+    await userEvent.upload(
+      screen.getByLabelText(/upload playlist files/i),
+      new File(["#EXTM3U\nBand - Alpha\n"], "Road.m3u8"),
+    );
+
+    const row = (await screen.findByText("Alpha")).closest("li");
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getByText("1")).toBeInTheDocument();
+    expect(within(row as HTMLElement).queryByText("0")).not.toBeInTheDocument();
+  });
+
+  test("the badge follows the live resolution, not the frozen preview status", async () => {
+    server.use(
+      http.post(PREVIEW_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            {
+              name: "Road",
+              matched_count: 0,
+              ambiguous_count: 1,
+              unmatched_count: 0,
+              entries: [
+                entry({
+                  status: "ambiguous",
+                  suggestions: [summary({ item_id: 11, title: "Alpha (Live)" })],
+                }),
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    renderImport();
+    await userEvent.upload(
+      screen.getByLabelText(/upload playlist files/i),
+      new File(["#EXTM3U\nBand - Alpha\n"], "Road.m3u8"),
+    );
+
+    const row = (await screen.findByText("Alpha")).closest("li") as HTMLElement;
+    expect(within(row).getByText("Ambiguous")).toBeInTheDocument();
+
+    // Accepting the chip flips the badge to Matched and shows the inline
+    // → confirmation on the same row (frozen entry.status would still say
+    // ambiguous — the whole point of the live derivation).
+    await userEvent.click(within(row).getByRole("button", { name: /alpha \(live\)/i }));
+    expect(within(row).getByText("Matched")).toBeInTheDocument();
+    expect(within(row).queryByText("Ambiguous")).not.toBeInTheDocument();
+    expect(within(row).getByText("Alpha (Live)", { selector: "span" })).toBeInTheDocument();
+  });
+
+  test("a suggestion-less row is a single line with Search inline; chips get a second line", async () => {
+    server.use(
+      http.post(PREVIEW_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            {
+              name: "Road",
+              matched_count: 0,
+              ambiguous_count: 1,
+              unmatched_count: 1,
+              entries: [
+                entry({ position: 0, status: "unmatched" }),
+                entry({
+                  position: 1,
+                  source: "Ghost - Gone",
+                  artist: "Ghost",
+                  title: "Gone",
+                  status: "ambiguous",
+                  suggestions: [summary({ item_id: 9, title: "Gone (Remaster)" })],
+                }),
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    renderImport();
+    await userEvent.upload(
+      screen.getByLabelText(/upload playlist files/i),
+      new File(["#EXTM3U\nBand - Alpha\nGhost - Gone\n"], "Road.m3u8"),
+    );
+
+    // The bare unmatched row: no "No library match" filler, no ↳ chips line —
+    // just its identity, an inline Search escape, and the badge.
+    const bare = (await screen.findByText("Alpha")).closest("li") as HTMLElement;
+    expect(within(bare).queryByText(/no library match/i)).not.toBeInTheDocument();
+    expect(within(bare).queryByText("↳")).not.toBeInTheDocument();
+    expect(within(bare).getByRole("button", { name: /search/i })).toBeInTheDocument();
+
+    // The chip row keeps its second line, marked by the ↳ affordance.
+    const chips = (await screen.findByText("Gone")).closest("li") as HTMLElement;
+    expect(within(chips).getByText("↳")).toBeInTheDocument();
+    expect(within(chips).getByRole("button", { name: /gone \(remaster\)/i })).toBeInTheDocument();
   });
 });

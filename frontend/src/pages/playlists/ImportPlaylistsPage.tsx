@@ -363,10 +363,20 @@ export function ImportPlaylistsPage() {
   );
 }
 
-const STATUS_VARIANT: Record<ImportEntryPreview["status"], "secondary" | "outline"> = {
-  matched: "secondary",
-  ambiguous: "outline",
-  unmatched: "outline",
+/** Live entry status — derived from the CURRENT resolution, not the preview's
+ * frozen verdict. The header tallies already follow live state; a frozen badge
+ * would contradict them the moment a chip is picked. */
+type LiveStatus = "matched" | "ambiguous" | "unmatched";
+
+function liveStatus(entry: ImportEntryPreview, resolved: number | null): LiveStatus {
+  if (resolved !== null) return "matched";
+  return entry.suggestions.length > 0 ? "ambiguous" : "unmatched";
+}
+
+const LIVE_STATUS_LABEL: Record<LiveStatus, string> = {
+  matched: "Matched",
+  ambiguous: "Ambiguous",
+  unmatched: "Unmatched",
 };
 
 /** One previewed playlist: a summary row (name + match tallies) with an
@@ -404,7 +414,7 @@ function PlaylistReview({
             <span>{unmatched} unmatched</span>
           </span>
         </summary>
-        <ul className="flex flex-col border-t">
+        <ul className="divide-border flex flex-col divide-y border-t">
           {playlist.entries.map((entry) => (
             <EntryRow
               key={entry.position}
@@ -421,8 +431,11 @@ function PlaylistReview({
   );
 }
 
-/** One entry: source text, status chip, its resolution (match confirmation or
- * suggestion buttons), and a Search escape hatch to the shared picker. */
+/** One entry: a single line — 1-based position, the track's own identity,
+ * inline resolution (→ confirmation, or a Search escape when there are no
+ * chips) and the live status badge — plus a second line ONLY when suggestion
+ * chips exist. Suggestion-less unmatched rows (the common case on a big
+ * import) stay one line tall. */
 function EntryRow({
   entry,
   resolved,
@@ -436,11 +449,16 @@ function EntryRow({
   onUseSuggestion: (itemId: number) => void;
   onSearch: () => void;
 }) {
+  const status = liveStatus(entry, resolved);
+  const hasSuggestions = entry.suggestions.length > 0;
   return (
     <li className="flex flex-col gap-2 px-4 py-3 last:rounded-b-xl">
       <div className="flex items-center gap-3">
-        <span className="text-muted-foreground w-6 shrink-0 text-right text-sm tabular-nums">
-          {entry.position}
+        {/* 1-based for humans — the backend's positions are 0-based (m3u line
+            order / Plex enumerate) and "track 0" reads like a bug. `position`
+            itself stays the resolutions key; only the rendering shifts. */}
+        <span className="text-muted-foreground w-8 shrink-0 text-right text-sm tabular-nums">
+          {entry.position + 1}
         </span>
         {entry.title ? (
           // Lead with what the track IS — title · artist · duration, the thing
@@ -470,43 +488,56 @@ function EntryRow({
             {entry.source}
           </span>
         )}
-        <Badge variant={STATUS_VARIANT[entry.status]} className="shrink-0 capitalize">
-          {entry.status}
+        {chosen && (
+          <span className="text-muted-foreground min-w-0 shrink truncate text-sm">
+            <span aria-hidden="true">→ </span>
+            <span className="text-foreground font-medium">{chosen.title}</span>
+            {chosen.artist && ` · ${chosen.artist}`}
+          </span>
+        )}
+        {!hasSuggestions && (
+          <Button size="sm" variant="ghost" className="shrink-0" onClick={onSearch}>
+            <Search className="size-4" aria-hidden="true" /> Search…
+          </Button>
+        )}
+        <Badge
+          variant={status === "matched" ? "secondary" : "outline"}
+          className="shrink-0"
+        >
+          {LIVE_STATUS_LABEL[status]}
         </Badge>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 pl-9">
-        {chosen ? (
-          <span className="text-sm">
-            <span aria-hidden="true">→ </span>
-            <span className="font-medium">{chosen.title}</span>
-            {chosen.artist && <span className="text-muted-foreground"> · {chosen.artist}</span>}
+      {hasSuggestions && (
+        // pl-11 = the position gutter (w-8) + the gap-3, so chips hang under
+        // the title, not under the number.
+        <div className="flex flex-wrap items-center gap-2 pl-11">
+          <span aria-hidden="true" className="text-muted-foreground text-sm">
+            ↳
           </span>
-        ) : (
-          <span className="text-muted-foreground text-sm">No library match</span>
-        )}
-        {entry.suggestions.map((track) => {
-          const active = resolved === track.item_id;
-          return (
-            <Button
-              key={track.item_id}
-              size="sm"
-              variant={active ? "secondary" : "outline"}
-              onClick={() => onUseSuggestion(track.item_id)}
-            >
-              {track.title}
-              {track.duration_seconds !== null && (
-                <span className="text-muted-foreground ml-1 tabular-nums">
-                  {formatDuration(track.duration_seconds)}
-                </span>
-              )}
-            </Button>
-          );
-        })}
-        <Button size="sm" variant="ghost" onClick={onSearch}>
-          <Search className="size-4" aria-hidden="true" /> Search…
-        </Button>
-      </div>
+          {entry.suggestions.map((track) => {
+            const active = resolved === track.item_id;
+            return (
+              <Button
+                key={track.item_id}
+                size="sm"
+                variant={active ? "secondary" : "outline"}
+                onClick={() => onUseSuggestion(track.item_id)}
+              >
+                {track.title}
+                {track.duration_seconds !== null && (
+                  <span className="text-muted-foreground ml-1 tabular-nums">
+                    {formatDuration(track.duration_seconds)}
+                  </span>
+                )}
+              </Button>
+            );
+          })}
+          <Button size="sm" variant="ghost" onClick={onSearch}>
+            <Search className="size-4" aria-hidden="true" /> Search…
+          </Button>
+        </div>
+      )}
     </li>
   );
 }
