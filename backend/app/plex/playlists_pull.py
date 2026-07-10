@@ -8,6 +8,7 @@ app/plex/ (adapter boundary); ``client.connect`` is the patchable seam.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 
 from plexapi.exceptions import PlexApiException
@@ -18,6 +19,8 @@ from app.models.plex import PlexPlaylistInfo
 from app.plex import client as client  # explicit re-export: the patchable seam
 from app.plex.config import PlexConfig
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
+
+logger = logging.getLogger(__name__)
 
 
 def _require(config: PlexConfig) -> None:
@@ -93,16 +96,60 @@ def _sniff_poster_format(data: bytes) -> Literal["jpg", "png"] | None:
     return None
 
 
+def _fetch_image(server: Any, key: str) -> tuple[bytes, Literal["jpg", "png"]] | None:
+    """GET ``key`` through the server's authed session and sniff its format.
+
+    Returns the bytes + format, or ``None`` when the bytes aren't a JPEG/PNG.
+    """
+    response = server._session.get(server.url(key, includeToken=True))
+    response.raise_for_status()
+    data: bytes = response.content
+    fmt = _sniff_poster_format(data)
+    return (data, fmt) if fmt is not None else None
+
+
+def _selected_poster_bytes(
+    server: Any, playlist: Any, title: str
+) -> tuple[bytes, Literal["jpg", "png"]] | None:
+    """The user's chosen custom poster, if any — degrades to ``None`` on failure.
+
+    plexapi's ``playlist.posters()`` (PosterMixin) lists the custom/agent
+    posters; the active one has ``selected=True`` and a fetchable ``key``. A
+    ``posters()`` failure, no selected entry, a falsy key, or bytes that fail the
+    JPEG/PNG sniff all fall through to ``None`` so the pull degrades to the
+    composite mosaic instead of aborting.
+    """
+    try:
+        posters = playlist.posters()
+    except Exception:  # best-effort: any posters() failure degrades to the composite mosaic
+        logger.debug("posters() failed for playlist %r; using composite", title, exc_info=True)
+        return None
+    selected = next((p for p in posters if getattr(p, "selected", False)), None)
+    if selected is None:
+        logger.debug("no selected custom poster for playlist %r", title)
+        return None
+    key = getattr(selected, "key", None)
+    if not key:
+        logger.debug("selected poster has no key for playlist %r", title)
+        return None
+    result = _fetch_image(server, str(key))
+    if result is None:
+        logger.debug("selected poster for playlist %r wasn't JPEG/PNG; using composite", title)
+    return result
+
+
 def download_poster(
     config: PlexConfig, playlist_title: str
 ) -> tuple[bytes, Literal["jpg", "png"]] | None:
     """Fetch the poster of the audio playlist titled ``playlist_title`` (exact
     match) through the server's authed session.
 
-    Returns the raw bytes + sniffed format, or ``None`` when the playlist is
-    absent, has no thumb, or the thumb isn't a JPEG/PNG. A genuine Plex/network
-    error raises ``PlexConnectionError`` (same as the other reads here) — the
-    import commit treats the whole pull as best-effort and swallows either way.
+    Prefers the user's selected custom poster (``playlist.posters()``); only
+    when none is set does it fall back to the composite mosaic. Returns the raw
+    bytes + sniffed format, or ``None`` when the playlist is absent, has no
+    usable poster, or the image isn't a JPEG/PNG. A genuine Plex/network error
+    raises ``PlexConnectionError`` (same as the other reads here) — the import
+    commit treats the whole pull as best-effort and swallows either way.
     """
     _require(config)
     try:
@@ -112,14 +159,20 @@ def download_poster(
             None,
         )
         if playlist is None:
+            logger.debug("no audio playlist titled %r for poster pull", playlist_title)
             return None
+        custom = _selected_poster_bytes(server, playlist, playlist_title)
+        if custom is not None:
+            return custom
+        # No custom poster selected — fall back to plexapi's ``thumb``, which is
+        # a property alias for ``composite`` (Plex's auto-generated 2x2 mosaic).
         thumb = getattr(playlist, "thumb", None)
         if not thumb:
+            logger.debug("playlist %r has no composite/thumb", playlist_title)
             return None
-        response = server._session.get(server.url(str(thumb), includeToken=True))
-        response.raise_for_status()
-        data: bytes = response.content
-        fmt = _sniff_poster_format(data)
-        return (data, fmt) if fmt is not None else None
+        result = _fetch_image(server, str(thumb))
+        if result is None:
+            logger.debug("composite/thumb for playlist %r wasn't JPEG/PNG", playlist_title)
+        return result
     except (PlexApiException, RequestException) as exc:
         raise PlexConnectionError("Couldn't read the Plex playlist poster.") from exc
