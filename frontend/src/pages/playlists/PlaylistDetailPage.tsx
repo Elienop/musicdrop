@@ -6,6 +6,7 @@ import {
   type PlaylistDetail,
   type PlaylistTrack,
   useDeletePlaylist,
+  useDeletePlaylistArtwork,
   usePlaylist,
   useRemoveEntry,
   useRenamePlaylist,
@@ -13,12 +14,15 @@ import {
   useResolveEntry,
   useSetTargets,
   useSyncPlaylist,
+  useUploadPlaylistArtwork,
 } from "@/api/usePlaylists";
 import { usePlexUsers } from "@/api/usePlex";
 import { BackLink } from "@/components/albums/album-grid";
+import { PlaylistCover } from "@/components/playlists/PlaylistCover";
 import { TrackMatchPicker } from "@/components/playlists/TrackMatchPicker";
 import {
   Close,
+  Cover,
   Edit,
   Error as ErrorIcon,
   MoveDown,
@@ -28,6 +32,7 @@ import {
   Refresh,
   Spinner,
   Success,
+  Upload,
   Warning,
 } from "@/components/icons";
 import { EmptyState } from "@/components/system/EmptyState";
@@ -232,6 +237,19 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
 
   const [editingName, setEditingName] = useState(false);
   const [draftName, setDraftName] = useState(playlist.name);
+
+  // Inline "Edit artwork" disclosure (album CoverEditPanel idiom): opening moves
+  // focus into the panel; closing from the toggle returns focus to it.
+  const [editingArtwork, setEditingArtwork] = useState(false);
+  const artworkPanelRef = useRef<HTMLDivElement>(null);
+  const artworkToggleRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (editingArtwork) artworkPanelRef.current?.focus();
+  }, [editingArtwork]);
+  const closeArtworkPanel = () => {
+    setEditingArtwork(false);
+    artworkToggleRef.current?.focus();
+  };
 
   // The one pending entry whose match picker is open (uid), or null. A single
   // shared picker is driven off this — clicking a row's "Match…" arms it, the
@@ -452,6 +470,13 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
   // in step with optimistic add/remove/resolve edits, not the last server body.
   const unmatchedCount = tracks.filter((t) => t.pending).length;
 
+  // How many Plex copies actually exist for this playlist — targets whose sync
+  // recorded a rating_key. Drives the delete-dialog's honest "…N synced Plex
+  // copies…" line (a failed/empty target has a slot but no copy on Plex).
+  const syncedPlexCopies = Object.values(playlist.plex ?? {}).filter(
+    (state) => state.rating_key,
+  ).length;
+
   return (
     <section className="flex flex-col gap-6" aria-label="Playlist">
       <BackLink to="/playlists" label="Playlists" />
@@ -461,7 +486,12 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
       </p>
 
       <header className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-col gap-2">
+        <div className="flex min-w-0 items-start gap-4">
+          <PlaylistCover
+            playlist={playlist}
+            className="border-border size-24 shrink-0 rounded-xl border"
+          />
+          <div className="flex min-w-0 flex-col gap-2">
           {editingName ? (
             <div className="flex items-center gap-2">
               <Input
@@ -524,9 +554,20 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
             {tracks.length} {tracks.length === 1 ? "track" : "tracks"}
             {unmatchedCount > 0 ? ` · ${unmatchedCount} unmatched` : ""}
           </p>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <Button
+            ref={artworkToggleRef}
+            variant="outline"
+            size="sm"
+            onClick={() => setEditingArtwork((v) => !v)}
+            aria-expanded={editingArtwork}
+            aria-controls="playlist-artwork-panel"
+          >
+            <Cover className="size-4" aria-hidden="true" /> Edit artwork
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -572,6 +613,15 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
                       {Object.keys(playlist.plex).length === 1 ? "" : "s"}).
                     </>
                   ) : null}
+                  {/* Count only the copies that actually landed on Plex (have a
+                      recorded rating_key) — a failed/empty target holds a plex
+                      slot but has no copy to remove. Built as one string so the
+                      sentence reads exactly, uninterrupted by interpolation. */}
+                  {syncedPlexCopies > 0
+                    ? ` Also removes its ${syncedPlexCopies} synced Plex ${
+                        syncedPlexCopies === 1 ? "copy" : "copies"
+                      } on Plex.`
+                    : null}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               {remove.isError && (
@@ -608,6 +658,17 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
           </AlertDialog>
         </div>
       </header>
+
+      {editingArtwork && (
+        <div
+          id="playlist-artwork-panel"
+          ref={artworkPanelRef}
+          tabIndex={-1}
+          className="outline-none"
+        >
+          <ArtworkEditPanel playlist={playlist} onClose={closeArtworkPanel} />
+        </div>
+      )}
 
       {/* Error stack — rename stays form-adjacent inline text; the list/sync
           mutation failures ride StatusBanner (tone=destructive ⇒ role=alert). */}
@@ -751,6 +812,105 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
         onPick={(picked) => handlePick(picked.item_id)}
         title="Match to a library track"
       />
+    </section>
+  );
+}
+
+/** Inline artwork editor (album CoverEditPanel idiom, trimmed to what a
+ * playlist needs): upload a custom JPEG/PNG cover, or remove it to fall back to
+ * the album-cover collage. The upload endpoint takes raw bytes; the picker ships
+ * the File straight through. A 415/413 surfaces the server's own reason. The
+ * Plex "Out of date" signal follows the server-side `updated_at` bump on its own
+ * — no extra staleness plumbing here. */
+function ArtworkEditPanel({
+  playlist,
+  onClose,
+}: {
+  playlist: PlaylistDetail;
+  onClose: () => void;
+}) {
+  const upload = useUploadPlaylistArtwork(playlist.id);
+  const removeArtwork = useDeletePlaylistArtwork(playlist.id);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  // What just succeeded, so the panel can confirm the outcome inline (cleared
+  // when a new action starts).
+  const [outcome, setOutcome] = useState<"uploaded" | "removed" | null>(null);
+  const busy = upload.isPending || removeArtwork.isPending;
+
+  return (
+    <section
+      aria-label="Edit artwork"
+      className="flex flex-col gap-3 rounded-lg border p-4"
+    >
+      <p className="text-muted-foreground text-sm">
+        Upload a custom cover (JPEG or PNG) for this playlist. It replaces the
+        album-cover collage and is pushed to Plex on the next sync.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="secondary"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={busy}
+        >
+          <Upload className="size-4" aria-hidden="true" />
+          {upload.isPending ? "Uploading…" : "Upload an image…"}
+        </Button>
+        {playlist.artwork_hash && (
+          <Button
+            variant="outline"
+            aria-label="Remove artwork"
+            onClick={() => {
+              setOutcome(null);
+              removeArtwork.mutate(undefined, {
+                onSuccess: () => setOutcome("removed"),
+              });
+            }}
+            disabled={busy}
+          >
+            <Remove className="size-4" aria-hidden="true" />
+            {removeArtwork.isPending ? "Removing…" : "Remove"}
+          </Button>
+        )}
+        <Button variant="ghost" onClick={onClose} disabled={busy}>
+          Close
+        </Button>
+      </div>
+      {/* Hidden native picker the "Upload an image…" button opens — the
+          shadcn-idiomatic way to style a file input. Uploads on pick (no
+          preview step): the header cover reflects the result after refetch. */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/jpeg,image/png"
+        aria-label="Upload artwork image"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = ""; // allow re-picking the same file
+          if (!file) return;
+          setOutcome(null);
+          upload.mutate(file, { onSuccess: () => setOutcome("uploaded") });
+        }}
+      />
+      {upload.isError && (
+        <StatusBanner tone="destructive" icon={ErrorIcon}>
+          {upload.error.message}
+        </StatusBanner>
+      )}
+      {removeArtwork.isError && (
+        <StatusBanner tone="destructive" icon={ErrorIcon}>
+          {removeArtwork.error.message}
+        </StatusBanner>
+      )}
+      {outcome !== null && !busy && (
+        <p
+          role="status"
+          className="text-muted-foreground inline-flex items-center gap-1 text-sm"
+        >
+          <Success className="text-success size-4 shrink-0" aria-hidden="true" />
+          {outcome === "uploaded" ? "Artwork updated." : "Artwork removed."}
+        </p>
+      )}
     </section>
   );
 }

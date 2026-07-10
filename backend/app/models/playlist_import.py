@@ -107,6 +107,9 @@ class PlaylistImportPlaylist(BaseModel):
     name: str
     description: str = ""
     entries: list[ImportEntry]
+    # The source Plex playlist this was imported from, if any — Task 3 pulls its
+    # poster to seed the new playlist's cover art. Inert until then.
+    plex_source: str | None = None
 
 
 class PlaylistImportRequest(BaseModel):

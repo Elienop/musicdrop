@@ -12,17 +12,20 @@ import os
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.albums import get_library
+from app.api.csrf import verify_upload_origin
+from app.api.http_cache import revalidating_image_response
 from app.api.plex import get_plex_store
 from app.beets.library import LibraryHandle
 from app.beets.playlist_match import build_match_index, match_entries
 from app.beets.playlists import (
     TrackRef,
+    cover_album_ids,
     item_exists,
     m3u_entries,
     resolve_entries,
@@ -60,6 +63,19 @@ from app.plex.paths import translate_path
 router = APIRouter(tags=["playlists"])
 logger = logging.getLogger(__name__)
 
+# Cover-art upload cap. Playlist collages/posters are modest; 8 MiB is generous
+# headroom for a full-res JPEG/PNG while bounding an abusive upload.
+_MAX_ARTWORK_BYTES = 8 * 1024 * 1024
+
+
+def _sniff_image_format(data: bytes) -> Literal["jpg", "png"] | None:
+    """The image format from its magic bytes — JPEG or PNG only, else None."""
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    return None
+
 
 def get_playlists_dir() -> Path:
     """Resolve the owned-playlist store dir from settings.
@@ -72,7 +88,7 @@ def get_playlists_dir() -> Path:
     return Path(settings.beets_dir) / "playlists"
 
 
-def _to_playlist(record: StoredPlaylist) -> Playlist:
+def _to_playlist(record: StoredPlaylist, cover_ids: list[int]) -> Playlist:
     resolved = len(record.resolved_item_ids)
     return Playlist(
         id=record.id,
@@ -84,12 +100,28 @@ def _to_playlist(record: StoredPlaylist) -> Playlist:
         plex=record.plex,
         created_at=record.created_at,
         updated_at=record.updated_at,
+        artwork_hash=record.artwork.hash if record.artwork else None,
+        cover_album_ids=cover_ids,
     )
+
+
+async def _summary(record: StoredPlaylist, handle: LibraryHandle) -> Playlist:
+    """Build the summary model, resolving the collage cover album ids off-thread.
+
+    A playlist with real uploaded artwork never shows the collage (the FE's
+    PlaylistCover short-circuits on ``artwork_hash``), so the album scan is dead
+    weight there — skip it and emit empty cover ids.
+    """
+    if record.artwork is not None:
+        return _to_playlist(record, [])
+    cover_ids = await run_in_threadpool(cover_album_ids, handle, record.resolved_item_ids)
+    return _to_playlist(record, cover_ids)
 
 
 async def _detail_response(record: StoredPlaylist, handle: LibraryHandle) -> PlaylistDetail:
     tracks = await run_in_threadpool(resolve_entries, handle.lib, record.entries)
-    return PlaylistDetail(**_to_playlist(record).model_dump(), tracks=tracks)
+    summary = await _summary(record, handle)
+    return PlaylistDetail(**summary.model_dump(), tracks=tracks)
 
 
 def _export_dir(handle: LibraryHandle) -> Path:
@@ -141,9 +173,10 @@ async def _best_effort_plex_delete(
 @router.get("/playlists", response_model=list[Playlist])
 async def list_playlists_endpoint(
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> list[Playlist]:
     records = await run_in_threadpool(store.list_playlists, playlists_dir)
-    return [_to_playlist(record) for record in records]
+    return [await _summary(record, handle) for record in records]
 
 
 @router.post("/playlists", response_model=Playlist)
@@ -159,7 +192,7 @@ async def create_playlist_endpoint(
         description=body.description,
     )
     await _export_playlist(record, handle)
-    return _to_playlist(record)
+    return await _summary(record, handle)
 
 
 @router.get("/playlists/{playlist_id}", response_model=PlaylistDetail)
@@ -272,6 +305,14 @@ async def sync_playlist_endpoint(
     if not (config.base_url and config.token):
         raise HTTPException(status_code=409, detail="Connect Plex first")
 
+    # The cover-art file to push as the Plex poster: only when the record marks
+    # art AND the file is actually on disk (else None -> no poster upload).
+    artwork_file: Path | None = None
+    if record.artwork is not None:
+        candidate = store.artwork_path(playlists_dir, record.id, record.artwork.format)
+        if candidate.is_file():
+            artwork_file = candidate
+
     try:
         specs = await run_in_threadpool(_plex_specs_for, record, handle, config)
         states = await run_in_threadpool(
@@ -282,6 +323,7 @@ async def sync_playlist_endpoint(
             record.target_plex_users,
             playlist_id=record.id,
             rating_keys={target: state.rating_key for target, state in record.plex.items()},
+            artwork_file=artwork_file,
         )
     except PlexNotConfigured as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -349,7 +391,7 @@ async def update_playlist_endpoint(
     if record is None:
         raise HTTPException(status_code=404, detail="Playlist not found")
     await _export_playlist(record, handle)
-    return _to_playlist(record)
+    return await _summary(record, handle)
 
 
 @router.delete("/playlists/{playlist_id}", status_code=204)
@@ -373,6 +415,74 @@ async def delete_playlist_endpoint(
         await _best_effort_plex_delete(
             plex_store.get(), rating_keys, f"delete {playlist_id}", playlist_id=record.id
         )
+    return Response(status_code=204)
+
+
+@router.get("/playlists/{playlist_id}/artwork")
+async def get_playlist_artwork_endpoint(
+    playlist_id: str,
+    request: Request,
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
+) -> Response:
+    """Serve the playlist's uploaded cover. 404 when the record or file is
+    missing; otherwise a revalidating image (content-hash ETag, no-cache) so a
+    replaced cover shows up without a hard refresh (same mechanics as /cover)."""
+    record = await run_in_threadpool(store.get_playlist, playlists_dir, playlist_id)
+    if record is None or record.artwork is None:
+        raise HTTPException(status_code=404, detail="Artwork not found")
+    path = store.artwork_path(playlists_dir, playlist_id, record.artwork.format)
+    try:
+        image_bytes = await run_in_threadpool(path.read_bytes)
+    except OSError as exc:
+        # The marker says there's art but the file is gone — treat as no cover.
+        raise HTTPException(status_code=404, detail="Artwork not found") from exc
+    mime = "image/jpeg" if record.artwork.format == "jpg" else "image/png"
+    return revalidating_image_response(request, image_bytes, mime)
+
+
+@router.put(
+    "/playlists/{playlist_id}/artwork",
+    response_model=Playlist,
+    dependencies=[Depends(verify_upload_origin)],
+)
+async def put_playlist_artwork_endpoint(
+    playlist_id: str,
+    request: Request,
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> Playlist:
+    """Upload a playlist cover (raw JPEG/PNG bytes). 413 over 8 MiB, 415 for a
+    non-JPEG/PNG body, 404 for an unknown playlist."""
+    # Reject an oversized body before reading it when the client declares its
+    # size; the post-read check below stays authoritative (Content-Length is
+    # client-supplied and may be absent or wrong).
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > _MAX_ARTWORK_BYTES:
+        raise HTTPException(status_code=413, detail="Image too large (max 8 MB)")
+    data = await request.body()
+    if len(data) > _MAX_ARTWORK_BYTES:
+        raise HTTPException(status_code=413, detail="Image too large (max 8 MB)")
+    image_format = _sniff_image_format(data)
+    if image_format is None:
+        raise HTTPException(status_code=415, detail="Unsupported image type (JPEG or PNG only)")
+    record = await run_in_threadpool(
+        store.set_artwork, playlists_dir, playlist_id, data, image_format
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    return await _summary(record, handle)
+
+
+@router.delete("/playlists/{playlist_id}/artwork", status_code=204)
+async def delete_playlist_artwork_endpoint(
+    playlist_id: str,
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
+) -> Response:
+    """Remove the playlist's cover. Idempotent (204 even with no art); 404 only
+    for an unknown playlist."""
+    record = await run_in_threadpool(store.delete_artwork, playlists_dir, playlist_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Playlist not found")
     return Response(status_code=204)
 
 
@@ -431,6 +541,7 @@ async def import_commit_endpoint(
     body: PlaylistImportRequest,
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
     handle: Annotated[LibraryHandle, Depends(get_library)],
+    plex_store: Annotated[PlexConfigStore, Depends(get_plex_store)],
 ) -> PlaylistImportResponse:
     """Create the playlists exactly as reviewed — resolved entries as tracks,
     unresolved ones as position-holding pending rows."""
@@ -474,6 +585,23 @@ async def import_commit_endpoint(
             logger.warning("Playlist import failed for %r", name, exc_info=True)
             failed.append(PlaylistImportFailure(name=name, error="Couldn't save this playlist."))
             continue
+        if playlist.plex_source:
+            try:
+                poster = await run_in_threadpool(
+                    playlists_pull.download_poster, plex_store.get(), playlist.plex_source
+                )
+                if poster is not None:
+                    data, image_format = poster
+                    updated = await run_in_threadpool(
+                        store.set_artwork, playlists_dir, record.id, data, image_format
+                    )
+                    if updated is not None:
+                        record = updated
+            except Exception:
+                # Best-effort poster seed: an artless import is still a successful
+                # import, so any Plex/network failure is logged and swallowed
+                # (mirrors the editSummary best-effort stamp in plex/sync.py).
+                logger.warning("Plex poster pull failed for %r", name, exc_info=True)
         await _export_playlist(record, handle)
-        created.append(_to_playlist(record))
+        created.append(await _summary(record, handle))
     return PlaylistImportResponse(created=created, failed=failed)

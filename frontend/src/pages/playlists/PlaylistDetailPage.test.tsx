@@ -64,6 +64,8 @@ function detail(tracks: Array<Record<string, unknown>>, name = "Late night") {
     plex: {},
     created_at: "2026-06-06T00:00:00+00:00",
     updated_at: "2026-06-06T00:00:00+00:00",
+    artwork_hash: null,
+    cover_album_ids: [],
     tracks,
   };
 }
@@ -95,6 +97,12 @@ function pendingTrack(uid: string, title: string, extra: Record<string, unknown>
     pending: true,
     ...extra,
   };
+}
+
+/** A tiny image File for the artwork picker (PNG magic bytes; content is
+ * irrelevant — the server sniffs the type, the client just ships the bytes). */
+function makeImageFile(name = "art.png", type = "image/png"): File {
+  return new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], name, { type });
 }
 
 /** A `TypedSearchPage` (`type=tracks`) carrying the given track hits. */
@@ -137,6 +145,25 @@ describe("PlaylistDetailPage", () => {
     expect(await screen.findByText("Late night")).toBeInTheDocument();
     expect(screen.getByText("Alpha")).toBeInTheDocument();
     expect(screen.getByText("Beta")).toBeInTheDocument();
+  });
+
+  test("the header shows the playlist cover collage", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          cover_album_ids: [11, 22, 33, 44],
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Late night");
+    const collage = document.querySelector('[data-slot="playlist-cover-collage"]');
+    expect(collage).not.toBeNull();
+    expect(collage?.querySelectorAll("img")).toHaveLength(4);
   });
 
   test("removes a track", async () => {
@@ -810,6 +837,69 @@ describe("PlaylistDetailPage", () => {
     expect(screen.queryByText(/also removes it from Plex/i)).not.toBeInTheDocument();
   });
 
+  test("delete dialog counts the synced Plex copies that actually exist", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: {
+            admin: {
+              rating_key: "1",
+              status: "ok",
+              missing: 0,
+              synced_at: "2026-06-07T01:00:00+00:00",
+              error: null,
+            },
+            "7": {
+              rating_key: "2",
+              status: "ok",
+              missing: 0,
+              synced_at: "2026-06-07T01:00:00+00:00",
+              error: null,
+            },
+          },
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /delete playlist/i }));
+    expect(
+      await screen.findByText(/Also removes its 2 synced Plex copies on Plex\./),
+    ).toBeInTheDocument();
+  });
+
+  test("delete dialog omits the synced-copies note when no copy has a rating key", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          // A target that was never created on Plex (no rating_key) must not be
+          // counted as a synced copy — even though it occupies a plex slot.
+          plex: {
+            admin: {
+              rating_key: null,
+              status: "failed",
+              missing: 0,
+              synced_at: null,
+              error: "boom",
+            },
+          },
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /delete playlist/i }));
+    expect(screen.queryByText(/synced Plex/)).not.toBeInTheDocument();
+  });
+
   // ——— Focus restoration (characterization: pins the pendingFocus engine the
   // useFocusAfterMutation swap must preserve exactly) ———
 
@@ -929,5 +1019,111 @@ describe("PlaylistDetailPage", () => {
     await screen.findByText("Alpha");
     await userEvent.click(screen.getByRole("button", { name: /remove alpha/i }));
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Removed Alpha"));
+  });
+
+  // ——— Artwork editor (Task 6) ———
+
+  test("uploads custom artwork and the header cover shows the new hash", async () => {
+    let uploaded = false;
+    let bodyLen = -1;
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          artwork_hash: uploaded ? "newhash" : null,
+        }),
+      ),
+      http.put(`${BASE}/artwork`, async ({ request }) => {
+        bodyLen = (await request.arrayBuffer()).byteLength;
+        uploaded = true;
+        return HttpResponse.json({ ...detail([track(1, "Alpha")]), artwork_hash: "newhash" });
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    // No custom artwork yet (no cover-art image in the header).
+    expect(document.querySelector('[data-slot="cover-art"]')).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /edit artwork/i }));
+    fireEvent.change(screen.getByLabelText(/upload artwork image/i), {
+      target: { files: [makeImageFile()] },
+    });
+    // The raw image bytes reach the endpoint…
+    await waitFor(() => expect(bodyLen).toBeGreaterThan(0));
+    // …and the detail refetch re-renders the header cover with the content-hash
+    // cache-bust (Task 5's `?v=<hash>`).
+    await waitFor(() => {
+      const img = document.querySelector('[data-slot="cover-art"]');
+      expect(img?.getAttribute("src") ?? "").toContain("newhash");
+    });
+  });
+
+  test("removes custom artwork and the header falls back to the collage", async () => {
+    let removed = false;
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          artwork_hash: removed ? null : "abc",
+          cover_album_ids: [11, 22],
+        }),
+      ),
+      http.delete(`${BASE}/artwork`, () => {
+        removed = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    // Custom artwork shows first (a single cover image, not the collage).
+    expect(document.querySelector('[data-slot="cover-art"]')).not.toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /edit artwork/i }));
+    await userEvent.click(screen.getByRole("button", { name: /remove artwork/i }));
+    // With the custom art gone the album-cover collage takes over.
+    await waitFor(() =>
+      expect(document.querySelector('[data-slot="playlist-cover-collage"]')).not.toBeNull(),
+    );
+  });
+
+  test("the Remove button is hidden when there is no custom artwork", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({ ...detail([track(1, "Alpha")]), artwork_hash: null }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /edit artwork/i }));
+    expect(screen.queryByRole("button", { name: /remove artwork/i })).not.toBeInTheDocument();
+  });
+
+  test("surfaces the server's message when the image type is rejected (415)", async () => {
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha")]))),
+      http.put(`${BASE}/artwork`, () =>
+        HttpResponse.json(
+          { detail: "Unsupported image type (JPEG or PNG only)" },
+          { status: 415 },
+        ),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /edit artwork/i }));
+    fireEvent.change(screen.getByLabelText(/upload artwork image/i), {
+      target: { files: [makeImageFile("art.png", "image/png")] },
+    });
+    expect(await screen.findByText(/unsupported image type/i)).toBeInTheDocument();
   });
 });

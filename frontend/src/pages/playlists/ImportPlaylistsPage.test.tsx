@@ -124,15 +124,21 @@ describe("ImportPlaylistsPage", () => {
       }),
     );
 
-    // Seeded: entry 1 is matched, entry 2 is unresolved.
+    // Seeded: entry 1 is matched, entry 2 is unresolved. The matched tally is a
+    // muted span in the header; the unmatched count rides the "Needs attention"
+    // filter label that now sits in the summary row beside it.
     expect(await screen.findByText(/1 matched/)).toBeInTheDocument();
-    expect(screen.getByText(/1 unmatched/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Needs attention (1)" }),
+    ).toBeInTheDocument();
 
     // Resolving entry 2's suggestion moves the tallies live (they no longer sit
     // frozen at the preview's counts).
     await userEvent.click(screen.getByRole("button", { name: /gone \(remaster\)/i }));
     expect(await screen.findByText(/2 matched/)).toBeInTheDocument();
-    expect(screen.getByText(/0 unmatched/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Needs attention (0)" }),
+    ).toBeInTheDocument();
   });
 
   test("an entry leads with its own track identity, not just the origin string", async () => {
@@ -657,5 +663,227 @@ describe("ImportPlaylistsPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "All (1)" }));
     expect(await screen.findByText("Alpha")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /alpha \(live\)/i })).toBeInTheDocument();
+  });
+
+  // ——— Editable playlist name (Task 7) ———
+
+  test("an edited playlist name lands in the commit body", async () => {
+    server.use(
+      http.post(PREVIEW_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            {
+              name: "Road",
+              matched_count: 1,
+              ambiguous_count: 0,
+              unmatched_count: 0,
+              entries: [entry({ item_id: 7, match: summary({ item_id: 7 }) })],
+            },
+          ],
+        }),
+      ),
+    );
+    let committed: unknown = null;
+    server.use(
+      http.post(COMMIT_URL, async ({ request }) => {
+        committed = await request.json();
+        return HttpResponse.json({ created: [] });
+      }),
+    );
+    renderImport();
+
+    await userEvent.upload(
+      screen.getByLabelText(/upload playlist files/i),
+      new File(["#EXTM3U\nBand - Alpha\n"], "Road.m3u8"),
+    );
+
+    // Pencil → input → save, the detail-page rename idiom.
+    await userEvent.click(await screen.findByRole("button", { name: /rename road/i }));
+    const input = screen.getByRole("textbox", { name: /playlist name/i });
+    await userEvent.clear(input);
+    await userEvent.type(input, "Highway");
+    await userEvent.click(screen.getByRole("button", { name: /save name/i }));
+
+    // The renamed title shows on the card…
+    expect(await screen.findByText("Highway")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /import 1 playlist/i }));
+    await waitFor(() => expect(committed).not.toBeNull());
+    // …and the edit is what commits.
+    expect(committed).toMatchObject({ playlists: [{ name: "Highway" }] });
+  });
+
+  test("an empty name edit falls back to the original name", async () => {
+    server.use(
+      http.post(PREVIEW_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            {
+              name: "Road",
+              matched_count: 1,
+              ambiguous_count: 0,
+              unmatched_count: 0,
+              entries: [entry({ item_id: 7, match: summary({ item_id: 7 }) })],
+            },
+          ],
+        }),
+      ),
+    );
+    let committed: unknown = null;
+    server.use(
+      http.post(COMMIT_URL, async ({ request }) => {
+        committed = await request.json();
+        return HttpResponse.json({ created: [] });
+      }),
+    );
+    renderImport();
+
+    await userEvent.upload(
+      screen.getByLabelText(/upload playlist files/i),
+      new File(["#EXTM3U\nBand - Alpha\n"], "Road.m3u8"),
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /rename road/i }));
+    await userEvent.clear(screen.getByRole("textbox", { name: /playlist name/i }));
+    await userEvent.click(screen.getByRole("button", { name: /save name/i }));
+
+    // The blank edit is rejected — the card keeps the original title.
+    expect(await screen.findByText("Road")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /import 1 playlist/i }));
+    await waitFor(() => expect(committed).not.toBeNull());
+    expect(committed).toMatchObject({ playlists: [{ name: "Road" }] });
+  });
+
+  test("a Plex import carries the ORIGINAL bare title as plex_source, even after a rename", async () => {
+    server.use(
+      http.get(PLEX_URL, () =>
+        HttpResponse.json({ playlists: [{ name: "UK Pop Fever", track_count: 1 }] }),
+      ),
+      http.post(PREVIEW_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            {
+              name: "UK Pop Fever",
+              matched_count: 1,
+              ambiguous_count: 0,
+              unmatched_count: 0,
+              entries: [entry({ item_id: 7, match: summary({ item_id: 7 }) })],
+            },
+          ],
+        }),
+      ),
+    );
+    let committed: unknown = null;
+    server.use(
+      http.post(COMMIT_URL, async ({ request }) => {
+        committed = await request.json();
+        return HttpResponse.json({ created: [] });
+      }),
+    );
+    renderImport();
+
+    await userEvent.click(await screen.findByRole("checkbox", { name: /uk pop fever/i }));
+    await userEvent.click(screen.getByRole("button", { name: /preview .*plex/i }));
+
+    // Rename it to something the user prefers…
+    await userEvent.click(await screen.findByRole("button", { name: /rename uk pop fever/i }));
+    const input = screen.getByRole("textbox", { name: /playlist name/i });
+    await userEvent.clear(input);
+    await userEvent.type(input, "My Mix");
+    await userEvent.click(screen.getByRole("button", { name: /save name/i }));
+
+    await userEvent.click(screen.getByRole("button", { name: /import 1 playlist/i }));
+    await waitFor(() => expect(committed).not.toBeNull());
+    // The new name commits, but plex_source stays the exact original Plex title
+    // (a decorated "plex:<name>" would silently import artless).
+    expect(committed).toMatchObject({
+      playlists: [{ name: "My Mix", plex_source: "UK Pop Fever" }],
+    });
+  });
+
+  test("a file import sets no plex_source", async () => {
+    server.use(
+      http.post(PREVIEW_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            {
+              name: "Road",
+              matched_count: 1,
+              ambiguous_count: 0,
+              unmatched_count: 0,
+              entries: [entry({ item_id: 7, match: summary({ item_id: 7 }) })],
+            },
+          ],
+        }),
+      ),
+    );
+    let committed: unknown = null;
+    server.use(
+      http.post(COMMIT_URL, async ({ request }) => {
+        committed = await request.json();
+        return HttpResponse.json({ created: [] });
+      }),
+    );
+    renderImport();
+
+    await userEvent.upload(
+      screen.getByLabelText(/upload playlist files/i),
+      new File(["#EXTM3U\nBand - Alpha\n"], "Road.m3u8"),
+    );
+    await userEvent.click(await screen.findByRole("button", { name: /import 1 playlist/i }));
+    await waitFor(() => expect(committed).not.toBeNull());
+    const playlist = (committed as { playlists: Record<string, unknown>[] }).playlists[0];
+    expect(playlist).not.toHaveProperty("plex_source");
+  });
+
+  // ——— Filter toggle in the header row (Task 7) ———
+
+  test("the filter toggle sits in the summary and switches views without collapsing the card", async () => {
+    server.use(
+      http.post(PREVIEW_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            {
+              name: "Road",
+              matched_count: 1,
+              ambiguous_count: 0,
+              unmatched_count: 1,
+              entries: [
+                entry({ position: 0, title: "Kept", artist: "A", item_id: 7, match: summary({ item_id: 7, title: "Kept" }) }),
+                entry({ position: 1, source: "Ghost - Gone", title: "Gone", artist: "B", status: "unmatched" }),
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    const { container } = renderImport();
+
+    await userEvent.upload(
+      screen.getByLabelText(/upload playlist files/i),
+      new File(["#EXTM3U\nBand - Alpha\nGhost - Gone\n"], "Road.m3u8"),
+    );
+
+    const details = (await screen.findByText("Gone")).closest("details") as HTMLDetailsElement;
+    const summaryEl = details.querySelector("summary") as HTMLElement;
+    // The filter now lives inside the summary row, next to the matched tally.
+    expect(within(summaryEl).getByRole("group", { name: /filter entries/i })).toBeInTheDocument();
+    expect(within(summaryEl).getByText(/1 matched/)).toBeInTheDocument();
+
+    // Open the card, then switch to All from the header toggle: the matched row
+    // appears and the card stays open (the preventDefault keeps the click from
+    // toggling the <details> collapse).
+    await userEvent.click(within(summaryEl).getByText("Road"));
+    expect(details.open).toBe(true);
+    expect(screen.queryByText("Kept")).not.toBeInTheDocument();
+
+    await userEvent.click(within(summaryEl).getByRole("button", { name: "All (2)" }));
+    // "Kept" renders twice under All — the row identity plus its "→ Kept"
+    // matched confirmation — so match all rather than a bare (throwing) query.
+    expect(await screen.findAllByText("Kept")).not.toHaveLength(0);
+    expect(details.open).toBe(true);
+    // The old toolbar band between the summary and the list is gone.
+    expect(container.querySelectorAll('[data-slot="segmented-control"]')).toHaveLength(1);
   });
 });

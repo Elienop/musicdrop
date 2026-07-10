@@ -3,10 +3,16 @@ from pathlib import Path
 
 from beets.library import Item, Library
 
-from app.beets.playlists import TrackRef, m3u_entries, resolve_entries, track_match_refs
+from app.beets.playlists import (
+    TrackRef,
+    cover_album_ids,
+    m3u_entries,
+    resolve_entries,
+    track_match_refs,
+)
 from app.models.playlist import PendingTrack
 from app.playlists.store import StoredEntry
-from tests.conftest import build_library
+from tests.conftest import build_library, make_test_handle
 
 
 def _lib_with_items(tmp_path: Path) -> tuple[Library, list[int]]:
@@ -44,6 +50,90 @@ def _lib_with_items(tmp_path: Path) -> tuple[Library, list[int]]:
     )
     lib.add_album([a, b])
     return lib, [int(a.id), int(b.id)]
+
+
+def _lib_with_albums_and_singleton(tmp_path: Path) -> tuple[object, dict[str, int]]:
+    """Two 2-track albums (A, B) plus one album-less singleton, wrapped in a
+    ``LibraryHandle`` (what ``cover_album_ids`` takes)."""
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+
+    def add(folder: str, fname: str, **fields: object) -> Item:
+        base = music / folder
+        base.mkdir(parents=True, exist_ok=True)
+        f = base / fname
+        f.write_bytes(b"\x00")
+        it = Item(**fields)  # type: ignore[arg-type]  # beets Item kwargs are untyped
+        it.path = os.fsencode(str(f))
+        return it
+
+    a1 = add("A/One", "01.flac", album="One", albumartist="A", artist="A", title="Alpha", track=1)
+    a2 = add("A/One", "02.flac", album="One", albumartist="A", artist="A", title="Beta", track=2)
+    alb_a = lib.add_album([a1, a2])
+    b1 = add("B/Two", "01.flac", album="Two", albumartist="B", artist="B", title="Gamma", track=1)
+    alb_b = lib.add_album([b1])
+    # Album-less singleton: added via lib.add (not add_album), so album_id is 0.
+    sdir = music / "loose"
+    sdir.mkdir(parents=True, exist_ok=True)
+    sf = sdir / "z.flac"
+    sf.write_bytes(b"\x00")
+    si = Item(artist="C", albumartist="C", title="Solo", track=1)
+    si.path = os.fsencode(str(sf))
+    lib.add(si)
+    handle = make_test_handle(lib, tmp_path)
+    return handle, {
+        "a1": int(a1.id),
+        "a2": int(a2.id),
+        "b1": int(b1.id),
+        "solo": int(si.id),
+        "album_a": int(alb_a.id),
+        "album_b": int(alb_b.id),
+    }
+
+
+def test_cover_album_ids_distinct_first_appearance_order(tmp_path: Path) -> None:
+    handle, ids = _lib_with_albums_and_singleton(tmp_path)
+    # a1, a2 share album A; b1 is album B; a1 again is a dup; solo is a singleton;
+    # 999999 is unknown. Expect [album A, album B] in first-appearance order.
+    result = cover_album_ids(
+        handle,  # type: ignore[arg-type]  # duck-typed handle
+        [ids["a1"], ids["a2"], ids["b1"], ids["a1"], ids["solo"], 999999],
+    )
+    assert result == [ids["album_a"], ids["album_b"]]
+
+
+def test_cover_album_ids_respects_limit(tmp_path: Path) -> None:
+    handle, ids = _lib_with_albums_and_singleton(tmp_path)
+    result = cover_album_ids(handle, [ids["a1"], ids["b1"]], limit=1)  # type: ignore[arg-type]
+    assert result == [ids["album_a"]]
+
+
+def test_cover_album_ids_bounds_lookups_by_scan_cap() -> None:
+    """scan_cap bounds the TOTAL get_item attempts, even when every id is
+    unresolvable — otherwise a long all-unknown list does one lookup per id."""
+
+    class _CountingLib:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get_item(self, item_id: int) -> None:
+            self.calls += 1
+            return None  # every id is unknown
+
+    class _Handle:
+        def __init__(self, lib: _CountingLib) -> None:
+            self.lib = lib
+
+    lib = _CountingLib()
+    handle = _Handle(lib)
+    result = cover_album_ids(handle, list(range(100)), scan_cap=10)  # type: ignore[arg-type]
+    assert result == []
+    assert lib.calls <= 10
+
+
+def test_cover_album_ids_skips_singleton_and_unknown(tmp_path: Path) -> None:
+    handle, ids = _lib_with_albums_and_singleton(tmp_path)
+    assert cover_album_ids(handle, [ids["solo"], 999999]) == []  # type: ignore[arg-type]
 
 
 def test_resolve_preserves_order(tmp_path: Path) -> None:

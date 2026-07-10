@@ -150,6 +150,75 @@ def test_commit_partial_success_when_one_playlist_fails(
     assert any(rec.name == "First" for rec in store.list_playlists(_dir()))
 
 
+def test_commit_pulls_plex_poster_for_plex_sourced_playlist(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A playlist carrying ``plex_source`` seeds its cover from the source Plex
+    playlist's poster (pull stubbed at the app.plex seam)."""
+    item_id = _seed(beets_library.lib, title="Real", artist="A")
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    seen: list[str] = []
+
+    def fake_download(config: Any, title: str) -> tuple[bytes, str]:
+        seen.append(title)
+        return png, "png"
+
+    monkeypatch.setattr("app.api.playlists.playlists_pull.download_poster", fake_download)
+    body = {
+        "playlists": [
+            {"name": "Road", "plex_source": "Road", "entries": [{"item_id": item_id}]},
+        ]
+    }
+    r = client.post("/api/playlists/import", json=body)
+    assert r.status_code == 200
+    (created,) = r.json()["created"]
+    assert created["artwork_hash"] is not None
+    assert seen == ["Road"]
+    record = store.get_playlist(_dir(), created["id"])
+    assert record is not None and record.artwork is not None and record.artwork.format == "png"
+
+
+def test_commit_skips_poster_pull_without_plex_source(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``plex_source`` -> the poster pull is never attempted, no cover set."""
+    item_id = _seed(beets_library.lib, title="Real", artist="A")
+
+    def fail_download(config: Any, title: str) -> tuple[bytes, str]:
+        raise AssertionError("download_poster must not be called without plex_source")
+
+    monkeypatch.setattr("app.api.playlists.playlists_pull.download_poster", fail_download)
+    body = {"playlists": [{"name": "Road", "entries": [{"item_id": item_id}]}]}
+    r = client.post("/api/playlists/import", json=body)
+    assert r.status_code == 200
+    (created,) = r.json()["created"]
+    assert created["artwork_hash"] is None
+
+
+def test_commit_survives_poster_download_failure(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A poster pull that raises must not fail the import — the playlist is still
+    created, just without a cover (best-effort art)."""
+    item_id = _seed(beets_library.lib, title="Real", artist="A")
+
+    def boom(config: Any, title: str) -> tuple[bytes, str]:
+        raise RuntimeError("plex unreachable")
+
+    monkeypatch.setattr("app.api.playlists.playlists_pull.download_poster", boom)
+    body = {
+        "playlists": [
+            {"name": "Road", "plex_source": "Road", "entries": [{"item_id": item_id}]},
+        ]
+    }
+    r = client.post("/api/playlists/import", json=body)
+    assert r.status_code == 200
+    (created,) = r.json()["created"]
+    assert created["artwork_hash"] is None
+    record = store.get_playlist(_dir(), created["id"])
+    assert record is not None and record.artwork is None
+
+
 def test_commit_rejects_unknown_item_ids(client: TestClient, beets_library: LibraryHandle) -> None:
     body = {"playlists": [{"name": "P", "entries": [{"item_id": 987654}]}]}
     r = client.post("/api/playlists/import", json=body)

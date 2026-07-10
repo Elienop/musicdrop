@@ -15,7 +15,7 @@ from typing import Any
 
 from beets.library import Library
 
-from app.beets.library import _abs_path, _coerce_duration, _coerce_str
+from app.beets.library import LibraryHandle, _abs_path, _coerce_duration, _coerce_str
 from app.models.playlist import PlaylistTrack
 from app.playlists.m3u import M3uEntry
 from app.playlists.store import StoredEntry  # store never imports beets - no cycle
@@ -94,6 +94,39 @@ def item_exists(lib: Library, item_id: int) -> bool:
         return lib.get_item(item_id) is not None
     except Exception:  # a locked/odd row is treated as "not a valid target"
         return False
+
+
+def cover_album_ids(
+    handle: LibraryHandle, item_ids: list[int], *, limit: int = 4, scan_cap: int = 50
+) -> list[int]:
+    """The first ``limit`` DISTINCT album ids among ``item_ids``, in
+    first-appearance order — the covers the FE tiles into a playlist collage.
+
+    Only the first ``scan_cap`` item ids are looked up (a hard bound on the
+    per-id library lookups regardless of how many resolve). Unknown items and
+    album-less singletons (beets ``album_id`` 0/absent) contribute no album cover
+    and are skipped, but their lookup still counts against ``scan_cap``.
+    """
+    lib = handle.lib
+    album_ids: list[int] = []
+    seen: set[int] = set()
+    for item_id in item_ids[:scan_cap]:
+        if len(album_ids) >= limit:
+            break
+        try:
+            item = lib.get_item(item_id)
+        except Exception:  # a locked/odd row is treated as "not resolvable"
+            item = None
+        if item is None:
+            continue  # unknown item — no cover
+        raw = getattr(item, "album_id", None)
+        if not raw:  # singleton (no album) — no album cover to show
+            continue
+        album_id = int(raw)
+        if album_id not in seen:
+            seen.add(album_id)
+            album_ids.append(album_id)
+    return album_ids
 
 
 def resolve_entries(lib: Library, entries: list[StoredEntry]) -> list[PlaylistTrack]:

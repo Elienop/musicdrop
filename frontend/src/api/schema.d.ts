@@ -1155,6 +1155,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/playlists/{playlist_id}/artwork": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Playlist Artwork Endpoint
+         * @description Serve the playlist's uploaded cover. 404 when the record or file is
+         *     missing; otherwise a revalidating image (content-hash ETag, no-cache) so a
+         *     replaced cover shows up without a hard refresh (same mechanics as /cover).
+         */
+        get: operations["get_playlist_artwork_endpoint_api_playlists__playlist_id__artwork_get"];
+        /**
+         * Put Playlist Artwork Endpoint
+         * @description Upload a playlist cover (raw JPEG/PNG bytes). 413 over 8 MiB, 415 for a
+         *     non-JPEG/PNG body, 404 for an unknown playlist.
+         */
+        put: operations["put_playlist_artwork_endpoint_api_playlists__playlist_id__artwork_put"];
+        post?: never;
+        /**
+         * Delete Playlist Artwork Endpoint
+         * @description Remove the playlist's cover. Idempotent (204 even with no art); 404 only
+         *     for an unknown playlist.
+         */
+        delete: operations["delete_playlist_artwork_endpoint_api_playlists__playlist_id__artwork_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/playlists/import/preview": {
         parameters: {
             query?: never;
@@ -3232,6 +3264,13 @@ export interface components {
             created_at: string;
             /** Updated At */
             updated_at: string;
+            /** Artwork Hash */
+            artwork_hash?: string | null;
+            /**
+             * Cover Album Ids
+             * @default []
+             */
+            cover_album_ids: number[];
         };
         /** PlaylistAddTracksRequest */
         PlaylistAddTracksRequest: {
@@ -3275,6 +3314,13 @@ export interface components {
             created_at: string;
             /** Updated At */
             updated_at: string;
+            /** Artwork Hash */
+            artwork_hash?: string | null;
+            /**
+             * Cover Album Ids
+             * @default []
+             */
+            cover_album_ids: number[];
             /** Tracks */
             tracks: components["schemas"]["PlaylistTrack"][];
         };
@@ -3306,6 +3352,8 @@ export interface components {
             description: string;
             /** Entries */
             entries: components["schemas"]["ImportEntry"][];
+            /** Plex Source */
+            plex_source?: string | null;
         };
         /** PlaylistImportPreview */
         PlaylistImportPreview: {
@@ -6296,6 +6344,97 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["PlaylistDetail"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_playlist_artwork_endpoint_api_playlists__playlist_id__artwork_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_playlist_artwork_endpoint_api_playlists__playlist_id__artwork_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Playlist"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_playlist_artwork_endpoint_api_playlists__playlist_id__artwork_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
