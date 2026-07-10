@@ -39,6 +39,11 @@ class Playlist(BaseModel):
     plex: dict[str, PlexTargetState]
     created_at: str
     updated_at: str
+    # Cover art: the stored artwork's content hash (None when the playlist has
+    # no cover), and up to a few album ids from the playlist's resolved tracks —
+    # the FE renders a collage from those covers when there is no uploaded art.
+    artwork_hash: str | None = None
+    cover_album_ids: list[int] = []
 
 
 class PlaylistTrack(BaseModel):

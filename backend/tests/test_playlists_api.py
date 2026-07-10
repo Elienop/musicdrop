@@ -677,3 +677,89 @@ def test_sync_cleans_up_detargeted_user(
     assert r.status_code == 200
     assert captured == [{"7": "1"}]  # the de-targeted user's recorded ratingKey
     assert set(r.json()["plex"]) == {"admin"}  # state map no longer lists 7
+
+
+# --- Playlist artwork (cover) endpoints -------------------------------------
+
+_PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+_JPG = b"\xff\xd8\xff" + b"0" * 32
+
+
+def _add_album_track(handle: LibraryHandle, title: str) -> tuple[int, int]:
+    """Seed a 1-track album; return (item_id, album_id)."""
+    music = os.fsdecode(handle.lib.directory)
+    folder = os.path.join(music, "Alb", title)
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, f"{title}.flac")
+    with open(path, "wb") as fh:
+        fh.write(b"\x00")
+    item = Item(album=title, albumartist="AA", artist="AA", title=title, track=1)
+    item.path = os.fsencode(path)
+    album = handle.lib.add_album([item])
+    return int(item.id), int(album.id)
+
+
+def test_playlist_artwork_lifecycle(client: TestClient) -> None:
+    pid = client.post("/api/playlists", json={"name": "Art"}).json()["id"]
+    # No artwork yet.
+    assert client.get(f"/api/playlists/{pid}/artwork").status_code == 404
+    # Upload a PNG -> 200, summary carries the artwork hash.
+    put = client.put(f"/api/playlists/{pid}/artwork", content=_PNG)
+    assert put.status_code == 200
+    assert put.json()["artwork_hash"] is not None
+    # GET serves the bytes with a revalidating ETag.
+    got = client.get(f"/api/playlists/{pid}/artwork")
+    assert got.status_code == 200
+    assert got.content == _PNG
+    etag = got.headers["etag"]
+    assert got.headers["cache-control"] == "no-cache"
+    # A matching If-None-Match revalidates to a bodiless 304.
+    again = client.get(f"/api/playlists/{pid}/artwork", headers={"If-None-Match": etag})
+    assert again.status_code == 304
+    # DELETE removes it (idempotent), then GET is 404 again.
+    assert client.delete(f"/api/playlists/{pid}/artwork").status_code == 204
+    assert client.get(f"/api/playlists/{pid}/artwork").status_code == 404
+
+
+def test_playlist_artwork_put_rejects_garbage_bytes(client: TestClient) -> None:
+    pid = client.post("/api/playlists", json={"name": "Art"}).json()["id"]
+    r = client.put(f"/api/playlists/{pid}/artwork", content=b"not an image at all")
+    assert r.status_code == 415
+
+
+def test_playlist_artwork_put_accepts_jpeg(client: TestClient) -> None:
+    pid = client.post("/api/playlists", json={"name": "Art"}).json()["id"]
+    assert client.put(f"/api/playlists/{pid}/artwork", content=_JPG).status_code == 200
+    got = client.get(f"/api/playlists/{pid}/artwork")
+    assert got.status_code == 200
+    assert got.headers["content-type"] == "image/jpeg"
+
+
+def test_playlist_artwork_put_unknown_id_404(client: TestClient) -> None:
+    r = client.put(f"/api/playlists/{'0' * 32}/artwork", content=_PNG)
+    assert r.status_code == 404
+
+
+def test_playlist_artwork_delete_idempotent_and_unknown_404(client: TestClient) -> None:
+    pid = client.post("/api/playlists", json={"name": "Art"}).json()["id"]
+    # Deleting with no artwork present is a 204 no-op.
+    assert client.delete(f"/api/playlists/{pid}/artwork").status_code == 204
+    # Unknown playlist is 404.
+    assert client.delete(f"/api/playlists/{'0' * 32}/artwork").status_code == 404
+
+
+def test_list_carries_artwork_and_cover_keys(client: TestClient) -> None:
+    client.post("/api/playlists", json={"name": "Art"})
+    row = client.get("/api/playlists").json()[0]
+    assert row["artwork_hash"] is None
+    assert row["cover_album_ids"] == []
+
+
+def test_detail_cover_album_ids_from_resolved_album_tracks(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    item_id, album_id = _add_album_track(beets_library, "Track")
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [item_id]})
+    detail = client.get(f"/api/playlists/{pid}").json()
+    assert detail["cover_album_ids"] == [album_id]

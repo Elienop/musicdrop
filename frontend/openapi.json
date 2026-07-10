@@ -3069,6 +3069,122 @@
         }
       }
     },
+    "/api/playlists/{playlist_id}/artwork": {
+      "get": {
+        "tags": [
+          "playlists"
+        ],
+        "summary": "Get Playlist Artwork Endpoint",
+        "description": "Serve the playlist's uploaded cover. 404 when the record or file is\nmissing; otherwise a revalidating image (content-hash ETag, no-cache) so a\nreplaced cover shows up without a hard refresh (same mechanics as /cover).",
+        "operationId": "get_playlist_artwork_endpoint_api_playlists__playlist_id__artwork_get",
+        "parameters": [
+          {
+            "name": "playlist_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Playlist Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "playlists"
+        ],
+        "summary": "Put Playlist Artwork Endpoint",
+        "description": "Upload a playlist cover (raw JPEG/PNG bytes). 413 over 8 MiB, 415 for a\nnon-JPEG/PNG body, 404 for an unknown playlist.",
+        "operationId": "put_playlist_artwork_endpoint_api_playlists__playlist_id__artwork_put",
+        "parameters": [
+          {
+            "name": "playlist_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Playlist Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Playlist"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "playlists"
+        ],
+        "summary": "Delete Playlist Artwork Endpoint",
+        "description": "Remove the playlist's cover. Idempotent (204 even with no art); 404 only\nfor an unknown playlist.",
+        "operationId": "delete_playlist_artwork_endpoint_api_playlists__playlist_id__artwork_delete",
+        "parameters": [
+          {
+            "name": "playlist_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Playlist Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playlists/import/preview": {
       "post": {
         "tags": [
@@ -8181,6 +8297,25 @@
           "updated_at": {
             "type": "string",
             "title": "Updated At"
+          },
+          "artwork_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artwork Hash"
+          },
+          "cover_album_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Cover Album Ids",
+            "default": []
           }
         },
         "type": "object",
@@ -8287,6 +8422,25 @@
             "type": "string",
             "title": "Updated At"
           },
+          "artwork_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artwork Hash"
+          },
+          "cover_album_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Cover Album Ids",
+            "default": []
+          },
           "tracks": {
             "items": {
               "$ref": "#/components/schemas/PlaylistTrack"
@@ -8365,6 +8519,17 @@
             },
             "type": "array",
             "title": "Entries"
+          },
+          "plex_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plex Source"
           }
         },
         "type": "object",
