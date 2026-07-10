@@ -99,6 +99,12 @@ function pendingTrack(uid: string, title: string, extra: Record<string, unknown>
   };
 }
 
+/** A tiny image File for the artwork picker (PNG magic bytes; content is
+ * irrelevant — the server sniffs the type, the client just ships the bytes). */
+function makeImageFile(name = "art.png", type = "image/png"): File {
+  return new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], name, { type });
+}
+
 /** A `TypedSearchPage` (`type=tracks`) carrying the given track hits. */
 function trackSearchPage(
   hits: Array<{
@@ -950,5 +956,111 @@ describe("PlaylistDetailPage", () => {
     await screen.findByText("Alpha");
     await userEvent.click(screen.getByRole("button", { name: /remove alpha/i }));
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Removed Alpha"));
+  });
+
+  // ——— Artwork editor (Task 6) ———
+
+  test("uploads custom artwork and the header cover shows the new hash", async () => {
+    let uploaded = false;
+    let bodyLen = -1;
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          artwork_hash: uploaded ? "newhash" : null,
+        }),
+      ),
+      http.put(`${BASE}/artwork`, async ({ request }) => {
+        bodyLen = (await request.arrayBuffer()).byteLength;
+        uploaded = true;
+        return HttpResponse.json({ ...detail([track(1, "Alpha")]), artwork_hash: "newhash" });
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    // No custom artwork yet (no cover-art image in the header).
+    expect(document.querySelector('[data-slot="cover-art"]')).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /edit artwork/i }));
+    fireEvent.change(screen.getByLabelText(/upload artwork image/i), {
+      target: { files: [makeImageFile()] },
+    });
+    // The raw image bytes reach the endpoint…
+    await waitFor(() => expect(bodyLen).toBeGreaterThan(0));
+    // …and the detail refetch re-renders the header cover with the content-hash
+    // cache-bust (Task 5's `?v=<hash>`).
+    await waitFor(() => {
+      const img = document.querySelector('[data-slot="cover-art"]');
+      expect(img?.getAttribute("src") ?? "").toContain("newhash");
+    });
+  });
+
+  test("removes custom artwork and the header falls back to the collage", async () => {
+    let removed = false;
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          artwork_hash: removed ? null : "abc",
+          cover_album_ids: [11, 22],
+        }),
+      ),
+      http.delete(`${BASE}/artwork`, () => {
+        removed = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    // Custom artwork shows first (a single cover image, not the collage).
+    expect(document.querySelector('[data-slot="cover-art"]')).not.toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /edit artwork/i }));
+    await userEvent.click(screen.getByRole("button", { name: /remove artwork/i }));
+    // With the custom art gone the album-cover collage takes over.
+    await waitFor(() =>
+      expect(document.querySelector('[data-slot="playlist-cover-collage"]')).not.toBeNull(),
+    );
+  });
+
+  test("the Remove button is hidden when there is no custom artwork", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({ ...detail([track(1, "Alpha")]), artwork_hash: null }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /edit artwork/i }));
+    expect(screen.queryByRole("button", { name: /remove artwork/i })).not.toBeInTheDocument();
+  });
+
+  test("surfaces the server's message when the image type is rejected (415)", async () => {
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha")]))),
+      http.put(`${BASE}/artwork`, () =>
+        HttpResponse.json(
+          { detail: "Unsupported image type (JPEG or PNG only)" },
+          { status: 415 },
+        ),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /edit artwork/i }));
+    fireEvent.change(screen.getByLabelText(/upload artwork image/i), {
+      target: { files: [makeImageFile("art.png", "image/png")] },
+    });
+    expect(await screen.findByText(/unsupported image type/i)).toBeInTheDocument();
   });
 });

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
-import { unwrap } from "@/api/lib";
+import { apiUrl, errorDetail, unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 export type Playlist = components["schemas"]["Playlist"];
@@ -177,6 +177,47 @@ export function useSyncPlaylist(id: string) {
       return data;
     },
     onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["playlist", id] });
+      void queryClient.invalidateQueries({ queryKey: ["playlists"] });
+    },
+  });
+}
+
+/** Upload raw JPEG/PNG bytes as this playlist's custom cover. The artwork PUT
+ * carries a raw image body (no request model), so it bypasses the typed
+ * openapi-fetch client and hits `fetch` directly — the same shape the album
+ * cover install uses. Surfaces the server's message so the panel can show the
+ * real reason (415 unsupported type, 413 too large). Invalidating the playlist
+ * + playlists queries re-renders the header cover via Task 5's `?v=<hash>` and
+ * refreshes the list thumbnail. */
+export function useUploadPlaylistArtwork(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation<Playlist, Error, Blob>({
+    mutationFn: async (image) => {
+      const res = await fetch(apiUrl(`/api/playlists/${id}/artwork`), {
+        method: "PUT",
+        body: image,
+      });
+      if (!res.ok) throw new Error(await errorDetail(res, "Couldn’t save the artwork."));
+      return (await res.json()) as Playlist;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["playlist", id] });
+      void queryClient.invalidateQueries({ queryKey: ["playlists"] });
+    },
+  });
+}
+
+/** Remove the playlist's custom cover (204). On success the header falls back
+ * to the album-cover collage — same cache invalidation as the upload. */
+export function useDeletePlaylistArtwork(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation<void, Error, void>({
+    mutationFn: async () => {
+      const res = await fetch(apiUrl(`/api/playlists/${id}/artwork`), { method: "DELETE" });
+      if (!res.ok) throw new Error("Couldn’t remove the artwork.");
+    },
+    onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["playlist", id] });
       void queryClient.invalidateQueries({ queryKey: ["playlists"] });
     },
