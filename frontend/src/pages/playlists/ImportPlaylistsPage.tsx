@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDuration } from "@/lib/format";
 
@@ -363,14 +364,27 @@ export function ImportPlaylistsPage() {
   );
 }
 
-const STATUS_VARIANT: Record<ImportEntryPreview["status"], "secondary" | "outline"> = {
-  matched: "secondary",
-  ambiguous: "outline",
-  unmatched: "outline",
+/** Live entry status — derived from the CURRENT resolution, not the preview's
+ * frozen verdict. The header tallies already follow live state; a frozen badge
+ * would contradict them the moment a chip is picked. */
+type LiveStatus = "matched" | "ambiguous" | "unmatched";
+
+function liveStatus(entry: ImportEntryPreview, resolved: number | null): LiveStatus {
+  if (resolved !== null) return "matched";
+  return entry.suggestions.length > 0 ? "ambiguous" : "unmatched";
+}
+
+const LIVE_STATUS_LABEL: Record<LiveStatus, string> = {
+  matched: "Matched",
+  ambiguous: "Ambiguous",
+  unmatched: "Unmatched",
 };
 
 /** One previewed playlist: a summary row (name + match tallies) with an
- * expandable entry table behind it. Collapsed by default. */
+ * expandable entry list behind it. Collapsed by default. The list opens on
+ * the needs-attention view — the rows still awaiting a decision — with the
+ * resolved ones a toggle away, so a big import isn't buried under rows that
+ * are already done. */
 function PlaylistReview({
   playlist,
   resolutionFor,
@@ -384,6 +398,7 @@ function PlaylistReview({
   onUseSuggestion: (position: number, itemId: number) => void;
   onSearch: (position: number) => void;
 }) {
+  const [view, setView] = useState<"attention" | "all">("attention");
   // Tallies follow the LIVE resolution state, not the frozen preview counts: a
   // resolved entry (seeded match or a user pick) has an item_id, the rest are
   // still unmatched. So "2 ambiguous" doesn't linger after the user resolves them.
@@ -391,6 +406,13 @@ function PlaylistReview({
     (entry) => resolutionFor(entry.position) !== null,
   ).length;
   const unmatched = playlist.entries.length - matched;
+  // Resolving a row in the attention view drops it immediately — the list
+  // shrinks as you work (the Review-page bank posture). It stays reachable,
+  // and re-pickable, under All.
+  const visible =
+    view === "all"
+      ? playlist.entries
+      : playlist.entries.filter((entry) => resolutionFor(entry.position) === null);
   return (
     <Card>
       <details>
@@ -404,25 +426,47 @@ function PlaylistReview({
             <span>{unmatched} unmatched</span>
           </span>
         </summary>
-        <ul className="flex flex-col border-t">
-          {playlist.entries.map((entry) => (
-            <EntryRow
-              key={entry.position}
-              entry={entry}
-              resolved={resolutionFor(entry.position)}
-              chosen={chosenTrack(entry)}
-              onUseSuggestion={(itemId) => onUseSuggestion(entry.position, itemId)}
-              onSearch={() => onSearch(entry.position)}
-            />
-          ))}
-        </ul>
+        {/* The filter lives OUTSIDE <summary> — a click there would toggle the
+            collapse instead of the view. */}
+        <div className="flex items-center border-t px-4 py-2">
+          <SegmentedControl
+            aria-label="Filter entries"
+            value={view}
+            onChange={(v) => setView(v === "all" ? "all" : "attention")}
+            options={[
+              { value: "attention", label: `Needs attention (${unmatched})` },
+              { value: "all", label: `All (${playlist.entries.length})` },
+            ]}
+          />
+        </div>
+        {visible.length === 0 ? (
+          <p className="text-muted-foreground border-t px-4 py-3 text-sm">
+            Everything’s matched — switch to All to see the entries.
+          </p>
+        ) : (
+          <ul className="divide-border flex flex-col divide-y border-t">
+            {visible.map((entry) => (
+              <EntryRow
+                key={entry.position}
+                entry={entry}
+                resolved={resolutionFor(entry.position)}
+                chosen={chosenTrack(entry)}
+                onUseSuggestion={(itemId) => onUseSuggestion(entry.position, itemId)}
+                onSearch={() => onSearch(entry.position)}
+              />
+            ))}
+          </ul>
+        )}
       </details>
     </Card>
   );
 }
 
-/** One entry: source text, status chip, its resolution (match confirmation or
- * suggestion buttons), and a Search escape hatch to the shared picker. */
+/** One entry: a single line — 1-based position, the track's own identity,
+ * inline resolution (→ confirmation, or a Search escape when there are no
+ * chips) and the live status badge — plus a second line ONLY when suggestion
+ * chips exist. Suggestion-less unmatched rows (the common case on a big
+ * import) stay one line tall. */
 function EntryRow({
   entry,
   resolved,
@@ -436,11 +480,16 @@ function EntryRow({
   onUseSuggestion: (itemId: number) => void;
   onSearch: () => void;
 }) {
+  const status = liveStatus(entry, resolved);
+  const hasSuggestions = entry.suggestions.length > 0;
   return (
     <li className="flex flex-col gap-2 px-4 py-3 last:rounded-b-xl">
       <div className="flex items-center gap-3">
-        <span className="text-muted-foreground w-6 shrink-0 text-right text-sm tabular-nums">
-          {entry.position}
+        {/* 1-based for humans — the backend's positions are 0-based (m3u line
+            order / Plex enumerate) and "track 0" reads like a bug. `position`
+            itself stays the resolutions key; only the rendering shifts. */}
+        <span className="text-muted-foreground w-8 shrink-0 text-right text-sm tabular-nums">
+          {entry.position + 1}
         </span>
         {entry.title ? (
           // Lead with what the track IS — title · artist · duration, the thing
@@ -470,43 +519,61 @@ function EntryRow({
             {entry.source}
           </span>
         )}
-        <Badge variant={STATUS_VARIANT[entry.status]} className="shrink-0 capitalize">
-          {entry.status}
+        {chosen && (
+          <span className="text-muted-foreground min-w-0 shrink truncate text-sm">
+            <span aria-hidden="true">→ </span>
+            <span className="text-foreground font-medium">{chosen.title}</span>
+            {chosen.artist && (
+              <span>
+                <span aria-hidden="true"> · </span>
+                {chosen.artist}
+              </span>
+            )}
+          </span>
+        )}
+        {!hasSuggestions && (
+          <Button size="sm" variant="ghost" className="shrink-0" onClick={onSearch}>
+            <Search className="size-4" aria-hidden="true" /> Search…
+          </Button>
+        )}
+        <Badge
+          variant={status === "matched" ? "secondary" : "outline"}
+          className="shrink-0"
+        >
+          {LIVE_STATUS_LABEL[status]}
         </Badge>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 pl-9">
-        {chosen ? (
-          <span className="text-sm">
-            <span aria-hidden="true">→ </span>
-            <span className="font-medium">{chosen.title}</span>
-            {chosen.artist && <span className="text-muted-foreground"> · {chosen.artist}</span>}
+      {hasSuggestions && (
+        // pl-11 = the position gutter (w-8) + the gap-3, so chips hang under
+        // the title, not under the number.
+        <div className="flex flex-wrap items-center gap-2 pl-11">
+          <span aria-hidden="true" className="text-muted-foreground text-sm">
+            ↳
           </span>
-        ) : (
-          <span className="text-muted-foreground text-sm">No library match</span>
-        )}
-        {entry.suggestions.map((track) => {
-          const active = resolved === track.item_id;
-          return (
-            <Button
-              key={track.item_id}
-              size="sm"
-              variant={active ? "secondary" : "outline"}
-              onClick={() => onUseSuggestion(track.item_id)}
-            >
-              {track.title}
-              {track.duration_seconds !== null && (
-                <span className="text-muted-foreground ml-1 tabular-nums">
-                  {formatDuration(track.duration_seconds)}
-                </span>
-              )}
-            </Button>
-          );
-        })}
-        <Button size="sm" variant="ghost" onClick={onSearch}>
-          <Search className="size-4" aria-hidden="true" /> Search…
-        </Button>
-      </div>
+          {entry.suggestions.map((track) => {
+            const active = resolved === track.item_id;
+            return (
+              <Button
+                key={track.item_id}
+                size="sm"
+                variant={active ? "secondary" : "outline"}
+                onClick={() => onUseSuggestion(track.item_id)}
+              >
+                {track.title}
+                {track.duration_seconds !== null && (
+                  <span className="text-muted-foreground ml-1 tabular-nums">
+                    {formatDuration(track.duration_seconds)}
+                  </span>
+                )}
+              </Button>
+            );
+          })}
+          <Button size="sm" variant="ghost" onClick={onSearch}>
+            <Search className="size-4" aria-hidden="true" /> Search…
+          </Button>
+        </div>
+      )}
     </li>
   );
 }
