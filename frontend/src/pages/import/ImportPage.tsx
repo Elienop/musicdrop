@@ -500,14 +500,16 @@ function FeedList({
   // Pin the album awaiting action to the top — in sequential review it's the one
   // thing to act on (and always the latest), so its Review/Resolve button stays
   // in view without scrolling. A parked duplicate awaits action just the same.
-  // Everything else keeps its import order below. On the done screen nothing is
-  // pending, so this is a no-op (stays chronological).
+  // Everything else lists newest-first below it (the bank-backlog order): the
+  // most recently landed album is the one the user is watching for, so it must
+  // not sink to the bottom of a long run. On the done screen nothing is
+  // pending, so the whole feed reads newest-first.
   const pending = (s: ImportAlbumSummary["status"]) =>
     s === "needs_review" || s === "needs_dup_resolution";
   const ordered = [...albums].sort(
     (a, b) =>
       Number(pending(b.status)) - Number(pending(a.status)) ||
-      a.index - b.index,
+      b.index - a.index,
   );
   return (
     <ul className="border-border divide-border divide-y overflow-hidden rounded-xl border">
