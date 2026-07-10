@@ -1,3 +1,4 @@
+import hashlib
 import json
 import threading
 import uuid
@@ -376,3 +377,99 @@ def test_concurrent_mutations_do_not_lose_an_update(
     assert final is not None
     ids = final.resolved_item_ids
     assert 101 in ids and 202 in ids, f"a concurrent mutation was lost: {ids}"
+
+
+def test_set_artwork_round_trip(tmp_path: Path) -> None:
+    created = store.create_playlist(tmp_path, name="P")
+    data = b"\xff\xd8\xff\x00jpeg-bytes"
+    updated = store.set_artwork(tmp_path, created.id, data, "jpg")
+    assert updated is not None
+    assert updated.artwork is not None
+    assert updated.artwork.format == "jpg"
+    assert updated.artwork.hash == hashlib.sha256(data).hexdigest()[:16]
+    # File landed at the deterministic artwork path with the exact bytes.
+    art = store.artwork_path(tmp_path, created.id, "jpg")
+    assert art.is_file()
+    assert art.read_bytes() == data
+    # Adding artwork is a real edit — it must bump updated_at (drives Plex staleness).
+    assert updated.updated_at > created.updated_at
+    # Round-trips through disk.
+    reloaded = store.get_playlist(tmp_path, created.id)
+    assert reloaded is not None
+    assert reloaded.artwork is not None
+    assert reloaded.artwork.format == "jpg"
+
+
+def test_set_artwork_format_replacement_removes_old_file(tmp_path: Path) -> None:
+    created = store.create_playlist(tmp_path, name="P")
+    store.set_artwork(tmp_path, created.id, b"jpeg", "jpg")
+    jpg = store.artwork_path(tmp_path, created.id, "jpg")
+    assert jpg.is_file()
+    updated = store.set_artwork(tmp_path, created.id, b"png", "png")
+    assert updated is not None
+    assert updated.artwork is not None
+    assert updated.artwork.format == "png"
+    # The stale .jpg must be gone — otherwise it would be re-served if the format
+    # ever flipped back to jpg.
+    assert not jpg.exists()
+    assert store.artwork_path(tmp_path, created.id, "png").is_file()
+
+
+def test_set_artwork_unknown_id_returns_none_writes_no_file(tmp_path: Path) -> None:
+    missing = "0" * 32
+    assert store.set_artwork(tmp_path, missing, b"data", "jpg") is None
+    assert not store.artwork_path(tmp_path, missing, "jpg").exists()
+
+
+def test_delete_artwork_removes_file_clears_field_and_bumps(tmp_path: Path) -> None:
+    created = store.create_playlist(tmp_path, name="P")
+    with_art = store.set_artwork(tmp_path, created.id, b"jpeg", "jpg")
+    assert with_art is not None
+    art = store.artwork_path(tmp_path, created.id, "jpg")
+    assert art.is_file()
+    cleared = store.delete_artwork(tmp_path, created.id)
+    assert cleared is not None
+    assert cleared.artwork is None
+    assert not art.exists()
+    assert cleared.updated_at > with_art.updated_at
+
+
+def test_delete_artwork_no_artwork_is_noop_returning_record(tmp_path: Path) -> None:
+    created = store.create_playlist(tmp_path, name="P")
+    result = store.delete_artwork(tmp_path, created.id)
+    assert result is not None
+    assert result.id == created.id
+    assert result.artwork is None
+
+
+def test_delete_artwork_unknown_id_returns_none(tmp_path: Path) -> None:
+    assert store.delete_artwork(tmp_path, "0" * 32) is None
+
+
+def test_delete_playlist_removes_artwork_file(tmp_path: Path) -> None:
+    created = store.create_playlist(tmp_path, name="P")
+    store.set_artwork(tmp_path, created.id, b"jpeg", "jpg")
+    art = store.artwork_path(tmp_path, created.id, "jpg")
+    assert art.is_file()
+    assert store.delete_playlist(tmp_path, created.id) is True
+    # No record survives to point at the file, so it must be swept too.
+    assert not art.exists()
+
+
+def test_legacy_record_without_artwork_key_loads_as_none(tmp_path: Path) -> None:
+    record = store.create_playlist(tmp_path, name="Old")
+    raw = {
+        "id": record.id,
+        "name": "Old",
+        "description": "",
+        "track_ids": [],
+        "entries": [],
+        "target_plex_users": [],
+        "plex": {},
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+    (tmp_path / f"{record.id}.json").write_text(json.dumps(raw), encoding="utf-8")
+    loaded = store.get_playlist(tmp_path, record.id)
+    assert loaded is not None
+    assert loaded.artwork is None

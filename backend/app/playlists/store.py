@@ -18,11 +18,14 @@ read never sees a half-written file).
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, model_validator
 
@@ -54,6 +57,18 @@ class StoredEntry(BaseModel):
     pending: PendingTrack | None = None
 
 
+class ArtworkInfo(BaseModel):
+    """Marker for a playlist's cover art file (the bytes live on disk, not here).
+
+    ``hash`` is the leading 16 hex chars of the sha256 of the stored bytes — a
+    cheap change-detection tag (e.g. for ETags / "did the art change since last
+    sync") without re-reading the file.
+    """
+
+    format: Literal["jpg", "png"]
+    hash: str
+
+
 class StoredPlaylist(BaseModel):
     """On-disk playlist record (``<playlists_dir>/<id>.json``)."""
 
@@ -64,6 +79,7 @@ class StoredPlaylist(BaseModel):
     entries: list[StoredEntry] = []
     target_plex_users: list[str] = []
     plex: dict[str, PlexTargetState] = {}
+    artwork: ArtworkInfo | None = None
     created_at: str
     updated_at: str
 
@@ -105,6 +121,41 @@ def _record_path(playlists_dir: Path, playlist_id: str) -> Path:
 def _write_atomic(path: Path, record: StoredPlaylist) -> None:
     """Crash-safe write of the JSON record (shared atomic-text recipe)."""
     write_atomic_text(path, record.model_dump_json(indent=2))
+
+
+def artwork_path(playlists_dir: Path, playlist_id: str, format: str) -> Path:
+    """On-disk path of a playlist's cover art (``artwork/<id>.<format>``)."""
+    return playlists_dir / "artwork" / f"{playlist_id}.{format}"
+
+
+def _write_artwork_atomic(path: Path, data: bytes) -> None:
+    """Crash-safe write of the raw art bytes — the binary sibling of the shared
+    ``write_atomic_text`` recipe (tmp -> fsync -> chmod -> replace -> parent
+    fsync), owner-only ``0o600`` to match the store's atomic-write posture."""
+    mode = 0o600
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / f".{path.name}.tmp"
+    try:
+        # Create the tempfile with the final mode up front (os.open honours
+        # umask, so the following chmod pins the exact bits).
+        fd = os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, mode)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def create_playlist(
@@ -175,6 +226,51 @@ def update_playlist(
             record.description = description
         if target_plex_users is not None:
             record.target_plex_users = target_plex_users
+        record.updated_at = _now()
+        _write_atomic(_record_path(playlists_dir, playlist_id), record)
+        return record
+
+
+def set_artwork(
+    playlists_dir: Path,
+    playlist_id: str,
+    data: bytes,
+    format: Literal["jpg", "png"],
+) -> StoredPlaylist | None:
+    """Store cover art bytes for a playlist and record the marker on the record.
+
+    Adding/replacing art is a real content edit, so it bumps ``updated_at`` (the
+    editor's Plex-staleness signal).
+    """
+    with _LOCK:
+        record = get_playlist(playlists_dir, playlist_id)
+        if record is None:
+            return None
+        _write_artwork_atomic(artwork_path(playlists_dir, playlist_id, format), data)
+        # Drop the other-format leftover: a stale ``.jpg`` sitting next to a live
+        # ``.png`` would be re-served if the format ever flipped back to jpg.
+        for other in ("jpg", "png"):
+            if other != format:
+                artwork_path(playlists_dir, playlist_id, other).unlink(missing_ok=True)
+        record.artwork = ArtworkInfo(format=format, hash=hashlib.sha256(data).hexdigest()[:16])
+        record.updated_at = _now()
+        _write_atomic(_record_path(playlists_dir, playlist_id), record)
+        return record
+
+
+def delete_artwork(playlists_dir: Path, playlist_id: str) -> StoredPlaylist | None:
+    """Remove a playlist's cover art (both formats) and clear the marker.
+
+    Idempotent: returns the record even when there was no artwork (a missing
+    file is fine), and still bumps ``updated_at`` — clearing art is an edit.
+    """
+    with _LOCK:
+        record = get_playlist(playlists_dir, playlist_id)
+        if record is None:
+            return None
+        for fmt in ("jpg", "png"):
+            artwork_path(playlists_dir, playlist_id, fmt).unlink(missing_ok=True)
+        record.artwork = None
         record.updated_at = _now()
         _write_atomic(_record_path(playlists_dir, playlist_id), record)
         return record
@@ -286,6 +382,9 @@ def delete_playlist(playlists_dir: Path, playlist_id: str) -> bool:
     with _LOCK:
         try:
             _record_path(playlists_dir, playlist_id).unlink()
-            return True
         except FileNotFoundError:
             return False
+        # Sweep any art files too — no record survives to point at them.
+        for fmt in ("jpg", "png"):
+            artwork_path(playlists_dir, playlist_id, fmt).unlink(missing_ok=True)
+        return True
