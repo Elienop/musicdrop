@@ -525,6 +525,7 @@ async def import_commit_endpoint(
     body: PlaylistImportRequest,
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
     handle: Annotated[LibraryHandle, Depends(get_library)],
+    plex_store: Annotated[PlexConfigStore, Depends(get_plex_store)],
 ) -> PlaylistImportResponse:
     """Create the playlists exactly as reviewed — resolved entries as tracks,
     unresolved ones as position-holding pending rows."""
@@ -568,6 +569,23 @@ async def import_commit_endpoint(
             logger.warning("Playlist import failed for %r", name, exc_info=True)
             failed.append(PlaylistImportFailure(name=name, error="Couldn't save this playlist."))
             continue
+        if playlist.plex_source:
+            try:
+                poster = await run_in_threadpool(
+                    playlists_pull.download_poster, plex_store.get(), playlist.plex_source
+                )
+                if poster is not None:
+                    data, image_format = poster
+                    updated = await run_in_threadpool(
+                        store.set_artwork, playlists_dir, record.id, data, image_format
+                    )
+                    if updated is not None:
+                        record = updated
+            except Exception:
+                # Best-effort poster seed: an artless import is still a successful
+                # import, so any Plex/network failure is logged and swallowed
+                # (mirrors the editSummary best-effort stamp in plex/sync.py).
+                logger.warning("Plex poster pull failed for %r", name, exc_info=True)
         await _export_playlist(record, handle)
         created.append(await _summary(record, handle))
     return PlaylistImportResponse(created=created, failed=failed)

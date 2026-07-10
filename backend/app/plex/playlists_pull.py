@@ -8,7 +8,7 @@ app/plex/ (adapter boundary); ``client.connect`` is the patchable seam.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from plexapi.exceptions import PlexApiException
 from requests.exceptions import RequestException
@@ -82,3 +82,44 @@ def pull_playlist_entries(config: PlexConfig, names: list[str]) -> list[ParsedPl
         raise
     except (PlexApiException, RequestException) as exc:
         raise PlexConnectionError("Couldn't read Plex playlists.") from exc
+
+
+def _sniff_poster_format(data: bytes) -> Literal["jpg", "png"] | None:
+    """The poster's image format from its magic bytes — JPEG or PNG only, else None."""
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    return None
+
+
+def download_poster(
+    config: PlexConfig, playlist_title: str
+) -> tuple[bytes, Literal["jpg", "png"]] | None:
+    """Fetch the poster of the audio playlist titled ``playlist_title`` (exact
+    match) through the server's authed session.
+
+    Returns the raw bytes + sniffed format, or ``None`` when the playlist is
+    absent, has no thumb, or the thumb isn't a JPEG/PNG. A genuine Plex/network
+    error raises ``PlexConnectionError`` (same as the other reads here) — the
+    import commit treats the whole pull as best-effort and swallows either way.
+    """
+    _require(config)
+    try:
+        server = client.connect(config.base_url, config.token)
+        playlist = next(
+            (pl for pl in _audio_playlists(server) if str(pl.title) == playlist_title),
+            None,
+        )
+        if playlist is None:
+            return None
+        thumb = getattr(playlist, "thumb", None)
+        if not thumb:
+            return None
+        response = server._session.get(server.url(str(thumb), includeToken=True))
+        response.raise_for_status()
+        data: bytes = response.content
+        fmt = _sniff_poster_format(data)
+        return (data, fmt) if fmt is not None else None
+    except (PlexApiException, RequestException) as exc:
+        raise PlexConnectionError("Couldn't read the Plex playlist poster.") from exc
