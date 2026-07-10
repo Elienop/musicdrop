@@ -392,6 +392,65 @@ describe("ImportPage — live feed", () => {
     expect(rows[1]).toHaveTextContent("OK Computer");
   });
 
+  test("the pinned decision outranks newest-first even at a lower index", async () => {
+    // Guards the pin sort key: the pending row is at the LOWEST index here, so
+    // newest-first alone would sink it to the bottom. Only the pin term keeps it
+    // on top — deleting that term from FeedList must fail this test. The fixture
+    // can't occur in today's sequential review (the album awaiting a decision is
+    // always the latest), so the pin key is defensive; this test keeps it honest.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            progress: { applied: 2, needs_review: 1, skipped: 0, not_landed: 0 },
+            albums: [
+              {
+                index: 0,
+                folder: "/music/incoming/Radiohead - Amnesiac",
+                artist: "Radiohead",
+                album: "Amnesiac",
+                recommendation: "medium",
+                confidence: 74,
+                status: "needs_review",
+                album_id: null,
+                did_not_land: false,
+              },
+              {
+                index: 1,
+                folder: "/music/incoming/Radiohead - OK Computer",
+                artist: "Radiohead",
+                album: "OK Computer",
+                recommendation: "strong",
+                confidence: 99,
+                status: "applied",
+                album_id: 41,
+                did_not_land: false,
+              },
+              {
+                index: 2,
+                folder: "/music/incoming/Radiohead - Kid A",
+                artist: "Radiohead",
+                album: "Kid A",
+                recommendation: "strong",
+                confidence: 98,
+                status: "applied",
+                album_id: 42,
+                did_not_land: false,
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    await screen.findByText("OK Computer");
+    const rows = screen.getAllByRole("listitem");
+    expect(rows[0]).toHaveTextContent("Amnesiac");
+    expect(rows[1]).toHaveTextContent("Kid A");
+    expect(rows[2]).toHaveTextContent("OK Computer");
+  });
+
   test("the Review affordance links to the right album index", async () => {
     server.use(http.get(JOB_URL, () => HttpResponse.json(makeJob())));
     renderAt("/import?job=job-1");
