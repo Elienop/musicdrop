@@ -108,6 +108,29 @@ def test_cover_album_ids_respects_limit(tmp_path: Path) -> None:
     assert result == [ids["album_a"]]
 
 
+def test_cover_album_ids_bounds_lookups_by_scan_cap() -> None:
+    """scan_cap bounds the TOTAL get_item attempts, even when every id is
+    unresolvable — otherwise a long all-unknown list does one lookup per id."""
+
+    class _CountingLib:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get_item(self, item_id: int) -> None:
+            self.calls += 1
+            return None  # every id is unknown
+
+    class _Handle:
+        def __init__(self, lib: _CountingLib) -> None:
+            self.lib = lib
+
+    lib = _CountingLib()
+    handle = _Handle(lib)
+    result = cover_album_ids(handle, list(range(100)), scan_cap=10)  # type: ignore[arg-type]
+    assert result == []
+    assert lib.calls <= 10
+
+
 def test_cover_album_ids_skips_singleton_and_unknown(tmp_path: Path) -> None:
     handle, ids = _lib_with_albums_and_singleton(tmp_path)
     assert cover_album_ids(handle, [ids["solo"], 999999]) == []  # type: ignore[arg-type]

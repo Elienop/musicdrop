@@ -106,7 +106,14 @@ def _to_playlist(record: StoredPlaylist, cover_ids: list[int]) -> Playlist:
 
 
 async def _summary(record: StoredPlaylist, handle: LibraryHandle) -> Playlist:
-    """Build the summary model, resolving the collage cover album ids off-thread."""
+    """Build the summary model, resolving the collage cover album ids off-thread.
+
+    A playlist with real uploaded artwork never shows the collage (the FE's
+    PlaylistCover short-circuits on ``artwork_hash``), so the album scan is dead
+    weight there — skip it and emit empty cover ids.
+    """
+    if record.artwork is not None:
+        return _to_playlist(record, [])
     cover_ids = await run_in_threadpool(cover_album_ids, handle, record.resolved_item_ids)
     return _to_playlist(record, cover_ids)
 

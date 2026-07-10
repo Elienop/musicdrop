@@ -763,3 +763,19 @@ def test_detail_cover_album_ids_from_resolved_album_tracks(
     client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [item_id]})
     detail = client.get(f"/api/playlists/{pid}").json()
     assert detail["cover_album_ids"] == [album_id]
+
+
+def test_cover_album_ids_empty_when_playlist_has_artwork(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    # A playlist with real uploaded art short-circuits the collage on the FE, so
+    # the (potentially expensive) album scan is skipped — cover_album_ids is [].
+    item_id, _album_id = _add_album_track(beets_library, "Solo")
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [item_id]})
+    put = client.put(f"/api/playlists/{pid}/artwork", content=_PNG)
+    assert put.status_code == 200
+    assert put.json()["cover_album_ids"] == []
+    detail = client.get(f"/api/playlists/{pid}").json()
+    assert detail["artwork_hash"] is not None
+    assert detail["cover_album_ids"] == []

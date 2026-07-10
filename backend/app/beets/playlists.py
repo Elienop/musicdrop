@@ -102,25 +102,23 @@ def cover_album_ids(
     """The first ``limit`` DISTINCT album ids among ``item_ids``, in
     first-appearance order — the covers the FE tiles into a playlist collage.
 
-    Only the first ``scan_cap`` RESOLVED item ids are inspected (a bound on the
-    per-id library lookups). Unknown items and album-less singletons (beets
-    ``album_id`` 0/absent) are skipped and, being unresolved covers, contribute
-    no cover — an unknown id does not count against ``scan_cap``.
+    Only the first ``scan_cap`` item ids are looked up (a hard bound on the
+    per-id library lookups regardless of how many resolve). Unknown items and
+    album-less singletons (beets ``album_id`` 0/absent) contribute no album cover
+    and are skipped, but their lookup still counts against ``scan_cap``.
     """
     lib = handle.lib
     album_ids: list[int] = []
     seen: set[int] = set()
-    resolved = 0
-    for item_id in item_ids:
-        if len(album_ids) >= limit or resolved >= scan_cap:
+    for item_id in item_ids[:scan_cap]:
+        if len(album_ids) >= limit:
             break
         try:
             item = lib.get_item(item_id)
         except Exception:  # a locked/odd row is treated as "not resolvable"
             item = None
         if item is None:
-            continue  # unknown item: no cover, and does not consume the scan cap
-        resolved += 1
+            continue  # unknown item — no cover
         raw = getattr(item, "album_id", None)
         if not raw:  # singleton (no album) — no album cover to show
             continue
