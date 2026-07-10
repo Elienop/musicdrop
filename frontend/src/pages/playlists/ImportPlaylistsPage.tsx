@@ -12,7 +12,7 @@ import {
   useImportPreview,
   usePlexImportPlaylists,
 } from "@/api/usePlaylistImport";
-import { Back, Playlists, Search, Upload } from "@/components/icons";
+import { Back, Close, Edit, Playlists, Search, Success, Upload } from "@/components/icons";
 import { type PickedTrack, TrackMatchPicker } from "@/components/playlists/TrackMatchPicker";
 import { ErrorState } from "@/components/system/ErrorState";
 import { PageHeader } from "@/components/system/PageHeader";
@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDuration } from "@/lib/format";
@@ -59,6 +60,14 @@ export function ImportPlaylistsPage() {
   const navigate = useNavigate();
   const [preview, setPreview] = useState<PlaylistImportPreviewResponse | null>(null);
   const [resolutions, setResolutions] = useState<Resolutions>(new Map());
+  // Per-playlist name edits, keyed by the preview INDEX (names aren't unique).
+  // Seeded from the preview at review start; an empty/whitespace edit falls back
+  // to the original name at commit.
+  const [names, setNames] = useState<Map<number, string>>(new Map());
+  // Whether THIS preview came from Plex — captured at review start. Only a
+  // Plex-sourced import stamps each playlist's `plex_source` (the backend matches
+  // it as an exact Plex title); file uploads never do.
+  const [fromPlex, setFromPlex] = useState(false);
   // Labels for picker-sourced picks (not in a preview entry's match/suggestions).
   const [picked, setPicked] = useState<Map<string, PickedTrack>>(new Map());
   const [pickerFor, setPickerFor] = useState<{ playlistIndex: number; position: number } | null>(
@@ -75,10 +84,17 @@ export function ImportPlaylistsPage() {
   // fails fast (retry:false) to the surfaced detail in the Plex card.
   const plexQuery = usePlexImportPlaylists(preview === null);
 
-  function startReview(response: PlaylistImportPreviewResponse) {
+  function startReview(response: PlaylistImportPreviewResponse, sourceIsPlex: boolean) {
     setResolutions(seedResolutions(response));
     setPicked(new Map());
+    setNames(new Map(response.playlists.map((playlist, index) => [index, playlist.name])));
+    setFromPlex(sourceIsPlex);
     setPreview(response);
+  }
+
+  /** Update the edited name for the playlist at `index`. */
+  function setPlaylistName(index: number, value: string) {
+    setNames((prev) => new Map(prev).set(index, value));
   }
 
   async function onFilesPicked(fileList: FileList | null) {
@@ -93,14 +109,17 @@ export function ImportPlaylistsPage() {
       setFileReadError("Couldn't read the selected files — try again.");
       return;
     }
-    previewMutation.mutate({ files }, { onSuccess: startReview });
+    previewMutation.mutate({ files }, { onSuccess: (response) => startReview(response, false) });
   }
 
   function previewFromPlex() {
-    const names = [...plexChecked];
-    if (names.length === 0) return;
+    const selected = [...plexChecked];
+    if (selected.length === 0) return;
     setFileReadError(null);
-    previewMutation.mutate({ plex_playlists: names }, { onSuccess: startReview });
+    previewMutation.mutate(
+      { plex_playlists: selected },
+      { onSuccess: (response) => startReview(response, true) },
+    );
   }
 
   function setResolution(playlistIndex: number, position: number, itemId: number | null) {
@@ -144,8 +163,14 @@ export function ImportPlaylistsPage() {
   function buildRequest(source: PlaylistImportPreviewResponse): PlaylistImportRequest {
     return {
       playlists: source.playlists.map((playlist, index) => ({
-        name: playlist.name,
+        // A blank/whitespace edit falls back to the original preview name.
+        name: (names.get(index) ?? "").trim() || playlist.name,
         description: "",
+        // Only a Plex-sourced import carries plex_source, and it MUST be the
+        // ORIGINAL bare Plex title (never the edited name, never a decorated
+        // "plex:<name>") — the backend matches it as an exact Plex title, so a
+        // decorated value would silently import artless.
+        ...(fromPlex ? { plex_source: playlist.name } : {}),
         entries: playlist.entries.map((entry) => {
           const itemId = resolutionFor(index, entry.position);
           if (itemId !== null) return { item_id: itemId };
@@ -225,6 +250,8 @@ export function ImportPlaylistsPage() {
             <li key={index}>
               <PlaylistReview
                 playlist={playlist}
+                name={names.get(index) ?? playlist.name}
+                onRename={(value) => setPlaylistName(index, value)}
                 resolutionFor={(position) => resolutionFor(index, position)}
                 chosenTrack={(entry) => chosenTrack(index, entry)}
                 onUseSuggestion={(position, itemId) =>
@@ -387,18 +414,36 @@ const LIVE_STATUS_LABEL: Record<LiveStatus, string> = {
  * are already done. */
 function PlaylistReview({
   playlist,
+  name,
+  onRename,
   resolutionFor,
   chosenTrack,
   onUseSuggestion,
   onSearch,
 }: {
   playlist: PlaylistImportPreview;
+  name: string;
+  onRename: (value: string) => void;
   resolutionFor: (position: number) => number | null;
   chosenTrack: (entry: ImportEntryPreview) => { title: string; artist: string } | null;
   onUseSuggestion: (position: number, itemId: number) => void;
   onSearch: (position: number) => void;
 }) {
   const [view, setView] = useState<"attention" | "all">("attention");
+  // Inline name editor (the detail-page rename idiom: pencil → input → save).
+  // The committed value lives in page state (`names`); the draft is local while
+  // editing, and a blank save is rejected so the card keeps its original title.
+  const [editingName, setEditingName] = useState(false);
+  const [draftName, setDraftName] = useState(name);
+  function saveName() {
+    const next = draftName.trim();
+    if (next.length === 0 || next === name) {
+      setEditingName(false);
+      return;
+    }
+    onRename(next);
+    setEditingName(false);
+  }
   // Tallies follow the LIVE resolution state, not the frozen preview counts: a
   // resolved entry (seeded match or a user pick) has an item_id, the rest are
   // still unmatched. So "2 ambiguous" doesn't linger after the user resolves them.
@@ -417,28 +462,82 @@ function PlaylistReview({
     <Card>
       <details>
         <summary className="focus-ring flex cursor-pointer list-none items-center justify-between gap-3 rounded-xl px-4 py-3">
-          <span className="min-w-0 truncate font-medium" title={playlist.name}>
-            {playlist.name}
-          </span>
-          <span className="text-muted-foreground flex shrink-0 gap-2 text-sm tabular-nums">
-            <span>{matched} matched</span>
-            <span aria-hidden="true">·</span>
-            <span>{unmatched} unmatched</span>
+          {editingName ? (
+            // The editor sits inside <summary>, so its clicks preventDefault —
+            // otherwise focusing the input or hitting save/cancel would toggle
+            // the <details> collapse.
+            <span
+              className="flex min-w-0 flex-1 items-center gap-2"
+              onClick={(e) => e.preventDefault()}
+            >
+              <Input
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                aria-label="Playlist name"
+                className="h-8 w-64 max-w-full"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    saveName();
+                  }
+                  if (e.key === "Escape") setEditingName(false);
+                }}
+              />
+              <Button size="icon-sm" onClick={saveName} aria-label="Save name">
+                <Success className="size-4" aria-hidden="true" />
+              </Button>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                onClick={() => setEditingName(false)}
+                aria-label="Cancel rename"
+              >
+                <Close className="size-4" aria-hidden="true" />
+              </Button>
+            </span>
+          ) : (
+            <span className="flex min-w-0 flex-1 items-center gap-2">
+              <span className="min-w-0 truncate font-medium" title={name}>
+                {name}
+              </span>
+              {/* The pencil preventDefaults too — a rename shouldn't toggle the
+                  card open/closed. The name text itself still toggles. */}
+              <span className="shrink-0" onClick={(e) => e.preventDefault()}>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setDraftName(name);
+                    setEditingName(true);
+                  }}
+                  aria-label={`Rename ${name}`}
+                >
+                  <Edit className="size-4" aria-hidden="true" />
+                </Button>
+              </span>
+            </span>
+          )}
+          <span className="flex shrink-0 items-center gap-3">
+            <span className="text-muted-foreground text-sm tabular-nums">
+              {matched} matched
+            </span>
+            {/* The filter lives INSIDE <summary> now, wrapped so its clicks
+                preventDefault — otherwise activating an option would toggle the
+                <details> collapse instead of switching the view. */}
+            <span onClick={(e) => e.preventDefault()}>
+              <SegmentedControl
+                aria-label="Filter entries"
+                value={view}
+                onChange={(v) => setView(v === "all" ? "all" : "attention")}
+                options={[
+                  { value: "attention", label: `Needs attention (${unmatched})` },
+                  { value: "all", label: `All (${playlist.entries.length})` },
+                ]}
+              />
+            </span>
           </span>
         </summary>
-        {/* The filter lives OUTSIDE <summary> — a click there would toggle the
-            collapse instead of the view. */}
-        <div className="flex items-center border-t px-4 py-2">
-          <SegmentedControl
-            aria-label="Filter entries"
-            value={view}
-            onChange={(v) => setView(v === "all" ? "all" : "attention")}
-            options={[
-              { value: "attention", label: `Needs attention (${unmatched})` },
-              { value: "all", label: `All (${playlist.entries.length})` },
-            ]}
-          />
-        </div>
         {visible.length === 0 ? (
           <p className="text-muted-foreground border-t px-4 py-3 text-sm">
             Everything’s matched — switch to All to see the entries.

@@ -837,6 +837,69 @@ describe("PlaylistDetailPage", () => {
     expect(screen.queryByText(/also removes it from Plex/i)).not.toBeInTheDocument();
   });
 
+  test("delete dialog counts the synced Plex copies that actually exist", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: {
+            admin: {
+              rating_key: "1",
+              status: "ok",
+              missing: 0,
+              synced_at: "2026-06-07T01:00:00+00:00",
+              error: null,
+            },
+            "7": {
+              rating_key: "2",
+              status: "ok",
+              missing: 0,
+              synced_at: "2026-06-07T01:00:00+00:00",
+              error: null,
+            },
+          },
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /delete playlist/i }));
+    expect(
+      await screen.findByText(/Also removes its 2 synced Plex copies on Plex\./),
+    ).toBeInTheDocument();
+  });
+
+  test("delete dialog omits the synced-copies note when no copy has a rating key", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          // A target that was never created on Plex (no rating_key) must not be
+          // counted as a synced copy — even though it occupies a plex slot.
+          plex: {
+            admin: {
+              rating_key: null,
+              status: "failed",
+              missing: 0,
+              synced_at: null,
+              error: "boom",
+            },
+          },
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /delete playlist/i }));
+    expect(screen.queryByText(/synced Plex/)).not.toBeInTheDocument();
+  });
+
   // ——— Focus restoration (characterization: pins the pendingFocus engine the
   // useFocusAfterMutation swap must preserve exactly) ———
 

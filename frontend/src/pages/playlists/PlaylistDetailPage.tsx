@@ -470,6 +470,13 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
   // in step with optimistic add/remove/resolve edits, not the last server body.
   const unmatchedCount = tracks.filter((t) => t.pending).length;
 
+  // How many Plex copies actually exist for this playlist — targets whose sync
+  // recorded a rating_key. Drives the delete-dialog's honest "…N synced Plex
+  // copies…" line (a failed/empty target has a slot but no copy on Plex).
+  const syncedPlexCopies = Object.values(playlist.plex ?? {}).filter(
+    (state) => state.rating_key,
+  ).length;
+
   return (
     <section className="flex flex-col gap-6" aria-label="Playlist">
       <BackLink to="/playlists" label="Playlists" />
@@ -606,6 +613,15 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
                       {Object.keys(playlist.plex).length === 1 ? "" : "s"}).
                     </>
                   ) : null}
+                  {/* Count only the copies that actually landed on Plex (have a
+                      recorded rating_key) — a failed/empty target holds a plex
+                      slot but has no copy to remove. Built as one string so the
+                      sentence reads exactly, uninterrupted by interpolation. */}
+                  {syncedPlexCopies > 0
+                    ? ` Also removes its ${syncedPlexCopies} synced Plex ${
+                        syncedPlexCopies === 1 ? "copy" : "copies"
+                      } on Plex.`
+                    : null}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               {remove.isError && (
