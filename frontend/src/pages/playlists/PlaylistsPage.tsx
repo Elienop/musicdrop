@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router";
 import { type Playlist, usePlaylists } from "@/api/usePlaylists";
 import { Add, Playlists, Upload } from "@/components/icons";
 import { CreatePlaylistDialog } from "@/components/playlists/CreatePlaylistDialog";
+import { PlaylistCover } from "@/components/playlists/PlaylistCover";
 import { EmptyState } from "@/components/system/EmptyState";
 import { ErrorState } from "@/components/system/ErrorState";
 import { PageHeader } from "@/components/system/PageHeader";
@@ -87,13 +88,19 @@ function PlaylistRow({ playlist }: { playlist: Playlist }) {
       className="focus-ring block rounded-xl"
     >
       <Card className="hover:bg-surface-hover gap-2 py-4 transition-colors">
-        <CardHeader className="px-4">
-          <CardTitle className="truncate" title={playlist.name}>
-            {playlist.name}
-          </CardTitle>
-          <CardDescription>
-            {playlist.track_count} {playlist.track_count === 1 ? "track" : "tracks"}
-          </CardDescription>
+        <CardHeader className="flex flex-row items-center gap-3 px-4">
+          <PlaylistCover
+            playlist={playlist}
+            className="border-border size-14 shrink-0 rounded-lg border"
+          />
+          <div className="flex min-w-0 flex-col gap-1">
+            <CardTitle className="truncate" title={playlist.name}>
+              {playlist.name}
+            </CardTitle>
+            <CardDescription>
+              {playlist.track_count} {playlist.track_count === 1 ? "track" : "tracks"}
+            </CardDescription>
+          </div>
         </CardHeader>
       </Card>
     </Link>
@@ -107,9 +114,12 @@ function ListSkeleton() {
       {Array.from({ length: 4 }, (_, i) => (
         <li key={i}>
           <Card className="gap-2 py-4">
-            <CardHeader className="gap-2 px-4">
-              <Skeleton className="h-5 w-48" />
-              <Skeleton className="h-4 w-20" />
+            <CardHeader className="flex flex-row items-center gap-3 px-4">
+              <Skeleton className="size-14 shrink-0 rounded-lg" />
+              <div className="flex flex-col gap-2">
+                <Skeleton className="h-5 w-48" />
+                <Skeleton className="h-4 w-20" />
+              </div>
             </CardHeader>
           </Card>
         </li>

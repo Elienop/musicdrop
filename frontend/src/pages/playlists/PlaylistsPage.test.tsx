@@ -20,6 +20,8 @@ function playlist(over: Partial<Record<string, unknown>> = {}) {
     target_plex_users: [],
     created_at: "2026-06-06T00:00:00+00:00",
     updated_at: "2026-06-06T00:00:00+00:00",
+    artwork_hash: null,
+    cover_album_ids: [],
     ...over,
   };
 }
@@ -38,6 +40,17 @@ describe("PlaylistsPage", () => {
     renderWithProviders(<PlaylistsPage />);
     expect(await screen.findByText("Late night")).toBeInTheDocument();
     expect(screen.getByText(/3 tracks/i)).toBeInTheDocument();
+  });
+
+  test("a playlist with album covers shows a collage on its row", async () => {
+    server.use(
+      http.get(URL, () => HttpResponse.json([playlist({ cover_album_ids: [11, 22] })])),
+    );
+    renderWithProviders(<PlaylistsPage />);
+    await screen.findByText("Late night");
+    const collage = document.querySelector('[data-slot="playlist-cover-collage"]');
+    expect(collage).not.toBeNull();
+    expect(collage?.querySelectorAll("img")).toHaveLength(2);
   });
 
   test("empty state when there are no playlists", async () => {

@@ -64,6 +64,8 @@ function detail(tracks: Array<Record<string, unknown>>, name = "Late night") {
     plex: {},
     created_at: "2026-06-06T00:00:00+00:00",
     updated_at: "2026-06-06T00:00:00+00:00",
+    artwork_hash: null,
+    cover_album_ids: [],
     tracks,
   };
 }
@@ -137,6 +139,25 @@ describe("PlaylistDetailPage", () => {
     expect(await screen.findByText("Late night")).toBeInTheDocument();
     expect(screen.getByText("Alpha")).toBeInTheDocument();
     expect(screen.getByText("Beta")).toBeInTheDocument();
+  });
+
+  test("the header shows the playlist cover collage", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          cover_album_ids: [11, 22, 33, 44],
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Late night");
+    const collage = document.querySelector('[data-slot="playlist-cover-collage"]');
+    expect(collage).not.toBeNull();
+    expect(collage?.querySelectorAll("img")).toHaveLength(4);
   });
 
   test("removes a track", async () => {

@@ -16,6 +16,7 @@ import {
 } from "@/api/usePlaylists";
 import { usePlexUsers } from "@/api/usePlex";
 import { BackLink } from "@/components/albums/album-grid";
+import { PlaylistCover } from "@/components/playlists/PlaylistCover";
 import { TrackMatchPicker } from "@/components/playlists/TrackMatchPicker";
 import {
   Close,
@@ -461,7 +462,12 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
       </p>
 
       <header className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-col gap-2">
+        <div className="flex min-w-0 items-start gap-4">
+          <PlaylistCover
+            playlist={playlist}
+            className="border-border size-24 shrink-0 rounded-xl border"
+          />
+          <div className="flex min-w-0 flex-col gap-2">
           {editingName ? (
             <div className="flex items-center gap-2">
               <Input
@@ -524,6 +530,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
             {tracks.length} {tracks.length === 1 ? "track" : "tracks"}
             {unmatchedCount > 0 ? ` · ${unmatchedCount} unmatched` : ""}
           </p>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
