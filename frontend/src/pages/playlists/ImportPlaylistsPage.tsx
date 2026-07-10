@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDuration } from "@/lib/format";
 
@@ -380,7 +381,10 @@ const LIVE_STATUS_LABEL: Record<LiveStatus, string> = {
 };
 
 /** One previewed playlist: a summary row (name + match tallies) with an
- * expandable entry table behind it. Collapsed by default. */
+ * expandable entry list behind it. Collapsed by default. The list opens on
+ * the needs-attention view — the rows still awaiting a decision — with the
+ * resolved ones a toggle away, so a big import isn't buried under rows that
+ * are already done. */
 function PlaylistReview({
   playlist,
   resolutionFor,
@@ -394,6 +398,7 @@ function PlaylistReview({
   onUseSuggestion: (position: number, itemId: number) => void;
   onSearch: (position: number) => void;
 }) {
+  const [view, setView] = useState<"attention" | "all">("attention");
   // Tallies follow the LIVE resolution state, not the frozen preview counts: a
   // resolved entry (seeded match or a user pick) has an item_id, the rest are
   // still unmatched. So "2 ambiguous" doesn't linger after the user resolves them.
@@ -401,6 +406,13 @@ function PlaylistReview({
     (entry) => resolutionFor(entry.position) !== null,
   ).length;
   const unmatched = playlist.entries.length - matched;
+  // Resolving a row in the attention view drops it immediately — the list
+  // shrinks as you work (the Review-page bank posture). It stays reachable,
+  // and re-pickable, under All.
+  const visible =
+    view === "all"
+      ? playlist.entries
+      : playlist.entries.filter((entry) => resolutionFor(entry.position) === null);
   return (
     <Card>
       <details>
@@ -414,18 +426,37 @@ function PlaylistReview({
             <span>{unmatched} unmatched</span>
           </span>
         </summary>
-        <ul className="divide-border flex flex-col divide-y border-t">
-          {playlist.entries.map((entry) => (
-            <EntryRow
-              key={entry.position}
-              entry={entry}
-              resolved={resolutionFor(entry.position)}
-              chosen={chosenTrack(entry)}
-              onUseSuggestion={(itemId) => onUseSuggestion(entry.position, itemId)}
-              onSearch={() => onSearch(entry.position)}
-            />
-          ))}
-        </ul>
+        {/* The filter lives OUTSIDE <summary> — a click there would toggle the
+            collapse instead of the view. */}
+        <div className="flex items-center border-t px-4 py-2">
+          <SegmentedControl
+            aria-label="Filter entries"
+            value={view}
+            onChange={(v) => setView(v === "all" ? "all" : "attention")}
+            options={[
+              { value: "attention", label: `Needs attention (${unmatched})` },
+              { value: "all", label: `All (${playlist.entries.length})` },
+            ]}
+          />
+        </div>
+        {visible.length === 0 ? (
+          <p className="text-muted-foreground border-t px-4 py-3 text-sm">
+            Everything’s matched — switch to All to see the entries.
+          </p>
+        ) : (
+          <ul className="divide-border flex flex-col divide-y border-t">
+            {visible.map((entry) => (
+              <EntryRow
+                key={entry.position}
+                entry={entry}
+                resolved={resolutionFor(entry.position)}
+                chosen={chosenTrack(entry)}
+                onUseSuggestion={(itemId) => onUseSuggestion(entry.position, itemId)}
+                onSearch={() => onSearch(entry.position)}
+              />
+            ))}
+          </ul>
+        )}
       </details>
     </Card>
   );

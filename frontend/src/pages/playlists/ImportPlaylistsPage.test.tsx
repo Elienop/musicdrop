@@ -513,12 +513,16 @@ describe("ImportPlaylistsPage", () => {
     expect(within(row).getByText("Ambiguous")).toBeInTheDocument();
 
     // Accepting the chip flips the badge to Matched and shows the inline
-    // → confirmation on the same row (frozen entry.status would still say
-    // ambiguous — the whole point of the live derivation).
+    // → confirmation (frozen entry.status would still say ambiguous — the whole
+    // point of the live derivation).
     await userEvent.click(within(row).getByRole("button", { name: /alpha \(live\)/i }));
-    expect(within(row).getByText("Matched")).toBeInTheDocument();
-    expect(within(row).queryByText("Ambiguous")).not.toBeInTheDocument();
-    expect(within(row).getByText("Alpha (Live)", { selector: "span" })).toBeInTheDocument();
+    // The resolved row left the needs-attention default view — flip to All and
+    // re-grab it (the pre-click element is detached once the filter drops it).
+    await userEvent.click(screen.getByRole("button", { name: "All (1)" }));
+    const rowAfter = (await screen.findByText("Alpha")).closest("li") as HTMLElement;
+    expect(within(rowAfter).getByText("Matched")).toBeInTheDocument();
+    expect(within(rowAfter).queryByText("Ambiguous")).not.toBeInTheDocument();
+    expect(within(rowAfter).getByText("Alpha (Live)", { selector: "span" })).toBeInTheDocument();
   });
 
   test("a suggestion-less row is a single line with Search inline; chips get a second line", async () => {
@@ -564,5 +568,94 @@ describe("ImportPlaylistsPage", () => {
     const chips = (await screen.findByText("Gone")).closest("li") as HTMLElement;
     expect(within(chips).getByText("↳")).toBeInTheDocument();
     expect(within(chips).getByRole("button", { name: /gone \(remaster\)/i })).toBeInTheDocument();
+  });
+
+  test("defaults to needs-attention: resolved rows hide until All is selected", async () => {
+    server.use(
+      http.post(PREVIEW_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            {
+              name: "Road",
+              matched_count: 1,
+              ambiguous_count: 0,
+              unmatched_count: 1,
+              entries: [
+                entry({ position: 0, item_id: 7, match: summary({ item_id: 7 }) }),
+                entry({
+                  position: 1,
+                  source: "Ghost - Gone",
+                  artist: "Ghost",
+                  title: "Gone",
+                  status: "unmatched",
+                }),
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    renderImport();
+    await userEvent.upload(
+      screen.getByLabelText(/upload playlist files/i),
+      new File(["#EXTM3U\nBand - Alpha\nGhost - Gone\n"], "Road.m3u8"),
+    );
+
+    // Default view: only the unresolved row; the seeded match is one click away.
+    expect(await screen.findByText("Gone")).toBeInTheDocument();
+    expect(screen.queryByText("Alpha")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Needs attention (1)", pressed: true }),
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "All (2)" }));
+    // The seeded match reappears under All. Its title "Alpha" renders twice —
+    // the row identity plus the "→ Alpha · Band" confirmation (the seeded
+    // match's own title) — so match all rather than a bare (throwing) findByText.
+    expect(await screen.findAllByText("Alpha")).not.toHaveLength(0);
+    expect(screen.getByText("Gone")).toBeInTheDocument();
+  });
+
+  test("resolving a row removes it from the needs-attention view, counts follow", async () => {
+    server.use(
+      http.post(PREVIEW_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            {
+              name: "Road",
+              matched_count: 0,
+              ambiguous_count: 1,
+              unmatched_count: 0,
+              entries: [
+                entry({
+                  status: "ambiguous",
+                  suggestions: [summary({ item_id: 11, title: "Alpha (Live)" })],
+                }),
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    renderImport();
+    await userEvent.upload(
+      screen.getByLabelText(/upload playlist files/i),
+      new File(["#EXTM3U\nBand - Alpha\n"], "Road.m3u8"),
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /alpha \(live\)/i }));
+
+    // The row left the default view and the empty state took its place; the
+    // toggle labels carry the live counts.
+    expect(screen.queryByText("Alpha", { selector: ".font-medium" })).not.toBeInTheDocument();
+    expect(screen.getByText(/switch to all to see the entries/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Needs attention (0)", pressed: true }),
+    ).toBeInTheDocument();
+
+    // The resolved row is still reachable — and re-pickable — under All.
+    await userEvent.click(screen.getByRole("button", { name: "All (1)" }));
+    expect(await screen.findByText("Alpha")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /alpha \(live\)/i })).toBeInTheDocument();
   });
 });
