@@ -1,5 +1,8 @@
+from pathlib import Path
+
 import pytest
 
+from app.playlists import store
 from app.plex import sync
 from app.plex.config import PlexConfig
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
@@ -43,6 +46,10 @@ class _FakePlaylist:
         self.summary = ""
         self._items = list(items)
         self.deleted = False
+        self.poster_uploads: list[str | None] = []
+
+    def uploadPoster(self, url: str | None = None, filepath: str | None = None) -> None:
+        self.poster_uploads.append(filepath)
 
     def items(self) -> list[_FakeTrack]:
         return list(self._items)
@@ -451,3 +458,88 @@ def test_same_title_playlists_do_not_clobber(monkeypatch: pytest.MonkeyPatch) ->
     assert plex_a.deleted is True  # A's own copy was rebuilt
     assert plex_b.deleted is False  # B's copy was left alone
     assert server.created[2].summary == "MusicDrop-id:A"
+
+
+def test_uploads_poster_when_artwork_file_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The reconcile deletes-and-recreates the Plex playlist, so the poster dies
+    # every sync and must be re-uploaded on the freshly created playlist.
+    server = _FakeServer([_FakeTrack(10, ["/m/a.flac"])])
+    _patch(monkeypatch, server)
+    art = Path("/data/playlists/artwork/p1.jpg")
+    state = sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1", artwork_file=art)
+    assert state.status == "ok"
+    assert server.created[0].poster_uploads == [str(art)]
+
+
+def test_no_poster_upload_when_artwork_file_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    server = _FakeServer([_FakeTrack(10, ["/m/a.flac"])])
+    _patch(monkeypatch, server)
+    state = sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1")
+    assert state.status == "ok"
+    assert server.created[0].poster_uploads == []  # no art => no upload attempted
+
+
+def test_poster_upload_via_fan_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The sync endpoint drives the fan-out entry point, so the poster path must
+    # thread through it too.
+    server = _FakeServer([_FakeTrack(10, ["/m/a.flac"])])
+    _patch(monkeypatch, server)
+    art = Path("/data/playlists/artwork/p1.png")
+    states = sync.sync_playlist_to_targets(
+        CONFIG,
+        "Mix",
+        [_p("/m/a.flac")],
+        [],
+        playlist_id="p1",
+        rating_keys={},
+        artwork_file=art,
+    )
+    assert states["admin"].status == "ok"
+    assert server.created[0].poster_uploads == [str(art)]
+
+
+class _PosterFailPlaylist(_FakePlaylist):
+    """A playlist whose poster upload (a separate Plex PUT) fails transiently."""
+
+    def uploadPoster(self, url: str | None = None, filepath: str | None = None) -> None:
+        raise Exception("transient poster failure")
+
+
+class _PosterFailServer(_FakeServer):
+    def createPlaylist(self, title: str, items: list[_FakeTrack]) -> _FakePlaylist:
+        pl = _PosterFailPlaylist(title, items, self._next_key)
+        self._next_key += 1
+        self.created.append(pl)
+        self._playlists.append(pl)
+        return pl
+
+
+def test_poster_upload_failure_leaves_status_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    # uploadPoster is a SEPARATE best-effort Plex PUT after createPlaylist; a
+    # transient failure there must NOT fail the reconcile — the playlist and its
+    # tracks are already synced.
+    server = _PosterFailServer([_FakeTrack(10, ["/m/a.flac"])])
+    _patch(monkeypatch, server)
+    art = Path("/data/playlists/artwork/p1.jpg")
+    state = sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1", artwork_file=art)
+    assert state.status == "ok"
+    assert state.rating_key == "500"
+
+
+def test_rename_propagates_to_recreated_plex_playlist(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The reconcile is delete-then-recreate, so a MusicDrop rename flows into the
+    # NEXT sync's createPlaylist title. Pins the rename propagation the artwork
+    # wave relies on (no production change needed for this to hold).
+    server = _FakeServer([_FakeTrack(10, ["/m/a.flac"])])
+    _patch(monkeypatch, server)
+    record = store.create_playlist(tmp_path, name="Old Name")
+
+    sync.sync_playlist(CONFIG, record.name, [_p("/m/a.flac")], playlist_id=record.id)
+    assert server.created[0].title == "Old Name"
+
+    renamed = store.update_playlist(tmp_path, record.id, name="New Name")
+    assert renamed is not None
+    sync.sync_playlist(CONFIG, renamed.name, [_p("/m/a.flac")], playlist_id=renamed.id)
+    assert server.created[1].title == "New Name"  # recreate used the NEW name

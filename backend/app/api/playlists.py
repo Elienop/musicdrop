@@ -298,6 +298,14 @@ async def sync_playlist_endpoint(
     if not (config.base_url and config.token):
         raise HTTPException(status_code=409, detail="Connect Plex first")
 
+    # The cover-art file to push as the Plex poster: only when the record marks
+    # art AND the file is actually on disk (else None -> no poster upload).
+    artwork_file: Path | None = None
+    if record.artwork is not None:
+        candidate = store.artwork_path(playlists_dir, record.id, record.artwork.format)
+        if candidate.is_file():
+            artwork_file = candidate
+
     try:
         specs = await run_in_threadpool(_plex_specs_for, record, handle, config)
         states = await run_in_threadpool(
@@ -308,6 +316,7 @@ async def sync_playlist_endpoint(
             record.target_plex_users,
             playlist_id=record.id,
             rating_keys={target: state.rating_key for target, state in record.plex.items()},
+            artwork_file=artwork_file,
         )
     except PlexNotConfigured as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

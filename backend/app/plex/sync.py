@@ -24,6 +24,7 @@ Time is stamped by the caller (this module has no clock): the returned
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from app.models.plex import PlexTargetState
@@ -60,6 +61,7 @@ def _reconcile_on(
     *,
     playlist_id: str,
     rating_key: str | None,
+    artwork_file: Path | None = None,
 ) -> PlexTargetState:
     """Rebuild this MusicDrop playlist on ``server``: find its existing Plex copy
     by IDENTITY (recorded ``rating_key`` first, else the ``playlist_id`` summary
@@ -69,6 +71,11 @@ def _reconcile_on(
     Never matches by title — same-named playlists must not clobber each other.
     Delete-then-recreate (rather than emptying in place) keeps the result a clean
     rebuild in either branch — no reliance on Plex's emptied-playlist behaviour.
+
+    When ``artwork_file`` is given, its poster is re-uploaded onto the freshly
+    created playlist: the delete-then-recreate destroys any Plex-side poster, so
+    it must be re-pushed on EVERY sync. Like the id-marker stamp, this is a
+    separate, best-effort Plex PUT — a failed poster never fails the reconcile.
     """
     existing = _find_by_rating_key(server, rating_key) if rating_key is not None else None
     if existing is None:
@@ -87,6 +94,15 @@ def _reconcile_on(
         # Failing the whole reconcile here would record no ratingKey and orphan
         # the just-created playlist, duplicating it on the next sync.
         pass
+    if artwork_file is not None:
+        try:
+            playlist.uploadPoster(filepath=str(artwork_file))
+        except Exception:
+            # Best-effort poster: uploadPoster is a SEPARATE Plex PUT that can
+            # fail transiently. The playlist and its tracks are already synced,
+            # so a poster hiccup must never fail the reconcile — the next sync
+            # re-uploads it anyway (the recreate always wipes the Plex poster).
+            pass
     status = "ok" if missing == 0 else "partial"
     return PlexTargetState(rating_key=str(playlist.ratingKey), status=status, missing=missing)
 
@@ -98,6 +114,7 @@ def sync_playlist(
     *,
     playlist_id: str,
     rating_key: str | None = None,
+    artwork_file: Path | None = None,
 ) -> PlexTargetState:
     """Create/reconcile the playlist on the admin account only, by identity."""
     if not (config.base_url and config.token):
@@ -109,7 +126,13 @@ def sync_playlist(
             raise _no_section_error(config.library_section)
         tracks, missing = resolve_ordered_tracks(section, specs)
         return _reconcile_on(
-            server, title, tracks, missing, playlist_id=playlist_id, rating_key=rating_key
+            server,
+            title,
+            tracks,
+            missing,
+            playlist_id=playlist_id,
+            rating_key=rating_key,
+            artwork_file=artwork_file,
         )
     except PlexConnectionError:
         raise  # already our type (e.g. no music section) — don't re-wrap
@@ -128,6 +151,7 @@ def sync_playlist_to_targets(
     *,
     playlist_id: str,
     rating_keys: dict[str, str | None],
+    artwork_file: Path | None = None,
 ) -> dict[str, PlexTargetState]:
     """Reconcile the playlist on the admin account AND each target user.
 
@@ -156,7 +180,13 @@ def sync_playlist_to_targets(
 
     def _reconcile_for(server: Any, key: str) -> PlexTargetState:
         return _reconcile_on(
-            server, title, tracks, missing, playlist_id=playlist_id, rating_key=rating_keys.get(key)
+            server,
+            title,
+            tracks,
+            missing,
+            playlist_id=playlist_id,
+            rating_key=rating_keys.get(key),
+            artwork_file=artwork_file,
         )
 
     # Bind each target id through a factory call so the closure captures the
