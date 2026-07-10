@@ -571,4 +571,27 @@ describe("AlbumDetailPage", () => {
     expect(heading.closest('div[aria-hidden="true"]')).toBeNull();
     expect(heading).toHaveAttribute("tabindex", "-1");
   });
+
+  test("opening the edit panel hides the read-only tracklist until it closes", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+    renderDetail(1);
+
+    expect(
+      await screen.findByRole("region", { name: "Tracklist" }),
+    ).toBeInTheDocument();
+
+    // Open the edit panel: it carries its own editable row per track, so the
+    // read-only tracklist below must not double the page.
+    await userEvent.click(screen.getByRole("button", { name: "Edit album" }));
+    expect(screen.getByRole("region", { name: "Edit album" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "Tracklist" }),
+    ).not.toBeInTheDocument();
+
+    // Closing the panel (Cancel) brings the tracklist back.
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(
+      await screen.findByRole("region", { name: "Tracklist" }),
+    ).toBeInTheDocument();
+  });
 });

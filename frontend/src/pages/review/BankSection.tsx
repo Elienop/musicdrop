@@ -97,6 +97,15 @@ function toBankFilter(value: string | null): BankFilter {
   return BANK_FILTERS.find((f) => f.value === value)?.value ?? "";
 }
 
+/** Section heading for the active filter. The default view keeps the spec §7
+ * section name; every other view names what it actually shows (statuses reuse
+ * BANK_STATUS_LABEL), so resolved history is never presented as "waiting". */
+function bankHeading(filter: BankFilter): string {
+  if (filter === "") return "Waiting for review";
+  if (filter === "all") return "All imports";
+  return BANK_STATUS_LABEL[filter];
+}
+
 /**
  * "Waiting for review" — the durable bank backlog (spec §7), paginated from
  * day one. Default filter is "Needs attention" (`view=active`) so resolved
@@ -112,6 +121,7 @@ function toBankFilter(value: string | null): BankFilter {
 export function BankSection() {
   const [searchParams, setSearchParams] = useSearchParams();
   const filter = toBankFilter(searchParams.get("bank_status"));
+  const heading = bankHeading(filter);
   const status = isBankStatus(filter) ? filter : undefined;
   const reasonFilter = toBankReason(searchParams.get("bank_reason"));
   const reason = reasonFilter === "" ? undefined : reasonFilter;
@@ -209,9 +219,9 @@ export function BankSection() {
   };
 
   return (
-    <section aria-label="Waiting for review" className="flex flex-col gap-3">
+    <section aria-label={heading} className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <SectionLabel>Waiting for review · {data.total}</SectionLabel>
+        <SectionLabel>{heading} · {data.total}</SectionLabel>
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-2">
             <Checkbox

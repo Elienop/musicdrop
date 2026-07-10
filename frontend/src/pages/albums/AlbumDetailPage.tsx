@@ -264,60 +264,66 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
             </div>
           )}
 
-          <section aria-label="Tracklist" className="flex flex-col gap-3">
-            <SectionLabel>Tracks</SectionLabel>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <TracklistStatus query={missingQuery} report={report} />
-          <LyricsStatus
-            albumId={album.id}
-            total={album.tracks.length}
-            withLyrics={withLyrics}
-            missing={missingLyrics}
-          />
-        </div>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-12 pr-4 text-right">#</TableHead>
-              <TableHead>Title</TableHead>
-              <TableHead className="w-20 text-right">Length</TableHead>
-              <TableHead className="w-16 text-center">Lyrics</TableHead>
-              <TableHead className="w-12 text-center">
-                <span className="sr-only">Add to playlist</span>
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          {/* One <tbody> per disc, disc header INCLUDED: scope="rowgroup"
-              scopes the header to the rest of ITS row group, so the header
-              row must share the tbody with the tracks it introduces. */}
-          {discs.map((group) => (
-            <TableBody key={group.disc}>
-              {multiDisc && group.disc > 0 && (
-                <TableRow className="hover:bg-transparent">
-                  <TableHead
-                    scope="rowgroup"
-                    colSpan={5}
-                    className="text-muted-foreground h-auto pt-6 text-xs font-medium tracking-wide uppercase"
-                  >
-                    Disc {group.disc}
-                  </TableHead>
-                </TableRow>
-              )}
-              {group.rows.map((row) =>
-                row.kind === "present" ? (
-                  <TrackRow
-                    key={`p-${row.track.id}`}
-                    track={row.track}
-                    albumArtist={album.album_artist}
-                  />
-                ) : (
-                  <MissingTrackRow key={`m-${row.track.index}-${row.track.mb_trackid ?? ""}`} track={row.track} />
-                ),
-              )}
-            </TableBody>
-          ))}
-        </Table>
-          </section>
+          {/* The edit panel carries its own editable row per track, so while
+              it's open the read-only tracklist below would double the page —
+              hide it until the panel closes (an Apply refetches the album, so
+              the list comes back current). */}
+          {!editing && (
+            <section aria-label="Tracklist" className="flex flex-col gap-3">
+              <SectionLabel>Tracks</SectionLabel>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <TracklistStatus query={missingQuery} report={report} />
+            <LyricsStatus
+              albumId={album.id}
+              total={album.tracks.length}
+              withLyrics={withLyrics}
+              missing={missingLyrics}
+            />
+          </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-12 pr-4 text-right">#</TableHead>
+                <TableHead>Title</TableHead>
+                <TableHead className="w-20 text-right">Length</TableHead>
+                <TableHead className="w-16 text-center">Lyrics</TableHead>
+                <TableHead className="w-12 text-center">
+                  <span className="sr-only">Add to playlist</span>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            {/* One <tbody> per disc, disc header INCLUDED: scope="rowgroup"
+                scopes the header to the rest of ITS row group, so the header
+                row must share the tbody with the tracks it introduces. */}
+            {discs.map((group) => (
+              <TableBody key={group.disc}>
+                {multiDisc && group.disc > 0 && (
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead
+                      scope="rowgroup"
+                      colSpan={5}
+                      className="text-muted-foreground h-auto pt-6 text-xs font-medium tracking-wide uppercase"
+                    >
+                      Disc {group.disc}
+                    </TableHead>
+                  </TableRow>
+                )}
+                {group.rows.map((row) =>
+                  row.kind === "present" ? (
+                    <TrackRow
+                      key={`p-${row.track.id}`}
+                      track={row.track}
+                      albumArtist={album.album_artist}
+                    />
+                  ) : (
+                    <MissingTrackRow key={`m-${row.track.index}-${row.track.mb_trackid ?? ""}`} track={row.track} />
+                  ),
+                )}
+              </TableBody>
+            ))}
+          </Table>
+            </section>
+          )}
         </div>
       </div>
     </article>

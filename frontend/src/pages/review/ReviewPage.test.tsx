@@ -550,9 +550,39 @@ describe("ReviewPage", () => {
       }),
     );
     renderWithProviders(<ReviewPage />, { route: "/review?bank_status=all" });
-    await screen.findByRole("region", { name: /waiting for review/i });
+    // The section renames itself for the wider view — resolved rows are not
+    // "waiting for review", and the heading must not claim they are.
+    const section = await screen.findByRole("region", { name: /all imports/i });
+    expect(
+      within(section).getByRole("heading", { name: /all imports · 1/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: /waiting for review/i }),
+    ).not.toBeInTheDocument();
     expect(queries[0]).toEqual({ status: null, view: null });
     expect(screen.getByLabelText(/filter by status/i)).toHaveValue("all");
+  });
+
+  test("a specific status filter renames the section to that status", async () => {
+    server.use(
+      http.get(BANK, () =>
+        HttpResponse.json({
+          items: [bankRow({ status: "done", album_id: 7 })],
+          total: 1,
+          total_all: 1,
+          offset: 0,
+          limit: 48,
+        }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />, { route: "/review?bank_status=done" });
+    const section = await screen.findByRole("region", { name: /^imported$/i });
+    expect(
+      within(section).getByRole("heading", { name: /imported · 1/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: /waiting for review/i }),
+    ).not.toBeInTheDocument();
   });
 
   test("row Ignore posts the decision; a 409 raises the conflict toast AND refetches the list", async () => {
