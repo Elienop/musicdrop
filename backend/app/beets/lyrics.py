@@ -319,7 +319,7 @@ def collect_lyrics_units(
 
 
 def _album_scope_label(lib: Library, album_id: int) -> str:
-    """'artist — album' for the banner/label, or raise AlbumNotFoundError (404)."""
+    """'artist - album' for the banner/label, or raise AlbumNotFoundError (404)."""
     with lib.music_dir_context():
         album = lib.get_album(album_id)
         if album is None:
