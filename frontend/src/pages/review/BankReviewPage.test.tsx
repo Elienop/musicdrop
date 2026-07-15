@@ -230,6 +230,10 @@ describe("BankReviewPage", () => {
     );
     renderRow();
     await screen.findByRole("heading", { name: /no match found/i });
+    // The no-match screen opens the search inline (defaultOpen) — no toggle.
+    expect(
+      screen.getByRole("form", { name: /search for a different release/i }),
+    ).toBeInTheDocument();
     fireEvent.change(
       screen.getByRole("textbox", { name: /release url or id/i }),
       { target: { value: "https://musicbrainz.org/release/x" } },
@@ -262,7 +266,7 @@ describe("BankReviewPage", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /^search$/i }));
     expect(
-      await screen.findByText(/no release found for that search/i),
+      await screen.findByText(/no release found/i),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: /no match found/i }),
@@ -281,6 +285,9 @@ describe("BankReviewPage", () => {
     );
     renderRow();
     await screen.findAllByText(/after import/i);
+    // The candidate screen folds the search behind the "Different release"
+    // toggle — open it before typing (the no-match screen is pre-opened).
+    await userEvent.click(screen.getByRole("button", { name: /different release/i }));
     fireEvent.change(
       screen.getByRole("textbox", { name: /release url or id/i }),
       { target: { value: "x" } },
@@ -312,6 +319,12 @@ describe("BankReviewPage", () => {
     );
     expect(section.getByText("Echoes")).toBeInTheDocument();
     expect(section.getByText(/FLAC · 987 kbps/)).toBeInTheDocument();
+    // The collision fold drops Apply + the apply-style actions but keeps the
+    // rest of the control bar (Ignore, the search toggle, and Rescan).
+    expect(screen.queryByRole("button", { name: /^apply$/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /different release/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /rescan folder/i })).toBeInTheDocument();
     // One click both pins the selected release and resolves the collision.
     await userEvent.click(screen.getByRole("button", { name: /replace old/i }));
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/review"));
@@ -535,19 +548,15 @@ describe("BankReviewPage", () => {
     ).toBeInTheDocument();
   });
 
-  test("rescan folder rides the top toolbar; the inline hint became its tooltip", async () => {
+  test("rescan rides the control bar next to Apply, with the tooltip", async () => {
     server.use(http.get(ITEM, () => HttpResponse.json(bankItem())));
     renderRow();
-    const h1 = await screen.findByRole("heading", { name: /Music Has the Right to Children/ });
-    const button = screen.getByRole("button", { name: /rescan folder/i });
-    // Top chrome: the button precedes the h1 in DOM order (old spot was
-    // below the tracklist, after it).
-    expect(
-      button.compareDocumentPosition(h1) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(button).toHaveAttribute(
+    await screen.findAllByText(/after import/i);
+    const rescan = screen.getByRole("button", { name: /rescan folder/i });
+    expect(rescan).toHaveAttribute(
       "title",
       "Re-reads the folder from disk and matches it again.",
     );
+    expect(screen.getByRole("button", { name: /apply/i })).toBeInTheDocument();
   });
 });
