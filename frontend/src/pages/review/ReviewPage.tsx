@@ -95,7 +95,7 @@ export function ReviewPage() {
         meta={settled ? `${pendingCount} awaiting a decision` : undefined}
       />
       <p className="text-muted-foreground text-sm">
-        Downloads and imports that need your decision — from every source, in
+        Downloads and imports that need your decision, from every source, in
         one place.
       </p>
 
@@ -322,7 +322,7 @@ function InboxSection({
       </ul>
       {importActive && (
         <p className="text-muted-foreground text-xs">
-          An import is already running — wait for it to finish before reviewing
+          An import is already running; wait for it to finish before reviewing
           another.
         </p>
       )}
@@ -333,11 +333,11 @@ function InboxSection({
         aria-live="polite"
         className={noneLeft ? "text-muted-foreground text-sm" : "sr-only"}
       >
-        {noneLeft ? "Nothing left to import — the inbox just cleared." : ""}
+        {noneLeft ? "Nothing left to import; the inbox just cleared." : ""}
       </span>
       {(reviewOne.isError || reviewAll.isError) && (
         <p className="text-destructive text-sm" role="alert">
-          Couldn’t start — it may have just been imported, or another import is
+          Couldn’t start; it may have just been imported, or another import is
           running. Try again in a moment.
         </p>
       )}
@@ -420,7 +420,7 @@ function SweepBanner({ jobId, sweep }: { jobId: string; sweep: SweepStatus }) {
       <p className="flex items-center gap-3 font-medium">
         <Spinner className="text-muted-foreground size-5 shrink-0 animate-spin" aria-hidden="true" />
         <span className="min-w-0">
-          Sweeping — {sweep.processed} processed · {sweep.auto_applied} imported ·{" "}
+          Sweeping: {sweep.processed} processed · {sweep.auto_applied} imported ·{" "}
           {sweep.banked} banked.
           {sweep.current_folder && !sweep.paused && (
             <span className="text-muted-foreground font-normal">
@@ -477,7 +477,7 @@ function SweepRecap({ recap }: { recap: FinishedSweep }) {
       }
     >
       <p className="min-w-0 font-medium">
-        {recap.paused ? "Sweep paused" : "Sweep finished"} — {recap.processed}{" "}
+        {recap.paused ? "Sweep paused" : "Sweep finished"}: {recap.processed}{" "}
         processed · {recap.auto_applied} imported · {recap.banked} banked
         {recap.skipped_known > 0 ? ` · ${recap.skipped_known} already known` : ""}.
         {recap.paused && (

@@ -187,7 +187,7 @@ describe("RouteAnnouncer", () => {
 
   it("sets the document title on first render without stealing focus", () => {
     renderAnnouncer("/");
-    expect(document.title).toBe("Overview — MusicDrop");
+    expect(document.title).toBe("Overview - MusicDrop");
     expect(
       screen.getByRole("heading", { level: 1, name: "Overview" }),
     ).not.toHaveFocus();
@@ -197,7 +197,7 @@ describe("RouteAnnouncer", () => {
     const user = userEvent.setup();
     renderAnnouncer("/");
     await user.click(screen.getByRole("link", { name: "Go to artists" }));
-    expect(document.title).toBe("Artists — MusicDrop");
+    expect(document.title).toBe("Artists - MusicDrop");
     expect(screen.getByRole("status")).toHaveTextContent("Artists");
     expect(
       screen.getByRole("heading", { level: 1, name: "Artists" }),
@@ -211,7 +211,7 @@ describe("RouteAnnouncer", () => {
     expect(
       screen.getByRole("heading", { level: 1, name: "Browse" }),
     ).not.toHaveFocus();
-    expect(document.title).toBe("Browse — MusicDrop");
+    expect(document.title).toBe("Browse - MusicDrop");
   });
 
   it("keeps focus in a text input on route change", async () => {

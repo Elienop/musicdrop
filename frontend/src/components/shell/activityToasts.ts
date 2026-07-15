@@ -30,13 +30,13 @@ export function useActivityToasts(rows: ActivityRow[]): void {
       if (row.state === "done") {
         toast.success(
           row.countsText !== undefined
-            ? `${row.label} — ${row.countsText}`
+            ? `${row.label}: ${row.countsText}`
             : `${row.label} finished`,
         );
       } else if (row.state === "failed") {
         toast.error(
           row.countsText !== undefined
-            ? `${row.label} failed — ${row.countsText}`
+            ? `${row.label} failed: ${row.countsText}`
             : `${row.label} failed`,
         );
       }

@@ -33,7 +33,7 @@ export function usePreviewDiskSync() {
   return useMutation<DiskSyncPlan, Error, void>({
     mutationFn: async (): Promise<DiskSyncPlan> => {
       const { data, response } = await client.GET("/api/disk-sync/preview");
-      if (response.status === 503) throw new Error("Library folder unavailable — is the music share mounted?");
+      if (response.status === 503) throw new Error("Library folder unavailable. Is the music share mounted?");
       if (!response.ok || !data) throw new Error("Failed to build the sync preview");
       return data;
     },
@@ -45,7 +45,7 @@ export function useStartDiskSync() {
   return useMutation<DiskSyncStatus, Error, void>({
     mutationFn: async (): Promise<DiskSyncStatus> => {
       const { data, response, error } = await client.POST("/api/disk-sync");
-      if (response.status === 409) throw new Error("Another library operation is running — try again when it finishes");
+      if (response.status === 409) throw new Error("Another library operation is running; try again when it finishes");
       if (error || !response.ok || !data) throw new Error("Failed to start the sync");
       return data;
     },

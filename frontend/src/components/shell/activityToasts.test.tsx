@@ -58,7 +58,7 @@ describe("useActivityToasts", () => {
     rerender(<Harness rows={[done]} />);
 
     expect(success).toHaveBeenCalledTimes(1);
-    expect(success).toHaveBeenCalledWith("Lyrics backfill — 5 found");
+    expect(success).toHaveBeenCalledWith("Lyrics backfill: 5 found");
     expect(error).not.toHaveBeenCalled();
   });
 
@@ -80,7 +80,7 @@ describe("useActivityToasts", () => {
     rerender(<Harness rows={[failed]} />);
 
     expect(error).toHaveBeenCalledTimes(1);
-    expect(error).toHaveBeenCalledWith("Reorganize failed — library locked");
+    expect(error).toHaveBeenCalledWith("Reorganize failed: library locked");
     expect(success).not.toHaveBeenCalled();
   });
 

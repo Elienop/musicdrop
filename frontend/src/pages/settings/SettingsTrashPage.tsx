@@ -110,7 +110,7 @@ function TrashRow({ album }: { album: TrashedAlbum }) {
     <li className="flex items-center gap-3 px-4 py-3">
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="truncate text-sm font-medium">
-          {album.album_artist ?? "Unknown artist"} — {album.album ?? album.folder}
+          {album.album_artist ?? "Unknown artist"} - {album.album ?? album.folder}
         </span>
         <span className="text-muted-foreground truncate text-xs">{meta || album.folder}</span>
         {result && (
@@ -118,7 +118,7 @@ function TrashRow({ album }: { album: TrashedAlbum }) {
             {result.restored
               ? "Restored to your library"
               : result.reason === "already_in_library"
-                ? "Already in your library — not restored"
+                ? "Already in your library; not restored"
                 : "Couldn’t restore"}
           </span>
         )}

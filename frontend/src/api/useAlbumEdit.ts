@@ -31,7 +31,7 @@ export function useApplyAlbumEdit(albumId: number) {
       });
       // Guard on !response.ok: a bodyless 5xx leaves openapi-fetch's `error` undefined.
       if (error || !response.ok || !data) {
-        if (response.status === 409) throw new Error("An import is running — try again when it finishes.");
+        if (response.status === 409) throw new Error("An import is running; try again when it finishes.");
         throw new Error("Edit failed");
       }
       return data;

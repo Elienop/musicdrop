@@ -46,7 +46,7 @@ export function RouteErrorBoundary() {
         bordered
         icon={Warning}
         title="Something went wrong"
-        body="This page hit an unexpected error — the rest of the app is still fine. Reload the page, or head back to the overview."
+        body="This page hit an unexpected error; the rest of the app is still fine. Reload the page, or head back to the overview."
         action={
           <div className="flex items-center gap-2">
             <Button

@@ -106,7 +106,7 @@ export function ImportPlaylistsPage() {
         Array.from(fileList).map(async (file) => ({ name: file.name, content: await file.text() })),
       );
     } catch {
-      setFileReadError("Couldn't read the selected files — try again.");
+      setFileReadError("Couldn't read the selected files. Try again.");
       return;
     }
     previewMutation.mutate({ files }, { onSuccess: (response) => startReview(response, false) });
@@ -201,7 +201,7 @@ export function ImportPlaylistsPage() {
         if (failed.length > 0) {
           const names = failed.map((f) => f.name).join(", ");
           const total = response.created.length + failed.length;
-          toast.error(`Imported ${response.created.length} of ${total} — couldn't create: ${names}`);
+          toast.error(`Imported ${response.created.length} of ${total}; couldn't create: ${names}`);
         } else if (response.created.length > 0) {
           const n = response.created.length;
           toast.success(`Imported ${n} ${n === 1 ? "playlist" : "playlists"}`);
@@ -540,7 +540,7 @@ function PlaylistReview({
         </summary>
         {visible.length === 0 ? (
           <p className="text-muted-foreground border-t px-4 py-3 text-sm">
-            Everything’s matched — switch to All to see the entries.
+            Everything’s matched. Switch to All to see the entries.
           </p>
         ) : (
           <ul className="divide-border flex flex-col divide-y border-t">

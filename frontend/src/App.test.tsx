@@ -371,14 +371,14 @@ describe("App shell", () => {
     renderShell();
 
     await waitFor(() =>
-      expect(document.title).toBe("Overview — MusicDrop"),
+      expect(document.title).toBe("Overview - MusicDrop"),
     );
 
     await userEvent.click(screen.getByRole("link", { name: "Artists" }));
 
     expect(await screen.findByText("artists route")).toBeInTheDocument();
     await waitFor(() =>
-      expect(document.title).toBe("Artists — MusicDrop"),
+      expect(document.title).toBe("Artists - MusicDrop"),
     );
   });
 });

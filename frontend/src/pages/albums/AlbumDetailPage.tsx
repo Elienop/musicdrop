@@ -623,7 +623,7 @@ function LoadErrorState({ onRetry }: { onRetry: () => void }) {
       {/* Artist unknown on error — the escape keeps the BackLink to the roster. */}
       <BackLink to="/artists" label="Artists" />
       <ErrorState
-        message="Couldn’t load this album. The library didn’t respond — check the backend and try again."
+        message="Couldn’t load this album. The library didn’t respond. Check the backend and try again."
         onRetry={onRetry}
       />
     </div>

@@ -106,7 +106,7 @@ function syncStatus(
     return { label: notSyncedLabel, tone: "muted" };
   }
   if (state.synced_at != null && isAfter(playlist.updated_at, state.synced_at)) {
-    return { label: "Out of date — re-sync", tone: "warning" };
+    return { label: "Out of date; re-sync", tone: "warning" };
   }
   switch (state.status) {
     case "ok":
@@ -577,7 +577,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
                 // matching tracks) instead of a blanket "complete" — derived
                 // from the same label the visible status line shows.
                 onSuccess: (updated) =>
-                  setStatusMsg(`Plex sync — ${adminSyncStatus(updated).label}`),
+                  setStatusMsg(`Plex sync: ${adminSyncStatus(updated).label}`),
               })
             }
             disabled={sync.isPending}

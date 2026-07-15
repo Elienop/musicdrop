@@ -81,7 +81,7 @@ export function AddToPlaylistMenu({
     feedback === "added"
       ? `Added to ${addedName}`
       : feedback === "error"
-        ? "Couldn't add — try again"
+        ? "Couldn't add. Try again"
         : "";
   const TriggerIcon =
     feedback === "added"

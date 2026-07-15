@@ -389,7 +389,7 @@ export function SettingsBeetsPage() {
             // Visible helper text — the disabled Save's reason (no title=
             // tooltip; spec §4 disabled-reason rule).
             <p className="text-destructive text-sm">
-              {lintErrors} validation error{lintErrors > 1 ? "s" : ""} —
+              {lintErrors} validation error{lintErrors > 1 ? "s" : ""};
               <span className="text-muted-foreground"> fix to save.</span>
             </p>
           )}
@@ -537,8 +537,8 @@ function ConfigStateBanner({
           <> ({new Date(data.file_modified_at).toLocaleTimeString()})</>
         )}
         {jobActive
-          ? " — Apply available once the running job finishes."
-          : " — click Apply to load it into beets."}
+          ? "; Apply available once the running job finishes."
+          : "; click Apply to load it into beets."}
       </p>
     </StatusBanner>
   );

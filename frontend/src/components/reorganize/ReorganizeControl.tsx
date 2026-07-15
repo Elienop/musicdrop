@@ -69,7 +69,7 @@ function FailureList({ failures }: { failures: ReorganizeUnitFailure[] }) {
       {failures.map((f, i) => (
         <li key={`${f.label}-${i}`}>
           <span className="font-medium">{f.label}</span>
-          <span className="text-muted-foreground"> — {f.error}</span>
+          <span className="text-muted-foreground">: {f.error}</span>
         </li>
       ))}
     </ul>
@@ -201,7 +201,7 @@ export function ReorganizeControl({
     } else {
       setMessage({
         kind: "info",
-        text: "Nothing to reorganize — everything already matches your config.",
+        text: "Nothing to reorganize; everything already matches your config.",
       });
     }
   }

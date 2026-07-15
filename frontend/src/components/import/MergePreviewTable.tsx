@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 
 /** "FLAC · 1000", "MP3" (no bitrate), or an em-dash when that side lacks the track. */
 function quality(fmt: string | null, kbps: number | null): string {
-  if (!fmt) return "—";
+  if (!fmt) return "-";
   return kbps ? `${fmt} · ${kbps}` : fmt;
 }
 

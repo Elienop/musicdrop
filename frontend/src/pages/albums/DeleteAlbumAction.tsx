@@ -40,7 +40,7 @@ export function DeleteAlbumAction({ album }: { album: AlbumDetail }) {
         <AlertDialogHeader>
           <AlertDialogTitle>Move this album to Trash?</AlertDialogTitle>
           <AlertDialogDescription>
-            The whole album folder — tracks, cover art, and the lyric sidecars —
+            The whole album folder (tracks, cover art, and the lyric sidecars)
             is moved to the Trash folder and removed from your library. It stays
             recoverable in Trash; Plex shows it as unavailable until a rescan.
           </AlertDialogDescription>

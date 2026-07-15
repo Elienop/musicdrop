@@ -49,7 +49,7 @@ function FailureList({ failures }: { failures: DiskSyncReadError[] }) {
       {failures.map((f, i) => (
         <li key={`${f.label}-${i}`}>
           <span className="font-medium">{f.label}</span>
-          <span className="text-muted-foreground"> — {f.error}</span>
+          <span className="text-muted-foreground">: {f.error}</span>
         </li>
       ))}
     </ul>
@@ -300,7 +300,7 @@ function DiskSyncControl() {
           )}
           <p className="text-muted-foreground text-sm">
             {phase === "stopped" &&
-              `Stopped early — ${job?.processed ?? 0} of ${job?.total ?? 0} processed · `}
+              `Stopped early: ${job?.processed ?? 0} of ${job?.total ?? 0} processed · `}
             {job?.removed ?? 0} removed · {job?.updated ?? 0} updated ·{" "}
             {job?.unchanged ?? 0} unchanged · {job?.emptied_albums ?? 0} albums
             pruned
@@ -316,7 +316,7 @@ export function DiskSyncPanel() {
   return (
     <SettingsSection
       title="Sync library with disk"
-      description="Make the database match your files — removes entries whose files were deleted outside MusicDrop and re-reads tags changed by other tools. Never touches the files themselves; use Reorganize to rename/move files."
+      description="Make the database match your files; removes entries whose files were deleted outside MusicDrop and re-reads tags changed by other tools. Never touches the files themselves; use Reorganize to rename/move files."
     >
       <DiskSyncControl />
     </SettingsSection>

@@ -46,11 +46,11 @@ export function ArtistImageEditPanel({
 
   const onPickFile = (file: File) => {
     if (!ACCEPTED_TYPES.includes(file.type)) {
-      setPickError("That file isn't an image we can use — pick a PNG, JPEG, GIF, or WebP.");
+      setPickError("That file isn't an image we can use. Pick a PNG, JPEG, GIF, or WebP.");
       return;
     }
     if (file.size > MAX_BYTES) {
-      setPickError("That image is over 10 MB — pick a smaller file.");
+      setPickError("That image is over 10 MB. Pick a smaller file.");
       return;
     }
     setPickError(null);

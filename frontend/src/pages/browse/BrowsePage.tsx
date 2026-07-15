@@ -359,7 +359,7 @@ export function BrowsePage() {
               <EmptyState
                 bordered
                 icon={Albums}
-                title="This page is empty — the filters changed under it."
+                title="This page is empty; the filters changed under it."
                 action={
                   <Button
                     type="button"

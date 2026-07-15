@@ -247,7 +247,7 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
       <p className="text-muted-foreground text-sm">
         Edit how files are named (beets <code className="font-mono">paths</code>{" "}
         / <code className="font-mono">replace</code>) with a live preview. New
-        names apply to imported files — use{" "}
+        names apply to imported files; use{" "}
         <span className="font-medium">Reorganize library</span> (Settings →
         Beets) to rename existing files. Saving writes to the same config;{" "}
         <span className="font-medium">Apply</span> to load it. Leave a field
@@ -264,7 +264,7 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
             </Button>
           }
         >
-          Config changed on disk — your save was refused. Reload to load the
+          Config changed on disk; your save was refused. Reload to load the
           on-disk version (your unsaved edits here will be discarded).
         </StatusBanner>
       )}
@@ -383,7 +383,7 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
         </Button>
         {hasReplaceErrors && (
           <p className="text-destructive text-sm">
-            Invalid replace pattern — fix to save.
+            Invalid replace pattern. Fix to save.
           </p>
         )}
         {!hasReplaceErrors &&
@@ -391,13 +391,13 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
           !save.isPending &&
           !job.active && (
             <p className="text-muted-foreground text-sm" role="status">
-              Saved — click <span className="font-medium">Apply</span> to load
+              Saved. Click <span className="font-medium">Apply</span> to load
               it.
             </p>
           )}
         {job.active && (
           <p className="text-muted-foreground text-sm" role="status">
-            Apply paused — {job.label} is running; available when it finishes.
+            Apply paused: {job.label} is running; available when it finishes.
           </p>
         )}
       </div>
@@ -410,11 +410,11 @@ function NamingEditor({ initial }: { initial: NamingConfig }) {
       {apply.isError &&
         (apply.error?.status === 409 ? (
           <p className="text-muted-foreground text-sm" role="status">
-            A library job is running — Apply will be available when it finishes.
+            A library job is running; Apply will be available when it finishes.
           </p>
         ) : (
           <p className="text-destructive text-sm" role="alert">
-            Apply failed — your config is saved on disk; try again or restart
+            Apply failed. Your config is saved on disk; try again or restart
             MusicDrop.
           </p>
         ))}
@@ -461,7 +461,7 @@ function PathRow({
           <>
             <span className="sr-only">Preview: </span>
             <span aria-hidden="true">→ </span>
-            <span className="font-mono">{rendered.sample_path || "—"}</span>
+            <span className="font-mono">{rendered.sample_path || "-"}</span>
             {rendered.sample_source && (
               <span className="text-muted-foreground/70">
                 {" "}

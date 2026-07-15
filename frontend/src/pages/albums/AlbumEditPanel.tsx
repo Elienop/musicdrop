@@ -208,7 +208,7 @@ function PreviewDiff({ preview }: { preview: AlbumEditPreview }) {
       className="flex flex-col gap-4 rounded-md border p-3 text-sm"
     >
       {!hasChanges && (
-        <p className="text-muted-foreground">No changes — the album already matches your edits.</p>
+        <p className="text-muted-foreground">No changes; the album already matches your edits.</p>
       )}
 
       {fieldRows.length > 0 && (
@@ -262,12 +262,12 @@ function TrackDiffTable({ tracks }: { tracks: EditTrackChange[] }) {
                 {trackCell(t.track_before, t.track_after)}
               </TableCell>
               <TableCell className="text-muted-foreground">
-                {[t.title_before, t.artist_before].filter(Boolean).join(" · ") || "—"}
+                {[t.title_before, t.artist_before].filter(Boolean).join(" · ") || "-"}
               </TableCell>
               <TableCell>
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="truncate font-medium">
-                    {[t.title_after, t.artist_after].filter(Boolean).join(" · ") || "—"}
+                    {[t.title_after, t.artist_after].filter(Boolean).join(" · ") || "-"}
                   </span>
                   <EditIcon className="text-muted-foreground size-3 shrink-0" aria-hidden="true" />
                 </span>
@@ -290,7 +290,7 @@ function MoveNotice({ count }: { count: number }) {
     >
       <Warning className="text-warning mt-0.5 size-4 shrink-0" aria-hidden="true" />
       <span>
-        {count} file{count === 1 ? "" : "s"} will be moved on disk to match the new tags —
+        {count} file{count === 1 ? "" : "s"} will be moved on disk to match the new tags;
         this relocates the files in your library.
       </span>
     </div>
@@ -333,7 +333,7 @@ function ApplyOutcome({
           <ul className="flex flex-col gap-0.5">
             {failures.map((i) => (
               <li key={i.item_id} className="text-muted-foreground">
-                {failureLabel(i)} — {i.error}
+                {failureLabel(i)}: {i.error}
               </li>
             ))}
           </ul>
@@ -358,7 +358,7 @@ function trackCell(before: number | null | undefined, after: number | null | und
 }
 
 function diffValue(v: string | number | null | undefined): string {
-  if (v === null || v === undefined || v === "") return "—";
+  if (v === null || v === undefined || v === "") return "-";
   return String(v);
 }
 
