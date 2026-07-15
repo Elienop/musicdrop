@@ -186,7 +186,7 @@ describe("ImportCandidatePage", () => {
     renderAt();
 
     expect(
-      await screen.findByRole("heading", { name: /Radiohead — OK Computer/i }),
+      await screen.findByRole("heading", { name: /Radiohead - OK Computer/i }),
     ).toBeInTheDocument();
     // "Medium match" is unique to the header (the switcher options carry % +
     // source, not the recommendation label).
@@ -346,7 +346,7 @@ describe("ImportCandidatePage", () => {
     renderAt();
 
     // Top match (selected === 0): the top release + its recommendation word.
-    await screen.findByRole("heading", { name: /Radiohead — OK Computer$/i });
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer$/i });
     expect(screen.getByText(/Medium match/i)).toBeInTheDocument();
     expect(
       screen.getByText(
@@ -359,7 +359,7 @@ describe("ImportCandidatePage", () => {
     // The header %, album, and tracklist now reflect the SELECTED release.
     expect(
       await screen.findByRole("heading", {
-        name: /Radiohead — OK Computer OKNOTOK/i,
+        name: /Radiohead - OK Computer OKNOTOK/i,
       }),
     ).toBeInTheDocument();
     expect(
@@ -410,7 +410,7 @@ describe("ImportCandidatePage", () => {
     const user = userEvent.setup();
     renderAt();
 
-    await screen.findByRole("heading", { name: /Radiohead — OK Computer$/i });
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer$/i });
     await user.selectOptions(screen.getByLabelText(/candidate release/i), "1");
 
     // (b) the legacy note explains the fallback (role=status).
@@ -420,7 +420,7 @@ describe("ImportCandidatePage", () => {
     expect(screen.getByText(/Medium match/i)).toBeInTheDocument();
     // (c) album + tracklist stay the TOP match's — no alternate diff to show.
     expect(
-      screen.getByRole("heading", { name: /Radiohead — OK Computer$/i }),
+      screen.getByRole("heading", { name: /Radiohead - OK Computer$/i }),
     ).toBeInTheDocument();
     expect(screen.getByText("Paranoid Android")).toBeInTheDocument();
     expect(screen.queryByText(/OKNOTOK/)).not.toBeInTheDocument();
@@ -489,7 +489,7 @@ describe("ImportCandidatePage", () => {
     expect(alert).toHaveTextContent(/Couldn’t submit that choice — try again\./);
     // Did NOT navigate away — still on the review screen.
     expect(
-      screen.getByRole("heading", { name: /Radiohead — OK Computer/i }),
+      screen.getByRole("heading", { name: /Radiohead - OK Computer/i }),
     ).toBeInTheDocument();
   });
 
@@ -549,7 +549,7 @@ describe("ImportCandidatePage", () => {
 
     const h1 = await screen.findByRole("heading", {
       level: 1,
-      name: /Radiohead — OK Computer/i,
+      name: /Radiohead - OK Computer/i,
     });
     expect(h1).toHaveAttribute("tabindex", "-1");
   });
@@ -594,7 +594,7 @@ describe("ImportCandidatePage", () => {
     const user = userEvent.setup();
     renderAt();
 
-    await screen.findByRole("heading", { name: /Radiohead — OK Computer/i });
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer/i });
     await user.type(
       screen.getByLabelText(/release url or id/i),
       "https://musicbrainz.org/release/dreams",
@@ -615,7 +615,7 @@ describe("ImportCandidatePage", () => {
     );
     // The re-looked-up release renders once the revision bumps.
     expect(
-      await screen.findByRole("heading", { name: /2 Brothers — Dreams/i }),
+      await screen.findByRole("heading", { name: /2 Brothers - Dreams/i }),
     ).toBeInTheDocument();
   });
 
@@ -633,7 +633,7 @@ describe("ImportCandidatePage", () => {
     const user = userEvent.setup();
     renderAt();
 
-    await screen.findByRole("heading", { name: /Radiohead — OK Computer/i });
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer/i });
     // Reveal the name search, then assert the toggle defaults on.
     await user.click(screen.getByText(/or search by name/i));
     expect(
@@ -675,7 +675,7 @@ describe("ImportCandidatePage", () => {
     const user = userEvent.setup();
     renderAt();
 
-    await screen.findByRole("heading", { name: /Radiohead — OK Computer/i });
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer/i });
     await user.type(screen.getByLabelText(/release url or id/i), "artist-url");
     await user.click(screen.getByRole("button", { name: /^Search/i }));
 
@@ -692,7 +692,7 @@ describe("ImportCandidatePage", () => {
     const user = userEvent.setup();
     renderAt();
 
-    await screen.findByRole("heading", { name: /Radiohead — OK Computer/i });
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer/i });
     await user.type(screen.getByLabelText(/release url or id/i), "rel-1");
     await user.click(screen.getByRole("button", { name: /^Search/i }));
 
