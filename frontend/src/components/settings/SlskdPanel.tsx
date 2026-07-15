@@ -312,7 +312,7 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
 
         {dirty && (
           <p className="text-muted-foreground text-xs">
-            Save before testing — Test uses your saved settings.
+            Save before testing. Test uses your saved settings.
           </p>
         )}
 
