@@ -22,7 +22,7 @@ def _album(lib: Library, name: str) -> Album:
 
 def test_album_label(reorganize_lib: Library) -> None:
     with reorganize_lib.music_dir_context():
-        assert album_label(_album(reorganize_lib, "In Rainbows")) == "Radiohead — In Rainbows"
+        assert album_label(_album(reorganize_lib, "In Rainbows")) == "Radiohead - In Rainbows"
 
 
 def test_item_moves_detects_misfiled(reorganize_lib: Library) -> None:

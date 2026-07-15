@@ -230,14 +230,14 @@ async def rescan_bank_item(item_id: str) -> BankItem:
     fingerprint = await run_in_threadpool(_current_fingerprint)
     if fingerprint is None:
         raise HTTPException(
-            status_code=409, detail="the banked folder no longer exists — remove the row"
+            status_code=409, detail="the banked folder no longer exists; remove the row"
         )
     try:
         outcome = await run_in_threadpool(rescan_folder, item.folder)
     except NoAudioFilesError:
         raise HTTPException(
             status_code=409,
-            detail="no audio files remain in the folder — remove the row or restore files",
+            detail="no audio files remain in the folder; remove the row or restore files",
         ) from None
 
     previous_revision = item.parked.candidate.search_revision if item.parked else 0

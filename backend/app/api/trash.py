@@ -37,7 +37,7 @@ def _gate() -> None:
     if library_job_active():
         raise HTTPException(
             status_code=409,
-            detail="A library operation is in progress — try again when it finishes",
+            detail="A library operation is in progress; try again when it finishes",
         )
 
 

@@ -55,7 +55,7 @@ def raise_if_library_busy(
     app: object,
     *,
     exclude: Container[str] = (),
-    message: str = "A library operation is in progress — try again when it finishes",
+    message: str = "A library operation is in progress; try again when it finishes",
 ) -> None:
     """Raise ``HTTPException(409, message)`` if a library job is active OR the
     beets swap lock is held — the api-layer variant of the gate.

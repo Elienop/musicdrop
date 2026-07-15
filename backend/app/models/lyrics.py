@@ -48,8 +48,8 @@ class LyricsBackfillStatus(BaseModel):
     not_found: int
     failed: int
     skipped: int
-    current: str | None  # "artist — album — title" of the in-flight track
+    current: str | None  # "artist - album - title" of the in-flight track
     writes_enabled: bool
     error: str | None
     album_id: int | None  # None = library-wide; else the scoped album
-    scope_label: str  # "library" or "artist — album" (banner/label text)
+    scope_label: str  # "library" or "artist - album" (banner/label text)

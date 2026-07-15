@@ -22,7 +22,7 @@ ReorganizeMoveKind = Literal["album", "singleton"]
 
 class ReorganizeMove(BaseModel):
     kind: ReorganizeMoveKind
-    label: str  # "Artist — Album" / "Artist — Title"
+    label: str  # "Artist - Album" / "Artist - Title"
     from_path: str
     to_path: str
     track_count: int  # items in this unit whose path changes
@@ -36,7 +36,7 @@ class OrphanFolder(BaseModel):
 
 class ReorganizePlan(BaseModel):
     scope: ReorganizeScope  # which set of files this plan describes
-    scope_label: str  # "library" / artist name / "Artist — Album"
+    scope_label: str  # "library" / artist name / "Artist - Album"
     total: int  # units in scope (albums [+ singletons at library scope])
     will_move: int  # exact
     already_in_place: int  # exact
@@ -60,7 +60,7 @@ class ReorganizeOutcome(BaseModel):
 
 
 class ReorganizeUnitFailure(BaseModel):
-    label: str  # "Artist — Album" / "Artist — Title"
+    label: str  # "Artist - Album" / "Artist - Title"
     error: str  # human-readable reason from the move/verification
 
 
@@ -77,10 +77,10 @@ class ReorganizeBackfillStatus(BaseModel):
     moved: int
     skipped: int
     failed: int
-    current: str | None  # "Artist — Album" of the in-flight unit
+    current: str | None  # "Artist - Album" of the in-flight unit
     error: str | None
     artist: str | None  # set for artist scope (None otherwise)
     album_id: int | None  # set for album scope (None otherwise)
-    scope_label: str  # "library" / artist name / "Artist — Album"
+    scope_label: str  # "library" / artist name / "Artist - Album"
     orphans_trashed: int  # husks moved to Trash this run (0 until the post-move pass)
     failures: list[ReorganizeUnitFailure]  # first FAILURE_ROW_CAP failed units (label + reason)

@@ -72,7 +72,7 @@ def ensure_import_can_start(request: Request) -> None:
     if lock is not None and lock.locked():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="A library operation is in progress — import available when it finishes",
+            detail="A library operation is in progress; import available when it finishes",
         )
 
     from app.library_busy import library_job_active
@@ -82,7 +82,7 @@ def ensure_import_can_start(request: Request) -> None:
     if library_job_active(exclude=("import",)):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="A library backfill is in progress — import available when it finishes",
+            detail="A library backfill is in progress; import available when it finishes",
         )
 
 

@@ -200,7 +200,7 @@ async def install_cover_op(
     if library_job_active():
         raise HTTPException(
             status_code=409,
-            detail="A library operation is in progress — cover changes available when it finishes",
+            detail="A library operation is in progress; cover changes available when it finishes",
         )
     async with _swap_lock(app):
         handle = app.state.beets_library

@@ -76,7 +76,7 @@ def _gate(app: Any) -> None:
     if library_job_active():
         raise HTTPException(
             status_code=409,
-            detail="A library operation is in progress — delete available when it finishes",
+            detail="A library operation is in progress; delete available when it finishes",
         )
 
 

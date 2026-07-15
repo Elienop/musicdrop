@@ -11,17 +11,17 @@ from pydantic import BaseModel, Field
 
 
 class DiskSyncRemoval(BaseModel):
-    label: str  # "Artist — Title"
+    label: str  # "Artist - Title"
     path: str  # relative to the music dir where possible (display only)
 
 
 class DiskSyncChange(BaseModel):
-    label: str  # "Artist — Title"
+    label: str  # "Artist - Title"
     fields: list[str]  # sorted media-field names whose value differs on disk
 
 
 class DiskSyncReadError(BaseModel):
-    label: str  # "Artist — Title"
+    label: str  # "Artist - Title"
     error: str  # read failure, verbatim
 
 
@@ -29,7 +29,7 @@ class DiskSyncPlan(BaseModel):
     total_items: int  # items examined
     will_remove: int  # exact count of missing-file rows
     will_update: int  # exact count of tag-refresh rows
-    emptied_albums: list[str]  # capped labels ("Artist — Album")
+    emptied_albums: list[str]  # capped labels ("Artist - Album")
     emptied_total: int  # exact
     removals: list[DiskSyncRemoval]  # capped at PREVIEW_ROW_CAP
     changes: list[DiskSyncChange]  # capped

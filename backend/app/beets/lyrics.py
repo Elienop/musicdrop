@@ -296,7 +296,7 @@ class LyricsSweepUnit:
 
 def _item_label(item: Any) -> str:
     artist = str(item.albumartist or item.artist or "").strip() or "Unknown"
-    return f"{artist} — {item.album} — {item.title}"
+    return f"{artist} - {item.album} - {item.title}"
 
 
 def collect_lyrics_units(
@@ -326,7 +326,7 @@ def _album_scope_label(lib: Library, album_id: int) -> str:
             raise AlbumNotFoundError(f"album {album_id} not found")
         artist = str(album.albumartist or "").strip()
         title = str(album.album or "").strip()
-        label = " — ".join(p for p in (artist, title) if p)
+        label = " - ".join(p for p in (artist, title) if p)
         return label or f"album {album_id}"
 
 
@@ -355,7 +355,7 @@ async def start_album_lyrics_op(
     reg = get_lyrics_backfill()
     raise_if_library_busy(
         app,
-        message="A library operation is in progress — lyrics fetch available when it finishes",
+        message="A library operation is in progress; lyrics fetch available when it finishes",
     )
     handle = app.state.beets_library
     try:
