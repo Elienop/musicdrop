@@ -38,6 +38,6 @@ def music_section(server: Any, title: str = "") -> Any | None:
         return None
     if len(artist_sections) > 1:
         raise PlexConnectionError(
-            "Multiple Plex music libraries found — set the library section in Settings."
+            "Multiple Plex music libraries found. Set the library section in Settings."
         )
     return artist_sections[0] if artist_sections else None

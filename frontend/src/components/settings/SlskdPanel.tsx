@@ -184,7 +184,7 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
             autoComplete="new-password"
             placeholder={
               initial.has_token
-                ? "API key saved — enter to replace"
+                ? "API key saved. Enter to replace"
                 : "slskd API key"
             }
             value={token}
@@ -208,7 +208,7 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
             className="max-w-md font-mono"
           />
           <p className="text-muted-foreground text-xs">
-            slskd&rsquo;s download root, as slskd sees it — stripped when a
+            slskd&rsquo;s download root, as slskd sees it; stripped when a
             completed drop is mapped into the inbox
           </p>
         </div>
@@ -223,7 +223,7 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
             autoComplete="new-password"
             placeholder={
               initial.has_webhook_secret
-                ? "Secret saved — enter to replace"
+                ? "Secret saved. Enter to replace"
                 : "shared webhook secret"
             }
             value={webhookSecret}
@@ -312,7 +312,7 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
 
         {dirty && (
           <p className="text-muted-foreground text-xs">
-            Save before testing — Test uses your saved settings.
+            Save before testing. Test uses your saved settings.
           </p>
         )}
 
@@ -361,7 +361,7 @@ function Panel({ children }: { children: React.ReactNode }) {
   return (
     <SettingsSection
       title="slskd"
-      description="Connect slskd so completed Soulseek downloads import themselves into the library. The API key and webhook secret are write-only — stored on the server and never shown again."
+      description="Connect slskd so completed Soulseek downloads import themselves into the library. The API key and webhook secret are write-only; stored on the server and never shown again."
     >
       {children}
     </SettingsSection>

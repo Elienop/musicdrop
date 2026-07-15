@@ -9,10 +9,10 @@ import {
   useSubmitChoice,
 } from "@/api/useImport";
 import { albumOriginFromState, BackLink } from "@/components/albums/album-grid";
-import { Info, Refresh, Spinner, Success } from "@/components/icons";
+import { Info } from "@/components/icons";
 import { AlreadyInLibrary } from "@/components/import/AlreadyInLibrary";
 import { CandidateReview } from "@/components/import/CandidateReview";
-import { ReleaseSearchPanel } from "@/components/import/ReleaseSearchPanel";
+import { ReviewControlBar } from "@/components/import/ReviewControlBar";
 import { EmptyState } from "@/components/system/EmptyState";
 import { PageSkeleton } from "@/components/system/PageSkeleton";
 import { Button } from "@/components/ui/button";
@@ -105,25 +105,19 @@ export function ImportCandidatePage() {
   );
 }
 
-/** Page chrome: the up-link to wherever the user came from. `toolbar` (the
- * ReviewScreen's Rescan button) rides the back-link row, top-right. */
+/** Page chrome: the up-link to wherever the user came from. */
 function Shell({
   backTo,
   backLabel,
-  toolbar,
   children,
 }: {
   backTo: string;
   backLabel: string;
-  toolbar?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <section className="flex flex-col gap-6" aria-label="Review album">
-      <div className="flex items-start justify-between gap-4">
-        <BackLink to={backTo} label={backLabel} />
-        {toolbar}
-      </div>
+      <BackLink to={backTo} label={backLabel} />
       {children}
     </section>
   );
@@ -153,10 +147,9 @@ function ReviewScreen({
   const [selected, setSelected] = useState(0);
   // Two independent choice mutations on the same album: `submit` drives the
   // no-revision-bump relookups (search / rescan); `applySubmit` drives the
-  // terminal decide (apply / skip / as-is). Keeping the decide mutation here —
-  // not inside ReviewActions — lets the relookup controls see when an Apply is
-  // in flight and lock out, closing the concurrent-action window on this
-  // no-undo endpoint.
+  // terminal decide (apply / skip / as-is). Keeping both here lets the relookup
+  // controls in the bar see when an Apply is in flight and lock out, closing the
+  // concurrent-action window on this no-undo endpoint.
   const submit = useSubmitChoice(jobId);
   const applySubmit = useSubmitChoice(jobId);
   // A landed re-lookup resets the chosen option back to the new top match.
@@ -202,24 +195,13 @@ function ReviewScreen({
   // A relookup (search / rescan) is busy while it's in flight OR while an Apply
   // is — both mutate the same parked album, so they lock each other out.
   const relookupBusy = searching || submit.isPending || applySubmit.isPending;
+  // The decision buttons + primary Apply lock out while ANY choice is in flight
+  // (a search/rescan or an Apply itself) — symmetric mutual exclusion on this
+  // no-undo endpoint.
+  const busy = applySubmit.isPending || searching || submit.isPending;
 
   return (
-    <Shell
-      backTo={backTo}
-      backLabel={backLabel}
-      toolbar={
-        <Button
-          variant="outline"
-          size="sm"
-          className="shrink-0"
-          disabled={relookupBusy}
-          title="Re-reads the folder from disk and matches it again."
-          onClick={runRescan}
-        >
-          <Refresh aria-hidden="true" /> Rescan folder
-        </Button>
-      }
-    >
+    <Shell backTo={backTo} backLabel={backLabel}>
       <div className="flex flex-col gap-6">
         <CandidateReview
           candidate={candidate}
@@ -230,102 +212,68 @@ function ReviewScreen({
         {existing.length > 0 && (
           <AlreadyInLibrary
             existing={existing}
-            blurb="This album matches one you already have. Applying will ask you to resolve it — Skip new, Keep both, Replace, or Merge — with a per-track comparison."
+            blurb="This album matches one you already have. Applying will ask you to resolve it: Skip new, Keep both, Replace, or Merge, with a per-track comparison."
           />
         )}
-        <ReleaseSearchPanel
-          onSearch={runSearch}
-          busy={relookupBusy}
-          feedback={candidate.search_feedback ?? null}
-          error={submit.isError}
-        />
-        <ReviewActions
-          onDecide={decide}
-          applyPending={applySubmit.isPending}
-          applyError={applySubmit.isError}
-          // Apply is blocked while a search/rescan is running too, keeping the
-          // mutual exclusion symmetric.
-          disabled={searching || submit.isPending}
+        <ReviewControlBar
+          decisions={[
+            {
+              key: "skip",
+              label: "Skip",
+              variant: "ghost",
+              onClick: () => decide("skip"),
+              disabled: busy,
+            },
+            {
+              key: "asis",
+              label: "Use as-is",
+              variant: "secondary",
+              hinted: true,
+              onClick: () => decide("asis"),
+              disabled: busy,
+            },
+            ...(AS_TRACKS_ENABLED
+              ? [
+                  {
+                    key: "astracks",
+                    label: "As tracks",
+                    variant: "secondary" as const,
+                    hinted: true,
+                    onClick: () => decide("astracks"),
+                    disabled: busy,
+                  },
+                ]
+              : []),
+          ]}
+          primary={{
+            label: "Apply",
+            pendingLabel: "Applying…",
+            pending: applySubmit.isPending,
+            icon: true,
+            onClick: () => decide("apply"),
+            disabled: busy,
+          }}
+          rescan={{ onClick: runRescan, pending: false, disabled: relookupBusy }}
+          search={{
+            onSearch: runSearch,
+            busy: relookupBusy,
+            feedback: candidate.search_feedback ?? null,
+            error: submit.isError,
+          }}
+          hint={
+            "Use as-is keeps your current tags; no MusicBrainz match is applied." +
+            (AS_TRACKS_ENABLED ? " As tracks imports files individually." : "")
+          }
+          messages={
+            applySubmit.isError ? (
+              <p className="text-destructive text-sm" role="alert">
+                Couldn’t submit that choice. Try again.
+              </p>
+            ) : null
+          }
         />
       </div>
     </Shell>
-  );
-}
-
-/** The beets choose_match actions, in a sticky bottom bar. Presentational: the
- * decide mutation lives in ReviewScreen so the relookup controls can lock out
- * while an Apply is in flight. `disabled` covers a search/rescan running;
- * `applyPending` covers the Apply itself. */
-function ReviewActions({
-  onDecide,
-  applyPending,
-  applyError,
-  disabled,
-}: {
-  onDecide: (action: "apply" | "skip" | "asis" | "astracks") => void;
-  applyPending: boolean;
-  applyError: boolean;
-  disabled: boolean;
-}) {
-  const busy = applyPending || disabled;
-  return (
-    <div className="bg-background/80 sticky bottom-0 z-10 -mx-2 flex flex-col gap-1.5 border-t px-2 py-3 backdrop-blur">
-      {/* useSubmitChoice swallows 404/409 (already-advanced, navigates anyway);
-          a genuine transport error surfaces here instead of silently re-enabling
-          the button. */}
-      {applyError && (
-        <p className="text-destructive text-sm" role="alert">
-          Couldn&rsquo;t submit that choice — try again.
-        </p>
-      )}
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={busy}
-          onClick={() => onDecide("skip")}
-        >
-          Skip
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={busy}
-          aria-describedby="review-actions-hint"
-          onClick={() => onDecide("asis")}
-        >
-          Use as-is
-        </Button>
-        {AS_TRACKS_ENABLED && (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            aria-describedby="review-actions-hint"
-            onClick={() => onDecide("astracks")}
-          >
-            As tracks
-          </Button>
-        )}
-        <Button className="ml-auto" disabled={busy} onClick={() => onDecide("apply")}>
-          {applyPending ? (
-            <>
-              <Spinner className="animate-spin" aria-hidden="true" /> Applying…
-            </>
-          ) : (
-            <>
-              <Success aria-hidden="true" /> Apply
-            </>
-          )}
-        </Button>
-      </div>
-      <p id="review-actions-hint" className="text-muted-foreground text-xs">
-        Use as-is imports with your current tags — no MusicBrainz match is
-        applied.
-        {AS_TRACKS_ENABLED &&
-          " As tracks imports each file as a standalone track, not grouped as an album."}
-      </p>
-    </div>
   );
 }
 

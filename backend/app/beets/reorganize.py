@@ -80,7 +80,7 @@ def _verify_moves(pending: list[tuple[int, bytes, bytes]], after: dict[int, byte
             if not os.path.exists(old_path):
                 problems.append(
                     f"{name}: file not found on disk at the library's recorded path"
-                    " — fix the file name on disk or re-import the album"
+                    "; fix the file name on disk or re-import the album"
                 )
             else:
                 problems.append(f"{name}: move did not take effect")
@@ -88,7 +88,7 @@ def _verify_moves(pending: list[tuple[int, bytes, bytes]], after: dict[int, byte
             problems.append(
                 f"{name}: computed filename is already taken by another track"
                 f" (landed at {os.path.basename(os.fsdecode(new_path))!r})"
-                " — two tracks share the same track number and title"
+                "; two tracks share the same track number and title"
             )
     return problems
 
@@ -110,12 +110,12 @@ def _commonpath_of_dirs(paths: list[bytes]) -> str:
 
 def album_label(album: Any) -> str:
     artist = str(getattr(album, "albumartist", "") or "").strip() or "Unknown"
-    return f"{artist} — {album.album}"
+    return f"{artist} - {album.album}"
 
 
 def singleton_label(item: Any) -> str:
     artist = str(item.artist or item.albumartist or "").strip() or "Unknown"
-    return f"{artist} — {item.title}"
+    return f"{artist} - {item.title}"
 
 
 def album_scope_label(handle: LibraryHandle, album_id: int) -> str | None:

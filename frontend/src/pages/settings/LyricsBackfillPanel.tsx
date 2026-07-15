@@ -100,7 +100,7 @@ export function LyricsBackfillPanel() {
           {status.data && status.data.album_id == null &&
             (status.data.phase === "done" || status.data.phase === "stopped") && (
             <span className="text-muted-foreground text-sm" role="status">
-              {status.data.phase === "done" ? "Done" : "Stopped"} — found {status.data.found} · none{" "}
+              {status.data.phase === "done" ? "Done" : "Stopped"}: found {status.data.found} · none{" "}
               {status.data.not_found} · failed {status.data.failed}
             </span>
           )}

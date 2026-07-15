@@ -154,7 +154,7 @@ function ImportEntry() {
             />
             <span>
               {origin === "sweep"
-                ? "A sweep is running — uncertain albums are being banked for review."
+                ? "A sweep is running; uncertain albums are being banked for review."
                 : origin === "inbox"
                   ? needsReview > 0
                     ? "An inbox import is running" // the set-aside clause completes the sentence
@@ -162,7 +162,7 @@ function ImportEntry() {
                   : "An import is already running."}
               {origin === "inbox" && needsReview > 0 && (
                 <span className="text-muted-foreground font-normal">
-                  {" — "}
+                  {" · "}
                   {needsReview} album{needsReview === 1 ? "" : "s"} set aside for
                   review.
                 </span>
@@ -206,8 +206,8 @@ function ImportEntry() {
         {conflict && (
           <p className="text-destructive text-sm" role="alert">
             {activeJobId
-              ? "An import is already running — use Resume above."
-              : "Couldn't start — a library operation is in progress. Try again in a moment."}
+              ? "An import is already running; use Resume above."
+              : "Couldn't start; a library operation is in progress. Try again in a moment."}
           </p>
         )}
         {rejected !== null && (
@@ -443,7 +443,7 @@ function SweepRun({ state, jobId }: { state: ImportJobState; jobId: string }) {
           <Spinner className="size-4 animate-spin" aria-hidden="true" />
           <span>
             {sweep.paused
-              ? "Pausing — finishing the current album…"
+              ? "Pausing; finishing the current album…"
               : sweep.current_folder
                 ? `Sweeping ${folderName(sweep.current_folder)}…`
                 : "Sweeping your folder…"}
@@ -462,7 +462,7 @@ function SweepRun({ state, jobId }: { state: ImportJobState; jobId: string }) {
         <div className="flex flex-col gap-1.5">
           {pause.isError && (
             <p className="text-destructive text-sm" role="alert">
-              Couldn&rsquo;t pause — try again.
+              Couldn&rsquo;t pause. Try again.
             </p>
           )}
           <div>
@@ -478,7 +478,7 @@ function SweepRun({ state, jobId }: { state: ImportJobState; jobId: string }) {
             </Button>
           </div>
           <p className="text-muted-foreground text-xs">
-            Banked albums show up on the Review page as the sweep finds them —
+            Banked albums show up on the Review page as the sweep finds them;
             you can start deciding right away. Resume later by sweeping the
             same folder again.
           </p>
@@ -703,7 +703,7 @@ function JobNotFound() {
 function JobError({ onRetry }: { onRetry: () => void }) {
   return (
     <ErrorState
-      message="Couldn’t load the import. The backend didn’t respond — try again."
+      message="Couldn’t load the import. The backend didn’t respond. Try again."
       onRetry={onRetry}
     />
   );

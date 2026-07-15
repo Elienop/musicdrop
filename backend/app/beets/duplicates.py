@@ -269,7 +269,7 @@ async def resolve_duplicates_op(request: Request, req: ResolveRequest) -> Resolv
     if library_job_active():
         raise HTTPException(
             status_code=409,
-            detail="Import in progress — resolve available when it finishes",
+            detail="Import in progress; resolve available when it finishes",
         )
     async with _swap_lock(app):
         handle: LibraryHandle = app.state.beets_library
@@ -356,7 +356,7 @@ async def resolve_all_op(request: Request, req: ResolveAllRequest) -> ResolveAll
     if library_job_active():
         raise HTTPException(
             status_code=409,
-            detail="Import in progress — resolve available when it finishes",
+            detail="Import in progress; resolve available when it finishes",
         )
     async with _swap_lock(app):
         handle: LibraryHandle = app.state.beets_library

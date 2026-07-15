@@ -49,20 +49,18 @@ def _music_dir(lib: Any) -> str:
 
 def _require_root(lib: Any) -> None:
     if not os.path.isdir(_music_dir(lib)):
-        raise LibraryRootUnavailableError(
-            "Library folder unavailable — is the music share mounted?"
-        )
+        raise LibraryRootUnavailableError("Library folder unavailable. Is the music share mounted?")
 
 
 def _item_label(item: Any) -> str:
     artist = str(item.artist or item.albumartist or "").strip() or "Unknown"
     title = str(item.title or "").strip() or os.path.basename(os.fsdecode(item.path))
-    return f"{artist} — {title}"
+    return f"{artist} - {title}"
 
 
 def _album_label(album: Any) -> str:
     artist = str(getattr(album, "albumartist", "") or "").strip() or "Unknown"
-    return f"{artist} — {album.album}"
+    return f"{artist} - {album.album}"
 
 
 def _rel_path(lib: Any, item: Any) -> str:

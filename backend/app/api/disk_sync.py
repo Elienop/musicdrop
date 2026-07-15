@@ -23,7 +23,7 @@ from app.models.disk_sync import DiskSyncPlan, DiskSyncStatus
 
 router = APIRouter(tags=["disk-sync"])
 
-_BUSY = "A library operation is in progress — disk sync available when it finishes"
+_BUSY = "A library operation is in progress; disk sync available when it finishes"
 
 
 def _gate_busy(app: object) -> None:

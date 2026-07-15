@@ -49,6 +49,6 @@ describe("formatDuration", () => {
     expect(formatDuration(0)).toBe("0:00");
   });
   test("en-dash for a missing duration", () => {
-    expect(formatDuration(null)).toBe("–");
+    expect(formatDuration(null)).toBe("-");
   });
 });

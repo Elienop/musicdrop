@@ -1778,7 +1778,7 @@ def test_rescan_with_no_audio_left_keeps_state_and_sets_feedback(
     assert second is not None
     assert second.candidate.search_revision == 1
     assert second.candidate.search_feedback == (
-        "No audio files remain in the folder — Skip or Abort."
+        "No audio files remain in the folder. Skip or Abort."
     )
     assert task.items is original_items
     assert second.candidate.album_after.album == "OK Computer"
@@ -1819,7 +1819,7 @@ def test_rescan_with_no_candidates_never_half_swaps(
     second = bridge.get_parked(timeout=2.0)
     assert second is not None
     assert second.candidate.search_feedback == (
-        "No release matched the rescanned folder — showing the album as originally scanned."
+        "No release matched the rescanned folder; showing the album as originally scanned."
     )
     # NO half-swap: items untouched, previous candidates still apply-able.
     assert task.items is original_items

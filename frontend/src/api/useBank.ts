@@ -192,7 +192,7 @@ export function useBankSearch(itemId: string) {
       );
       if (response.status === 409 || response.status === 422) {
         throw new BankConflictError(
-          detailMessage(error) ?? "This row changed state — go back and reopen it.",
+          detailMessage(error) ?? "This row changed state. Go back and reopen it.",
         );
       }
       if (response.status === 404) {
@@ -234,7 +234,7 @@ export function useBankRescan(itemId: string) {
       );
       if (response.status === 409) {
         throw new BankConflictError(
-          detailMessage(error) ?? "This row can’t be rescanned — go back and reopen it.",
+          detailMessage(error) ?? "This row can’t be rescanned. Go back and reopen it.",
         );
       }
       if (response.status === 404) {
@@ -274,7 +274,7 @@ async function decideBankItem(
   // detailMessage tolerates both (the dual-shape carry-forward).
   if (response.status === 409 || response.status === 422) {
     throw new BankConflictError(
-      detailMessage(error) ?? "This row changed state — go back and reopen it.",
+      detailMessage(error) ?? "This row changed state. Go back and reopen it.",
     );
   }
   if (response.status === 404) {
@@ -324,7 +324,7 @@ async function deleteBankItem(itemId: string): Promise<void> {
   }
   if (response.status === 409) {
     throw new BankConflictError(
-      detailMessage(error) ?? "The row is applying — wait for it to finish.",
+      detailMessage(error) ?? "The row is applying. Wait for it to finish.",
     );
   }
   if (error || !response.ok) {

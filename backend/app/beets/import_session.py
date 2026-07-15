@@ -658,13 +658,13 @@ class WebImportSession(ImportSession):
                     recommendation = _REC_MAP.get(new_rec, Recommendation.none)
                     feedback = None
                 else:
-                    feedback = "No release found for that search — showing your previous matches."
+                    feedback = "No release found. Showing your previous matches."
             else:
                 # Rescan: the user changed the folder on purpose — re-read it
                 # from disk and re-run beets' DEFAULT first-scan lookup.
                 new_items = _read_items(Path(folder))
                 if not new_items:
-                    feedback = "No audio files remain in the folder — Skip or Abort."
+                    feedback = "No audio files remain in the folder. Skip or Abort."
                 else:
                     cur_artist, cur_album, new_candidates, new_rec = lookup_items(new_items, None)
                     if not new_candidates:
@@ -672,7 +672,7 @@ class WebImportSession(ImportSession):
                         # and a half-swap would let Apply import deleted files —
                         # keep the task fully consistent on its original scan.
                         feedback = (
-                            "No release matched the rescanned folder — "
+                            "No release matched the rescanned folder; "
                             "showing the album as originally scanned."
                         )
                     else:

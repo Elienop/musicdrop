@@ -142,13 +142,13 @@ export function DuplicatesPage() {
             Moved {summary.moved_count} {summary.moved_count === 1 ? "copy" : "copies"} across{" "}
             {summary.group_count} {summary.group_count === 1 ? "group" : "groups"} to Trash.
             {skipped > 0 &&
-              ` ${skipped} group${skipped === 1 ? "" : "s"} changed and ${skipped === 1 ? "was" : "were"} skipped — refreshed; re-check ${skipped === 1 ? "it" : "them"}.`}
+              ` ${skipped} group${skipped === 1 ? "" : "s"} changed and ${skipped === 1 ? "was" : "were"} skipped; refreshed; re-check ${skipped === 1 ? "it" : "them"}.`}
           </p>
         ) : (
           // All groups drifted since the scan (a normal 200 with nothing moved):
           // lead with the actionable part, not a "moved 0" that reads as a no-op.
           <p className="text-sm" role="status">
-            Nothing moved — {skipped === 1 ? "the group" : `all ${skipped} groups`} changed
+            Nothing moved; {skipped === 1 ? "the group" : `all ${skipped} groups`} changed
             since the scan and {skipped === 1 ? "was" : "were"} skipped. The report refreshed;
             re-check {skipped === 1 ? "it" : "them"}.
           </p>
@@ -206,7 +206,7 @@ export function DuplicatesPage() {
             <AlertDialogDescription asChild>
               <div className="text-sm">
                 Keeping one copy per group (the marked keeper). These move to the
-                Trash folder (reversible — nothing is deleted):
+                Trash folder (reversible; nothing is deleted):
                 <ul className="mt-2 max-h-64 space-y-1 overflow-y-auto">
                   {decisions.map((d) => {
                     const keeper = d.group.members.find((m) => m.id === d.keep);
@@ -215,7 +215,7 @@ export function DuplicatesPage() {
                         Keep <strong>{keeper?.title}</strong>
                         <span className="text-muted-foreground">
                           {" "}
-                          — {keeper?.album_artist} · move {d.removeIds.length}
+                          - {keeper?.album_artist} · move {d.removeIds.length}
                         </span>
                       </li>
                     );
@@ -241,7 +241,7 @@ function resolve409Message(err: DuplicatesOpError): string {
   const detail = (err.body as { detail?: string } | null)?.detail ?? "";
   return detail.toLowerCase().includes("import")
     ? "Can't resolve while an import is running."
-    : "This group changed — refreshing. Re-check the copies and retry.";
+    : "This group changed; refreshing. Re-check the copies and retry.";
 }
 
 function GroupCard({
@@ -335,7 +335,7 @@ function GroupCard({
             <AlertDialogDescription asChild>
               <div className="text-sm">
                 Keeping <strong>{keeper?.title}</strong>. These move to the Trash
-                folder (reversible — nothing is deleted):
+                folder (reversible; nothing is deleted):
                 <ul className="mt-2 list-disc pl-5">
                   {group.members
                     .filter((m) => m.id !== keeperId)
@@ -375,7 +375,7 @@ function MemberRow({
   checked: boolean;
   onChoose: () => void;
 }) {
-  const quality = `${album.format ?? "—"}${album.bitrate_kbps ? ` · ${album.bitrate_kbps}k` : ""}`;
+  const quality = `${album.format ?? "-"}${album.bitrate_kbps ? ` · ${album.bitrate_kbps}k` : ""}`;
   return (
     <li className={cn("flex items-center gap-1", checked && "bg-primary/5")}>
       <input
@@ -391,7 +391,7 @@ function MemberRow({
           cover={`/api/albums/${album.id}/cover`}
           title={album.title}
           subtitle={album.album_artist}
-          meta={`${album.year ?? "—"} · ${album.track_count} tracks · ${quality}`}
+          meta={`${album.year ?? "-"} · ${album.track_count} tracks · ${quality}`}
           badge={
             album.is_suggested_keeper ? (
               <Badge variant="secondary" className="shrink-0">

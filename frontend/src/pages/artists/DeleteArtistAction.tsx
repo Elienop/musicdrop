@@ -42,8 +42,8 @@ export function DeleteArtistAction({
         <AlertDialogHeader>
           <AlertDialogTitle>Move every album by this artist to Trash?</AlertDialogTitle>
           <AlertDialogDescription>
-            All {albumCount} album{albumCount === 1 ? "" : "s"} by {name} —
-            folders, art, and lyric sidecars — are moved to the Trash folder and
+            All {albumCount} album{albumCount === 1 ? "" : "s"} by {name}{" "}
+            (folders, art, and lyric sidecars) are moved to the Trash folder and
             removed from your library. Recoverable in Trash; Plex shows them as
             unavailable until a rescan.
           </AlertDialogDescription>

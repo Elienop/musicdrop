@@ -501,7 +501,7 @@ describe("PlaylistDetailPage", () => {
     await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
     // The polite region announces the derived outcome — not a generic "complete"
     // and not the ambiguous "Not synced".
-    expect(await screen.findByText(/plex sync — synced/i)).toBeInTheDocument();
+    expect(await screen.findByText(/plex sync: synced/i)).toBeInTheDocument();
     // And the visible per-playlist status line settles on exactly "Synced".
     await waitFor(() => expect(screen.getByText("Synced")).toBeInTheDocument());
   });

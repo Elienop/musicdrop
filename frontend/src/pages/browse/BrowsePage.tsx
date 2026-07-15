@@ -299,7 +299,7 @@ export function BrowsePage() {
                     setSort(e.target.value === "added" ? "added" : "artist")
                   }
                 >
-                  <option value="artist">A–Z (artist)</option>
+                  <option value="artist">A-Z (artist)</option>
                   <option value="added">Recently added</option>
                 </select>
                 <Expand
@@ -359,7 +359,7 @@ export function BrowsePage() {
               <EmptyState
                 bordered
                 icon={Albums}
-                title="This page is empty — the filters changed under it."
+                title="This page is empty; the filters changed under it."
                 action={
                   <Button
                     type="button"

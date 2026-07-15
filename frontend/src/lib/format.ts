@@ -35,7 +35,7 @@ export function formatBytes(bytes: number): string {
  * formatTotalDuration above: this is per-track, never rolls into hours. */
 export function formatDuration(seconds: number | null): string {
   if (seconds === null) {
-    return "–";
+    return "-";
   }
   const total = Math.floor(seconds);
   const mins = Math.floor(total / 60);

@@ -61,11 +61,11 @@ export function CoverEditPanel({
     setNotFound(false);
     fetchCover.reset();
     if (!ACCEPTED_TYPES.includes(file.type)) {
-      setPickError("That file isn't an image we can use — pick a PNG, JPEG, GIF, or WebP.");
+      setPickError("That file isn't an image we can use. Pick a PNG, JPEG, GIF, or WebP.");
       return;
     }
     if (file.size > MAX_BYTES) {
-      setPickError("That image is over 10 MB — pick a smaller file.");
+      setPickError("That image is over 10 MB. Pick a smaller file.");
       return;
     }
     setPickError(null);
@@ -107,7 +107,7 @@ export function CoverEditPanel({
       {!pending && (
         <div className="flex flex-col gap-3">
           <p className="text-muted-foreground text-sm">
-            Set a cover for this album — search online art sources, or upload your own image.
+            Set a cover for this album. Search online art sources, or upload your own image.
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="secondary" onClick={onFetch} disabled={fetchCover.isPending}>

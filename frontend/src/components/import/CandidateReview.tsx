@@ -69,7 +69,7 @@ export function CandidateReview({
       )}
       {isTopFallback && (
         <p className="text-muted-foreground text-sm" role="status">
-          Showing the top match — this row predates per-candidate previews; Apply
+          Showing the top match; this row predates per-candidate previews. Apply
           will still use the selected release.
         </p>
       )}
@@ -132,7 +132,7 @@ function MatchHeader({
     <div className="flex flex-col gap-1">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <h1 tabIndex={-1} className="font-display text-display font-semibold tracking-tight">
-          {after.artist ?? "Unknown artist"} — {after.album ?? "Unknown album"}
+          {after.artist ?? "Unknown artist"} - {after.album ?? "Unknown album"}
         </h1>
       </div>
       <p className="text-muted-foreground flex items-center gap-2 text-sm">
@@ -296,7 +296,7 @@ function Field({
     <div className="flex items-baseline gap-2 text-sm">
       <span className="text-muted-foreground w-12 shrink-0">{label}</span>
       <span className={cn("truncate", changed && "text-foreground font-medium")}>
-        {value ?? "—"}
+        {value ?? "-"}
       </span>
       {changed && (
         <Badge variant="secondary" className="shrink-0">
@@ -386,15 +386,15 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
                 <TableCell className="text-muted-foreground pr-4 text-right tabular-nums whitespace-nowrap">
                   {numberChanged
                     ? `${t.track_before} → ${t.track_after}`
-                    : (t.track_after ?? t.track_before ?? "–")}
+                    : (t.track_after ?? t.track_before ?? "-")}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  <span className="truncate">{t.title_before ?? "—"}</span>
+                  <span className="truncate">{t.title_before ?? "-"}</span>
                 </TableCell>
                 <TableCell>
                   <span className="flex min-w-0 items-center gap-2">
                     <span className={cn("truncate", changed && "font-medium")}>
-                      {t.title_after ?? "—"}
+                      {t.title_after ?? "-"}
                     </span>
                     {changed && (
                       <>
@@ -413,24 +413,24 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
           {candidate.missing.map((m, i) => (
             <TableRow key={`missing-${m.index ?? i}`} className="hover:bg-transparent">
               <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
-                {m.index ?? "–"}
+                {m.index ?? "-"}
               </TableCell>
               <TableCell className="text-muted-foreground">
                 <span className="inline-flex items-center gap-1">
                   <Missing className="size-3" aria-hidden="true" /> missing
                 </span>
               </TableCell>
-              <TableCell className="text-muted-foreground">{m.title ?? "—"}</TableCell>
+              <TableCell className="text-muted-foreground">{m.title ?? "-"}</TableCell>
             </TableRow>
           ))}
           {candidate.unmatched.map((u, i) => (
             <TableRow key={`unmatched-${i}`} className="hover:bg-transparent">
               <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
-                –
+                -
               </TableCell>
               <TableCell>
                 <span className="inline-flex items-center gap-1">
-                  <Add className="size-3" aria-hidden="true" /> {u.title ?? "—"}
+                  <Add className="size-3" aria-hidden="true" /> {u.title ?? "-"}
                 </span>
               </TableCell>
               <TableCell className="text-muted-foreground">not on release</TableCell>

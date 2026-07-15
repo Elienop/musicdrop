@@ -140,7 +140,7 @@ function DuplicateScreen({
       />
       {resolve.isError && (
         <p className="text-destructive text-sm" role="alert">
-          Couldn&rsquo;t submit that — try again.
+          Couldn&rsquo;t submit that. Try again.
         </p>
       )}
       <DuplicateActions pending={pending} busy={resolve.isPending} onDecide={decide} />

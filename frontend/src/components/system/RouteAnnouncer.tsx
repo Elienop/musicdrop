@@ -83,7 +83,7 @@ export function RouteAnnouncer() {
 
   useEffect(() => {
     const title = titleForPathname(pathname);
-    document.title = `${title} — MusicDrop`;
+    document.title = `${title} - MusicDrop`;
     setAnnouncement(title);
     if (
       previousPathname.current !== null &&

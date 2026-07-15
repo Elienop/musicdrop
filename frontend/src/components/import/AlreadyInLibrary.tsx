@@ -53,7 +53,7 @@ function ExistingTracklist({ tracks }: { tracks: ExistingAlbum["tracks"] }) {
       {tracks.map((t, i) => (
         <li key={i} className="flex items-center gap-3 px-3 py-1.5">
           <span className="text-muted-foreground w-6 shrink-0 text-right font-mono text-xs">
-            {t.track ?? "–"}
+            {t.track ?? "-"}
           </span>
           <span className="min-w-0 flex-1 truncate">{t.title ?? "Untitled"}</span>
           <span className="text-muted-foreground shrink-0 text-xs">

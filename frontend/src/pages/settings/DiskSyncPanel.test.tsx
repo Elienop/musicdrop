@@ -150,7 +150,7 @@ test("a stopped (partial) job labels the summary as stopped early", async () => 
   });
   wrap(<DiskSyncPanel />);
   expect(
-    await screen.findByText(/Stopped early — 3 of 10 processed ·/),
+    await screen.findByText(/Stopped early: 3 of 10 processed ·/),
   ).toBeInTheDocument();
 });
 

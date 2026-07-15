@@ -754,7 +754,7 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
     if library_job_active():
         raise HTTPException(
             status_code=409,
-            detail="Import in progress — Apply available when it finishes / lyrics backfill",
+            detail="Import in progress; Apply available when it finishes / lyrics backfill",
         )
 
     async with _swap_lock(app):

@@ -205,7 +205,7 @@ export function BankSection() {
     toast.error(
       error instanceof BankConflictError
         ? error.message
-        : "That didn’t go through — the row may have changed state. Try again.",
+        : "That didn’t go through; the row may have changed state. Try again.",
     );
   };
 
@@ -271,7 +271,7 @@ export function BankSection() {
                 </AlertDialogTitle>
                 <AlertDialogDescription>
                   The files stay on disk, but the banked candidates are
-                  forfeited — a re-sweep will NOT pick these folders up again.
+                  forfeited; a re-sweep will NOT pick these folders up again.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -340,7 +340,7 @@ export function BankSection() {
           <EmptyState
             bordered
             icon={Albums}
-            title="This page is empty — the backlog changed under it."
+            title="This page is empty; the backlog changed under it."
             action={
               <Button
                 type="button"
@@ -357,7 +357,7 @@ export function BankSection() {
           // (total_all > 0) — everything's resolved. Point at the filters so
           // the Imported/Ignored history stays discoverable, not a dead end.
           <p className="text-muted-foreground text-sm">
-            Nothing needs attention — switch the filter to see resolved history.
+            Nothing needs attention. Switch the filter to see resolved history.
           </p>
         ) : (
           // An active status/reason filter matched nothing on this page.
@@ -474,7 +474,7 @@ function BankRow({
                     <AlertDialogTitle>Remove this row?</AlertDialogTitle>
                     <AlertDialogDescription>
                       The files stay on disk, but the banked candidates are
-                      forfeited — a re-sweep will NOT pick this folder up again.
+                      forfeited; a re-sweep will NOT pick this folder up again.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>

@@ -351,7 +351,7 @@ describe("ReviewPage", () => {
     expect(within(section).getByLabelText(/filter by status/i)).toBeInTheDocument();
     expect(within(section).getByLabelText(/filter by reason/i)).toBeInTheDocument();
     expect(
-      within(section).getByText(/nothing needs attention — switch the filter/i),
+      within(section).getByText(/nothing needs attention\. switch the filter/i),
     ).toBeInTheDocument();
   });
 
@@ -875,7 +875,7 @@ describe("ReviewPage", () => {
       renderWithProviders(<ReviewPage />);
       const strip = await screen.findByText(/sweep finished/i);
       expect(strip).toHaveTextContent(
-        "Sweep finished — 12 processed · 9 imported · 3 banked · 2 already known.",
+        "Sweep finished: 12 processed · 9 imported · 3 banked · 2 already known.",
       );
       expect(screen.getByRole("link", { name: /view run/i })).toHaveAttribute(
         "href",
@@ -894,7 +894,7 @@ describe("ReviewPage", () => {
       );
       renderWithProviders(<ReviewPage />);
       const strip = await screen.findByText(/sweep paused/i);
-      expect(strip).toHaveTextContent("Sweep paused — 12 processed · 9 imported · 3 banked.");
+      expect(strip).toHaveTextContent("Sweep paused: 12 processed · 9 imported · 3 banked.");
       expect(strip).not.toHaveTextContent(/already known/i);
       expect(strip).toHaveTextContent(/resume by sweeping the same folder again/i);
     });

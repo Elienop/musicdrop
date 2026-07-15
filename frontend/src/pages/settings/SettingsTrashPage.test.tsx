@@ -37,7 +37,7 @@ describe("SettingsTrashPage", () => {
       ),
     );
     renderPage();
-    expect(await screen.findByText(/2 Brothers — Dreams/)).toBeInTheDocument();
+    expect(await screen.findByText(/2 Brothers - Dreams/)).toBeInTheDocument();
     expect(screen.getByText("2 tracks · FLAC · 1994")).toBeInTheDocument();
     expect(screen.getByText("/data/beets/trash")).toBeInTheDocument();
   });

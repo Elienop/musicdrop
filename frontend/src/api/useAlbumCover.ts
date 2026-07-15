@@ -32,7 +32,7 @@ export function useInstallAlbumCover(albumId: number) {
       const form = new FormData();
       form.append("file", image, "cover");
       const res = await fetch(apiUrl(`/api/albums/${albumId}/cover`), { method: "POST", body: form });
-      if (res.status === 409) throw new Error("An import is running — try again when it finishes.");
+      if (res.status === 409) throw new Error("An import is running; try again when it finishes.");
       if (!res.ok) throw new Error(await errorDetail(res, "Cover install failed"));
       return (await res.json()) as CoverInstallResult;
     },

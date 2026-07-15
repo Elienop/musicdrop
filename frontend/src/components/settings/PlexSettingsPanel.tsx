@@ -150,7 +150,7 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
             // or prompting to save this server secret. "new-password" is honored
             // more reliably than "off" for password inputs.
             autoComplete="new-password"
-            placeholder={initial.has_token ? "Token saved — enter to replace" : "X-Plex-Token"}
+            placeholder={initial.has_token ? "Token saved. Enter to replace" : "X-Plex-Token"}
             value={token}
             onChange={(e) => setToken(e.target.value)}
             className="max-w-md font-mono"
@@ -183,7 +183,7 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
             value={librarySection}
             onChange={(e) => setLibrarySection(e.target.value)}
           >
-            <option value="">Auto — first music library</option>
+            <option value="">Auto: first music library</option>
             {sectionOptions.map((title) => (
               <option key={title} value={title}>
                 {title}
@@ -225,7 +225,7 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
 
         {dirty && (
           <p className="text-muted-foreground text-xs">
-            Save before testing — Test uses your saved settings.
+            Save before testing. Test uses your saved settings.
           </p>
         )}
 
@@ -273,7 +273,7 @@ function Panel({ children }: { children: React.ReactNode }) {
   return (
     <SettingsSection
       title="Plex"
-      description="Connect your Plex server so playlists can be pushed to it. The admin token is write-only — it’s stored on the server and never shown again."
+      description="Connect your Plex server so playlists can be pushed to it. The admin token is write-only; it’s stored on the server and never shown again."
     >
       {children}
     </SettingsSection>

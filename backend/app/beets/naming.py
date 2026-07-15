@@ -119,7 +119,7 @@ def _is_legible(text: str) -> bool:
 
 def _label(item: Any) -> str:
     artist = item.albumartist or item.artist or "Unknown"
-    return f"{artist} — {item.album or item.title}"
+    return f"{artist} - {item.album or item.title}"
 
 
 def _pick_sample(lib: Any, query: str) -> tuple[Any, str]:

@@ -96,7 +96,7 @@ async function startImport(
   }
   if (response.status === 422) {
     throw new ImportStartRejectedError(
-      detailMessage(error) ?? "The import was rejected — check the path and options.",
+      detailMessage(error) ?? "The import was rejected. Check the path and options.",
     );
   }
   if (error || !data) {

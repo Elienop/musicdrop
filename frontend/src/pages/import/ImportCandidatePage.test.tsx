@@ -186,7 +186,7 @@ describe("ImportCandidatePage", () => {
     renderAt();
 
     expect(
-      await screen.findByRole("heading", { name: /Radiohead — OK Computer/i }),
+      await screen.findByRole("heading", { name: /Radiohead - OK Computer/i }),
     ).toBeInTheDocument();
     // "Medium match" is unique to the header (the switcher options carry % +
     // source, not the recommendation label).
@@ -299,8 +299,12 @@ describe("ImportCandidatePage", () => {
     const asIs = await screen.findByRole("button", { name: /use as-is/i });
     // title= never surfaces on keyboard focus or on a disabled button.
     expect(asIs).not.toHaveAttribute("title");
-    expect(asIs).toHaveAttribute("aria-describedby", "review-actions-hint");
-    expect(asIs).toHaveAccessibleDescription(/imports with your current tags/i);
+    // The bar wires the hint via a generated id (useId), so assert the linkage
+    // through the resolved accessible description, not a hardcoded id.
+    expect(asIs).toHaveAttribute("aria-describedby");
+    expect(asIs).toHaveAccessibleDescription(
+      /Use as-is keeps your current tags; no MusicBrainz match is applied\./i,
+    );
     // The hint is VISIBLE helper text under the action bar.
     expect(
       screen.getByText(/no MusicBrainz match is applied/i),
@@ -346,7 +350,7 @@ describe("ImportCandidatePage", () => {
     renderAt();
 
     // Top match (selected === 0): the top release + its recommendation word.
-    await screen.findByRole("heading", { name: /Radiohead — OK Computer$/i });
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer$/i });
     expect(screen.getByText(/Medium match/i)).toBeInTheDocument();
     expect(
       screen.getByText(
@@ -359,7 +363,7 @@ describe("ImportCandidatePage", () => {
     // The header %, album, and tracklist now reflect the SELECTED release.
     expect(
       await screen.findByRole("heading", {
-        name: /Radiohead — OK Computer OKNOTOK/i,
+        name: /Radiohead - OK Computer OKNOTOK/i,
       }),
     ).toBeInTheDocument();
     expect(
@@ -410,7 +414,7 @@ describe("ImportCandidatePage", () => {
     const user = userEvent.setup();
     renderAt();
 
-    await screen.findByRole("heading", { name: /Radiohead — OK Computer$/i });
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer$/i });
     await user.selectOptions(screen.getByLabelText(/candidate release/i), "1");
 
     // (b) the legacy note explains the fallback (role=status).
@@ -420,7 +424,7 @@ describe("ImportCandidatePage", () => {
     expect(screen.getByText(/Medium match/i)).toBeInTheDocument();
     // (c) album + tracklist stay the TOP match's — no alternate diff to show.
     expect(
-      screen.getByRole("heading", { name: /Radiohead — OK Computer$/i }),
+      screen.getByRole("heading", { name: /Radiohead - OK Computer$/i }),
     ).toBeInTheDocument();
     expect(screen.getByText("Paranoid Android")).toBeInTheDocument();
     expect(screen.queryByText(/OKNOTOK/)).not.toBeInTheDocument();
@@ -486,10 +490,10 @@ describe("ImportCandidatePage", () => {
     await user.click(await screen.findByRole("button", { name: /^Apply/i }));
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/Couldn’t submit that choice — try again\./);
+    expect(alert).toHaveTextContent(/Couldn’t submit that choice\. Try again\./);
     // Did NOT navigate away — still on the review screen.
     expect(
-      screen.getByRole("heading", { name: /Radiohead — OK Computer/i }),
+      screen.getByRole("heading", { name: /Radiohead - OK Computer/i }),
     ).toBeInTheDocument();
   });
 
@@ -549,7 +553,7 @@ describe("ImportCandidatePage", () => {
 
     const h1 = await screen.findByRole("heading", {
       level: 1,
-      name: /Radiohead — OK Computer/i,
+      name: /Radiohead - OK Computer/i,
     });
     expect(h1).toHaveAttribute("tabindex", "-1");
   });
@@ -594,7 +598,10 @@ describe("ImportCandidatePage", () => {
     const user = userEvent.setup();
     renderAt();
 
-    await screen.findByRole("heading", { name: /Radiohead — OK Computer/i });
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer/i });
+    // The search form is folded inside the bar behind the "Different release"
+    // toggle — open it before touching the release field.
+    await user.click(screen.getByRole("button", { name: /different release/i }));
     await user.type(
       screen.getByLabelText(/release url or id/i),
       "https://musicbrainz.org/release/dreams",
@@ -615,7 +622,7 @@ describe("ImportCandidatePage", () => {
     );
     // The re-looked-up release renders once the revision bumps.
     expect(
-      await screen.findByRole("heading", { name: /2 Brothers — Dreams/i }),
+      await screen.findByRole("heading", { name: /2 Brothers - Dreams/i }),
     ).toBeInTheDocument();
   });
 
@@ -633,12 +640,12 @@ describe("ImportCandidatePage", () => {
     const user = userEvent.setup();
     renderAt();
 
-    await screen.findByRole("heading", { name: /Radiohead — OK Computer/i });
-    // Reveal the name search, then assert the toggle defaults on.
-    await user.click(screen.getByText(/or search by name/i));
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer/i });
+    // Open the folded search row, then assert the toggle defaults on.
+    await user.click(screen.getByRole("button", { name: /different release/i }));
     expect(
       screen.getByRole("checkbox", {
-        name: /not a various-artists compilation/i,
+        name: /not a compilation/i,
       }),
     ).toBeChecked();
     await user.type(screen.getByLabelText(/^artist/i), "2 Brothers");
@@ -666,8 +673,7 @@ describe("ImportCandidatePage", () => {
       http.post(CHOICE_URL, async () => {
         current = makeCandidate({
           search_revision: 1,
-          search_feedback:
-            "No release found for that search — showing your previous matches.",
+          search_feedback: "No release found. Showing your previous matches.",
         });
         return new HttpResponse(null, { status: 204 });
       }),
@@ -675,12 +681,13 @@ describe("ImportCandidatePage", () => {
     const user = userEvent.setup();
     renderAt();
 
-    await screen.findByRole("heading", { name: /Radiohead — OK Computer/i });
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer/i });
+    await user.click(screen.getByRole("button", { name: /different release/i }));
     await user.type(screen.getByLabelText(/release url or id/i), "artist-url");
     await user.click(screen.getByRole("button", { name: /^Search/i }));
 
     expect(
-      await screen.findByText(/No release found for that search/i),
+      await screen.findByText(/No release found/i),
     ).toBeInTheDocument();
   });
 
@@ -692,7 +699,8 @@ describe("ImportCandidatePage", () => {
     const user = userEvent.setup();
     renderAt();
 
-    await screen.findByRole("heading", { name: /Radiohead — OK Computer/i });
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer/i });
+    await user.click(screen.getByRole("button", { name: /different release/i }));
     await user.type(screen.getByLabelText(/release url or id/i), "rel-1");
     await user.click(screen.getByRole("button", { name: /^Search/i }));
 
@@ -773,7 +781,10 @@ describe("ImportCandidatePage", () => {
     const user = userEvent.setup();
     renderAt();
 
-    await user.click(await screen.findByRole("button", { name: /^Apply/i }));
+    // Open the folded search row first (the toggle is never disabled), so the
+    // release field is mounted and we can assert it locks with the rest.
+    await user.click(await screen.findByRole("button", { name: /different release/i }));
+    await user.click(screen.getByRole("button", { name: /^Apply/i }));
     // With the Apply in flight, the no-undo relookup controls must lock out —
     // firing a rescan/search against the same album mid-Apply is an avoidable
     // concurrent-action window the backend can only swallow.
@@ -783,18 +794,14 @@ describe("ImportCandidatePage", () => {
     expect(screen.getByLabelText(/release url or id/i)).toBeDisabled();
   });
 
-  test("rescan folder rides the top toolbar; the inline hint is gone", async () => {
+  test("rescan rides the control bar and locks with the other tools", async () => {
     server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
     renderAt();
-    const rescanButton = await screen.findByRole("button", { name: /rescan folder/i });
-    const h1 = screen.getByRole("heading", { level: 1 });
-    expect(
-      rescanButton.compareDocumentPosition(h1) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(rescanButton).toHaveAttribute(
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer/i });
+    const rescan = screen.getByRole("button", { name: /rescan folder/i });
+    expect(rescan).toHaveAttribute(
       "title",
       "Re-reads the folder from disk and matches it again.",
     );
-    expect(screen.queryByText(/changed the files on disk\?/i)).not.toBeInTheDocument();
   });
 });

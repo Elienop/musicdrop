@@ -108,7 +108,7 @@ export function ArtistArtPanel() {
               happened without watching the live feed. */}
           {libraryTerminal && job && (job.phase === "done" || job.phase === "stopped") && (
             <span className="text-muted-foreground text-sm" role="status">
-              {job.phase === "done" ? "Done" : "Stopped"} — written {job.written} · skipped{" "}
+              {job.phase === "done" ? "Done" : "Stopped"}: written {job.written} · skipped{" "}
               {job.skipped} · failed {job.failed}
             </span>
           )}

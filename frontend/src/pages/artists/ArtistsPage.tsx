@@ -79,7 +79,7 @@ export function ArtistsPage() {
         <EmptyState
           bordered
           icon={Artists}
-          title="This page is empty — the roster changed under it."
+          title="This page is empty; the roster changed under it."
           action={
             <Button
               type="button"

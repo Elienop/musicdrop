@@ -63,7 +63,7 @@ export function CreatePlaylistDialog({
         <DialogHeader>
           <DialogTitle>New playlist</DialogTitle>
           <DialogDescription>
-            Name your playlist — add tracks from any album or from search.
+            Name your playlist, then add tracks from any album or from search.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="flex flex-col gap-4">

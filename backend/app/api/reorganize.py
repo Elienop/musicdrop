@@ -30,7 +30,7 @@ from app.reorganize_jobs.runner import start_backfill
 
 router = APIRouter(tags=["reorganize"])
 
-_BUSY = "A library operation is in progress — reorganize available when it finishes"
+_BUSY = "A library operation is in progress; reorganize available when it finishes"
 
 
 def _gate_busy(app: object) -> None:
