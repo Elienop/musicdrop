@@ -354,7 +354,7 @@ function trackCell(before: number | null | undefined, after: number | null | und
   const b = before ?? null;
   const a = after ?? null;
   if (a !== null && a !== b) return b === null ? String(a) : `${b} → ${a}`;
-  return String(b ?? a ?? "–");
+  return String(b ?? a ?? "-");
 }
 
 function diffValue(v: string | number | null | undefined): string {

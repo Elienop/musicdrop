@@ -343,7 +343,7 @@ function TrackRow({
       <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
         {/* Untagged track number comes through as 0 — show an en-dash instead,
             matching the duration fallback. */}
-        {track.track || "–"}
+        {track.track || "-"}
       </TableCell>
       <TableCell>
         <div className="flex min-w-0 flex-col">
@@ -372,7 +372,7 @@ function TrackRow({
         ) : (
           <>
             <span className="text-muted-foreground" aria-hidden="true">
-              –
+              -
             </span>
             <span className="sr-only">No lyrics</span>
           </>
@@ -397,7 +397,7 @@ function MissingTrackRow({ track }: { track: MissingReleaseTrack }) {
   return (
     <TableRow className="bg-muted/40 hover:bg-muted/60">
       <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
-        {track.index || "–"}
+        {track.index || "-"}
       </TableCell>
       <TableCell>
         <div className="flex min-w-0 items-center gap-2">
@@ -422,7 +422,7 @@ function MissingTrackRow({ track }: { track: MissingReleaseTrack }) {
         {formatDuration(track.duration_seconds)}
       </TableCell>
       <TableCell aria-hidden="true" className="text-muted-foreground text-center">
-        –
+        -
       </TableCell>
       {/* No add-to-playlist for a track that isn't in the library. */}
       <TableCell aria-hidden="true" />

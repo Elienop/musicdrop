@@ -299,7 +299,7 @@ export function BrowsePage() {
                     setSort(e.target.value === "added" ? "added" : "artist")
                   }
                 >
-                  <option value="artist">A–Z (artist)</option>
+                  <option value="artist">A-Z (artist)</option>
                   <option value="added">Recently added</option>
                 </select>
                 <Expand

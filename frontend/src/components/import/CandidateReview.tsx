@@ -386,7 +386,7 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
                 <TableCell className="text-muted-foreground pr-4 text-right tabular-nums whitespace-nowrap">
                   {numberChanged
                     ? `${t.track_before} → ${t.track_after}`
-                    : (t.track_after ?? t.track_before ?? "–")}
+                    : (t.track_after ?? t.track_before ?? "-")}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   <span className="truncate">{t.title_before ?? "-"}</span>
@@ -413,7 +413,7 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
           {candidate.missing.map((m, i) => (
             <TableRow key={`missing-${m.index ?? i}`} className="hover:bg-transparent">
               <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
-                {m.index ?? "–"}
+                {m.index ?? "-"}
               </TableCell>
               <TableCell className="text-muted-foreground">
                 <span className="inline-flex items-center gap-1">
@@ -426,7 +426,7 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
           {candidate.unmatched.map((u, i) => (
             <TableRow key={`unmatched-${i}`} className="hover:bg-transparent">
               <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
-                –
+                -
               </TableCell>
               <TableCell>
                 <span className="inline-flex items-center gap-1">

@@ -174,7 +174,7 @@ describe("AlbumDetailPage", () => {
     expect(row).not.toBeNull();
     // The row carries two en-dashes now: the null duration AND the
     // no-lyrics indicator cell. Assert the duration fallback is among them.
-    expect(within(row as HTMLElement).getAllByText("–").length).toBeGreaterThan(0);
+    expect(within(row as HTMLElement).getAllByText("-").length).toBeGreaterThan(0);
   });
 
   test("shows the track artist only when it differs from the album artist", async () => {
@@ -326,7 +326,7 @@ describe("AlbumDetailPage", () => {
     const row = (await screen.findByText("Untracked")).closest("tr");
     expect(row).not.toBeNull();
     // Two en-dashes now: the untagged track number (0) AND the no-lyrics cell.
-    expect(within(row as HTMLElement).getAllByText("–").length).toBeGreaterThan(0);
+    expect(within(row as HTMLElement).getAllByText("-").length).toBeGreaterThan(0);
   });
 
   test("does not render a 'Disc 0' header for untagged discs", async () => {
