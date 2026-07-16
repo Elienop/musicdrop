@@ -2,7 +2,11 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 
 import type { DuplicatePrompt } from "@/api/useImport";
-import { DuplicateActions, DuplicateComparison } from "@/components/import/DuplicateReview";
+import {
+  DuplicateActionRow,
+  DuplicateActions,
+  DuplicateComparison,
+} from "@/components/import/DuplicateReview";
 
 function makePrompt(overrides: Partial<DuplicatePrompt> = {}): DuplicatePrompt {
   return {
@@ -157,5 +161,17 @@ describe("DuplicateActions", () => {
     expect(
       screen.getByText(/combines them into your library/i),
     ).toBeInTheDocument();
+  });
+});
+
+describe("DuplicateActionRow", () => {
+  test("DuplicateActionRow points aria-describedby at the given id", () => {
+    render(
+      <DuplicateActionRow pending={null} busy={false} onDecide={vi.fn()} describedBy="x1" />,
+    );
+    expect(screen.getByRole("button", { name: /skip new/i })).toHaveAttribute(
+      "aria-describedby",
+      "x1",
+    );
   });
 });

@@ -310,8 +310,15 @@ describe("BankReviewPage", () => {
     );
     renderRow();
     await screen.findByRole("heading", { name: /Music Has the Right/ });
-    // The up-front collision notice + a View link to the existing copy.
-    expect(await screen.findByText(/already in your library/i)).toBeInTheDocument();
+    // The up-front collision card + a View link to the existing copy. Pin the
+    // heading role — the bar's notice line also matches /already in your library/i.
+    expect(
+      await screen.findByRole("heading", { name: /already in your library/i }),
+    ).toBeInTheDocument();
+    // The bar carries an in-line notice line while the collision fold is active.
+    expect(
+      screen.getByText("This album is already in your library."),
+    ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /^view$/i })).toHaveAttribute("href", "/albums/7");
     // The existing copy's own tracklist is shown so the choice is informed.
     const section = within(

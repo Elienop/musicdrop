@@ -95,6 +95,24 @@ test("a pending rescan shows Rescanning and disables itself", () => {
   expect(screen.getByRole("button", { name: /rescanning/i })).toBeDisabled();
 });
 
+test("no search prop renders no Different release toggle", () => {
+  renderBar({ search: undefined });
+  expect(
+    screen.queryByRole("button", { name: /different release/i }),
+  ).not.toBeInTheDocument();
+});
+
+test("cluster renders in the bar and receives the hint id", async () => {
+  renderBar({
+    primary: null,
+    cluster: (hintId) => (
+      <button aria-describedby={hintId}>Replace old</button>
+    ),
+  });
+  const btn = screen.getByRole("button", { name: /replace old/i });
+  expect(btn).toHaveAttribute("aria-describedby", screen.getByText("Use as-is keeps your tags.").id);
+});
+
 test("a pending primary shows its pending label and messages render", () => {
   renderBar({
     primary: {

@@ -22,6 +22,8 @@ import { BackLink } from "@/components/albums/album-grid";
 import { AlreadyInLibrary } from "@/components/import/AlreadyInLibrary";
 import { CandidateReview } from "@/components/import/CandidateReview";
 import {
+  DUPLICATE_FOOTNOTE_BANK,
+  DuplicateActionRow,
   DuplicateActions,
   DuplicateComparison,
 } from "@/components/import/DuplicateReview";
@@ -145,31 +147,6 @@ function DecisionError({ error }: { error: unknown }) {
     <p className="text-destructive text-sm" role="alert">
       {message}
     </p>
-  );
-}
-
-/** The standalone Ignore + decision-error strip shared by the bank screens
- * whose Ignore action sits on its own row (the candidate-collision fold and
- * the duplicate screen). Screens that interleave Ignore with other actions in
- * a single flex row (no-match, the candidate apply footer) keep their own
- * markup — their `ml-auto` pin needs every button in one container. Each
- * caller passes its own busy expression and ignore handler. */
-function BankDecisionFooter({
-  busy,
-  onIgnore,
-  error,
-}: {
-  busy: boolean;
-  onIgnore: () => void;
-  error: unknown;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <Button variant="ghost" size="sm" disabled={busy} onClick={onIgnore}>
-        Ignore
-      </Button>
-      <DecisionError error={error} />
-    </div>
   );
 }
 
@@ -357,19 +334,6 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
                 </p>
               </section>
             )}
-            <DuplicateActions
-              pending={pendingDup}
-              busy={busyAll}
-              context="bank"
-              onDecide={(action) => {
-                setPendingDup(action);
-                submit({
-                  action: "duplicate",
-                  candidate_index: selected,
-                  duplicate_action: action,
-                });
-              }}
-            />
           </>
         )}
         <ReviewControlBar
@@ -419,14 +383,38 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
             feedback: search.data?.found === false ? NO_HIT_FEEDBACK : null,
             error: search.isError && !(search.error instanceof BankConflictError),
           }}
+          cluster={
+            showDupActions
+              ? (hintId) => (
+                  <DuplicateActionRow
+                    pending={pendingDup}
+                    busy={busyAll}
+                    describedBy={hintId}
+                    onDecide={(action) => {
+                      setPendingDup(action);
+                      submit({
+                        action: "duplicate",
+                        candidate_index: selected,
+                        duplicate_action: action,
+                      });
+                    }}
+                  />
+                )
+              : undefined
+          }
           checking={!showDupActions && checking}
           hint={
             showDupActions
-              ? undefined
+              ? DUPLICATE_FOOTNOTE_BANK
               : "Decisions queue until the import slot is free. Use as-is keeps your tags; As tracks imports files individually."
           }
           messages={
             <>
+              {hasCollision && (
+                <p className="text-muted-foreground text-sm" role="status">
+                  This album is already in your library.
+                </p>
+              )}
               <DecisionError error={decide.error} />
               <SearchConflict error={search.error} />
               <SearchConflict error={rescan.error} />
@@ -460,24 +448,52 @@ function BankDuplicateScreen({ item }: { item: BankItem }) {
   }
 
   return (
-    <Shell toolbar={<RescanControl rescan={rescan} disabled={decide.isPending} />}>
-    <div className="flex flex-col gap-6">
-      {item.status === "failed" && <FailedBanner error={item.error} />}
-      <DuplicateComparison prompt={prompt} incomingCoverUrl={null} />
-      <BankDecisionFooter
-        busy={decide.isPending || rescan.isPending}
-        onIgnore={() =>
-          decide.mutate({ action: "ignore" }, { onSuccess: () => navigate("/review") })
-        }
-        error={decide.error}
-      />
-      <DuplicateActions
-        pending={pending}
-        busy={decide.isPending || rescan.isPending}
-        onDecide={onDecide}
-        context="bank"
-      />
-    </div>
+    <Shell>
+      <div className="flex flex-col gap-6">
+        {item.status === "failed" && <FailedBanner error={item.error} />}
+        <DuplicateComparison prompt={prompt} incomingCoverUrl={null} />
+        <ReviewControlBar
+          decisions={[
+            {
+              key: "ignore",
+              label: "Ignore",
+              variant: "ghost",
+              onClick: () =>
+                decide.mutate(
+                  { action: "ignore" },
+                  { onSuccess: () => navigate("/review") },
+                ),
+              disabled: decide.isPending || rescan.isPending,
+            },
+          ]}
+          primary={null}
+          rescan={{
+            onClick: () => rescan.mutate(),
+            pending: rescan.isPending,
+            disabled: decide.isPending,
+          }}
+          hint={DUPLICATE_FOOTNOTE_BANK}
+          cluster={(hintId) => (
+            <DuplicateActionRow
+              pending={pending}
+              busy={decide.isPending || rescan.isPending}
+              describedBy={hintId}
+              onDecide={onDecide}
+            />
+          )}
+          messages={
+            <>
+              <DecisionError error={decide.error} />
+              <SearchConflict error={rescan.error} />
+              {rescan.isError && !(rescan.error instanceof BankConflictError) && (
+                <p className="text-destructive text-sm" role="alert">
+                  Couldn’t rescan the folder. Try again.
+                </p>
+              )}
+            </>
+          }
+        />
+      </div>
     </Shell>
   );
 }

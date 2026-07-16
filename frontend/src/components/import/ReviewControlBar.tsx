@@ -33,6 +33,7 @@ export function ReviewControlBar({
   primary,
   rescan,
   search,
+  cluster,
   checking = false,
   hint,
   messages,
@@ -40,24 +41,25 @@ export function ReviewControlBar({
   decisions: BarDecision[];
   primary: BarPrimary | null;
   rescan: { onClick: () => void; pending: boolean; disabled: boolean };
-  search: {
+  search?: {
     onSearch: (s: ImportSearch) => void;
     busy: boolean;
     feedback: string | null;
     error: boolean;
     defaultOpen?: boolean;
   };
+  cluster?: (hintId: string | undefined) => React.ReactNode;
   checking?: boolean;
   hint?: string;
   messages?: React.ReactNode;
 }) {
   const hintId = useId();
   const formId = useId();
-  const [searchOpen, setSearchOpen] = useState(search.defaultOpen ?? false);
+  const [searchOpen, setSearchOpen] = useState(search?.defaultOpen ?? false);
 
   return (
-    <div className="bg-background/80 sticky bottom-0 z-10 -mx-2 flex flex-col gap-1.5 border-t px-2 py-3 shadow-[0_-8px_24px_-16px_rgb(0_0_0/0.35)] backdrop-blur">
-      {searchOpen && (
+    <div className="bg-background/80 sticky bottom-0 z-10 -mx-6 -mb-6 flex flex-col gap-1.5 border-t px-6 py-3 shadow-[0_-8px_24px_-16px_rgb(0_0_0/0.35)] backdrop-blur">
+      {search && searchOpen && (
         <div className="border-border border-b pb-3">
           <ReleaseSearchRow
             formId={formId}
@@ -88,20 +90,22 @@ export function ReviewControlBar({
           </Button>
         ))}
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            aria-expanded={searchOpen}
-            aria-controls={formId}
-            onClick={() => setSearchOpen((o) => !o)}
-          >
-            Different release{" "}
-            <Expand
-              aria-hidden="true"
-              className={searchOpen ? "rotate-180 transition-transform" : "transition-transform"}
-            />
-          </Button>
+          {search && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-expanded={searchOpen}
+              aria-controls={formId}
+              onClick={() => setSearchOpen((o) => !o)}
+            >
+              Different release{" "}
+              <Expand
+                aria-hidden="true"
+                className={searchOpen ? "rotate-180 transition-transform" : "transition-transform"}
+              />
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -119,6 +123,7 @@ export function ReviewControlBar({
               </>
             )}
           </Button>
+          {cluster?.(hint ? hintId : undefined)}
           {primary && (
             <Button disabled={primary.disabled} onClick={primary.onClick}>
               {primary.pending ? (
