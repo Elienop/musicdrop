@@ -70,6 +70,80 @@ export function DuplicateComparison({
 }
 
 /**
+ * The bank-context footnote body for the four duplicate actions. Kept as a
+ * shared constant so Task 2 can render the same text under the control bar.
+ */
+export const DUPLICATE_FOOTNOTE_BANK =
+  "Keep both imports alongside the existing copy · Replace moves the old copy to Trash (reversible) · Merge combines them into your library.";
+
+/**
+ * beets' four duplicate actions as one flat button row — Skip new / Keep both
+ * / Replace old / Merge. Reusable: `DuplicateActions` wraps it in the sticky
+ * footnote shell; Task 2 drops it into the control bar's cluster slot.
+ *
+ * The caller owns the mutation: `onDecide(action)`; `pending` puts the spinner
+ * on the clicked button; `busy` disables the row while a submission is in
+ * flight. `describedBy` is the id of the footnote the buttons point at.
+ */
+export function DuplicateActionRow({
+  pending,
+  busy,
+  onDecide,
+  describedBy,
+}: {
+  pending: DuplicateAction | null;
+  busy: boolean;
+  onDecide: (action: DuplicateAction) => void;
+  describedBy?: string;
+}) {
+  return (
+    <>
+      {/* None of the four is the preferred choice — they sit as one neutral
+          peer row. Replace included: it moves the old copy to the reversible
+          Trash (the footnote says so), so a warning tint would overstate the
+          risk and discourage what is often the normal choice. */}
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={busy}
+        aria-describedby={describedBy}
+        onClick={() => onDecide("skip_new")}
+      >
+        <ActionIcon action="skip_new" pending={pending} icon={Close} /> Skip new
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={busy}
+        aria-describedby={describedBy}
+        onClick={() => onDecide("keep_both")}
+      >
+        <ActionIcon action="keep_both" pending={pending} icon={Duplicates} /> Keep both
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={busy}
+        aria-describedby={describedBy}
+        onClick={() => onDecide("replace")}
+      >
+        <ActionIcon action="replace" pending={pending} icon={ReplaceIcon} /> Replace old
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={busy}
+        aria-describedby={describedBy}
+        onClick={() => onDecide("merge")}
+      >
+        <ActionIcon action="merge" pending={pending} icon={MergeIcon} />
+        Merge
+      </Button>
+    </>
+  );
+}
+
+/**
  * beets' four duplicate actions in the sticky bottom bar — Skip new / Keep
  * both / Replace old / Merge — with the footnote. The caller owns the
  * mutation: `onDecide(action)`; `pending` puts the spinner on the clicked
@@ -95,54 +169,17 @@ export function DuplicateActions({
   return (
     <>
       <div className="bg-background/80 sticky bottom-0 z-10 -mx-2 flex flex-wrap items-center gap-2 border-t px-2 py-3 backdrop-blur">
-        {/* None of the four is the preferred choice — they sit as one neutral
-            peer row. Replace included: it moves the old copy to the reversible
-            Trash (the footnote says so), so a warning tint would overstate the
-            risk and discourage what is often the normal choice. */}
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={busy}
-          aria-describedby="duplicate-footnote"
-          onClick={() => onDecide("skip_new")}
-        >
-          <ActionIcon action="skip_new" pending={pending} icon={Close} /> Skip new
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={busy}
-          aria-describedby="duplicate-footnote"
-          onClick={() => onDecide("keep_both")}
-        >
-          <ActionIcon action="keep_both" pending={pending} icon={Duplicates} /> Keep both
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={busy}
-          aria-describedby="duplicate-footnote"
-          onClick={() => onDecide("replace")}
-        >
-          <ActionIcon action="replace" pending={pending} icon={ReplaceIcon} /> Replace old
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={busy}
-          aria-describedby="duplicate-footnote"
-          onClick={() => onDecide("merge")}
-        >
-          <ActionIcon action="merge" pending={pending} icon={MergeIcon} />
-          Merge
-        </Button>
+        <DuplicateActionRow
+          pending={pending}
+          busy={busy}
+          onDecide={onDecide}
+          describedBy="duplicate-footnote"
+        />
       </div>
       <p id="duplicate-footnote" className="text-muted-foreground text-xs">
-        Keep both imports alongside the existing copy · Replace moves the old
-        copy to Trash (reversible) ·{" "}
         {context === "bank"
-          ? "Merge combines them into your library."
-          : "Merge combines them, then reappears as a normal review."}
+          ? DUPLICATE_FOOTNOTE_BANK
+          : "Keep both imports alongside the existing copy · Replace moves the old copy to Trash (reversible) · Merge combines them, then reappears as a normal review."}
       </p>
     </>
   );
