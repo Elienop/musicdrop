@@ -13,13 +13,13 @@ dependencies = [
     "httpx>=0.28.1",
     "ruamel.yaml>=0.15.93",
     "python-multipart>=0.0.32",
-    "plexapi>=4.15,<5",
+    "plexapi>=4.18.2,<5",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "mypy>=2.2.0",
-    "ruff>=0.15.20",
+    "mypy>=2.3.0",
+    "ruff>=0.15.21",
     "pytest>=9.1.1",
     "respx>=0.23.1",
 ]
