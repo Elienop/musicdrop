@@ -280,7 +280,13 @@ describe("ImportCandidatePage", () => {
     server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(candidate)));
     renderAt();
 
-    expect(await screen.findByText("1 → 19")).toBeInTheDocument();
+    // The number split lives across the two cards now: the file's own position
+    // on the left ("Now"), the release's renumbered position on the right.
+    await screen.findByRole("table", { name: "Current files" });
+    const nowTable = screen.getByRole("table", { name: "Current files" });
+    const afterTable = screen.getByRole("table", { name: "After import" });
+    expect(within(nowTable).getByText("1")).toBeInTheDocument();
+    expect(within(afterTable).getByText("19")).toBeInTheDocument();
   });
 
   test("does not show a number delta when only the title changed", async () => {
