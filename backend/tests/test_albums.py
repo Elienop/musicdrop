@@ -275,7 +275,9 @@ def test_album_detail_returns_album_with_sorted_tracklist(
     # endpoint returns the album fields plus a tracklist sorted by (disc, track).
     directory = Path(os.fsdecode(temp_library.directory))
 
-    def _track_item(*, title: str, track: int, disc: int, length: float, artist: str) -> Item:
+    def _track_item(
+        *, title: str, track: int, disc: int, length: float, artist: str, fmt: str = ""
+    ) -> Item:
         item = _make_item(
             directory,
             album="Discovery",
@@ -288,12 +290,15 @@ def test_album_detail_returns_album_with_sorted_tracklist(
         item.disc = disc
         item.length = length
         item.artist = artist
+        item.format = fmt
         return item
 
     out_of_order = [
         _track_item(title="Aerodynamic", track=2, disc=1, length=212.5, artist="Daft Punk"),
         _track_item(title="Nightvision", track=1, disc=2, length=104.0, artist="Daft Punk feat. X"),
-        _track_item(title="One More Time", track=1, disc=1, length=320.0, artist="Daft Punk"),
+        _track_item(
+            title="One More Time", track=1, disc=1, length=320.0, artist="Daft Punk", fmt="FLAC"
+        ),
         _track_item(title="No Length", track=3, disc=1, length=0.0, artist="Daft Punk"),
     ]
     album = temp_library.add_album(out_of_order)
@@ -324,6 +329,9 @@ def test_album_detail_returns_album_with_sorted_tracklist(
     # length 0 maps to None.
     assert tracks[2]["duration_seconds"] is None
     assert tracks[3]["artist"] == "Daft Punk feat. X"
+    # format comes from the item; empty string maps to None.
+    assert tracks[0]["format"] == "FLAC"
+    assert tracks[1]["format"] is None
 
 
 def test_albums_filtered_by_artist(client: TestClient) -> None:

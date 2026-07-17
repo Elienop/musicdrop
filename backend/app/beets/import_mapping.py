@@ -172,6 +172,7 @@ def _track_changes(match: AlbumMatch) -> list[TrackChange]:
                 title_after=_opt_str(track_info.title),
                 track_before=track_before,
                 track_after=track_after,
+                format=_opt_str(item.format),
             )
         )
     rows.sort(key=lambda r: (r.index is None, r.index or 0))
@@ -188,7 +189,8 @@ def _missing_tracks(match: AlbumMatch) -> list[MissingTrack]:
 def _unmatched_items(match: AlbumMatch) -> list[UnmatchedItem]:
     """Local files with no release track (AlbumMatch.extra_items)."""
     return [
-        UnmatchedItem(title=_opt_str(i.title), track=_opt_int(i.track)) for i in match.extra_items
+        UnmatchedItem(title=_opt_str(i.title), track=_opt_int(i.track), format=_opt_str(i.format))
+        for i in match.extra_items
     ]
 
 

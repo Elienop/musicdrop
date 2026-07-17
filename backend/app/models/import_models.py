@@ -80,6 +80,9 @@ class TrackChange(BaseModel):
     title_after: str | None
     track_before: int | None
     track_after: int | None
+    # Current file's audio format ("FLAC", "MP3", ...). Defaults to None so
+    # rows banked before this field existed still validate on load.
+    format: str | None = None
 
 
 class MissingTrack(BaseModel):
@@ -100,6 +103,7 @@ class UnmatchedItem(BaseModel):
 
     title: str | None
     track: int | None
+    format: str | None = None
 
 
 class CandidateOption(BaseModel):

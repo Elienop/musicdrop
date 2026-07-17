@@ -18,10 +18,18 @@ def test_caa_url_none_for_non_musicbrainz_or_missing_id() -> None:
     assert coverartarchive_front_url(data_source=None, album_id="x") is None
 
 
-def _item(*, album: str, title: str, track: int, length: float, artist: str = "Radiohead") -> Item:
+def _item(
+    *,
+    album: str,
+    title: str,
+    track: int,
+    length: float,
+    artist: str = "Radiohead",
+    fmt: str = "",
+) -> Item:
     # In-memory item, no DB add and no real audio file needed: the mapping and
     # the choose_match seam never touch the filesystem (we never call run()).
-    item = Item(artist=artist, album=album, title=title, track=track, length=length)
+    item = Item(artist=artist, album=album, title=title, track=track, length=length, format=fmt)
     return item
 
 
@@ -90,6 +98,34 @@ def test_map_perfect_match_is_full_confidence_no_changes() -> None:
     assert candidate.unmatched == []
 
 
+def test_map_carries_current_file_format() -> None:
+    items = [_item(album="OK Computer", title="Airbag", track=1, length=234.0, fmt="FLAC")]
+    tracks = [TrackInfo(title="Airbag", track_id="t1", index=1, length=234.0)]
+    info = AlbumInfo(
+        tracks=tracks,
+        album="OK Computer",
+        artist="Radiohead",
+        album_id="a1",
+        data_source="MusicBrainz",
+        data_url="https://musicbrainz.org/release/a1",
+        year=1997,
+        va=False,
+    )
+    pairs, extra_items, extra_tracks = assign_items(items, info.tracks)
+    dist = distance(items, info, pairs)
+    match = AlbumMatch(dist, info, dict(pairs), extra_items, extra_tracks)
+    candidate = map_album_match(match, cur_artist="Radiohead", cur_album="OK Computer", options=[])
+    assert candidate.tracks[0].format == "FLAC"
+
+
+def test_map_missing_format_maps_to_none() -> None:
+    # _perfect_match items never set format; beets defaults it to "".
+    candidate = map_album_match(
+        _perfect_match(), cur_artist="Radiohead", cur_album="OK Computer", options=[]
+    )
+    assert candidate.tracks[0].format is None
+
+
 def test_map_diff_match_reports_album_track_missing_and_distance() -> None:
     candidate = map_album_match(
         _diff_match(), cur_artist="Radiohead", cur_album="OK Computr", options=[]
@@ -147,7 +183,7 @@ def _unmatched_match() -> AlbumMatch:
     items = [
         _item(album="OK Computer", title="Airbag", track=1, length=234.0),
         _item(album="OK Computer", title="Paranoid Android", track=2, length=387.0),
-        _item(album="OK Computer", title="ZZZ BONUS JUNK", track=3, length=99.0),
+        _item(album="OK Computer", title="ZZZ BONUS JUNK", track=3, length=99.0, fmt="MP3"),
     ]
     tracks = [
         TrackInfo(title="Airbag", track_id="t1", index=1, length=234.0),
@@ -254,6 +290,7 @@ def test_map_unmatched_local_file_is_reported() -> None:
     assert len(candidate.unmatched) == 1
     assert candidate.unmatched[0].title == "ZZZ BONUS JUNK"
     assert candidate.unmatched[0].track == 3
+    assert candidate.unmatched[0].format == "MP3"
     # beets flags the surplus local file as an "unmatched tracks" penalty.
     assert "unmatched tracks" in candidate.changed_fields
 

@@ -27,6 +27,7 @@ class Track(BaseModel):
     artist: str
     mb_trackid: str | None
     has_lyrics: bool
+    format: str | None = None
 
 
 class ReleaseIdentity(BaseModel):

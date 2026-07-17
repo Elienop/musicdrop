@@ -389,7 +389,10 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
                     : (t.track_after ?? t.track_before ?? "-")}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  <span className="truncate">{t.title_before ?? "-"}</span>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="truncate">{t.title_before ?? "-"}</span>
+                    {t.format && <span className="shrink-0 text-xs">{t.format}</span>}
+                  </span>
                 </TableCell>
                 <TableCell>
                   <span className="flex min-w-0 items-center gap-2">
@@ -431,6 +434,9 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
               <TableCell>
                 <span className="inline-flex items-center gap-1">
                   <Add className="size-3" aria-hidden="true" /> {u.title ?? "-"}
+                  {u.format && (
+                    <span className="text-muted-foreground shrink-0 text-xs">{u.format}</span>
+                  )}
                 </span>
               </TableCell>
               <TableCell className="text-muted-foreground">not on release</TableCell>

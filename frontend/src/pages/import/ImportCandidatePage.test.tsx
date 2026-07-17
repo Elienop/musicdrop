@@ -47,6 +47,7 @@ function makeCandidate(overrides: Partial<Candidate> = {}): Candidate {
         title_after: "Airbag",
         track_before: 1,
         track_after: 1,
+        format: "FLAC",
       },
       {
         index: 2,
@@ -58,7 +59,7 @@ function makeCandidate(overrides: Partial<Candidate> = {}): Candidate {
       },
     ],
     missing: [{ index: 10, title: "Lull" }],
-    unmatched: [{ title: "bonus.mp3", track: null }],
+    unmatched: [{ title: "bonus.mp3", track: null, format: "MP3" }],
     options: [
       // options[0] is the canonical top — its diff MIRRORS the candidate's top
       // diff (so resolveSelected at selected=0 renders identically).
@@ -88,6 +89,7 @@ function makeCandidate(overrides: Partial<Candidate> = {}): Candidate {
             title_after: "Airbag",
             track_before: 1,
             track_after: 1,
+            format: "FLAC",
           },
           {
             index: 2,
@@ -99,7 +101,7 @@ function makeCandidate(overrides: Partial<Candidate> = {}): Candidate {
           },
         ],
         missing: [{ index: 10, title: "Lull" }],
-        unmatched: [{ title: "bonus.mp3", track: null }],
+        unmatched: [{ title: "bonus.mp3", track: null, format: "MP3" }],
         cover_after_url: "https://coverartarchive.org/release/abc/front-500",
         data_url: "https://musicbrainz.org/release/abc",
       },
@@ -211,6 +213,18 @@ describe("ImportCandidatePage", () => {
     expect(screen.getByText("Paranoid Android")).toBeInTheDocument();
     expect(screen.getByText("Lull")).toBeInTheDocument();
     expect(screen.getByText("bonus.mp3")).toBeInTheDocument();
+  });
+
+  test("shows the current file's format in the Now column and on unmatched rows", async () => {
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
+    renderAt();
+
+    // One FLAC chip from the matched row's before-side; the After column never
+    // renders a format.
+    expect(await screen.findByText("FLAC")).toBeInTheDocument();
+    expect(screen.getAllByText("FLAC")).toHaveLength(1);
+    // The unmatched local file carries its own format chip.
+    expect(screen.getAllByText("MP3").length).toBeGreaterThanOrEqual(1);
   });
 
   test("shows the missing + not-on-release caveat chips", async () => {

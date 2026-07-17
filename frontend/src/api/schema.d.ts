@@ -4016,6 +4016,8 @@ export interface components {
             mb_trackid: string | null;
             /** Has Lyrics */
             has_lyrics: boolean;
+            /** Format */
+            format?: string | null;
         };
         /**
          * TrackChange
@@ -4033,6 +4035,8 @@ export interface components {
             track_before: number | null;
             /** Track After */
             track_after: number | null;
+            /** Format */
+            format?: string | null;
         };
         /**
          * TrackChangeStatus
@@ -4163,6 +4167,8 @@ export interface components {
             title: string | null;
             /** Track */
             track: number | null;
+            /** Format */
+            format?: string | null;
         };
         /**
          * ValidateRequest

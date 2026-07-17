@@ -37,7 +37,13 @@ function makeDetail(overrides: Partial<AlbumDetail> = {}): AlbumDetail {
     genre: "Alternative Rock",
     mb_albumid: null,
     tracks: [
-      makeTrack({ id: 1, title: "Airbag", track: 1, duration_seconds: 284 }),
+      makeTrack({
+        id: 1,
+        title: "Airbag",
+        track: 1,
+        duration_seconds: 284,
+        format: "FLAC",
+      }),
       makeTrack({
         id: 2,
         title: "Paranoid Android",
@@ -123,6 +129,16 @@ describe("AlbumDetailPage", () => {
     expect(await screen.findByText("Airbag")).toBeInTheDocument();
     expect(screen.getByText("Paranoid Android")).toBeInTheDocument();
     expect(screen.getByText("Subterranean Homesick Alien")).toBeInTheDocument();
+  });
+
+  test("shows the track's audio format after the title, only when known", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+
+    renderDetail();
+
+    expect(await screen.findByText("FLAC")).toBeInTheDocument();
+    // Exactly one chip: the format-less tracks render nothing.
+    expect(screen.getAllByText("FLAC")).toHaveLength(1);
   });
 
   test("formats duration_seconds as m:ss", async () => {
