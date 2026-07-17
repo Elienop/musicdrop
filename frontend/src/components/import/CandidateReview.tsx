@@ -365,6 +365,7 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
           <TableRow>
             <TableHead className="w-20 pr-4 text-right">#</TableHead>
             <TableHead>Now</TableHead>
+            <TableHead className="w-16">Format</TableHead>
             <TableHead>After import</TableHead>
           </TableRow>
         </TableHeader>
@@ -389,11 +390,9 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
                     : (t.track_after ?? t.track_before ?? "-")}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className="truncate">{t.title_before ?? "-"}</span>
-                    {t.format && <span className="shrink-0 text-xs">{t.format}</span>}
-                  </span>
+                  <span className="truncate">{t.title_before ?? "-"}</span>
                 </TableCell>
+                <TableCell className="text-muted-foreground">{t.format ?? "-"}</TableCell>
                 <TableCell>
                   <span className="flex min-w-0 items-center gap-2">
                     <span className={cn("truncate", changed && "font-medium")}>
@@ -423,6 +422,9 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
                   <Missing className="size-3" aria-hidden="true" /> missing
                 </span>
               </TableCell>
+              <TableCell aria-hidden="true" className="text-muted-foreground">
+                -
+              </TableCell>
               <TableCell className="text-muted-foreground">{m.title ?? "-"}</TableCell>
             </TableRow>
           ))}
@@ -434,11 +436,9 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
               <TableCell>
                 <span className="inline-flex items-center gap-1">
                   <Add className="size-3" aria-hidden="true" /> {u.title ?? "-"}
-                  {u.format && (
-                    <span className="text-muted-foreground shrink-0 text-xs">{u.format}</span>
-                  )}
                 </span>
               </TableCell>
+              <TableCell className="text-muted-foreground">{u.format ?? "-"}</TableCell>
               <TableCell className="text-muted-foreground">not on release</TableCell>
             </TableRow>
           ))}

@@ -215,16 +215,17 @@ describe("ImportCandidatePage", () => {
     expect(screen.getByText("bonus.mp3")).toBeInTheDocument();
   });
 
-  test("shows the current file's format in the Now column and on unmatched rows", async () => {
+  test("shows the current file's format in the Format column", async () => {
     server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
     renderAt();
 
-    // One FLAC chip from the matched row's before-side; the After column never
-    // renders a format.
+    // One FLAC cell from the matched row's file; nothing else in the table
+    // renders a format value.
     expect(await screen.findByText("FLAC")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Format" })).toBeInTheDocument();
     expect(screen.getAllByText("FLAC")).toHaveLength(1);
-    // The unmatched local file carries its own format chip.
-    expect(screen.getAllByText("MP3").length).toBeGreaterThanOrEqual(1);
+    // The unmatched local file fills its own Format cell.
+    expect(screen.getAllByText("MP3")).toHaveLength(1);
   });
 
   test("shows the missing + not-on-release caveat chips", async () => {

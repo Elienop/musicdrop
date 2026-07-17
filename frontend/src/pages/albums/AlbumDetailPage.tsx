@@ -285,6 +285,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
               <TableRow>
                 <TableHead className="w-12 pr-4 text-right">#</TableHead>
                 <TableHead>Title</TableHead>
+                <TableHead className="w-16">Format</TableHead>
                 <TableHead className="w-20 text-right">Length</TableHead>
                 <TableHead className="w-16 text-center">Lyrics</TableHead>
                 <TableHead className="w-12 text-center">
@@ -301,7 +302,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
                   <TableRow className="hover:bg-transparent">
                     <TableHead
                       scope="rowgroup"
-                      colSpan={5}
+                      colSpan={6}
                       className="text-muted-foreground h-auto pt-6 text-xs font-medium tracking-wide uppercase"
                     >
                       Disc {group.disc}
@@ -347,12 +348,7 @@ function TrackRow({
       </TableCell>
       <TableCell>
         <div className="flex min-w-0 flex-col">
-          <span className="flex min-w-0 items-center gap-2">
-            <span className="truncate">{track.title}</span>
-            {track.format && (
-              <span className="text-muted-foreground shrink-0 text-xs">{track.format}</span>
-            )}
-          </span>
+          <span className="truncate">{track.title}</span>
           {showArtist && (
             <span className="text-muted-foreground truncate text-sm">
               {track.artist}
@@ -360,6 +356,7 @@ function TrackRow({
           )}
         </div>
       </TableCell>
+      <TableCell className="text-muted-foreground">{track.format ?? "-"}</TableCell>
       <TableCell className="text-muted-foreground text-right tabular-nums">
         {formatDuration(track.duration_seconds)}
       </TableCell>
@@ -422,6 +419,9 @@ function MissingTrackRow({ track }: { track: MissingReleaseTrack }) {
             missing
           </Badge>
         </div>
+      </TableCell>
+      <TableCell aria-hidden="true" className="text-muted-foreground">
+        -
       </TableCell>
       <TableCell className="text-muted-foreground text-right tabular-nums">
         {formatDuration(track.duration_seconds)}

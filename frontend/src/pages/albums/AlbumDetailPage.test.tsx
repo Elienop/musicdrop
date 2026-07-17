@@ -131,13 +131,14 @@ describe("AlbumDetailPage", () => {
     expect(screen.getByText("Subterranean Homesick Alien")).toBeInTheDocument();
   });
 
-  test("shows the track's audio format after the title, only when known", async () => {
+  test("shows the track's audio format in its own column, only when known", async () => {
     server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
 
     renderDetail();
 
     expect(await screen.findByText("FLAC")).toBeInTheDocument();
-    // Exactly one chip: the format-less tracks render nothing.
+    expect(screen.getByRole("columnheader", { name: "Format" })).toBeInTheDocument();
+    // Exactly one FLAC cell: the format-less tracks fall back to "-".
     expect(screen.getAllByText("FLAC")).toHaveLength(1);
   });
 
