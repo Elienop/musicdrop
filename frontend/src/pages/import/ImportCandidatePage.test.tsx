@@ -215,16 +215,17 @@ describe("ImportCandidatePage", () => {
     expect(screen.getByText("bonus.mp3")).toBeInTheDocument();
   });
 
-  test("shows the current file's format in the Now column and on unmatched rows", async () => {
+  test("shows the current file's format in the Format column", async () => {
     server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
     renderAt();
 
-    // One FLAC chip from the matched row's before-side; the After column never
-    // renders a format.
+    // One FLAC cell from the matched row's file; nothing else in the table
+    // renders a format value.
     expect(await screen.findByText("FLAC")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Format" })).toBeInTheDocument();
     expect(screen.getAllByText("FLAC")).toHaveLength(1);
-    // The unmatched local file carries its own format chip.
-    expect(screen.getAllByText("MP3").length).toBeGreaterThanOrEqual(1);
+    // The unmatched local file fills its own Format cell.
+    expect(screen.getAllByText("MP3")).toHaveLength(1);
   });
 
   test("shows the missing + not-on-release caveat chips", async () => {
@@ -279,7 +280,13 @@ describe("ImportCandidatePage", () => {
     server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(candidate)));
     renderAt();
 
-    expect(await screen.findByText("1 → 19")).toBeInTheDocument();
+    // The number split lives across the two cards now: the file's own position
+    // on the left ("Now"), the release's renumbered position on the right.
+    await screen.findByRole("table", { name: "Current files" });
+    const nowTable = screen.getByRole("table", { name: "Current files" });
+    const afterTable = screen.getByRole("table", { name: "After import" });
+    expect(within(nowTable).getByText("1")).toBeInTheDocument();
+    expect(within(afterTable).getByText("19")).toBeInTheDocument();
   });
 
   test("does not show a number delta when only the title changed", async () => {

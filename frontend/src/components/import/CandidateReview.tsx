@@ -355,95 +355,159 @@ function WhatChanges({ candidate }: { candidate: Candidate }) {
   );
 }
 
-/** Every track current→proposed; changed rows tagged, missing/unmatched flagged. */
+/** Every track current→proposed as two mirrored panels; changed rows tagged,
+    missing/unmatched flagged. Both panels render one row per entry of the same
+    list, so the cards stay line-aligned. */
 function TrackDiff({ candidate }: { candidate: Candidate }) {
+  type Row =
+    | { kind: "track"; t: Candidate["tracks"][number] }
+    | { kind: "missing"; m: Candidate["missing"][number] }
+    | { kind: "unmatched"; u: Candidate["unmatched"][number] };
+  const rows: Row[] = [
+    ...candidate.tracks.map((t) => ({ kind: "track" as const, t })),
+    ...candidate.missing.map((m) => ({ kind: "missing" as const, m })),
+    ...candidate.unmatched.map((u) => ({ kind: "unmatched" as const, u })),
+  ];
+  const rowKey = (row: Row, i: number) =>
+    row.kind === "track"
+      ? `t-${row.t.index ?? i}`
+      : row.kind === "missing"
+        ? `m-${row.m.index ?? i}`
+        : `u-${i}`;
   return (
     <section aria-label="Track changes" className="flex flex-col gap-3">
       <SectionLabel>Tracklist · {candidate.tracks.length}</SectionLabel>
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead className="w-20 pr-4 text-right">#</TableHead>
-            <TableHead>Now</TableHead>
-            <TableHead>After import</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {candidate.tracks.map((t, i) => {
-            const changed = t.status === "changed";
-            // A multi-disc match renumbers tracks to album-global indices, so a
-            // row can be "changed" with an identical title. Show the position
-            // before→after (not just the final number) so the highlight reads.
-            const numberChanged =
-              t.track_before != null &&
-              t.track_after != null &&
-              t.track_before !== t.track_after;
-            return (
-              <TableRow
-                key={t.index ?? `row-${i}`}
-                className={cn("hover:bg-transparent", changed && "bg-primary/5")}
-              >
-                <TableCell className="text-muted-foreground pr-4 text-right tabular-nums whitespace-nowrap">
-                  {numberChanged
-                    ? `${t.track_before} → ${t.track_after}`
-                    : (t.track_after ?? t.track_before ?? "-")}
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className="truncate">{t.title_before ?? "-"}</span>
-                    {t.format && <span className="shrink-0 text-xs">{t.format}</span>}
-                  </span>
-                </TableCell>
-                <TableCell>
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className={cn("truncate", changed && "font-medium")}>
-                      {t.title_after ?? "-"}
-                    </span>
-                    {changed && (
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="border-border flex flex-col gap-3 rounded-xl border p-4">
+          <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
+            Now (your files)
+          </p>
+          <Table aria-label="Current files">
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-12 pr-4 text-right">#</TableHead>
+                <TableHead>Title</TableHead>
+                <TableHead className="w-16">Format</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row, i) => (
+                <TableRow key={rowKey(row, i)} className="hover:bg-transparent">
+                  {row.kind === "track" ? (
+                    <>
+                      <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+                        {row.t.track_before ?? "-"}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        <span className="block truncate">{row.t.title_before ?? "-"}</span>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {row.t.format ?? "-"}
+                      </TableCell>
+                    </>
+                  ) : row.kind === "missing" ? (
+                    <>
+                      <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+                        -
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        <span className="flex items-center gap-1">
+                          <Missing className="size-3 shrink-0" aria-hidden="true" />
+                          <span className="block truncate">missing</span>
+                        </span>
+                      </TableCell>
+                      <TableCell aria-hidden="true" className="text-muted-foreground">
+                        -
+                      </TableCell>
+                    </>
+                  ) : (
+                    <>
+                      <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+                        {row.u.track ?? "-"}
+                      </TableCell>
+                      <TableCell>
+                        <span className="flex items-center gap-1">
+                          <Add className="size-3 shrink-0" aria-hidden="true" />
+                          <span className="block truncate">{row.u.title ?? "-"}</span>
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {row.u.format ?? "-"}
+                      </TableCell>
+                    </>
+                  )}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+        <div className="border-border flex flex-col gap-3 rounded-xl border p-4">
+          <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
+            After import
+          </p>
+          <Table aria-label="After import">
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-12 pr-4 text-right">#</TableHead>
+                <TableHead>Title</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row, i) => {
+                const changed = row.kind === "track" && row.t.status === "changed";
+                return (
+                  <TableRow
+                    key={rowKey(row, i)}
+                    className={cn("hover:bg-transparent", changed && "bg-primary/5")}
+                  >
+                    {row.kind === "track" ? (
                       <>
-                        <EditIcon
-                          className="text-muted-foreground size-3 shrink-0"
-                          aria-hidden="true"
-                        />
-                        <span className="sr-only">changed</span>
+                        <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+                          {row.t.track_after ?? "-"}
+                        </TableCell>
+                        <TableCell>
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span className={cn("block truncate", changed && "font-medium")}>
+                              {row.t.title_after ?? "-"}
+                            </span>
+                            {changed && (
+                              <>
+                                <EditIcon
+                                  className="text-muted-foreground size-3 shrink-0"
+                                  aria-hidden="true"
+                                />
+                                <span className="sr-only">changed</span>
+                              </>
+                            )}
+                          </span>
+                        </TableCell>
+                      </>
+                    ) : row.kind === "missing" ? (
+                      <>
+                        <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+                          {row.m.index ?? "-"}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          <span className="block truncate">{row.m.title ?? "-"}</span>
+                        </TableCell>
+                      </>
+                    ) : (
+                      <>
+                        <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+                          -
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          <span className="block truncate">not on release</span>
+                        </TableCell>
                       </>
                     )}
-                  </span>
-                </TableCell>
-              </TableRow>
-            );
-          })}
-          {candidate.missing.map((m, i) => (
-            <TableRow key={`missing-${m.index ?? i}`} className="hover:bg-transparent">
-              <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
-                {m.index ?? "-"}
-              </TableCell>
-              <TableCell className="text-muted-foreground">
-                <span className="inline-flex items-center gap-1">
-                  <Missing className="size-3" aria-hidden="true" /> missing
-                </span>
-              </TableCell>
-              <TableCell className="text-muted-foreground">{m.title ?? "-"}</TableCell>
-            </TableRow>
-          ))}
-          {candidate.unmatched.map((u, i) => (
-            <TableRow key={`unmatched-${i}`} className="hover:bg-transparent">
-              <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
-                -
-              </TableCell>
-              <TableCell>
-                <span className="inline-flex items-center gap-1">
-                  <Add className="size-3" aria-hidden="true" /> {u.title ?? "-"}
-                  {u.format && (
-                    <span className="text-muted-foreground shrink-0 text-xs">{u.format}</span>
-                  )}
-                </span>
-              </TableCell>
-              <TableCell className="text-muted-foreground">not on release</TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+      </div>
     </section>
   );
 }
