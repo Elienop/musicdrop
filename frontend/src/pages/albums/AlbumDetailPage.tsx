@@ -347,7 +347,12 @@ function TrackRow({
       </TableCell>
       <TableCell>
         <div className="flex min-w-0 flex-col">
-          <span className="truncate">{track.title}</span>
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="truncate">{track.title}</span>
+            {track.format && (
+              <span className="text-muted-foreground shrink-0 text-xs">{track.format}</span>
+            )}
+          </span>
           {showArtist && (
             <span className="text-muted-foreground truncate text-sm">
               {track.artist}
