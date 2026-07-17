@@ -360,13 +360,16 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
   return (
     <section aria-label="Track changes" className="flex flex-col gap-3">
       <SectionLabel>Tracklist · {candidate.tracks.length}</SectionLabel>
-      <Table>
+      {/* Fixed layout: the After column is pinned to the container's right
+          half, so its edge lines up with the "After import" card above instead
+          of drifting with the tracklist's content widths. */}
+      <Table className="table-fixed">
         <TableHeader>
           <TableRow>
             <TableHead className="w-20 pr-4 text-right">#</TableHead>
             <TableHead>Now</TableHead>
             <TableHead className="w-16">Format</TableHead>
-            <TableHead>After import</TableHead>
+            <TableHead className="w-1/2">After import</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -390,7 +393,9 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
                     : (t.track_after ?? t.track_before ?? "-")}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  <span className="truncate">{t.title_before ?? "-"}</span>
+                  {/* block: truncate needs a block box to ellipsize inside the
+                      fixed-width column. */}
+                  <span className="block truncate">{t.title_before ?? "-"}</span>
                 </TableCell>
                 <TableCell className="text-muted-foreground">{t.format ?? "-"}</TableCell>
                 <TableCell>
@@ -412,37 +417,66 @@ function TrackDiff({ candidate }: { candidate: Candidate }) {
               </TableRow>
             );
           })}
-          {candidate.missing.map((m, i) => (
-            <TableRow key={`missing-${m.index ?? i}`} className="hover:bg-transparent">
-              <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
-                {m.index ?? "-"}
-              </TableCell>
-              <TableCell className="text-muted-foreground">
-                <span className="inline-flex items-center gap-1">
-                  <Missing className="size-3" aria-hidden="true" /> missing
-                </span>
-              </TableCell>
-              <TableCell aria-hidden="true" className="text-muted-foreground">
-                -
-              </TableCell>
-              <TableCell className="text-muted-foreground">{m.title ?? "-"}</TableCell>
-            </TableRow>
-          ))}
-          {candidate.unmatched.map((u, i) => (
-            <TableRow key={`unmatched-${i}`} className="hover:bg-transparent">
-              <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
-                -
-              </TableCell>
-              <TableCell>
-                <span className="inline-flex items-center gap-1">
-                  <Add className="size-3" aria-hidden="true" /> {u.title ?? "-"}
-                </span>
-              </TableCell>
-              <TableCell className="text-muted-foreground">{u.format ?? "-"}</TableCell>
-              <TableCell className="text-muted-foreground">not on release</TableCell>
-            </TableRow>
-          ))}
         </TableBody>
+        {/* Missing/unmatched ride their own row groups with a labelled header
+            (the album page's disc-header idiom), so the caveat rows read as
+            separate sections instead of a continuation of the tracklist. */}
+        {candidate.missing.length > 0 && (
+          <TableBody>
+            <TableRow className="hover:bg-transparent">
+              <TableHead
+                scope="rowgroup"
+                colSpan={4}
+                className="text-muted-foreground h-auto pt-6 text-xs font-medium tracking-wide uppercase"
+              >
+                Missing from your folder · {candidate.missing.length}
+              </TableHead>
+            </TableRow>
+            {candidate.missing.map((m, i) => (
+              <TableRow key={`missing-${m.index ?? i}`} className="hover:bg-transparent">
+                <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+                  {m.index ?? "-"}
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  <span className="inline-flex items-center gap-1">
+                    <Missing className="size-3" aria-hidden="true" /> missing
+                  </span>
+                </TableCell>
+                <TableCell aria-hidden="true" className="text-muted-foreground">
+                  -
+                </TableCell>
+                <TableCell className="text-muted-foreground">{m.title ?? "-"}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        )}
+        {candidate.unmatched.length > 0 && (
+          <TableBody>
+            <TableRow className="hover:bg-transparent">
+              <TableHead
+                scope="rowgroup"
+                colSpan={4}
+                className="text-muted-foreground h-auto pt-6 text-xs font-medium tracking-wide uppercase"
+              >
+                Not on this release · {candidate.unmatched.length}
+              </TableHead>
+            </TableRow>
+            {candidate.unmatched.map((u, i) => (
+              <TableRow key={`unmatched-${i}`} className="hover:bg-transparent">
+                <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+                  -
+                </TableCell>
+                <TableCell>
+                  <span className="inline-flex items-center gap-1">
+                    <Add className="size-3" aria-hidden="true" /> {u.title ?? "-"}
+                  </span>
+                </TableCell>
+                <TableCell className="text-muted-foreground">{u.format ?? "-"}</TableCell>
+                <TableCell className="text-muted-foreground">not on release</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        )}
       </Table>
     </section>
   );
