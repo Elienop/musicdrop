@@ -10156,6 +10156,17 @@
           "has_lyrics": {
             "type": "boolean",
             "title": "Has Lyrics"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format"
           }
         },
         "type": "object",
@@ -10230,6 +10241,17 @@
               }
             ],
             "title": "Track After"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format"
           }
         },
         "type": "object",
@@ -10549,6 +10571,17 @@
               }
             ],
             "title": "Track"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format"
           }
         },
         "type": "object",

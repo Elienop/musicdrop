@@ -6,7 +6,12 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.bank import BankDecision, BankItem
-from app.models.import_models import DuplicateAction, DuplicatesCheckResponse
+from app.models.import_models import (
+    DuplicateAction,
+    DuplicatesCheckResponse,
+    TrackChange,
+    UnmatchedItem,
+)
 
 BANKED_AT = datetime(2026, 6, 12, tzinfo=UTC)
 
@@ -134,6 +139,24 @@ def test_bank_item_rejects_incoherent_rows() -> None:
             status="queued",
             banked_at=BANKED_AT,
         )
+
+
+def test_review_track_rows_parse_legacy_json_without_format() -> None:
+    # Banked rows persist candidate payloads as JSON (app/bank/store.py); rows
+    # banked before the format field existed must still validate.
+    row = TrackChange.model_validate(
+        {
+            "index": 1,
+            "status": "unchanged",
+            "title_before": "Airbag",
+            "title_after": "Airbag",
+            "track_before": 1,
+            "track_after": 1,
+        }
+    )
+    assert row.format is None
+    extra = UnmatchedItem.model_validate({"title": "bonus", "track": None})
+    assert extra.format is None
 
 
 def test_bank_item_decided_row_validates() -> None:
