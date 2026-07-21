@@ -416,6 +416,18 @@ class WebImportSession(ImportSession):
         run() — never beets' destructive REMOVE).
         """
         self._check_pause()
+        if not task.is_album:
+            # A singleton "as tracks" import whose track duplicates a library item.
+            # beets 2.12 shares this hook for singletons, but passes Items — not
+            # Albums (SingletonImportTask.find_duplicates, tasks.py) — and the
+            # prompt / replace machinery below is album-shaped. SKIP the duplicate
+            # track (keeps the library copy): the safe, non-destructive resolution,
+            # matching beets' own singleton default. Never feed Items to
+            # to_existing_album (it does items[0].path on a Model.items() field
+            # tuple → crashes the whole import job) nor record their ids into
+            # _replace_album_ids (the post-run Trash pass would delete the album
+            # that happens to share that id).
+            return BeetsDuplicateAction.SKIP
         index = getattr(task, "md_album_index", None)
         if index is None:
             # Defensive: this hook should always follow choose_match.

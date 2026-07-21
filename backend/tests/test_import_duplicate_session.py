@@ -21,8 +21,9 @@ from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
 from beets.autotag.distance import distance
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
+from beets.importer.actions import Action
 from beets.importer.actions import DuplicateAction as BeetsDuplicateAction
-from beets.importer.tasks import ImportTask
+from beets.importer.tasks import ImportTask, SingletonImportTask
 from beets.library import Item
 
 from app.beets.import_session import (
@@ -30,6 +31,7 @@ from app.beets.import_session import (
     WebImportSession,
     _trash_replaced_albums,
 )
+from app.models.bank import BankApplyDirective
 from app.models.import_models import (
     AlbumOutcomeStatus,
     DuplicateAction,
@@ -274,6 +276,52 @@ def test_replace_records_ids_and_keeps(monkeypatch: pytest.MonkeyPatch) -> None:
     # then recorded for the post-run reversible Trash by id.
     assert result["action"] is BeetsDuplicateAction.KEEP
     assert session._replace_album_ids == {11, 22}
+
+
+def test_singleton_astracks_duplicate_skips_without_crashing() -> None:
+    """An "as tracks" import re-pipelines each file as a SingletonImportTask
+    (``is_album`` False). When such a track duplicates a library item, beets 2.12
+    calls ``get_duplicate_action`` with Items (not Albums), so the album-shaped
+    prompt / replace machinery must not run: it used to crash the WHOLE import job
+    here (``to_existing_album`` does ``items[0].path`` on a ``Model.items()`` field
+    tuple). The safe resolution is SKIP — keep the library track, drop the dup."""
+    bridge = ImportBridge()
+    session = _session(bridge)
+    item = Item(artist="Radiohead", title="15 Step", path=b"/incoming/15 Step.flac")
+    task = SingletonImportTask(toppath=None, item=item)
+    task.set_choice(Action.ASIS)  # as-tracks imports each singleton ASIS
+    dup = Item(artist="Radiohead", title="15 Step", path=b"/library/15 Step.flac")
+    dup.id = 501  # a real library Item carries an id (find_duplicates returns rows)
+
+    action = session.get_duplicate_action(task, [dup])
+
+    assert action is BeetsDuplicateAction.SKIP  # keep the library track, drop the dup
+    assert bridge.pending_count() == 0  # never parked (no album-shaped prompt)
+    assert bridge.drain_outcomes() == []  # no album feed row flipped for a singleton
+    assert session._replace_album_ids == set()  # no Item ids recorded as albums to trash
+
+
+def test_singleton_astracks_duplicate_ignores_replace_directive() -> None:
+    """A banked astracks apply carries an album-level ``duplicate_action``; it must
+    NEVER be applied to an individual singleton duplicate. Doing so recorded the
+    Item ids into ``_replace_album_ids`` and the post-run Trash pass would then
+    delete the album that happens to share that id — a wrong-album data loss.
+    Singletons SKIP regardless of the directive."""
+    bridge = ImportBridge()
+    session = _session(bridge)
+    session._directive = BankApplyDirective(
+        action="astracks", duplicate_action=DuplicateAction.replace
+    )
+    item = Item(artist="Radiohead", title="15 Step", path=b"/incoming/15 Step.flac")
+    task = SingletonImportTask(toppath=None, item=item)
+    task.set_choice(Action.ASIS)
+    dup = Item(artist="Radiohead", title="15 Step", path=b"/library/15 Step.flac")
+    dup.id = 501  # the album with id 501 must NOT be trashed by an item-id collision
+
+    action = session.get_duplicate_action(task, [dup])
+
+    assert action is BeetsDuplicateAction.SKIP
+    assert session._replace_album_ids == set()  # NOT {501} — no wrong-album trash
 
 
 def test_trash_replaced_albums_runs_from_a_worker_thread(
