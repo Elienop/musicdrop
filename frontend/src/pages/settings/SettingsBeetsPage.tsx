@@ -29,6 +29,7 @@ import { SettingsConflict } from "@/pages/settings/SettingsConflict";
 import {
   READ_ONLY_EXTENSION,
   buildExtensions,
+  buildReadOnlyExtensions,
   shadcnTheme,
 } from "@/pages/settings/codemirror-config";
 
@@ -158,6 +159,15 @@ export function SettingsBeetsPage() {
         theme: shadcnTheme,
       }),
     [data?.yaml_text],
+  );
+
+  // Extensions for the read-only "Effective config" pane. Content-independent
+  // (the doc rides in via the `value` prop, which @uiw keeps synced on
+  // refetch), so this memo has no deps — the array identity stays stable and
+  // the pane never needlessly rebuilds.
+  const effectiveExtensions = useMemo(
+    () => buildReadOnlyExtensions(shadcnTheme),
+    [],
   );
 
   if (isPending) return <Loader />;
@@ -424,6 +434,28 @@ export function SettingsBeetsPage() {
           />
         )}
       </section>
+
+      <section className="flex flex-col gap-4" aria-label="Effective config">
+        <header className="flex flex-col gap-1">
+          <SectionLabel>Effective config</SectionLabel>
+          <p className="text-muted-foreground text-sm">
+            The fully-merged config (beets + plugin defaults), with secrets
+            redacted. Read-only &mdash; computed from your config, never saved.
+          </p>
+        </header>
+
+        <CodeMirror
+          value={data?.effective_yaml ?? ""}
+          height="500px"
+          // `theme="none"` opts out of @uiw/react-codemirror's default theme so
+          // the shadcnTheme (folded into effectiveExtensions) owns the colors.
+          theme="none"
+          editable={false}
+          readOnly
+          extensions={effectiveExtensions}
+        />
+      </section>
+
       <ReorganizeLibraryPanel />
       <DiskSyncPanel />
     </div>

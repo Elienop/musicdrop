@@ -122,6 +122,22 @@ export const READ_ONLY_EXTENSION = [
 ];
 
 /**
+ * Minimal read-only CM6 extension set for the "Effective config" pane.
+ *
+ * Unlike {@link buildExtensions} this omits the linter, the Mod-s Save keymap,
+ * and dirty tracking — the effective config is computed server-side and never
+ * editable, so the pane only needs syntax highlighting + the read-only triplet.
+ * No Compartments either: read-only never toggles here, so there's nothing to
+ * reconfigure. The doc is fed through @uiw/react-codemirror's `value` prop
+ * (which stays in sync on refetch), so this factory takes no `initialDoc`.
+ */
+export function buildReadOnlyExtensions(
+  theme: ReturnType<typeof EditorView.theme>,
+) {
+  return [basicSetup, yaml(), shadcnHighlight, READ_ONLY_EXTENSION, theme];
+}
+
+/**
  * Canonical CM6 extension factory for the SettingsPage editor.
  *
  * Compartments are created PER CALL (not module-level): module-level

@@ -5543,6 +5543,10 @@
             "type": "string",
             "title": "Yaml Text"
           },
+          "effective_yaml": {
+            "type": "string",
+            "title": "Effective Yaml"
+          },
           "config_path": {
             "type": "string",
             "title": "Config Path"
@@ -5576,6 +5580,7 @@
         "type": "object",
         "required": [
           "yaml_text",
+          "effective_yaml",
           "config_path",
           "loaded_at",
           "file_modified_at",

@@ -14,7 +14,16 @@ class BeetsConfigSnapshot(BaseModel):
     """Read-only snapshot of beets' effective config + file freshness."""
 
     yaml_text: str
-    """Rendered post-merge effective config as YAML, with secrets redacted."""
+    """The RAW on-disk ``config.yaml`` text — the editable document. Comments,
+    anchors, key order and quoting are preserved verbatim (secrets are NOT
+    masked here: this is the user's own file, and ``POST /config/save`` writes it
+    back as-is). Empty string if the file is missing."""
+
+    effective_yaml: str
+    """The fully-merged EFFECTIVE config (beets + every loaded plugin's defaults)
+    rendered as YAML with secrets redacted — a READ-ONLY view for the editor's
+    'effective config' panel. Never written back; ``yaml_text`` is the source of
+    truth for saves."""
 
     config_path: str
     """Absolute path to the user-owned ``<BEETSDIR>/config.yaml``."""

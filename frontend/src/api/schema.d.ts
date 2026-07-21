@@ -2159,6 +2159,8 @@ export interface components {
         BeetsConfigSnapshot: {
             /** Yaml Text */
             yaml_text: string;
+            /** Effective Yaml */
+            effective_yaml: string;
             /** Config Path */
             config_path: string;
             /**
