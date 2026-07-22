@@ -59,3 +59,15 @@ def test_no_art_when_both_none(edit_lib: Library) -> None:
 def test_no_folder_for_unknown_artist(edit_lib: Library) -> None:
     out = write_artist_art(edit_lib, "No Such Artist 99", poster=PNG, background=None, force=True)
     assert out.status == "no_folder"
+
+
+def test_has_background_true_only_when_every_folder_has_it(edit_lib: Library) -> None:
+    from app.beets.artist_art import has_background
+
+    name = _artist_of(edit_lib)
+    assert has_background(edit_lib, name) is False  # nothing written yet
+    write_artist_art(edit_lib, name, poster=None, background=JPG, force=True)
+    assert has_background(edit_lib, name) is True  # every folder now has one
+    dirs = get_artist_dirs(edit_lib, name)
+    next(iter(dirs[0].glob("artist-background.*"))).unlink()  # drop it from one folder
+    assert has_background(edit_lib, name) is False  # fetch is needed again

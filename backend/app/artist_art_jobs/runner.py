@@ -23,7 +23,7 @@ from app.artwork.factory import build_fanart_background_source, build_source_cha
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
 from app.artwork.source import TransientSourceError
-from app.beets.artist_art import write_artist_art
+from app.beets.artist_art import has_background, write_artist_art
 from app.beets.library import get_artist_mbid, list_artists
 from app.config import Settings
 from app.models.artist_art import ArtistArtOutcome
@@ -35,7 +35,14 @@ async def _default_fetch_one(
     mbid = await asyncio.to_thread(get_artist_mbid, lib, name)
     poster = await service.get_artist_image(name, get_mbid=lambda: mbid)
     background: tuple[bytes, str] | None = None
-    if bg_source is not None and mbid:
+    needs_bg = bg_source is not None and bool(mbid)
+    # Skip the fanart.tv API call + full image download when a non-force run would
+    # write nothing anyway (every artist folder already has artist-background.*).
+    # resolve_background is uncached, so without this the library-wide sweep
+    # re-downloaded every artist's background — gigabytes — just to discard it.
+    if needs_bg and not force and await asyncio.to_thread(has_background, lib, name):
+        needs_bg = False
+    if needs_bg:
         try:
             bg = await bg_source.resolve_background(mbid)
         except TransientSourceError:

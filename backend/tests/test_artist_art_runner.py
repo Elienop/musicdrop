@@ -1,7 +1,9 @@
 # tests/test_artist_art_runner.py
 from pathlib import Path
+from typing import Any
 
 import pytest
+from beets.library import Library
 
 from app.artist_art_jobs.registry import ArtistArtBackfillRegistry
 from app.artist_art_jobs.runner import sweep_async
@@ -11,6 +13,44 @@ from app.models.artist_art import ArtistArtOutcome
 
 class _Lib:
     directory = b"/music"
+
+
+@pytest.mark.anyio
+async def test_default_fetch_one_skips_background_fetch_when_present(
+    edit_lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-force sweep must NOT hit fanart.tv when every artist folder already has
+    an artist-background.* — resolve_background is an uncached API call + full image
+    download that write_artist_art would then discard (skip-existing)."""
+    import app.artist_art_jobs.runner as runner
+    from app.beets.artist_art import write_artist_art
+
+    name = str(next(iter(edit_lib.albums())).albumartist)
+    write_artist_art(
+        edit_lib, name, poster=None, background=(b"\xff\xd8\xff\x00", "image/jpeg"), force=True
+    )
+    monkeypatch.setattr(runner, "get_artist_mbid", lambda lib, n: "mbid-123")  # reach the bg branch
+
+    calls = {"bg": 0}
+
+    class _Service:
+        async def get_artist_image(self, n: str, *, get_mbid: Any) -> None:
+            get_mbid()
+            return None
+
+    class _BgSource:
+        async def resolve_background(self, mbid: str) -> None:
+            calls["bg"] += 1
+            return None
+
+    service: Any = _Service()  # duck-typed stub for ArtistImageService
+    bg_source: Any = _BgSource()
+    await runner._default_fetch_one(service, bg_source, edit_lib, name, force=False)
+    assert calls["bg"] == 0  # skipped the fanart download (background already on disk)
+
+    calls["bg"] = 0
+    await runner._default_fetch_one(service, bg_source, edit_lib, name, force=True)
+    assert calls["bg"] == 1  # force re-fetches
 
 
 @pytest.mark.anyio
