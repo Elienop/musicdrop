@@ -297,17 +297,29 @@ class ImportJobRegistry:
         )
 
     @staticmethod
-    def _is_imported(row: _FeedAlbum, *, astracks_directive: bool = False) -> bool:
+    def _is_imported(
+        row: _FeedAlbum, *, astracks_directive: bool = False, terminal: bool = True
+    ) -> bool:
         """Imported: auto-applied, a parked album resolved apply-like, or a
         duplicate resolved keep_both/replace/merge — AND it actually landed (a
         library album id is attached), except astracks/merge which carry no id
-        of their own (see _did_not_land)."""
+        of their own (see _did_not_land).
+
+        ``terminal`` mirrors state()'s not_landed guard: the did-not-land veto is
+        only truthful once every follow-up id has flushed (at run() end). Mid-run
+        (``terminal=False``) an apply-like row not yet carrying its id is the
+        NORMAL move-stage state, so count it optimistically as applied and skip
+        the premature veto — otherwise the applied bucket transiently reads 0.
+        The default (``terminal=True``) preserves _summarize's post-finish
+        behavior, where asserting did-not-land is correct."""
         if row.duplicate_action is not None:
             decided = row.duplicate_action in _DUP_IMPORTED_ACTIONS
         else:
             decided = row.status is ImportAlbumStatus.applied or (
                 row.status is ImportAlbumStatus.decided and row.decided_action in _APPLY_ACTIONS
             )
+        if not terminal:
+            return decided
         return decided and not ImportJobRegistry._did_not_land(
             row, astracks_directive=astracks_directive
         )
@@ -595,17 +607,21 @@ class ImportJobRegistry:
         job = self._require(job_id)
         with self._lock:
             astracks = job.directive_astracks
+            # Only assert "did not land" on a terminal job — mid-run a landed
+            # row's follow-up id can still be one drain behind. The applied count
+            # shares the same guard so a just-applied idless row still counts
+            # (see _is_imported's terminal param).
+            terminal = job.phase in (ImportPhase.done, ImportPhase.failed)
             applied = sum(
-                1 for a in job.albums.values() if self._is_imported(a, astracks_directive=astracks)
+                1
+                for a in job.albums.values()
+                if self._is_imported(a, astracks_directive=astracks, terminal=terminal)
             )
             needs_review = sum(
                 1 for a in job.albums.values() if a.status is ImportAlbumStatus.needs_review
             )
             skipped = sum(1 for a in job.albums.values() if self._is_skipped(a))
             set_aside = sum(1 for a in job.albums.values() if a.status in _SET_ASIDE_STATUSES)
-            # Only assert "did not land" on a terminal job — mid-run a landed
-            # row's follow-up id can still be one drain behind.
-            terminal = job.phase in (ImportPhase.done, ImportPhase.failed)
             not_landed = (
                 sum(
                     1
