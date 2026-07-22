@@ -61,6 +61,24 @@ def list_trashed_albums(trash_dir: Path) -> list[TrashedAlbum]:
                 format=_coerce_optional_str(getattr(first, "format", None)),
             )
         )
+    # Audio-free trashed folders (art/sidecar husks the orphan sweep relocates here)
+    # carry no Item rows, so the tag-grouping above never lists them. Surface each
+    # top-level trash dir that produced no audio group as a zero-track entry —
+    # otherwise it is invisible in the Trash UI, has no per-entry Restore/Empty
+    # affordance, and Empty-all deletes it silently (the page under-reporting what
+    # it destroys). Dirs only; hidden/system names skipped.
+    for entry in sorted(trash_dir.iterdir()):
+        if entry.is_dir() and not entry.name.startswith(".") and entry.name not in groups:
+            albums.append(
+                TrashedAlbum(
+                    folder=entry.name,
+                    album_artist=None,
+                    album=None,
+                    year=None,
+                    track_count=0,
+                    format=None,
+                )
+            )
     albums.sort(key=lambda a: ((a.album_artist or "").lower(), (a.album or "").lower()))
     return albums
 
