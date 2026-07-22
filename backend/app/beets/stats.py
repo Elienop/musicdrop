@@ -9,50 +9,61 @@ filesystem walk.
 
 from __future__ import annotations
 
+import heapq
 from typing import Any
 
-from app.beets.library import _coerce_str, _to_album
+from app.beets.library import _to_album
 from app.models.album import Album
 from app.models.stats import LibraryStats, LibraryStatsResponse
 
 
 def compute_stats(lib: Any) -> LibraryStats:
-    """Counts + total duration + estimated total size, in two DB passes."""
-    track_count = 0
-    total_seconds = 0.0
-    total_bytes = 0
-    for item in lib.items():
-        length = float(item.length or 0.0)
-        bitrate = int(item.bitrate or 0)
-        track_count += 1
-        total_seconds += length
-        total_bytes += int(bitrate * length / 8)
+    """Counts + total duration + estimated total size.
 
-    album_count = 0
-    # Match ``list_artists`` exactly (it skips blank/whitespace album artists),
-    # so ``artist_count`` equals the number of rows the roster shows below.
-    artists: set[str] = set()
-    for album in lib.albums():
-        album_count += 1
-        name = _coerce_str(album.albumartist)
-        if not name.strip():
-            continue
-        artists.add(name)
+    Item-level sums come from ONE SQL aggregate (no per-track beets Model build —
+    the whole item table used to be materialized on every Home load). Album/artist
+    counts come from the shared ``BrowseRow`` cache, so ``artist_count`` matches
+    :func:`list_artists` exactly (same rows, same blank-albumartist skip).
+    ``CAST(... AS INTEGER)`` truncates per row, mirroring the old
+    ``int(bitrate * length / 8)`` per-track math; NULL length/bitrate rows drop out
+    of ``SUM`` exactly as the old code contributed 0 for them.
+    """
+    from app.beets.browse import _rows
+
+    with lib.transaction() as tx:
+        row = tx.query(
+            "SELECT COUNT(*), COALESCE(SUM(length), 0), "
+            "COALESCE(SUM(CAST(bitrate * length / 8 AS INTEGER)), 0) FROM items"
+        )[0]
+
+    rows = _rows(lib)
+    artists = {r.albumartist for r in rows if r.albumartist.strip()}
 
     return LibraryStats(
-        track_count=track_count,
-        album_count=album_count,
+        track_count=int(row[0]),
+        album_count=len(rows),
         artist_count=len(artists),
-        total_seconds=total_seconds,
-        total_bytes=total_bytes,
+        total_seconds=float(row[1]),
+        total_bytes=int(row[2]),
     )
 
 
 def recent_albums(lib: Any, *, limit: int = 8) -> list[Album]:
-    """The newest albums by ``added`` (desc), mapped to the wire ``Album``."""
-    albums = list(lib.albums())
-    albums.sort(key=lambda a: a.added or 0.0, reverse=True)
-    return [_to_album(a) for a in albums[:limit]]
+    """The newest albums by ``added`` (desc), mapped to the wire ``Album``.
+
+    Picks the top-``limit`` album ids from the shared ``BrowseRow`` cache (by
+    ``added``) via ``heapq.nlargest`` and loads ONLY those from beets — the old
+    path materialized every album just to keep 8.
+    """
+    from app.beets.browse import _rows
+
+    winners = heapq.nlargest(limit, _rows(lib), key=lambda r: r.added)
+    albums: list[Album] = []
+    for r in winners:
+        album = lib.get_album(r.album_id)
+        if album is not None:
+            albums.append(_to_album(album))
+    return albums
 
 
 def build_stats_response(lib: Any, *, recent_limit: int = 8) -> LibraryStatsResponse:
