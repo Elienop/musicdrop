@@ -195,17 +195,29 @@ def sync_playlist_to_targets(
         return lambda: _reconcile_for(admin.switchUser(uid), uid)
 
     results: dict[str, PlexTargetState] = {}
-    results["admin"] = _safe_reconcile(lambda: _reconcile_for(admin, "admin"))
+    results["admin"] = _safe_reconcile(
+        lambda: _reconcile_for(admin, "admin"), rating_keys.get("admin")
+    )
     for uid in target_user_ids:
-        results[uid] = _safe_reconcile(_run_for(uid))
+        results[uid] = _safe_reconcile(_run_for(uid), rating_keys.get(uid))
     return results
 
 
-def _safe_reconcile(run: Callable[[], PlexTargetState]) -> PlexTargetState:
+def _safe_reconcile(
+    run: Callable[[], PlexTargetState], prior_rating_key: str | None = None
+) -> PlexTargetState:
     try:
         return run()
     except Exception:
-        return PlexTargetState(status="failed", error="Couldn't sync to this Plex account.")
+        # Carry the prior ratingKey into the failed state: the caller replaces the
+        # WHOLE state map with what we return, so recording None here would ERASE a
+        # known key and orphan the still-existing Plex copy (a later delete/de-target
+        # short-circuits on a None key). Preserving it leaves a retry/delete path.
+        return PlexTargetState(
+            rating_key=prior_rating_key,
+            status="failed",
+            error="Couldn't sync to this Plex account.",
+        )
 
 
 def delete_playlist_on_targets(
@@ -219,9 +231,10 @@ def delete_playlist_on_targets(
     title) keeps it precise — it can never remove a same-titled playlist that
     belongs to a different MusicDrop playlist or was made by hand in Plex, and it
     survives renames. If the recorded ratingKey no longer resolves (a Plex DB
-    rebuild reassigns ratingKeys), we fall back to the ``playlist_id`` summary
-    marker so a stale key doesn't orphan the copy. A ``None`` ratingKey means
-    nothing was ever synced there (-> "absent"). Each target is ISOLATED — one
+    rebuild reassigns ratingKeys), OR is ``None`` (never recorded, or erased by a
+    transient sync failure), we fall back to the ``playlist_id`` summary marker so
+    a missing key doesn't orphan an existing copy; only a marker miss is "absent".
+    Each target is ISOLATED — one
     failure never aborts the others. Returns
     ``{target: "deleted" | "absent" | "failed"}``. Raises only
     ``PlexNotConfigured`` (no URL/token); a connect failure raises
@@ -239,14 +252,14 @@ def delete_playlist_on_targets(
 
 
 def _safe_delete(admin: Any, target: str, rating_key: str | None, *, playlist_id: str) -> str:
-    if rating_key is None:  # never synced to this account — nothing to remove
-        return "absent"
     try:
         server = admin if target == "admin" else admin.switchUser(target)
-        existing = _find_by_rating_key(server, rating_key)
+        existing = _find_by_rating_key(server, rating_key) if rating_key is not None else None
         if existing is None:
-            # The recorded ratingKey went stale (e.g. a Plex DB rebuild). Re-find
-            # our copy by the id marker so we delete it instead of orphaning it.
+            # No usable ratingKey — either it went stale (a Plex DB rebuild), or it
+            # was erased by a transient reconcile failure before it could be carried
+            # forward. Re-find our copy by the id marker so we still delete it rather
+            # than short-circuiting to "absent" and orphaning it on Plex forever.
             existing = _find_by_summary_marker(server, playlist_id)
         if existing is None:
             return "absent"
