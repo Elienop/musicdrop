@@ -455,3 +455,42 @@ def get_album_cover(lib: Library, album_id: int) -> tuple[bytes, str] | None:
     if album is None:
         return None
     return _cover_from_artpath(lib, album) or _cover_from_embedded(lib, album)
+
+
+def _stat_etag(path: str) -> str | None:
+    """An opaque ETag from a file's ``mtime_ns`` + ``size`` — no read. ``None`` if
+    the file vanished between the caller's isfile check and here (race)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return f'"{st.st_mtime_ns}-{st.st_size}"'
+
+
+def cover_validator(lib: Library, album_id: int) -> str | None:
+    """A CHEAP ETag for an album's cover — derived by ``stat``-ing the cover SOURCE
+    file, with NO image read and NO ``MediaFile`` parse.
+
+    Mirrors :func:`get_album_cover`'s source resolution (``artpath`` with a known
+    image extension, else the first track's audio file) so the tag identifies the
+    same bytes it would serve. Lets the cover endpoint answer a conditional GET
+    (``304``) off metadata alone instead of re-reading ~50-200 MB / re-parsing
+    audio over a NAS on every album-grid repaint. Self-correcting: a re-fetched
+    cover writes a new file, and editing embedded art bumps the audio file's mtime,
+    so a stale tag can never yield a false ``304``. ``None`` when the album is
+    missing or has no cover source (the endpoint then falls through to the full
+    read, which returns the image or a 404)."""
+    album = lib.get_album(album_id)
+    if album is None:
+        return None
+    raw_path = album.get("artpath")
+    if raw_path:
+        path = _abs_path(lib, raw_path)
+        if os.path.isfile(path) and _EXTENSION_MIME.get(os.path.splitext(path)[1].lower()):
+            return _stat_etag(path)
+    items = list(album.items())
+    if items:
+        track = _abs_path(lib, items[0].path)
+        if os.path.isfile(track):
+            return _stat_etag(track)
+    return None

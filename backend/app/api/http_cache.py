@@ -26,16 +26,37 @@ def _opaque(tag: str) -> str:
     return tag[2:] if tag.startswith("W/") else tag
 
 
+def if_none_match_hit(request: Request, etag: str) -> bool:
+    """True when the request's ``If-None-Match`` already holds ``etag`` (RFC 9110
+    weak comparison; ``*`` matches any existing entity). Lets an endpoint answer a
+    ``304`` from a cheap validator without materializing the body first."""
+    if_none_match = request.headers.get("if-none-match")
+    if if_none_match is None:
+        return False
+    candidates = {_opaque(t) for t in if_none_match.split(",")}
+    return "*" in candidates or _opaque(etag) in candidates
+
+
+def not_modified(etag: str) -> Response:
+    """A bodiless ``304`` carrying the revalidation headers for ``etag``."""
+    return Response(status_code=304, headers={"Cache-Control": "no-cache", "ETag": etag})
+
+
+def image_response(image_bytes: bytes, mime: str, etag: str) -> Response:
+    """A ``200`` image response with ``etag`` + the revalidation headers."""
+    return Response(
+        content=image_bytes,
+        media_type=mime,
+        headers={"Cache-Control": "no-cache", "ETag": etag},
+    )
+
+
 def revalidating_image_response(request: Request, image_bytes: bytes, mime: str) -> Response:
     """A revalidating image ``Response``: a content-hash ``ETag`` plus
     ``Cache-Control: no-cache``. Returns a bodiless ``304`` when the request's
     ``If-None-Match`` already holds the current entity-tag (weak comparison;
     ``*`` matches any existing entity)."""
     etag = f'"{hashlib.sha256(image_bytes).hexdigest()}"'
-    headers = {"Cache-Control": "no-cache", "ETag": etag}
-    if_none_match = request.headers.get("if-none-match")
-    if if_none_match is not None:
-        candidates = {_opaque(t) for t in if_none_match.split(",")}
-        if "*" in candidates or _opaque(etag) in candidates:
-            return Response(status_code=304, headers=headers)
-    return Response(content=image_bytes, media_type=mime, headers=headers)
+    if if_none_match_hit(request, etag):
+        return not_modified(etag)
+    return image_response(image_bytes, mime, etag)

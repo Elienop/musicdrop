@@ -4,12 +4,23 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.csrf import verify_upload_origin
-from app.api.http_cache import revalidating_image_response
+from app.api.http_cache import (
+    if_none_match_hit,
+    image_response,
+    not_modified,
+    revalidating_image_response,
+)
 from app.beets.completeness import missing_report_op
 from app.beets.cover import fetch_cover_op, install_cover_op
 from app.beets.delete import delete_album_op
 from app.beets.edit import apply_album_edit_op, preview_album_edit_op
-from app.beets.library import LibraryHandle, get_album_cover, get_album_detail, list_albums
+from app.beets.library import (
+    LibraryHandle,
+    cover_validator,
+    get_album_cover,
+    get_album_detail,
+    list_albums,
+)
 from app.beets.lyrics import start_album_lyrics_op
 from app.events.emit import emit_art_changed, emit_library_changed
 from app.models.album import Album, AlbumDetail, AlbumPage
@@ -101,14 +112,23 @@ async def get_album_cover_endpoint(
     request: Request,
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> Response:
-    cover = await run_in_threadpool(get_album_cover, handle.lib, album_id)
+    lib = handle.lib
+    # Validate off a CHEAP stat-based ETag first: the album grid revalidates every
+    # cover on every paint (no ?v= buster, no max-age), and the old path re-read the
+    # whole image / re-parsed the audio file just to hash it and return a 304.
+    # cover_validator stats the source instead, so an unchanged cover answers 304
+    # without touching the bytes. Only a validator miss falls through to the read.
+    validator = await run_in_threadpool(cover_validator, lib, album_id)
+    if validator is not None and if_none_match_hit(request, validator):
+        return not_modified(validator)
+
+    cover = await run_in_threadpool(get_album_cover, lib, album_id)
     if cover is None:
         raise HTTPException(status_code=404, detail="Cover not found")
-
     image_bytes, mime = cover
-    # Revalidate every time (no max-age) so a freshly-edited cover shows up
-    # immediately — no hard refresh, and correct even for the roster grid, which
-    # fetches /cover with no ?v= buster. See app.api.http_cache.
+    if validator is not None:
+        return image_response(image_bytes, mime, validator)
+    # No stat validator (odd source / a race): fall back to the content-hash ETag.
     return revalidating_image_response(request, image_bytes, mime)
 
 

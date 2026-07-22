@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -39,6 +41,55 @@ def test_upload_install_sets_cover(cover_client: TestClient, edit_lib: Library) 
     assert r.json()["ok"] is True
     # cover now served
     assert cover_client.get(f"/api/albums/{aid}/cover").status_code == 200
+
+
+def _install(cover_client: TestClient, aid: int) -> None:
+    cover_client.post(
+        f"/api/albums/{aid}/cover",
+        files={"file": ("cover.png", PNG.read_bytes(), "image/png")},
+    )
+
+
+def test_cover_304_revalidates_without_reading_the_image(
+    cover_client: TestClient, edit_lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A conditional GET must 304 off the cheap stat validator WITHOUT re-reading /
+    re-hashing the full image — the album grid revalidates every cover on every
+    paint, and the old path read the whole image just to produce a 304."""
+    import app.api.albums as albums_mod
+
+    aid = _aid(edit_lib)
+    _install(cover_client, aid)
+    first = cover_client.get(f"/api/albums/{aid}/cover")
+    assert first.status_code == 200
+    etag = first.headers["etag"]
+    assert etag
+
+    def _boom(*a: object, **k: object) -> object:
+        raise AssertionError("get_album_cover must not run on a 304 revalidation")
+
+    monkeypatch.setattr(albums_mod, "get_album_cover", _boom)
+    second = cover_client.get(f"/api/albums/{aid}/cover", headers={"If-None-Match": etag})
+    assert second.status_code == 304
+    assert second.headers["etag"] == etag
+
+
+def test_cover_stale_etag_after_change_returns_200(
+    cover_client: TestClient, edit_lib: Library
+) -> None:
+    """The stat validator is self-correcting: touching the cover file (a re-fetch
+    would write a new one) changes mtime, so an old ETag no longer 304s."""
+    aid = _aid(edit_lib)
+    _install(cover_client, aid)
+    etag1 = cover_client.get(f"/api/albums/{aid}/cover").headers["etag"]
+
+    artpath = os.fsdecode(edit_lib.get_album(aid).artpath)  # type: ignore[union-attr]
+    future = time.time() + 10
+    os.utime(artpath, (future, future))  # simulate a cover replacement (new mtime)
+
+    resp = cover_client.get(f"/api/albums/{aid}/cover", headers={"If-None-Match": etag1})
+    assert resp.status_code == 200  # stale tag, not a false 304
+    assert resp.headers["etag"] != etag1
 
 
 def test_cover_upload_read_is_size_bounded(
