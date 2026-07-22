@@ -109,6 +109,14 @@ class ImportJob:
     # carry a library album id. The not-landed veto must exempt them (they are
     # NOT the crash-before-landing case an idless applied row otherwise signals).
     directive_astracks: bool = False
+    # A ParkedAlbum / DuplicatePrompt popped from the bridge's one-shot queue
+    # before its feed row existed (the drain's outcome pass ran before the worker
+    # emitted its needs_review outcome, but the parked pass ran after the worker
+    # parked). Buffered here — NEVER discarded — and attached on the next drain
+    # once the outcome creates the row; otherwise the worker blocks in park()
+    # forever and the row 404s, wedging the single import slot.
+    pending_parked: dict[int, ParkedAlbum] = field(default_factory=dict)
+    pending_duplicate: dict[int, DuplicatePrompt] = field(default_factory=dict)
 
 
 class ImportJobRegistry:
@@ -418,6 +426,20 @@ class ImportJobRegistry:
                 # ups always carry status=applied, so the upgrade branch above
                 # can never match them.
                 row.outcome = row.outcome.model_copy(update={"album_id": outcome.album_id})
+        # Replay any parked/duplicate that a PRIOR drain popped before its feed
+        # row existed (the outcome pass had run before the worker's note_outcome).
+        # This drain's outcome pass has now created the row, so attach + clear.
+        for index in list(job.pending_parked):
+            row = job.albums.get(index)
+            if row is not None:
+                row.parked = job.pending_parked.pop(index)
+                row.art_source = job.bridge.art_source(index)
+        for index in list(job.pending_duplicate):
+            row = job.albums.get(index)
+            if row is not None:
+                row.duplicate = job.pending_duplicate.pop(index)
+                row.art_source = job.bridge.art_source(index)
+                row.status = ImportAlbumStatus.needs_dup_resolution
         while True:
             parked = job.bridge.get_parked(timeout=0)
             if parked is None:
@@ -426,8 +448,14 @@ class ImportJobRegistry:
             if row is not None:
                 row.parked = parked
                 row.art_source = job.bridge.art_source(parked.album_index)
-            # (The needs_review outcome is emitted before park, so the row
-            # already exists; if ordering ever changed, we'd create it here.)
+            else:
+                # Consumer-interleaving race: the outcome pass above ran before
+                # the worker emitted this album's needs_review outcome, but the
+                # one-shot queue still hands us the parked. No row exists yet, so
+                # BUFFER it (never discard) and attach on the next drain once the
+                # outcome creates the row — otherwise the worker blocks in park()
+                # forever and GET candidate 404s, wedging the single import slot.
+                job.pending_parked[parked.album_index] = parked
         while True:
             prompt = job.bridge.get_parked_duplicate(timeout=0)
             if prompt is None:
@@ -441,6 +469,9 @@ class ImportJobRegistry:
                 # Flip the (applied/decided) row to the duplicate-pending state so
                 # the feed + UI route to the duplicate decision panel.
                 row.status = ImportAlbumStatus.needs_dup_resolution
+            else:
+                # Same race as the parked loop — buffer the prompt, never discard.
+                job.pending_duplicate[prompt.album_index] = prompt
 
     def _drain_sweep_locked(self, job: ImportJob) -> None:
         """Counter drain for sweep jobs (caller holds ``self._lock``).

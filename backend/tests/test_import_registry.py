@@ -60,6 +60,18 @@ def _applied_outcome(index: int) -> AlbumOutcome:
     )
 
 
+def _needs_review_outcome(index: int) -> AlbumOutcome:
+    return AlbumOutcome(
+        album_index=index,
+        folder=f"/music/incoming/album{index}",
+        artist="Radiohead",
+        album="OK Computer",
+        recommendation=Recommendation.medium,
+        confidence=75.5,
+        status=AlbumOutcomeStatus.needs_review,
+    )
+
+
 def _poll(fn, want, attempts: int = 200) -> None:  # type: ignore[no-untyped-def]  # test-local poll: fn/want are inline callables
     ev = threading.Event()
     for _ in range(attempts):
@@ -479,6 +491,35 @@ def test_applied_landed_row_counts_as_applied_at_terminal() -> None:
     assert state.albums[0].album_id == 5
     assert state.progress.applied == 1  # landed row still counted
     assert state.progress.not_landed == 0
+
+
+def test_drain_buffers_a_parked_popped_before_its_row_exists() -> None:
+    # M1 race: a drain's outcome pass can run BEFORE the worker emits an album's
+    # needs_review outcome, while its parked pass runs AFTER the worker parked.
+    # The one-shot queue then hands the parked to a drain with no feed row yet.
+    # It must be BUFFERED (never discarded) and attached on the next drain once
+    # the outcome creates the row — else the worker blocks in park() forever,
+    # GET candidate 404s, and the single import slot is wedged until restart.
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    bridge = ImportBridge()
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="race", bridge=bridge, phase=ImportPhase.reviewing)
+    job = reg._job
+
+    parked = _parked(0, Recommendation.medium)
+    bridge._out.put(parked)  # parked reaches the queue with no outcome yet -> no row
+    reg.drain("race")  # drain #1: popped before the row exists
+    assert job.albums.get(0) is None  # no row yet
+    assert job.pending_parked.get(0) is parked  # buffered, NOT discarded
+
+    bridge.note_outcome(_needs_review_outcome(0))  # the worker's outcome finally lands
+    reg.drain("race")  # drain #2: outcome creates the row + replay attaches the parked
+    row = job.albums.get(0)
+    assert row is not None
+    assert row.parked is parked  # attached -> candidate renders, slot not wedged
+    assert 0 not in job.pending_parked  # buffer cleared
 
 
 def test_start_validate_failure_takes_no_slot() -> None:
