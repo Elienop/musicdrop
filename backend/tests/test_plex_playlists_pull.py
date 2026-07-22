@@ -18,12 +18,23 @@ class _FakeItem:
 
 
 class _FakePlaylist:
-    def __init__(self, title: str, playlist_type: str, items: list[_FakeItem]) -> None:
+    def __init__(
+        self,
+        title: str,
+        playlist_type: str,
+        items: list[_FakeItem],
+        leaf_count: int | None = None,
+    ) -> None:
         self.title = title
         self.playlistType = playlist_type
         self._items = items
+        # Real plexapi Playlist objects carry leafCount from the initial
+        # server.playlists() response — no extra request.
+        self.leafCount = len(items) if leaf_count is None else leaf_count
+        self.items_calls = 0
 
     def items(self) -> list[_FakeItem]:
+        self.items_calls += 1  # a real .items() is a full per-playlist track fetch
         return list(self._items)
 
 
@@ -50,6 +61,19 @@ def test_list_audio_playlists_filters_video(monkeypatch: pytest.MonkeyPatch) -> 
     assert playlists_pull.list_audio_playlists(CONFIG) == [
         PlexPlaylistInfo(name="Road", track_count=1)
     ]
+
+
+def test_list_audio_playlists_counts_via_leafcount_without_fetching_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The picker's track_count must come from the already-loaded leafCount, NOT a
+    per-playlist items() fetch (a full track-metadata download, many MB over a NAS).
+    leaf_count is set distinct from the (unfetched) items length to prove the source."""
+    pl = _FakePlaylist("Big", "audio", [_FakeItem("t", "a", "b", 1000, "/p")], leaf_count=4200)
+    _patch(monkeypatch, _FakeServer([pl]))
+    result = playlists_pull.list_audio_playlists(CONFIG)
+    assert result == [PlexPlaylistInfo(name="Big", track_count=4200)]  # leafCount, not len(items)
+    assert pl.items_calls == 0  # never paid the full-contents fetch just to count
 
 
 def test_pull_playlist_entries_maps_fields(monkeypatch: pytest.MonkeyPatch) -> None:

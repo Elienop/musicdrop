@@ -36,8 +36,12 @@ def list_audio_playlists(config: PlexConfig) -> list[PlexPlaylistInfo]:
     _require(config)
     try:
         server = client.connect(config.base_url, config.token)
+        # ``leafCount`` rides along on the initial server.playlists() response, so
+        # the name+count picker needs ZERO extra requests. ``pl.items()`` (a full
+        # per-playlist track fetch — many MB over a NAS) stays in
+        # pull_playlist_entries, where the contents are actually consumed.
         return [
-            PlexPlaylistInfo(name=str(pl.title), track_count=len(pl.items()))
+            PlexPlaylistInfo(name=str(pl.title), track_count=int(getattr(pl, "leafCount", 0) or 0))
             for pl in _audio_playlists(server)
         ]
     except (PlexApiException, RequestException) as exc:
