@@ -369,6 +369,38 @@ describe("ReviewPage", () => {
     ).not.toBeInTheDocument();
   });
 
+  test("a bank load error surfaces an error + retry, never the false empty state", async () => {
+    // A 5xx (backend restarting on a single home box) must NOT read as a resolved
+    // backlog: the section shows the failure with a retry, and the page must not
+    // claim "Nothing to review" while banked rows may still await a decision.
+    server.use(http.get(BANK, () => new HttpResponse(null, { status: 500 })));
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    expect(within(section).getByRole("alert")).toBeInTheDocument();
+    expect(
+      within(section).getByRole("button", { name: /retry/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/nothing to review/i)).not.toBeInTheDocument();
+    // The header must not fabricate a "0 awaiting a decision" count off an error.
+    expect(screen.queryByText(/awaiting a decision/i)).not.toBeInTheDocument();
+  });
+
+  test("Retry after a bank error refetches and shows the rows", async () => {
+    let fail = true;
+    server.use(
+      http.get(BANK, () =>
+        fail
+          ? new HttpResponse(null, { status: 500 })
+          : HttpResponse.json({ items: [bankRow()], total: 1, total_all: 1, offset: 0, limit: 48 }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    fail = false;
+    await userEvent.click(within(section).getByRole("button", { name: /retry/i }));
+    expect(await screen.findByText("Album X")).toBeInTheDocument();
+  });
+
   test("the reason filter narrows the query, sets bank_reason, and resets offset", async () => {
     const reasons: Array<string | null> = [];
     const offsets: Array<string | null> = [];

@@ -84,15 +84,30 @@ export function ReviewPage() {
   // state never flashes on first paint before the lists load.
   const settled =
     !activeQuery.isLoading && !inboxQuery.isLoading && !bankPending.isLoading;
+  // A probe that ERRORED reports empty data (items=[], total=0), so counting it
+  // as settled would let a transient failure masquerade as a resolved backlog —
+  // the exact state most likely to make the user think their sweep found nothing.
+  // Exclude errored probes from both the empty-state verdict and the header count
+  // (BankSection surfaces the bank failure itself, with a retry).
+  const probesErrored =
+    activeQuery.isError || inboxQuery.isError || bankPending.isError;
   const nothingPending =
-    settled && decisions.length === 0 && items.length === 0 && bankPendingTotal === 0;
+    settled &&
+    !probesErrored &&
+    decisions.length === 0 &&
+    items.length === 0 &&
+    bankPendingTotal === 0;
   const pendingCount = decisions.length + items.length + bankPendingTotal;
 
   return (
     <PageBody>
       <PageHeader
         title="Review"
-        meta={settled ? `${pendingCount} awaiting a decision` : undefined}
+        meta={
+          settled && !probesErrored
+            ? `${pendingCount} awaiting a decision`
+            : undefined
+        }
       />
       <p className="text-muted-foreground text-sm">
         Downloads and imports that need your decision, from every source, in
