@@ -19,12 +19,43 @@ treated as already-stale so a corrupt marker self-heals on the next lookup.
 """
 
 import hashlib
+import os
+import secrets
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
 from app.artwork.normalize import normalize_artist_name
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Publish ``data`` to ``path`` atomically: write a unique same-dir tmp,
+    fsync it, then ``os.replace``.
+
+    The artist-art backfill daemon writes this cache on its own thread while the
+    event loop serves image GETs over the same files, so a plain truncate-then-
+    write lets a reader catch a half-written image (served 200 with a content-
+    hash ETag) and a crash mid-write leaves a truncated file cached forever (the
+    positive slot has no TTL/validation). An atomic rename closes both: a reader
+    only ever opens the old or the new whole file, and an interrupted write
+    leaves the tmp, never the target. No parent-dir fsync — this cache is
+    rebuildable, so per-image rename durability isn't worth an fsync per write on
+    the library-wide backfill.
+    """
+    tmp = path.parent / f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+    try:
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            with suppress(OSError):
+                tmp.unlink()
 
 
 @dataclass(frozen=True)
@@ -92,9 +123,11 @@ class ArtistImageCache:
         # A positive result supersedes any prior negative marker.
         (self._dir / f"{key}.miss").unlink(missing_ok=True)
         # Write the mime sidecar BEFORE the bytes so a concurrent get() never
-        # reads image bytes paired with a missing/stale content-type.
-        (self._dir / f"{key}.mime").write_text(content_type, encoding="utf-8")
-        (self._dir / f"{key}.bin").write_bytes(data)
+        # reads image bytes paired with a missing/stale content-type. Both writes
+        # are atomic (tmp + os.replace) so a reader never catches a truncated
+        # file and a crash can't leave a corrupt image cached (see _read_image).
+        _atomic_write_bytes(self._dir / f"{key}.mime", content_type.encode("utf-8"))
+        _atomic_write_bytes(self._dir / f"{key}.bin", data)
 
     def store_negative(self, name: str, *, ttl_seconds: float) -> None:
         self._ensure_dir()
@@ -107,9 +140,9 @@ class ArtistImageCache:
         """Plant a manual override (always wins). No auto-writer in this chunk."""
         self._ensure_dir()
         key = self._key(name)
-        # Mime before bytes (see store_positive).
-        (self._dir / f"{key}.override.mime").write_text(content_type, encoding="utf-8")
-        (self._dir / f"{key}.override").write_bytes(data)
+        # Mime before bytes, both atomic (see store_positive).
+        _atomic_write_bytes(self._dir / f"{key}.override.mime", content_type.encode("utf-8"))
+        _atomic_write_bytes(self._dir / f"{key}.override", data)
 
     def clear_override(self, name: str) -> None:
         """Remove a manual override -> next get() falls back to auto/cache.
