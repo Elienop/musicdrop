@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+import pytest
 from beets.library import Item, Library
 
 from app.beets.playlists import (
@@ -174,15 +175,39 @@ def test_empty_entries(tmp_path: Path) -> None:
     assert resolve_entries(lib, []) == []
 
 
-def test_get_item_error_degrades_to_unavailable() -> None:
+def test_query_error_degrades_to_unavailable() -> None:
     class _BoomLib:
-        def get_item(self, item_id: int) -> object:
+        def items(self, query: object) -> object:
             raise RuntimeError("library is locked")
 
     tracks = resolve_entries(_BoomLib(), [StoredEntry(uid="u", item_id=7)])  # type: ignore[arg-type]  # duck-typed lib
     assert tracks[0].available is False
     assert tracks[0].id == 7
     assert tracks[0].uid == "u"
+
+
+def test_resolve_entries_uses_one_batched_query_not_per_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Perf: resolve_entries must issue ONE batched query for all entries, never a
+    lib.get_item per entry (the old N+1 that stalled a few-thousand-entry playlist)."""
+    lib, ids = _lib_with_items(tmp_path)
+    counts = {"items": 0}
+    real_items = lib.items
+
+    def spy_items(query: object) -> object:
+        counts["items"] += 1
+        return real_items(query)
+
+    def boom_get_item(item_id: int) -> object:
+        raise AssertionError("resolve_entries must not call get_item per entry")
+
+    monkeypatch.setattr(lib, "items", spy_items)
+    monkeypatch.setattr(lib, "get_item", boom_get_item)
+    entries = [StoredEntry(uid=f"u{i}", item_id=item_id) for i, item_id in enumerate(ids)]
+    tracks = resolve_entries(lib, entries)
+    assert [t.available for t in tracks] == [True, True]  # both resolved via the batch
+    assert counts["items"] == 1  # single query (<500 ids -> one chunk), not per-entry
 
 
 def test_resolve_entries_interleaves_pending_rows(tmp_path: Path) -> None:

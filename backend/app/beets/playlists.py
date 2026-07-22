@@ -10,9 +10,11 @@ playlists stays in this module (CLAUDE.md rule 3).
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from beets.dbcore.query import MatchQuery, OrQuery
 from beets.library import Library
 
 from app.beets.library import LibraryHandle, _abs_path, _coerce_duration, _coerce_str
@@ -129,28 +131,53 @@ def cover_album_ids(
     return album_ids
 
 
+_ID_FETCH_CHUNK = 500  # one OrQuery per chunk — stays under SQLite's bound-variable limit
+
+
+def _items_by_id(lib: Library, ids: Iterable[int]) -> dict[int, Any]:
+    """Fetch a set of item ids in ONE (chunked) query -> ``{id: Item}``.
+
+    Replaces the per-id ``lib.get_item`` N+1 (each a full ``_fetch``: its own
+    transaction + SELECT + flex-attr rows + Item build) with one ``lib.items`` per
+    ~500 ids. A missing id is simply absent from the map, so callers keep their
+    per-entry degrade/skip behavior; a chunk whose iteration raises on a locked/odd
+    row degrades that chunk's remaining ids rather than 500-ing the view.
+    """
+    out: dict[int, Any] = {}
+    unique = list(dict.fromkeys(int(i) for i in ids))
+    for start in range(0, len(unique), _ID_FETCH_CHUNK):
+        chunk = unique[start : start + _ID_FETCH_CHUNK]
+        try:
+            for item in lib.items(OrQuery([MatchQuery("id", i) for i in chunk])):
+                out[int(item.id)] = item
+        except Exception:  # a bad row aborts this chunk's remainder; those ids degrade
+            continue
+    return out
+
+
 def resolve_entries(lib: Library, entries: list[StoredEntry]) -> list[PlaylistTrack]:
     """Ordered rows for every entry — resolved, pending, or unavailable.
 
     A per-item lookup failure (a missing id, or a locked/odd library row that
     raises) degrades that one entry to "unavailable" rather than failing the
     whole playlist view with a 500 — the owned store still holds the membership.
+    One batched lookup for all entries (see :func:`_items_by_id`), not one query
+    per entry.
     """
+    by_id = _items_by_id(lib, (e.item_id for e in entries if e.item_id is not None))
     tracks: list[PlaylistTrack] = []
     for entry in entries:
         if entry.item_id is None:
             tracks.append(_pending_row(entry))
             continue
+        item = by_id.get(entry.item_id)
+        if item is None:
+            tracks.append(_unavailable(entry.uid, entry.item_id))
+            continue
         try:
-            item = lib.get_item(entry.item_id)
-            row = (
-                _resolved(entry.uid, item)
-                if item is not None
-                else _unavailable(entry.uid, entry.item_id)
-            )
-        except Exception:  # one bad row degrades, never 500s the view
-            row = _unavailable(entry.uid, entry.item_id)
-        tracks.append(row)
+            tracks.append(_resolved(entry.uid, item))
+        except Exception:  # a bad row degrades, never 500s the view
+            tracks.append(_unavailable(entry.uid, entry.item_id))
     return tracks
 
 
@@ -162,11 +189,9 @@ def track_match_refs(lib: Library, ids: list[int]) -> list[TrackRef]:
     metadata matching when the exact file path isn't present in Plex."""
     refs: list[TrackRef] = []
     with lib.music_dir_context():
+        by_id = _items_by_id(lib, ids)
         for item_id in ids:
-            try:
-                item = lib.get_item(item_id)
-            except Exception:  # a locked/odd row is simply skipped
-                item = None
+            item = by_id.get(item_id)
             if item is None:
                 continue
             refs.append(
@@ -192,11 +217,9 @@ def m3u_entries(lib: Library, ids: list[int], export_dir: str) -> list[M3uEntry]
     """
     entries: list[M3uEntry] = []
     with lib.music_dir_context():
+        by_id = _items_by_id(lib, ids)
         for item_id in ids:
-            try:
-                item = lib.get_item(item_id)
-            except Exception:  # a locked/odd row is simply omitted from the export
-                item = None
+            item = by_id.get(item_id)
             if item is None:
                 continue
             abs_path = _abs_path(lib, item.path)
