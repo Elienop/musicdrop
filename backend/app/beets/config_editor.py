@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import os
 import re
 import shutil
@@ -204,6 +205,31 @@ def validate_known_keys(
         return out
 
 
+def _strip_yaml_directive(text: str) -> str:
+    """Drop a leading ``%YAML 1.1`` directive line and its ``---`` document-start.
+
+    ruamel emits this two-line prologue whenever ``yaml.version`` is set. We keep
+    the version on the dumper (it drives 1.1 scalar-quoting — see ``atomic_write``)
+    but the directive itself is unwanted churn in the user's config.yaml, so we
+    peel it off the dumped text. Only a directive at the very top is stripped; a
+    ``---`` is removed only when it directly follows the directive (never a
+    ``---`` that legitimately appears inside the document).
+    """
+    if not text.startswith("%YAML"):
+        return text
+    newline = text.find("\n")
+    if newline == -1:
+        return text
+    rest = text[newline + 1 :]
+    if rest.startswith("---\n"):
+        rest = rest[len("---\n") :]
+    elif rest == "---\n".rstrip("\n") or rest.startswith("--- "):
+        # A "--- <inline scalar>" form (never produced for a mapping root, but be
+        # defensive): keep the content after the marker.
+        rest = rest[len("---") :].lstrip(" ")
+    return rest
+
+
 def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
     """Atomic write with crash-safety on ext4.
 
@@ -236,10 +262,23 @@ def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
     favor of this recipe (github.com/untitaker/python-atomicwrites), so we
     roll it ourselves rather than pull in an unmaintained dep.
     """
+    # Dump to a buffer and strip the "%YAML 1.1" directive prologue (see
+    # _strip_yaml_directive) rather than write ``yaml.dump(data, f)`` directly:
+    # ruamel injects that header on every dump whenever ``yaml.version`` is set,
+    # churning the user's hand-edited config.yaml (diff noise, a changed CAS sha,
+    # a no-op save that isn't byte-identical). The version MUST stay (1,1) on the
+    # dump side — clearing it would switch the emitter to the YAML-1.2 resolver,
+    # which writes bool-token strings ("no"/"yes"/"on"/"off"/"y"/"n") and
+    # sexagesimals ("d:d:d") UNQUOTED; those silently reload as bool/int and
+    # corrupt config (e.g. a naming ``replace`` rule value "no" becomes False,
+    # crashing beets' re.compile on Apply). 1.1 keeps them quoted.
+    buf = io.StringIO()
+    yaml.dump(data, buf)
+    text = _strip_yaml_directive(buf.getvalue())
     tmp = dst.parent / f".{dst.name}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            yaml.dump(data, f)
+            f.write(text)
             f.flush()
             os.fsync(f.fileno())
 
