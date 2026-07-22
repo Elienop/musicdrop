@@ -250,6 +250,40 @@ def test_browse_albums_preserves_null_genre_while_facet_buckets_unknown(tmp_path
     assert "Unknown" in genre_vals  # facet still buckets the genre-less album
 
 
+def test_browse_tolerates_a_non_canonical_per_disc_numbering_value(tmp_path: Path) -> None:
+    # A per_disc_numbering value beets tolerates but that isn't a canonical bool
+    # (e.g. `on`) makes confuse's `.get(bool)` raise ConfigTypeError; the cache
+    # build must read the flag by truthiness instead so it never crashes browse.
+    from beets import config
+
+    from app.beets import browse as browse_mod
+
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    _add(
+        lib,
+        tmp_path,
+        artist="A",
+        album="Multi",
+        year=2015,
+        genre="Pop",
+        fmt="FLAC",
+        tracks=4,
+        discs=2,
+        tracktotal=2,  # disctotal=2 -> hits the flag branch
+    )
+    config["per_disc_numbering"] = "on"  # tolerated by beets, rejected by the bool template
+    try:
+        browse_mod._ROWS.clear()
+        facets = browse_facets(lib)  # builds rows -> _album_tracks_bucket -> reads the flag
+        albums, total = browse_albums(lib, genres=[], decades=[], formats=[], limit=50, offset=0)
+    finally:
+        config["per_disc_numbering"] = False  # restore the beets default
+
+    assert total == 1  # computed without raising ConfigTypeError
+    assert {f.value for f in facets.tracks}  # the tracks facet was bucketed
+    assert albums[0].track_count == 4
+
+
 def test_browse_single_genre(browse_lib: Library) -> None:
     albums, total = browse_albums(
         browse_lib, genres=["Pop"], decades=[], formats=[], limit=50, offset=0

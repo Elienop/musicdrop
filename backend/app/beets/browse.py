@@ -125,7 +125,10 @@ def _album_tracks_bucket(album: BeetsAlbum, items: list[Any]) -> str:
     if not items:
         return "Unknown"
     disctotal = _coerce_int(album.get("disctotal"))
-    if disctotal <= 1 or not bool(config["per_disc_numbering"].get(bool)):
+    # Read the flag by confuse truthiness, NOT .get(bool): a value beets tolerates
+    # but that isn't a canonical bool (e.g. `per_disc_numbering: on`) makes the
+    # bool template raise ConfigTypeError, crashing the whole browse-cache build.
+    if disctotal <= 1 or not bool(config["per_disc_numbering"]):
         expected = _coerce_int(items[0].get("tracktotal"))
     else:
         seen: set[int] = set()
