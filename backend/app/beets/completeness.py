@@ -66,7 +66,14 @@ class _FetchResult:
 def _fetch_release(mb_albumid: str, data_source: str) -> _FetchResult:
     cached = _CACHE.get(mb_albumid)
     if cached is not None:
-        _CACHE.move_to_end(mb_albumid)
+        try:
+            _CACHE.move_to_end(mb_albumid)
+        except KeyError:
+            # The LRU promote is check-then-act: on a threadpool a concurrent
+            # insert can evict this exact key between the get above and here, so
+            # move_to_end raises. The read already succeeded — the promote is
+            # best-effort, so swallow it rather than 500 the missing-tracks report.
+            pass
         return _FetchResult(info=cached)
     source = metadata_plugins.get_metadata_source(data_source)
     if source is None:
