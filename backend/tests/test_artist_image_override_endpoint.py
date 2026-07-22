@@ -1,9 +1,12 @@
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
+from fastapi.concurrency import run_in_threadpool as _real_run_in_threadpool
 from fastapi.testclient import TestClient
 
+import app.api.artists as artists_mod
 from app.api.artists import (
     get_artist_image_cache,
     get_artist_image_http_client,
@@ -51,6 +54,33 @@ def test_upload_writes_override(client: TestClient, cache: ArtistImageCache) -> 
     cached = cache.get("ABBA")
     assert isinstance(cached, CachedImage)
     assert cached.data == PNG.read_bytes()
+
+
+def test_upload_offloads_the_cache_write_to_the_threadpool(
+    client: TestClient, cache: ArtistImageCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # write_override is a blocking mkdir + up-to-10MB disk write (cache dir may be
+    # on slow HDD/NAS) — it must not run on the event loop.
+    spy = Mock(side_effect=lambda fn, *a, **k: _real_run_in_threadpool(fn, *a, **k))
+    monkeypatch.setattr(artists_mod, "run_in_threadpool", spy, raising=False)
+    resp = client.post(
+        "/api/artists/image/override",
+        params={"name": "ABBA"},
+        files={"file": ("p.png", PNG.read_bytes(), "image/png")},
+    )
+    assert resp.status_code == 200
+    assert cache.write_override in [call.args[0] for call in spy.call_args_list]
+
+
+def test_delete_offloads_the_cache_clear_to_the_threadpool(
+    client: TestClient, cache: ArtistImageCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache.write_override("ABBA", b"manual", "image/png")
+    spy = Mock(side_effect=lambda fn, *a, **k: _real_run_in_threadpool(fn, *a, **k))
+    monkeypatch.setattr(artists_mod, "run_in_threadpool", spy, raising=False)
+    resp = client.delete("/api/artists/image/override", params={"name": "ABBA"})
+    assert resp.status_code == 204
+    assert cache.clear_override in [call.args[0] for call in spy.call_args_list]
 
 
 def test_cross_origin_upload_rejected(client: TestClient) -> None:

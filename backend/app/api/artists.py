@@ -147,7 +147,9 @@ async def upload_artist_image_override_endpoint(
     mime = sniff_image_mime(image_bytes)
     if mime is None:
         raise HTTPException(status_code=422, detail="not a supported image (png/jpeg/gif/webp)")
-    cache.write_override(name, image_bytes, mime)
+    # Offload the blocking mkdir + up-to-10MB cache write (dir may be on slow
+    # HDD/NAS) so it never stalls the event loop, mirroring the cache read.
+    await run_in_threadpool(cache.write_override, name, image_bytes, mime)
     emit_art_changed(request.app)
     return ArtistImageOverrideResult(ok=True, content_type=mime)
 
@@ -170,7 +172,7 @@ async def set_artist_image_override_from_url_endpoint(
             status_code=422,
             detail="that link is not a supported image (png/jpeg/gif/webp)",
         )
-    cache.write_override(name, data, mime)
+    await run_in_threadpool(cache.write_override, name, data, mime)
     emit_art_changed(request.app)
     return ArtistImageOverrideResult(ok=True, content_type=mime)
 
@@ -181,7 +183,7 @@ async def clear_artist_image_override_endpoint(
     name: Annotated[str, Query(min_length=1)],
     cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
 ) -> Response:
-    cache.clear_override(name)
+    await run_in_threadpool(cache.clear_override, name)
     emit_art_changed(request.app)
     return Response(status_code=204)
 

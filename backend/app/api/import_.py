@@ -140,7 +140,11 @@ async def get_import_album_cover(
     reg: Annotated[ImportJobRegistry, Depends(get_registry)],
 ) -> Response:
     try:
-        cover = reg.candidate_cover(job_id, index)
+        # candidate_cover parses the parked album's first audio file for embedded
+        # art (HDD/NAS source) — offload so the read never stalls the event loop.
+        # It takes the registry lock internally and reads the file outside it, so
+        # it is threadpool-safe.
+        cover = await run_in_threadpool(reg.candidate_cover, job_id, index)
     except KeyError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Import album not found"

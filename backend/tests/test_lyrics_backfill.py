@@ -178,6 +178,37 @@ def test_lyrics_coverage(edit_lib: Library) -> None:
     assert cov.percent == pytest.approx(33.3, abs=0.1)
 
 
+def test_lyrics_coverage_counts_checked_no_lyrics_flex_attr(edit_lib: Library) -> None:
+    # lyrics_checked is a flex attr (item_attributes), not an items column: one
+    # track has lyrics, one is checked-but-empty, one is neither.
+    from app.beets.lyrics import lyrics_coverage
+
+    tracks = sorted(next(iter(edit_lib.albums())).items(), key=lambda it: it.track)
+    tracks[0].lyrics = "x"
+    tracks[0].store()
+    tracks[1]["lyrics_checked"] = 1  # searched, found nothing
+    tracks[1].store()
+    cov = lyrics_coverage(edit_lib)
+    assert cov.total == 3
+    assert cov.with_lyrics == 1
+    assert cov.checked_no_lyrics == 1
+
+
+def test_lyrics_coverage_does_not_materialize_every_item(
+    edit_lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Perf: the three counts come from ONE SQL aggregate, never a full lib.items()
+    # scan that builds a beets Item per (15k-75k) track on every panel mount.
+    from app.beets.lyrics import lyrics_coverage
+
+    def _boom(*a: object, **k: object) -> object:
+        raise AssertionError("lyrics_coverage must not iterate lib.items()")
+
+    monkeypatch.setattr(edit_lib, "items", _boom)
+    cov = lyrics_coverage(edit_lib)
+    assert cov.total == 3
+
+
 def test_per_album_fetch_409_during_backfill(
     edit_lib: Library, monkeypatch: pytest.MonkeyPatch
 ) -> None:
