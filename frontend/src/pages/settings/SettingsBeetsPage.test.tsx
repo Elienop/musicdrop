@@ -447,6 +447,96 @@ describe("SettingsPage", () => {
     ).toBeDisabled();
   });
 
+  test("an Apply failure surfaces a destructive banner with the recovery hint", async () => {
+    let getCalls = 0;
+    server.use(
+      http.get(CONFIG_URL, () => {
+        getCalls += 1;
+        return HttpResponse.json(
+          snapshotFixture({ apply_pending: true, sha256: `sha-${getCalls}` }),
+        );
+      }),
+      http.get(ACTIVE_IMPORT_URL, () => HttpResponse.json({ active: false })),
+      http.post(VALIDATE_URL, () => HttpResponse.json({ errors: [] })),
+      http.post(APPLY_URL, () =>
+        HttpResponse.json(
+          {
+            detail: {
+              message: "Apply failed during rebuild: boom",
+              recovery:
+                "Restart MusicDrop. The saved config is on disk; cold start will load it.",
+            },
+          },
+          { status: 500 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await findEditorContent();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /apply changes/i }),
+      ).toBeEnabled(),
+    );
+
+    await user.click(screen.getByRole("button", { name: /apply changes/i }));
+
+    // The failure is surfaced (not silently swallowed back to the resting
+    // banner), and the 500's recovery hint is shown inline.
+    const banner = await screen.findByText(/apply failed/i);
+    expect(banner).toHaveAttribute("role", "alert");
+    expect(banner).toHaveTextContent(/restart musicdrop/i);
+  });
+
+  test("a non-409 Save failure surfaces a destructive banner", async () => {
+    defaultMocks();
+    server.use(
+      http.post(SAVE_URL, () =>
+        HttpResponse.json({ detail: "disk write failed" }, { status: 500 }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    const content = await findEditorContent();
+
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    content.focus();
+    await user.keyboard("x");
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+    const banner = await screen.findByText(/save failed/i);
+    expect(banner).toHaveAttribute("role", "alert");
+  });
+
+  test("Cancel after a failed Save clears the stale Save-failed alert", async () => {
+    // A settled error mutation stays in its error state until reset, and the
+    // alert is not gated on page state — so without a reset the red "Save
+    // failed" banner would linger on an otherwise-clean page after Cancel.
+    defaultMocks();
+    server.use(
+      http.post(SAVE_URL, () =>
+        HttpResponse.json({ detail: "disk write failed" }, { status: 500 }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    const content = await findEditorContent();
+
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    content.focus();
+    await user.keyboard("x");
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(await screen.findByText(/save failed/i)).toBeInTheDocument();
+
+    // Discarding the edit returns the page to clean — the failure banner must go.
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+    await waitFor(() =>
+      expect(screen.queryByText(/save failed/i)).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: /^edit$/i })).toBeEnabled();
+  });
+
   test("Apply is disabled while an import is active and shows the helper text", async () => {
     let getCalls = 0;
     server.use(
