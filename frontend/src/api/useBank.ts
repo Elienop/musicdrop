@@ -123,7 +123,8 @@ async function fetchBankItem(itemId: string): Promise<BankItem> {
  * One full bank row (`GET /api/bank/{id}`), payloads included. Disabled until
  * an id exists. Polls ONLY while the apply runner owns the row
  * (queued/applying) so "Queued to apply" progresses to done/failed live;
- * settled rows don't poll. Errors stop the loop (a 404 means removed/applied).
+ * settled rows don't poll. Only a 404 (BankConflictError) stops the loop — a
+ * transient error keeps polling an in-flight row so it self-heals.
  */
 export function useBankItem(itemId: string | undefined) {
   return useQuery({
@@ -135,9 +136,14 @@ export function useBankItem(itemId: string | undefined) {
     enabled: Boolean(itemId),
     retry: false,
     refetchInterval: (query) => {
-      if (query.state.error) {
+      // Only a 404 (BankConflictError) is terminal — the row was applied/
+      // ignored/removed. A transient error (backend restart, proxy blip) keeps
+      // the poll alive so an in-flight row self-heals instead of freezing.
+      if (query.state.error instanceof BankConflictError) {
         return false;
       }
+      // On a transient error TanStack keeps the last data, so this is the
+      // last-known status: keep polling an in-flight row.
       const status = query.state.data?.status;
       return status === "queued" || status === "applying"
         ? BANK_ROW_POLL_MS

@@ -486,6 +486,17 @@ describe("BankReviewPage", () => {
     expect(await screen.findByText(/no longer in the bank/i)).toBeInTheDocument();
   });
 
+  test("a transient load error shows a retry, not the terminal gone notice", async () => {
+    // A 5xx (backend restart while the apply runner hammers the disk) must not
+    // falsely claim the row was applied/removed — offer a retry instead.
+    server.use(http.get(ITEM, () => new HttpResponse(null, { status: 500 })));
+    renderRow();
+    expect(
+      await screen.findByRole("button", { name: /retry/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/no longer in the bank/i)).not.toBeInTheDocument();
+  });
+
   test("rescues a stale row in place: rescan swaps in a candidate screen", async () => {
     const staleRow = bankItem({ status: "stale", error: "the folder changed" });
     // The rescan lands a real needs_review candidate row on the SAME id.
