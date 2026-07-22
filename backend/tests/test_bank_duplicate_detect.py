@@ -140,6 +140,34 @@ def test_exclude_under_sibling_string_prefix_keeps_the_album(
     assert [e.album_id for e in found] == [aid]
 
 
+def test_exclude_under_drops_reimport_reached_via_a_symlink_alias(
+    beets_library: LibraryHandle, tmp_path: Path
+) -> None:
+    # beets stores item paths under the REAL dir, but the banked/parked folder
+    # can reach the same files via a symlinked alias (the documented TrueNAS
+    # library layout — is_in_library_source was hardened with realpath for
+    # exactly this). abspath prefix-matching leaves the two alias strings
+    # distinct, so the album's OWN copy is wrongly reported as a collision.
+    # realpath on both sides collapses the alias and the re-import is excluded.
+    lib = beets_library.lib
+    real_root = tmp_path / "real"
+    base = real_root / "Album"
+    _add_album_with_paths(lib, artist="Air", album="Moon Safari", base=base, n=10)
+
+    alias_root = tmp_path / "alias"
+    alias_root.symlink_to(real_root, target_is_directory=True)
+    # exclude_under reaches the identical files through the symlink alias.
+    assert (
+        find_import_duplicates(
+            lib,
+            albumartist="Air",
+            album="Moon Safari",
+            exclude_under=str(alias_root / "Album"),
+        )
+        == []
+    )
+
+
 # ----- endpoint (uses the lifespan-less client wired to a real library) -----
 
 

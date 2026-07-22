@@ -211,13 +211,19 @@ def find_import_duplicates(
     tmp_album = Album(lib, **info)
     keys: list[str] = config["import"]["duplicate_keys"]["album"].as_str_seq()
     dup_query = tmp_album.duplicates_query(keys)
-    excl = os.path.abspath(exclude_under) if exclude_under else None
+    # realpath (not abspath) on BOTH sides: beets stores item paths under the
+    # real library dir, but exclude_under (the banked/parked source folder) can
+    # reach the same files through a symlinked alias (the documented TrueNAS
+    # layout). abspath leaves the two alias strings distinct, so an in-library
+    # re-import's own copy would be wrongly flagged as a collision. This mirrors
+    # is_in_library_source's realpath hardening in import_session.py.
+    excl = os.path.realpath(exclude_under) if exclude_under else None
     out: list[ExistingAlbum] = []
     with lib.music_dir_context():
         for album_obj in lib.albums(dup_query):
             if excl is not None:
                 items = list(album_obj.items())
-                paths = [os.path.abspath(os.fsdecode(i.path)) for i in items if i.path]
+                paths = [os.path.realpath(os.fsdecode(i.path)) for i in items if i.path]
                 if paths and all(p == excl or p.startswith(excl + os.sep) for p in paths):
                     continue
             out.append(to_existing_album(lib, album_obj))
