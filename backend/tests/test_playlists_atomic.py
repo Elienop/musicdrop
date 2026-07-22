@@ -55,4 +55,38 @@ def test_default_final_file_mode(tmp_path: Path) -> None:
 def test_tempfile_cleaned_up_on_success(tmp_path: Path) -> None:
     target = tmp_path / "playlist.m3u8"
     write_atomic_text(target, "data")
-    assert list(tmp_path.glob(".playlist.m3u8.tmp*")) == []
+    assert list(tmp_path.glob(".playlist.m3u8*")) == []
+
+
+def test_overlapping_writers_never_corrupt_the_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two concurrent writers of the SAME target must not share one tmp inode.
+
+    With a fixed ``.<name>.tmp`` name, writer B's ``O_TRUNC`` wipes writer A's
+    just-written bytes and A's ``os.replace`` then either publishes truncated
+    content or raises on the vanished tmp — the ``.m3u8`` export self-corrupts.
+    Orchestrate the exact interleave deterministically: hook ``os.fsync`` so that
+    the instant writer A has written its tmp (but not yet replaced), a COMPLETE
+    overlapping write B runs. A must still finish cleanly and the final file must
+    be one whole write, never a truncated/mixed blend.
+    """
+    target = tmp_path / "playlist.m3u8"
+    a_text = "A" * 20_000
+    b_text = "B" * 20_000
+    real_fsync = os.fsync
+    state = {"nested": False}
+
+    def hook_fsync(fd: int) -> None:
+        if not state["nested"]:
+            state["nested"] = True
+            write_atomic_text(target, b_text)  # writer B, fully, mid-flight of A
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", hook_fsync)
+    write_atomic_text(target, a_text)  # writer A — must not raise despite B racing
+
+    final = target.read_text(encoding="utf-8")
+    assert final in (a_text, b_text)  # a COMPLETE write won
+    assert len(set(final)) == 1  # homogeneous — never truncated or mixed
+    assert list(tmp_path.glob(".playlist.m3u8*")) == []  # both writers cleaned up
