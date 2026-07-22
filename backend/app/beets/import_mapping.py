@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from beets import config
 from beets.autotag import AlbumMatch
 from beets.autotag.match import Recommendation as BeetsRec
 from beets.util import get_most_common_tags
@@ -143,13 +144,37 @@ def _album_change_from_current(
     )
 
 
+def _applied_track_number(track_info: Any, per_disc: bool) -> int | None:
+    """The track number beets will actually WRITE for this release track.
+
+    beets 2.12 maps ``medium_index`` -> the item's ``track`` tag, and
+    ``TrackInfo.raw_data`` sets ``medium_index = self.medium_index (falling back
+    to self.index) if config['per_disc_numbering'] else self.index``. So the
+    written number is the per-disc number under per_disc_numbering, else the
+    absolute release index. Mirror that exactly (not ``medium_index or index``,
+    which would wrongly skip a legitimate medium_index of 0)."""
+    if per_disc:
+        mindex = getattr(track_info, "medium_index", None)
+        return _opt_int(mindex if mindex is not None else track_info.index)
+    return _opt_int(track_info.index)
+
+
 def _track_changes(match: AlbumMatch) -> list[TrackChange]:
     """Per-track current->proposed rows from AlbumMatch.mapping.
 
-    Ordered by the proposed track index so the tracklist reads in release order.
-    A row is ``changed`` when the matched TrackInfo has a non-zero per-field
-    title distance or the track number differs; otherwise ``unchanged``.
+    Ordered by the ABSOLUTE release index so the tracklist reads in release order
+    (disc 1 before disc 2 even when per-disc numbering restarts each disc at 1).
+    A row is ``changed`` when the matched TrackInfo has a non-zero per-field title
+    distance or the track number beets will write differs from the current tag;
+    otherwise ``unchanged``. ``track_after`` is the number beets actually writes,
+    which honors the user's ``per_disc_numbering`` config (PR #8/#9) — using the
+    absolute index there mislabels every disc-2+ track as changed under per-disc
+    numbering.
     """
+    # Read the flag the way beets does — `if config["per_disc_numbering"]`, i.e.
+    # truthiness coercion — NOT `.get(bool)`, which raises ConfigTypeError on a
+    # non-bool scalar (a quoted "yes" / bare 1) that beets itself tolerates.
+    per_disc = bool(config["per_disc_numbering"])
     rows: list[TrackChange] = []
     for item, track_info in match.mapping.items():
         track_dist = match.distance.tracks.get(track_info)
@@ -157,7 +182,7 @@ def _track_changes(match: AlbumMatch) -> list[TrackChange]:
         # already means the title differs (no need to re-compare against 0).
         title_changed = track_dist is not None and "track_title" in track_dist.keys()
         track_before = _opt_int(item.track)
-        track_after = _opt_int(track_info.index)
+        track_after = _applied_track_number(track_info, per_disc)
         number_changed = track_before != track_after
         status = (
             TrackChangeStatus.changed
@@ -166,7 +191,7 @@ def _track_changes(match: AlbumMatch) -> list[TrackChange]:
         )
         rows.append(
             TrackChange(
-                index=track_after,
+                index=_opt_int(track_info.index),  # absolute release order (sort key)
                 status=status,
                 title_before=_opt_str(item.title),
                 title_after=_opt_str(track_info.title),
