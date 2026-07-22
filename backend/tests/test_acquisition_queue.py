@@ -22,9 +22,13 @@ from app.acquisition.queue import AcquisitionQueue
 from app.import_jobs.fakes import FakeImportRunner
 from app.import_jobs.registry import ImportJobRegistry
 from app.models.bank import BankApplyDirective
+from app.models.import_api import ImportPhase
 from app.models.import_models import ImportOptions, ImportOrigin
 
 T = TypeVar("T")
+
+_TERMINAL = (ImportPhase.done, ImportPhase.failed)
+_INBOX_OPTS = ImportOptions(operation="move", unattended=True)
 
 
 def _poll(
@@ -241,6 +245,71 @@ def test_queue_refuses_inbox_root_itself(tmp_path: Path) -> None:
     q.enqueue(inside)
     assert q._queue.qsize() == 1
     assert q.status().queued == 1
+
+
+def test_failed_inbox_import_marks_failed_not_imported(tmp_path: Path) -> None:
+    # The primary path: the drain reads OUR job's terminal (failed) state and
+    # classifies it as failed — incrementing the failed counter and recording
+    # "failed" in the ledger, never a phantom "imported".
+    fake = FakeImportRunner(fail_with="boom")
+    reg = ImportJobRegistry(runner=fake)
+    led = AcquisitionLedger(tmp_path / "ledger.json")
+    q = AcquisitionQueue(import_registry=reg, ledger=led, poll_interval=0.01, busy_backoff=0.02)
+    folder = tmp_path / "inbox" / "Album"
+    folder.mkdir(parents=True)
+
+    q.start()
+    try:
+        q.enqueue(folder)
+        _poll(lambda: q.status().failed, lambda n: n >= 1)
+        s = q.status()
+        assert s.failed == 1
+        assert s.processed == 1
+        assert s.set_aside == 0
+        entry = next(e for e in led.entries() if e.path == str(folder))
+        assert entry.outcome == "failed"
+    finally:
+        q.stop()
+
+
+def test_raced_handoff_result_for_does_not_assume_imported(tmp_path: Path) -> None:
+    # After our inbox job reaches a terminal phase, a SECOND import claims the
+    # single slot, replacing ours. Reading _result_for for the original job_id
+    # can no longer see our outcome (state() raises KeyError) — the fallback must
+    # surface it as needs-attention ("failed"), NOT silently assume "imported".
+    q, _fake, reg, _led = _make_queue(tmp_path)
+    folder1 = tmp_path / "inbox" / "A"
+    folder1.mkdir(parents=True)
+    job1 = reg.start(str(folder1), options=_INBOX_OPTS, origin="inbox")
+    _poll(lambda: reg.get(job1), lambda j: j is not None and j.phase in _TERMINAL)
+
+    folder2 = tmp_path / "inbox" / "B"
+    folder2.mkdir(parents=True)
+    reg.start(str(folder2), options=_INBOX_OPTS, origin="inbox")
+    assert reg.get(job1) is None  # our job was replaced in the slot
+
+    assert q._result_for(job1) == ("failed", None)
+
+
+def test_raced_handoff_wait_for_import_returns_failed_fallback(tmp_path: Path) -> None:
+    # _wait_for_import polls the slot BY IDENTITY: once our job has been replaced
+    # (get() returns None), it returns the raced-handoff fallback rather than
+    # blocking on — or misreading — the unrelated job now in the slot.
+    q, _fake, reg, _led = _make_queue(tmp_path)
+    folder1 = tmp_path / "inbox" / "A"
+    folder1.mkdir(parents=True)
+    job1 = reg.start(str(folder1), options=_INBOX_OPTS, origin="inbox")
+    _poll(lambda: reg.get(job1), lambda j: j is not None and j.phase in _TERMINAL)
+
+    folder2 = tmp_path / "inbox" / "B"
+    folder2.mkdir(parents=True)
+    job2 = reg.start(str(folder2), options=_INBOX_OPTS, origin="inbox")
+    # Advance the replacing job to terminal too so the assertion is deterministic
+    # (no active slot to block a poll loop under any implementation).
+    _poll(lambda: reg.get(job2), lambda j: j is not None and j.phase in _TERMINAL)
+    assert reg.get(job1) is None
+
+    assert q._wait_for_import(job1) == ("failed", None)
 
 
 def test_stop_is_idempotent_and_unblocks_drain(tmp_path: Path) -> None:

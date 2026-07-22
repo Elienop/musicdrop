@@ -185,9 +185,22 @@ class AcquisitionQueue:
         return import_gate_clear(self._import_registry, self._swap_lock)
 
     def _wait_for_import(self, job_id: str) -> tuple[LedgerOutcome, str | None] | None:
-        """Wait until the import releases the slot, then classify it. ``None`` on stop."""
+        """Wait until OUR job reaches a terminal phase, then classify it. ``None`` on stop.
+
+        Polls the slot BY JOB IDENTITY (``get(job_id)``) — never the global
+        ``has_active_job()`` slot. An unrelated manual import claiming the slot
+        in the poll gap must not make us block on, or misread, its outcome. The
+        worker sets ``job.phase`` to done/failed directly and that terminal
+        state persists in the slot until a new ``start()`` replaces it, so once
+        our own job is terminal ``_result_for`` reads OUR outcome, not another's.
+        """
         while not self._stop.is_set():
-            if not self._import_registry.has_active_job():
+            job = self._import_registry.get(job_id)
+            if job is None:
+                # A newer import claimed the single slot before we could read our
+                # job's terminal state (raced handoff) — see _raced_handoff.
+                return self._raced_handoff()
+            if job.phase in (ImportPhase.done, ImportPhase.failed):
                 return self._result_for(job_id)
             self._stop.wait(self._poll_interval)
         return None
@@ -196,13 +209,24 @@ class AcquisitionQueue:
         try:
             state = self._import_registry.state(job_id)
         except KeyError:
-            # Our job was replaced before we could read it; assume handled.
-            return ("imported", None)
+            # Our job was replaced in the slot before we could read it — see
+            # _raced_handoff.
+            return self._raced_handoff()
         if state.phase == ImportPhase.failed:
             return ("failed", state.error)
         if state.set_aside > 0:
             return ("set_aside", None)
         return ("imported", None)
+
+    @staticmethod
+    def _raced_handoff() -> tuple[LedgerOutcome, str | None]:
+        """Fallback when a newer import claimed the single slot before we could
+        read our job's terminal outcome. We CANNOT tell whether the download
+        imported, was set aside, or failed, so we surface it as ``failed`` —
+        needs-attention in the inbox — rather than silently assuming ``imported``
+        and losing a failed/set-aside drop. A disk/folder-existence heuristic is
+        unreliable (a move-import leaves an empty source dir), so we avoid one."""
+        return ("failed", None)
 
     def _finish(self, key: str, outcome: LedgerOutcome, error: str | None) -> None:
         with self._lock:
