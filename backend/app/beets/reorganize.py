@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from beets.util import MoveOperation
+from beets.util import FilesystemError, MoveOperation
 
 from app.beets.library import LibraryHandle
 from app.beets.orphans import find_orphan_folders
@@ -267,7 +267,10 @@ def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
             if problems:
                 return ReorganizeOutcome(status="failed", label=label, error="; ".join(problems))
             return ReorganizeOutcome(status="moved", label=label, source_dir=source_dir or None)
-        except (ValueError, OSError) as exc:
+        # FilesystemError (permission/disk-full/NAS I/O from beets' util.move/copy)
+        # subclasses HumanReadableError(Exception), NOT OSError — catch it too, or
+        # one bad album escapes this "never raises" adapter and aborts the whole sweep.
+        except (ValueError, OSError, FilesystemError) as exc:
             return ReorganizeOutcome(
                 status="failed", label=label, error=str(exc) or exc.__class__.__name__
             )
@@ -292,7 +295,7 @@ def reorganize_singleton(lib: Any, item: Any) -> ReorganizeOutcome:
             if problems:
                 return ReorganizeOutcome(status="failed", label=label, error="; ".join(problems))
             return ReorganizeOutcome(status="moved", label=label, source_dir=source_dir or None)
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError, FilesystemError) as exc:  # see reorganize_album
             return ReorganizeOutcome(
                 status="failed", label=label, error=str(exc) or exc.__class__.__name__
             )
