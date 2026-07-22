@@ -245,6 +245,38 @@ def test_apply_reports_both_write_and_move_failure_for_one_item(
     assert "move failed" in failed[0].error
 
 
+def test_apply_move_relocates_album_art_and_updates_artpath(edit_lib: Library) -> None:
+    """An album edit with move must relocate the cover AND persist the new artpath.
+    item.move(with_album=True, store=False) moved the art on disk but discarded the
+    transient album carrying the updated artpath, so the DB pointed at the vacated
+    (pruned) old dir and the cover silently vanished."""
+    from app.beets.edit import apply_album_edit
+
+    aid = _album_id(edit_lib)
+    album = edit_lib.get_album(aid)
+    assert album is not None
+    old_dir = os.path.dirname(os.fsdecode(next(iter(album.items())).path))
+    art = os.path.join(old_dir, "cover.jpg")
+    with open(art, "wb") as fh:
+        fh.write(b"\xff\xd8\xff\xe0JFIF-fake-cover")  # bytes; content irrelevant
+    album.artpath = os.fsencode(art)
+    album.store()
+
+    req = AlbumEditRequest(album=AlbumFieldEdits(album_artist="Radiohead (Live)"))
+    result = apply_album_edit(edit_lib, album_id=aid, request=req, write=True, move=True)
+    assert result.move_failures == 0
+
+    refetched = edit_lib.get_album(aid)
+    assert refetched is not None
+    assert refetched.artpath is not None
+    art_path = os.fsdecode(refetched.artpath)
+    assert os.path.isfile(art_path)  # cover survived (DB points at a real file)
+    # The cover sits in the NEW album dir alongside the moved tracks.
+    new_dir = os.path.dirname(os.fsdecode(next(iter(refetched.items())).path))
+    assert os.path.dirname(art_path) == new_dir
+    assert "Radiohead (Live)" in art_path  # followed the album to its new home
+
+
 def test_apply_runs_from_a_worker_thread(edit_lib: Library) -> None:
     """apply must bind music_dir_context so paths expand off the main thread."""
     from app.beets.edit import apply_album_edit

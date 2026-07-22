@@ -21,6 +21,7 @@ import os
 from typing import Any
 
 from beets.library import Library
+from beets.util import MoveOperation
 from fastapi import Request
 
 from app.models.edit import (
@@ -252,7 +253,10 @@ def _maybe_move(lib: Library, item: Any) -> bool:
 
     Returns True when a move happened. Mirrors beets ``Item.try_sync``'s guard
     (only move files under the library directory). ``store=False`` because the
-    caller stores once per item after write+move.
+    caller stores once per item after write+move; ``with_album=False`` so the
+    album art is NOT moved per item — that discards the transient album's updated
+    ``artpath``, stranding the cover. The caller relocates the art once after the
+    loop (mirrors beets' ``update_items``).
     """
     current = os.fsdecode(item.path)
     libdir = os.fsdecode(lib.directory)
@@ -269,7 +273,7 @@ def _maybe_move(lib: Library, item: Any) -> bool:
         # move failure it is, so the caller reports it (a real I/O error during
         # the move below — permission, disk — still raises as before).
         raise FileNotFoundError(f"source file is missing: {current}")
-    item.move(basedir=lib.directory, store=False)
+    item.move(basedir=lib.directory, store=False, with_album=False)
     return True
 
 
@@ -303,6 +307,7 @@ def apply_album_edit(
         results: list[ItemWriteResult] = []
         write_failures = 0
         move_failures = 0
+        moved_any = False
         with lib.transaction():
             _apply_in_memory(album, items, album_edits, track_edits)
             album.store(inherit=False)  # we fanned album fields to items manually
@@ -321,6 +326,7 @@ def apply_album_edit(
                 if move:
                     try:
                         moved = _maybe_move(lib, item)
+                        moved_any = moved_any or moved
                     except Exception as exc:  # report, do not abort the batch
                         move_failures += 1
                         errors.append(f"move failed: {exc}")
@@ -335,6 +341,13 @@ def apply_album_edit(
                         error="; ".join(errors) if errors else None,
                     )
                 )
+            # Relocate the album art ONCE, after the items have moved+stored (so
+            # art_destination reads their new dir), then persist the new artpath.
+            # Per-item with_album=True would have moved the art but dropped the
+            # artpath update, stranding the cover at the pruned old folder.
+            if moved_any:
+                album.move_art(MoveOperation.MOVE)
+                album.store(inherit=False)
 
         detail = get_album_detail(lib, album_id)
         assert detail is not None  # the album still exists; we just edited it
