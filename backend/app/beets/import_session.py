@@ -651,7 +651,21 @@ class WebImportSession(ImportSession):
             )
             is_search = choice.action is ImportAction.search and choice.search is not None
             is_rescan = choice.action is ImportAction.rescan
-            if not is_search and not is_rescan:
+            # Stale-client race: a prior search re-parked with a SHORTER candidate
+            # list, but the client still renders the old (longer) one and submits an
+            # apply for an index past the current list's end. Re-confirm instead of
+            # letting _apply_choice silently import candidates[0] (a DIFFERENT release
+            # than the user chose). A None index ("apply the top") is never stale.
+            # NOTE: this closes the common SHRINK case only (index falls out of
+            # range). A search that replaces the list with an equal-or-longer one
+            # leaves a stale in-range index looking valid; fully closing that needs a
+            # client-echoed search_revision on ImportChoice (a contract change) — a
+            # documented follow-up. The single-tab UI already resets the selection on
+            # a search_revision bump, so the residual is a narrow multi-tab race.
+            is_stale_apply = choice.action is ImportAction.apply and not self._apply_index_in_range(
+                choice, candidates
+            )
+            if not is_search and not is_rescan and not is_stale_apply:
                 result = self._apply_choice(choice, candidates)
                 if result is Action.TRACKS:
                     # Arm the astracks window: the serial pipeline delivers this
@@ -661,7 +675,12 @@ class WebImportSession(ImportSession):
                 return result
             revision += 1
             feedback: str | None
-            if is_search:
+            if is_stale_apply:
+                # The chosen index no longer exists (a prior search shrank the list
+                # out from under the client). Keep the current candidates and re-park
+                # so the user re-confirms rather than importing the wrong release.
+                feedback = "That release is no longer in the list - please pick again."
+            elif is_search:
                 assert choice.search is not None  # is_search narrowed it above
                 new_candidates, new_rec = relookup(task, choice.search)
                 if new_candidates:
@@ -906,6 +925,16 @@ class WebImportSession(ImportSession):
         )
 
     @staticmethod
+    def _apply_index_in_range(choice: ImportChoice, candidates: list[Any]) -> bool:
+        """True iff an apply choice's index selects one of the CURRENT candidates.
+
+        A ``None`` index means "apply the top" and is in range whenever any
+        candidate exists; an explicit index must fall within the current list,
+        which a prior search may have shortened out from under the client.
+        """
+        return 0 <= (choice.candidate_index or 0) < len(candidates)
+
+    @staticmethod
     def _apply_choice(choice: ImportChoice, candidates: list[Any]) -> Any:
         """Translate a user ImportChoice into a beets match/Action.
 
@@ -919,6 +948,9 @@ class WebImportSession(ImportSession):
             idx = choice.candidate_index or 0
             if 0 <= idx < len(candidates):
                 return candidates[idx]
+            # Defensive net only: _park_with_research now intercepts an out-of-range
+            # apply as a stale submit and re-parks, so this is unreachable for the
+            # attended path — but any other caller still degrades to the top match.
             return candidates[0]
         if choice.action is ImportAction.asis:
             return Action.ASIS
