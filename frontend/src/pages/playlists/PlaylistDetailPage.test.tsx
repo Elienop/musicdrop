@@ -47,6 +47,19 @@ vi.mock("@/api/usePlaylists", async (importOriginal) => {
   };
 });
 
+// A render probe for the memoized rows: PlaylistTrackRow calls formatDuration
+// exactly once per render (its only call site in the page), so counting the
+// spy's invocations tells us precisely which rows re-rendered. Passthrough (the
+// real formatter still runs) so no other test's duration text changes.
+vi.mock("@/lib/format", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/format")>();
+  return { ...actual, formatDuration: vi.fn(actual.formatDuration) };
+});
+
+import { formatDuration } from "@/lib/format";
+
+const formatDurationSpy = vi.mocked(formatDuration);
+
 const ID = "a".repeat(32);
 const BASE = `${window.location.origin}/api/playlists/${ID}`;
 const USERS = `${window.location.origin}/api/plex/users`;
@@ -133,6 +146,7 @@ describe("PlaylistDetailPage", () => {
   // register their own /api/plex/users handler (which takes precedence).
   beforeEach(() => {
     toastSuccess.mockClear();
+    formatDurationSpy.mockClear();
     server.use(http.get(USERS, () => HttpResponse.json({ users: [] })));
   });
 
@@ -203,6 +217,70 @@ describe("PlaylistDetailPage", () => {
     await userEvent.click(screen.getByRole("button", { name: /move alpha down/i }));
     // The new order is Beta (u2) then Alpha (u1) — sent as the full uid list.
     await waitFor(() => expect(body).toEqual(["u2", "u1"]));
+  });
+
+  // ——— Row memoization (perf: no whole-list reconcile on header state churn) ———
+
+  test("typing in the rename input does not re-render any track row", async () => {
+    // A few rows is enough to prove the mechanism (the real playlists hold
+    // thousands, which is what made the per-keystroke reconcile expensive).
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta"), track(3, "Gamma")])),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    // Enter rename mode — a header-only state change (no tracklist mutation).
+    await userEvent.click(screen.getByRole("button", { name: /edit name/i }));
+    const input = screen.getByRole("textbox", { name: /playlist name/i });
+    // Forget every render up to here; from now on we only churn header state.
+    formatDurationSpy.mockClear();
+    // Each keystroke bumps draftName → the page re-renders. With memoized rows
+    // whose callbacks are stable, NONE of the three rows' props change, so not
+    // one row re-renders (5 keystrokes × 3 rows = 15 avoided reconciles). The
+    // pre-fix build recreated per-row closures every render, re-rendering all.
+    await userEvent.type(input, "abcde");
+    expect(formatDurationSpy).not.toHaveBeenCalled();
+  });
+
+  test("a reorder re-renders only the rows whose position changed, not untouched rows", async () => {
+    // Distinct durations so the render probe can attribute each re-render to a
+    // specific row by its formatDuration argument.
+    const rows = [
+      { ...track(1, "Alpha"), duration_seconds: 101 },
+      { ...track(2, "Beta"), duration_seconds: 102 },
+      { ...track(3, "Gamma"), duration_seconds: 103 },
+    ];
+    server.use(http.get(BASE, () => HttpResponse.json(detail(rows))));
+    // Record the PUT without settling, so no refetch reseed muddies the count —
+    // we observe exactly the optimistic re-render.
+    reorderOverride.current = () => ({ mutate: () => {}, isError: false });
+    try {
+      renderWithProviders(<PlaylistDetailPage />, {
+        route: `/playlists/${ID}`,
+        path: "/playlists/:playlistId",
+      });
+      await screen.findByText("Alpha");
+      formatDurationSpy.mockClear();
+      // Swap Alpha (pos 1) and Beta (pos 2). Gamma (pos 3) is untouched.
+      fireEvent.click(screen.getByRole("button", { name: /move alpha down/i }));
+      await waitFor(() => {
+        const order = screen.getAllByRole("row").slice(1).map((r) => r.textContent);
+        expect(order[0]).toContain("Beta");
+      });
+      const durations = formatDurationSpy.mock.calls.map((c) => c[0]);
+      // The two swapped rows re-render (their position/isFirst/isLast changed)…
+      expect(durations).toContain(101); // Alpha
+      expect(durations).toContain(102); // Beta
+      // …while the untouched row stays memoized (never re-formatted).
+      expect(durations).not.toContain(103); // Gamma
+    } finally {
+      reorderOverride.current = null;
+    }
   });
 
   test("the reorder PUT body derives from the same snapshot as the optimistic order", async () => {
