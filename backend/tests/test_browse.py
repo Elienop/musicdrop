@@ -199,6 +199,57 @@ def test_browse_no_filters_returns_all(browse_lib: Library) -> None:
     assert len(albums) == 6
 
 
+def test_browse_albums_maps_page_without_a_per_album_items_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # M22 (N+1): once the BrowseRow cache is warm, mapping a page must NOT run a
+    # per-row album.items() query — track_count + genre come from the same scan
+    # that built the cache. Before the fix, _to_album re-fetched items per row.
+    from beets.library import Album as _BeetsAlbum
+
+    from app.beets import browse as browse_mod
+
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    _add(lib, tmp_path, artist="A", album="One", year=2015, genre="Pop", fmt="FLAC", tracks=3)
+    _add(lib, tmp_path, artist="B", album="Two", year=2015, genre="Rock", fmt="MP3", tracks=5)
+    browse_mod._ROWS.clear()
+    browse_mod._rows(lib)  # warm the cache — the one legitimate items() scan
+
+    calls = {"n": 0}
+    real_items = _BeetsAlbum.items
+
+    def counting_items(self: _BeetsAlbum, *a: Any, **k: Any) -> Any:
+        calls["n"] += 1
+        return real_items(self, *a, **k)
+
+    monkeypatch.setattr(_BeetsAlbum, "items", counting_items)
+    albums, total = browse_albums(lib, genres=[], decades=[], formats=[], limit=50, offset=0)
+
+    assert calls["n"] == 0  # no per-row items() during page mapping — the N+1 is gone
+    assert total == 2
+    assert {a.title: a.track_count for a in albums} == {"One": 3, "Two": 5}
+
+
+def test_browse_albums_preserves_null_genre_while_facet_buckets_unknown(tmp_path: Path) -> None:
+    # The cached path must keep the Album model's genre NULLABLE (genre_raw), not
+    # substitute the facet's "Unknown" default — while the facet still buckets a
+    # genre-less album under "Unknown".
+    from app.beets import browse as browse_mod
+
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    _add(lib, tmp_path, artist="A", album="Genred", year=2015, genre="Pop", fmt="FLAC", tracks=2)
+    _add(lib, tmp_path, artist="B", album="NoGenre", year=2015, genre=None, fmt="FLAC", tracks=2)
+    browse_mod._ROWS.clear()
+
+    albums, _ = browse_albums(lib, genres=[], decades=[], formats=[], limit=50, offset=0)
+    by_title = {a.title: a.genre for a in albums}
+    assert by_title["Genred"] == "Pop"
+    assert by_title["NoGenre"] is None  # model keeps null, NOT "Unknown"
+
+    genre_vals = {f.value for f in browse_facets(lib).genres}
+    assert "Unknown" in genre_vals  # facet still buckets the genre-less album
+
+
 def test_browse_single_genre(browse_lib: Library) -> None:
     albums, total = browse_albums(
         browse_lib, genres=["Pop"], decades=[], formats=[], limit=50, offset=0

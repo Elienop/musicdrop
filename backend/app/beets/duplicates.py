@@ -30,6 +30,7 @@ from app.beets.existing_album import to_existing_album
 from app.beets.library import (
     LibraryHandle,
     _album_fields,
+    _album_genre,
     _coerce_optional_str,
     _coerce_str,
 )
@@ -148,7 +149,7 @@ def _to_duplicate_album(lib: Library, album: Any, *, is_keeper: bool) -> Duplica
     items = list(album.items())
     fmt, bitrate_kbps = album_format_bitrate(items)
     return DuplicateAlbum(
-        **_album_fields(album, items),
+        **_album_fields(album, track_count=len(items), genre=_album_genre(album, items)),
         format=fmt,
         bitrate_kbps=bitrate_kbps,
         folder=album_folder(lib, items),

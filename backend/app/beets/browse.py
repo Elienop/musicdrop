@@ -31,7 +31,7 @@ from app.beets.library import (
     _coerce_optional_str,
     _coerce_str,
     _coerce_year,
-    _to_album,
+    _to_album_cached,
 )
 from app.models.album import Album
 from app.models.browse import BrowseFacets, FacetValue
@@ -56,6 +56,14 @@ class BrowseRow(NamedTuple):
     country: str
     lyrics: str
     tracks: str
+    # Carried so the album-list pages (list_albums / browse_albums / recent_albums)
+    # can build their Album models from this cached scan instead of paying a
+    # per-row ``album.items()`` query just to recompute track_count + genre.
+    # ``genre`` above is the "Unknown"-defaulted FACET value; ``genre_raw`` keeps
+    # the nullable album genre so the Album model's genre stays null (not
+    # "Unknown") exactly as ``_to_album`` returned it before.
+    track_count: int
+    genre_raw: str | None
 
 
 _LOCK = threading.Lock()
@@ -143,13 +151,16 @@ def _coerce_added(value: object) -> float:
 def _build_row(album: BeetsAlbum) -> BrowseRow:
     items = list(album.items())
     albumartist = _coerce_str(album.albumartist)
+    genre_raw = _album_genre(album, items)
     return BrowseRow(
         album_id=int(album.id),
         artist_key=albumartist.casefold(),
         album_key=_coerce_str(album.album).casefold(),
         albumartist=albumartist,
         added=_coerce_added(album.get("added")),
-        genre=_album_genre(album, items) or "Unknown",
+        track_count=len(items),
+        genre_raw=genre_raw,
+        genre=genre_raw or "Unknown",
         # "80s" means the music's era: original release year, falling back to
         # the (possibly reissue) release year when beets has no original_year.
         decade=_album_decade(_coerce_year(album.get("original_year")) or _coerce_year(album.year)),
@@ -281,5 +292,7 @@ def browse_albums(
         album = lib.get_album(row.album_id)
         # vanished mid-window — defensive, single-writer makes it near-impossible
         if album is not None:
-            albums.append(_to_album(album))
+            # track_count + genre come from this row's cache scan — no per-row
+            # album.items() query (see _to_album_cached).
+            albums.append(_to_album_cached(album, track_count=row.track_count, genre=row.genre_raw))
     return albums, len(matched)

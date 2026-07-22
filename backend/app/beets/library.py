@@ -145,26 +145,39 @@ def _coerce_duration(value: object) -> float | None:
     return seconds or None
 
 
-def _album_fields(album: BeetsAlbum, items: list[Any]) -> dict[str, Any]:
-    """Map a beets album + its items to the shared ``Album`` field set.
+def _album_fields(album: BeetsAlbum, *, track_count: int, genre: str | None) -> dict[str, Any]:
+    """Map a beets album + precomputed track_count/genre to the ``Album`` fields.
 
-    Factored out so ``_to_album`` and ``get_album_detail`` build the album
-    portion from one source of truth instead of duplicating the mapping.
+    Factored out so ``_to_album``, ``_to_album_cached`` and ``get_album_detail``
+    build the album portion from one source of truth. ``track_count`` and
+    ``genre`` are passed in (not derived from ``items`` here) so a caller that
+    already has them — the BrowseRow cache — need not re-query ``album.items()``.
     """
     return {
         "id": int(album.id),
         "album_artist": _coerce_str(album.albumartist),
         "title": _coerce_str(album.album),
         "year": _coerce_year(album.year),
-        "track_count": len(items),
-        "genre": _album_genre(album, items),
+        "track_count": track_count,
+        "genre": genre,
         "mb_albumid": _coerce_optional_str(album.mb_albumid),
     }
 
 
 def _to_album(album: BeetsAlbum) -> Album:
     items = list(album.items())
-    return Album(**_album_fields(album, items))
+    return Album(**_album_fields(album, track_count=len(items), genre=_album_genre(album, items)))
+
+
+def _to_album_cached(album: BeetsAlbum, *, track_count: int, genre: str | None) -> Album:
+    """Build an ``Album`` from a beets album + a BrowseRow's precomputed
+    track_count/genre, WITHOUT a per-album ``items()`` query.
+
+    The browse/list/recent pages already hold these two values from the single
+    cache scan that built the BrowseRows; calling ``_to_album`` (which re-runs
+    ``album.items()``) once per page row is the avoidable N+1 this replaces.
+    """
+    return Album(**_album_fields(album, track_count=track_count, genre=genre))
 
 
 def _to_track(item: Any) -> Track:
@@ -195,7 +208,7 @@ def get_album_detail(lib: Library, album_id: int) -> AlbumDetail | None:
         key=lambda t: (t.disc, t.track),
     )
     return AlbumDetail(
-        **_album_fields(album, items),
+        **_album_fields(album, track_count=len(items), genre=_album_genre(album, items)),
         tracks=tracks,
         release=release_identity(album, album.mb_albumid),
     )
@@ -392,7 +405,9 @@ def list_albums(
         # Vanished between cache build and load — skip defensively; the cache
         # invalidates on every mutation, so this is belt-and-suspenders.
         if album is not None:
-            albums.append(_to_album(album))
+            # track_count + genre come from the cache row that this same scan
+            # built — no per-row album.items() query (see _to_album_cached).
+            albums.append(_to_album_cached(album, track_count=row.track_count, genre=row.genre_raw))
     return albums, total
 
 

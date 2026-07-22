@@ -12,7 +12,7 @@ from __future__ import annotations
 import heapq
 from typing import Any
 
-from app.beets.library import _to_album
+from app.beets.library import _to_album_cached
 from app.models.album import Album
 from app.models.stats import LibraryStats, LibraryStatsResponse
 
@@ -62,7 +62,8 @@ def recent_albums(lib: Any, *, limit: int = 8) -> list[Album]:
     for r in winners:
         album = lib.get_album(r.album_id)
         if album is not None:
-            albums.append(_to_album(album))
+            # track_count + genre from the cache row — no per-row items() query.
+            albums.append(_to_album_cached(album, track_count=r.track_count, genre=r.genre_raw))
     return albums
 
 
