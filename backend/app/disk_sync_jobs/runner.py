@@ -5,7 +5,6 @@ it on a daemon thread so the API start endpoint returns immediately."""
 from __future__ import annotations
 
 import logging
-import threading
 from collections.abc import Callable
 
 from app.beets.disk_sync import LibraryRootUnavailableError, run_disk_sync
@@ -52,9 +51,11 @@ def start_backfill(
     *,
     on_complete: Callable[[], None] | None = None,
 ) -> None:
-    """Spawn the sync on a daemon thread (non-blocking)."""
-    threading.Thread(
-        target=lambda: sweep(reg, handle, on_complete=on_complete),
+    """Spawn the sync on a daemon thread (non-blocking).
+
+    Via ``reg.spawn_worker`` so a refused ``Thread.start()`` frees the slot
+    instead of wedging every library mutation (see SingleSlotRegistry)."""
+    reg.spawn_worker(
+        lambda: sweep(reg, handle, on_complete=on_complete),
         name="musicdrop-disk-sync",
-        daemon=True,
-    ).start()
+    )

@@ -10,7 +10,6 @@ service/client are bound to the MAIN loop and must NOT be reused here.
 from __future__ import annotations
 
 import asyncio
-import threading
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -143,9 +142,12 @@ def start_backfill(
     artist: str | None = None,
     on_complete: Callable[[], None] | None = None,
 ) -> None:
-    """Spawn the sweep on a daemon thread that owns its event loop (non-blocking)."""
-    threading.Thread(
-        target=lambda: asyncio.run(
+    """Spawn the sweep on a daemon thread that owns its event loop.
+
+    Via ``reg.spawn_worker`` so a refused ``Thread.start()`` frees the slot
+    instead of wedging every library mutation (see SingleSlotRegistry)."""
+    reg.spawn_worker(
+        lambda: asyncio.run(
             sweep_async(
                 reg,
                 lib,
@@ -158,5 +160,4 @@ def start_backfill(
             )
         ),
         name="musicdrop-artist-art-backfill",
-        daemon=True,
-    ).start()
+    )

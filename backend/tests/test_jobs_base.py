@@ -145,3 +145,52 @@ def test_lifecycle_methods_noop_before_start() -> None:
     assert reg.snapshot() is None
     assert reg.is_running() is False
     assert reg.should_stop() is False
+
+
+class _SyncThread:
+    """A Thread stand-in that runs its target synchronously on start() — keeps
+    the test deterministic and leaks no real daemon into teardown."""
+
+    def __init__(self, *, target: object, name: str, daemon: bool) -> None:
+        self._target = target
+
+    def start(self) -> None:
+        self._target()  # type: ignore[operator]  # target is a callable in the test
+
+
+def test_spawn_worker_runs_the_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    reg = _FakeRegistry()
+    reg.start()
+    monkeypatch.setattr("app.jobs.base.threading.Thread", _SyncThread)
+    ran: list[int] = []
+    reg.spawn_worker(lambda: ran.append(1), name="musicdrop-fake")
+    assert ran == [1]
+    assert reg.is_running() is True
+
+
+def test_spawn_worker_frees_the_slot_when_the_thread_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Thread.start() can raise under resource exhaustion. Without the guard the
+    # slot stays stuck at phase="running" forever (no worker will ever finish
+    # it), and since library_job_active() unions these slots that wedges EVERY
+    # library mutation until restart. spawn_worker must fail the job (release the
+    # slot) and re-raise.
+    reg = _FakeRegistry()
+    reg.start()
+
+    class _BoomThread:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr("app.jobs.base.threading.Thread", _BoomThread)
+    with pytest.raises(RuntimeError, match="can't start new thread"):
+        reg.spawn_worker(lambda: None, name="musicdrop-fake")
+
+    assert reg.is_running() is False  # slot released — mutations not wedged
+    snap = reg.snapshot()
+    assert snap is not None and snap.phase == "failed"
+    assert snap.error and "musicdrop-fake" in snap.error

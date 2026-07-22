@@ -17,6 +17,7 @@ beets-free by construction — no beets import belongs here.
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
@@ -89,3 +90,22 @@ class SingleSlotRegistry(Generic[JobT]):
                 self._job.phase = "failed"
                 self._job.error = message
                 self._job.current = None
+
+    def spawn_worker(self, target: Callable[[], None], *, name: str) -> None:
+        """Spawn the job's daemon worker, freeing the slot if the thread refuses.
+
+        ``Thread.start()`` can raise under resource exhaustion; without this
+        guard the just-claimed slot would stay stuck at ``phase="running"``
+        forever (no worker will ever run to finish it), and since
+        ``library_job_active()`` unions these four slots that wedges EVERY
+        library mutation until restart. On failure, fail the job — releasing the
+        slot and surfacing the error — before re-raising, mirroring the import
+        registry's own Thread.start guard. Call AFTER ``start`` has claimed the
+        slot; the API's 500 then rides the re-raise.
+        """
+        thread = threading.Thread(target=target, name=name, daemon=True)
+        try:
+            thread.start()
+        except Exception as exc:
+            self.fail(f"could not start the {name} worker: {exc}")
+            raise
