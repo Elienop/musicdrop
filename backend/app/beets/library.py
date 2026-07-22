@@ -10,6 +10,7 @@ import uuid
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -203,15 +204,22 @@ def get_album_detail(lib: Library, album_id: int) -> AlbumDetail | None:
 def list_artists(lib: Library) -> list[Artist]:
     """Return the artist roster: one entry per distinct ``albumartist``.
 
-    beets has no first-class artist entity, so we derive it by grouping albums
-    on ``albumartist`` and counting distinct albums per artist. Sorted by name
-    (case-insensitive) for a stable, readable roster.
+    beets has no first-class artist entity, so we derive it by grouping albums on
+    ``albumartist`` and counting distinct albums per artist. Sourced from the
+    shared ``BrowseRow`` cache (ONE scan, invalidated on every
+    ``emit_library_changed``) rather than a fresh ``lib.albums()`` materialization
+    — the roster is rebuilt on every debounced search keystroke, and the cache
+    already holds ``albumartist`` per album. Sorted by name (case-insensitive).
     """
+    # Lazy import: browse.py imports helpers from this module at import time, so a
+    # top-level import back would cycle (mirrors list_albums).
+    from app.beets.browse import _rows
+
     counts: dict[str, int] = {}
-    for album in lib.albums():
-        name = _coerce_str(album.albumartist)
-        # _coerce_str does not strip, so a null/whitespace albumartist would
-        # emit a blank, nameless card; drop those albums from the roster.
+    for row in _rows(lib):
+        name = row.albumartist
+        # A null/whitespace albumartist would emit a blank, nameless card; drop
+        # those albums from the roster (BrowseRow.albumartist is already _coerce_str'd).
         if not name.strip():
             continue
         counts[name] = counts.get(name, 0) + 1
@@ -270,21 +278,24 @@ def search(lib: Library, *, query: str, limit: int) -> SearchResults:
 
     # Tracks: beets free-text query. A malformed query raises ParsingError
     # (an InvalidQueryError/ValueError subclass) from the parser; catch it so a
-    # bad term yields no tracks rather than a 500.
+    # bad term yields no tracks rather than a 500. Keep the Results lazy: len()
+    # returns the raw row count without constructing any Item (for the
+    # SQL-evaluable free-text case), and islice materializes only `limit` — vs
+    # list() which built a full Item model for every one of the (up to 75k) rows.
     try:
-        all_items = list(lib.items(query))
+        track_results = lib.items(query)
+        track_total = len(track_results)
+        tracks = [_to_search_track(item) for item in islice(track_results, limit)]
     except ParsingError:
-        all_items = []
-    track_total = len(all_items)
-    tracks = [_to_search_track(item) for item in all_items[:limit]]
+        track_total, tracks = 0, []
 
     # Albums: same free-text query, mapped through the shared _to_album.
     try:
-        all_album_matches = list(lib.albums(query))
+        album_results = lib.albums(query)
+        album_total = len(album_results)
+        albums = [_to_album(album) for album in islice(album_results, limit)]
     except ParsingError:
-        all_album_matches = []
-    album_total = len(all_album_matches)
-    albums = [_to_album(album) for album in all_album_matches[:limit]]
+        album_total, albums = 0, []
 
     # Artists: no beets query entity, so filter the derived roster by a
     # case-insensitive substring match on the name.
@@ -323,18 +334,20 @@ def search_typed(
     if query.strip():
         if entity == "tracks":
             try:
-                all_items = list(lib.items(query))
+                results = lib.items(query)
+                total = len(results)
+                tracks = [
+                    _to_search_track(item) for item in islice(results, offset, offset + limit)
+                ]
             except ParsingError:
-                all_items = []
-            total = len(all_items)
-            tracks = [_to_search_track(item) for item in all_items[offset : offset + limit]]
+                total, tracks = 0, []
         elif entity == "albums":
             try:
-                all_album_matches = list(lib.albums(query))
+                album_results = lib.albums(query)
+                total = len(album_results)
+                albums = [_to_album(a) for a in islice(album_results, offset, offset + limit)]
             except ParsingError:
-                all_album_matches = []
-            total = len(all_album_matches)
-            albums = [_to_album(a) for a in all_album_matches[offset : offset + limit]]
+                total, albums = 0, []
         else:
             needle = query.casefold()
             matches = [a for a in list_artists(lib) if needle in a.name.casefold()]
