@@ -81,6 +81,9 @@ def _session(bridge: ImportBridge, *, trash_dir: Path | None = None) -> WebImpor
     session._bank_dir = None
     # __init__ is skipped, so default the apply directive the hooks now read.
     session._directive = None
+    # __init__ is skipped, so set the toppaths _task_folder scopes by (beets sets
+    # these in ImportSession.__init__). The tasks import from /incoming.
+    session.paths = [b"/incoming"]
     return session
 
 

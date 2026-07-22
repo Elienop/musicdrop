@@ -1508,23 +1508,64 @@ def test_task_folder_is_the_common_parent_of_multidisc_paths() -> None:
     # A deemix multi-disc layout collapses to paths=[CD1, CD2, CD3] (the album
     # parent is excluded because its loose files defeat the nested collapse). The
     # bank folder must be the album dir, not CD1, or the apply re-imports CD1 only.
+    session = _make_session(ImportBridge())
+    session.paths = [b"/dl"]
     task = ImportTask(
         toppath=None,
         paths=[b"/dl/Album/CD1", b"/dl/Album/CD2", b"/dl/Album/CD3"],
         items=[],
     )
-    assert WebImportSession._task_folder(task) == "/dl/Album"
+    assert session._task_folder(task) == "/dl/Album"
 
 
 def test_task_folder_single_path_is_unchanged() -> None:
     # A normal one-folder album: common-parent of a single path is that path.
+    session = _make_session(ImportBridge())
+    session.paths = [b"/dl"]
     task = ImportTask(toppath=None, paths=[b"/dl/Album"], items=[])
-    assert WebImportSession._task_folder(task) == "/dl/Album"
+    assert session._task_folder(task) == "/dl/Album"
 
 
 def test_task_folder_empty_paths_is_blank() -> None:
+    session = _make_session(ImportBridge())
     task = ImportTask(toppath=None, paths=[], items=[])
-    assert WebImportSession._task_folder(task) == ""
+    assert session._task_folder(task) == ""
+
+
+def test_task_folder_no_toppaths_falls_back_to_full_commonpath() -> None:
+    # Degenerate session (no toppaths recorded): with nothing to scope by, the
+    # folder is the plain common-parent of every path — the pre-fix behavior.
+    session = _make_session(ImportBridge())
+    session.paths = []
+    task = ImportTask(toppath=None, paths=[b"/dl/Album/CD1", b"/dl/Album/CD2"], items=[])
+    assert session._task_folder(task) == "/dl/Album"
+
+
+def test_task_folder_merged_task_uses_source_folder_not_library_ancestor() -> None:
+    # A MERGE decision makes beets build ImportTask(None, source_paths +
+    # duplicate LIBRARY file paths). The naive common-parent of an inbox folder
+    # and a library file is a bogus ancestor ("/"), which the feed then shows and
+    # a Rescan would os.walk across the whole library mount. Scoping to the paths
+    # under a session toppath recovers the real incoming source folder.
+    session = _make_session(ImportBridge())
+    session.paths = [b"/inbox"]
+    task = ImportTask(
+        toppath=None,
+        paths=[b"/inbox/Album", b"/music/Artist/Album/01.flac", b"/music/Artist/Album/02.flac"],
+        items=[],
+    )
+    assert session._task_folder(task) == "/inbox/Album"
+
+
+def test_task_folder_merged_multidisc_source_stays_scoped() -> None:
+    session = _make_session(ImportBridge())
+    session.paths = [b"/inbox"]
+    task = ImportTask(
+        toppath=None,
+        paths=[b"/inbox/Album/CD1", b"/inbox/Album/CD2", b"/music/Artist/Album/01.flac"],
+        items=[],
+    )
+    assert session._task_folder(task) == "/inbox/Album"
 
 
 def test_albums_in_dir_collapses_deemix_multidisc(tmp_path: Path) -> None:
@@ -1712,6 +1753,7 @@ def test_rescan_choice_rereads_swaps_items_and_reparks(
     bridge = ImportBridge()
     session = _make_session(bridge)
     task = _make_task(match, monkeypatch, BeetsRec.medium)
+    session.paths = [b"/music"]  # a real session always has toppaths; /music/album is under it
     original_items = task.items
     new_items = list(other.mapping.keys())  # the fresh read (one file deleted)
     monkeypatch.setattr(session_mod, "_read_items", lambda p: new_items)
@@ -1758,6 +1800,7 @@ def test_rescan_with_no_audio_left_keeps_state_and_sets_feedback(
     bridge = ImportBridge()
     session = _make_session(bridge)
     task = _make_task(match, monkeypatch, BeetsRec.medium)
+    session.paths = [b"/music"]  # a real session always has toppaths; /music/album is under it
     original_items = task.items
     monkeypatch.setattr(session_mod, "_read_items", lambda p: [])
 
@@ -1797,6 +1840,7 @@ def test_rescan_with_no_candidates_never_half_swaps(
     bridge = ImportBridge()
     session = _make_session(bridge)
     task = _make_task(match, monkeypatch, BeetsRec.medium)
+    session.paths = [b"/music"]  # a real session always has toppaths; /music/album is under it
     original_items = task.items
     monkeypatch.setattr(session_mod, "_read_items", lambda p: [Item(title="x")])
     monkeypatch.setattr(
@@ -1829,3 +1873,51 @@ def test_rescan_with_no_candidates_never_half_swaps(
     assert done.wait(timeout=2.0)
     t.join(timeout=2.0)
     assert task.match is match  # the original candidate applied
+
+
+def test_rescan_refused_when_folder_escapes_the_session_toppaths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Defense-in-depth for the merge shape: if the parked folder is not under a
+    # session toppath (a task whose paths are all library files), a Rescan must
+    # NOT os.walk it — that ancestor can be the whole library mount. The guard
+    # refuses with feedback and never reaches _read_items.
+    import app.beets.import_session as session_mod
+
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    session.paths = [b"/inbox"]  # the real import source
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    # A merged-away shape: every path is a LIBRARY file, none under /inbox, so
+    # _task_folder falls back to "/music/Artist/Album" — outside the toppath.
+    task.paths = [b"/music/Artist/Album/01.flac", b"/music/Artist/Album/02.flac"]
+    original_items = task.items
+
+    def _boom(_p: object) -> list[Item]:
+        raise AssertionError("rescan must not read a folder outside the session toppaths")
+
+    monkeypatch.setattr(session_mod, "_read_items", _boom)
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    first = bridge.get_parked(timeout=2.0)
+    assert first is not None
+    bridge.push_choice(first.album_index, ImportChoice(action=ImportAction.rescan))
+
+    second = bridge.get_parked(timeout=2.0)
+    assert second is not None
+    assert second.candidate.search_feedback == "Rescan isn't available for this album."
+    assert task.items is original_items  # nothing swapped
+    assert second.candidate.search_revision == 1
+
+    bridge.push_choice(second.album_index, ImportChoice(action=ImportAction.skip))
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)

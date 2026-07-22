@@ -671,6 +671,12 @@ class WebImportSession(ImportSession):
                     feedback = None
                 else:
                     feedback = "No release found. Showing your previous matches."
+            elif not folder or not self._under_toppath(folder):
+                # Rescan guard: an empty folder, or one outside every session
+                # toppath (a MERGE task's library-spanning ancestor), must never
+                # be os.walk'd — that can traverse the whole library mount and
+                # swap task.items to every file under it. Refuse instead.
+                feedback = "Rescan isn't available for this album."
             else:
                 # Rescan: the user changed the folder on purpose — re-read it
                 # from disk and re-run beets' DEFAULT first-scan lookup.
@@ -920,19 +926,38 @@ class WebImportSession(ImportSession):
             return Action.TRACKS
         return Action.SKIP
 
-    @staticmethod
-    def _task_folder(task: ImportTask) -> str:
-        # The album's folder = the common parent of the task's paths. For a
+    def _under_toppath(self, path: str) -> bool:
+        """True iff ``path`` is, or lives inside, one of the session toppaths (the
+        user-chosen import-source roots). Distinguishes a real source folder from
+        the library-spanning ancestor a MERGE task's mixed paths would produce."""
+        for raw in self.paths:
+            top = os.fsdecode(raw)
+            if path == top or path.startswith(top + os.sep):
+                return True
+        return False
+
+    def _task_folder(self, task: ImportTask) -> str:
+        # The album's source folder = the common parent of the task's paths. For a
         # one-folder album this is that folder; for a multi-disc task whose paths
         # are [CD1, CD2, CD3] (a deemix layout excludes the parent) it is the
         # album dir — NOT paths[0]=CD1, which would bank/re-import only disc 1.
+        #
+        # A MERGE decision makes beets rebuild the task as ImportTask(None,
+        # source_paths + duplicate LIBRARY file paths); the naive common-parent of
+        # an inbox folder and a library file escapes to a bogus ancestor ("/"),
+        # which the feed would show and a Rescan would os.walk across the whole
+        # library. Scope to the paths under a session toppath so the folder stays
+        # the real incoming source; fall back to the full set only when nothing is
+        # under a toppath (a degenerate / library-reimport shape).
         if not task.paths:
             return ""
         decoded = [os.fsdecode(p) for p in task.paths]
+        scoped = [p for p in decoded if self._under_toppath(p)]
+        candidates = scoped or decoded
         try:
-            return os.path.commonpath(decoded)
+            return os.path.commonpath(candidates)
         except ValueError:  # mixed/relative paths — never happens for beets toppaths
-            return decoded[0]
+            return candidates[0]
 
 
 def run_import_worker(
