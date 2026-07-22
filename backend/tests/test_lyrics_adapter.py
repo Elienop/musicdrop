@@ -38,6 +38,22 @@ class _FakePlugin:
         self.backends = backends
 
 
+def test_store_lyrics_persists_mtime_so_disk_sync_gate_stays_shut(edit_lib: Library) -> None:
+    """Writing the lyrics tag bumps the file's on-disk mtime; the DB store must run
+    AFTER the write so that fresh mtime is persisted. Storing BEFORE the write leaves
+    the DB mtime behind the file, and disk-sync's staleness gate then re-probes every
+    lyric-written track forever (full MediaFile parse per file over HDD/NAS)."""
+    from app.beets.lyrics import _store_lyrics
+
+    item = _first_item(edit_lib)
+    _store_lyrics(item, Lyrics("la la la", "lrclib", "u"), write=True)
+
+    row = edit_lib.get_item(item.id)
+    assert row is not None
+    # DB mtime equals the file the write just touched -> the mtime gate is shut.
+    assert row.mtime == int(os.path.getmtime(os.fsdecode(row.path)))
+
+
 def test_fetch_item_found_stores_and_writes(edit_lib: Library) -> None:
     from app.beets.lyrics import fetch_item_lyrics
 

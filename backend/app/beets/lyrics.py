@@ -210,8 +210,14 @@ def _store_lyrics(item: Any, lyrics: Lyrics, *, write: bool) -> bool:
         value = getattr(lyrics, key, None)
         if value:
             item[f"lyrics_{key}"] = value
-    item.store()
+    # Write the file tag BEFORE the DB store (beets' Item.try_sync order): try_write
+    # bumps the file's mtime and sets item.mtime = current_mtime() in memory, so the
+    # store AFTER it persists that fresh mtime. Storing first left the DB mtime behind
+    # the file, and disk-sync's staleness gate then re-probed every lyric-written
+    # track forever. store() runs regardless of the write gate (the DB row + sidecar
+    # are non-destructive and are the whole point for Plex).
     written = bool(item.try_write()) if write else False
+    item.store()
     write_lyric_sidecar(item, lyrics)
     return written
 
