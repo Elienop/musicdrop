@@ -134,4 +134,54 @@ describe("PlexSettingsPanel", () => {
 
     expect(await screen.findByText(/living room/i)).toBeInTheDocument();
   });
+
+  test("a later save failure clears the stale success message", async () => {
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings({ base_url: "http://plex:32400" }))),
+      http.post(TEST_URL, () =>
+        HttpResponse.json({ ok: true, server_name: "Living Room", error: null }),
+      ),
+      http.put(SETTINGS, () => new HttpResponse(null, { status: 500 })),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    const input = await screen.findByLabelText(/base url/i);
+    // A successful test shows the green "Connected to Living Room." status.
+    await userEvent.click(screen.getByRole("button", { name: /test connection/i }));
+    expect(await screen.findByText(/living room/i)).toBeInTheDocument();
+
+    // Editing and saving into a failure must clear that stale success — the UI
+    // must not show a green "connected" line next to a red "couldn't save".
+    await userEvent.type(input, "9");
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(
+      await screen.findByText(/couldn.t save plex settings/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/living room/i)).not.toBeInTheDocument();
+  });
+
+  test("a later successful test clears a stale save-failure alert", async () => {
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings({ base_url: "http://plex:32400" }))),
+      http.put(SETTINGS, () => new HttpResponse(null, { status: 500 })),
+      http.post(TEST_URL, () =>
+        HttpResponse.json({ ok: true, server_name: "Living Room", error: null }),
+      ),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    // Save the (clean) form into a failure — the red "couldn't save" alert shows.
+    await screen.findByLabelText(/base url/i);
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(
+      await screen.findByText(/couldn.t save plex settings/i),
+    ).toBeInTheDocument();
+
+    // A subsequent successful test must clear the stale failure alert.
+    await userEvent.click(screen.getByRole("button", { name: /test connection/i }));
+    expect(await screen.findByText(/living room/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/couldn.t save plex settings/i),
+    ).not.toBeInTheDocument();
+  });
 });
