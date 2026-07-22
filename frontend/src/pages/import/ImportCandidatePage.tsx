@@ -3,6 +3,7 @@ import { useLocation, useNavigate, useParams, useSearchParams } from "react-rout
 
 import type { Candidate, ImportSearch } from "@/api/useImport";
 import {
+  CandidateNotFoundError,
   importCoverUrl,
   useImportCandidate,
   useImportDuplicates,
@@ -14,6 +15,7 @@ import { AlreadyInLibrary } from "@/components/import/AlreadyInLibrary";
 import { CandidateReview } from "@/components/import/CandidateReview";
 import { ReviewControlBar } from "@/components/import/ReviewControlBar";
 import { EmptyState } from "@/components/system/EmptyState";
+import { ErrorState } from "@/components/system/ErrorState";
 import { PageSkeleton } from "@/components/system/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -43,7 +45,7 @@ export function ImportCandidatePage() {
   // While a release search is in flight we hold the baseline search_revision and
   // poll the candidate; the worker re-parks with a bumped revision when it lands.
   const [searching, setSearching] = useState<{ baseline: number } | null>(null);
-  const { data, isPending, isError, refetch } = useImportCandidate(
+  const { data, error, isPending, isError, refetch } = useImportCandidate(
     jobId ?? "",
     // `validIndex ? index : 0` keeps the (disabled) query key out of NaN when the
     // index is invalid; the query never fires anyway since `enabled` is false.
@@ -56,6 +58,15 @@ export function ImportCandidatePage() {
       setSearching(null);
     }
   }, [searching, data]);
+  // If the candidate 404s while a search/rescan is in flight (the album was
+  // decided from another tab, or the job died mid-search), no revision bump ever
+  // arrives — clear `searching` so the 700ms poll stops (refetchInterval -> false)
+  // and the panel unfreezes, instead of hammering the 404 under a stale notice.
+  useEffect(() => {
+    if (searching && error instanceof CandidateNotFoundError) {
+      setSearching(null);
+    }
+  }, [searching, error]);
   // Cold-load focus repair (see useDeferredH1Focus). The !enabled and error
   // notices render no h1, so the hook is a quiet no-op there.
   useDeferredH1Focus(!isPending && !isError);
@@ -78,13 +89,26 @@ export function ImportCandidatePage() {
     );
   }
   if (isError) {
-    // A 404 here means the album is no longer parked (already decided / the
-    // worker advanced). Treat it as "return to the feed", not a hard error.
+    // A 404 (CandidateNotFoundError) means the album is no longer parked
+    // (already decided / the worker advanced). Treat it as "return to the feed"
+    // with the calm notice. ANY other error is transient (5xx / network blip;
+    // `retry: false` means one is enough) — surface a retryable error instead of
+    // wrongly telling the user their still-parked decision is gone.
+    if (error instanceof CandidateNotFoundError) {
+      return (
+        <Shell backTo={backTo} backLabel={backLabel}>
+          <Notice
+            title="This album isn’t waiting for review"
+            body="It may already be decided. Head back to see what's pending."
+            onRetry={() => void refetch()}
+          />
+        </Shell>
+      );
+    }
     return (
       <Shell backTo={backTo} backLabel={backLabel}>
-        <Notice
-          title="This album isn’t waiting for review"
-          body="It may already be decided. Head back to see what's pending."
+        <ErrorState
+          message="Couldn’t load this album for review. The library didn’t respond. Check the backend and try again."
           onRetry={() => void refetch()}
         />
       </Shell>

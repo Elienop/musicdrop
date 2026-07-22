@@ -87,6 +87,18 @@ export class ImportJobNotFoundError extends Error {
   }
 }
 
+/** Thrown when a parked album's candidate is no longer available (backend 404 —
+ * already decided, or the worker advanced). Distinct from a transient transport
+ * failure so the review screen can show the calm "already decided" notice for a
+ * true 404 while STILL surfacing a retryable error for a 5xx/network blip (which
+ * `retry: false` would otherwise mislabel as "gone"), and stop any live poll. */
+export class CandidateNotFoundError extends Error {
+  constructor() {
+    super("Import candidate not found");
+    this.name = "CandidateNotFoundError";
+  }
+}
+
 async function startImport(
   body: StartImportRequest,
 ): Promise<StartImportResponse> {
@@ -185,18 +197,27 @@ export function useImportJob(jobId: string | undefined) {
 }
 
 async function fetchCandidate(jobId: string, index: number): Promise<Candidate> {
-  return unwrap(
-    await client.GET("/api/import/{job_id}/albums/{index}", {
-      params: { path: { job_id: jobId, index } },
-    }),
-    "Failed to load candidate",
-  );
+  const result = await client.GET("/api/import/{job_id}/albums/{index}", {
+    params: { path: { job_id: jobId, index } },
+  });
+  // A 404 means the album is no longer parked (already decided / the worker
+  // advanced) — surface it distinctly (like fetchJob's 404), NOT through the
+  // generic unwrap. That lets the page tell a genuine "gone" apart from a
+  // transient failure, and stop any live poll.
+  if (result.response.status === 404) {
+    throw new CandidateNotFoundError();
+  }
+  return unwrap(result, "Failed to load candidate");
 }
 
 /**
  * Fetch the full Candidate for one parked album
  * (`GET /api/import/{job}/albums/{index}`). `enabled` gates it so it only fires
  * when the review screen opens (it 404s once the album is no longer parked).
+ * `refetchInterval` is wrapped so a 404 (`CandidateNotFoundError`) stops the
+ * poll for good — a caller can hold it live (while a search re-parks the album)
+ * without hammering a 404 once the album is gone. `retry: false` means one
+ * transient error surfaces immediately; the page shows a retryable error there.
  */
 export function useImportCandidate(
   jobId: string,
@@ -209,7 +230,14 @@ export function useImportCandidate(
     queryFn: () => fetchCandidate(jobId, index),
     enabled,
     retry: false,
-    refetchInterval,
+    refetchInterval: (query) => {
+      // A not-found candidate is gone for good — stop polling. Other transient
+      // errors keep the caller's cadence (they may recover).
+      if (query.state.error instanceof CandidateNotFoundError) {
+        return false;
+      }
+      return refetchInterval;
+    },
   });
 }
 
