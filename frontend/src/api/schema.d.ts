@@ -3003,6 +3003,11 @@ export interface components {
          *     ``art:changed`` = image BYTES changed (cover install, artist-image override);
          *     the frontend remounts ``<img>`` elements only on this variant so routine
          *     edits don't flicker the roster.
+         *
+         *     ``scope`` names WHICH asset changed — ``"album:123"`` / ``"artist:Radiohead"``
+         *     — so a tab remounts just that image instead of every ``<img>`` on the page
+         *     (a browse grid can hold 192 covers). ``None`` = library-wide: bump
+         *     everything, which is what a multi-artist sweep or a reconnect catch-up needs.
          */
         LibraryChangedEvent: {
             /**
@@ -3011,6 +3016,8 @@ export interface components {
              * @enum {string}
              */
             type: "library:changed" | "art:changed";
+            /** Scope */
+            scope?: string | null;
         };
         /**
          * LibraryStats
@@ -3356,6 +3363,8 @@ export interface components {
             entries: components["schemas"]["ImportEntry"][];
             /** Plex Source */
             plex_source?: string | null;
+            /** Plex Rating Key */
+            plex_rating_key?: string | null;
         };
         /** PlaylistImportPreview */
         PlaylistImportPreview: {
@@ -3372,13 +3381,17 @@ export interface components {
         };
         /**
          * PlaylistImportPreviewRequest
-         * @description Exactly one source: uploaded m3u files OR named Plex playlists.
+         * @description Exactly one source: uploaded m3u files OR Plex playlists by ratingKey.
+         *
+         *     Plex selections travel by ``ratingKey``, never by title — Plex allows
+         *     duplicate titles, and keying by title makes one of a same-titled pair
+         *     permanently unreachable.
          */
         PlaylistImportPreviewRequest: {
             /** Files */
             files?: components["schemas"]["PlaylistImportFile"][] | null;
-            /** Plex Playlists */
-            plex_playlists?: string[] | null;
+            /** Plex Rating Keys */
+            plex_rating_keys?: string[] | null;
         };
         /** PlaylistImportPreviewResponse */
         PlaylistImportPreviewResponse: {
@@ -3470,12 +3483,18 @@ export interface components {
         /**
          * PlexPlaylistInfo
          * @description One audio playlist on the Plex server (import source listing).
+         *
+         *     ``rating_key`` is the playlist's Plex identity (``ratingKey``, stringified).
+         *     Titles are NOT unique on Plex — two playlists may share one — so every
+         *     selection travels by key; ``name`` is display only.
          */
         PlexPlaylistInfo: {
             /** Name */
             name: string;
             /** Track Count */
             track_count: number;
+            /** Rating Key */
+            rating_key: string;
         };
         /** PlexPlaylistList */
         PlexPlaylistList: {

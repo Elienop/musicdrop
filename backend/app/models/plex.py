@@ -30,10 +30,16 @@ class PlexSectionList(BaseModel):
 
 
 class PlexPlaylistInfo(BaseModel):
-    """One audio playlist on the Plex server (import source listing)."""
+    """One audio playlist on the Plex server (import source listing).
+
+    ``rating_key`` is the playlist's Plex identity (``ratingKey``, stringified).
+    Titles are NOT unique on Plex — two playlists may share one — so every
+    selection travels by key; ``name`` is display only.
+    """
 
     name: str
     track_count: int
+    rating_key: str
 
 
 class PlexPlaylistList(BaseModel):

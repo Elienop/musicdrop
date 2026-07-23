@@ -70,19 +70,24 @@ class PlaylistImportFile(BaseModel):
 
 
 class PlaylistImportPreviewRequest(BaseModel):
-    """Exactly one source: uploaded m3u files OR named Plex playlists."""
+    """Exactly one source: uploaded m3u files OR Plex playlists by ratingKey.
+
+    Plex selections travel by ``ratingKey``, never by title — Plex allows
+    duplicate titles, and keying by title makes one of a same-titled pair
+    permanently unreachable.
+    """
 
     files: list[PlaylistImportFile] | None = None
-    plex_playlists: list[str] | None = None
+    plex_rating_keys: list[str] | None = None
 
     @model_validator(mode="after")
     def _exactly_one_source(self) -> Self:
-        if (self.files is None) == (self.plex_playlists is None):
-            raise ValueError("provide exactly one of files or plex_playlists")
+        if (self.files is None) == (self.plex_rating_keys is None):
+            raise ValueError("provide exactly one of files or plex_rating_keys")
         if self.files is not None and not self.files:
             raise ValueError("files must not be empty")
-        if self.plex_playlists is not None and not self.plex_playlists:
-            raise ValueError("plex_playlists must not be empty")
+        if self.plex_rating_keys is not None and not self.plex_rating_keys:
+            raise ValueError("plex_rating_keys must not be empty")
         return self
 
 
@@ -107,9 +112,13 @@ class PlaylistImportPlaylist(BaseModel):
     name: str
     description: str = ""
     entries: list[ImportEntry]
-    # The source Plex playlist this was imported from, if any — Task 3 pulls its
-    # poster to seed the new playlist's cover art. Inert until then.
+    # The source Plex playlist's TITLE, if any — the user-facing origin, kept
+    # verbatim (never the edited name, never a decorated "plex:<name>").
     plex_source: str | None = None
+    # The source Plex playlist's IDENTITY (``ratingKey``). Titles aren't unique
+    # on Plex, so the poster pull resolves by this; ``plex_source`` remains the
+    # display/back-compat value and is only the fallback when no key is sent.
+    plex_rating_key: str | None = None
 
 
 class PlaylistImportRequest(BaseModel):

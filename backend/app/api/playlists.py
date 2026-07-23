@@ -519,7 +519,7 @@ async def import_preview_endpoint(
             parsed = await run_in_threadpool(
                 playlists_pull.pull_playlist_entries,
                 plex_store.get(),
-                body.plex_playlists or [],
+                body.plex_rating_keys or [],
             )
         except PlexNotConfigured as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -603,10 +603,15 @@ async def import_commit_endpoint(
             logger.warning("Playlist import failed for %r", name, exc_info=True)
             failed.append(PlaylistImportFailure(name=name, error="Couldn't save this playlist."))
             continue
-        if playlist.plex_source:
+        if playlist.plex_rating_key or playlist.plex_source:
             try:
+                # The ratingKey identifies the source playlist; the title is only
+                # the fallback for a body minted before keys were carried.
                 poster = await run_in_threadpool(
-                    playlists_pull.download_poster, plex_store.get(), playlist.plex_source
+                    playlists_pull.download_poster,
+                    plex_store.get(),
+                    playlist.plex_rating_key,
+                    playlist.plex_source,
                 )
                 if poster is not None:
                     data, image_format = poster

@@ -22,12 +22,13 @@ export type PlaylistImportFile = components["schemas"]["PlaylistImportFile"];
 /** A Plex playlist the import source picker lists (generated contract). */
 export type PlexPlaylistInfo = components["schemas"]["PlexPlaylistInfo"];
 
-/** Exactly one source per preview request: uploaded files OR named Plex
- * playlists (the generated `PlaylistImportPreviewRequest` union, narrowed to
- * the two shapes the UI actually sends). */
+/** Exactly one source per preview request: uploaded files OR Plex playlists by
+ * `rating_key` (the generated `PlaylistImportPreviewRequest` union, narrowed to
+ * the two shapes the UI actually sends). Plex titles aren't unique, so the
+ * selection travels by the server-side identity, never by name. */
 export type ImportSource =
   | { files: PlaylistImportFile[] }
-  | { plex_playlists: string[] };
+  | { plex_rating_keys: string[] };
 
 async function fetchPlexPlaylists(): Promise<PlexPlaylistInfo[]> {
   const { data, error, response } = await client.GET("/api/plex/playlists");
@@ -56,9 +57,10 @@ export function usePlexImportPlaylists(enabled: boolean) {
 
 /**
  * Preview an import (`POST /api/playlists/import/preview`): send EITHER
- * uploaded m3u files OR named Plex playlists and get back one match preview per
- * playlist (each entry classified matched / ambiguous / unmatched). A pure
- * read — it creates nothing, so there is nothing to invalidate.
+ * uploaded m3u files OR Plex playlist rating keys and get back one match
+ * preview per playlist, in the order requested (each entry classified matched /
+ * ambiguous / unmatched). A pure read — it creates nothing, so there is nothing
+ * to invalidate.
  */
 export function useImportPreview() {
   return useMutation<PlaylistImportPreviewResponse, Error, ImportSource>({
