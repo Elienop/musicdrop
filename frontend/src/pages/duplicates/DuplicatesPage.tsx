@@ -389,6 +389,7 @@ function MemberRow({
       <div className="min-w-0 flex-1">
         <AlbumRow
           cover={`/api/albums/${album.id}/cover`}
+          coverAssetKey={`album:${album.id}`}
           title={album.title}
           subtitle={album.album_artist}
           meta={`${album.year ?? "-"} · ${album.track_count} tracks · ${quality}`}

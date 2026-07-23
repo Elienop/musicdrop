@@ -171,7 +171,7 @@ async def install_album_cover_endpoint(
     if len(image_bytes) > _MAX_COVER_BYTES:
         raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
     result = await install_cover_op(request, album_id, image_bytes)
-    emit_art_changed(request.app)
+    emit_art_changed(request.app, f"album:{album_id}")
     return result
 
 

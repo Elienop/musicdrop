@@ -39,10 +39,19 @@ class EventBroker:
         # holds the broker directly and publishes without going through emit.
         # (emit.py keeps its own call for the broker-less/lifespan-less paths.)
         invalidate_browse_cache()
-        self.publish(LibraryChangedEvent().model_dump_json())
+        self.publish(LibraryChangedEvent().model_dump_json(exclude_none=True))
 
-    def publish_art_changed(self) -> None:
-        self.publish(LibraryChangedEvent(type="art:changed").model_dump_json())
+    def publish_art_changed(self, scope: str | None = None) -> None:
+        """``scope`` = which asset's bytes changed (``"album:12"`` /
+        ``"artist:ABBA"``); ``None`` means library-wide.
+
+        ``exclude_none`` keeps an unscoped event's bytes exactly as before this
+        field existed (``{"type": ...}``), so the wire contract only grows when
+        there IS a scope; the frontend reads a missing scope as "bump globally".
+        """
+        self.publish(
+            LibraryChangedEvent(type="art:changed", scope=scope).model_dump_json(exclude_none=True)
+        )
 
     def publish(self, event: str) -> None:
         try:

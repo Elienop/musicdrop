@@ -18,9 +18,13 @@ def emit_library_changed(app: Any) -> None:
         broker.publish_library_changed()
 
 
-def emit_art_changed(app: Any) -> None:
+def emit_art_changed(app: Any, scope: str | None = None) -> None:
     """Null-safe ``art:changed`` emit — image bytes changed (cover/artist art),
-    so tabs remount their ``<img>`` elements without refetching list data."""
+    so tabs remount their ``<img>`` elements without refetching list data.
+
+    Pass ``scope`` (``"album:12"`` / ``"artist:ABBA"``) when exactly one asset
+    changed so tabs remount only that image; omit it for sweeps that touch many.
+    """
     broker = getattr(app.state, "event_broker", None)
     if broker is not None:
-        broker.publish_art_changed()
+        broker.publish_art_changed(scope)

@@ -1,5 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
+
+import { bumpAssetVersion } from "@/api/assetVersion";
 
 import type { DuplicatePrompt } from "@/api/useImport";
 import {
@@ -173,5 +175,29 @@ describe("DuplicateActionRow", () => {
       "aria-describedby",
       "x1",
     );
+  });
+});
+
+describe("existing-copy cover invalidation", () => {
+  // Regression: album cover installs emit a SCOPED art:changed. The existing-copy
+  // panel renders a LIBRARY album cover, so it must carry that album's assetKey —
+  // without it the panel silently stops refreshing cross-tab (under-invalidation,
+  // the direction scoping must never regress into).
+  test("remounts the existing copy's cover on ITS album's art event", () => {
+    const { container } = render(
+      <DuplicateComparison prompt={makePrompt()} incomingCoverUrl={null} />,
+    );
+    const img = container.querySelector('img[src="/api/albums/1/cover"]');
+    expect(img).not.toBeNull();
+    fireEvent.error(img as HTMLImageElement);
+    expect(container.querySelector('img[src="/api/albums/1/cover"]')).toBeNull();
+
+    // Another album's cover changed — this panel must NOT remount.
+    act(() => bumpAssetVersion("album:999"));
+    expect(container.querySelector('img[src="/api/albums/1/cover"]')).toBeNull();
+
+    // Its OWN album's cover changed — it must come back.
+    act(() => bumpAssetVersion("album:1"));
+    expect(container.querySelector('img[src="/api/albums/1/cover"]')).not.toBeNull();
   });
 });

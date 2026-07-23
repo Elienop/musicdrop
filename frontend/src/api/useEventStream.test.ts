@@ -63,9 +63,32 @@ describe("useEventStream", () => {
 
   it("invalidates AND bumps the asset version on an art:changed message", () => {
     const { spy, bumpSpy, es } = setup();
-    es().onmessage?.(new MessageEvent("message", { data: '{"type":"art:changed"}' }));
+    es().onmessage?.(
+      // The REAL unscoped wire bytes: the broker dumps with exclude_none, so a
+      // library-wide art event carries no `scope` key at all (not `null`).
+      new MessageEvent("message", { data: '{"type":"art:changed"}' }),
+    );
     expect(spy.mock.calls.length).toBeGreaterThan(0);
+    // No scope = library-wide: bump the global counter (undefined, not null).
+    expect(bumpSpy).toHaveBeenCalledWith(undefined);
+  });
+
+  it("bumps ONLY the named scope when art:changed carries one", () => {
+    const { bumpSpy, es } = setup();
+    es().onmessage?.(
+      new MessageEvent("message", { data: '{"type":"art:changed","scope":"album:7"}' }),
+    );
     expect(bumpSpy).toHaveBeenCalledTimes(1);
+    expect(bumpSpy).toHaveBeenCalledWith("album:7");
+  });
+
+  it("re-connect catch-up bumps GLOBALLY (unknown what was missed)", () => {
+    const { bumpSpy, es } = setup();
+    es().onopen?.(new Event("open")); // first connect: nothing to catch up on
+    expect(bumpSpy).not.toHaveBeenCalled();
+    es().onopen?.(new Event("open")); // re-connect
+    expect(bumpSpy).toHaveBeenCalledTimes(1);
+    expect(bumpSpy.mock.calls[0][0]).toBeUndefined(); // no scope = global bump
   });
 
   it("skips the first onopen but catches up on re-connect", () => {

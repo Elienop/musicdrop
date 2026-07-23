@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from beets.library import Library
@@ -19,16 +21,21 @@ class _RecordingBroker:
 
     The emit helpers call exactly one of these two methods, so the recorded
     list lets a test assert an endpoint emits library:changed vs art:changed.
+    ``art_scopes`` additionally records WHICH asset each art event named, so a
+    test can pin that an endpoint scopes its bump instead of repainting every
+    image in every open tab.
     """
 
     def __init__(self) -> None:
         self.events: list[str] = []
+        self.art_scopes: list[str | None] = []
 
     def publish_library_changed(self) -> None:
         self.events.append("library:changed")
 
-    def publish_art_changed(self) -> None:
+    def publish_art_changed(self, scope: str | None = None) -> None:
         self.events.append("art:changed")
+        self.art_scopes.append(scope)
 
 
 @pytest.fixture
@@ -72,6 +79,23 @@ def art_client(
         delattr(app.state, "event_broker")
 
 
+def test_album_cover_install_emits_album_scoped_art_changed(
+    edit_client: tuple[TestClient, _RecordingBroker],
+) -> None:
+    client, broker = edit_client
+    albums = client.get("/api/albums").json()["items"]
+    album_id = albums[0]["id"]
+    png = (Path(__file__).parent / "fixtures" / "cover.png").read_bytes()
+    resp = client.post(
+        f"/api/albums/{album_id}/cover", files={"file": ("cover.png", png, "image/png")}
+    )
+    assert resp.status_code == 200
+    # Only THIS album's cover changed — tabs must remount that one <img>, not
+    # every cover on a 192-per-page browse grid.
+    assert broker.events == ["art:changed"]
+    assert broker.art_scopes == [f"album:{album_id}"]
+
+
 def test_artist_image_clear_emits_art_changed(
     art_client: tuple[TestClient, _RecordingBroker, ArtistImageCache],
 ) -> None:
@@ -79,5 +103,46 @@ def test_artist_image_clear_emits_art_changed(
     cache.write_override("ABBA", b"manual", "image/png")
     resp = client.delete("/api/artists/image/override", params={"name": "ABBA"})
     assert resp.status_code == 204
-    # Clearing an artist override changes the served image BYTES → art:changed.
+    # Clearing an artist override changes the served image BYTES → art:changed,
+    # UNSCOPED: the portrait is served under a NORMALIZED name, so a raw
+    # display name is not a reliable asset identity (see api/artists.py).
     assert broker.events == ["art:changed"]
+    assert broker.art_scopes == [None]
+
+
+def test_artist_image_upload_emits_unscoped_art_changed(
+    art_client: tuple[TestClient, _RecordingBroker, ArtistImageCache],
+) -> None:
+    client, broker, _cache = art_client
+    png = (Path(__file__).parent / "fixtures" / "cover.png").read_bytes()
+    resp = client.post(
+        "/api/artists/image/override",
+        params={"name": "Radiohead"},
+        files={"file": ("p.png", png, "image/png")},
+    )
+    assert resp.status_code == 200
+    assert broker.art_scopes == [None]
+
+
+def test_artist_art_backfill_completion_stays_unscoped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sweep repaints MANY artists, so its completion event carries no scope —
+    the frontend then bumps the global counter and refreshes everything."""
+    import app.api.artists as artists_mod
+
+    captured: dict[str, object] = {}
+
+    def _fake_start(*_args: object, **kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(artists_mod, "start_art_backfill", _fake_start)
+    broker = _RecordingBroker()
+    stub_app = SimpleNamespace(state=SimpleNamespace(event_broker=broker))
+    artists_mod._start(stub_app, cast(Any, None), None, force=False, artist=None)
+
+    on_complete = captured["on_complete"]
+    assert callable(on_complete)
+    on_complete()
+    assert broker.events == ["art:changed"]
+    assert broker.art_scopes == [None]

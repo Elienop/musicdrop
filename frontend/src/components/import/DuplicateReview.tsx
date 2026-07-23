@@ -58,6 +58,7 @@ export function DuplicateComparison({
             heading="Already in library"
             album={album}
             coverUrl={`/api/albums/${album.album_id}/cover`}
+            coverAssetKey={`album:${album.album_id}`}
           />
         ))}
       </div>
@@ -208,12 +209,17 @@ export function Panel({
   heading,
   album,
   coverUrl,
+  coverAssetKey,
   accent = false,
 }: {
   id: string;
   heading: string;
   album: IncomingAlbum | ExistingAlbum;
   coverUrl: string | null;
+  /** Asset scope for a LIBRARY album's cover (`album:{id}`), so a scoped
+   * `art:changed` remounts it. Omitted for the incoming/import side, which has
+   * no library identity and therefore no scoped event to listen for. */
+  coverAssetKey?: string;
   accent?: boolean;
 }) {
   const headingId = `panel-heading-${id}`;
@@ -240,7 +246,7 @@ export function Panel({
       </p>
       <div className="flex gap-4">
         <div className="w-48 shrink-0">
-          <CoverArt src={coverUrl} className="w-full rounded-lg" />
+          <CoverArt src={coverUrl} assetKey={coverAssetKey} className="w-full rounded-lg" />
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-0.5 self-center">
           <p className="truncate font-medium">{album.album ?? "Unknown album"}</p>

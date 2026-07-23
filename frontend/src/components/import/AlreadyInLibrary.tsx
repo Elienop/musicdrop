@@ -32,6 +32,7 @@ export function AlreadyInLibrary({
               heading="Already in library"
               album={album}
               coverUrl={`/api/albums/${album.album_id}/cover`}
+              coverAssetKey={`album:${album.album_id}`}
             />
             {album.tracks.length > 0 && <ExistingTracklist tracks={album.tracks} />}
             <div>
