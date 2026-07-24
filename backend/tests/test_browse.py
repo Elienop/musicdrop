@@ -250,6 +250,105 @@ def test_browse_albums_preserves_null_genre_while_facet_buckets_unknown(tmp_path
     assert "Unknown" in genre_vals  # facet still buckets the genre-less album
 
 
+def test_invalidate_never_blocks_on_an_in_flight_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # I17: invalidate_browse_cache() runs synchronously ON THE EVENT LOOP for
+    # every mutation. It must be O(1) even while a threadpool thread is mid-scan
+    # — the old single lock made a mutating endpoint freeze the whole asyncio
+    # loop for the duration of the rebuild. Orchestrated with events, no sleeps:
+    # the build parks inside _build_row until released, and the invalidate runs
+    # (in a helper thread so a regression can't hang the suite) while parked.
+    import threading
+
+    from app.beets import browse as browse_mod
+
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    _add(lib, tmp_path, artist="A", album="One", year=2015, genre="Pop", fmt="FLAC")
+    browse_mod.invalidate_browse_cache()
+
+    in_build = threading.Event()
+    release_build = threading.Event()
+    build_calls = {"n": 0}
+    real_build = browse_mod._build_row
+
+    def parked_build(album: Any) -> Any:
+        build_calls["n"] += 1
+        in_build.set()
+        assert release_build.wait(timeout=5.0)
+        return real_build(album)
+
+    monkeypatch.setattr(browse_mod, "_build_row", parked_build)
+    built: list[list[Any]] = []
+    builder = threading.Thread(target=lambda: built.append(browse_mod._rows(lib)), daemon=True)
+    builder.start()
+    assert in_build.wait(timeout=5.0)  # the scan is genuinely in flight
+
+    invalidated = threading.Event()
+
+    def _invalidate_then_signal() -> None:
+        browse_mod.invalidate_browse_cache()
+        invalidated.set()
+
+    inv = threading.Thread(target=_invalidate_then_signal, daemon=True)
+    inv.start()
+    # The whole point: invalidation completes WHILE the scan is still parked.
+    assert invalidated.wait(timeout=2.0), "invalidate blocked on an in-flight scan"
+
+    release_build.set()
+    builder.join(timeout=5.0)
+    assert not builder.is_alive()
+    assert len(built[0]) == 1  # the requester still gets the rows it built
+
+    # THE DISCARD SEMANTIC: the scan snapshotted the generation BEFORE the
+    # mid-flight invalidate bumped it, so its rows must NOT have been stored —
+    # they describe a library state that no longer exists. Asserting the cache is
+    # EMPTY here is what makes this test able to fail: a store-unconditionally
+    # regression leaves the stale rows sitting in _ROWS and is caught right here.
+    assert not browse_mod._ROWS, "an invalidated scan's rows were cached anyway"
+
+    # And the next call genuinely re-scans (rather than serving anything stale).
+    monkeypatch.setattr(browse_mod, "_build_row", real_build)
+    rebuilt = browse_mod._rows(lib)
+    assert rebuilt is not built[0]  # a fresh list object, not the discarded one
+    assert browse_mod._ROWS  # this build WAS cached (no invalidate raced it)
+
+
+def test_concurrent_cold_cache_calls_scan_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The build lock's job: two browse calls racing a cold cache must not run
+    # duplicate whole-library scans.
+    import threading
+
+    from app.beets import browse as browse_mod
+
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    _add(lib, tmp_path, artist="A", album="One", year=2015, genre="Pop", fmt="FLAC")
+    _add(lib, tmp_path, artist="B", album="Two", year=2015, genre="Rock", fmt="MP3")
+    browse_mod.invalidate_browse_cache()
+
+    calls = {"n": 0}
+    real_build = browse_mod._build_row
+
+    def counting_build(album: Any) -> Any:
+        calls["n"] += 1
+        return real_build(album)
+
+    monkeypatch.setattr(browse_mod, "_build_row", counting_build)
+    results: list[list[Any]] = []
+    threads = [
+        threading.Thread(target=lambda: results.append(browse_mod._rows(lib)), daemon=True)
+        for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+    assert calls["n"] == 2  # one scan of two albums — NOT four (duplicate scans)
+    assert len(results) == 2 and results[0] == results[1]
+
+
 def test_browse_tolerates_a_non_canonical_per_disc_numbering_value(tmp_path: Path) -> None:
     # A per_disc_numbering value beets tolerates but that isn't a canonical bool
     # (e.g. `on`) makes confuse's `.get(bool)` raise ConfigTypeError; the cache

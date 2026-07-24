@@ -66,13 +66,39 @@ class BrowseRow(NamedTuple):
     genre_raw: str | None
 
 
-_LOCK = threading.Lock()
+# Two locks so invalidation NEVER waits on a scan. The whole-library build takes
+# seconds on an HDD (one albums() scan + per-album items()), and
+# invalidate_browse_cache() is called synchronously ON THE EVENT LOOP by every
+# mutating endpoint (via emit_library_changed / broker.publish_library_changed).
+# With a single lock held across the build, one open Browse tab rebuilding the
+# cache in a threadpool thread froze the entire asyncio loop the moment any
+# mutation emitted — every endpoint, every SSE stream — until the scan finished.
+#
+# * ``_STATE_LOCK`` — held only for O(1) dict/int work: guards ``_ROWS`` and
+#   ``_GENERATION``. Everything acquires it briefly; nothing blocks under it.
+# * ``_BUILD_LOCK`` — held across the scan itself, purely so concurrent browse
+#   calls on a cold cache don't run duplicate scans.
+# Ordering: ``_BUILD_LOCK`` -> ``_STATE_LOCK`` (nested briefly); invalidation
+# takes only ``_STATE_LOCK``, so it can never deadlock or wait on a build.
+_STATE_LOCK = threading.Lock()
+_BUILD_LOCK = threading.Lock()
 _ROWS: dict[str, list[BrowseRow]] = {}  # resolved DB path -> rows
+# Bumped on every invalidation. A build snapshots it before scanning and only
+# stores its rows if it is UNCHANGED after — a scan the library mutated under
+# is discarded (never cached stale), while the requester still gets the rows.
+_GENERATION = 0
 
 
 def invalidate_browse_cache() -> None:
-    """Drop every cached library (mutation happened / test isolation)."""
-    with _LOCK:
+    """Drop every cached library (mutation happened / test isolation).
+
+    O(1) and non-blocking by design: bumps the generation and clears the dict
+    under the brief state lock only. Never waits on an in-flight scan — the
+    generation bump makes that scan discard its result instead.
+    """
+    global _GENERATION
+    with _STATE_LOCK:
+        _GENERATION += 1
         _ROWS.clear()
 
 
@@ -180,16 +206,29 @@ def _build_row(album: BeetsAlbum) -> BrowseRow:
 def _rows(lib: Library) -> list[BrowseRow]:
     """Cached rows for this library, building with ONE full scan on a miss.
 
-    Built under the lock so concurrent browse calls don't race duplicate scans;
-    endpoints run in the threadpool, so the lock is required either way.
+    The scan runs under ``_BUILD_LOCK`` only (so concurrent cold-cache calls
+    don't duplicate it) and NEVER under ``_STATE_LOCK`` — invalidation must stay
+    O(1) even mid-scan (see the lock comments above). The build snapshots the
+    generation first and stores its rows only if no invalidation happened while
+    it scanned; a mutated-under scan is served to its requester but not cached.
     """
     key = _cache_key(lib)
-    with _LOCK:
+    with _STATE_LOCK:
         cached = _ROWS.get(key)
         if cached is not None:
             return cached
+    with _BUILD_LOCK:
+        # Another builder may have filled the cache while we waited for the
+        # build lock — re-check before paying for a scan of our own.
+        with _STATE_LOCK:
+            cached = _ROWS.get(key)
+            if cached is not None:
+                return cached
+            generation = _GENERATION
         rows = [_build_row(album) for album in lib.albums()]
-        _ROWS[key] = rows
+        with _STATE_LOCK:
+            if _GENERATION == generation:
+                _ROWS[key] = rows
         return rows
 
 
