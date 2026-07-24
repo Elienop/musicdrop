@@ -111,6 +111,25 @@ def _build_third_match() -> AlbumMatch:
     return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_i, extra_t)
 
 
+def _build_fourth_match() -> AlbumMatch:
+    """A fourth distinct release, paired with the third so a search can REPLACE
+    the candidate list with an equal-length one (the stale-revision case)."""
+    items = [Item(artist="Radiohead", album="In Rainbows", title="Nude", track=1, length=260.0)]
+    tracks = [TrackInfo(title="Nude", track_id="t7", index=1, length=260.0)]
+    info = AlbumInfo(
+        tracks=tracks,
+        album="In Rainbows",
+        artist="Radiohead",
+        album_id="a7",
+        data_source="MusicBrainz",
+        data_url="https://mb/a7",
+        year=2007,
+        va=False,
+    )
+    pairs, extra_i, extra_t = assign_items(items, info.tracks)
+    return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_i, extra_t)
+
+
 def _patch_tag_album(monkeypatch: pytest.MonkeyPatch, match: AlbumMatch, rec: BeetsRec) -> None:
     """Patch the seam beets uses to fetch candidates so no network is hit.
 
@@ -643,6 +662,181 @@ def test_stale_apply_after_search_shrinks_list_reparks(
     assert done.wait(timeout=2.0)
     t.join(timeout=2.0)
     assert task.match is single
+
+
+def test_stale_revision_apply_after_equal_length_search_reparks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The M12b residual: a search REPLACES the list with an EQUAL-LENGTH one, so
+    # the stale client's index is still in range — only the echoed
+    # search_revision can reveal the submit predates the search. It must
+    # re-park, not silently import a release the user never chose.
+    import app.beets.import_session as session_mod
+
+    match = _build_match(BeetsRec.medium)
+    other = _build_other_match()
+    x = _build_third_match()
+    y = _build_fourth_match()
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    # First scan offers TWO candidates; the search swaps in TWO DIFFERENT ones.
+    task = _make_task_multi([match, other], monkeypatch, BeetsRec.medium)
+    monkeypatch.setattr(session_mod, "relookup", lambda t, s: ([x, y], BeetsRec.medium))
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    first = bridge.get_parked(timeout=2.0)
+    assert first is not None
+    assert first.candidate.search_revision == 0
+    assert len(first.candidate.options) == 2
+
+    bridge.push_choice(
+        first.album_index,
+        ImportChoice(action=ImportAction.search, search=ImportSearch(release_id="a5")),
+    )
+    second = bridge.get_parked(timeout=2.0)
+    assert second is not None
+    assert second.candidate.search_revision == 1
+    assert second.candidate.album_after.album == "Kid A"  # the replaced list's top
+    assert len(second.candidate.options) == 2  # SAME length — index 1 looks valid
+
+    # Stale apply: index 1 is IN RANGE for the new list, but the echoed revision
+    # (0) says the client was still rendering the OLD list. Re-park, don't
+    # import Y (a release the user never saw, let alone chose).
+    bridge.push_choice(
+        second.album_index,
+        ImportChoice(action=ImportAction.apply, candidate_index=1, search_revision=0),
+    )
+    third = bridge.get_parked(timeout=2.0)
+    assert third is not None  # re-parked rather than resolving
+    assert third.candidate.search_revision == 2
+    assert third.candidate.search_feedback is not None
+    assert "no longer in the list" in third.candidate.search_feedback
+    assert not done.is_set()
+
+    # An apply echoing the CURRENT revision resolves to the intended release.
+    bridge.push_choice(
+        third.album_index,
+        ImportChoice(action=ImportAction.apply, candidate_index=0, search_revision=2),
+    )
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert task.match is x
+
+
+def test_matching_revision_apply_resolves_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Guard: an apply echoing the CURRENT revision resolves at once (no re-park).
+    match = _build_match(BeetsRec.medium)
+    other = _build_other_match()
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task_multi([match, other], monkeypatch, BeetsRec.medium)
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    parked = bridge.get_parked(timeout=2.0)
+    assert parked is not None
+    assert parked.candidate.search_revision == 0
+    bridge.push_choice(
+        parked.album_index,
+        ImportChoice(action=ImportAction.apply, candidate_index=1, search_revision=0),
+    )
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert task.choice_flag is Action.APPLY
+    candidates = task.candidates
+    assert candidates is not None
+    assert task.match is candidates[1]
+
+
+def test_none_revision_apply_keeps_legacy_length_only_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A legacy/simple client that never echoes a revision (None) degrades to the
+    # length-only guard: an in-range apply resolves even though a search bumped
+    # the revision out from under it.
+    import app.beets.import_session as session_mod
+
+    match = _build_match(BeetsRec.medium)
+    other = _build_other_match()
+    x = _build_third_match()
+    y = _build_fourth_match()
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task_multi([match, other], monkeypatch, BeetsRec.medium)
+    monkeypatch.setattr(session_mod, "relookup", lambda t, s: ([x, y], BeetsRec.medium))
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    first = bridge.get_parked(timeout=2.0)
+    assert first is not None
+    bridge.push_choice(
+        first.album_index,
+        ImportChoice(action=ImportAction.search, search=ImportSearch(release_id="a5")),
+    )
+    second = bridge.get_parked(timeout=2.0)
+    assert second is not None
+    assert second.candidate.search_revision == 1
+
+    # No echoed revision: the in-range apply resolves against the CURRENT list.
+    bridge.push_choice(
+        second.album_index, ImportChoice(action=ImportAction.apply, candidate_index=0)
+    )
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert task.choice_flag is Action.APPLY
+    assert task.match is x
+
+
+def test_stale_revision_on_skip_does_not_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Non-apply actions are list-independent decisions: a stale echoed revision
+    # must never re-park them — skip resolves regardless.
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    parked = bridge.get_parked(timeout=2.0)
+    assert parked is not None
+    assert parked.candidate.search_revision == 0
+    bridge.push_choice(
+        parked.album_index, ImportChoice(action=ImportAction.skip, search_revision=99)
+    )
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert task.choice_flag is Action.SKIP
+    assert task.skip is True
 
 
 def test_in_range_explicit_index_apply_resolves_immediately(

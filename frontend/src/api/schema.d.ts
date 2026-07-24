@@ -2758,6 +2758,8 @@ export interface components {
             /** Candidate Index */
             candidate_index?: number | null;
             search?: components["schemas"]["ImportSearch"] | null;
+            /** Search Revision */
+            search_revision?: number | null;
         };
         /**
          * ImportEntry

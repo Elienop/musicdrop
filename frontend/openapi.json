@@ -7084,6 +7084,17 @@
                 "type": "null"
               }
             ]
+          },
+          "search_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Revision"
           }
         },
         "type": "object",

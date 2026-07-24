@@ -360,8 +360,14 @@ describe("ImportCandidatePage", () => {
     renderAt();
 
     await user.click(await screen.findByRole("button", { name: /^Apply/i }));
+    // The apply echoes the rendered candidate's search_revision so the worker
+    // can tell a stale submit (predating a search re-park) from a live one.
     await waitFor(() =>
-      expect(body).toEqual({ action: "apply", candidate_index: 0 }),
+      expect(body).toEqual({
+        action: "apply",
+        candidate_index: 0,
+        search_revision: 0,
+      }),
     );
   });
 
@@ -476,7 +482,11 @@ describe("ImportCandidatePage", () => {
     );
     await user.click(screen.getByRole("button", { name: /^Apply/i }));
     await waitFor(() =>
-      expect(body).toEqual({ action: "apply", candidate_index: 1 }),
+      expect(body).toEqual({
+        action: "apply",
+        candidate_index: 1,
+        search_revision: 0,
+      }),
     );
   });
 
@@ -729,6 +739,56 @@ describe("ImportCandidatePage", () => {
     expect(
       await screen.findByRole("heading", { name: /2 Brothers - Dreams/i }),
     ).toBeInTheDocument();
+  });
+
+  test("after a search re-park bumps the revision, Apply echoes the NEW revision", async () => {
+    let current = makeCandidate();
+    const posted: unknown[] = [];
+    server.use(
+      http.get(CANDIDATE_URL, () => HttpResponse.json(current)),
+      http.post(CHOICE_URL, async ({ request }) => {
+        posted.push(await request.json());
+        // The first POST is the search: the worker re-parks with a bumped
+        // revision; the poll picks it up and the page re-renders on it.
+        current = makeCandidate({
+          search_revision: 1,
+          album_after: { ...makeCandidate().album_after, album: "Amnesiac" },
+          options: [
+            {
+              ...makeCandidate().options[0],
+              album: "Amnesiac",
+              album_after: {
+                ...makeCandidate().album_after,
+                album: "Amnesiac",
+              },
+            },
+          ],
+        });
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt();
+
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer/i });
+    await user.click(screen.getByRole("button", { name: /different release/i }));
+    await user.type(
+      screen.getByLabelText(/release url or id/i),
+      "https://musicbrainz.org/release/amnesiac",
+    );
+    await user.click(screen.getByRole("button", { name: /^Search/i }));
+
+    // The re-parked candidate (revision 1) renders; Apply must echo revision 1,
+    // not the stale 0 the page loaded with.
+    await screen.findByRole("heading", { name: /Radiohead - Amnesiac/i });
+    await user.click(screen.getByRole("button", { name: /^Apply/i }));
+    await waitFor(() =>
+      expect(posted[1]).toEqual({
+        action: "apply",
+        candidate_index: 0,
+        search_revision: 1,
+      }),
+    );
   });
 
   test("the not-Various-Artists toggle defaults checked; a name search omits release_id", async () => {

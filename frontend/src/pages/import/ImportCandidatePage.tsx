@@ -210,6 +210,13 @@ function ReviewScreen({
         choice: {
           action,
           candidate_index: action === "apply" ? selected : null,
+          // Apply echoes the RENDERED candidate's search_revision so the worker
+          // can spot a stale submit (one racing a search re-park from another
+          // tab) and re-park instead of importing a release the user never
+          // chose. Non-apply actions are list-independent — no echo.
+          ...(action === "apply"
+            ? { search_revision: candidate.search_revision }
+            : {}),
         },
       },
       { onSuccess: () => navigate(backTo) },

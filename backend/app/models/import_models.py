@@ -294,6 +294,12 @@ class ImportChoice(BaseModel):
     candidate_index: int | None = None
     # Re-lookup parameters; required iff action == search, forbidden otherwise.
     search: ImportSearch | None = None
+    # The ``search_revision`` of the parked Candidate the client was LOOKING AT
+    # when it submitted. Only checked for apply (an index into a list the client
+    # may be rendering stale); a mismatch re-parks instead of importing a
+    # release the user never chose. None = a legacy/non-echoing client — the
+    # server degrades to the length-only (index-in-range) guard.
+    search_revision: int | None = None
 
     @model_validator(mode="after")
     def _search_matches_action(self) -> Self:

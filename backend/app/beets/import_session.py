@@ -651,19 +651,21 @@ class WebImportSession(ImportSession):
             )
             is_search = choice.action is ImportAction.search and choice.search is not None
             is_rescan = choice.action is ImportAction.rescan
-            # Stale-client race: a prior search re-parked with a SHORTER candidate
-            # list, but the client still renders the old (longer) one and submits an
-            # apply for an index past the current list's end. Re-confirm instead of
-            # letting _apply_choice silently import candidates[0] (a DIFFERENT release
-            # than the user chose). A None index ("apply the top") is never stale.
-            # NOTE: this closes the common SHRINK case only (index falls out of
-            # range). A search that replaces the list with an equal-or-longer one
-            # leaves a stale in-range index looking valid; fully closing that needs a
-            # client-echoed search_revision on ImportChoice (a contract change) — a
-            # documented follow-up. The single-tab UI already resets the selection on
-            # a search_revision bump, so the residual is a narrow multi-tab race.
-            is_stale_apply = choice.action is ImportAction.apply and not self._apply_index_in_range(
-                choice, candidates
+            # Stale-client race: a prior search re-parked a DIFFERENT candidate
+            # list, but the client still renders the old one and submits an apply
+            # against it. Re-confirm instead of letting _apply_choice silently
+            # import a release the user never chose. Two detectors: the index is
+            # out of range for the current list (a search SHRANK it), or the
+            # client-echoed search_revision doesn't match the current park (a
+            # search REPLACED it with an equal-or-longer list, where a stale
+            # in-range index still looks valid). The revision echo closes that
+            # residual for revision-echoing clients; a None revision (a legacy/
+            # non-echoing client) degrades to the length-only guard. Only apply
+            # is revision-checked — skip/asis/astracks/abort are list-independent
+            # decisions and must never be blocked by a stale revision.
+            is_stale_apply = choice.action is ImportAction.apply and (
+                not self._apply_index_in_range(choice, candidates)
+                or (choice.search_revision is not None and choice.search_revision != revision)
             )
             if not is_search and not is_rescan and not is_stale_apply:
                 result = self._apply_choice(choice, candidates)
