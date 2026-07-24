@@ -84,8 +84,14 @@ class ReviewInboxResponse(BaseModel):
     ``started`` is True iff an attended import of the inbox was kicked off, with
     ``job_id`` the running job to navigate to. An empty inbox is a no-op
     (``started=False, job_id=None``), never an error.
+
+    ``in_flight`` counts the inbox folders that were SKIPPED because they are
+    still receiving files. It exists so the caller can tell "the inbox is empty"
+    (0) apart from "nothing has settled yet" (>0) — both return
+    ``started=False``, but only the first means there is nothing left to import.
     """
 
     started: bool
     job_id: str | None = None
     pending: int = 0
+    in_flight: int = 0

@@ -565,7 +565,31 @@ def test_start_passes_path_and_options_to_validate() -> None:
     reg = ImportJobRegistry(runner=runner)
     opts = ImportOptions(operation="move")
     reg.start("/downloads/Artist", options=opts)
-    assert runner.validate_calls == [("/downloads/Artist", opts)]
+    # A bare string is the single-folder shorthand — normalized to a one-element
+    # path list, which is what the runner contract takes.
+    assert runner.validate_calls == [(["/downloads/Artist"], opts)]
+
+
+def test_start_accepts_a_list_of_source_folders() -> None:
+    # I1: the inbox review hands over the SETTLED folders individually rather
+    # than importing their shared parent, so start() must carry a path LIST
+    # through validate + run (beets takes each as its own toppath).
+    runner = FakeImportRunner()
+    reg = ImportJobRegistry(runner=runner)
+    reg.start(["/inbox/A", "/inbox/B"], options=ImportOptions(operation="move"))
+    assert runner.validate_calls[0][0] == ["/inbox/A", "/inbox/B"]
+    assert runner.received_paths == ["/inbox/A", "/inbox/B"]
+
+
+def test_start_refuses_when_any_list_member_fails_validation() -> None:
+    # One bad member refuses the WHOLE start — a partial import would leave the
+    # caller believing every folder was handled, and the slot must stay free.
+    runner = FakeImportRunner()
+    runner.validate_error = InLibraryCopyError("refused")
+    reg = ImportJobRegistry(runner=runner)
+    with pytest.raises(InLibraryCopyError):
+        reg.start(["/inbox/A", "/library/Artist"], options=ImportOptions(operation="copy"))
+    assert reg.has_active_job() is False
 
 
 def _sweep_outcome(

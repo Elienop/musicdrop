@@ -150,7 +150,7 @@ def _run_attended(runner: BeetsImportRunner, source: Path, bridge: ImportBridge)
         done.set()
 
     runner.run(
-        str(source),
+        [str(source)],
         bridge,
         on_finish=done.set,
         on_error=_on_error,

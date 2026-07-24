@@ -189,7 +189,7 @@ class ImportJobRegistry:
 
     def start(
         self,
-        path: str,
+        source: str | list[str],
         *,
         options: ImportOptions | None = None,
         origin: ImportOrigin = "manual",
@@ -197,6 +197,11 @@ class ImportJobRegistry:
     ) -> str:
         """Start an import; raise RuntimeError if one is already active.
 
+        ``source`` is one folder or a LIST of them — beets takes each as its own
+        toppath, so the inbox review can hand over the settled folders
+        individually instead of importing their shared parent (which would sweep
+        in whatever is still downloading beside them). A bare string is the
+        single-folder shorthand every other caller uses.
         ``options`` threads per-import overrides (operation move/copy,
         unattended, sweep) to the runner; ``None`` is today's manual default.
         ``origin`` (manual/inbox/sweep/bank_apply) is recorded on the job and
@@ -204,8 +209,9 @@ class ImportJobRegistry:
         bank apply runner's translated decision, threaded to the session so
         the one-folder run answers every hook from it (None everywhere else).
         """
+        paths = [source] if isinstance(source, str) else list(source)
         runner = self._resolve_runner()
-        runner.validate(path, options)
+        runner.validate(paths, options)
         # options.sweep is the single source of truth for the sweep origin:
         # callers never pass origin="sweep" themselves, and the inbox/manual
         # call sites stay untouched.
@@ -225,7 +231,7 @@ class ImportJobRegistry:
 
         try:
             runner.run(
-                path,
+                paths,
                 job.bridge,
                 on_finish=lambda: self._on_finish(job.id),
                 on_error=lambda message: self._on_error(job.id, message),

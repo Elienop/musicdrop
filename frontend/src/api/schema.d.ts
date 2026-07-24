@@ -1395,14 +1395,21 @@ export interface paths {
         put?: never;
         /**
          * Review Inbox
-         * @description Start an attended, move-mode import of the fixed slskd inbox dir.
+         * @description Start an attended, move-mode import of the SETTLED inbox folders.
          *
          *     One-click review of the set-aside backlog from the slskd panel: no path is
          *     typed and the absolute inbox path never leaves the server. Strong matches
          *     auto-apply (and move out of the inbox); uncertain ones park for review in the
-         *     normal candidate-review screen. An empty inbox is a no-op (``started=False``),
-         *     never an error — and the shared import-slot gate refuses (409) while another
-         *     beets mutation or backfill owns the slot.
+         *     normal candidate-review screen. Nothing to import is a no-op
+         *     (``started=False``), never an error — and the shared import-slot gate refuses
+         *     (409) while another beets mutation or backfill owns the slot.
+         *
+         *     The inbox ROOT is never the import target. It is the downloader's live output
+         *     directory, so importing it would sweep in every folder still receiving files
+         *     and file a PARTIAL album (whose remaining tracks then arrive and import again
+         *     as a duplicate). Instead each top-level folder that has been quiet for
+         *     ``inbox_settle_seconds`` is handed over as its own beets toppath; folders
+         *     still being written are left for the next click.
          */
         post: operations["review_inbox_api_acquisition_review_inbox_post"];
         delete?: never;
@@ -3812,6 +3819,11 @@ export interface components {
          *     ``started`` is True iff an attended import of the inbox was kicked off, with
          *     ``job_id`` the running job to navigate to. An empty inbox is a no-op
          *     (``started=False, job_id=None``), never an error.
+         *
+         *     ``in_flight`` counts the inbox folders that were SKIPPED because they are
+         *     still receiving files. It exists so the caller can tell "the inbox is empty"
+         *     (0) apart from "nothing has settled yet" (>0) — both return
+         *     ``started=False``, but only the first means there is nothing left to import.
          */
         ReviewInboxResponse: {
             /** Started */
@@ -3823,6 +3835,11 @@ export interface components {
              * @default 0
              */
             pending: number;
+            /**
+             * In Flight
+             * @default 0
+             */
+            in_flight: number;
         };
         /**
          * SaveNamingRequest

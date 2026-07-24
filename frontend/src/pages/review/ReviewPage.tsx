@@ -265,24 +265,34 @@ function InboxSection({
 }) {
   const reviewOne = useImportInboxItem();
   const reviewAll = useReviewInbox();
-  const [noneLeft, setNoneLeft] = useState(false);
+  // null = no no-op yet. Otherwise the number of folders the backend SKIPPED as
+  // still-arriving: 0 means the inbox really did clear, >0 means "not yet".
+  const [noOpInFlight, setNoOpInFlight] = useState<number | null>(null);
   const busy = importActive || reviewOne.isPending || reviewAll.isPending;
 
   if (items.length === 0) return null;
 
-  // A started import navigates away; a no-op start (the inbox emptied since the
-  // last poll) shows a notice — the list also refetches (the hooks invalidate
-  // it), so the stale rows clear on their own.
+  // A started import navigates away. A no-op has TWO causes and they must not
+  // read the same: the inbox emptied since the last poll (nothing left), or every
+  // folder is still receiving files (`in_flight` > 0) — in which case the rows
+  // the user is looking at are still there and telling them it cleared is a lie.
   const mutateOpts = {
-    onSuccess: (res: { started?: boolean; job_id?: string | null }) => {
+    onSuccess: (res: { started?: boolean; job_id?: string | null; in_flight?: number }) => {
       if (res.started && res.job_id) onStarted(res.job_id);
-      else setNoneLeft(true);
+      else setNoOpInFlight(res.in_flight ?? 0);
     },
   };
   const start = (run: () => void) => {
-    setNoneLeft(false);
+    setNoOpInFlight(null);
     run();
   };
+  const noOpMessage =
+    noOpInFlight === null
+      ? ""
+      : noOpInFlight > 0
+        ? `Still downloading — ${noOpInFlight} ${noOpInFlight === 1 ? "folder is" : "folders are"} ` +
+          "still receiving files. They'll be importable once they finish."
+        : "Nothing left to import; the inbox just cleared.";
 
   return (
     <section aria-label="Waiting in the inbox" className="flex flex-col gap-3">
@@ -346,9 +356,9 @@ function InboxSection({
       <span
         role="status"
         aria-live="polite"
-        className={noneLeft ? "text-muted-foreground text-sm" : "sr-only"}
+        className={noOpMessage ? "text-muted-foreground text-sm" : "sr-only"}
       >
-        {noneLeft ? "Nothing left to import; the inbox just cleared." : ""}
+        {noOpMessage}
       </span>
       {(reviewOne.isError || reviewAll.isError) && (
         <p className="text-destructive text-sm" role="alert">

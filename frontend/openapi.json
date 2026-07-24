@@ -3562,7 +3562,7 @@
           "acquisition"
         ],
         "summary": "Review Inbox",
-        "description": "Start an attended, move-mode import of the fixed slskd inbox dir.\n\nOne-click review of the set-aside backlog from the slskd panel: no path is\ntyped and the absolute inbox path never leaves the server. Strong matches\nauto-apply (and move out of the inbox); uncertain ones park for review in the\nnormal candidate-review screen. An empty inbox is a no-op (``started=False``),\nnever an error \u2014 and the shared import-slot gate refuses (409) while another\nbeets mutation or backfill owns the slot.",
+        "description": "Start an attended, move-mode import of the SETTLED inbox folders.\n\nOne-click review of the set-aside backlog from the slskd panel: no path is\ntyped and the absolute inbox path never leaves the server. Strong matches\nauto-apply (and move out of the inbox); uncertain ones park for review in the\nnormal candidate-review screen. Nothing to import is a no-op\n(``started=False``), never an error \u2014 and the shared import-slot gate refuses\n(409) while another beets mutation or backfill owns the slot.\n\nThe inbox ROOT is never the import target. It is the downloader's live output\ndirectory, so importing it would sweep in every folder still receiving files\nand file a PARTIAL album (whose remaining tracks then arrive and import again\nas a duplicate). Instead each top-level folder that has been quiet for\n``inbox_settle_seconds`` is handed over as its own beets toppath; folders\nstill being written are left for the next click.",
         "operationId": "review_inbox_api_acquisition_review_inbox_post",
         "responses": {
           "200": {
@@ -9715,6 +9715,11 @@
             "type": "integer",
             "title": "Pending",
             "default": 0
+          },
+          "in_flight": {
+            "type": "integer",
+            "title": "In Flight",
+            "default": 0
           }
         },
         "type": "object",
@@ -9722,7 +9727,7 @@
           "started"
         ],
         "title": "ReviewInboxResponse",
-        "description": "Result of ``POST /api/acquisition/review-inbox`` (the slskd-panel review).\n\n``started`` is True iff an attended import of the inbox was kicked off, with\n``job_id`` the running job to navigate to. An empty inbox is a no-op\n(``started=False, job_id=None``), never an error."
+        "description": "Result of ``POST /api/acquisition/review-inbox`` (the slskd-panel review).\n\n``started`` is True iff an attended import of the inbox was kicked off, with\n``job_id`` the running job to navigate to. An empty inbox is a no-op\n(``started=False, job_id=None``), never an error.\n\n``in_flight`` counts the inbox folders that were SKIPPED because they are\nstill receiving files. It exists so the caller can tell \"the inbox is empty\"\n(0) apart from \"nothing has settled yet\" (>0) \u2014 both return\n``started=False``, but only the first means there is nothing left to import."
       },
       "SaveNamingRequest": {
         "properties": {

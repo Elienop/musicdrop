@@ -71,18 +71,18 @@ def test_queue_drains_to_registry_with_move_unattended_inbox(tmp_path: Path) -> 
     folder = tmp_path / "inbox" / "Album"
     folder.mkdir(parents=True)
 
-    calls: list[tuple[str, ImportOptions | None, ImportOrigin]] = []
+    calls: list[tuple[str | list[str], ImportOptions | None, ImportOrigin]] = []
     real_start = reg.start
 
     def spy_start(
-        path: str,
+        source: str | list[str],
         *,
         options: ImportOptions | None = None,
         origin: ImportOrigin = "manual",
         directive: BankApplyDirective | None = None,
     ) -> str:
-        calls.append((path, options, origin))
-        return real_start(path, options=options, origin=origin, directive=directive)
+        calls.append((source, options, origin))
+        return real_start(source, options=options, origin=origin, directive=directive)
 
     reg.start = spy_start  # type: ignore[method-assign]  # test spy delegates to the real start
 

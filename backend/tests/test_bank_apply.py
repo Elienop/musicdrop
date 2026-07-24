@@ -257,18 +257,18 @@ def test_drains_queued_row_to_done_with_album_id(tmp_path: Path) -> None:
     bank = _bank(tmp_path)
     item_id = _seed_queued(bank, _folder(tmp_path))
 
-    calls: list[tuple[str, ImportOptions | None, ImportOrigin]] = []
+    calls: list[tuple[str | list[str], ImportOptions | None, ImportOrigin]] = []
     real_start = reg.start
 
     def spy_start(
-        path: str,
+        source: str | list[str],
         *,
         options: ImportOptions | None = None,
         origin: ImportOrigin = "manual",
         directive: BankApplyDirective | None = None,
     ) -> str:
-        calls.append((path, options, origin))
-        return real_start(path, options=options, origin=origin, directive=directive)
+        calls.append((source, options, origin))
+        return real_start(source, options=options, origin=origin, directive=directive)
 
     reg.start = spy_start  # type: ignore[method-assign]  # test spy delegates to the real start
 
@@ -330,18 +330,18 @@ def test_fifo_order_is_decided_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     store.decide_item(bank, item_b.id, BankDecision(action="asis"))
     monkeypatch.undo()  # the runner's own set_status timestamps need the real clock
 
-    order: list[str] = []
+    order: list[str | list[str]] = []
     real_start = reg.start
 
     def spy_start(
-        path: str,
+        source: str | list[str],
         *,
         options: ImportOptions | None = None,
         origin: ImportOrigin = "manual",
         directive: BankApplyDirective | None = None,
     ) -> str:
-        order.append(path)
-        return real_start(path, options=options, origin=origin, directive=directive)
+        order.append(source)
+        return real_start(source, options=options, origin=origin, directive=directive)
 
     reg.start = spy_start  # type: ignore[method-assign]
 
@@ -649,7 +649,7 @@ def test_slot_toctou_requeues_and_retries(tmp_path: Path) -> None:
     calls = {"n": 0}
 
     def flaky_start(
-        path: str,
+        source: str | list[str],
         *,
         options: ImportOptions | None = None,
         origin: ImportOrigin = "manual",
@@ -658,7 +658,7 @@ def test_slot_toctou_requeues_and_retries(tmp_path: Path) -> None:
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("an import is already running")
-        return real_start(path, options=options, origin=origin, directive=directive)
+        return real_start(source, options=options, origin=origin, directive=directive)
 
     reg.start = flaky_start  # type: ignore[method-assign]
 

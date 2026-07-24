@@ -185,6 +185,49 @@ describe("ReviewPage", () => {
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/import?job=jall"));
   });
 
+  test("a no-op Review all says STILL DOWNLOADING when folders are in flight", async () => {
+    // The backend refuses folders that are still receiving files. Saying "the
+    // inbox just cleared" there would be a flat lie — the rows are still on
+    // screen, and the user would have no idea why the button did nothing.
+    server.use(
+      http.get(ITEMS, () =>
+        HttpResponse.json({
+          items: [{ name: "Half Arrived", mtime: 1, size: 10, track_count: 2, outcome: null }],
+        }),
+      ),
+      http.post(REVIEW_ALL, () =>
+        HttpResponse.json({ started: false, job_id: null, pending: 0, in_flight: 1 }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /review all/i }));
+    expect(await screen.findByText(/still downloading/i)).toBeInTheDocument();
+    expect(screen.queryByText(/inbox just cleared/i)).not.toBeInTheDocument();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    // the row it refused is still listed — the message must agree with the list
+    expect(screen.getByText("Half Arrived")).toBeInTheDocument();
+  });
+
+  test("a no-op Review all with nothing in flight still says the inbox cleared", async () => {
+    // The genuine race the message was written for: the inbox emptied between
+    // the last poll and the click.
+    server.use(
+      http.get(ITEMS, () =>
+        HttpResponse.json({
+          items: [{ name: "Lost Tapes", mtime: 1, size: 10, track_count: 9, outcome: null }],
+        }),
+      ),
+      http.post(REVIEW_ALL, () =>
+        HttpResponse.json({ started: false, job_id: null, pending: 0, in_flight: 0 }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /review all/i }));
+    expect(await screen.findByText(/inbox just cleared/i)).toBeInTheDocument();
+  });
+
   test("inbox actions are disabled while an import is running", async () => {
     server.use(
       http.get(ACTIVE, () =>
