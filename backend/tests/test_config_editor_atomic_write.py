@@ -73,3 +73,20 @@ def test_atomic_write_cleans_up_tmpfile_on_success(tmp_path: Path) -> None:
     atomic_write(cfg, data, _yaml())
     tmps = list(tmp_path.glob(".config.yaml.tmp*"))
     assert tmps == []
+
+
+def test_atomic_write_omits_yaml_directive_header(tmp_path: Path) -> None:
+    """``_yaml()`` sets ``version=(1,1)`` so ``yes``/``no`` parse as bool, but
+    ruamel then also injects a ``%YAML 1.1\\n---\\n`` prologue on every dump —
+    unrequested churn in the user's hand-edited config.yaml (diff noise, a
+    changed CAS sha, a no-op save that isn't byte-identical). ``atomic_write``
+    must strip that directive; the version stays a LOAD-side concern only."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("a: 1\n")
+    data = parse_yaml("# keep me\nplugins: [fetchart]\n")
+    atomic_write(cfg, data, _yaml())
+    text = cfg.read_text()
+    assert not text.startswith("%YAML")
+    assert "%YAML" not in text
+    assert "---" not in text  # the version directive drags a document-start with it
+    assert "# keep me" in text  # comments still round-trip

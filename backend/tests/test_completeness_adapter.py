@@ -272,3 +272,27 @@ def test_runs_from_worker_thread(tmp_path: Any, monkeypatch: pytest.MonkeyPatch)
     with ThreadPoolExecutor(max_workers=1) as pool:
         report = pool.submit(release_missing_report, lib, _aid(lib)).result()
     assert report.status == "ok" and report.present_count == 1
+
+
+def test_fetch_release_survives_a_raced_eviction_of_a_just_read_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The LRU cache hit path is check-then-act: _CACHE.get(k) (hit) then
+    # _CACHE.move_to_end(k). On a threadpool a concurrent insert can trip the
+    # eviction (popitem) that removes exactly k in between, so move_to_end raises
+    # KeyError. That must NOT propagate as a 500 — the read still succeeded, the
+    # LRU promote is best-effort. Simulate the eviction by making move_to_end
+    # raise, and assert the cached value is still returned.
+    from app.beets import completeness as comp
+
+    comp.clear_release_cache()
+    info = SimpleNamespace(tracks=[], mb="rel-1")
+    comp._CACHE["rel-1"] = info  # a warm hit
+
+    def _evicted(key: str, last: bool = True) -> None:
+        raise KeyError(key)  # another thread evicted it between get and here
+
+    monkeypatch.setattr(comp._CACHE, "move_to_end", _evicted)
+    result = comp._fetch_release("rel-1", "MusicBrainz")
+    assert result.status == "ok"
+    assert result.info is info  # the read still returned the cached release

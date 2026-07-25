@@ -210,8 +210,14 @@ def _store_lyrics(item: Any, lyrics: Lyrics, *, write: bool) -> bool:
         value = getattr(lyrics, key, None)
         if value:
             item[f"lyrics_{key}"] = value
-    item.store()
+    # Write the file tag BEFORE the DB store (beets' Item.try_sync order): try_write
+    # bumps the file's mtime and sets item.mtime = current_mtime() in memory, so the
+    # store AFTER it persists that fresh mtime. Storing first left the DB mtime behind
+    # the file, and disk-sync's staleness gate then re-probed every lyric-written
+    # track forever. store() runs regardless of the write gate (the DB row + sidecar
+    # are non-destructive and are the whole point for Plex).
     written = bool(item.try_write()) if write else False
+    item.store()
     write_lyric_sidecar(item, lyrics)
     return written
 
@@ -383,18 +389,29 @@ async def start_album_lyrics_op(
     return reg.state()
 
 
+# One aggregate for the three coverage counts. `lyrics` is a column on `items`
+# (empty string when unset); `lyrics_checked` is a flex attr in `item_attributes`,
+# so the empty-lyrics-but-checked count is a correlated EXISTS subquery. Mirrors
+# the old per-Item scan (item.lyrics truthy; else the lyrics_checked flex truthy)
+# without materializing every one of 15k-75k Items on each panel mount.
+_LYRICS_COVERAGE_SQL = """
+SELECT
+    COUNT(*),
+    COALESCE(SUM(CASE WHEN lyrics IS NOT NULL AND lyrics != '' THEN 1 ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN (lyrics IS NULL OR lyrics = '') AND EXISTS (
+        SELECT 1 FROM item_attributes a
+        WHERE a.entity_id = items.id AND a.key = 'lyrics_checked' AND a.value != ''
+    ) THEN 1 ELSE 0 END), 0)
+FROM items
+"""
+
+
 def lyrics_coverage(lib: Library) -> LyricsCoverage:
-    """Count items with lyrics vs. known-empty vs. total. One DB scan; no network."""
-    with lib.music_dir_context():
-        total = 0
-        with_lyrics = 0
-        checked_no_lyrics = 0
-        for item in lib.items():
-            total += 1
-            if item.lyrics:
-                with_lyrics += 1
-            elif item.get("lyrics_checked"):
-                checked_no_lyrics += 1
+    """Count items with lyrics vs. known-empty vs. total. One SQL aggregate; no
+    network, no per-Item construction (see :data:`_LYRICS_COVERAGE_SQL`)."""
+    with lib.transaction() as tx:
+        row = tx.query(_LYRICS_COVERAGE_SQL)[0]
+    total, with_lyrics, checked_no_lyrics = int(row[0]), int(row[1]), int(row[2])
     percent = round(100.0 * with_lyrics / total, 1) if total else 0.0
     return LyricsCoverage(
         total=total, with_lyrics=with_lyrics, checked_no_lyrics=checked_no_lyrics, percent=percent

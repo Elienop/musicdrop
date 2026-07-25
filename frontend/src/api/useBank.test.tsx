@@ -201,6 +201,44 @@ describe("useBankItem", () => {
     });
     expect(disabled.result.current.fetchStatus).toBe("idle");
   });
+
+  test("keeps polling an in-flight row on a transient error, stops only on a 404", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const w = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    );
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json({
+          ...summary, status: "applying", parked: null, duplicate: null, decided: null,
+          fingerprint: "f", decided_at: null, resolved_at: null, reason: "no_match",
+          recommendation: null, confidence: null,
+        }),
+      ),
+    );
+    const { result } = renderHook(() => useBankItem("b1"), { wrapper: w });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const query = qc.getQueryCache().find({ queryKey: ["bank", "item", "b1"] });
+    const refetchInterval = (
+      query?.options as unknown as { refetchInterval: (q: unknown) => number | false }
+    ).refetchInterval;
+
+    // A transient error (backend restart / proxy blip) while the row is applying
+    // must NOT freeze the row — keep the live poll going.
+    expect(
+      refetchInterval({ state: { error: new Error("blip"), data: { status: "applying" } } }),
+    ).not.toBe(false);
+    // A 404 (BankConflictError) is terminal — the row was applied/removed — stop.
+    expect(
+      refetchInterval({
+        state: { error: new BankConflictError("gone"), data: { status: "applying" } },
+      }),
+    ).toBe(false);
+    // A transient error on a SETTLED row never polls (nothing left to progress).
+    expect(
+      refetchInterval({ state: { error: new Error("blip"), data: { status: "done" } } }),
+    ).toBe(false);
+  });
 });
 
 describe("useBankDecision", () => {

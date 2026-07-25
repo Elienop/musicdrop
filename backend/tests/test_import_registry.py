@@ -60,6 +60,18 @@ def _applied_outcome(index: int) -> AlbumOutcome:
     )
 
 
+def _needs_review_outcome(index: int) -> AlbumOutcome:
+    return AlbumOutcome(
+        album_index=index,
+        folder=f"/music/incoming/album{index}",
+        artist="Radiohead",
+        album="OK Computer",
+        recommendation=Recommendation.medium,
+        confidence=75.5,
+        status=AlbumOutcomeStatus.needs_review,
+    )
+
+
 def _poll(fn, want, attempts: int = 200) -> None:  # type: ignore[no-untyped-def]  # test-local poll: fn/want are inline callables
     ev = threading.Event()
     for _ in range(attempts):
@@ -420,6 +432,96 @@ def test_follow_up_outcome_attaches_album_id_without_new_row() -> None:
     assert state.progress.applied == 1  # counted once
 
 
+def test_applied_idless_row_counts_as_applied_mid_run() -> None:
+    # Mid-run a strong auto-apply emits an `applied` outcome whose library album
+    # id only arrives at the NEXT choose_match (or run() end). During the whole
+    # beets move stage the row is `applied` but idless. On a NON-terminal job the
+    # applied count must optimistically include it (progress.applied == 1) and the
+    # not_landed veto must not fire yet (not_landed == 0) — otherwise the UI reads
+    # "0 albums imported" while a folder is actively landing.
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="mid-run", bridge=ImportBridge(), phase=ImportPhase.reviewing)
+    reg._job = job  # white-box: install the job in the single slot for state()
+    job.bridge.note_outcome(_applied_outcome(0))  # applied, album_id still None
+
+    state = reg.state("mid-run")
+    assert state.phase is ImportPhase.reviewing  # still non-terminal
+    assert state.albums[0].status is ImportAlbumStatus.applied
+    assert state.albums[0].album_id is None  # id not yet flushed
+    assert state.progress.applied == 1  # counted optimistically mid-run
+    assert state.progress.not_landed == 0  # veto stays quiet pre-terminal
+
+
+def test_applied_idless_row_drops_to_not_landed_at_terminal() -> None:
+    # The SAME applied-but-idless row on a TERMINAL job is the crash-before-landing
+    # case: every follow-up id has flushed, so a still-idless applied row genuinely
+    # never task.add'd. The terminal guard must fire — the row falls out of applied
+    # and into not_landed.
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="never-landed", bridge=ImportBridge(), phase=ImportPhase.done)
+    reg._job = job  # white-box: install the job in the single slot for state()
+    job.bridge.note_outcome(_applied_outcome(0))  # applied, album_id never arrived
+
+    state = reg.state("never-landed")
+    assert state.phase is ImportPhase.done  # terminal
+    assert state.progress.applied == 0  # veto fires: no longer counted as applied
+    assert state.progress.not_landed == 1  # dropped into the not-landed bucket
+
+
+def test_applied_landed_row_counts_as_applied_at_terminal() -> None:
+    # Regression guard: an applied row WITH a flushed album id on a terminal job
+    # stays counted as applied (the veto only targets idless rows).
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="landed", bridge=ImportBridge(), phase=ImportPhase.done)
+    reg._job = job  # white-box: install the job in the single slot for state()
+    job.bridge.note_outcome(_applied_outcome(0))  # initial applied outcome
+    job.bridge.note_outcome(_applied_follow_up(0, 5))  # follow-up carrying the id
+
+    state = reg.state("landed")
+    assert state.phase is ImportPhase.done  # terminal
+    assert state.albums[0].album_id == 5
+    assert state.progress.applied == 1  # landed row still counted
+    assert state.progress.not_landed == 0
+
+
+def test_drain_buffers_a_parked_popped_before_its_row_exists() -> None:
+    # M1 race: a drain's outcome pass can run BEFORE the worker emits an album's
+    # needs_review outcome, while its parked pass runs AFTER the worker parked.
+    # The one-shot queue then hands the parked to a drain with no feed row yet.
+    # It must be BUFFERED (never discarded) and attached on the next drain once
+    # the outcome creates the row — else the worker blocks in park() forever,
+    # GET candidate 404s, and the single import slot is wedged until restart.
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    bridge = ImportBridge()
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="race", bridge=bridge, phase=ImportPhase.reviewing)
+    job = reg._job
+
+    parked = _parked(0, Recommendation.medium)
+    bridge._out.put(parked)  # parked reaches the queue with no outcome yet -> no row
+    reg.drain("race")  # drain #1: popped before the row exists
+    assert job.albums.get(0) is None  # no row yet
+    assert job.pending_parked.get(0) is parked  # buffered, NOT discarded
+
+    bridge.note_outcome(_needs_review_outcome(0))  # the worker's outcome finally lands
+    reg.drain("race")  # drain #2: outcome creates the row + replay attaches the parked
+    row = job.albums.get(0)
+    assert row is not None
+    assert row.parked is parked  # attached -> candidate renders, slot not wedged
+    assert 0 not in job.pending_parked  # buffer cleared
+
+
 def test_start_validate_failure_takes_no_slot() -> None:
     runner = FakeImportRunner()
     runner.validate_error = InLibraryCopyError("refused")
@@ -463,7 +565,31 @@ def test_start_passes_path_and_options_to_validate() -> None:
     reg = ImportJobRegistry(runner=runner)
     opts = ImportOptions(operation="move")
     reg.start("/downloads/Artist", options=opts)
-    assert runner.validate_calls == [("/downloads/Artist", opts)]
+    # A bare string is the single-folder shorthand — normalized to a one-element
+    # path list, which is what the runner contract takes.
+    assert runner.validate_calls == [(["/downloads/Artist"], opts)]
+
+
+def test_start_accepts_a_list_of_source_folders() -> None:
+    # I1: the inbox review hands over the SETTLED folders individually rather
+    # than importing their shared parent, so start() must carry a path LIST
+    # through validate + run (beets takes each as its own toppath).
+    runner = FakeImportRunner()
+    reg = ImportJobRegistry(runner=runner)
+    reg.start(["/inbox/A", "/inbox/B"], options=ImportOptions(operation="move"))
+    assert runner.validate_calls[0][0] == ["/inbox/A", "/inbox/B"]
+    assert runner.received_paths == ["/inbox/A", "/inbox/B"]
+
+
+def test_start_refuses_when_any_list_member_fails_validation() -> None:
+    # One bad member refuses the WHOLE start — a partial import would leave the
+    # caller believing every folder was handled, and the slot must stay free.
+    runner = FakeImportRunner()
+    runner.validate_error = InLibraryCopyError("refused")
+    reg = ImportJobRegistry(runner=runner)
+    with pytest.raises(InLibraryCopyError):
+        reg.start(["/inbox/A", "/library/Artist"], options=ImportOptions(operation="copy"))
+    assert reg.has_active_job() is False
 
 
 def _sweep_outcome(

@@ -16,6 +16,7 @@ import {
 import { Albums, Remove } from "@/components/icons";
 import { AlbumRow } from "@/components/system/AlbumRow";
 import { EmptyState } from "@/components/system/EmptyState";
+import { ErrorState } from "@/components/system/ErrorState";
 import { Pagination, PAGE_SIZE } from "@/components/system/Pagination";
 import { SectionLabel } from "@/components/system/SectionLabel";
 import {
@@ -141,6 +142,21 @@ export function BankSection() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const data = listQuery.data;
+  // A load error with no cached page must SHOW the failure (with a retry), never
+  // silently unmount: an errored probe vanishing reads as "backlog resolved", so
+  // the calm empty state would hide banked rows still awaiting a decision.
+  if (listQuery.isError && !data) {
+    return (
+      <section aria-label={heading} className="flex flex-col gap-3">
+        <SectionLabel>{heading}</SectionLabel>
+        <ErrorState
+          variant="inline"
+          message="Couldn’t load the review bank."
+          onRetry={() => void listQuery.refetch()}
+        />
+      </section>
+    );
+  }
   // Hide only when the bank is truly empty (no rows of ANY status). Once any
   // row exists the section stays mounted — its filters are the ONLY path to
   // the resolved (Imported/Ignored) history, so an empty active view must not

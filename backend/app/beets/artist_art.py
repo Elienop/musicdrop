@@ -83,6 +83,17 @@ def _write_one(directory: Path, stem: str, asset: tuple[bytes, str] | None, *, f
     return True
 
 
+def has_background(lib: Any, name: str) -> bool:
+    """True iff EVERY one of the artist's folders already holds an
+    ``artist-background.*`` file (or the artist has no folders).
+
+    Lets the sweep skip the expensive fanart.tv background fetch on a non-force run
+    when the write would be a no-op anyway: :func:`_write_one` skip-existing is
+    per-folder, so the fetch is only wasted when ALL folders already have the file.
+    False when any folder lacks it (the fetch is still needed to fill that one)."""
+    return all(any(d.glob(f"{_BACKGROUND}.*")) for d in get_artist_dirs(lib, name))
+
+
 def write_artist_art(
     lib: Any,
     name: str,

@@ -294,3 +294,54 @@ def test_run_fails_fast_when_root_missing(edit_lib: Library) -> None:
             edit_lib, on_total=lambda n: None, on_item=lambda o: None, should_stop=lambda: False
         )
     assert len(list(edit_lib.items())) == n_before  # nothing removed
+
+
+def test_run_aborts_when_root_present_but_empty(edit_lib: Library) -> None:
+    """A dropped NAS/SMB/NFS mount typically leaves music_dir PRESENT but empty
+    (the kernel keeps the mountpoint dir), so os.path.isdir stays True. The
+    isdir-only guard would then read every file as deleted and wipe the DB. An
+    empty root while the DB has items is a dropped mount — abort, remove nothing."""
+    import shutil
+
+    from app.beets.disk_sync import run_disk_sync
+
+    n_before = len(list(edit_lib.items()))
+    root = os.fsdecode(edit_lib.directory)
+    for entry in os.listdir(root):  # empty the mountpoint (files + artist/album dirs)
+        p = os.path.join(root, entry)
+        shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+    assert os.path.isdir(root) and not os.listdir(root)  # present but empty
+    with pytest.raises(LibraryRootUnavailableError):
+        run_disk_sync(
+            edit_lib, on_total=lambda n: None, on_item=lambda o: None, should_stop=lambda: False
+        )
+    assert len(list(edit_lib.items())) == n_before  # nothing removed
+
+
+def test_run_aborts_when_root_drops_midrun(
+    edit_lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The nightmare-scenario guard must re-check the root when a file looks
+    missing MID-run, not only once at the start. If the share unmounts partway
+    through the sweep every remaining file looks deleted; without the re-check the
+    loop removes thousands of DB rows in one pass. Abort instead — nothing removed."""
+    import app.beets.disk_sync as ds
+    from app.beets.disk_sync import run_disk_sync
+
+    n_before = len(list(edit_lib.items()))
+    # Mount dropped mid-run: every file now looks gone...
+    monkeypatch.setattr(ds, "_file_missing", lambda item: True)
+    # ...and the root check passes ONCE (start-of-run guard) then fails (the drop).
+    calls = {"n": 0}
+
+    def flaky_require_root(lib: object) -> None:
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise ds.LibraryRootUnavailableError("share unmounted mid-run")
+
+    monkeypatch.setattr(ds, "_require_root", flaky_require_root)
+    with pytest.raises(ds.LibraryRootUnavailableError):
+        run_disk_sync(
+            edit_lib, on_total=lambda n: None, on_item=lambda o: None, should_stop=lambda: False
+        )
+    assert len(list(edit_lib.items())) == n_before  # no mass-removal

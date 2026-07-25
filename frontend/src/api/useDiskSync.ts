@@ -18,11 +18,18 @@ const IDLE: DiskSyncStatus = {
 };
 
 export function useDiskSyncStatus() {
+  const qc = useQueryClient();
   return useQuery({
     queryKey: DISK_SYNC_STATUS_KEY,
     queryFn: async (): Promise<DiskSyncStatus> => {
       const { data, response } = await client.GET("/api/disk-sync/status");
-      if (!response.ok || !data) return IDLE;
+      // Never fabricate `idle` over a live snapshot: a 502/504 (proxy hiccup
+      // while the sync hammers the NAS) would overwrite a "running" status and
+      // flip refetchInterval to false, stopping the poll for good. Keep the
+      // last-known status so the running poll self-heals; idle only on cold load.
+      if (!response.ok || !data) {
+        return qc.getQueryData<DiskSyncStatus>(DISK_SYNC_STATUS_KEY) ?? IDLE;
+      }
       return data;
     },
     refetchInterval: (q) => (q.state.data?.phase === "running" ? 1000 : false),

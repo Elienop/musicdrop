@@ -40,6 +40,12 @@ function buildRequest(album: AlbumDetail, draft: Draft): AlbumEditRequest {
 
   const tracks = album.tracks.flatMap((t) => {
     const td = draft.tracks[t.id];
+    // A live refetch (SSE library:changed) can change this album's track
+    // membership while the panel is open, surfacing an id the once-seeded draft
+    // has no entry for. Such a track carries no user edits to send, so skip it
+    // rather than dereference an undefined draft entry (which throws inside the
+    // Preview/Apply click handler and silently no-ops the request).
+    if (!td) return [];
     const changes: NonNullable<AlbumEditRequest["tracks"]>[number] = { item_id: t.id };
     let changed = false;
     if (td.title !== t.title) { changes.title = td.title; changed = true; }

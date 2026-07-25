@@ -33,6 +33,7 @@ import {
 } from "@/components/import/ReviewControlBar";
 import { Info, Refresh, Remove, Spinner, Success, Warning } from "@/components/icons";
 import { EmptyState } from "@/components/system/EmptyState";
+import { ErrorState } from "@/components/system/ErrorState";
 import { PageSkeleton } from "@/components/system/PageSkeleton";
 import { SectionLabel } from "@/components/system/SectionLabel";
 import { StatusBanner } from "@/components/system/StatusBanner";
@@ -52,7 +53,7 @@ import { useDeferredH1Focus } from "@/lib/useDeferredH1Focus";
  */
 export function BankReviewPage() {
   const { itemId } = useParams<{ itemId: string }>();
-  const { data, isPending, isError } = useBankItem(itemId);
+  const { data, isPending, isError, error, refetch } = useBankItem(itemId);
   useDeferredH1Focus(!isPending && !isError);
 
   if (isPending) {
@@ -70,7 +71,7 @@ export function BankReviewPage() {
       </Shell>
     );
   }
-  if (isError || !data) {
+  if (error instanceof BankConflictError) {
     // 404 = removed, applied away, or a dead deep link — return to the list.
     return (
       <Shell>
@@ -84,6 +85,19 @@ export function BankReviewPage() {
               <Link to="/review">Back to Review</Link>
             </Button>
           }
+        />
+      </Shell>
+    );
+  }
+  if (isError || !data) {
+    // A transient failure (5xx / network blip, e.g. a backend restart while the
+    // apply runner hammers the disk) — offer a retry rather than falsely
+    // declaring the row applied/removed.
+    return (
+      <Shell>
+        <ErrorState
+          message="Couldn’t load this banked row."
+          onRetry={() => void refetch()}
         />
       </Shell>
     );

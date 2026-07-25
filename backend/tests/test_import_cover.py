@@ -95,3 +95,26 @@ def test_cover_streams_embedded_art(monkeypatch: pytest.MonkeyPatch) -> None:
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("image/")
     assert r.content == b"PNGDATA"
+
+
+def test_cover_offloads_the_tag_read_to_the_threadpool(monkeypatch: pytest.MonkeyPatch) -> None:
+    # candidate_cover parses the parked album's first audio file for embedded art
+    # (HDD/NAS source) — it must be offloaded, not run on the event loop.
+    from unittest.mock import Mock
+
+    from fastapi.concurrency import run_in_threadpool as _real
+
+    import app.api.import_ as import_mod
+
+    monkeypatch.setattr(
+        "app.import_jobs.registry.embedded_art",
+        lambda p: (b"PNGDATA", "image/png"),
+    )
+    spy = Mock(side_effect=lambda fn, *a, **k: _real(fn, *a, **k))
+    monkeypatch.setattr(import_mod, "run_in_threadpool", spy, raising=False)
+    client = _client_with_fake(parked=[_parked(0)], art_sources={0: "/fake/album0/track.flac"})
+    job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
+    _poll(client, job_id, lambda s: len(s["albums"]) == 1)
+    r = client.get(f"/api/import/{job_id}/albums/0/cover")
+    assert r.status_code == 200
+    assert "candidate_cover" in [getattr(c.args[0], "__name__", "") for c in spy.call_args_list]

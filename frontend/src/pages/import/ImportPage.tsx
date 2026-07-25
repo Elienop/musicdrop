@@ -550,6 +550,7 @@ function FeedRow({
     <div className={cn((needsReview || needsDup) && "bg-primary/5")}>
       <AlbumRow
         cover={albumId !== null ? `/api/albums/${albumId}/cover` : null}
+        coverAssetKey={albumId !== null ? `album:${albumId}` : undefined}
         title={title}
         subtitle={album.artist ?? "Unknown artist"}
         meta={

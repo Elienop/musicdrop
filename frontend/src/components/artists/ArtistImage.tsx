@@ -50,6 +50,12 @@ export function ArtistImage({
   version?: number;
 }) {
   const [failed, setFailed] = useState(false);
+  // Scoped to THIS artist: a portrait saved for someone else in another tab
+  // must not remount every card in the roster.
+  // Unscoped (global) on purpose: the backend serves this image under a
+  // NORMALIZED artist name, so the raw display name is not a reliable identity
+  // for the asset — a scoped subscription would silently miss a twin spelling
+  // of the same artist. Artist-art writes are rare, so a global bump is fine.
   const assetVersion = useAssetVersion();
   const imageSettings = useArtistImageSettings();
   const artSettings = useArtistArtSettings();

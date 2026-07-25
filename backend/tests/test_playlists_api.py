@@ -670,13 +670,77 @@ def test_sync_cleans_up_detargeted_user(
         config: object, rating_keys: dict[str, str | None], *, playlist_id: str
     ) -> dict[str, str]:
         captured.append(dict(rating_keys))
-        return {}
+        return {uid: "deleted" for uid in rating_keys}  # delete CONFIRMED
 
     monkeypatch.setattr(plex_sync, "delete_playlist_on_targets", _record)
     r = client.post(f"/api/playlists/{pid}/sync")
     assert r.status_code == 200
     assert captured == [{"7": "1"}]  # the de-targeted user's recorded ratingKey
-    assert set(r.json()["plex"]) == {"admin"}  # state map no longer lists 7
+    assert set(r.json()["plex"]) == {"admin"}  # confirmed-deleted -> dropped from the map
+
+
+def test_sync_retains_detargeted_user_when_delete_unconfirmed(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # M24 residual: if the de-target delete does NOT confirm removal (e.g. a
+    # transient admin.switchUser failure), the user's entry + recorded ratingKey
+    # must be RETAINED so a later sync can retry — dropping it (the whole-map
+    # replace) would orphan the still-existing Plex copy forever.
+    from app.plex import sync as plex_sync
+
+    t1 = _add_track(beets_library, "Alpha")
+    plex_path = os.path.join(os.fsdecode(beets_library.lib.directory), "Seed", "Alpha.flac")
+
+    class _Sec:
+        TYPE = "artist"
+
+        def searchTracks(self) -> list[object]:
+            return [type("T", (), {"ratingKey": 9, "locations": [plex_path]})()]
+
+    class _Srv:
+        def __init__(self) -> None:
+            self.library = type("L", (), {"sections": lambda _s: [_Sec()]})()
+
+        def playlists(self) -> list[object]:
+            return []
+
+        def createPlaylist(self, title: str, items: list[object]) -> object:
+            return type(
+                "PL",
+                (),
+                {
+                    "title": title,
+                    "ratingKey": 1,
+                    "summary": "",
+                    "items": lambda _s: items,
+                    "editSummary": lambda _s, summary: None,
+                },
+            )()
+
+        def switchUser(self, uid: str) -> "_Srv":
+            return _Srv()
+
+    monkeypatch.setattr(plex_sync.client, "connect", lambda base_url, token: _Srv())
+    client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
+
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
+    client.patch(f"/api/playlists/{pid}", json={"target_plex_users": ["7"]})
+    client.post(f"/api/playlists/{pid}/sync")  # plex == {"admin", "7": ratingKey 1}
+
+    client.patch(f"/api/playlists/{pid}", json={"target_plex_users": []})  # untick 7
+
+    def _failed(
+        config: object, rating_keys: dict[str, str | None], *, playlist_id: str
+    ) -> dict[str, str]:
+        return {uid: "failed" for uid in rating_keys}  # switchUser threw -> NOT confirmed
+
+    monkeypatch.setattr(plex_sync, "delete_playlist_on_targets", _failed)
+    r = client.post(f"/api/playlists/{pid}/sync")
+    assert r.status_code == 200
+    plex = r.json()["plex"]
+    assert set(plex) == {"admin", "7"}  # 7 retained (delete unconfirmed) -> retry path
+    assert plex["7"]["rating_key"] == "1"  # its recorded ratingKey survives for the retry
 
 
 # --- Playlist artwork (cover) endpoints -------------------------------------

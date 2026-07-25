@@ -109,7 +109,7 @@ def _run_apply(lib: Library, source_album_dir: Path) -> None:
         done.set()
 
     runner.run(
-        str(source_album_dir),
+        [str(source_album_dir)],
         bridge,
         on_finish=done.set,
         on_error=_on_error,

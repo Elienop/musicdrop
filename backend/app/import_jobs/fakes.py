@@ -53,20 +53,22 @@ class FakeImportRunner:
         # Guard seam: tests set validate_error to make start() refuse like the
         # real runner; validate_calls records the (path, options) it saw.
         self.validate_error: Exception | None = None
-        self.validate_calls: list[tuple[str, ImportOptions | None]] = []
+        self.validate_calls: list[tuple[list[str], ImportOptions | None]] = []
+        # The paths the registry handed run() — the multi-path contract's seam.
+        self.received_paths: list[str] | None = None
         # Spawn-failure seam: tests set run_error to make run() raise
         # SYNCHRONOUSLY (no worker thread, no callback) — modelling the real
         # runner's threading.Thread(...).start() failing under exhaustion.
         self.run_error: Exception | None = None
 
-    def validate(self, path: str, options: ImportOptions | None = None) -> None:
-        self.validate_calls.append((path, options))
+    def validate(self, paths: list[str], options: ImportOptions | None = None) -> None:
+        self.validate_calls.append((list(paths), options))
         if self.validate_error is not None:
             raise self.validate_error
 
     def run(
         self,
-        path: str,
+        paths: list[str],
         bridge: ImportBridge,
         on_finish: Callable[[], None],
         on_error: Callable[[str], None],
@@ -77,6 +79,7 @@ class FakeImportRunner:
             # Fail like the real runner's synchronous session build /
             # Thread.start() — the slot is already claimed, no thread spawns.
             raise self.run_error
+        self.received_paths = list(paths)
         self.received_options = options
         self.received_directive = directive
 

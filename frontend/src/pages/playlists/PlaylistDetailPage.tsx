@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 
@@ -313,6 +313,18 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
   // `${trackId}:up|down|remove`; the empty state registers as "empty".
   const { register, requestFocus } = useFocusAfterMutation();
 
+  // WHY (perf): PlaylistTrackRow is React.memo'd so a header-only state change
+  // (rename keystroke, statusMsg live-region update, target toggle, artwork
+  // panel) doesn't reconcile the whole tracklist — which can run to a few
+  // thousand rows, each three icon Buttons. memo only holds if every callback a
+  // row receives keeps a STABLE identity across a parent re-render, so we route
+  // all row actions through ONE ref of the volatile deps (the live tracklist +
+  // the mutations), refreshed each render, and hand the rows truly-stable
+  // useCallback([]) handlers that read it. A rename keystroke then changes NO
+  // row prop, so not one row re-renders.
+  const rowDeps = useRef({ tracks, reorder, removeEntry, requestFocus });
+  rowDeps.current = { tracks, reorder, removeEntry, requestFocus };
+
   function saveName() {
     const next = draftName.trim();
     if (next.length === 0 || next === playlist.name) {
@@ -379,12 +391,17 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     scheduleTargetSave();
   }
 
-  /** Move the track at `index` one slot in `dir`: reorder locally for instant
-   * feedback, PUT the new full order, and refocus the moved row's move button
-   * (falling back to its sibling button when the move lands it at an end). */
-  function move(index: number, dir: -1 | 1) {
+  /** Move the row identified by `uid` one slot in `dir`: reorder locally for
+   * instant feedback, PUT the new full order, and refocus the moved row's move
+   * button (falling back to its sibling button when the move lands it at an
+   * end). Stable identity (useCallback []) so it doesn't defeat the row memo;
+   * reads the live tracklist/mutation off `rowDeps` and derives position from
+   * `uid` rather than a captured index, so it never closes over the array. */
+  const onMove = useCallback((uid: string, dir: -1 | 1) => {
+    const { tracks, reorder, requestFocus } = rowDeps.current;
+    const index = tracks.findIndex((t) => t.uid === uid);
     const target = index + dir;
-    if (target < 0 || target >= tracks.length) {
+    if (index < 0 || target < 0 || target >= tracks.length) {
       return;
     }
     const moved = tracks[index];
@@ -395,11 +412,11 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     requestFocus(`${moved.uid}:${dirKey}`, `${moved.uid}:${altKey}`);
 
     // Derive the optimistic order AND the PUT body from one snapshot (this
-    // render's tracklist) so they can't diverge. A move is a single deliberate
-    // action, so the click-time order is the intent; a background reseed that
-    // lands between render and click self-heals on the next refetch. (The
-    // rapid-edit resurrection guard that must stay uid-keyed lives on the
-    // remove path, not here.)
+    // render's tracklist, read via the ref) so they can't diverge. A move is a
+    // single deliberate action, so the click-time order is the intent; a
+    // background reseed that lands between render and click self-heals on the
+    // next refetch. (The rapid-edit resurrection guard that must stay uid-keyed
+    // lives on the remove path, not here.)
     const prev = tracks;
     const next = swapByUid(tracks, moved.uid, dir);
     setTracks(next);
@@ -410,7 +427,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
         onError: () => setTracks(prev),
       },
     );
-  }
+  }, []);
 
   /** Resolve the armed pending entry to the picked library track, keeping its
    * position. On success the mutation swaps the detail cache (which reseeds the
@@ -429,14 +446,24 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     setMatchUid(null);
   }
 
-  /** Remove the track at `index`. On success announce + toast it and move
-   * focus to a surviving sibling (the row that shifts up into its slot, else
-   * the previous row, else the empty state). The local `setTracks` runs in the
-   * SAME handler as `requestFocus` so the commit the hook fulfils the request
-   * on already has the survivor list / empty state mounted (the refetch reseed
-   * lands later and is a no-op for focus). */
-  function handleRemove(index: number) {
-    const removed = tracks[index];
+  /** Arm the shared match picker for the pending row `uid`. Stable identity so
+   * it doesn't defeat the row memo. */
+  const onMatch = useCallback((uid: string) => setMatchUid(uid), []);
+
+  /** Remove the row identified by `uid`. On success announce + toast it and
+   * move focus to a surviving sibling (the row that shifts up into its slot,
+   * else the previous row, else the empty state). The local `setTracks` runs in
+   * the SAME handler as `requestFocus` so the commit the hook fulfils the
+   * request on already has the survivor list / empty state mounted (the refetch
+   * reseed lands later and is a no-op for focus). Stable identity (useCallback
+   * []) and uid-keyed (reads the live tracklist off `rowDeps`) so it neither
+   * defeats the row memo nor closes over a captured index/array. */
+  const onRemove = useCallback((uid: string) => {
+    const { tracks, removeEntry } = rowDeps.current;
+    const removed = tracks.find((t) => t.uid === uid);
+    if (!removed) {
+      return;
+    }
     removeEntry.mutate(removed.uid, {
       onSuccess: () => {
         const message = `Removed ${displayTitle(removed)}`;
@@ -464,7 +491,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
         });
       },
     });
-  }
+  }, []);
 
   // Count unmatched (pending) rows from the local tracklist so the header stays
   // in step with optimistic add/remove/resolve edits, not the last server body.
@@ -790,10 +817,9 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
                 position={index + 1}
                 isFirst={index === 0}
                 isLast={index === tracks.length - 1}
-                onMoveUp={() => move(index, -1)}
-                onMoveDown={() => move(index, 1)}
-                onRemove={() => handleRemove(index)}
-                onMatch={() => setMatchUid(track.uid)}
+                onMove={onMove}
+                onRemove={onRemove}
+                onMatch={onMatch}
                 registerRef={register}
               />
             ))}
@@ -915,13 +941,19 @@ function ArtworkEditPanel({
   );
 }
 
-function PlaylistTrackRow({
+// Memoized so a header-only re-render of PlaylistDetailView (rename keystroke,
+// statusMsg live-region update, target toggle, artwork panel) doesn't reconcile
+// every row of a potentially multi-thousand-row tracklist. Default shallow prop
+// comparison suffices BECAUSE the parent hands stable useCallback([]) handlers
+// (onMove/onRemove/onMatch) and passes only primitives otherwise (position,
+// isFirst, isLast) plus the reseed-stable `track` object — so an unrelated
+// header change touches no prop of an untouched row.
+const PlaylistTrackRow = memo(function PlaylistTrackRow({
   track,
   position,
   isFirst,
   isLast,
-  onMoveUp,
-  onMoveDown,
+  onMove,
   onRemove,
   onMatch,
   registerRef,
@@ -930,10 +962,9 @@ function PlaylistTrackRow({
   position: number;
   isFirst: boolean;
   isLast: boolean;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
-  onRemove: () => void;
-  onMatch: () => void;
+  onMove: (uid: string, dir: -1 | 1) => void;
+  onRemove: (uid: string) => void;
+  onMatch: (uid: string) => void;
   registerRef: (key: string, el: HTMLButtonElement | null) => void;
 }) {
   // A pending row (an import that didn't match a library track) keeps its slot
@@ -995,7 +1026,7 @@ function PlaylistTrackRow({
               size="sm"
               variant="outline"
               className="mr-1"
-              onClick={onMatch}
+              onClick={() => onMatch(track.uid)}
               aria-label={`Match ${title}`}
             >
               Match&hellip;
@@ -1005,7 +1036,7 @@ function PlaylistTrackRow({
             ref={(el) => registerRef(`${track.uid}:up`, el)}
             size="icon-sm"
             variant="ghost"
-            onClick={onMoveUp}
+            onClick={() => onMove(track.uid, -1)}
             disabled={isFirst}
             aria-label={`Move ${title} up`}
           >
@@ -1015,7 +1046,7 @@ function PlaylistTrackRow({
             ref={(el) => registerRef(`${track.uid}:down`, el)}
             size="icon-sm"
             variant="ghost"
-            onClick={onMoveDown}
+            onClick={() => onMove(track.uid, 1)}
             disabled={isLast}
             aria-label={`Move ${title} down`}
           >
@@ -1025,7 +1056,7 @@ function PlaylistTrackRow({
             ref={(el) => registerRef(`${track.uid}:remove`, el)}
             size="icon-sm"
             variant="ghost"
-            onClick={onRemove}
+            onClick={() => onRemove(track.uid)}
             aria-label={`Remove ${title}`}
           >
             <Remove className="size-4" aria-hidden="true" />
@@ -1034,7 +1065,7 @@ function PlaylistTrackRow({
       </TableCell>
     </TableRow>
   );
-}
+});
 
 function EmptyTracks({
   register,

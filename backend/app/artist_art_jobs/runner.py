@@ -10,7 +10,6 @@ service/client are bound to the MAIN loop and must NOT be reused here.
 from __future__ import annotations
 
 import asyncio
-import threading
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -23,7 +22,7 @@ from app.artwork.factory import build_fanart_background_source, build_source_cha
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
 from app.artwork.source import TransientSourceError
-from app.beets.artist_art import write_artist_art
+from app.beets.artist_art import has_background, write_artist_art
 from app.beets.library import get_artist_mbid, list_artists
 from app.config import Settings
 from app.models.artist_art import ArtistArtOutcome
@@ -35,7 +34,14 @@ async def _default_fetch_one(
     mbid = await asyncio.to_thread(get_artist_mbid, lib, name)
     poster = await service.get_artist_image(name, get_mbid=lambda: mbid)
     background: tuple[bytes, str] | None = None
-    if bg_source is not None and mbid:
+    needs_bg = bg_source is not None and bool(mbid)
+    # Skip the fanart.tv API call + full image download when a non-force run would
+    # write nothing anyway (every artist folder already has artist-background.*).
+    # resolve_background is uncached, so without this the library-wide sweep
+    # re-downloaded every artist's background — gigabytes — just to discard it.
+    if needs_bg and not force and await asyncio.to_thread(has_background, lib, name):
+        needs_bg = False
+    if needs_bg:
         try:
             bg = await bg_source.resolve_background(mbid)
         except TransientSourceError:
@@ -136,9 +142,12 @@ def start_backfill(
     artist: str | None = None,
     on_complete: Callable[[], None] | None = None,
 ) -> None:
-    """Spawn the sweep on a daemon thread that owns its event loop (non-blocking)."""
-    threading.Thread(
-        target=lambda: asyncio.run(
+    """Spawn the sweep on a daemon thread that owns its event loop.
+
+    Via ``reg.spawn_worker`` so a refused ``Thread.start()`` frees the slot
+    instead of wedging every library mutation (see SingleSlotRegistry)."""
+    reg.spawn_worker(
+        lambda: asyncio.run(
             sweep_async(
                 reg,
                 lib,
@@ -151,5 +160,4 @@ def start_backfill(
             )
         ),
         name="musicdrop-artist-art-backfill",
-        daemon=True,
-    ).start()
+    )

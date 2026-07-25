@@ -43,6 +43,7 @@ export function useEventStream(): void {
       // drop/sleep) invalidate + refresh images for anything missed.
       if (connected) {
         invalidateLibraryContent(qc);
+        // We can't know WHICH assets changed while disconnected → global bump.
         bumpAssetVersion();
       }
       connected = true;
@@ -50,12 +51,18 @@ export function useEventStream(): void {
     es.onmessage = (e) => {
       invalidateLibraryContent(qc);
       let type: string | undefined;
+      // `scope` names the one asset whose bytes changed ("album:7",
+      // "artist:ABBA"); absent/null means library-wide.
+      let scope: string | undefined;
       try {
-        type = (JSON.parse(e.data) as { type?: string }).type;
+        const payload = JSON.parse(e.data) as { type?: string; scope?: string | null };
+        type = payload.type;
+        scope = payload.scope ?? undefined;
       } catch {
         type = undefined;
+        scope = undefined;
       }
-      if (type === "art:changed") bumpAssetVersion();
+      if (type === "art:changed") bumpAssetVersion(scope);
     };
     return () => es.close();
   }, [qc]);

@@ -416,6 +416,18 @@ class WebImportSession(ImportSession):
         run() — never beets' destructive REMOVE).
         """
         self._check_pause()
+        if not task.is_album:
+            # A singleton "as tracks" import whose track duplicates a library item.
+            # beets 2.12 shares this hook for singletons, but passes Items — not
+            # Albums (SingletonImportTask.find_duplicates, tasks.py) — and the
+            # prompt / replace machinery below is album-shaped. SKIP the duplicate
+            # track (keeps the library copy): the safe, non-destructive resolution,
+            # matching beets' own singleton default. Never feed Items to
+            # to_existing_album (it does items[0].path on a Model.items() field
+            # tuple → crashes the whole import job) nor record their ids into
+            # _replace_album_ids (the post-run Trash pass would delete the album
+            # that happens to share that id).
+            return BeetsDuplicateAction.SKIP
         index = getattr(task, "md_album_index", None)
         if index is None:
             # Defensive: this hook should always follow choose_match.
@@ -639,7 +651,23 @@ class WebImportSession(ImportSession):
             )
             is_search = choice.action is ImportAction.search and choice.search is not None
             is_rescan = choice.action is ImportAction.rescan
-            if not is_search and not is_rescan:
+            # Stale-client race: a prior search re-parked a DIFFERENT candidate
+            # list, but the client still renders the old one and submits an apply
+            # against it. Re-confirm instead of letting _apply_choice silently
+            # import a release the user never chose. Two detectors: the index is
+            # out of range for the current list (a search SHRANK it), or the
+            # client-echoed search_revision doesn't match the current park (a
+            # search REPLACED it with an equal-or-longer list, where a stale
+            # in-range index still looks valid). The revision echo closes that
+            # residual for revision-echoing clients; a None revision (a legacy/
+            # non-echoing client) degrades to the length-only guard. Only apply
+            # is revision-checked — skip/asis/astracks/abort are list-independent
+            # decisions and must never be blocked by a stale revision.
+            is_stale_apply = choice.action is ImportAction.apply and (
+                not self._apply_index_in_range(choice, candidates)
+                or (choice.search_revision is not None and choice.search_revision != revision)
+            )
+            if not is_search and not is_rescan and not is_stale_apply:
                 result = self._apply_choice(choice, candidates)
                 if result is Action.TRACKS:
                     # Arm the astracks window: the serial pipeline delivers this
@@ -649,7 +677,12 @@ class WebImportSession(ImportSession):
                 return result
             revision += 1
             feedback: str | None
-            if is_search:
+            if is_stale_apply:
+                # The chosen index no longer exists (a prior search shrank the list
+                # out from under the client). Keep the current candidates and re-park
+                # so the user re-confirms rather than importing the wrong release.
+                feedback = "That release is no longer in the list - please pick again."
+            elif is_search:
                 assert choice.search is not None  # is_search narrowed it above
                 new_candidates, new_rec = relookup(task, choice.search)
                 if new_candidates:
@@ -659,6 +692,12 @@ class WebImportSession(ImportSession):
                     feedback = None
                 else:
                     feedback = "No release found. Showing your previous matches."
+            elif not folder or not self._under_toppath(folder):
+                # Rescan guard: an empty folder, or one outside every session
+                # toppath (a MERGE task's library-spanning ancestor), must never
+                # be os.walk'd — that can traverse the whole library mount and
+                # swap task.items to every file under it. Refuse instead.
+                feedback = "Rescan isn't available for this album."
             else:
                 # Rescan: the user changed the folder on purpose — re-read it
                 # from disk and re-run beets' DEFAULT first-scan lookup.
@@ -888,6 +927,16 @@ class WebImportSession(ImportSession):
         )
 
     @staticmethod
+    def _apply_index_in_range(choice: ImportChoice, candidates: list[Any]) -> bool:
+        """True iff an apply choice's index selects one of the CURRENT candidates.
+
+        A ``None`` index means "apply the top" and is in range whenever any
+        candidate exists; an explicit index must fall within the current list,
+        which a prior search may have shortened out from under the client.
+        """
+        return 0 <= (choice.candidate_index or 0) < len(candidates)
+
+    @staticmethod
     def _apply_choice(choice: ImportChoice, candidates: list[Any]) -> Any:
         """Translate a user ImportChoice into a beets match/Action.
 
@@ -901,6 +950,9 @@ class WebImportSession(ImportSession):
             idx = choice.candidate_index or 0
             if 0 <= idx < len(candidates):
                 return candidates[idx]
+            # Defensive net only: _park_with_research now intercepts an out-of-range
+            # apply as a stale submit and re-parks, so this is unreachable for the
+            # attended path — but any other caller still degrades to the top match.
             return candidates[0]
         if choice.action is ImportAction.asis:
             return Action.ASIS
@@ -908,19 +960,38 @@ class WebImportSession(ImportSession):
             return Action.TRACKS
         return Action.SKIP
 
-    @staticmethod
-    def _task_folder(task: ImportTask) -> str:
-        # The album's folder = the common parent of the task's paths. For a
+    def _under_toppath(self, path: str) -> bool:
+        """True iff ``path`` is, or lives inside, one of the session toppaths (the
+        user-chosen import-source roots). Distinguishes a real source folder from
+        the library-spanning ancestor a MERGE task's mixed paths would produce."""
+        for raw in self.paths:
+            top = os.fsdecode(raw)
+            if path == top or path.startswith(top + os.sep):
+                return True
+        return False
+
+    def _task_folder(self, task: ImportTask) -> str:
+        # The album's source folder = the common parent of the task's paths. For a
         # one-folder album this is that folder; for a multi-disc task whose paths
         # are [CD1, CD2, CD3] (a deemix layout excludes the parent) it is the
         # album dir — NOT paths[0]=CD1, which would bank/re-import only disc 1.
+        #
+        # A MERGE decision makes beets rebuild the task as ImportTask(None,
+        # source_paths + duplicate LIBRARY file paths); the naive common-parent of
+        # an inbox folder and a library file escapes to a bogus ancestor ("/"),
+        # which the feed would show and a Rescan would os.walk across the whole
+        # library. Scope to the paths under a session toppath so the folder stays
+        # the real incoming source; fall back to the full set only when nothing is
+        # under a toppath (a degenerate / library-reimport shape).
         if not task.paths:
             return ""
         decoded = [os.fsdecode(p) for p in task.paths]
+        scoped = [p for p in decoded if self._under_toppath(p)]
+        candidates = scoped or decoded
         try:
-            return os.path.commonpath(decoded)
+            return os.path.commonpath(candidates)
         except ValueError:  # mixed/relative paths — never happens for beets toppaths
-            return decoded[0]
+            return candidates[0]
 
 
 def run_import_worker(

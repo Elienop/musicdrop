@@ -29,6 +29,7 @@ import { SettingsConflict } from "@/pages/settings/SettingsConflict";
 import {
   READ_ONLY_EXTENSION,
   buildExtensions,
+  buildReadOnlyExtensions,
   shadcnTheme,
 } from "@/pages/settings/codemirror-config";
 
@@ -79,6 +80,21 @@ function parseConflictBody(err: unknown): ConflictState | null {
     serverDoc: detail.current_yaml_text,
     sha: detail.current_sha256,
   };
+}
+
+/**
+ * The recovery hint an Apply 500 carries. The backend nests it as
+ * `{detail: {message, recovery}}` (see config_editor.apply); pull the string
+ * out, or return null for any other status/shape so the caller falls back to
+ * generic copy.
+ */
+function applyRecoveryHint(err: ConfigOpError | null | undefined): string | null {
+  const detail = (err?.body as { detail?: unknown } | undefined)?.detail;
+  if (detail && typeof detail === "object" && "recovery" in detail) {
+    const recovery = (detail as { recovery?: unknown }).recovery;
+    if (typeof recovery === "string" && recovery.trim()) return recovery;
+  }
+  return null;
 }
 
 export function SettingsBeetsPage() {
@@ -158,6 +174,15 @@ export function SettingsBeetsPage() {
         theme: shadcnTheme,
       }),
     [data?.yaml_text],
+  );
+
+  // Extensions for the read-only "Effective config" pane. Content-independent
+  // (the doc rides in via the `value` prop, which @uiw keeps synced on
+  // refetch), so this memo has no deps — the array identity stays stable and
+  // the pane never needlessly rebuilds.
+  const effectiveExtensions = useMemo(
+    () => buildReadOnlyExtensions(shadcnTheme),
+    [],
   );
 
   if (isPending) return <Loader />;
@@ -241,6 +266,12 @@ export function SettingsBeetsPage() {
   onSaveRef.current = handleSave;
 
   function handleEdit() {
+    // Entering a fresh edit session clears any stale Save/Apply failure banner
+    // from a prior attempt: a settled error mutation keeps its error state until
+    // reset, so without this the old alert would resurface the moment the doc is
+    // dirty again.
+    save.reset();
+    applyMutation.reset();
     const view = editorRef.current?.view;
     if (view) {
       view.dispatch({
@@ -276,6 +307,10 @@ export function SettingsBeetsPage() {
     // beets is already running on).
     setConflict(null);
     setLintErrors(0);
+    // Discarding also clears a prior Save/Apply failure banner — the page is
+    // returning to clean, so a lingering "Save failed" would be a false alarm.
+    save.reset();
+    applyMutation.reset();
   }
 
   function handleApply() {
@@ -415,6 +450,35 @@ export function SettingsBeetsPage() {
           )}
         </div>
 
+        {/* Surface Save/Apply failures — otherwise the spinner just ends and the
+            banner silently returns to its resting state, so the user never
+            learns the click failed. Each is co-gated on the page state the error
+            belongs to (apply_pending / dirty) so a stale error can't outlive it:
+            a settled mutation keeps its error until reset, so an externally
+            resolved apply_pending or a discarded edit would otherwise leave a
+            false alarm behind. A 409 on Save opens the conflict panel above; a
+            409 on Apply is the library-job gate (a transient status, not an
+            error). Everything else is a destructive alert. */}
+        {applyMutation.isError &&
+          pageState === "apply_pending" &&
+          (applyMutation.error?.status === 409 ? (
+            <p className="text-muted-foreground text-sm" role="status">
+              A library job is running; Apply will be available when it
+              finishes.
+            </p>
+          ) : (
+            <p className="text-destructive text-sm" role="alert">
+              Apply failed.{" "}
+              {applyRecoveryHint(applyMutation.error) ??
+                "Your config is saved on disk — try again or restart MusicDrop."}
+            </p>
+          ))}
+        {save.isError && save.error?.status !== 409 && pageState === "dirty" && (
+          <p className="text-destructive text-sm" role="alert">
+            Save failed. Your changes weren’t written — try again.
+          </p>
+        )}
+
         {conflict && (
           <SettingsConflict
             local={localText ?? data.yaml_text}
@@ -424,6 +488,28 @@ export function SettingsBeetsPage() {
           />
         )}
       </section>
+
+      <section className="flex flex-col gap-4" aria-label="Effective config">
+        <header className="flex flex-col gap-1">
+          <SectionLabel>Effective config</SectionLabel>
+          <p className="text-muted-foreground text-sm">
+            The fully-merged config (beets + plugin defaults), with secrets
+            redacted. Read-only &mdash; computed from your config, never saved.
+          </p>
+        </header>
+
+        <CodeMirror
+          value={data?.effective_yaml ?? ""}
+          height="500px"
+          // `theme="none"` opts out of @uiw/react-codemirror's default theme so
+          // the shadcnTheme (folded into effectiveExtensions) owns the colors.
+          theme="none"
+          editable={false}
+          readOnly
+          extensions={effectiveExtensions}
+        />
+      </section>
+
       <ReorganizeLibraryPanel />
       <DiskSyncPanel />
     </div>

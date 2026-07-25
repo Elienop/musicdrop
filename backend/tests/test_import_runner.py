@@ -31,7 +31,7 @@ def test_beets_runner_builds_session_and_invokes_run(
 
     runner = BeetsImportRunner(lib)
     runner.run(
-        str(tmp_path / "incoming"),
+        [str(tmp_path / "incoming")],
         ImportBridge(),
         on_finish=finished.set,
         on_error=lambda message: errored.__setitem__("message", message),
@@ -65,7 +65,7 @@ def test_beets_runner_crash_routes_to_on_error(
 
     runner = BeetsImportRunner(lib)
     runner.run(
-        str(tmp_path / "incoming"),
+        [str(tmp_path / "incoming")],
         ImportBridge(),
         on_finish=finished.set,
         on_error=on_error,
@@ -106,7 +106,7 @@ def test_post_import_trash_failure_still_reports_success(
         finished.set()
 
     BeetsImportRunner(lib).run(
-        str(tmp_path / "incoming"),
+        [str(tmp_path / "incoming")],
         ImportBridge(),
         on_finish=on_finish,
         on_error=on_error,
@@ -136,7 +136,7 @@ def test_runner_passes_trash_dir_to_session(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
     BeetsImportRunner(lib=object(), trash_dir=Path("/tmp/t")).run(
-        "/music", ImportBridge(), on_finish=lambda: None, on_error=lambda m: None
+        ["/music"], ImportBridge(), on_finish=lambda: None, on_error=lambda m: None
     )
     # The daemon thread sets it; poll briefly.
     import time
@@ -187,7 +187,7 @@ def test_runner_translates_options_operation_to_move(
 
     finished = threading.Event()
     BeetsImportRunner(lib=object()).run(
-        "/music",
+        ["/music"],
         ImportBridge(),
         on_finish=finished.set,
         on_error=lambda _message: None,
@@ -228,7 +228,7 @@ def test_runner_forwards_unattended_to_session(
 
     finished = threading.Event()
     BeetsImportRunner(lib=object()).run(
-        "/music",
+        ["/music"],
         ImportBridge(),
         on_finish=finished.set,
         on_error=lambda _message: None,
@@ -276,7 +276,7 @@ def test_runner_forwards_sweep_and_bank_dir(
 
     finished = threading.Event()
     BeetsImportRunner(lib=object(), bank_dir=Path("/tmp/bank")).run(
-        "/music",
+        ["/music"],
         ImportBridge(),
         on_finish=finished.set,
         on_error=lambda _message: None,
@@ -288,11 +288,34 @@ def test_runner_forwards_sweep_and_bank_dir(
     assert captured["worker_sweep"] is expected_sweep
 
 
+def test_validate_refuses_when_ANY_list_member_is_in_library(tmp_path: Path) -> None:
+    # I1 hands over a LIST of inbox folders. One in-library member must refuse the
+    # WHOLE start — a partial import would leave the caller believing every folder
+    # was handled. (Mutating the any() to all() must fail this.)
+    music = tmp_path / "music"
+    music.mkdir()
+    inside = music / "Artist"
+    inside.mkdir()
+    outside = tmp_path / "downloads" / "Artist"
+    outside.mkdir(parents=True)
+
+    import os as _os
+
+    class _Lib:
+        directory = _os.fsencode(str(music))
+
+    runner = BeetsImportRunner(lib=_Lib())
+    with pytest.raises(InLibraryCopyError):
+        runner.validate([str(outside), str(inside)], ImportOptions(operation="copy"))
+    # ...and an all-outside list still passes.
+    runner.validate([str(outside)], ImportOptions(operation="copy"))
+
+
 def test_validate_refuses_in_library_copy(tmp_path: Path) -> None:
     lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
     runner = BeetsImportRunner(lib)
     with pytest.raises(InLibraryCopyError):
-        runner.validate(str(tmp_path / "music" / "incoming"), ImportOptions(operation="copy"))
+        runner.validate([str(tmp_path / "music" / "incoming")], ImportOptions(operation="copy"))
 
 
 @pytest.mark.parametrize(
@@ -309,7 +332,7 @@ def test_validate_passes_safe_combinations(
 ) -> None:
     lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
     runner = BeetsImportRunner(lib)
-    runner.validate(str(tmp_path / path_suffix), options)  # must not raise
+    runner.validate([str(tmp_path / path_suffix)], options)  # must not raise
 
 
 def test_runner_forwards_directive_to_session_and_worker(
@@ -340,7 +363,7 @@ def test_runner_forwards_directive_to_session_and_worker(
     directive = BankApplyDirective(action="asis")
     finished = threading.Event()
     BeetsImportRunner(lib=object()).run(
-        "/library/A",
+        ["/library/A"],
         ImportBridge(),
         on_finish=finished.set,
         on_error=lambda _message: None,

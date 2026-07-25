@@ -1,9 +1,11 @@
 """End-to-end tests for ``POST /api/config/save``.
 
-Covers the full Layer-3 save flow: parse, schema-validate, SHA-256 CAS,
-secret preserve, atomic write. The CAS branch is exercised with a
-stale ``base_sha256`` — SHA alone is the CAS token (mtime would overflow
-JS's ``Number.MAX_SAFE_INTEGER`` and silently corrupt the round-trip).
+Covers the full Layer-3 save flow: parse, schema-validate, SHA-256 CAS, atomic
+write. The editor serves and edits the RAW ``config.yaml``, so Save writes the
+submitted document verbatim (no secret-preserve merge) — the comment/secret
+regressions the raw-serve fix closed are pinned here too. The CAS branch is
+exercised with a stale ``base_sha256`` — SHA alone is the CAS token (mtime would
+overflow JS's ``Number.MAX_SAFE_INTEGER`` and silently corrupt the round-trip).
 """
 
 from __future__ import annotations
@@ -120,35 +122,61 @@ def test_save_409_carries_fresh_cas_token(
     assert r.json()["detail"]["current_sha256"] == hashlib.sha256(new_bytes).hexdigest()
 
 
-def test_save_preserves_secret_when_unchanged(
+def test_get_serves_raw_yaml_unredacted(
     client: TestClient, beets_library_config_path: Path
 ) -> None:
-    # Set a fake secret on disk, then reload ``beets.config`` so the in-memory
-    # snapshot (which the GET endpoint renders) actually contains the new
-    # ``spotify`` block — the user's editor view must show ``REDACTED`` at the
-    # secret path before the "submit unchanged" round-trip can exercise the
-    # preserve branch. In production this state arrives via the Apply endpoint
-    # (Task 8); here we simulate it inline.
-    import beets
-
+    """The editor is seeded with the RAW file (secrets included), not the
+    redacted flatten dump — so a round-trip Save can't destroy them. The
+    redacted view lives in ``effective_yaml`` instead."""
     text = beets_library_config_path.read_text() + "\nspotify:\n  client_secret: REAL_SECRET_123\n"
     beets_library_config_path.write_text(text)
-    beets.config.reload()  # pick up the new on-disk section into beets.config
+    snap = client.get("/api/config").json()
+    # Editable doc = the raw file, real secret visible (was the redacted flatten
+    # dump before the fix).
+    assert snap["yaml_text"] == text
+    assert "REAL_SECRET_123" in snap["yaml_text"]
+    # The redacted merged view is a separate, distinct field (its masking is
+    # unit-tested in test_config_snapshot).
+    assert isinstance(snap["effective_yaml"], str) and snap["effective_yaml"]
+    assert snap["effective_yaml"] != snap["yaml_text"]
+
+
+def test_save_writes_list_nested_secret_verbatim(
+    client: TestClient, beets_library_config_path: Path
+) -> None:
+    """Regression for the list-nested secret-destruction bug: saving the raw
+    document writes real credentials back verbatim — the literal ``REDACTED``
+    never lands on disk (the old redacted-merge wrote it over list-nested
+    secrets like ``kodi: [{pwd: ...}]``)."""
+    text = (
+        beets_library_config_path.read_text()
+        + "\nkodiupdate:\n  kodi:\n    - host: 10.0.0.5\n      pwd: REAL_KODI_PW\n"
+    )
+    beets_library_config_path.write_text(text)
     sha = _cas(client)
     snap = client.get("/api/config").json()
-    # The displayed yaml_text has REDACTED at spotify.client_secret (the
-    # SECRET_KEY_PATTERN safety-net in config_snapshot masks ``client_secret``
-    # by name, even when the plugin isn't loaded).
-    assert "REAL_SECRET_123" not in snap["yaml_text"]
-    assert "client_secret: REDACTED" in snap["yaml_text"]
-    # Submit unchanged.
+    assert "REAL_KODI_PW" in snap["yaml_text"]  # served raw
+
     r = client.post(
         "/api/config/save",
-        json={
-            "yaml_text": snap["yaml_text"],
-            "base_sha256": sha,
-        },
+        json={"yaml_text": snap["yaml_text"], "base_sha256": sha},
     )
     assert r.status_code == 200
-    # On disk, the real secret survives.
-    assert "REAL_SECRET_123" in beets_library_config_path.read_text()
+    on_disk = beets_library_config_path.read_text()
+    assert "REAL_KODI_PW" in on_disk  # the real credential survives
+    assert "REDACTED" not in on_disk  # and no tombstone was written
+
+
+def test_save_preserves_comments(client: TestClient, beets_library_config_path: Path) -> None:
+    """Regression for the flatten-dump bug: the editor edits the raw file, so a
+    Save keeps the user's hand-authored comments instead of replacing the file
+    with a comment-free, every-default-pinned dump."""
+    original = beets_library_config_path.read_text()
+    edited = "# my hand-authored note\n" + original
+    sha = _cas(client)
+    r = client.post(
+        "/api/config/save",
+        json={"yaml_text": edited, "base_sha256": sha},
+    )
+    assert r.status_code == 200
+    assert "# my hand-authored note" in beets_library_config_path.read_text()

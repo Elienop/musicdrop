@@ -13,6 +13,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 
+from app import library_busy
 from app.jobs import JobState, SingleSlotRegistry
 from app.models.disk_sync import (
     DiskSyncOutcome,
@@ -39,8 +40,10 @@ class _DiskSyncJob(JobState):
 class DiskSyncRegistry(SingleSlotRegistry[_DiskSyncJob]):
     """Holds the active (or last) disk-sync job."""
 
+    job_type = library_busy.DISK_SYNC
+
     def start(self) -> str:
-        with self._lock:
+        with self._claim("a disk sync or another library operation is already running"):
             if self._job is not None and self._job.phase == "running":
                 raise RuntimeError("a disk sync is already running")
             job = _DiskSyncJob(id=uuid.uuid4().hex)

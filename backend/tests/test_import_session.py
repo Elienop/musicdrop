@@ -93,6 +93,43 @@ def _build_other_match() -> AlbumMatch:
     return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_i, extra_t)
 
 
+def _build_third_match() -> AlbumMatch:
+    """A third distinct release, used as a search re-lookup's single result."""
+    items = [Item(artist="Radiohead", album="Kid A", title="Everything", track=1, length=180.0)]
+    tracks = [TrackInfo(title="Everything", track_id="t5", index=1, length=180.0)]
+    info = AlbumInfo(
+        tracks=tracks,
+        album="Kid A",
+        artist="Radiohead",
+        album_id="a5",
+        data_source="MusicBrainz",
+        data_url="https://mb/a5",
+        year=2000,
+        va=False,
+    )
+    pairs, extra_i, extra_t = assign_items(items, info.tracks)
+    return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_i, extra_t)
+
+
+def _build_fourth_match() -> AlbumMatch:
+    """A fourth distinct release, paired with the third so a search can REPLACE
+    the candidate list with an equal-length one (the stale-revision case)."""
+    items = [Item(artist="Radiohead", album="In Rainbows", title="Nude", track=1, length=260.0)]
+    tracks = [TrackInfo(title="Nude", track_id="t7", index=1, length=260.0)]
+    info = AlbumInfo(
+        tracks=tracks,
+        album="In Rainbows",
+        artist="Radiohead",
+        album_id="a7",
+        data_source="MusicBrainz",
+        data_url="https://mb/a7",
+        year=2007,
+        va=False,
+    )
+    pairs, extra_i, extra_t = assign_items(items, info.tracks)
+    return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_i, extra_t)
+
+
 def _patch_tag_album(monkeypatch: pytest.MonkeyPatch, match: AlbumMatch, rec: BeetsRec) -> None:
     """Patch the seam beets uses to fetch candidates so no network is hit.
 
@@ -140,6 +177,21 @@ def _make_task(match: AlbumMatch, monkeypatch: pytest.MonkeyPatch, rec: BeetsRec
     _patch_tag_album(monkeypatch, match, rec)
     task = ImportTask(toppath=None, paths=[b"/music/album"], items=list(match.mapping.keys()))
     task.lookup_candidates([])  # populates cur_artist/cur_album/candidates/rec
+    return task
+
+
+def _make_task_multi(
+    matches: list[AlbumMatch], monkeypatch: pytest.MonkeyPatch, rec: BeetsRec
+) -> ImportTask:
+    """Like _make_task but the first scan offers MULTIPLE candidates, so the
+    client can render a long list a later search can shrink out from under it."""
+
+    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
+        return ("Radiohead", "OK Computer", Proposal(list(matches), rec))
+
+    monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
+    task = ImportTask(toppath=None, paths=[b"/music/album"], items=list(matches[0].mapping.keys()))
+    task.lookup_candidates([])
     return task
 
 
@@ -510,9 +562,12 @@ def test_no_candidates_skips_without_parking(monkeypatch: pytest.MonkeyPatch) ->
     assert bridge.pending_count() == 0
 
 
-def test_apply_with_out_of_range_index_falls_back_to_top(
+def test_out_of_range_apply_reparks_instead_of_importing_top(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # A stale apply for an index past the current list must NOT silently import
+    # candidates[0] (a different release than the user chose) — it re-parks with
+    # feedback so the user re-confirms; a subsequent in-range apply then resolves.
     match = _build_match(BeetsRec.medium)
     bridge = ImportBridge()
     session = _make_session(bridge)
@@ -531,11 +586,288 @@ def test_apply_with_out_of_range_index_falls_back_to_top(
     bridge.push_choice(
         parked.album_index, ImportChoice(action=ImportAction.apply, candidate_index=99)
     )
+
+    # It re-parks (does NOT resolve) with the stale-apply feedback + bumped revision.
+    reparked = bridge.get_parked(timeout=2.0)
+    assert reparked is not None
+    assert reparked.album_index == parked.album_index
+    assert reparked.candidate.search_revision == 1
+    assert reparked.candidate.search_feedback is not None
+    assert "no longer in the list" in reparked.candidate.search_feedback
+    assert not done.is_set()  # the worker did not import candidates[0]
+
+    # A valid apply now resolves normally to the (only) candidate.
+    bridge.push_choice(reparked.album_index, ImportChoice(action=ImportAction.apply))
     assert done.wait(timeout=2.0)
     t.join(timeout=2.0)
-    # Out-of-range index defensively falls back to the top candidate.
     assert task.choice_flag is Action.APPLY
     assert task.match is match
+
+
+def test_stale_apply_after_search_shrinks_list_reparks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The finding's exact race: a search re-parks with a SHORTER list, then the
+    # client (still showing the old, longer list) submits an apply for an index
+    # that is out of range for the new list. It must re-park, not import blindly.
+    import app.beets.import_session as session_mod
+
+    match = _build_match(BeetsRec.medium)
+    other = _build_other_match()
+    single = _build_third_match()
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    # First scan offers TWO candidates (index 1 is valid for now).
+    task = _make_task_multi([match, other], monkeypatch, BeetsRec.medium)
+    # A search shrinks the list to a SINGLE distinct release.
+    monkeypatch.setattr(session_mod, "relookup", lambda t, s: ([single], BeetsRec.strong))
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    first = bridge.get_parked(timeout=2.0)
+    assert first is not None
+    assert len(first.candidate.options) == 2  # client renders the long list
+
+    bridge.push_choice(
+        first.album_index,
+        ImportChoice(action=ImportAction.search, search=ImportSearch(release_id="a5")),
+    )
+    second = bridge.get_parked(timeout=2.0)
+    assert second is not None
+    assert second.candidate.search_revision == 1
+    assert second.candidate.album_after.album == "Kid A"  # shrank to the search result
+
+    # Stale apply: index 1 was valid for the OLD 2-list, out of range for the new 1-list.
+    bridge.push_choice(
+        second.album_index, ImportChoice(action=ImportAction.apply, candidate_index=1)
+    )
+    third = bridge.get_parked(timeout=2.0)
+    assert third is not None  # re-parked rather than resolving
+    assert third.candidate.search_revision == 2
+    assert third.candidate.search_feedback is not None
+    assert "no longer in the list" in third.candidate.search_feedback
+    assert not done.is_set()
+
+    # An in-range apply resolves to the correct (search-result) release, not match/other.
+    bridge.push_choice(
+        third.album_index, ImportChoice(action=ImportAction.apply, candidate_index=0)
+    )
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert task.match is single
+
+
+def test_stale_revision_apply_after_equal_length_search_reparks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The M12b residual: a search REPLACES the list with an EQUAL-LENGTH one, so
+    # the stale client's index is still in range — only the echoed
+    # search_revision can reveal the submit predates the search. It must
+    # re-park, not silently import a release the user never chose.
+    import app.beets.import_session as session_mod
+
+    match = _build_match(BeetsRec.medium)
+    other = _build_other_match()
+    x = _build_third_match()
+    y = _build_fourth_match()
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    # First scan offers TWO candidates; the search swaps in TWO DIFFERENT ones.
+    task = _make_task_multi([match, other], monkeypatch, BeetsRec.medium)
+    monkeypatch.setattr(session_mod, "relookup", lambda t, s: ([x, y], BeetsRec.medium))
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    first = bridge.get_parked(timeout=2.0)
+    assert first is not None
+    assert first.candidate.search_revision == 0
+    assert len(first.candidate.options) == 2
+
+    bridge.push_choice(
+        first.album_index,
+        ImportChoice(action=ImportAction.search, search=ImportSearch(release_id="a5")),
+    )
+    second = bridge.get_parked(timeout=2.0)
+    assert second is not None
+    assert second.candidate.search_revision == 1
+    assert second.candidate.album_after.album == "Kid A"  # the replaced list's top
+    assert len(second.candidate.options) == 2  # SAME length — index 1 looks valid
+
+    # Stale apply: index 1 is IN RANGE for the new list, but the echoed revision
+    # (0) says the client was still rendering the OLD list. Re-park, don't
+    # import Y (a release the user never saw, let alone chose).
+    bridge.push_choice(
+        second.album_index,
+        ImportChoice(action=ImportAction.apply, candidate_index=1, search_revision=0),
+    )
+    third = bridge.get_parked(timeout=2.0)
+    assert third is not None  # re-parked rather than resolving
+    assert third.candidate.search_revision == 2
+    assert third.candidate.search_feedback is not None
+    assert "no longer in the list" in third.candidate.search_feedback
+    assert not done.is_set()
+
+    # An apply echoing the CURRENT revision resolves to the intended release.
+    bridge.push_choice(
+        third.album_index,
+        ImportChoice(action=ImportAction.apply, candidate_index=0, search_revision=2),
+    )
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert task.match is x
+
+
+def test_matching_revision_apply_resolves_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Guard: an apply echoing the CURRENT revision resolves at once (no re-park).
+    match = _build_match(BeetsRec.medium)
+    other = _build_other_match()
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task_multi([match, other], monkeypatch, BeetsRec.medium)
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    parked = bridge.get_parked(timeout=2.0)
+    assert parked is not None
+    assert parked.candidate.search_revision == 0
+    bridge.push_choice(
+        parked.album_index,
+        ImportChoice(action=ImportAction.apply, candidate_index=1, search_revision=0),
+    )
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert task.choice_flag is Action.APPLY
+    candidates = task.candidates
+    assert candidates is not None
+    assert task.match is candidates[1]
+
+
+def test_none_revision_apply_keeps_legacy_length_only_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A legacy/simple client that never echoes a revision (None) degrades to the
+    # length-only guard: an in-range apply resolves even though a search bumped
+    # the revision out from under it.
+    import app.beets.import_session as session_mod
+
+    match = _build_match(BeetsRec.medium)
+    other = _build_other_match()
+    x = _build_third_match()
+    y = _build_fourth_match()
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task_multi([match, other], monkeypatch, BeetsRec.medium)
+    monkeypatch.setattr(session_mod, "relookup", lambda t, s: ([x, y], BeetsRec.medium))
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    first = bridge.get_parked(timeout=2.0)
+    assert first is not None
+    bridge.push_choice(
+        first.album_index,
+        ImportChoice(action=ImportAction.search, search=ImportSearch(release_id="a5")),
+    )
+    second = bridge.get_parked(timeout=2.0)
+    assert second is not None
+    assert second.candidate.search_revision == 1
+
+    # No echoed revision: the in-range apply resolves against the CURRENT list.
+    bridge.push_choice(
+        second.album_index, ImportChoice(action=ImportAction.apply, candidate_index=0)
+    )
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert task.choice_flag is Action.APPLY
+    assert task.match is x
+
+
+def test_stale_revision_on_skip_does_not_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Non-apply actions are list-independent decisions: a stale echoed revision
+    # must never re-park them — skip resolves regardless.
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    parked = bridge.get_parked(timeout=2.0)
+    assert parked is not None
+    assert parked.candidate.search_revision == 0
+    bridge.push_choice(
+        parked.album_index, ImportChoice(action=ImportAction.skip, search_revision=99)
+    )
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert task.choice_flag is Action.SKIP
+    assert task.skip is True
+
+
+def test_in_range_explicit_index_apply_resolves_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Guard: a NORMAL in-range explicit index still resolves at once (no re-park).
+    match = _build_match(BeetsRec.medium)
+    other = _build_other_match()
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task_multi([match, other], monkeypatch, BeetsRec.medium)
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    parked = bridge.get_parked(timeout=2.0)
+    assert parked is not None
+    bridge.push_choice(
+        parked.album_index, ImportChoice(action=ImportAction.apply, candidate_index=1)
+    )
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert task.choice_flag is Action.APPLY
+    candidates = task.candidates
+    assert candidates is not None
+    assert task.match is candidates[1]  # the explicitly chosen in-range candidate
 
 
 def test_bridge_outcome_channel_round_trips() -> None:
@@ -1508,23 +1840,64 @@ def test_task_folder_is_the_common_parent_of_multidisc_paths() -> None:
     # A deemix multi-disc layout collapses to paths=[CD1, CD2, CD3] (the album
     # parent is excluded because its loose files defeat the nested collapse). The
     # bank folder must be the album dir, not CD1, or the apply re-imports CD1 only.
+    session = _make_session(ImportBridge())
+    session.paths = [b"/dl"]
     task = ImportTask(
         toppath=None,
         paths=[b"/dl/Album/CD1", b"/dl/Album/CD2", b"/dl/Album/CD3"],
         items=[],
     )
-    assert WebImportSession._task_folder(task) == "/dl/Album"
+    assert session._task_folder(task) == "/dl/Album"
 
 
 def test_task_folder_single_path_is_unchanged() -> None:
     # A normal one-folder album: common-parent of a single path is that path.
+    session = _make_session(ImportBridge())
+    session.paths = [b"/dl"]
     task = ImportTask(toppath=None, paths=[b"/dl/Album"], items=[])
-    assert WebImportSession._task_folder(task) == "/dl/Album"
+    assert session._task_folder(task) == "/dl/Album"
 
 
 def test_task_folder_empty_paths_is_blank() -> None:
+    session = _make_session(ImportBridge())
     task = ImportTask(toppath=None, paths=[], items=[])
-    assert WebImportSession._task_folder(task) == ""
+    assert session._task_folder(task) == ""
+
+
+def test_task_folder_no_toppaths_falls_back_to_full_commonpath() -> None:
+    # Degenerate session (no toppaths recorded): with nothing to scope by, the
+    # folder is the plain common-parent of every path — the pre-fix behavior.
+    session = _make_session(ImportBridge())
+    session.paths = []
+    task = ImportTask(toppath=None, paths=[b"/dl/Album/CD1", b"/dl/Album/CD2"], items=[])
+    assert session._task_folder(task) == "/dl/Album"
+
+
+def test_task_folder_merged_task_uses_source_folder_not_library_ancestor() -> None:
+    # A MERGE decision makes beets build ImportTask(None, source_paths +
+    # duplicate LIBRARY file paths). The naive common-parent of an inbox folder
+    # and a library file is a bogus ancestor ("/"), which the feed then shows and
+    # a Rescan would os.walk across the whole library mount. Scoping to the paths
+    # under a session toppath recovers the real incoming source folder.
+    session = _make_session(ImportBridge())
+    session.paths = [b"/inbox"]
+    task = ImportTask(
+        toppath=None,
+        paths=[b"/inbox/Album", b"/music/Artist/Album/01.flac", b"/music/Artist/Album/02.flac"],
+        items=[],
+    )
+    assert session._task_folder(task) == "/inbox/Album"
+
+
+def test_task_folder_merged_multidisc_source_stays_scoped() -> None:
+    session = _make_session(ImportBridge())
+    session.paths = [b"/inbox"]
+    task = ImportTask(
+        toppath=None,
+        paths=[b"/inbox/Album/CD1", b"/inbox/Album/CD2", b"/music/Artist/Album/01.flac"],
+        items=[],
+    )
+    assert session._task_folder(task) == "/inbox/Album"
 
 
 def test_albums_in_dir_collapses_deemix_multidisc(tmp_path: Path) -> None:
@@ -1712,6 +2085,7 @@ def test_rescan_choice_rereads_swaps_items_and_reparks(
     bridge = ImportBridge()
     session = _make_session(bridge)
     task = _make_task(match, monkeypatch, BeetsRec.medium)
+    session.paths = [b"/music"]  # a real session always has toppaths; /music/album is under it
     original_items = task.items
     new_items = list(other.mapping.keys())  # the fresh read (one file deleted)
     monkeypatch.setattr(session_mod, "_read_items", lambda p: new_items)
@@ -1758,6 +2132,7 @@ def test_rescan_with_no_audio_left_keeps_state_and_sets_feedback(
     bridge = ImportBridge()
     session = _make_session(bridge)
     task = _make_task(match, monkeypatch, BeetsRec.medium)
+    session.paths = [b"/music"]  # a real session always has toppaths; /music/album is under it
     original_items = task.items
     monkeypatch.setattr(session_mod, "_read_items", lambda p: [])
 
@@ -1797,6 +2172,7 @@ def test_rescan_with_no_candidates_never_half_swaps(
     bridge = ImportBridge()
     session = _make_session(bridge)
     task = _make_task(match, monkeypatch, BeetsRec.medium)
+    session.paths = [b"/music"]  # a real session always has toppaths; /music/album is under it
     original_items = task.items
     monkeypatch.setattr(session_mod, "_read_items", lambda p: [Item(title="x")])
     monkeypatch.setattr(
@@ -1829,3 +2205,51 @@ def test_rescan_with_no_candidates_never_half_swaps(
     assert done.wait(timeout=2.0)
     t.join(timeout=2.0)
     assert task.match is match  # the original candidate applied
+
+
+def test_rescan_refused_when_folder_escapes_the_session_toppaths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Defense-in-depth for the merge shape: if the parked folder is not under a
+    # session toppath (a task whose paths are all library files), a Rescan must
+    # NOT os.walk it — that ancestor can be the whole library mount. The guard
+    # refuses with feedback and never reaches _read_items.
+    import app.beets.import_session as session_mod
+
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    session.paths = [b"/inbox"]  # the real import source
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    # A merged-away shape: every path is a LIBRARY file, none under /inbox, so
+    # _task_folder falls back to "/music/Artist/Album" — outside the toppath.
+    task.paths = [b"/music/Artist/Album/01.flac", b"/music/Artist/Album/02.flac"]
+    original_items = task.items
+
+    def _boom(_p: object) -> list[Item]:
+        raise AssertionError("rescan must not read a folder outside the session toppaths")
+
+    monkeypatch.setattr(session_mod, "_read_items", _boom)
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    first = bridge.get_parked(timeout=2.0)
+    assert first is not None
+    bridge.push_choice(first.album_index, ImportChoice(action=ImportAction.rescan))
+
+    second = bridge.get_parked(timeout=2.0)
+    assert second is not None
+    assert second.candidate.search_feedback == "Rescan isn't available for this album."
+    assert task.items is original_items  # nothing swapped
+    assert second.candidate.search_revision == 1
+
+    bridge.push_choice(second.album_index, ImportChoice(action=ImportAction.skip))
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)

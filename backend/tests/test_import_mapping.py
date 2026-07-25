@@ -295,6 +295,97 @@ def test_map_unmatched_local_file_is_reported() -> None:
     assert "unmatched tracks" in candidate.changed_fields
 
 
+def _multi_disc_match() -> AlbumMatch:
+    # A 2-disc release, 2 tracks per disc. Disc 2's release tracks carry the
+    # ABSOLUTE index (3, 4) but per-disc medium_index (1, 2). The local files are
+    # already numbered per-disc (each disc restarts at 1), titles match exactly,
+    # so the ONLY thing that could differ per row is the track NUMBER.
+    items = [
+        _item(album="Box", title="A1", track=1, length=100.0),  # disc 1, track 1
+        _item(album="Box", title="A2", track=2, length=100.0),  # disc 1, track 2
+        _item(album="Box", title="B1", track=1, length=100.0),  # disc 2, track 1
+        _item(album="Box", title="B2", track=2, length=100.0),  # disc 2, track 2
+    ]
+    tracks = [
+        TrackInfo(title="A1", track_id="t1", index=1, medium=1, medium_index=1, length=100.0),
+        TrackInfo(title="A2", track_id="t2", index=2, medium=1, medium_index=2, length=100.0),
+        TrackInfo(title="B1", track_id="t3", index=3, medium=2, medium_index=1, length=100.0),
+        TrackInfo(title="B2", track_id="t4", index=4, medium=2, medium_index=2, length=100.0),
+    ]
+    info = AlbumInfo(
+        tracks=tracks,
+        album="Box",
+        artist="Radiohead",
+        album_id="a1",
+        data_source="MusicBrainz",
+        data_url="https://musicbrainz.org/release/a1",
+        va=False,
+    )
+    pairs, extra_items, extra_tracks = assign_items(items, info.tracks)
+    dist = distance(items, info, pairs)
+    return AlbumMatch(dist, info, dict(pairs), extra_items, extra_tracks)
+
+
+def test_track_after_uses_per_disc_number_when_configured() -> None:
+    """With per_disc_numbering: yes (honored beets config), beets writes the
+    per-disc number (medium_index) as the track tag, so disc 2 track 1 stays 1
+    — NOT the absolute index 3. The review must show 'track_after == 1' and flag
+    the row unchanged, not the bogus '1 -> 3' the absolute index produced."""
+    from beets import config as beets_config
+
+    beets_config["per_disc_numbering"] = True
+    try:
+        candidate = map_album_match(
+            _multi_disc_match(), cur_artist="Radiohead", cur_album="Box", options=[]
+        )
+    finally:
+        beets_config["per_disc_numbering"] = False
+
+    by_title = {t.title_after: t for t in candidate.tracks}
+    # Disc 2 rows keep the per-disc number that beets actually writes.
+    assert by_title["B1"].track_after == 1
+    assert by_title["B2"].track_after == 2
+    # ... and since the local files are already numbered per-disc, nothing changed.
+    assert by_title["B1"].track_before == 1
+    assert by_title["B1"].status is TrackChangeStatus.unchanged
+    assert by_title["B2"].status is TrackChangeStatus.unchanged
+
+
+def test_track_after_uses_absolute_index_by_default() -> None:
+    """Default beets config (per_disc_numbering: no) writes the absolute release
+    index as the track tag — unchanged behavior. Disc 2 track 1 becomes 3, so a
+    per-disc-numbered local file legitimately shows '1 -> 3' / changed."""
+    candidate = map_album_match(
+        _multi_disc_match(), cur_artist="Radiohead", cur_album="Box", options=[]
+    )
+    by_title = {t.title_after: t for t in candidate.tracks}
+    assert by_title["B1"].track_after == 3
+    assert by_title["B2"].track_after == 4
+    assert by_title["B1"].status is TrackChangeStatus.changed
+
+
+def test_multi_disc_rows_keep_release_order_under_per_disc() -> None:
+    """The row's `index` is the release-order sort key and must stay ABSOLUTE
+    even under per_disc_numbering, or disc 1 and disc 2 (both restarting at 1)
+    would interleave. Only the displayed/written track_after is per-disc."""
+    from beets import config as beets_config
+
+    beets_config["per_disc_numbering"] = True
+    try:
+        candidate = map_album_match(
+            _multi_disc_match(), cur_artist="Radiohead", cur_album="Box", options=[]
+        )
+    finally:
+        beets_config["per_disc_numbering"] = False
+
+    # Rows read in release order A1, A2, B1, B2 (absolute index 1..4).
+    assert [t.title_after for t in candidate.tracks] == ["A1", "A2", "B1", "B2"]
+    assert [t.index for t in candidate.tracks] == [1, 2, 3, 4]
+    # index (sort key) and track_after (per-disc) diverge on disc 2.
+    b1 = candidate.tracks[2]
+    assert b1.index == 3 and b1.track_after == 1
+
+
 def test_clean_disambig_drops_none_segments() -> None:
     # beets' Match.disambig_string str()-joins its disambig fields, so missing
     # values arrive as literal "None" segments — the FE dropdown showed

@@ -54,6 +54,7 @@ function makeSnapshot(
 ): BeetsConfigSnapshot {
   return {
     yaml_text: "directory: /music\n",
+    effective_yaml: "directory: /music\nimport:\n  copy: true\n",
     config_path: "/data/beets/config.yaml",
     loaded_at: "2026-05-28T00:00:00Z",
     file_modified_at: "2026-05-28T00:00:00Z",

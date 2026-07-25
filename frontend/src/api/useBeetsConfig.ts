@@ -66,7 +66,10 @@ export function useBeetsConfig() {
  */
 export function useSaveConfig() {
   const queryClient = useQueryClient();
-  return useMutation({
+  // Type the error as ConfigOpError (what the mutationFn throws) so callers can
+  // branch on `.status` — e.g. 409 (conflict) vs any other failure — without a
+  // narrowing dance. Mirrors useApplyConfig.
+  return useMutation<BeetsConfigSnapshot, ConfigOpError, SaveRequest>({
     mutationFn: async (req: SaveRequest): Promise<BeetsConfigSnapshot> => {
       const { data, error, response } = await client.POST("/api/config/save", {
         body: req,

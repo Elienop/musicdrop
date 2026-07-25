@@ -79,6 +79,7 @@ export function AlbumCard({
     >
       <CoverArt
         src={`/api/albums/${album.id}/cover`}
+        assetKey={`album:${album.id}`}
         alt={`${album.title} cover`}
         className="border-border size-32 shrink-0 rounded-lg border"
       />

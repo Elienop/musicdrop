@@ -6,7 +6,6 @@ local file IO, so no courtesy delay is needed (default 0)."""
 from __future__ import annotations
 
 import os
-import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -128,9 +127,12 @@ def start_backfill(
     delay: float = 0.0,
     on_complete: Callable[[], None] | None = None,
 ) -> None:
-    """Spawn the scoped sweep on a daemon thread (non-blocking)."""
-    threading.Thread(
-        target=lambda: sweep(
+    """Spawn the scoped sweep on a daemon thread (non-blocking).
+
+    Via ``reg.spawn_worker`` so a refused ``Thread.start()`` frees the slot
+    instead of wedging every library mutation (see SingleSlotRegistry)."""
+    reg.spawn_worker(
+        lambda: sweep(
             reg,
             handle,
             scope=scope,
@@ -142,5 +144,4 @@ def start_backfill(
             on_complete=on_complete,
         ),
         name="musicdrop-reorganize",
-        daemon=True,
-    ).start()
+    )

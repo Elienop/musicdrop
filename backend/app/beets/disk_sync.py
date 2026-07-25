@@ -48,8 +48,25 @@ def _music_dir(lib: Any) -> str:
 
 
 def _require_root(lib: Any) -> None:
-    if not os.path.isdir(_music_dir(lib)):
+    root = _music_dir(lib)
+    if not os.path.isdir(root):
         raise LibraryRootUnavailableError("Library folder unavailable. Is the music share mounted?")
+    # A dropped NAS/SMB/NFS mount usually leaves the mountpoint PRESENT but empty
+    # (the kernel keeps the directory), so os.path.isdir alone stays True and a sync
+    # would read every file as deleted and wipe the DB. Treat an empty or unreadable
+    # root as unavailable too — a real library's root always has entries, and a
+    # genuine single deletion leaves siblings behind. Deliberately O(1) (one entry,
+    # not a recursive audio scan): the residual gaps — a stray file left on the local
+    # mountpoint masking a drop, or a genuinely-empty library reading as unavailable —
+    # are accepted, since the plan/preview dry-run the user reviews stands in front of
+    # any removal.
+    try:
+        with os.scandir(root) as it:
+            has_entry = next(it, None) is not None
+    except OSError:
+        has_entry = False  # stale mount handle / I/O error → unavailable
+    if not has_entry:
+        raise LibraryRootUnavailableError("Library folder is empty. Is the music share mounted?")
 
 
 def _item_label(item: Any) -> str:
@@ -190,6 +207,13 @@ def run_disk_sync(
                 break
             label = _item_label(item)
             if _file_missing(item):
+                # Re-verify the root before treating a missing file as a deletion.
+                # _require_root ran once at the start, but if the share unmounts
+                # mid-sweep EVERY remaining file looks gone and the loop would wipe
+                # thousands of DB rows in one pass. A dropped mount fails this check
+                # and aborts (raising past run_disk_sync) — genuine deletions on a
+                # still-mounted root fall through and remove as before.
+                _require_root(lib)
                 if item.album_id is not None:
                     affected.add(int(item.album_id))
                 item.remove(delete=False, with_album=True)

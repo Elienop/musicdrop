@@ -113,11 +113,21 @@ def test_playlists_endpoint_lists_audio(
 
     monkeypatch.setattr(
         "app.api.plex.playlists_pull.list_audio_playlists",
-        lambda config: [PlexPlaylistInfo(name="Road", track_count=2)],
+        lambda config: [
+            PlexPlaylistInfo(name="Road", track_count=2, rating_key="11"),
+            # Plex allows duplicate titles — the listing must keep both, each
+            # carrying its own identity so the picker can tell them apart.
+            PlexPlaylistInfo(name="Road", track_count=5, rating_key="22"),
+        ],
     )
     r = client.get("/api/plex/playlists")
     assert r.status_code == 200
-    assert r.json() == {"playlists": [{"name": "Road", "track_count": 2}]}
+    assert r.json() == {
+        "playlists": [
+            {"name": "Road", "track_count": 2, "rating_key": "11"},
+            {"name": "Road", "track_count": 5, "rating_key": "22"},
+        ]
+    }
 
 
 def test_playlists_endpoint_409_when_unconfigured(

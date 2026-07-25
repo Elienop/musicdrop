@@ -109,6 +109,14 @@ class ImportJob:
     # carry a library album id. The not-landed veto must exempt them (they are
     # NOT the crash-before-landing case an idless applied row otherwise signals).
     directive_astracks: bool = False
+    # A ParkedAlbum / DuplicatePrompt popped from the bridge's one-shot queue
+    # before its feed row existed (the drain's outcome pass ran before the worker
+    # emitted its needs_review outcome, but the parked pass ran after the worker
+    # parked). Buffered here — NEVER discarded — and attached on the next drain
+    # once the outcome creates the row; otherwise the worker blocks in park()
+    # forever and the row 404s, wedging the single import slot.
+    pending_parked: dict[int, ParkedAlbum] = field(default_factory=dict)
+    pending_duplicate: dict[int, DuplicatePrompt] = field(default_factory=dict)
 
 
 class ImportJobRegistry:
@@ -181,7 +189,7 @@ class ImportJobRegistry:
 
     def start(
         self,
-        path: str,
+        source: str | list[str],
         *,
         options: ImportOptions | None = None,
         origin: ImportOrigin = "manual",
@@ -189,6 +197,11 @@ class ImportJobRegistry:
     ) -> str:
         """Start an import; raise RuntimeError if one is already active.
 
+        ``source`` is one folder or a LIST of them — beets takes each as its own
+        toppath, so the inbox review can hand over the settled folders
+        individually instead of importing their shared parent (which would sweep
+        in whatever is still downloading beside them). A bare string is the
+        single-folder shorthand every other caller uses.
         ``options`` threads per-import overrides (operation move/copy,
         unattended, sweep) to the runner; ``None`` is today's manual default.
         ``origin`` (manual/inbox/sweep/bank_apply) is recorded on the job and
@@ -196,14 +209,28 @@ class ImportJobRegistry:
         bank apply runner's translated decision, threaded to the session so
         the one-folder run answers every hook from it (None everywhere else).
         """
+        paths = [source] if isinstance(source, str) else list(source)
         runner = self._resolve_runner()
-        runner.validate(path, options)
+        runner.validate(paths, options)
         # options.sweep is the single source of truth for the sweep origin:
         # callers never pass origin="sweep" themselves, and the inbox/manual
         # call sites stay untouched.
         if options is not None and options.sweep:
             origin = "sweep"
-        with self._lock:
+        # The union check and the slot claim are ONE atomic step: the background
+        # producers (bank apply, inbox drain) pass their gate, then spend real
+        # time — a folder fingerprint walks a NAS — before reaching this line, and
+        # an unlocked check let a user-started reorganize claim its own slot in
+        # that window. Both would then run: a beets import moving files into the
+        # library beside a sweep moving those same folders, one SQLite DB, two
+        # writer threads. Released before ``runner.run`` below, which spawns the
+        # worker — a global lock must never span a thread start.
+        from app.library_busy import IMPORT, claim_slot
+
+        with (
+            claim_slot(IMPORT, message="another library operation is already running"),
+            self._lock,
+        ):
             if self._job is not None and self._job.phase in _ACTIVE_PHASES:
                 raise RuntimeError("an import is already running")
             job = ImportJob(
@@ -217,7 +244,7 @@ class ImportJobRegistry:
 
         try:
             runner.run(
-                path,
+                paths,
                 job.bridge,
                 on_finish=lambda: self._on_finish(job.id),
                 on_error=lambda message: self._on_error(job.id, message),
@@ -297,17 +324,29 @@ class ImportJobRegistry:
         )
 
     @staticmethod
-    def _is_imported(row: _FeedAlbum, *, astracks_directive: bool = False) -> bool:
+    def _is_imported(
+        row: _FeedAlbum, *, astracks_directive: bool = False, terminal: bool = True
+    ) -> bool:
         """Imported: auto-applied, a parked album resolved apply-like, or a
         duplicate resolved keep_both/replace/merge — AND it actually landed (a
         library album id is attached), except astracks/merge which carry no id
-        of their own (see _did_not_land)."""
+        of their own (see _did_not_land).
+
+        ``terminal`` mirrors state()'s not_landed guard: the did-not-land veto is
+        only truthful once every follow-up id has flushed (at run() end). Mid-run
+        (``terminal=False``) an apply-like row not yet carrying its id is the
+        NORMAL move-stage state, so count it optimistically as applied and skip
+        the premature veto — otherwise the applied bucket transiently reads 0.
+        The default (``terminal=True``) preserves _summarize's post-finish
+        behavior, where asserting did-not-land is correct."""
         if row.duplicate_action is not None:
             decided = row.duplicate_action in _DUP_IMPORTED_ACTIONS
         else:
             decided = row.status is ImportAlbumStatus.applied or (
                 row.status is ImportAlbumStatus.decided and row.decided_action in _APPLY_ACTIONS
             )
+        if not terminal:
+            return decided
         return decided and not ImportJobRegistry._did_not_land(
             row, astracks_directive=astracks_directive
         )
@@ -406,6 +445,20 @@ class ImportJobRegistry:
                 # ups always carry status=applied, so the upgrade branch above
                 # can never match them.
                 row.outcome = row.outcome.model_copy(update={"album_id": outcome.album_id})
+        # Replay any parked/duplicate that a PRIOR drain popped before its feed
+        # row existed (the outcome pass had run before the worker's note_outcome).
+        # This drain's outcome pass has now created the row, so attach + clear.
+        for index in list(job.pending_parked):
+            row = job.albums.get(index)
+            if row is not None:
+                row.parked = job.pending_parked.pop(index)
+                row.art_source = job.bridge.art_source(index)
+        for index in list(job.pending_duplicate):
+            row = job.albums.get(index)
+            if row is not None:
+                row.duplicate = job.pending_duplicate.pop(index)
+                row.art_source = job.bridge.art_source(index)
+                row.status = ImportAlbumStatus.needs_dup_resolution
         while True:
             parked = job.bridge.get_parked(timeout=0)
             if parked is None:
@@ -414,8 +467,14 @@ class ImportJobRegistry:
             if row is not None:
                 row.parked = parked
                 row.art_source = job.bridge.art_source(parked.album_index)
-            # (The needs_review outcome is emitted before park, so the row
-            # already exists; if ordering ever changed, we'd create it here.)
+            else:
+                # Consumer-interleaving race: the outcome pass above ran before
+                # the worker emitted this album's needs_review outcome, but the
+                # one-shot queue still hands us the parked. No row exists yet, so
+                # BUFFER it (never discard) and attach on the next drain once the
+                # outcome creates the row — otherwise the worker blocks in park()
+                # forever and GET candidate 404s, wedging the single import slot.
+                job.pending_parked[parked.album_index] = parked
         while True:
             prompt = job.bridge.get_parked_duplicate(timeout=0)
             if prompt is None:
@@ -429,6 +488,9 @@ class ImportJobRegistry:
                 # Flip the (applied/decided) row to the duplicate-pending state so
                 # the feed + UI route to the duplicate decision panel.
                 row.status = ImportAlbumStatus.needs_dup_resolution
+            else:
+                # Same race as the parked loop — buffer the prompt, never discard.
+                job.pending_duplicate[prompt.album_index] = prompt
 
     def _drain_sweep_locked(self, job: ImportJob) -> None:
         """Counter drain for sweep jobs (caller holds ``self._lock``).
@@ -595,17 +657,21 @@ class ImportJobRegistry:
         job = self._require(job_id)
         with self._lock:
             astracks = job.directive_astracks
+            # Only assert "did not land" on a terminal job — mid-run a landed
+            # row's follow-up id can still be one drain behind. The applied count
+            # shares the same guard so a just-applied idless row still counts
+            # (see _is_imported's terminal param).
+            terminal = job.phase in (ImportPhase.done, ImportPhase.failed)
             applied = sum(
-                1 for a in job.albums.values() if self._is_imported(a, astracks_directive=astracks)
+                1
+                for a in job.albums.values()
+                if self._is_imported(a, astracks_directive=astracks, terminal=terminal)
             )
             needs_review = sum(
                 1 for a in job.albums.values() if a.status is ImportAlbumStatus.needs_review
             )
             skipped = sum(1 for a in job.albums.values() if self._is_skipped(a))
             set_aside = sum(1 for a in job.albums.values() if a.status in _SET_ASIDE_STATUSES)
-            # Only assert "did not land" on a terminal job — mid-run a landed
-            # row's follow-up id can still be one drain behind.
-            terminal = job.phase in (ImportPhase.done, ImportPhase.failed)
             not_landed = (
                 sum(
                     1

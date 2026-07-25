@@ -64,6 +64,11 @@ class InboxItem(BaseModel):
     size: int
     track_count: int
     outcome: LedgerOutcome | None = None
+    # True while the folder is still receiving files (its tree was touched inside
+    # the settle window). "Review all" skips these; the per-row Review still
+    # imports on request — an explicit override — so the row carries the cue that
+    # makes that an INFORMED choice rather than a silent partial-album import.
+    in_flight: bool = False
 
 
 class InboxListing(BaseModel):
@@ -84,8 +89,14 @@ class ReviewInboxResponse(BaseModel):
     ``started`` is True iff an attended import of the inbox was kicked off, with
     ``job_id`` the running job to navigate to. An empty inbox is a no-op
     (``started=False, job_id=None``), never an error.
+
+    ``in_flight`` counts the inbox folders that were SKIPPED because they are
+    still receiving files. It exists so the caller can tell "the inbox is empty"
+    (0) apart from "nothing has settled yet" (>0) — both return
+    ``started=False``, but only the first means there is nothing left to import.
     """
 
     started: bool
     job_id: str | None = None
     pending: int = 0
+    in_flight: int = 0

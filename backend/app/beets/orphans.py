@@ -60,6 +60,30 @@ SKIP_DIR_NAMES: frozenset[str] = frozenset(
     {"@eaDir", "#recycle", "lost+found", "$RECYCLE.BIN", "System Volume Information"}
 )
 
+# Well-known art/booklet/rip-artifact subfolder basenames (lowercased). A live
+# MULTI-DISC album keeps its audio in ``Disc N/`` children, so the album dir has no
+# DIRECT audio and the has_own_audio guard can't tell its ``Scans/`` folder from a
+# genuine husk (structurally identical). Skipping these names is the backstop.
+# False-negative-only: a stale husk that happens to bear one of these names is
+# merely left in place — the module errs toward keeping.
+ART_DIR_NAMES: frozenset[str] = frozenset(
+    {
+        "scans",
+        "scan",
+        "artwork",
+        "art",
+        "art-scans",
+        "artscans",
+        "covers",
+        "cover",
+        "booklet",
+        "booklets",
+        "digital booklet",
+        "images",
+        "logs",
+    }
+)
+
 
 def _skip_name(name: str) -> bool:
     return name.startswith(".") or name in SKIP_DIR_NAMES
@@ -72,17 +96,21 @@ def _under(path: str, root: str) -> bool:
 
 def _scan_tree(
     root: str, excluded: Callable[[str], bool]
-) -> tuple[dict[str, bool], dict[str, bool]]:
-    """Bottom-up walk: ``has_audio[dir]`` / ``has_file[dir]`` for every dir at/under
-    ``root``. Excluded subtrees (trash, ignore-dirs, dotdirs/NAS names) are skipped
-    entirely (never recorded, never counted as audio for their parent)."""
+) -> tuple[dict[str, bool], dict[str, bool], dict[str, bool]]:
+    """Bottom-up walk: ``has_audio[dir]`` / ``has_file[dir]`` / ``has_own_audio[dir]``
+    for every dir at/under ``root``. ``has_audio`` folds in descendants; ``has_own_audio``
+    is audio DIRECTLY in the dir (marks a live album dir). Excluded subtrees (trash,
+    ignore-dirs, dotdirs/NAS names) are skipped entirely (never recorded, never
+    counted as audio for their parent)."""
     has_audio: dict[str, bool] = {}
     has_file: dict[str, bool] = {}
+    has_own_audio: dict[str, bool] = {}
     for dirpath, dirnames, filenames in os.walk(root, topdown=False, onerror=lambda _e: None):
         dp = os.path.normpath(dirpath)
         if excluded(dp):
             continue
-        audio = any(_is_audio(f) for f in filenames)
+        own_audio = any(_is_audio(f) for f in filenames)
+        audio = own_audio
         has_files = bool(filenames)
         for d in dirnames:
             child = os.path.normpath(os.path.join(dp, d))
@@ -90,16 +118,26 @@ def _scan_tree(
             has_files = has_files or has_file.get(child, False)
         has_audio[dp] = audio
         has_file[dp] = has_files
-    return has_audio, has_file
+        has_own_audio[dp] = own_audio
+    return has_audio, has_file, has_own_audio
 
 
 def _library_orphans(root: str, excluded: Callable[[str], bool]) -> list[str]:
-    has_audio, has_file = _scan_tree(root, excluded)
+    has_audio, has_file, has_own_audio = _scan_tree(root, excluded)
     out: list[str] = []
     for dp, audio in has_audio.items():
         if dp == root or audio or not has_file[dp]:
             continue  # root / has audio / truly empty (beets prunes empties)
+        if os.path.basename(dp).lower() in ART_DIR_NAMES:
+            continue  # well-known art/booklet folder (protects multi-disc album art)
         parent = os.path.dirname(dp)
+        # A live album dir holds audio files DIRECTLY; its audio-empty subdirs
+        # (``Album/Scans/``, ``Album/Artwork/`` booklet scans) are the album's own
+        # art, NOT stale husks — never trash them. A genuine husk's parent is an
+        # artist container whose audio comes only from OTHER album subdirs (no
+        # own-audio), so it still flags.
+        if has_own_audio.get(parent, False):
+            continue
         # Top-most husk = audio-empty dir whose parent is "kept" (has audio, or is
         # the root). If the parent is itself audio-empty it will be reported instead.
         if parent == root or has_audio.get(parent, False):

@@ -73,7 +73,7 @@ def test_preview_requires_exactly_one_source(client: TestClient) -> None:
     assert (
         client.post(
             "/api/playlists/import/preview",
-            json={"files": [{"name": "a", "content": ""}], "plex_playlists": ["x"]},
+            json={"files": [{"name": "a", "content": ""}], "plex_rating_keys": ["x"]},
         ).status_code
         == 422
     )
@@ -85,13 +85,18 @@ def test_preview_from_plex_uses_the_puller(
     parsed = ParsedPlaylist(
         name="Road", entries=[SourceEntry(position=0, title="T", source="plex:Road")]
     )
-    monkeypatch.setattr(
-        "app.api.playlists.playlists_pull.pull_playlist_entries",
-        lambda config, names: [parsed],
-    )
-    r = client.post("/api/playlists/import/preview", json={"plex_playlists": ["Road"]})
+    seen: list[list[str]] = []
+
+    def fake_pull(config: Any, rating_keys: list[str]) -> list[ParsedPlaylist]:
+        seen.append(rating_keys)
+        return [parsed]
+
+    monkeypatch.setattr("app.api.playlists.playlists_pull.pull_playlist_entries", fake_pull)
+    r = client.post("/api/playlists/import/preview", json={"plex_rating_keys": ["77"]})
     assert r.status_code == 200
     assert r.json()["playlists"][0]["name"] == "Road"
+    # The puller is addressed by ratingKey — titles aren't unique on Plex.
+    assert seen == [["77"]]
 
 
 def test_commit_creates_playlists_with_pending_and_suffixes_collisions(
@@ -150,17 +155,54 @@ def test_commit_partial_success_when_one_playlist_fails(
     assert any(rec.name == "First" for rec in store.list_playlists(_dir()))
 
 
-def test_commit_pulls_plex_poster_for_plex_sourced_playlist(
+def test_commit_pulls_plex_poster_by_rating_key(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A playlist carrying ``plex_source`` seeds its cover from the source Plex
-    playlist's poster (pull stubbed at the app.plex seam)."""
+    """A Plex-sourced playlist seeds its cover from the source playlist resolved
+    by ratingKey — the title rides along only as the legacy fallback."""
     item_id = _seed(beets_library.lib, title="Real", artist="A")
     png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
-    seen: list[str] = []
+    seen: list[tuple[str | None, str | None]] = []
 
-    def fake_download(config: Any, title: str) -> tuple[bytes, str]:
-        seen.append(title)
+    def fake_download(
+        config: Any, rating_key: str | None, title: str | None = None
+    ) -> tuple[bytes, str]:
+        seen.append((rating_key, title))
+        return png, "png"
+
+    monkeypatch.setattr("app.api.playlists.playlists_pull.download_poster", fake_download)
+    body = {
+        "playlists": [
+            {
+                "name": "Road",
+                "plex_source": "Road",
+                "plex_rating_key": "22",
+                "entries": [{"item_id": item_id}],
+            },
+        ]
+    }
+    r = client.post("/api/playlists/import", json=body)
+    assert r.status_code == 200
+    (created,) = r.json()["created"]
+    assert created["artwork_hash"] is not None
+    assert seen == [("22", "Road")]
+    record = store.get_playlist(_dir(), created["id"])
+    assert record is not None and record.artwork is not None and record.artwork.format == "png"
+
+
+def test_commit_pulls_plex_poster_from_a_legacy_title_only_playlist(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Back-compat: a body minted before rating keys carries only ``plex_source``
+    — the pull still runs, with no key, and the puller falls back to the title."""
+    item_id = _seed(beets_library.lib, title="Real", artist="A")
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    seen: list[tuple[str | None, str | None]] = []
+
+    def fake_download(
+        config: Any, rating_key: str | None, title: str | None = None
+    ) -> tuple[bytes, str]:
+        seen.append((rating_key, title))
         return png, "png"
 
     monkeypatch.setattr("app.api.playlists.playlists_pull.download_poster", fake_download)
@@ -173,19 +215,19 @@ def test_commit_pulls_plex_poster_for_plex_sourced_playlist(
     assert r.status_code == 200
     (created,) = r.json()["created"]
     assert created["artwork_hash"] is not None
-    assert seen == ["Road"]
-    record = store.get_playlist(_dir(), created["id"])
-    assert record is not None and record.artwork is not None and record.artwork.format == "png"
+    assert seen == [(None, "Road")]
 
 
-def test_commit_skips_poster_pull_without_plex_source(
+def test_commit_skips_poster_pull_without_any_plex_source(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No ``plex_source`` -> the poster pull is never attempted, no cover set."""
+    """Neither ``plex_rating_key`` nor ``plex_source`` -> no pull, no cover."""
     item_id = _seed(beets_library.lib, title="Real", artist="A")
 
-    def fail_download(config: Any, title: str) -> tuple[bytes, str]:
-        raise AssertionError("download_poster must not be called without plex_source")
+    def fail_download(
+        config: Any, rating_key: str | None, title: str | None = None
+    ) -> tuple[bytes, str]:
+        raise AssertionError("download_poster must not be called for a non-Plex import")
 
     monkeypatch.setattr("app.api.playlists.playlists_pull.download_poster", fail_download)
     body = {"playlists": [{"name": "Road", "entries": [{"item_id": item_id}]}]}
@@ -202,13 +244,18 @@ def test_commit_survives_poster_download_failure(
     created, just without a cover (best-effort art)."""
     item_id = _seed(beets_library.lib, title="Real", artist="A")
 
-    def boom(config: Any, title: str) -> tuple[bytes, str]:
+    def boom(config: Any, rating_key: str | None, title: str | None = None) -> tuple[bytes, str]:
         raise RuntimeError("plex unreachable")
 
     monkeypatch.setattr("app.api.playlists.playlists_pull.download_poster", boom)
     body = {
         "playlists": [
-            {"name": "Road", "plex_source": "Road", "entries": [{"item_id": item_id}]},
+            {
+                "name": "Road",
+                "plex_source": "Road",
+                "plex_rating_key": "22",
+                "entries": [{"item_id": item_id}],
+            },
         ]
     }
     r = client.post("/api/playlists/import", json=body)

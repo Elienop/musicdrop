@@ -10,6 +10,7 @@ import uuid
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -144,26 +145,39 @@ def _coerce_duration(value: object) -> float | None:
     return seconds or None
 
 
-def _album_fields(album: BeetsAlbum, items: list[Any]) -> dict[str, Any]:
-    """Map a beets album + its items to the shared ``Album`` field set.
+def _album_fields(album: BeetsAlbum, *, track_count: int, genre: str | None) -> dict[str, Any]:
+    """Map a beets album + precomputed track_count/genre to the ``Album`` fields.
 
-    Factored out so ``_to_album`` and ``get_album_detail`` build the album
-    portion from one source of truth instead of duplicating the mapping.
+    Factored out so ``_to_album``, ``_to_album_cached`` and ``get_album_detail``
+    build the album portion from one source of truth. ``track_count`` and
+    ``genre`` are passed in (not derived from ``items`` here) so a caller that
+    already has them — the BrowseRow cache — need not re-query ``album.items()``.
     """
     return {
         "id": int(album.id),
         "album_artist": _coerce_str(album.albumartist),
         "title": _coerce_str(album.album),
         "year": _coerce_year(album.year),
-        "track_count": len(items),
-        "genre": _album_genre(album, items),
+        "track_count": track_count,
+        "genre": genre,
         "mb_albumid": _coerce_optional_str(album.mb_albumid),
     }
 
 
 def _to_album(album: BeetsAlbum) -> Album:
     items = list(album.items())
-    return Album(**_album_fields(album, items))
+    return Album(**_album_fields(album, track_count=len(items), genre=_album_genre(album, items)))
+
+
+def _to_album_cached(album: BeetsAlbum, *, track_count: int, genre: str | None) -> Album:
+    """Build an ``Album`` from a beets album + a BrowseRow's precomputed
+    track_count/genre, WITHOUT a per-album ``items()`` query.
+
+    The browse/list/recent pages already hold these two values from the single
+    cache scan that built the BrowseRows; calling ``_to_album`` (which re-runs
+    ``album.items()``) once per page row is the avoidable N+1 this replaces.
+    """
+    return Album(**_album_fields(album, track_count=track_count, genre=genre))
 
 
 def _to_track(item: Any) -> Track:
@@ -194,7 +208,7 @@ def get_album_detail(lib: Library, album_id: int) -> AlbumDetail | None:
         key=lambda t: (t.disc, t.track),
     )
     return AlbumDetail(
-        **_album_fields(album, items),
+        **_album_fields(album, track_count=len(items), genre=_album_genre(album, items)),
         tracks=tracks,
         release=release_identity(album, album.mb_albumid),
     )
@@ -203,15 +217,22 @@ def get_album_detail(lib: Library, album_id: int) -> AlbumDetail | None:
 def list_artists(lib: Library) -> list[Artist]:
     """Return the artist roster: one entry per distinct ``albumartist``.
 
-    beets has no first-class artist entity, so we derive it by grouping albums
-    on ``albumartist`` and counting distinct albums per artist. Sorted by name
-    (case-insensitive) for a stable, readable roster.
+    beets has no first-class artist entity, so we derive it by grouping albums on
+    ``albumartist`` and counting distinct albums per artist. Sourced from the
+    shared ``BrowseRow`` cache (ONE scan, invalidated on every
+    ``emit_library_changed``) rather than a fresh ``lib.albums()`` materialization
+    — the roster is rebuilt on every debounced search keystroke, and the cache
+    already holds ``albumartist`` per album. Sorted by name (case-insensitive).
     """
+    # Lazy import: browse.py imports helpers from this module at import time, so a
+    # top-level import back would cycle (mirrors list_albums).
+    from app.beets.browse import _rows
+
     counts: dict[str, int] = {}
-    for album in lib.albums():
-        name = _coerce_str(album.albumartist)
-        # _coerce_str does not strip, so a null/whitespace albumartist would
-        # emit a blank, nameless card; drop those albums from the roster.
+    for row in _rows(lib):
+        name = row.albumartist
+        # A null/whitespace albumartist would emit a blank, nameless card; drop
+        # those albums from the roster (BrowseRow.albumartist is already _coerce_str'd).
         if not name.strip():
             continue
         counts[name] = counts.get(name, 0) + 1
@@ -270,21 +291,24 @@ def search(lib: Library, *, query: str, limit: int) -> SearchResults:
 
     # Tracks: beets free-text query. A malformed query raises ParsingError
     # (an InvalidQueryError/ValueError subclass) from the parser; catch it so a
-    # bad term yields no tracks rather than a 500.
+    # bad term yields no tracks rather than a 500. Keep the Results lazy: len()
+    # returns the raw row count without constructing any Item (for the
+    # SQL-evaluable free-text case), and islice materializes only `limit` — vs
+    # list() which built a full Item model for every one of the (up to 75k) rows.
     try:
-        all_items = list(lib.items(query))
+        track_results = lib.items(query)
+        track_total = len(track_results)
+        tracks = [_to_search_track(item) for item in islice(track_results, limit)]
     except ParsingError:
-        all_items = []
-    track_total = len(all_items)
-    tracks = [_to_search_track(item) for item in all_items[:limit]]
+        track_total, tracks = 0, []
 
     # Albums: same free-text query, mapped through the shared _to_album.
     try:
-        all_album_matches = list(lib.albums(query))
+        album_results = lib.albums(query)
+        album_total = len(album_results)
+        albums = [_to_album(album) for album in islice(album_results, limit)]
     except ParsingError:
-        all_album_matches = []
-    album_total = len(all_album_matches)
-    albums = [_to_album(album) for album in all_album_matches[:limit]]
+        album_total, albums = 0, []
 
     # Artists: no beets query entity, so filter the derived roster by a
     # case-insensitive substring match on the name.
@@ -323,18 +347,20 @@ def search_typed(
     if query.strip():
         if entity == "tracks":
             try:
-                all_items = list(lib.items(query))
+                results = lib.items(query)
+                total = len(results)
+                tracks = [
+                    _to_search_track(item) for item in islice(results, offset, offset + limit)
+                ]
             except ParsingError:
-                all_items = []
-            total = len(all_items)
-            tracks = [_to_search_track(item) for item in all_items[offset : offset + limit]]
+                total, tracks = 0, []
         elif entity == "albums":
             try:
-                all_album_matches = list(lib.albums(query))
+                album_results = lib.albums(query)
+                total = len(album_results)
+                albums = [_to_album(a) for a in islice(album_results, offset, offset + limit)]
             except ParsingError:
-                all_album_matches = []
-            total = len(all_album_matches)
-            albums = [_to_album(a) for a in all_album_matches[offset : offset + limit]]
+                total, albums = 0, []
         else:
             needle = query.casefold()
             matches = [a for a in list_artists(lib) if needle in a.name.casefold()]
@@ -379,7 +405,9 @@ def list_albums(
         # Vanished between cache build and load — skip defensively; the cache
         # invalidates on every mutation, so this is belt-and-suspenders.
         if album is not None:
-            albums.append(_to_album(album))
+            # track_count + genre come from the cache row that this same scan
+            # built — no per-row album.items() query (see _to_album_cached).
+            albums.append(_to_album_cached(album, track_count=row.track_count, genre=row.genre_raw))
     return albums, total
 
 
@@ -442,3 +470,42 @@ def get_album_cover(lib: Library, album_id: int) -> tuple[bytes, str] | None:
     if album is None:
         return None
     return _cover_from_artpath(lib, album) or _cover_from_embedded(lib, album)
+
+
+def _stat_etag(path: str) -> str | None:
+    """An opaque ETag from a file's ``mtime_ns`` + ``size`` — no read. ``None`` if
+    the file vanished between the caller's isfile check and here (race)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return f'"{st.st_mtime_ns}-{st.st_size}"'
+
+
+def cover_validator(lib: Library, album_id: int) -> str | None:
+    """A CHEAP ETag for an album's cover — derived by ``stat``-ing the cover SOURCE
+    file, with NO image read and NO ``MediaFile`` parse.
+
+    Mirrors :func:`get_album_cover`'s source resolution (``artpath`` with a known
+    image extension, else the first track's audio file) so the tag identifies the
+    same bytes it would serve. Lets the cover endpoint answer a conditional GET
+    (``304``) off metadata alone instead of re-reading ~50-200 MB / re-parsing
+    audio over a NAS on every album-grid repaint. Self-correcting: a re-fetched
+    cover writes a new file, and editing embedded art bumps the audio file's mtime,
+    so a stale tag can never yield a false ``304``. ``None`` when the album is
+    missing or has no cover source (the endpoint then falls through to the full
+    read, which returns the image or a 404)."""
+    album = lib.get_album(album_id)
+    if album is None:
+        return None
+    raw_path = album.get("artpath")
+    if raw_path:
+        path = _abs_path(lib, raw_path)
+        if os.path.isfile(path) and _EXTENSION_MIME.get(os.path.splitext(path)[1].lower()):
+            return _stat_etag(path)
+    items = list(album.items())
+    if items:
+        track = _abs_path(lib, items[0].path)
+        if os.path.isfile(track):
+            return _stat_etag(track)
+    return None

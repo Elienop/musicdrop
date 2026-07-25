@@ -10,7 +10,6 @@ is just an inter-track pause.
 from __future__ import annotations
 
 import logging
-import threading
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -103,9 +102,12 @@ def start_backfill(
     recheck_misses: bool = False,
     on_complete: Callable[[], None] | None = None,
 ) -> None:
-    """Spawn the (library- or album-scoped) sweep on a daemon thread (non-blocking)."""
-    threading.Thread(
-        target=lambda: sweep(
+    """Spawn the (library- or album-scoped) sweep on a daemon thread.
+
+    Via ``reg.spawn_worker`` so a refused ``Thread.start()`` frees the slot
+    instead of wedging every library mutation (see SingleSlotRegistry)."""
+    reg.spawn_worker(
+        lambda: sweep(
             reg,
             handle,
             delay=delay,
@@ -115,5 +117,4 @@ def start_backfill(
             on_complete=on_complete,
         ),
         name="musicdrop-lyrics-backfill",
-        daemon=True,
-    ).start()
+    )

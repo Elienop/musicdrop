@@ -30,6 +30,7 @@ from app.beets.existing_album import to_existing_album
 from app.beets.library import (
     LibraryHandle,
     _album_fields,
+    _album_genre,
     _coerce_optional_str,
     _coerce_str,
 )
@@ -72,29 +73,83 @@ def normalize(text: str) -> str:
     return _WS_RE.sub(" ", text).strip()
 
 
-def _grouping_key(album: Any, mode: DuplicateMode) -> str | None:
-    """Return an album's duplicate-grouping key, or ``None`` to exclude it.
+def _grouping_signals(album: Any, mode: DuplicateMode) -> list[str]:
+    """The grouping signals for an album — albums sharing ANY signal are one dup
+    group. Empty list = no usable key, so the album is dropped from detection
+    (mirrors beets ``_group_by`` null handling).
 
-    Mirrors beets ``_group_by`` null handling: an album with no usable key is
-    dropped from detection.
+    Strict mode = MB-id only (beets album-mode default). Fuzzy mode adds the
+    normalized artist+title signal ON TOP of the MB-id one, so fuzzy stays a
+    proper superset of strict AND catches the two real dup shapes MB-precedence
+    alone missed: an MB-tagged copy paired with an untagged/as-is copy (only the
+    tagged one has an ``mb:`` signal, but both share the ``fuzzy:`` one), and two
+    distinct releases of the same album (different MBIDs, same normalized title).
     """
+    signals: list[str] = []
     mb = _coerce_optional_str(album.get("mb_albumid"))
     if mb is not None:
-        return f"mb:{mb}"
-    if mode is DuplicateMode.strict:
-        return None  # strict = MB-id only (beets album-mode default)
-    artist = normalize(_coerce_optional_str(album.albumartist) or "")
-    title = normalize(_coerce_optional_str(album.album) or "")
-    if not artist and not title:
-        return None
-    return f"fuzzy:{artist}\x00{title}"
+        signals.append(f"mb:{mb}")
+    if mode is DuplicateMode.fuzzy:
+        artist = normalize(_coerce_optional_str(album.albumartist) or "")
+        title = normalize(_coerce_optional_str(album.album) or "")
+        if artist or title:
+            signals.append(f"fuzzy:{artist}\x00{title}")
+    return signals
+
+
+def _group_by_shared_signal(albums: list[Any], mode: DuplicateMode) -> list[tuple[list[Any], bool]]:
+    """Union albums that share any grouping signal into connected components.
+
+    Returns ``(members, all_share_mb)`` per component with >= 2 members (albums
+    with no signal are excluded). ``all_share_mb`` drives the match reason: a
+    component whose members all carry the SAME MBID is an MB-id match; anything
+    bridged by the normalized artist+title signal (mixed/absent MBIDs) is an
+    artist+title match. Union-find keeps the grouping transitive — A~B via MBID,
+    B~C via title folds all three together.
+    """
+    parent = list(range(len(albums)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+
+    signal_owner: dict[str, int] = {}
+    has_signal: list[bool] = []
+    for idx, album in enumerate(albums):
+        signals = _grouping_signals(album, mode)
+        has_signal.append(bool(signals))
+        for sig in signals:
+            owner = signal_owner.setdefault(sig, idx)
+            if owner != idx:
+                union(idx, owner)
+
+    components: dict[int, list[Any]] = {}
+    for idx, album in enumerate(albums):
+        if has_signal[idx]:
+            components.setdefault(find(idx), []).append(album)
+
+    out: list[tuple[list[Any], bool]] = []
+    for members in components.values():
+        if len(members) < 2:
+            continue
+        mbids = {_coerce_optional_str(a.get("mb_albumid")) for a in members}
+        all_share_mb = len(mbids) == 1 and None not in mbids
+        out.append((members, all_share_mb))
+    return out
 
 
 def _to_duplicate_album(lib: Library, album: Any, *, is_keeper: bool) -> DuplicateAlbum:
     items = list(album.items())
     fmt, bitrate_kbps = album_format_bitrate(items)
     return DuplicateAlbum(
-        **_album_fields(album, items),
+        **_album_fields(album, track_count=len(items), genre=_album_genre(album, items)),
         format=fmt,
         bitrate_kbps=bitrate_kbps,
         folder=album_folder(lib, items),
@@ -106,24 +161,15 @@ def find_duplicate_albums(lib: Library, *, mode: DuplicateMode) -> DuplicatesRep
     """Scan the whole library for duplicate album groups.
 
     Read-only. ``lib.albums()`` (no query) returns every album; albums are
-    grouped by :func:`_grouping_key`, singletons dropped, members ordered
-    keeper-first by track count (beets ``_order``).
+    grouped by :func:`_group_by_shared_signal`, singletons dropped, members
+    ordered keeper-first by track count (beets ``_order``).
     """
-    by_key: dict[str, list[Any]] = {}
-    for album in lib.albums():
-        key = _grouping_key(album, mode)
-        if key is None:
-            continue
-        by_key.setdefault(key, []).append(album)
-
     groups: list[DuplicateGroup] = []
-    for key, albums in by_key.items():
-        if len(albums) < 2:
-            continue
+    for albums, all_share_mb in _group_by_shared_signal(list(lib.albums()), mode):
         ordered = sorted(albums, key=lambda a: len(a.items()), reverse=True)
         keeper_id = int(ordered[0].id)
         members = [_to_duplicate_album(lib, a, is_keeper=(int(a.id) == keeper_id)) for a in ordered]
-        reason = _MATCH_REASON["mb" if key.startswith("mb:") else "fuzzy"]
+        reason = _MATCH_REASON["mb" if all_share_mb else "fuzzy"]
         groups.append(
             DuplicateGroup(match_reason=reason, suggested_keeper_id=keeper_id, members=members)
         )
@@ -166,13 +212,19 @@ def find_import_duplicates(
     tmp_album = Album(lib, **info)
     keys: list[str] = config["import"]["duplicate_keys"]["album"].as_str_seq()
     dup_query = tmp_album.duplicates_query(keys)
-    excl = os.path.abspath(exclude_under) if exclude_under else None
+    # realpath (not abspath) on BOTH sides: beets stores item paths under the
+    # real library dir, but exclude_under (the banked/parked source folder) can
+    # reach the same files through a symlinked alias (the documented TrueNAS
+    # layout). abspath leaves the two alias strings distinct, so an in-library
+    # re-import's own copy would be wrongly flagged as a collision. This mirrors
+    # is_in_library_source's realpath hardening in import_session.py.
+    excl = os.path.realpath(exclude_under) if exclude_under else None
     out: list[ExistingAlbum] = []
     with lib.music_dir_context():
         for album_obj in lib.albums(dup_query):
             if excl is not None:
                 items = list(album_obj.items())
-                paths = [os.path.abspath(os.fsdecode(i.path)) for i in items if i.path]
+                paths = [os.path.realpath(os.fsdecode(i.path)) for i in items if i.path]
                 if paths and all(p == excl or p.startswith(excl + os.sep) for p in paths):
                     continue
             out.append(to_existing_album(lib, album_obj))

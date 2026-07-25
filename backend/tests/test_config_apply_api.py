@@ -40,6 +40,30 @@ def test_apply_returns_snapshot_with_apply_pending_false(
     assert r.json()["apply_pending"] is False
 
 
+def test_apply_reattaches_new_lib_to_import_registry(
+    client: TestClient, beets_library_config_path: Path
+) -> None:
+    """Apply swaps ``app.state.beets_library`` for a freshly-rebuilt handle; the
+    import registry must follow. The lifespan attaches the lib once (main.py) and
+    the registry's runner captures it at construction, so without a re-attach every
+    later import (manual, inbox webhook, bank-apply) silently runs against the
+    pre-Apply Library — old ``directory`` / ``path_formats`` / DB path, i.e. files
+    placed per the stale config and, if ``library:`` changed, a split DB."""
+    from app.import_jobs.registry import get_registry
+    from app.main import app
+
+    old_lib = app.state.beets_library.lib
+    get_registry().attach_library(old_lib)  # mirror the lifespan wiring
+    assert get_registry()._lib is old_lib
+
+    r = client.post("/api/config/apply")
+    assert r.status_code == 200
+
+    new_lib = app.state.beets_library.lib
+    assert new_lib is not old_lib  # the rebuild produced a fresh Library
+    assert get_registry()._lib is new_lib  # registry re-attached to it, not the stale old lib
+
+
 def test_apply_409_when_import_active(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.import_jobs.registry import get_registry
 

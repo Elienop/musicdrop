@@ -8,6 +8,7 @@ import {
   type PlaylistImportPreview,
   type PlaylistImportPreviewResponse,
   type PlaylistImportRequest,
+  type PlexPlaylistInfo,
   useImportCommit,
   useImportPreview,
   usePlexImportPlaylists,
@@ -33,6 +34,34 @@ type Resolutions = Map<number, Map<number, number | null>>;
 /** Composite key for the picker-sourced label store (playlist index + position). */
 function pickedKey(playlistIndex: number, position: number): string {
   return `${playlistIndex}:${position}`;
+}
+
+/** One accessible checkbox name per listed Plex playlist, by index.
+ *
+ * Plex allows duplicate titles, so a repeated title is qualified with its track
+ * count — and when THAT still ties (same title AND same count, the commonest
+ * duplicate shape) a 1-based ordinal is appended. Every row therefore reads
+ * distinctly, which is the whole point: two identically-named checkboxes cannot
+ * be told apart by a screen reader or by name-based test queries.
+ */
+function plexLabels(playlists: PlexPlaylistInfo[]): string[] {
+  const byTitle = new Map<string, number>();
+  const byTitleAndCount = new Map<string, number>();
+  const key = (p: PlexPlaylistInfo) => `${p.name}\u0000${p.track_count}`;
+  for (const p of playlists) {
+    byTitle.set(p.name, (byTitle.get(p.name) ?? 0) + 1);
+    byTitleAndCount.set(key(p), (byTitleAndCount.get(key(p)) ?? 0) + 1);
+  }
+  const ordinals = new Map<string, number>();
+  return playlists.map((p) => {
+    if ((byTitle.get(p.name) ?? 0) < 2) return p.name;
+    const tracks = `${p.track_count} ${p.track_count === 1 ? "track" : "tracks"}`;
+    const label = `${p.name} · ${tracks}`;
+    if ((byTitleAndCount.get(key(p)) ?? 0) < 2) return label;
+    const nth = (ordinals.get(key(p)) ?? 0) + 1;
+    ordinals.set(key(p), nth);
+    return `${label} · #${nth}`;
+  });
 }
 
 /** Seed resolutions from a fresh preview: matched entries adopt their match,
@@ -64,10 +93,11 @@ export function ImportPlaylistsPage() {
   // Seeded from the preview at review start; an empty/whitespace edit falls back
   // to the original name at commit.
   const [names, setNames] = useState<Map<number, string>>(new Map());
-  // Whether THIS preview came from Plex — captured at review start. Only a
-  // Plex-sourced import stamps each playlist's `plex_source` (the backend matches
-  // it as an exact Plex title); file uploads never do.
-  const [fromPlex, setFromPlex] = useState(false);
+  // The Plex rating keys THIS preview was pulled with, aligned to the preview
+  // list by index (the backend returns one preview per requested key, in order),
+  // or null for a file upload. Only a Plex-sourced import stamps each playlist's
+  // `plex_rating_key` / `plex_source`; file uploads never do.
+  const [plexKeys, setPlexKeys] = useState<string[] | null>(null);
   // Labels for picker-sourced picks (not in a preview entry's match/suggestions).
   const [picked, setPicked] = useState<Map<string, PickedTrack>>(new Map());
   const [pickerFor, setPickerFor] = useState<{ playlistIndex: number; position: number } | null>(
@@ -84,11 +114,11 @@ export function ImportPlaylistsPage() {
   // fails fast (retry:false) to the surfaced detail in the Plex card.
   const plexQuery = usePlexImportPlaylists(preview === null);
 
-  function startReview(response: PlaylistImportPreviewResponse, sourceIsPlex: boolean) {
+  function startReview(response: PlaylistImportPreviewResponse, sourceKeys: string[] | null) {
     setResolutions(seedResolutions(response));
     setPicked(new Map());
     setNames(new Map(response.playlists.map((playlist, index) => [index, playlist.name])));
-    setFromPlex(sourceIsPlex);
+    setPlexKeys(sourceKeys);
     setPreview(response);
   }
 
@@ -109,7 +139,7 @@ export function ImportPlaylistsPage() {
       setFileReadError("Couldn't read the selected files. Try again.");
       return;
     }
-    previewMutation.mutate({ files }, { onSuccess: (response) => startReview(response, false) });
+    previewMutation.mutate({ files }, { onSuccess: (response) => startReview(response, null) });
   }
 
   function previewFromPlex() {
@@ -117,8 +147,8 @@ export function ImportPlaylistsPage() {
     if (selected.length === 0) return;
     setFileReadError(null);
     previewMutation.mutate(
-      { plex_playlists: selected },
-      { onSuccess: (response) => startReview(response, true) },
+      { plex_rating_keys: selected },
+      { onSuccess: (response) => startReview(response, selected) },
     );
   }
 
@@ -132,11 +162,14 @@ export function ImportPlaylistsPage() {
     });
   }
 
-  function togglePlex(name: string, checked: boolean) {
+  /** Select/deselect one listed Plex playlist BY ITS RATING KEY — titles aren't
+   * unique, so a name-keyed set would make one of a same-titled pair
+   * unselectable (and both resolve to the same playlist server-side). */
+  function togglePlex(ratingKey: string, checked: boolean) {
     setPlexChecked((prev) => {
       const next = new Set(prev);
-      if (checked) next.add(name);
-      else next.delete(name);
+      if (checked) next.add(ratingKey);
+      else next.delete(ratingKey);
       return next;
     });
   }
@@ -166,11 +199,15 @@ export function ImportPlaylistsPage() {
         // A blank/whitespace edit falls back to the original preview name.
         name: (names.get(index) ?? "").trim() || playlist.name,
         description: "",
-        // Only a Plex-sourced import carries plex_source, and it MUST be the
-        // ORIGINAL bare Plex title (never the edited name, never a decorated
-        // "plex:<name>") — the backend matches it as an exact Plex title, so a
-        // decorated value would silently import artless.
-        ...(fromPlex ? { plex_source: playlist.name } : {}),
+        // Only a Plex-sourced import carries these two, and only together:
+        //  · plex_rating_key is the IDENTITY the backend resolves the poster by
+        //    (the same key this preview was pulled with, aligned by index).
+        //  · plex_source is the ORIGINAL bare Plex title (never the edited name,
+        //    never a decorated "plex:<name>") — the display value, and the
+        //    backend's title fallback for keyless legacy bodies.
+        ...(plexKeys
+          ? { plex_source: playlist.name, plex_rating_key: plexKeys[index] }
+          : {}),
         entries: playlist.entries.map((entry) => {
           const itemId = resolutionFor(index, entry.position);
           if (itemId !== null) return { item_id: itemId };
@@ -284,6 +321,9 @@ export function ImportPlaylistsPage() {
   // the request — surface both in one shared spot above the two source cards.
   const sourceError =
     fileReadError ?? (previewMutation.isError ? previewMutation.error.message : null);
+  // Plex allows duplicate titles — qualify those rows' labels so both are
+  // addressable (the identity itself is the rating_key, not the label).
+  const plexAriaLabels = plexLabels(plexQuery.data ?? []);
   return (
     <section className="flex flex-col gap-6" aria-label="Import playlists">
       <PageHeader
@@ -356,13 +396,15 @@ export function ImportPlaylistsPage() {
             {plexQuery.data && plexQuery.data.length > 0 && (
               <>
                 <ul className="flex flex-col gap-2">
-                  {plexQuery.data.map((playlist) => (
-                    <li key={playlist.name} className="flex items-center gap-2">
+                  {plexQuery.data.map((playlist, index) => (
+                    // Keyed by rating_key: two Plex playlists can share a title,
+                    // and a name key would collapse them into one row.
+                    <li key={playlist.rating_key} className="flex items-center gap-2">
                       <Checkbox
-                        aria-label={playlist.name}
-                        checked={plexChecked.has(playlist.name)}
+                        aria-label={plexAriaLabels[index]}
+                        checked={plexChecked.has(playlist.rating_key)}
                         onCheckedChange={(checked) =>
-                          togglePlex(playlist.name, checked === true)
+                          togglePlex(playlist.rating_key, checked === true)
                         }
                       />
                       <span className="min-w-0 flex-1 truncate" title={playlist.name}>

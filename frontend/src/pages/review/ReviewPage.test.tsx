@@ -185,6 +185,72 @@ describe("ReviewPage", () => {
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/import?job=jall"));
   });
 
+  test("an in-flight inbox row warns before its per-row Review override", async () => {
+    // The per-row button has no settle guard — it is an explicit "import THIS
+    // one now". The row must therefore SAY the folder is still arriving, or the
+    // user overrides blind and files a partial album.
+    server.use(
+      http.get(ITEMS, () =>
+        HttpResponse.json({
+          items: [
+            { name: "Half Arrived", mtime: 1, size: 10, track_count: 2, outcome: null, in_flight: true },
+            { name: "All Here", mtime: 2, size: 20, track_count: 9, outcome: null, in_flight: false },
+          ],
+        }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+
+    expect(await screen.findByText(/still downloading — importing now may catch only part/i))
+      .toBeInTheDocument();
+    // the settled row keeps the plain affordance; only the in-flight one is hedged
+    expect(screen.getByRole("button", { name: "Review anyway" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review" })).toBeInTheDocument();
+  });
+
+  test("a no-op Review all says STILL DOWNLOADING when folders are in flight", async () => {
+    // The backend refuses folders that are still receiving files. Saying "the
+    // inbox just cleared" there would be a flat lie — the rows are still on
+    // screen, and the user would have no idea why the button did nothing.
+    server.use(
+      http.get(ITEMS, () =>
+        HttpResponse.json({
+          items: [{ name: "Half Arrived", mtime: 1, size: 10, track_count: 2, outcome: null }],
+        }),
+      ),
+      http.post(REVIEW_ALL, () =>
+        HttpResponse.json({ started: false, job_id: null, pending: 0, in_flight: 1 }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /review all/i }));
+    expect(await screen.findByText(/still downloading/i)).toBeInTheDocument();
+    expect(screen.queryByText(/inbox just cleared/i)).not.toBeInTheDocument();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    // the row it refused is still listed — the message must agree with the list
+    expect(screen.getByText("Half Arrived")).toBeInTheDocument();
+  });
+
+  test("a no-op Review all with nothing in flight still says the inbox cleared", async () => {
+    // The genuine race the message was written for: the inbox emptied between
+    // the last poll and the click.
+    server.use(
+      http.get(ITEMS, () =>
+        HttpResponse.json({
+          items: [{ name: "Lost Tapes", mtime: 1, size: 10, track_count: 9, outcome: null }],
+        }),
+      ),
+      http.post(REVIEW_ALL, () =>
+        HttpResponse.json({ started: false, job_id: null, pending: 0, in_flight: 0 }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /review all/i }));
+    expect(await screen.findByText(/inbox just cleared/i)).toBeInTheDocument();
+  });
+
   test("inbox actions are disabled while an import is running", async () => {
     server.use(
       http.get(ACTIVE, () =>
@@ -367,6 +433,38 @@ describe("ReviewPage", () => {
     expect(
       screen.queryByRole("region", { name: /waiting for review/i }),
     ).not.toBeInTheDocument();
+  });
+
+  test("a bank load error surfaces an error + retry, never the false empty state", async () => {
+    // A 5xx (backend restarting on a single home box) must NOT read as a resolved
+    // backlog: the section shows the failure with a retry, and the page must not
+    // claim "Nothing to review" while banked rows may still await a decision.
+    server.use(http.get(BANK, () => new HttpResponse(null, { status: 500 })));
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    expect(within(section).getByRole("alert")).toBeInTheDocument();
+    expect(
+      within(section).getByRole("button", { name: /retry/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/nothing to review/i)).not.toBeInTheDocument();
+    // The header must not fabricate a "0 awaiting a decision" count off an error.
+    expect(screen.queryByText(/awaiting a decision/i)).not.toBeInTheDocument();
+  });
+
+  test("Retry after a bank error refetches and shows the rows", async () => {
+    let fail = true;
+    server.use(
+      http.get(BANK, () =>
+        fail
+          ? new HttpResponse(null, { status: 500 })
+          : HttpResponse.json({ items: [bankRow()], total: 1, total_all: 1, offset: 0, limit: 48 }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    fail = false;
+    await userEvent.click(within(section).getByRole("button", { name: /retry/i }));
+    expect(await screen.findByText("Album X")).toBeInTheDocument();
   });
 
   test("the reason filter narrows the query, sets bank_reason, and resets offset", async () => {

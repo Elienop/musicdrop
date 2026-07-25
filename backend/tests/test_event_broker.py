@@ -9,7 +9,19 @@ from app.models.events import LibraryChangedEvent
 
 
 def test_event_serializes_to_library_changed() -> None:
-    assert LibraryChangedEvent().model_dump_json() == '{"type":"library:changed"}'
+    # The wire bytes are what the broker publishes, and it dumps with
+    # exclude_none — so an unscoped event keeps exactly the shape it had before
+    # `scope` existed. Only a genuinely scoped event grows the payload.
+    assert LibraryChangedEvent().model_dump_json(exclude_none=True) == '{"type":"library:changed"}'
+
+
+def test_art_event_serializes_its_scope() -> None:
+    # The scope names WHICH asset changed so a tab only remounts that image
+    # instead of every <img> on the page.
+    assert (
+        LibraryChangedEvent(type="art:changed", scope="album:7").model_dump_json()
+        == '{"type":"art:changed","scope":"album:7"}'
+    )
 
 
 @pytest.mark.anyio
@@ -26,8 +38,19 @@ async def test_publish_art_changed_fans_out_art_changed() -> None:
     broker = EventBroker(asyncio.get_running_loop())
     a, b = broker.subscribe(), broker.subscribe()
     broker.publish_art_changed()
+    # No scope = library-wide: every image refreshes (today's behavior).
     assert await asyncio.wait_for(a.get(), 1.0) == '{"type":"art:changed"}'
     assert await asyncio.wait_for(b.get(), 1.0) == '{"type":"art:changed"}'
+
+
+@pytest.mark.anyio
+async def test_publish_art_changed_carries_the_scope() -> None:
+    broker = EventBroker(asyncio.get_running_loop())
+    q = broker.subscribe()
+    broker.publish_art_changed("artist:Radiohead")
+    assert (
+        await asyncio.wait_for(q.get(), 1.0) == '{"type":"art:changed","scope":"artist:Radiohead"}'
+    )
 
 
 @pytest.mark.anyio

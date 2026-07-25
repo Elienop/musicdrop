@@ -94,6 +94,11 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
       : fetchedSections;
 
   function handleSave() {
+    // Clear any prior success line and stale test result before a new attempt,
+    // so at most one outcome (this save's) is ever on screen — never a green
+    // "saved"/"connected" next to a fresh red failure.
+    setStatusMsg("");
+    test.reset();
     const body: components["schemas"]["PlexSettingsUpdate"] = {
       base_url: baseUrl,
       library_path: libraryPath,
@@ -112,6 +117,10 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
   }
 
   function handleTest() {
+    // Clear a prior save/test success line AND a prior save failure so this
+    // test's outcome stands alone (never a red "couldn't save" beside a green).
+    setStatusMsg("");
+    save.reset();
     test.mutate(undefined, {
       onSuccess: (connection) => {
         if (connection.ok) {

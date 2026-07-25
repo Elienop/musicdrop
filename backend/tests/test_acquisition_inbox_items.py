@@ -189,3 +189,36 @@ def test_import_inbox_item_409_while_swap_lock_held(tmp_path: Path) -> None:
             app.state.beets_swap_lock = prior
     assert resp.status_code == 409
     assert fake.received_options is None
+
+
+def test_listing_flags_a_still_arriving_folder_as_in_flight(tmp_path: Path) -> None:
+    # The per-row Review button has no settle guard on purpose — it is an explicit
+    # "import THIS one now" override. But the row must SAY the folder is still
+    # arriving, or the user makes that choice blind and files a partial album.
+    import os
+    import time
+
+    from app.acquisition.inbox import list_inbox
+
+    inbox = tmp_path / "inbox"
+    for name in ("Settled", "Arriving"):
+        folder = inbox / name
+        folder.mkdir(parents=True)
+        (folder / "01 track.flac").write_bytes(b"\0")
+    old = time.time() - 3600
+    for path in [inbox / "Settled", *(inbox / "Settled").rglob("*")]:
+        os.utime(path, (old, old))
+
+    rows = {i.name: i.in_flight for i in list_inbox(inbox, None, settle_seconds=60)}
+    assert rows == {"Settled": False, "Arriving": True}
+
+
+def test_listing_defaults_to_not_in_flight_without_a_window(tmp_path: Path) -> None:
+    # settle_seconds=0 (the default) means "don't judge" — every row reads settled.
+    from app.acquisition.inbox import list_inbox
+
+    inbox = tmp_path / "inbox"
+    folder = inbox / "Fresh"
+    folder.mkdir(parents=True)
+    (folder / "01 track.flac").write_bytes(b"\0")
+    assert [i.in_flight for i in list_inbox(inbox, None)] == [False]

@@ -151,6 +151,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
           <div className="relative">
             <CoverArt
               src={coverSrc}
+              assetKey={`album:${album.id}`}
               className="aspect-square w-full"
             />
             <div

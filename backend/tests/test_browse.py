@@ -199,6 +199,190 @@ def test_browse_no_filters_returns_all(browse_lib: Library) -> None:
     assert len(albums) == 6
 
 
+def test_browse_albums_maps_page_without_a_per_album_items_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # M22 (N+1): once the BrowseRow cache is warm, mapping a page must NOT run a
+    # per-row album.items() query — track_count + genre come from the same scan
+    # that built the cache. Before the fix, _to_album re-fetched items per row.
+    from beets.library import Album as _BeetsAlbum
+
+    from app.beets import browse as browse_mod
+
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    _add(lib, tmp_path, artist="A", album="One", year=2015, genre="Pop", fmt="FLAC", tracks=3)
+    _add(lib, tmp_path, artist="B", album="Two", year=2015, genre="Rock", fmt="MP3", tracks=5)
+    browse_mod._ROWS.clear()
+    browse_mod._rows(lib)  # warm the cache — the one legitimate items() scan
+
+    calls = {"n": 0}
+    real_items = _BeetsAlbum.items
+
+    def counting_items(self: _BeetsAlbum, *a: Any, **k: Any) -> Any:
+        calls["n"] += 1
+        return real_items(self, *a, **k)
+
+    monkeypatch.setattr(_BeetsAlbum, "items", counting_items)
+    albums, total = browse_albums(lib, genres=[], decades=[], formats=[], limit=50, offset=0)
+
+    assert calls["n"] == 0  # no per-row items() during page mapping — the N+1 is gone
+    assert total == 2
+    assert {a.title: a.track_count for a in albums} == {"One": 3, "Two": 5}
+
+
+def test_browse_albums_preserves_null_genre_while_facet_buckets_unknown(tmp_path: Path) -> None:
+    # The cached path must keep the Album model's genre NULLABLE (genre_raw), not
+    # substitute the facet's "Unknown" default — while the facet still buckets a
+    # genre-less album under "Unknown".
+    from app.beets import browse as browse_mod
+
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    _add(lib, tmp_path, artist="A", album="Genred", year=2015, genre="Pop", fmt="FLAC", tracks=2)
+    _add(lib, tmp_path, artist="B", album="NoGenre", year=2015, genre=None, fmt="FLAC", tracks=2)
+    browse_mod._ROWS.clear()
+
+    albums, _ = browse_albums(lib, genres=[], decades=[], formats=[], limit=50, offset=0)
+    by_title = {a.title: a.genre for a in albums}
+    assert by_title["Genred"] == "Pop"
+    assert by_title["NoGenre"] is None  # model keeps null, NOT "Unknown"
+
+    genre_vals = {f.value for f in browse_facets(lib).genres}
+    assert "Unknown" in genre_vals  # facet still buckets the genre-less album
+
+
+def test_invalidate_never_blocks_on_an_in_flight_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # I17: invalidate_browse_cache() runs synchronously ON THE EVENT LOOP for
+    # every mutation. It must be O(1) even while a threadpool thread is mid-scan
+    # — the old single lock made a mutating endpoint freeze the whole asyncio
+    # loop for the duration of the rebuild. Orchestrated with events, no sleeps:
+    # the build parks inside _build_row until released, and the invalidate runs
+    # (in a helper thread so a regression can't hang the suite) while parked.
+    import threading
+
+    from app.beets import browse as browse_mod
+
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    _add(lib, tmp_path, artist="A", album="One", year=2015, genre="Pop", fmt="FLAC")
+    browse_mod.invalidate_browse_cache()
+
+    in_build = threading.Event()
+    release_build = threading.Event()
+    build_calls = {"n": 0}
+    real_build = browse_mod._build_row
+
+    def parked_build(album: Any) -> Any:
+        build_calls["n"] += 1
+        in_build.set()
+        assert release_build.wait(timeout=5.0)
+        return real_build(album)
+
+    monkeypatch.setattr(browse_mod, "_build_row", parked_build)
+    built: list[list[Any]] = []
+    builder = threading.Thread(target=lambda: built.append(browse_mod._rows(lib)), daemon=True)
+    builder.start()
+    assert in_build.wait(timeout=5.0)  # the scan is genuinely in flight
+
+    invalidated = threading.Event()
+
+    def _invalidate_then_signal() -> None:
+        browse_mod.invalidate_browse_cache()
+        invalidated.set()
+
+    inv = threading.Thread(target=_invalidate_then_signal, daemon=True)
+    inv.start()
+    # The whole point: invalidation completes WHILE the scan is still parked.
+    assert invalidated.wait(timeout=2.0), "invalidate blocked on an in-flight scan"
+
+    release_build.set()
+    builder.join(timeout=5.0)
+    assert not builder.is_alive()
+    assert len(built[0]) == 1  # the requester still gets the rows it built
+
+    # THE DISCARD SEMANTIC: the scan snapshotted the generation BEFORE the
+    # mid-flight invalidate bumped it, so its rows must NOT have been stored —
+    # they describe a library state that no longer exists. Asserting the cache is
+    # EMPTY here is what makes this test able to fail: a store-unconditionally
+    # regression leaves the stale rows sitting in _ROWS and is caught right here.
+    assert not browse_mod._ROWS, "an invalidated scan's rows were cached anyway"
+
+    # And the next call genuinely re-scans (rather than serving anything stale).
+    monkeypatch.setattr(browse_mod, "_build_row", real_build)
+    rebuilt = browse_mod._rows(lib)
+    assert rebuilt is not built[0]  # a fresh list object, not the discarded one
+    assert browse_mod._ROWS  # this build WAS cached (no invalidate raced it)
+
+
+def test_concurrent_cold_cache_calls_scan_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The build lock's job: two browse calls racing a cold cache must not run
+    # duplicate whole-library scans.
+    import threading
+
+    from app.beets import browse as browse_mod
+
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    _add(lib, tmp_path, artist="A", album="One", year=2015, genre="Pop", fmt="FLAC")
+    _add(lib, tmp_path, artist="B", album="Two", year=2015, genre="Rock", fmt="MP3")
+    browse_mod.invalidate_browse_cache()
+
+    calls = {"n": 0}
+    real_build = browse_mod._build_row
+
+    def counting_build(album: Any) -> Any:
+        calls["n"] += 1
+        return real_build(album)
+
+    monkeypatch.setattr(browse_mod, "_build_row", counting_build)
+    results: list[list[Any]] = []
+    threads = [
+        threading.Thread(target=lambda: results.append(browse_mod._rows(lib)), daemon=True)
+        for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+    assert calls["n"] == 2  # one scan of two albums — NOT four (duplicate scans)
+    assert len(results) == 2 and results[0] == results[1]
+
+
+def test_browse_tolerates_a_non_canonical_per_disc_numbering_value(tmp_path: Path) -> None:
+    # A per_disc_numbering value beets tolerates but that isn't a canonical bool
+    # (e.g. `on`) makes confuse's `.get(bool)` raise ConfigTypeError; the cache
+    # build must read the flag by truthiness instead so it never crashes browse.
+    from beets import config
+
+    from app.beets import browse as browse_mod
+
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    _add(
+        lib,
+        tmp_path,
+        artist="A",
+        album="Multi",
+        year=2015,
+        genre="Pop",
+        fmt="FLAC",
+        tracks=4,
+        discs=2,
+        tracktotal=2,  # disctotal=2 -> hits the flag branch
+    )
+    config["per_disc_numbering"] = "on"  # tolerated by beets, rejected by the bool template
+    try:
+        browse_mod._ROWS.clear()
+        facets = browse_facets(lib)  # builds rows -> _album_tracks_bucket -> reads the flag
+        albums, total = browse_albums(lib, genres=[], decades=[], formats=[], limit=50, offset=0)
+    finally:
+        config["per_disc_numbering"] = False  # restore the beets default
+
+    assert total == 1  # computed without raising ConfigTypeError
+    assert {f.value for f in facets.tracks}  # the tracks facet was bucketed
+    assert albums[0].track_count == 4
+
+
 def test_browse_single_genre(browse_lib: Library) -> None:
     albums, total = browse_albums(
         browse_lib, genres=["Pop"], decades=[], formats=[], limit=50, offset=0

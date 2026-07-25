@@ -261,6 +261,100 @@ def test_fan_out_isolates_a_failing_user(monkeypatch: pytest.MonkeyPatch) -> Non
     assert states["ok"].status == "ok"
 
 
+def test_failed_reconcile_carries_forward_prior_rating_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A transient reconcile failure must NOT erase a target's recorded ratingKey.
+    # The caller replaces the WHOLE state map with what we return, so dropping the
+    # key here would orphan the still-existing Plex copy: a later delete/de-target
+    # short-circuits on a None key and never removes it. Carry the prior key
+    # forward so a retry (or delete) can still find the copy by identity.
+    server = _FakeServer([_FakeTrack(10, ["/m/a.flac"])])
+
+    def _switch(uid: str) -> _FakeServer:
+        raise RuntimeError("transient network blip")
+
+    server.switchUser = _switch  # type: ignore[attr-defined]
+    _patch(monkeypatch, server)
+
+    states = sync.sync_playlist_to_targets(
+        CONFIG,
+        "Mix",
+        [_p("/m/a.flac")],
+        ["7"],
+        playlist_id="p1",
+        rating_keys={"admin": None, "7": "600"},
+    )
+    assert states["7"].status == "failed"
+    assert states["7"].rating_key == "600"  # preserved, NOT erased to None
+
+
+def test_delete_with_none_rating_key_falls_back_to_id_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A record whose ratingKey was lost (e.g. erased by a prior transient-failure
+    # bug) but whose Plex copy still exists under our id marker must STILL be
+    # deleted — not short-circuited to "absent" and orphaned on Plex forever.
+    orphan = _FakePlaylist("Mix", [_FakeTrack(1, ["/m/a.flac"])])
+    orphan.ratingKey = 777
+    orphan.summary = "MusicDrop-id:p1"  # our identity marker survived
+    server = _FakeServer([])
+    server._playlists.append(orphan)
+    _patch(monkeypatch, server)
+    results = sync.delete_playlist_on_targets(CONFIG, {"admin": None}, playlist_id="p1")
+    assert results == {"admin": "deleted"}
+    assert orphan.deleted is True
+
+
+def test_carried_forward_key_lets_a_later_delete_remove_the_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # End-to-end of the fix: a target fails to sync (its prior key is preserved),
+    # then is unticked/deleted — the delete finds the copy by the carried-forward
+    # ratingKey instead of short-circuiting to "absent" and orphaning it.
+    user7 = _FakeServer([_FakeTrack(2, ["/m/b.flac"])])
+    user7_pl = _FakePlaylist("Mix", [_FakeTrack(2, ["/m/b.flac"])], rating_key=600)
+    user7._playlists.append(user7_pl)
+
+    server = _FakeServer([_FakeTrack(10, ["/m/a.flac"])])
+
+    def _fail(uid: str) -> _FakeServer:
+        raise RuntimeError("transient network blip")
+
+    server.switchUser = _fail  # type: ignore[attr-defined]
+    _patch(monkeypatch, server)
+
+    states = sync.sync_playlist_to_targets(
+        CONFIG, "Mix", [_p("/m/a.flac")], ["7"], playlist_id="p1", rating_keys={"7": "600"}
+    )
+    assert states["7"].rating_key == "600"  # key survived the failure
+
+    # Now the user is unticked; switchUser works again and delete uses the key.
+    server.switchUser = lambda uid: user7  # type: ignore[attr-defined]
+    results = sync.delete_playlist_on_targets(
+        CONFIG, {"7": states["7"].rating_key}, playlist_id="p1"
+    )
+    assert results == {"7": "deleted"}
+    assert user7_pl.deleted is True
+
+
+def test_successful_reconcile_records_fresh_key_not_prior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression guard: on a SUCCESSFUL reconcile the FRESH ratingKey is recorded,
+    # never the stale prior key carried in via rating_keys.
+    server = _FakeServer([_FakeTrack(10, ["/m/a.flac"])])
+    existing = _FakePlaylist("Mix", [], rating_key=999)
+    existing.summary = "MusicDrop-id:p1"
+    server._playlists.append(existing)
+    _patch(monkeypatch, server)
+    states = sync.sync_playlist_to_targets(
+        CONFIG, "Mix", [_p("/m/a.flac")], [], playlist_id="p1", rating_keys={"admin": "999"}
+    )
+    assert states["admin"].status == "ok"
+    assert states["admin"].rating_key == "500"  # fresh created key, not the prior 999
+
+
 def test_fan_out_not_configured() -> None:
     with pytest.raises(PlexNotConfigured):
         sync.sync_playlist_to_targets(

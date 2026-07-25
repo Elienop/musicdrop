@@ -101,6 +101,13 @@ class Settings(BaseSettings):
     # time from the live library handle (sidesteps the cwd-relative gotcha, like
     # trash_dir). (env MUSICDROP_INBOX_DIR)
     inbox_dir: str = ""
+    # How long an inbox folder must be quiet before "Review inbox" will import
+    # it. The inbox IS the downloader's live output dir: slskd moves each file
+    # in as it completes, so a folder touched moments ago may still be gaining
+    # tracks — importing it then files a PARTIAL album (and the remainder
+    # arrives later as a second, duplicate copy).
+    # (env MUSICDROP_INBOX_SETTLE_SECONDS)
+    inbox_settle_seconds: int = 60
 
     # slskd acquisition source (app/slskd/). The API key + webhook secret are
     # secrets: these env vars seed the INITIAL persisted JSON config (file > env);

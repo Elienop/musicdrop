@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from pathlib import Path
 
 from app.acquisition.ledger import AcquisitionLedger
@@ -166,7 +167,91 @@ def count_pending(inbox_dir: Path) -> int:
     return count
 
 
-def list_inbox(inbox_dir: Path, ledger: AcquisitionLedger | None) -> list[InboxItem]:
+def _max_mtime(current: float | None, candidate: float) -> float:
+    """The later of two mtimes (``None`` = nothing seen yet)."""
+    return candidate if current is None or candidate > current else current
+
+
+def _newest_mtime(folder: Path) -> float | None:
+    """The newest mtime of ANY file under ``folder`` (None when unreadable).
+
+    ANY file, not just audio: a downloader writes partial/temp/sidecar files
+    while an album is still arriving, and those are exactly the signal that the
+    folder is not finished. DIRECTORY mtimes count too — a tool that preserves
+    timestamps (``unzip``, ``rsync -a``, ``cp -p``, a cross-filesystem ``mv``)
+    drops files whose own mtimes are ancient, and then the only fresh signal is
+    the directory whose entry list just changed. Cheap ``os.scandir`` walk — no
+    audio parsing.
+    """
+    newest: float | None = None
+    stack = [folder]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = list(os.scandir(current))
+            # The dir's own mtime bumps whenever an entry is added or removed —
+            # the one signal that stays fresh for preserved-timestamp copies.
+            newest = _max_mtime(newest, current.stat().st_mtime)
+        except OSError:
+            return None  # unreadable mid-walk -> treat as unsettled (caller skips)
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+                    continue
+                mtime = entry.stat(follow_symlinks=False).st_mtime
+            except OSError:
+                return None  # vanished mid-walk -> still moving; skip it
+            newest = _max_mtime(newest, mtime)
+    return newest
+
+
+def settled_folders(inbox_dir: Path, *, settle_seconds: float, now: float) -> list[Path]:
+    """Top-level inbox items that have been QUIET for ``settle_seconds``.
+
+    Same item definition as ``list_inbox``/``count_pending`` (one immediate
+    child dir holding audio, no hidden/ledger/symlink entries), minus the ones
+    still receiving files. Ledger-seen folders stay eligible: a failed or
+    set-aside drop is still sitting there and must remain reviewable.
+
+    Skipping is always the safe direction — a folder we cannot stat, or one that
+    vanishes mid-walk, is treated as in-flight rather than swept into an import.
+    """
+    try:
+        entries = list(os.scandir(inbox_dir))
+    except OSError:
+        return []
+    settled: list[Path] = []
+    for entry in entries:
+        if entry.name.startswith(".") or entry.name == LEDGER_FILENAME:
+            continue
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        folder = Path(entry.path)
+        if not has_audio(folder):
+            continue
+        newest = _newest_mtime(folder)
+        if newest is None:
+            continue
+        # Clamp a FUTURE mtime (NAS/container clock skew) to now: without this a
+        # negative age is always < settle_seconds, so the folder would be skipped
+        # on every click forever, with no way to import it from here. Clamped, it
+        # simply reads as "just touched" and settles once the window elapses.
+        age = now - min(newest, now)
+        if age < settle_seconds:
+            continue
+        settled.append(folder)
+    settled.sort(key=lambda f: f.name)
+    return settled
+
+
+def list_inbox(
+    inbox_dir: Path,
+    ledger: AcquisitionLedger | None,
+    *,
+    settle_seconds: float = 0.0,
+    now: float | None = None,
+) -> list[InboxItem]:
     """Top-level non-hidden inbox dirs holding audio, ledger-annotated (never filtered).
 
     An item = one immediate child directory with >=1 audio file beneath it (empty
@@ -196,6 +281,13 @@ def list_inbox(inbox_dir: Path, ledger: AcquisitionLedger | None) -> list[InboxI
         except OSError:
             continue
         folder = Path(entry.path).resolve()
+        in_flight = False
+        if settle_seconds > 0:
+            newest = _newest_mtime(Path(entry.path))
+            reference = time.time() if now is None else now
+            # Unreadable (None) reads as in-flight, matching settled_folders:
+            # we cannot know it is finished, so we must not imply it is.
+            in_flight = newest is None or reference - min(newest, reference) < settle_seconds
         outcome: LedgerOutcome | None = None
         for row in ledger_rows:
             if row.outcome not in ("set_aside", "failed"):
@@ -214,6 +306,7 @@ def list_inbox(inbox_dir: Path, ledger: AcquisitionLedger | None) -> list[InboxI
                 size=size,
                 track_count=tracks,
                 outcome=outcome,
+                in_flight=in_flight,
             )
         )
     items.sort(key=lambda i: i.mtime, reverse=True)

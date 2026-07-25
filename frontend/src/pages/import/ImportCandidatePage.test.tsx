@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { delay, http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes } from "react-router";
@@ -360,8 +360,14 @@ describe("ImportCandidatePage", () => {
     renderAt();
 
     await user.click(await screen.findByRole("button", { name: /^Apply/i }));
+    // The apply echoes the rendered candidate's search_revision so the worker
+    // can tell a stale submit (predating a search re-park) from a live one.
     await waitFor(() =>
-      expect(body).toEqual({ action: "apply", candidate_index: 0 }),
+      expect(body).toEqual({
+        action: "apply",
+        candidate_index: 0,
+        search_revision: 0,
+      }),
     );
   });
 
@@ -476,7 +482,11 @@ describe("ImportCandidatePage", () => {
     );
     await user.click(screen.getByRole("button", { name: /^Apply/i }));
     await waitFor(() =>
-      expect(body).toEqual({ action: "apply", candidate_index: 1 }),
+      expect(body).toEqual({
+        action: "apply",
+        candidate_index: 1,
+        search_revision: 0,
+      }),
     );
   });
 
@@ -528,6 +538,90 @@ describe("ImportCandidatePage", () => {
     expect(
       await screen.findByText(/isn.t waiting for review/i),
     ).toBeInTheDocument();
+  });
+
+  test("a 404 renders the 'already decided' copy, not the retryable error", async () => {
+    // A genuine no-longer-parked album: the calm "already decided" notice is
+    // correct here — and it must NOT be the generic retryable ErrorState.
+    server.use(
+      http.get(CANDIDATE_URL, () =>
+        HttpResponse.json({ detail: "Import album not found" }, { status: 404 }),
+      ),
+    );
+    renderAt();
+
+    expect(await screen.findByText(/already be decided/i)).toBeInTheDocument();
+    expect(screen.getByText(/isn.t waiting for review/i)).toBeInTheDocument();
+    // Not the shared error surface (role=alert data-slot=error-state / "Retry").
+    expect(
+      screen.queryByRole("button", { name: /^retry$/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      document.querySelector('[data-slot="error-state"]'),
+    ).not.toBeInTheDocument();
+  });
+
+  test("a non-404 candidate error renders the retryable ErrorState, not the 'already decided' notice", async () => {
+    // A transient failure (5xx / network blip; retry:false means one is enough)
+    // must NOT tell the user their still-parked decision is gone — it's a
+    // retryable error, on the shared ErrorState recipe.
+    server.use(
+      http.get(CANDIDATE_URL, () => new HttpResponse(null, { status: 500 })),
+    );
+    renderAt();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveAttribute("data-slot", "error-state");
+    expect(
+      screen.getByRole("button", { name: /^retry$/i }),
+    ).toBeInTheDocument();
+    // It must not assert the decision is already gone.
+    expect(
+      screen.queryByText(/isn.t waiting for review/i),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/already be decided/i)).not.toBeInTheDocument();
+  });
+
+  test("a 404 arriving mid-search clears the searching state and stops the 700ms poll", async () => {
+    // The stuck-poll regression: while `searching` is latched, if the candidate
+    // starts 404ing (album decided from a 2nd tab / job died mid-search), the
+    // page must clear `searching` — stopping the 700ms poll and unfreezing the
+    // panel — instead of hammering the 404 forever under a misleading notice.
+    let gone = false;
+    let getCalls = 0;
+    server.use(
+      http.get(CANDIDATE_URL, () => {
+        getCalls += 1;
+        if (gone) {
+          return HttpResponse.json(
+            { detail: "Import album not found" },
+            { status: 404 },
+          );
+        }
+        return HttpResponse.json(makeCandidate());
+      }),
+      http.post(CHOICE_URL, () => {
+        // The slot vanished mid-search — the candidate now 404s while the page
+        // is still in its `searching` state (no revision bump ever arrives).
+        gone = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt();
+
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer/i });
+    // Enter the searching state via rescan; the follow-up candidate load 404s.
+    await user.click(screen.getByRole("button", { name: /rescan folder/i }));
+
+    // The page flips to the calm notice (searching cleared -> poll off).
+    expect(
+      await screen.findByText(/isn.t waiting for review/i),
+    ).toBeInTheDocument();
+    // With `searching` cleared, refetchInterval is false: the poll must stop.
+    const callsAtStop = getCalls;
+    await act(() => new Promise((r) => setTimeout(r, 1500)));
+    expect(getCalls).toBe(callsAtStop);
   });
 
   test("a missing job id sends the user back with a notice", async () => {
@@ -645,6 +739,56 @@ describe("ImportCandidatePage", () => {
     expect(
       await screen.findByRole("heading", { name: /2 Brothers - Dreams/i }),
     ).toBeInTheDocument();
+  });
+
+  test("after a search re-park bumps the revision, Apply echoes the NEW revision", async () => {
+    let current = makeCandidate();
+    const posted: unknown[] = [];
+    server.use(
+      http.get(CANDIDATE_URL, () => HttpResponse.json(current)),
+      http.post(CHOICE_URL, async ({ request }) => {
+        posted.push(await request.json());
+        // The first POST is the search: the worker re-parks with a bumped
+        // revision; the poll picks it up and the page re-renders on it.
+        current = makeCandidate({
+          search_revision: 1,
+          album_after: { ...makeCandidate().album_after, album: "Amnesiac" },
+          options: [
+            {
+              ...makeCandidate().options[0],
+              album: "Amnesiac",
+              album_after: {
+                ...makeCandidate().album_after,
+                album: "Amnesiac",
+              },
+            },
+          ],
+        });
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt();
+
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer/i });
+    await user.click(screen.getByRole("button", { name: /different release/i }));
+    await user.type(
+      screen.getByLabelText(/release url or id/i),
+      "https://musicbrainz.org/release/amnesiac",
+    );
+    await user.click(screen.getByRole("button", { name: /^Search/i }));
+
+    // The re-parked candidate (revision 1) renders; Apply must echo revision 1,
+    // not the stale 0 the page loaded with.
+    await screen.findByRole("heading", { name: /Radiohead - Amnesiac/i });
+    await user.click(screen.getByRole("button", { name: /^Apply/i }));
+    await waitFor(() =>
+      expect(posted[1]).toEqual({
+        action: "apply",
+        candidate_index: 0,
+        search_revision: 1,
+      }),
+    );
   });
 
   test("the not-Various-Artists toggle defaults checked; a name search omits release_id", async () => {

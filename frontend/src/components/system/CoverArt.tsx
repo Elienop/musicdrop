@@ -24,13 +24,20 @@ export function CoverArt({
   src,
   alt = "",
   className,
+  assetKey,
 }: {
   src: string | null;
   alt?: string;
   className?: string;
+  /** Which library asset this cover shows, e.g. `album:7`. Pass it when the
+   * caller knows the id so a cross-tab `art:changed` for a DIFFERENT album
+   * leaves this <img> mounted (a browse page holds up to 192 of them). Omit it
+   * for covers with no library identity (import candidates) — they then follow
+   * the global bump, as every cover did before. */
+  assetKey?: string;
 }) {
   const [failed, setFailed] = useState(false);
-  const assetVersion = useAssetVersion();
+  const assetVersion = useAssetVersion(assetKey);
 
   // A new src is a new fetch — forget the previous failure (same idiom as
   // ArtistImage's reset-on-version-change), so cache-busted `?v=` reloads

@@ -155,6 +155,45 @@ def test_reorganize_album_failure_is_caught(
     assert "disk full" in (outcome.error or "")
 
 
+def test_reorganize_album_isolates_beets_filesystem_error(
+    monkeypatch: pytest.MonkeyPatch, reorganize_lib: Library
+) -> None:
+    """beets raises FilesystemError (a HumanReadableError, NOT an OSError) for real
+    move failures — permission denied, disk full, NAS I/O. The 'Never raises'
+    adapter must catch it and record status='failed', or one bad album escapes and
+    aborts the ENTIRE library-wide reorganize sweep."""
+    from beets.util import FilesystemError
+
+    with reorganize_lib.music_dir_context():
+        album = _album(reorganize_lib, "In Rainbows")
+
+        def boom(*a: object, **k: object) -> None:
+            raise FilesystemError(OSError("permission denied"), "move", (b"/a", b"/b"))
+
+        monkeypatch.setattr(type(album), "move", boom)
+        outcome = reorg.reorganize_album(reorganize_lib, album)  # must not raise
+    assert outcome.status == "failed"
+    assert outcome.error
+
+
+def test_reorganize_singleton_isolates_beets_filesystem_error(
+    monkeypatch: pytest.MonkeyPatch, reorganize_lib: Library
+) -> None:
+    """Same FilesystemError isolation for the singleton path."""
+    from beets.util import FilesystemError
+
+    with reorganize_lib.music_dir_context():
+        item = next(iter(reorganize_lib.items("singleton:true")))
+
+        def boom(*a: object, **k: object) -> None:
+            raise FilesystemError(OSError("disk full"), "move", (b"/a", b"/b"))
+
+        monkeypatch.setattr(type(item), "move", boom)
+        outcome = reorg.reorganize_singleton(reorganize_lib, item)  # must not raise
+    assert outcome.status == "failed"
+    assert outcome.error
+
+
 def test_reorganize_album_missing_source_fails(reorganize_lib: Library) -> None:
     """A moving item whose file is gone at the DB path: beets 2.12 silently skips
     the move (models.py:1142 — no store, no exception). Verification must turn the

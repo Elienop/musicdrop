@@ -156,18 +156,25 @@ async def _remove_export(playlist_id: str, handle: LibraryHandle) -> None:
 
 async def _best_effort_plex_delete(
     config: PlexConfig, rating_keys: dict[str, str | None], ctx: str, *, playlist_id: str
-) -> None:
+) -> dict[str, str]:
     """Remove the playlist (by recorded ratingKey, else its id marker) from the
     given Plex accounts. Best-effort: a Plex hiccup (or no Plex configured) must
-    never fail the local operation."""
+    never fail the local operation.
+
+    Returns the per-target ``{target: "deleted"|"absent"|"failed"}`` result so a
+    caller can tell which deletes were CONFIRMED (deleted/absent) from which
+    failed — an empty map means nothing ran (unconfigured / no keys) or the whole
+    call raised. The de-target sync path uses this to retain an unconfirmed
+    target's entry rather than dropping it and orphaning a live Plex copy."""
     if not (config.base_url and config.token) or not rating_keys:
-        return
+        return {}
     try:
-        await run_in_threadpool(
+        return await run_in_threadpool(
             plex_sync.delete_playlist_on_targets, config, rating_keys, playlist_id=playlist_id
         )
     except Exception:  # best-effort cleanup — log and move on, never fail the op
         logger.warning("Plex playlist cleanup failed (%s)", ctx, exc_info=True)
+        return {}
 
 
 @router.get("/playlists", response_model=list[Playlist])
@@ -339,12 +346,23 @@ async def sync_playlist_endpoint(
     # the sync. `record` still holds the PRE-sync plex state map.
     removed = sorted(set(record.plex) - {"admin"} - set(record.target_plex_users))
     removed_keys = {uid: record.plex[uid].rating_key for uid in removed}
-    await _best_effort_plex_delete(
+    delete_results = await _best_effort_plex_delete(
         config, removed_keys, f"de-target {playlist_id}", playlist_id=record.id
     )
 
     now = datetime.now(UTC).isoformat()
     states = {key: state.model_copy(update={"synced_at": now}) for key, state in states.items()}
+    # Retain a de-targeted user's entry (with its recorded ratingKey) when its
+    # delete did NOT confirm removal. Otherwise the whole-map replace below drops
+    # the mapping, and a transient failure (e.g. admin.switchUser throwing before
+    # the ratingKey/marker delete can run) would orphan the still-existing Plex
+    # copy forever — no later op references a non-target user. Keeping the entry
+    # leaves a retry path: the next sync re-lists it in `removed` and tries again;
+    # a confirmed deleted/absent target is correctly dropped. The retained state
+    # is also truthful — a copy really does still exist on that account.
+    for uid in removed:
+        if delete_results.get(uid) not in ("deleted", "absent"):
+            states[uid] = record.plex[uid]
     try:
         record = await run_in_threadpool(
             store.replace_plex_states, playlists_dir, playlist_id, states
@@ -501,7 +519,7 @@ async def import_preview_endpoint(
             parsed = await run_in_threadpool(
                 playlists_pull.pull_playlist_entries,
                 plex_store.get(),
-                body.plex_playlists or [],
+                body.plex_rating_keys or [],
             )
         except PlexNotConfigured as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -585,10 +603,15 @@ async def import_commit_endpoint(
             logger.warning("Playlist import failed for %r", name, exc_info=True)
             failed.append(PlaylistImportFailure(name=name, error="Couldn't save this playlist."))
             continue
-        if playlist.plex_source:
+        if playlist.plex_rating_key or playlist.plex_source:
             try:
+                # The ratingKey identifies the source playlist; the title is only
+                # the fallback for a body minted before keys were carried.
                 poster = await run_in_threadpool(
-                    playlists_pull.download_poster, plex_store.get(), playlist.plex_source
+                    playlists_pull.download_poster,
+                    plex_store.get(),
+                    playlist.plex_rating_key,
+                    playlist.plex_source,
                 )
                 if poster is not None:
                     data, image_format = poster

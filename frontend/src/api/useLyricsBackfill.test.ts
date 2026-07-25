@@ -57,6 +57,30 @@ describe("useLyricsBackfillStatus", () => {
     // idle (current cache state) -> no polling
     expect(options.refetchInterval(query)).toBe(false);
   });
+
+  it("keeps the last running snapshot when a poll hiccups (never fabricates idle)", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const running = { ...idleStatus, phase: "running", job_id: "j1" };
+    const getMock = client.GET as ReturnType<typeof vi.fn>;
+    getMock.mockResolvedValue({ data: running, error: undefined, response: { ok: true } });
+    const w = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: qc }, children);
+    const { result } = renderHook(() => useLyricsBackfillStatus(), { wrapper: w });
+    await waitFor(() => expect(result.current.data?.phase).toBe("running"));
+
+    // A proxy hiccup mid-run (502) must NOT overwrite the running snapshot with a
+    // fabricated idle — that would flip refetchInterval to false and stop the
+    // poll for good, hiding a job that is still running.
+    getMock.mockClear();
+    getMock.mockResolvedValue({
+      data: undefined, error: undefined, response: { ok: false, status: 502 },
+    });
+    await result.current.refetch();
+    await waitFor(() => expect(getMock).toHaveBeenCalled());
+    // The hiccup's queryFn ran, yet the status stays running (kept, not idled).
+    expect(result.current.data?.phase).toBe("running");
+    expect(result.current.data?.job_id).toBe("j1");
+  });
 });
 
 describe("useStopLyricsBackfill", () => {

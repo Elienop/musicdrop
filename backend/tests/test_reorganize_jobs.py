@@ -10,8 +10,33 @@ from app.reorganize_jobs.registry import (
     reorganize_backfill_active,
     reset_reorganize_backfill,
 )
-from app.reorganize_jobs.runner import sweep
+from app.reorganize_jobs.runner import start_backfill, sweep
 from tests.conftest import make_test_handle
+
+
+def test_start_backfill_frees_the_slot_if_the_worker_thread_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Integration guard for M2: start_backfill routes through reg.spawn_worker, so
+    # a refused Thread.start() fails the job (releasing the slot) instead of
+    # leaving it stuck at "running" — which would wedge every library mutation.
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+
+    class _BoomThread:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr("app.jobs.base.threading.Thread", _BoomThread)
+    with pytest.raises(RuntimeError, match="can't start new thread"):
+        # handle is only captured by the (never-run) worker lambda, so None is safe.
+        start_backfill(reg, None, scope="library")  # type: ignore[arg-type]  # handle unused pre-spawn
+
+    assert reg.is_running() is False  # slot released
+    assert reg.state().phase == "failed"
 
 
 def test_start_then_running_then_finish() -> None:

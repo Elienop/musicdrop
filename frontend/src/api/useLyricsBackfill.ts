@@ -19,17 +19,24 @@ export function useLyricsCoverage() {
 
 /** Poll the backfill job. Polls fast while running, otherwise infrequently. */
 export function useLyricsBackfillStatus() {
+  const queryClient = useQueryClient();
   return useQuery({
     queryKey: ["lyrics", "backfill"],
     queryFn: async (): Promise<LyricsBackfillStatus> => {
       const { data, response } = await client.GET("/api/lyrics/backfill");
       if (!response.ok || !data) {
-        // Treat a probe hiccup as idle (never red-banner) — same posture as useActiveImport.
-        return {
-          phase: "idle", job_id: null, total: 0, processed: 0, found: 0,
-          not_found: 0, failed: 0, skipped: 0, current: null,
-          writes_enabled: false, error: null, album_id: null, scope_label: "library",
-        };
+        // Never fabricate `idle` over a live snapshot: a probe hiccup (a 502/504
+        // from a proxy while the job hammers the NAS) would overwrite a
+        // "running" status, flip refetchInterval to false, and stop the poll for
+        // good — hiding a job still running. Keep the last-known status so the
+        // running poll self-heals; fall back to idle only on a cold first load.
+        return (
+          queryClient.getQueryData<LyricsBackfillStatus>(["lyrics", "backfill"]) ?? {
+            phase: "idle", job_id: null, total: 0, processed: 0, found: 0,
+            not_found: 0, failed: 0, skipped: 0, current: null,
+            writes_enabled: false, error: null, album_id: null, scope_label: "library",
+          }
+        );
       }
       return data;
     },

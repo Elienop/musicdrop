@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { describe, expect, it } from "vitest";
 
+import { bumpAssetVersion } from "@/api/assetVersion";
 import { ArtistImage } from "@/components/artists/ArtistImage";
 import { ARTIST_ART_SETTINGS_KEY } from "@/api/useArtistArt";
 import { ARTIST_IMAGE_SETTINGS_KEY } from "@/api/useArtistImage";
@@ -44,6 +45,35 @@ describe("ArtistImage", () => {
   it("appends &v= when a version is given", () => {
     const { container } = renderImage(<ArtistImage name="ABBA" version={3} />, { enabled: true });
     expect(container.querySelector("img")?.getAttribute("src")).toContain("&v=3");
+  });
+
+  it("ignores an ALBUM-scoped art event", () => {
+    const { container } = renderImage(<ArtistImage name="ABBA" />, { enabled: true });
+    fireEvent.error(container.querySelector("img") as HTMLImageElement);
+    expect(container.querySelector("img")).toBeNull();
+    // A cover installed on one album must not remount every portrait.
+    act(() => bumpAssetVersion("album:7"));
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("tracks the GLOBAL version, since artist art is emitted unscoped", () => {
+    // The portrait is served under a NORMALIZED artist name, so a raw display
+    // name is not a reliable asset identity — artist-art writes therefore emit
+    // an unscoped (global) event and every portrait refreshes. See ArtistImage.
+    const { container } = renderImage(<ArtistImage name="ABBA" />, { enabled: true });
+    fireEvent.error(container.querySelector("img") as HTMLImageElement);
+    expect(container.querySelector("img")).toBeNull();
+    act(() => bumpAssetVersion("artist:ABBA"));
+    expect(container.querySelector("img")).toBeNull(); // a scoped bump is NOT how artists refresh
+    act(() => bumpAssetVersion());
+    expect(container.querySelector("img")).not.toBeNull();
+  });
+
+  it("remounts on an UNSCOPED art event (sweep / re-connect catch-up)", () => {
+    const { container } = renderImage(<ArtistImage name="ABBA" />, { enabled: true });
+    fireEvent.error(container.querySelector("img") as HTMLImageElement);
+    act(() => bumpAssetVersion());
+    expect(container.querySelector("img")).not.toBeNull();
   });
 
   it("requests the portrait when ONLY the write toggle is on (the OR)", () => {

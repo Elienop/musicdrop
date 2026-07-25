@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
+from app import library_busy
 from app.jobs import JobState, SingleSlotRegistry
 from app.models.artist_art import ArtistArtBackfillPhase, ArtistArtBackfillStatus, ArtistArtOutcome
 
@@ -25,8 +26,10 @@ class _BackfillJob(JobState):
 
 
 class ArtistArtBackfillRegistry(SingleSlotRegistry[_BackfillJob]):
+    job_type = library_busy.ARTIST_ART
+
     def start(self, *, force: bool, artist: str | None = None, scope_label: str = "library") -> str:
-        with self._lock:
+        with self._claim("an artist-art backfill or another library operation is already running"):
             if self._job is not None and self._job.phase == "running":
                 raise RuntimeError("an artist-art backfill is already running")
             job = _BackfillJob(

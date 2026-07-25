@@ -1395,14 +1395,21 @@ export interface paths {
         put?: never;
         /**
          * Review Inbox
-         * @description Start an attended, move-mode import of the fixed slskd inbox dir.
+         * @description Start an attended, move-mode import of the SETTLED inbox folders.
          *
          *     One-click review of the set-aside backlog from the slskd panel: no path is
          *     typed and the absolute inbox path never leaves the server. Strong matches
          *     auto-apply (and move out of the inbox); uncertain ones park for review in the
-         *     normal candidate-review screen. An empty inbox is a no-op (``started=False``),
-         *     never an error — and the shared import-slot gate refuses (409) while another
-         *     beets mutation or backfill owns the slot.
+         *     normal candidate-review screen. Nothing to import is a no-op
+         *     (``started=False``), never an error — and the shared import-slot gate refuses
+         *     (409) while another beets mutation or backfill owns the slot.
+         *
+         *     The inbox ROOT is never the import target. It is the downloader's live output
+         *     directory, so importing it would sweep in every folder still receiving files
+         *     and file a PARTIAL album (whose remaining tracks then arrive and import again
+         *     as a duplicate). Instead each top-level folder that has been quiet for
+         *     ``inbox_settle_seconds`` is handed over as its own beets toppath; folders
+         *     still being written are left for the next click.
          */
         post: operations["review_inbox_api_acquisition_review_inbox_post"];
         delete?: never;
@@ -2159,6 +2166,8 @@ export interface components {
         BeetsConfigSnapshot: {
             /** Yaml Text */
             yaml_text: string;
+            /** Effective Yaml */
+            effective_yaml: string;
             /** Config Path */
             config_path: string;
             /**
@@ -2756,6 +2765,8 @@ export interface components {
             /** Candidate Index */
             candidate_index?: number | null;
             search?: components["schemas"]["ImportSearch"] | null;
+            /** Search Revision */
+            search_revision?: number | null;
         };
         /**
          * ImportEntry
@@ -2936,6 +2947,11 @@ export interface components {
             track_count: number;
             /** Outcome */
             outcome?: ("imported" | "set_aside" | "failed") | null;
+            /**
+             * In Flight
+             * @default false
+             */
+            in_flight: boolean;
         };
         /**
          * InboxListing
@@ -3001,6 +3017,11 @@ export interface components {
          *     ``art:changed`` = image BYTES changed (cover install, artist-image override);
          *     the frontend remounts ``<img>`` elements only on this variant so routine
          *     edits don't flicker the roster.
+         *
+         *     ``scope`` names WHICH asset changed — ``"album:123"`` / ``"artist:Radiohead"``
+         *     — so a tab remounts just that image instead of every ``<img>`` on the page
+         *     (a browse grid can hold 192 covers). ``None`` = library-wide: bump
+         *     everything, which is what a multi-artist sweep or a reconnect catch-up needs.
          */
         LibraryChangedEvent: {
             /**
@@ -3009,6 +3030,8 @@ export interface components {
              * @enum {string}
              */
             type: "library:changed" | "art:changed";
+            /** Scope */
+            scope?: string | null;
         };
         /**
          * LibraryStats
@@ -3354,6 +3377,8 @@ export interface components {
             entries: components["schemas"]["ImportEntry"][];
             /** Plex Source */
             plex_source?: string | null;
+            /** Plex Rating Key */
+            plex_rating_key?: string | null;
         };
         /** PlaylistImportPreview */
         PlaylistImportPreview: {
@@ -3370,13 +3395,17 @@ export interface components {
         };
         /**
          * PlaylistImportPreviewRequest
-         * @description Exactly one source: uploaded m3u files OR named Plex playlists.
+         * @description Exactly one source: uploaded m3u files OR Plex playlists by ratingKey.
+         *
+         *     Plex selections travel by ``ratingKey``, never by title — Plex allows
+         *     duplicate titles, and keying by title makes one of a same-titled pair
+         *     permanently unreachable.
          */
         PlaylistImportPreviewRequest: {
             /** Files */
             files?: components["schemas"]["PlaylistImportFile"][] | null;
-            /** Plex Playlists */
-            plex_playlists?: string[] | null;
+            /** Plex Rating Keys */
+            plex_rating_keys?: string[] | null;
         };
         /** PlaylistImportPreviewResponse */
         PlaylistImportPreviewResponse: {
@@ -3468,12 +3497,18 @@ export interface components {
         /**
          * PlexPlaylistInfo
          * @description One audio playlist on the Plex server (import source listing).
+         *
+         *     ``rating_key`` is the playlist's Plex identity (``ratingKey``, stringified).
+         *     Titles are NOT unique on Plex — two playlists may share one — so every
+         *     selection travels by key; ``name`` is display only.
          */
         PlexPlaylistInfo: {
             /** Name */
             name: string;
             /** Track Count */
             track_count: number;
+            /** Rating Key */
+            rating_key: string;
         };
         /** PlexPlaylistList */
         PlexPlaylistList: {
@@ -3789,6 +3824,11 @@ export interface components {
          *     ``started`` is True iff an attended import of the inbox was kicked off, with
          *     ``job_id`` the running job to navigate to. An empty inbox is a no-op
          *     (``started=False, job_id=None``), never an error.
+         *
+         *     ``in_flight`` counts the inbox folders that were SKIPPED because they are
+         *     still receiving files. It exists so the caller can tell "the inbox is empty"
+         *     (0) apart from "nothing has settled yet" (>0) — both return
+         *     ``started=False``, but only the first means there is nothing left to import.
          */
         ReviewInboxResponse: {
             /** Started */
@@ -3800,6 +3840,11 @@ export interface components {
              * @default 0
              */
             pending: number;
+            /**
+             * In Flight
+             * @default 0
+             */
+            in_flight: number;
         };
         /**
          * SaveNamingRequest

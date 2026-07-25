@@ -8,20 +8,25 @@ Option A). Under the lifespan-less test client there is no queue on
 ``POST /acquisition/review-inbox`` is the slskd-panel one-click review: it
 resolves the fixed inbox path SERVER-SIDE (never sent to the browser) and starts
 a normal *attended* import with ``operation="move"`` so applied albums leave the
-inbox. An empty inbox is a no-op (``started=False``), never an error.
+inbox — targeting the SETTLED top-level folders, never the inbox root (which is
+the downloader's live output dir). Nothing settled is a no-op (``started=False``),
+never an error.
 """
 
 from __future__ import annotations
 
+import time
+from functools import partial
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 
-from app.acquisition.inbox import contain, count_pending, list_inbox
+from app.acquisition.inbox import contain, count_pending, list_inbox, settled_folders
 from app.acquisition.ledger import AcquisitionLedger
 from app.api.import_ import ensure_import_can_start
+from app.config import settings
 from app.import_jobs.registry import ImportJobRegistry, get_registry
 from app.models.acquisition import (
     AcquisitionQueueStatus,
@@ -62,25 +67,45 @@ async def review_inbox(
     request: Request,
     reg: Annotated[ImportJobRegistry, Depends(get_registry)],
 ) -> ReviewInboxResponse:
-    """Start an attended, move-mode import of the fixed slskd inbox dir.
+    """Start an attended, move-mode import of the SETTLED inbox folders.
 
     One-click review of the set-aside backlog from the slskd panel: no path is
     typed and the absolute inbox path never leaves the server. Strong matches
     auto-apply (and move out of the inbox); uncertain ones park for review in the
-    normal candidate-review screen. An empty inbox is a no-op (``started=False``),
-    never an error — and the shared import-slot gate refuses (409) while another
-    beets mutation or backfill owns the slot.
+    normal candidate-review screen. Nothing to import is a no-op
+    (``started=False``), never an error — and the shared import-slot gate refuses
+    (409) while another beets mutation or backfill owns the slot.
+
+    The inbox ROOT is never the import target. It is the downloader's live output
+    directory, so importing it would sweep in every folder still receiving files
+    and file a PARTIAL album (whose remaining tracks then arrive and import again
+    as a duplicate). Instead each top-level folder that has been quiet for
+    ``inbox_settle_seconds`` is handed over as its own beets toppath; folders
+    still being written are left for the next click.
     """
     ensure_import_can_start(request)
     inbox_dir: Path | None = getattr(request.app.state, "inbox_dir", None)
     if inbox_dir is None:
         return ReviewInboxResponse(started=False, job_id=None, pending=0)
-    pending = await run_in_threadpool(count_pending, inbox_dir)
-    if pending == 0:
-        return ReviewInboxResponse(started=False, job_id=None, pending=0)
+    app_settings = getattr(request.app.state, "settings", None) or settings
+    settle = float(getattr(app_settings, "inbox_settle_seconds", 60))
+    folders = await run_in_threadpool(
+        partial(settled_folders, inbox_dir, settle_seconds=settle, now=time.time())
+    )
+    if not folders:
+        # Nothing to review right now — but distinguish WHY. An empty inbox is
+        # "all done"; folders still receiving files are "not yet", and the caller
+        # must not tell the user the inbox cleared while their rows are on screen.
+        total = await run_in_threadpool(count_pending, inbox_dir)
+        return ReviewInboxResponse(started=False, job_id=None, pending=0, in_flight=total)
+    pending = len(folders)
+    # Any listed item we did not hand over is still arriving; report it so the UI
+    # can say so rather than implying the backlog is now empty.
+    total = await run_in_threadpool(count_pending, inbox_dir)
+    in_flight = max(0, total - pending)
     try:
         job_id = reg.start(
-            str(inbox_dir),
+            [str(folder) for folder in folders],
             options=ImportOptions(operation="move"),
             origin="inbox",
         )
@@ -89,7 +114,7 @@ async def review_inbox(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="An import is already running"
         ) from None
-    return ReviewInboxResponse(started=True, job_id=job_id, pending=pending)
+    return ReviewInboxResponse(started=True, job_id=job_id, pending=pending, in_flight=in_flight)
 
 
 @router.get("/acquisition/inbox/items", response_model=InboxListing)
@@ -103,7 +128,13 @@ async def list_inbox_items(request: Request) -> InboxListing:
     if inbox_dir is None:
         return InboxListing(items=[])
     ledger: AcquisitionLedger | None = getattr(request.app.state, "acquisition_ledger", None)
-    items = await run_in_threadpool(list_inbox, inbox_dir, ledger)
+    app_settings = getattr(request.app.state, "settings", None) or settings
+    settle = float(getattr(app_settings, "inbox_settle_seconds", 60))
+    # Same window "Review all" uses, so a row's in_flight cue agrees with whether
+    # that button would actually import it.
+    items = await run_in_threadpool(
+        partial(list_inbox, inbox_dir, ledger, settle_seconds=settle, now=time.time())
+    )
     return InboxListing(items=items)
 
 

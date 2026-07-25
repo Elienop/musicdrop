@@ -92,12 +92,48 @@ def _album_root(lib: Library, items: list[Any]) -> str:
     return dirs[0] if len(dirs) == 1 else os.path.commonpath(dirs)
 
 
+# Any other album's/singleton's file at or under the folder (both stored path
+# forms — see _folder_is_shared). substr (not LIKE) so %/_ in folder names need
+# no escaping; byte-exact BLOB compare, same case semantics as the old string
+# comparison on Linux. album_id IS NULL = a singleton item — a potential sharer
+# too (the old loop's `int(item.album_id or 0)` treated it the same way).
+_SHARED_UNDER_SQL = """
+SELECT COUNT(*) FROM items
+WHERE (album_id IS NULL OR album_id != ?)
+  AND (path = ? OR substr(path, 1, ?) = ?
+    OR path = ? OR substr(path, 1, ?) = ?)
+"""
+
+# Stored paths that byte-prefix matching cannot be trusted to judge: a `..`/`.`
+# segment or a doubled slash can NORMALIZE to somewhere else entirely. beets
+# writes normalized paths, so these are essentially never present — but a wrong
+# "not shared" here trashes a SIBLING album's files, so the rare weird row gets
+# the old full normalization treatment instead of being assumed clean.
+_WEIRD_PATHS_SQL = """
+SELECT path FROM items
+WHERE (album_id IS NULL OR album_id != ?)
+  AND (instr(path, ?) > 0 OR instr(path, ?) > 0 OR instr(path, ?) > 0
+    OR substr(path, 1, 3) = ? OR substr(path, 1, 2) = ?)
+"""
+
+
 def _folder_is_shared(lib: Library, album: Any, album_root: str) -> bool:
     """Whether moving ``album_root`` wholesale would catch files that aren't this
     album's — so the whole-folder trash must NOT be used.
 
     True when the folder is the library root (or above/outside it), or any OTHER
-    album has an item under it. Guards a sibling album from becoming collateral.
+    album (or singleton) has an item under it. Guards a sibling album from
+    becoming collateral.
+
+    Scoped SQL, not a library scan: the old implementation materialized every
+    beets ``Item`` in the library (seconds at 75k tracks, and once PER ALBUM
+    inside delete-artist — minutes, all under the swap lock). The DB stores
+    paths RELATIVE to ``lib.directory`` in the normal case but absolute for
+    legacy/outside rows, so the prefix is matched in BOTH forms; only when the
+    fast query finds nothing AND pathologically-shaped rows exist (``..``/``.``
+    segments, doubled slashes — byte-prefix-unjudgeable) do those few rows get
+    the old normalization logic. Errs toward "shared": a false True merely
+    downgrades to per-file trash; a false False would trash a sibling's files.
     """
     music_dir = os.path.normpath(_abs_path(lib, lib.directory))
     root = os.path.normpath(album_root)
@@ -109,11 +145,34 @@ def _folder_is_shared(lib: Library, album: Any, album_root: str) -> bool:
     except ValueError:
         return True  # different drives / unrelated paths
     this_id = int(album.id)
+
+    sep = os.fsencode(os.sep)
+    abs_root = os.fsencode(root)
+    rel_root = os.fsencode(os.path.relpath(root, music_dir))
+    abs_prefix = abs_root + sep
+    rel_prefix = rel_root + sep
+    with lib.transaction() as tx:
+        shared = tx.query(
+            _SHARED_UNDER_SQL,
+            (
+                this_id,
+                rel_root,
+                len(rel_prefix),
+                rel_prefix,
+                abs_root,
+                len(abs_prefix),
+                abs_prefix,
+            ),
+        )[0][0]
+        if int(shared) > 0:
+            return True
+        weird = tx.query(
+            _WEIRD_PATHS_SQL,
+            (this_id, b"/../", b"//", b"/./", b"../", b"./"),
+        )
     root_with_sep = os.path.join(root, "")
-    for item in lib.items():
-        if int(item.album_id or 0) == this_id:
-            continue
-        path = os.path.normpath(_abs_path(lib, item.path))
+    for row in weird:
+        path = os.path.normpath(_abs_path(lib, bytes(row[0])))
         if path == root or path.startswith(root_with_sep):
             return True
     return False

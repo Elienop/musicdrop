@@ -327,6 +327,56 @@ describe("AlbumEditPanel", () => {
     await waitFor(() => expect(screen.getByLabelText(/album title/i)).not.toBeDisabled());
   });
 
+  it("builds a preview request that omits a live-added track absent from the draft", async () => {
+    const post = vi.spyOn(client, "POST").mockResolvedValue(
+      ok({
+        changed_fields: [],
+        album_before: {},
+        album_after: {},
+        tracks: [],
+        move_enabled: false,
+        move_plan: [],
+      }),
+    );
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <AlbumEditPanel album={album} onClose={() => {}} />
+      </QueryClientProvider>,
+    );
+
+    // A real user edit to a track the seeded draft DOES know about.
+    fireEvent.change(screen.getByLabelText(/title of track 1/i), {
+      target: { value: "16 Step" },
+    });
+
+    // An SSE library:changed refetch adds item id 3 that the once-seeded draft
+    // has no entry for.
+    const withExtra = {
+      ...album,
+      tracks: [
+        ...album.tracks,
+        { id: 3, title: "Nude", track: 3, disc: 1, duration_seconds: 200, artist: "Radiohead" },
+      ],
+    } as unknown as AlbumDetail;
+    rerender(
+      <QueryClientProvider client={qc}>
+        <AlbumEditPanel album={withExtra} onClose={() => {}} />
+      </QueryClientProvider>,
+    );
+
+    // Preview must not throw on the stale draft: buildRequest dereferencing the
+    // missing id-3 entry would crash the click handler and silently no-op.
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    const body = (post.mock.calls[0][1] as { body: { tracks: { item_id: number }[] } }).body;
+    // The known edit survives; the un-drafted live-added track is omitted.
+    expect(body.tracks).toEqual([{ item_id: 1, title: "16 Step" }]);
+    expect(body.tracks.some((t) => t.item_id === 3)).toBe(false);
+  });
+
   it("does not crash when a live refetch adds a track not in the seeded draft", () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const { rerender } = render(

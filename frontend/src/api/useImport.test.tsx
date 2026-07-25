@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { describe, expect, test } from "vitest";
 
 import {
+  CandidateNotFoundError,
   ImportConflictError,
   ImportJobNotFoundError,
   ImportStartRejectedError,
@@ -298,6 +299,37 @@ describe("useImportCandidate", () => {
       wrapper: wrapper(),
     });
     expect(result.current.fetchStatus).toBe("idle");
+  });
+
+  test("maps a 404 to CandidateNotFoundError and stops polling", async () => {
+    // Mirror useImportJob's 404 discrimination: a no-longer-parked album is a
+    // distinct, terminal state (not a generic transport failure), and even a
+    // polling caller must stop hammering the 404.
+    let calls = 0;
+    server.use(
+      http.get(CANDIDATE_URL, () => {
+        calls += 1;
+        return HttpResponse.json(
+          { detail: "Import album not found" },
+          { status: 404 },
+        );
+      }),
+    );
+
+    // Pass a live poll interval (as the review screen does while searching) to
+    // prove the 404 stops the loop rather than keeping it alive.
+    const { result } = renderHook(
+      () => useImportCandidate("job-1", 1, true, 700),
+      { wrapper: wrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).toBeInstanceOf(CandidateNotFoundError);
+    // A 404 is terminal — the poll must stop. Give the interval time and assert
+    // no further fetches.
+    const callsAtError = calls;
+    await act(() => new Promise((r) => setTimeout(r, 1500)));
+    expect(calls).toBe(callsAtError);
   });
 });
 

@@ -1,23 +1,22 @@
 """Build a :class:`BeetsConfigSnapshot` from the in-memory beets config + handle.
 
-Two passes redact secrets before rendering YAML:
+The snapshot carries two YAML views:
 
-1. ``beets.config.flatten(redact=True)`` honors confuse's per-view ``redact``
-   flag, which bundled plugins set (e.g. ``spotify.client_secret`` at
-   ``beetsplug/spotify.py``). That value comes out as ``"REDACTED"``.
-2. A regex safety-net (``SECRET_KEY_PATTERN``) walks the flattened mapping and
-   masks any string value whose KEY matches the pattern — protection against
-   third-party plugins that forgot to mark their fields ``.redact = True``.
+* ``yaml_text`` — the RAW on-disk ``config.yaml``, byte-for-byte. This is the
+  editable document; Save writes it back verbatim, so it is served unredacted.
+* ``effective_yaml`` — the fully-merged effective config (read-only), with
+  secrets redacted in two passes:
+
+  1. ``beets.config.flatten(redact=True)`` honors confuse's per-view ``redact``
+     flag, which bundled plugins set (e.g. ``spotify.client_secret`` at
+     ``beetsplug/spotify.py``). That value comes out as ``"REDACTED"``.
+  2. A regex safety-net (``SECRET_KEY_PATTERN``) walks the flattened mapping and
+     masks any string value whose KEY matches the pattern — protection against
+     third-party plugins that forgot to mark their fields ``.redact = True``.
 
 The flattened mapping is a confuse ``OrderedDict`` (a ``dict`` subclass);
 PyYAML's ``safe_dump`` refuses non-plain ``dict`` subclasses, so ``_to_plain``
 recursively converts every level before rendering.
-
-``find_redacted_paths`` is exported as a module-level helper for the Layer-3
-save flow (``app/beets/config_editor.py``): it walks the parsed-YAML map and
-returns the dotted paths whose values would be redacted at display time, so
-the save merge step can preserve untouched secrets without diffing against the
-displayed snapshot.
 """
 
 from __future__ import annotations
@@ -53,75 +52,49 @@ SECRET_KEY_PATTERN = re.compile(
 )
 
 
-def find_redacted_paths(data: Any, path: tuple[str, ...] = ()) -> list[tuple[str, ...]]:
-    """Walk a nested mapping (parsed YAML / ruamel ``CommentedMap``) and return
-    the dotted paths whose string values would be redacted at display.
-
-    Used by Layer-3 save (``config_editor.merge_preserve_secrets``) to know
-    which keys to preserve from disk when the editor still shows ``REDACTED``
-    at them. Mirrors the same key-matching policy as
-    :func:`_mask_secrets_in_place` (which masks display values); they MUST stay
-    in lockstep or the save merge will leak fresh secrets back into the page.
-
-    The list branch descends into BOTH nested dicts AND nested lists, matching
-    ``_mask_secrets_in_place``'s ``isinstance(v, dict | list)`` recursion —
-    asymmetry would let display redact a path that save can't preserve.
-
-    Results are deduped (preserving first-seen order): a list like
-    ``accounts: [{api_token: a}, {api_token: b}]`` yields one path, not N.
-    """
-    out: list[tuple[str, ...]] = []
-    _walk_redacted(data, path, out)
-    # Dedup while preserving first-seen order. ``dict.fromkeys`` is the cheap
-    # deterministic shape; ``sorted(set(...))`` would lose insertion order,
-    # making test failures noisier than they need to be.
-    return list(dict.fromkeys(out))
-
-
-def _walk_redacted(data: Any, path: tuple[str, ...], out: list[tuple[str, ...]]) -> None:
-    """Recursive worker for :func:`find_redacted_paths`. Mutates ``out``."""
-    if isinstance(data, dict):
-        for k, v in data.items():
-            sub = (*path, str(k))
-            if isinstance(v, dict | list):
-                # NOTE: list/dict descent does NOT extend the path with an
-                # index — display redaction is per-key, and the save-flow
-                # caller pairs each result with a positional walk against the
-                # on-disk map. Adding indices would break that contract.
-                _walk_redacted(v, sub, out)
-            elif isinstance(v, str) and SECRET_KEY_PATTERN.search(str(k)):
-                out.append(sub)
-    elif isinstance(data, list):
-        for item in data:
-            _walk_redacted(item, path, out)
-
-
 def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
-    """Render the current beets config to YAML (redacted) + freshness fields."""
+    """Build the config snapshot: the RAW on-disk file (editable) + the merged
+    effective view (read-only, redacted) + freshness fields."""
+    # Effective (read-only) view — the fully-merged config incl. beets + every
+    # loaded plugin's defaults, secrets redacted. Two passes: confuse's per-view
+    # ``redact`` flag, then the SECRET_KEY_PATTERN safety-net for third-party
+    # plugins that forgot to mark their fields ``.redact = True``.
     flat = beets.config.flatten(redact=True)
     _mask_secrets_in_place(flat, SECRET_KEY_PATTERN)
-    yaml_text = yaml.safe_dump(_to_plain(flat), sort_keys=False, default_flow_style=False)
+    effective_yaml = yaml.safe_dump(_to_plain(flat), sort_keys=False, default_flow_style=False)
 
-    # Single stat() with try/except instead of exists()+stat(): closes a TOCTOU
-    # window where the file is deleted between the existence check and the
-    # stat call, which would leak FileNotFoundError out of the snapshot
-    # builder. OSError also covers permission/IO failures (treated as
-    # "missing" for the apply-pending signal).
+    # Editable document — the user's own config.yaml, byte-for-byte (comments,
+    # anchors, key order and quoting preserved). Served RAW, NOT redacted: Save
+    # writes it back verbatim, so this is the source of truth. Masking here is
+    # exactly what used to destroy comments and overwrite list-nested credentials
+    # with "REDACTED" on the round-trip.
+    #
+    # Read the bytes ONCE (sha + text from the same read) inside a single
+    # try/except instead of exists()+stat(): closes the TOCTOU window where the
+    # file is deleted mid-check and leaks FileNotFoundError. OSError covers
+    # missing/permission/IO failures; UnicodeDecodeError (a ValueError, NOT an
+    # OSError) covers a config corrupted to non-UTF-8. Both degrade to the empty
+    # editable doc rather than 500-ing the settings page — exactly when a user
+    # opens Settings to fix a broken config. The effective view still renders
+    # from the in-memory beets.config either way.
     file_modified_at: datetime | None = None
     current_mtime: float | None = None
     sha256 = ""
+    yaml_text = ""
     try:
-        st = handle.config_path.stat()
-        current_mtime = st.st_mtime
+        raw = handle.config_path.read_bytes()
+        current_mtime = handle.config_path.stat().st_mtime
         file_modified_at = datetime.fromtimestamp(current_mtime, tz=UTC)
-        sha256 = hashlib.sha256(handle.config_path.read_bytes()).hexdigest()
-    except OSError:
+        sha256 = hashlib.sha256(raw).hexdigest()
+        yaml_text = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
         pass
 
     apply_pending = current_mtime is None or current_mtime > handle.file_mtime_at_load
 
     return BeetsConfigSnapshot(
         yaml_text=yaml_text,
+        effective_yaml=effective_yaml,
         config_path=str(handle.config_path),
         loaded_at=handle.loaded_at,
         file_modified_at=file_modified_at,

@@ -1,8 +1,14 @@
+from __future__ import annotations
+
+import contextlib
+import os
 from pathlib import Path
 
 import pytest
 
 from app.artwork.cache import NEGATIVE, ArtistImageCache, CachedImage
+
+_StrPath = str | os.PathLike[str]
 
 
 @pytest.fixture
@@ -113,3 +119,86 @@ def test_clear_override_removes_both_files_and_falls_through(
 def test_clear_override_is_idempotent_when_absent(cache: ArtistImageCache) -> None:
     cache.clear_override("Nobody")  # no error, no-op
     assert cache.get("Nobody") is None
+
+
+def test_store_positive_publishes_bin_via_atomic_replace(
+    cache: ArtistImageCache, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The image bytes must be published by an atomic rename, never a truncate-
+    then-write in place. The artist-art backfill daemon writes this cache on its
+    own thread while the event loop serves GET /api/artists/image over the same
+    files; an in-place write lets a reader catch a half-written (truncated)
+    image and serve it with a 200 + content-hash ETag."""
+    key = cache._key("ABBA")
+    bin_path = tmp_path / f"{key}.bin"
+    cache.store_positive("ABBA", b"GOODCOMPLETE", "image/png")  # seed a full image
+
+    replaced: list[str] = []
+    real_replace = os.replace
+
+    def spy(src: _StrPath, dst: _StrPath) -> None:
+        replaced.append(os.fspath(dst))
+        real_replace(src, dst)  # pass-through spy
+
+    monkeypatch.setattr(os, "replace", spy)
+    cache.store_positive("ABBA", b"NEWCOMPLETE", "image/png")
+
+    assert str(bin_path) in replaced  # .bin came from os.replace, not in-place write
+    result = cache.get("ABBA")
+    assert isinstance(result, CachedImage)
+    assert result.data == b"NEWCOMPLETE"
+
+
+def test_store_positive_crash_before_publish_keeps_last_good_image(
+    cache: ArtistImageCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash mid-write must not cache a corrupt image forever: the target is
+    only ever published atomically, so an interrupted overwrite leaves the last
+    good image intact (get() has no TTL/validation on the positive slot, so a
+    truncated .bin would otherwise be served indefinitely).
+
+    The crash is injected on the ``.bin`` publish specifically (letting the .mime
+    sidecar succeed first) so the positive-slot image-bytes path — the one the
+    docstring protects — is the path actually interrupted."""
+    cache.store_positive("ABBA", b"GOODCOMPLETE", "image/png")  # last-good
+
+    real_replace = os.replace
+
+    def boom_on_bin(src: _StrPath, dst: _StrPath) -> None:
+        if os.fspath(dst).endswith(".bin"):
+            raise OSError("simulated crash publishing the .bin")
+        real_replace(src, dst)  # let the .mime sidecar land
+
+    monkeypatch.setattr(os, "replace", boom_on_bin)
+    with contextlib.suppress(OSError):
+        cache.store_positive("ABBA", b"TRUNCATED", "image/png")  # crashes on .bin publish
+
+    result = cache.get("ABBA")
+    assert isinstance(result, CachedImage)
+    assert result.data == b"GOODCOMPLETE"  # the .bin overwrite never tore the target
+
+
+def test_write_override_publishes_via_atomic_replace(
+    cache: ArtistImageCache, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An override upload racing an image GET has the same torn-read window —
+    it too must publish via an atomic rename."""
+    key = cache._key("ABBA")
+    override_path = tmp_path / f"{key}.override"
+    cache.write_override("ABBA", b"FIRST", "image/png")
+
+    replaced: list[str] = []
+    real_replace = os.replace
+
+    def spy(src: _StrPath, dst: _StrPath) -> None:
+        replaced.append(os.fspath(dst))
+        real_replace(src, dst)  # pass-through spy
+
+    monkeypatch.setattr(os, "replace", spy)
+    cache.write_override("ABBA", b"SECOND", "image/jpeg")
+
+    assert str(override_path) in replaced
+    result = cache.get("ABBA")
+    assert isinstance(result, CachedImage)
+    assert result.data == b"SECOND"
+    assert result.content_type == "image/jpeg"

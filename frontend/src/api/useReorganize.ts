@@ -18,16 +18,23 @@ export type ReorganizeScope =
   | { scope: "album"; albumId: number };
 
 export function useReorganizeStatus() {
+  const qc = useQueryClient();
   return useQuery({
     queryKey: REORGANIZE_STATUS_KEY,
     queryFn: async (): Promise<ReorganizeBackfillStatus> => {
       const { data, response } = await client.GET("/api/reorganize/status");
       if (!response.ok || !data) {
-        return {
-          phase: "idle", job_id: null, scope: null, total: 0, processed: 0, moved: 0,
-          skipped: 0, failed: 0, orphans_trashed: 0, current: null, error: null, artist: null,
-          album_id: null, scope_label: "library", failures: [],
-        };
+        // Never fabricate `idle` over a live snapshot: a 502/504 (proxy hiccup
+        // while the reorganize hammers the NAS) would overwrite a "running"
+        // status and flip refetchInterval to false, stopping the poll for good.
+        // Keep the last-known status so the running poll self-heals.
+        return (
+          qc.getQueryData<ReorganizeBackfillStatus>(REORGANIZE_STATUS_KEY) ?? {
+            phase: "idle", job_id: null, scope: null, total: 0, processed: 0, moved: 0,
+            skipped: 0, failed: 0, orphans_trashed: 0, current: null, error: null, artist: null,
+            album_id: null, scope_label: "library", failures: [],
+          }
+        );
       }
       return data;
     },

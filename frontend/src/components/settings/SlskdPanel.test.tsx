@@ -115,6 +115,28 @@ describe("SlskdPanel", () => {
     expect(await screen.findByText(/0\.22\.3/)).toBeInTheDocument();
   });
 
+  test("a later save failure clears the stale success message", async () => {
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings({ base_url: "http://slskd:5030" }))),
+      http.post(TEST_URL, () => HttpResponse.json({ ok: true, version: "0.22.3", error: null })),
+      http.put(SETTINGS, () => new HttpResponse(null, { status: 500 })),
+    );
+    renderWithProviders(<SlskdPanel />);
+
+    const input = await screen.findByLabelText(/base url/i);
+    // A successful test shows the green "Connected to slskd 0.22.3." status.
+    await userEvent.click(screen.getByRole("button", { name: /test connection/i }));
+    expect(await screen.findByText(/0\.22\.3/)).toBeInTheDocument();
+
+    // Editing and saving into a failure must clear that stale success.
+    await userEvent.type(input, "9");
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(
+      await screen.findByText(/couldn.t save slskd settings/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/0\.22\.3/)).not.toBeInTheDocument();
+  });
+
   test("shows the paste-in webhook snippet", async () => {
     server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
     renderWithProviders(<SlskdPanel />);

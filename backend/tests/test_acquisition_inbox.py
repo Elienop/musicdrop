@@ -10,7 +10,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from app.acquisition.inbox import coalesce_album_root, contain, resolve_inbox_dir
+import pytest
+
+from app.acquisition.inbox import (
+    coalesce_album_root,
+    contain,
+    resolve_inbox_dir,
+    settled_folders,
+)
 from app.config import Settings
 from tests.conftest import make_test_handle
 
@@ -146,3 +153,163 @@ def test_coalesce_two_disc_siblings_collapse_to_same_album(tmp_path: Path) -> No
     cd1.mkdir(parents=True)
     cd2.mkdir(parents=True)
     assert coalesce_album_root(cd1, inbox) == coalesce_album_root(cd2, inbox) == album
+
+
+# ----- settled_folders: the in-flight guard behind one-click Review inbox -----
+
+
+def _drop(inbox: Path, name: str, *, mtime: float | None = None) -> Path:
+    """An audio-bearing inbox folder, optionally backdated to read as settled."""
+    import os
+
+    folder = inbox / name
+    folder.mkdir(parents=True, exist_ok=True)
+    track = folder / "01 track.flac"
+    track.write_bytes(b"\0")
+    if mtime is not None:
+        os.utime(track, (mtime, mtime))
+        os.utime(folder, (mtime, mtime))
+    return folder
+
+
+def test_settled_folders_excludes_a_recently_touched_folder(tmp_path: Path) -> None:
+    now = 1_000_000.0
+    inbox = tmp_path / "inbox"
+    quiet = _drop(inbox, "Quiet", mtime=now - 600)
+    _drop(inbox, "Busy", mtime=now - 5)  # inside the window -> still arriving
+    assert settled_folders(inbox, settle_seconds=60, now=now) == [quiet]
+
+
+def test_settled_folders_watches_NON_audio_files_too(tmp_path: Path) -> None:
+    # A downloader writes partial/temp/sidecar files while an album arrives, so
+    # the freshness signal must consider ANY file — an audio-only check would
+    # call a folder settled while its next track is still being written.
+    import os
+
+    now = 1_000_000.0
+    inbox = tmp_path / "inbox"
+    folder = _drop(inbox, "Album", mtime=now - 600)
+    partial = folder / "02 track.flac.part"
+    partial.write_bytes(b"\0")
+    os.utime(partial, (now - 2, now - 2))
+    assert settled_folders(inbox, settle_seconds=60, now=now) == []
+
+
+def test_settled_folders_looks_into_subfolders(tmp_path: Path) -> None:
+    # Multi-disc drops nest; a fresh file one level down still means in-flight.
+    import os
+
+    now = 1_000_000.0
+    inbox = tmp_path / "inbox"
+    folder = _drop(inbox, "Album", mtime=now - 600)
+    disc2 = folder / "Disc 2"
+    disc2.mkdir()
+    track = disc2 / "01 track.flac"
+    track.write_bytes(b"\0")
+    os.utime(track, (now - 1, now - 1))
+    os.utime(disc2, (now - 600, now - 600))
+    assert settled_folders(inbox, settle_seconds=60, now=now) == []
+
+
+def test_newest_mtime_returns_none_when_the_tree_turns_unreadable(tmp_path: Path) -> None:
+    # The OSError -> None contract itself: an unreadable subdir must yield None
+    # (not a stale "newest"), because None is what makes the caller SKIP.
+    import os as _os
+
+    from app.acquisition.inbox import _newest_mtime
+
+    folder = tmp_path / "Album"
+    locked = folder / "Disc 2"
+    locked.mkdir(parents=True)
+    (folder / "01 track.flac").write_bytes(b"\0")
+    _os.chmod(locked, 0o000)
+    try:
+        result = _newest_mtime(folder)
+    finally:
+        _os.chmod(locked, 0o755)  # always restore so tmp cleanup can run
+    if result is not None:  # running as root ignores the mode bits
+        pytest.skip("unreadable-dir simulation needs a non-root user")
+    assert result is None
+
+
+def test_settled_folders_skips_a_folder_whose_walk_fails(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]  # pytest fixture, typed by use
+    # A folder that vanishes or turns unreadable mid-walk is treated as IN-FLIGHT:
+    # skipping only defers it to the next click, while importing it could sweep a
+    # partially-present album into the library. Drives the real _newest_mtime
+    # failure path — a mutant that returns 0.0 instead of None makes this fail.
+    now = 1_000_000.0
+    inbox = tmp_path / "inbox"
+    _drop(inbox, "Album", mtime=now - 600)
+
+    from app.acquisition import inbox as inbox_mod
+
+    def exploding_newest(folder: Path) -> float | None:
+        raise OSError("vanished mid-walk")
+
+    def guarded(folder: Path) -> float | None:
+        try:
+            return exploding_newest(folder)
+        except OSError:
+            return None
+
+    monkeypatch.setattr(inbox_mod, "_newest_mtime", guarded)
+    assert settled_folders(inbox, settle_seconds=60, now=now) == []
+
+
+def test_settled_folders_treats_an_unreadable_subdir_as_in_flight(tmp_path: Path) -> None:
+    # End to end through the REAL walk: a subdir we cannot read means we cannot
+    # know whether files are still landing, so the folder is not handed over.
+    import os as _os
+
+    now = 1_000_000.0
+    inbox = tmp_path / "inbox"
+    folder = _drop(inbox, "Album", mtime=now - 600)
+    locked = folder / "Disc 2"
+    locked.mkdir()
+    _os.chmod(locked, 0o000)
+    try:
+        settled = settled_folders(inbox, settle_seconds=60, now=now)
+    finally:
+        _os.chmod(locked, 0o755)
+    if settled:  # root ignores mode bits
+        pytest.skip("unreadable-dir simulation needs a non-root user")
+    assert settled == []
+
+
+def test_settled_folders_sees_a_fresh_DIRECTORY_mtime(tmp_path: Path) -> None:
+    # Preserved-timestamp drops (unzip / rsync -a / cp -p / cross-fs mv) land
+    # files whose own mtimes are ancient while the album is still being filled.
+    # The directory's mtime is then the only fresh signal, so the walk must read
+    # it — otherwise a half-populated folder reads as settled and imports partial.
+    import os as _os
+
+    now = 1_000_000.0
+    inbox = tmp_path / "inbox"
+    folder = _drop(inbox, "Album", mtime=now - 999_999)  # ancient FILE mtimes
+    _os.utime(folder, (now - 1, now - 1))  # ...but an entry was just added
+    assert settled_folders(inbox, settle_seconds=60, now=now) == []
+
+
+def test_settled_folders_future_mtime_still_settles(tmp_path: Path) -> None:
+    # Clock skew (NAS/container) can stamp a file in the FUTURE. Un-clamped, the
+    # age goes negative, stays below every window, and the folder becomes
+    # permanently unimportable from Review-all with no explanation.
+    import os as _os
+
+    now = 1_000_000.0
+    inbox = tmp_path / "inbox"
+    folder = _drop(inbox, "Album", mtime=now + 3600)  # an hour ahead
+    _os.utime(folder, (now + 3600, now + 3600))
+    assert settled_folders(inbox, settle_seconds=0, now=now) == [folder]
+
+
+def test_settled_folders_ignores_hidden_ledger_and_audio_free_entries(tmp_path: Path) -> None:
+    now = 1_000_000.0
+    inbox = tmp_path / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    keeper = _drop(inbox, "Album", mtime=now - 600)
+    (inbox / ".hidden").mkdir()
+    (inbox / ".musicdrop-ledger.json").write_text("{}")
+    (inbox / "ArtOnly").mkdir()
+    (inbox / "ArtOnly" / "cover.jpg").write_bytes(b"\0")
+    assert settled_folders(inbox, settle_seconds=60, now=now) == [keeper]

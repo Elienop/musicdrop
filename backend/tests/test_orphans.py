@@ -36,6 +36,34 @@ def test_nested_album_husk_under_kept_artist(tmp_path: Path) -> None:
     assert found == [root / "Artist" / "Old Album"]  # NOT the whole Artist (it has audio)
 
 
+def test_live_album_art_subfolder_is_not_flagged(tmp_path: Path) -> None:
+    """A ``Scans/`` or ``Artwork/`` subfolder inside a LIVE album dir (tracks sit
+    directly in the album folder) is the album's own art, NOT a stale husk — a
+    whole-library sweep must never trash it. Distinguisher: the PARENT holds audio
+    files DIRECTLY (a live album), vs a genuine husk whose parent is an artist dir
+    that has audio only via other album subdirs."""
+    root = tmp_path / "music"
+    _touch(root / "Artist" / "Album" / "01.flac")  # live album (audio in the album dir)
+    _touch(root / "Artist" / "Album" / "Scans" / "booklet.jpg")  # art subfolder, no audio
+    _touch(root / "Artist" / "Album" / "Artwork" / "back.png")
+    trash = tmp_path / "trash"
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash) == []
+
+
+def test_multidisc_album_art_subfolder_is_not_flagged(tmp_path: Path) -> None:
+    """Multi-disc album (audio lives in ``Disc N/`` children, so the album dir has
+    no DIRECT audio): its ``Scans/`` art folder must still be spared. has_own_audio
+    alone can't tell it from a genuine husk, so well-known art-folder names are
+    skipped by name as a backstop."""
+    root = tmp_path / "music"
+    _touch(root / "Artist" / "Album" / "Disc 1" / "01.flac")
+    _touch(root / "Artist" / "Album" / "Disc 2" / "01.flac")
+    _touch(root / "Artist" / "Album" / "Scans" / "booklet.jpg")  # art, no audio
+    trash = tmp_path / "trash"
+    found = find_orphan_folders(root, seeds=None, trash_dir=trash)
+    assert (root / "Artist" / "Album" / "Scans") not in found
+
+
 def test_untracked_audio_in_husk_is_not_flagged(tmp_path: Path) -> None:
     root = tmp_path / "music"
     _touch(root / "Real" / "Album" / "01.flac")
@@ -123,7 +151,7 @@ def test_trash_folder_collision_gets_unique_name(tmp_path: Path) -> None:
     assert (dest / "cover.jpg").exists()
 
 
-def test_art_only_husk_does_not_break_trash_listing(tmp_path: Path) -> None:
+def test_art_only_husk_is_listed_for_visibility(tmp_path: Path) -> None:
     from app.beets.trash import trash_folder
     from app.beets.trash_manage import list_trashed_albums
 
@@ -132,9 +160,12 @@ def test_art_only_husk_does_not_break_trash_listing(tmp_path: Path) -> None:
     trash = tmp_path / "trash"
     trash_folder(husk, trash_dir=trash)
 
-    # list_trashed_albums groups by audio tags; an art-only folder yields no album
-    # row (it is skipped), so the album-restore listing stays clean.
-    assert list_trashed_albums(trash) == []
+    # Audio-free trashed folders (husks the orphan sweep moves here) must appear in
+    # the listing as zero-track entries — otherwise the Trash UI never shows them
+    # and Empty-all deletes them silently. Now visible + individually empty-able.
+    listed = list_trashed_albums(trash)
+    assert [a.folder for a in listed] == ["Old Name"]
+    assert listed[0].track_count == 0
 
 
 def test_reorganize_models_carry_orphan_fields() -> None:

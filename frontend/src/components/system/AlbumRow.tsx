@@ -15,6 +15,7 @@ import { CoverArt } from "@/components/system/CoverArt";
  */
 export function AlbumRow({
   cover,
+  coverAssetKey,
   title,
   subtitle,
   meta,
@@ -24,6 +25,9 @@ export function AlbumRow({
   hrefState,
 }: {
   cover: string | null;
+  /** Which library asset `cover` shows (e.g. `album:7`), when the caller knows
+   * it — scopes cross-tab image remounts to that one album. See CoverArt. */
+  coverAssetKey?: string;
   title: string;
   subtitle?: string;
   meta?: ReactNode;
@@ -38,7 +42,11 @@ export function AlbumRow({
     <div className="flex min-w-0 items-center gap-3 px-4 py-3">
       {/* Decorative — the adjacent title text names the album, so alt
           stays "" (CoverArt's default). */}
-      <CoverArt src={cover} className="size-10 shrink-0 rounded-md" />
+      <CoverArt
+        src={cover}
+        assetKey={coverAssetKey}
+        className="size-10 shrink-0 rounded-md"
+      />
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-w-0 items-center gap-2">
           <span className="min-w-0 truncate font-medium" title={title}>

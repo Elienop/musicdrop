@@ -407,7 +407,9 @@ describe("ImportPlaylistsPage", () => {
   test("surfaces a failed preview from the Plex source path", async () => {
     server.use(
       http.get(PLEX_URL, () =>
-        HttpResponse.json({ playlists: [{ name: "Road", track_count: 3 }] }),
+        HttpResponse.json({
+          playlists: [{ name: "Road", track_count: 3, rating_key: "11" }],
+        }),
       ),
     );
     server.use(
@@ -428,8 +430,8 @@ describe("ImportPlaylistsPage", () => {
       http.get(PLEX_URL, () =>
         HttpResponse.json({
           playlists: [
-            { name: "Road", track_count: 12 },
-            { name: "Chill", track_count: 5 },
+            { name: "Road", track_count: 12, rating_key: "11" },
+            { name: "Chill", track_count: 5, rating_key: "22" },
           ],
         }),
       ),
@@ -457,7 +459,181 @@ describe("ImportPlaylistsPage", () => {
     await userEvent.click(screen.getByRole("button", { name: /preview .*plex/i }));
 
     await waitFor(() => expect(previewBody).not.toBeNull());
-    expect(previewBody).toEqual({ plex_playlists: ["Road"] });
+    // Selection travels by Plex IDENTITY (ratingKey), never by title.
+    expect(previewBody).toEqual({ plex_rating_keys: ["11"] });
+  });
+
+  test("two same-titled Plex playlists stay independently selectable", async () => {
+    // Plex allows duplicate titles. Keyed by name, one of these two could never
+    // be picked (and picking either pulled the same shadowed playlist).
+    server.use(
+      http.get(PLEX_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            { name: "Road", track_count: 12, rating_key: "11" },
+            { name: "Road", track_count: 5, rating_key: "22" },
+          ],
+        }),
+      ),
+    );
+    let previewBody: unknown = null;
+    server.use(
+      http.post(PREVIEW_URL, async ({ request }) => {
+        previewBody = await request.json();
+        return HttpResponse.json({ playlists: [] });
+      }),
+    );
+    renderImport();
+
+    // Duplicate titles get a disambiguated label so both rows are addressable.
+    const first = await screen.findByRole("checkbox", { name: /road.*12 tracks/i });
+    const second = screen.getByRole("checkbox", { name: /road.*5 tracks/i });
+    await userEvent.click(first);
+    await userEvent.click(second);
+
+    // Both are checked at once — a name-keyed selection would collapse them.
+    expect(first).toBeChecked();
+    expect(second).toBeChecked();
+
+    await userEvent.click(screen.getByRole("button", { name: /preview 2 from plex/i }));
+    await waitFor(() => expect(previewBody).not.toBeNull());
+    expect(previewBody).toEqual({ plex_rating_keys: ["11", "22"] });
+  });
+
+  test("picking the SECOND of two same-titled Plex playlists sends only its key", async () => {
+    // The shadowing bug's sharpest edge: the later duplicate used to be the only
+    // one reachable by title — now each is reachable on its own.
+    server.use(
+      http.get(PLEX_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            { name: "Road", track_count: 12, rating_key: "11" },
+            { name: "Road", track_count: 5, rating_key: "22" },
+          ],
+        }),
+      ),
+    );
+    let previewBody: unknown = null;
+    let committed: unknown = null;
+    server.use(
+      http.post(PREVIEW_URL, async ({ request }) => {
+        previewBody = await request.json();
+        return HttpResponse.json({
+          playlists: [
+            {
+              name: "Road",
+              matched_count: 1,
+              ambiguous_count: 0,
+              unmatched_count: 0,
+              entries: [entry({ item_id: 7, match: summary({ item_id: 7 }) })],
+            },
+          ],
+        });
+      }),
+      http.post(COMMIT_URL, async ({ request }) => {
+        committed = await request.json();
+        return HttpResponse.json({ created: [] });
+      }),
+    );
+    renderImport();
+
+    await userEvent.click(await screen.findByRole("checkbox", { name: /road.*5 tracks/i }));
+    await userEvent.click(screen.getByRole("button", { name: /preview 1 from plex/i }));
+
+    await waitFor(() => expect(previewBody).not.toBeNull());
+    expect(previewBody).toEqual({ plex_rating_keys: ["22"] });
+
+    await userEvent.click(await screen.findByRole("button", { name: /import 1 playlist/i }));
+    await waitFor(() => expect(committed).not.toBeNull());
+    // The commit stamps the SAME identity the preview was pulled with.
+    expect(committed).toMatchObject({
+      playlists: [{ name: "Road", plex_source: "Road", plex_rating_key: "22" }],
+    });
+  });
+
+  test("a multi-playlist Plex commit stamps each playlist's OWN rating key", async () => {
+    // plexKeys is an ARRAY aligned to the preview list by index — that alignment
+    // is the whole reason it isn't a single value, and a commit is the only place
+    // it is observable. If it ever slipped, each playlist would be stamped with
+    // its neighbour's Plex identity and later seed the WRONG cover.
+    server.use(
+      http.get(PLEX_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            { name: "Alpha", track_count: 1, rating_key: "11" },
+            { name: "Beta", track_count: 1, rating_key: "22" },
+          ],
+        }),
+      ),
+    );
+    let previewBody: unknown = null;
+    let committed: unknown = null;
+    server.use(
+      http.post(PREVIEW_URL, async ({ request }) => {
+        previewBody = await request.json();
+        return HttpResponse.json({
+          playlists: ["Alpha", "Beta"].map((name) => ({
+            name,
+            matched_count: 1,
+            ambiguous_count: 0,
+            unmatched_count: 0,
+            entries: [entry({ item_id: 7, match: summary({ item_id: 7 }) })],
+          })),
+        });
+      }),
+      http.post(COMMIT_URL, async ({ request }) => {
+        committed = await request.json();
+        return HttpResponse.json({ created: [] });
+      }),
+    );
+    renderImport();
+
+    await userEvent.click(await screen.findByRole("checkbox", { name: "Alpha" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Beta" }));
+    await userEvent.click(screen.getByRole("button", { name: /preview 2 from plex/i }));
+    await waitFor(() => expect(previewBody).not.toBeNull());
+    expect(previewBody).toEqual({ plex_rating_keys: ["11", "22"] });
+
+    await userEvent.click(await screen.findByRole("button", { name: /import 2 playlists/i }));
+    await waitFor(() => expect(committed).not.toBeNull());
+    expect(committed).toMatchObject({
+      playlists: [
+        { name: "Alpha", plex_source: "Alpha", plex_rating_key: "11" },
+        { name: "Beta", plex_source: "Beta", plex_rating_key: "22" },
+      ],
+    });
+  });
+
+  test("same-titled Plex playlists with EQUAL track counts still read distinctly", async () => {
+    // The track-count qualifier ties in the commonest duplicate shape (a playlist
+    // copied verbatim), so an ordinal breaks the tie — otherwise both checkboxes
+    // carry a byte-identical accessible name and neither can be addressed.
+    server.use(
+      http.get(PLEX_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            { name: "Road", track_count: 5, rating_key: "11" },
+            { name: "Road", track_count: 5, rating_key: "22" },
+          ],
+        }),
+      ),
+    );
+    let previewBody: unknown = null;
+    server.use(
+      http.post(PREVIEW_URL, async ({ request }) => {
+        previewBody = await request.json();
+        return HttpResponse.json({ playlists: [] });
+      }),
+    );
+    renderImport();
+
+    const second = await screen.findByRole("checkbox", { name: /road.*5 tracks.*#2/i });
+    expect(screen.getByRole("checkbox", { name: /road.*5 tracks.*#1/i })).not.toBe(second);
+    await userEvent.click(second);
+    await userEvent.click(screen.getByRole("button", { name: /preview 1 from plex/i }));
+
+    await waitFor(() => expect(previewBody).not.toBeNull());
+    expect(previewBody).toEqual({ plex_rating_keys: ["22"] });  // the one actually clicked
   });
 
   test("positions render 1-based even though the backend sends 0-based", async () => {
@@ -758,7 +934,9 @@ describe("ImportPlaylistsPage", () => {
   test("a Plex import carries the ORIGINAL bare title as plex_source, even after a rename", async () => {
     server.use(
       http.get(PLEX_URL, () =>
-        HttpResponse.json({ playlists: [{ name: "UK Pop Fever", track_count: 1 }] }),
+        HttpResponse.json({
+          playlists: [{ name: "UK Pop Fever", track_count: 1, rating_key: "77" }],
+        }),
       ),
       http.post(PREVIEW_URL, () =>
         HttpResponse.json({
@@ -798,7 +976,11 @@ describe("ImportPlaylistsPage", () => {
     // The new name commits, but plex_source stays the exact original Plex title
     // (a decorated "plex:<name>" would silently import artless).
     expect(committed).toMatchObject({
-      playlists: [{ name: "My Mix", plex_source: "UK Pop Fever" }],
+      playlists: [
+        // plex_rating_key is the identity the backend resolves the poster by;
+        // plex_source stays the display/back-compat title.
+        { name: "My Mix", plex_source: "UK Pop Fever", plex_rating_key: "77" },
+      ],
     });
   });
 
@@ -835,6 +1017,7 @@ describe("ImportPlaylistsPage", () => {
     await waitFor(() => expect(committed).not.toBeNull());
     const playlist = (committed as { playlists: Record<string, unknown>[] }).playlists[0];
     expect(playlist).not.toHaveProperty("plex_source");
+    expect(playlist).not.toHaveProperty("plex_rating_key");
   });
 
   // ——— Filter toggle in the header row (Task 7) ———

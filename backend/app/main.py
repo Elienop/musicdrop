@@ -6,6 +6,7 @@ import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app import library_busy
 from app.api.acquisition import router as acquisition_router
 from app.api.albums import router as albums_router
 from app.api.artists import router as artists_router
@@ -99,6 +100,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # surface).
     app.state.settings = settings
     app.state.beets_swap_lock = asyncio.Lock()
+    # Let the cross-job claim gate see beets swaps too — a config Apply holds
+    # this lock while tearing down the Library handle but claims no job slot.
+    library_busy.register_swap_lock(app.state.beets_swap_lock)
 
     from app.events.broker import EventBroker
 

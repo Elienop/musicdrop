@@ -84,15 +84,30 @@ export function ReviewPage() {
   // state never flashes on first paint before the lists load.
   const settled =
     !activeQuery.isLoading && !inboxQuery.isLoading && !bankPending.isLoading;
+  // A probe that ERRORED reports empty data (items=[], total=0), so counting it
+  // as settled would let a transient failure masquerade as a resolved backlog —
+  // the exact state most likely to make the user think their sweep found nothing.
+  // Exclude errored probes from both the empty-state verdict and the header count
+  // (BankSection surfaces the bank failure itself, with a retry).
+  const probesErrored =
+    activeQuery.isError || inboxQuery.isError || bankPending.isError;
   const nothingPending =
-    settled && decisions.length === 0 && items.length === 0 && bankPendingTotal === 0;
+    settled &&
+    !probesErrored &&
+    decisions.length === 0 &&
+    items.length === 0 &&
+    bankPendingTotal === 0;
   const pendingCount = decisions.length + items.length + bankPendingTotal;
 
   return (
     <PageBody>
       <PageHeader
         title="Review"
-        meta={settled ? `${pendingCount} awaiting a decision` : undefined}
+        meta={
+          settled && !probesErrored
+            ? `${pendingCount} awaiting a decision`
+            : undefined
+        }
       />
       <p className="text-muted-foreground text-sm">
         Downloads and imports that need your decision, from every source, in
@@ -250,24 +265,34 @@ function InboxSection({
 }) {
   const reviewOne = useImportInboxItem();
   const reviewAll = useReviewInbox();
-  const [noneLeft, setNoneLeft] = useState(false);
+  // null = no no-op yet. Otherwise the number of folders the backend SKIPPED as
+  // still-arriving: 0 means the inbox really did clear, >0 means "not yet".
+  const [noOpInFlight, setNoOpInFlight] = useState<number | null>(null);
   const busy = importActive || reviewOne.isPending || reviewAll.isPending;
 
   if (items.length === 0) return null;
 
-  // A started import navigates away; a no-op start (the inbox emptied since the
-  // last poll) shows a notice — the list also refetches (the hooks invalidate
-  // it), so the stale rows clear on their own.
+  // A started import navigates away. A no-op has TWO causes and they must not
+  // read the same: the inbox emptied since the last poll (nothing left), or every
+  // folder is still receiving files (`in_flight` > 0) — in which case the rows
+  // the user is looking at are still there and telling them it cleared is a lie.
   const mutateOpts = {
-    onSuccess: (res: { started?: boolean; job_id?: string | null }) => {
+    onSuccess: (res: { started?: boolean; job_id?: string | null; in_flight?: number }) => {
       if (res.started && res.job_id) onStarted(res.job_id);
-      else setNoneLeft(true);
+      else setNoOpInFlight(res.in_flight ?? 0);
     },
   };
   const start = (run: () => void) => {
-    setNoneLeft(false);
+    setNoOpInFlight(null);
     run();
   };
+  const noOpMessage =
+    noOpInFlight === null
+      ? ""
+      : noOpInFlight > 0
+        ? `Still downloading — ${noOpInFlight} ${noOpInFlight === 1 ? "folder is" : "folders are"} ` +
+          "still receiving files. They'll be importable once they finish."
+        : "Nothing left to import; the inbox just cleared.";
 
   return (
     <section aria-label="Waiting in the inbox" className="flex flex-col gap-3">
@@ -290,8 +315,13 @@ function InboxSection({
           // The inbox doesn't track where a folder came from (it just lists a
           // directory), so the only honest subtitle is its outcome — set-aside
           // or failed — and nothing for a fresh drop.
-          const subtitle =
-            item.outcome === "set_aside"
+          // A folder still receiving files says so FIRST: "Review all" skips it,
+          // and the per-row Review below is an explicit override — importing a
+          // half-arrived album files a partial copy, so the choice must be
+          // informed rather than blind.
+          const subtitle = item.in_flight
+            ? "Still downloading — importing now may catch only part of it"
+            : item.outcome === "set_aside"
               ? "Set aside"
               : item.outcome === "failed"
                 ? "Import failed"
@@ -312,7 +342,7 @@ function InboxSection({
                       start(() => reviewOne.mutate(item.name, mutateOpts))
                     }
                   >
-                    {starting ? "Starting…" : "Review"}
+                    {starting ? "Starting…" : item.in_flight ? "Review anyway" : "Review"}
                   </Button>
                 }
               />
@@ -331,9 +361,9 @@ function InboxSection({
       <span
         role="status"
         aria-live="polite"
-        className={noneLeft ? "text-muted-foreground text-sm" : "sr-only"}
+        className={noOpMessage ? "text-muted-foreground text-sm" : "sr-only"}
       >
-        {noneLeft ? "Nothing left to import; the inbox just cleared." : ""}
+        {noOpMessage}
       </span>
       {(reviewOne.isError || reviewAll.isError) && (
         <p className="text-destructive text-sm" role="alert">

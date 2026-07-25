@@ -147,7 +147,16 @@ async def upload_artist_image_override_endpoint(
     mime = sniff_image_mime(image_bytes)
     if mime is None:
         raise HTTPException(status_code=422, detail="not a supported image (png/jpeg/gif/webp)")
-    cache.write_override(name, image_bytes, mime)
+    # Offload the blocking mkdir + up-to-10MB cache write (dir may be on slow
+    # HDD/NAS) so it never stalls the event loop, mirroring the cache read.
+    await run_in_threadpool(cache.write_override, name, image_bytes, mime)
+    # UNSCOPED on purpose: the artist image is served under a NORMALIZED name
+    # (NFKD accent-fold + casefold + whitespace-collapse — see
+    # artwork/normalize.py), so a raw display name is not a reliable identity
+    # for the served asset. Scoping on it would silently fail to refresh a
+    # twin spelling of the same artist, and mirroring that normalization in TS
+    # would duplicate it across languages (casefold != toLowerCase). Album
+    # covers ARE scoped — they key off a stable numeric id.
     emit_art_changed(request.app)
     return ArtistImageOverrideResult(ok=True, content_type=mime)
 
@@ -170,7 +179,14 @@ async def set_artist_image_override_from_url_endpoint(
             status_code=422,
             detail="that link is not a supported image (png/jpeg/gif/webp)",
         )
-    cache.write_override(name, data, mime)
+    await run_in_threadpool(cache.write_override, name, data, mime)
+    # UNSCOPED on purpose: the artist image is served under a NORMALIZED name
+    # (NFKD accent-fold + casefold + whitespace-collapse — see
+    # artwork/normalize.py), so a raw display name is not a reliable identity
+    # for the served asset. Scoping on it would silently fail to refresh a
+    # twin spelling of the same artist, and mirroring that normalization in TS
+    # would duplicate it across languages (casefold != toLowerCase). Album
+    # covers ARE scoped — they key off a stable numeric id.
     emit_art_changed(request.app)
     return ArtistImageOverrideResult(ok=True, content_type=mime)
 
@@ -181,7 +197,14 @@ async def clear_artist_image_override_endpoint(
     name: Annotated[str, Query(min_length=1)],
     cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
 ) -> Response:
-    cache.clear_override(name)
+    await run_in_threadpool(cache.clear_override, name)
+    # UNSCOPED on purpose: the artist image is served under a NORMALIZED name
+    # (NFKD accent-fold + casefold + whitespace-collapse — see
+    # artwork/normalize.py), so a raw display name is not a reliable identity
+    # for the served asset. Scoping on it would silently fail to refresh a
+    # twin spelling of the same artist, and mirroring that normalization in TS
+    # would duplicate it across languages (casefold != toLowerCase). Album
+    # covers ARE scoped — they key off a stable numeric id.
     emit_art_changed(request.app)
     return Response(status_code=204)
 
@@ -282,8 +305,10 @@ def _start(
         delay=delay,
         force=force,
         artist=artist,
-        # Repaint open tabs when the sweep finishes (fired from the daemon
-        # thread; the broker hops onto the main loop via call_soon_threadsafe).
+        # Repaint open tabs when the run finishes (fired from the daemon thread;
+        # the broker hops onto the main loop via call_soon_threadsafe). UNSCOPED:
+        # a sweep repaints many artists, and even a single-artist run cannot use a
+        # display name as an asset identity (see the override handlers above).
         on_complete=lambda: emit_art_changed(app),
     )
 

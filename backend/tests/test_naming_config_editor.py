@@ -97,6 +97,43 @@ def test_save_naming_roundtrip_preserves_other_keys_and_comments(
     assert "'[?]': _" in text or "[?]: _" in text
 
 
+def test_save_naming_keeps_boolean_token_replace_rules_as_strings(
+    beets_library: LibraryHandle,
+) -> None:
+    # Regression: save_naming builds a FRESH CommentedMap of plain-str values, so
+    # their quoting is decided by the dumper's YAML-version resolver, NOT by
+    # preserve_quotes. A bool-token pattern/replacement ("no"/"off"/"y") must be
+    # emitted QUOTED so it reloads as a string. If the dumper used the 1.2 resolver
+    # (what clearing yaml.version does), these dump BARE, then confuse/PyYAML and
+    # ruamel-1.1 re-type them to bool — beets' re.compile(False) crashes on Apply
+    # for a bool KEY, and a bool VALUE is silently dropped (`repl or ''`).
+    import yaml as pyyaml
+
+    cfg_path = beets_library.config_path
+    cfg_path.write_text("directory: /tmp/music\nlibrary: library.db\n")
+    req = SaveNamingRequest(
+        rules=[NamingRuleInput(query="default", template="$title")],
+        replace=[
+            ReplaceRuleInput(pattern="no", replacement="_"),  # bool-token KEY
+            ReplaceRuleInput(pattern="[<>]", replacement="off"),  # bool-token VALUE
+            ReplaceRuleInput(pattern="ñ", replacement="y"),  # bool-token VALUE
+        ],
+        base_sha256=_sha(cfg_path),
+    )
+    save_naming(beets_library, req)
+    text = cfg_path.read_text()
+
+    assert "%YAML" not in text  # directive prologue stripped (M5)
+    # read_naming (ruamel, version 1.1) round-trips them as strings, not bool tokens.
+    rules = [(r.pattern, r.replacement) for r in read_naming(beets_library).replace]
+    assert rules == [("no", "_"), ("[<>]", "off"), ("ñ", "y")]
+    # confuse/beets load path is PyYAML (YAML 1.1): keys AND values must be str —
+    # a bare token would parse as bool and break re.compile / drop the replacement.
+    loaded = pyyaml.safe_load(text)["replace"]
+    assert loaded == {"no": "_", "[<>]": "off", "ñ": "y"}
+    assert all(isinstance(k, str) and isinstance(v, str) for k, v in loaded.items())
+
+
 def test_save_naming_empty_rules_drops_paths_key(beets_library: LibraryHandle) -> None:
     cfg_path = beets_library.config_path
     cfg_path.write_text("directory: /tmp/music\nlibrary: library.db\npaths:\n  default: $title\n")
