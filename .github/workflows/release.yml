@@ -90,13 +90,25 @@ jobs:
             ghcr.io/elienop/musicdrop:${{ steps.version.outputs.new_tag }}
             ghcr.io/elienop/musicdrop:latest
 
-      # 4. Image is live -> NOW create the real git tag. The checkout's
-      #    persisted GITHUB_TOKEN can push refs (permissions: contents: write).
-      - name: Create and push tag
+      # 4. Image is live -> NOW create the real git tag. Created through the
+      #    REST refs endpoint, NOT `git push`: GITHUB_TOKEN is a GitHub App
+      #    token, and the git path refuses any ref whose commit touches
+      #    .github/workflows/** ("refusing to allow a GitHub App to create or
+      #    update workflow ... without `workflows` permission"). That
+      #    permission cannot be granted to GITHUB_TOKEN — it is not one of the
+      #    valid `permissions:` keys — so every github-actions dependency bump
+      #    used to push its image and then fail to tag (v0.28.1, run
+      #    30151283532). The API endpoint is not subject to that check, and
+      #    `contents: write` above is all it needs.
+      - name: Create tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git tag "${{ steps.version.outputs.new_tag }}"
-          git push origin "refs/tags/${{ steps.version.outputs.new_tag }}"
+          gh api --method POST --silent \
+            "repos/${{ github.repository }}/git/refs" \
+            -f ref="refs/tags/${{ steps.version.outputs.new_tag }}" \
+            -f sha="${{ github.sha }}"
 
       # 5. Release last, against the now-existing tag + live image.
       - name: Create the release
