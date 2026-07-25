@@ -185,6 +185,29 @@ describe("ReviewPage", () => {
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/import?job=jall"));
   });
 
+  test("an in-flight inbox row warns before its per-row Review override", async () => {
+    // The per-row button has no settle guard — it is an explicit "import THIS
+    // one now". The row must therefore SAY the folder is still arriving, or the
+    // user overrides blind and files a partial album.
+    server.use(
+      http.get(ITEMS, () =>
+        HttpResponse.json({
+          items: [
+            { name: "Half Arrived", mtime: 1, size: 10, track_count: 2, outcome: null, in_flight: true },
+            { name: "All Here", mtime: 2, size: 20, track_count: 9, outcome: null, in_flight: false },
+          ],
+        }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+
+    expect(await screen.findByText(/still downloading — importing now may catch only part/i))
+      .toBeInTheDocument();
+    // the settled row keeps the plain affordance; only the in-flight one is hedged
+    expect(screen.getByRole("button", { name: "Review anyway" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review" })).toBeInTheDocument();
+  });
+
   test("a no-op Review all says STILL DOWNLOADING when folders are in flight", async () => {
     // The backend refuses folders that are still receiving files. Saying "the
     // inbox just cleared" there would be a flat lie — the rows are still on

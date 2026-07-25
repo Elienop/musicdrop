@@ -64,6 +64,11 @@ class InboxItem(BaseModel):
     size: int
     track_count: int
     outcome: LedgerOutcome | None = None
+    # True while the folder is still receiving files (its tree was touched inside
+    # the settle window). "Review all" skips these; the per-row Review still
+    # imports on request — an explicit override — so the row carries the cue that
+    # makes that an INFORMED choice rather than a silent partial-album import.
+    in_flight: bool = False
 
 
 class InboxListing(BaseModel):

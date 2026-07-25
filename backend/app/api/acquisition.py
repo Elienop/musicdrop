@@ -128,7 +128,13 @@ async def list_inbox_items(request: Request) -> InboxListing:
     if inbox_dir is None:
         return InboxListing(items=[])
     ledger: AcquisitionLedger | None = getattr(request.app.state, "acquisition_ledger", None)
-    items = await run_in_threadpool(list_inbox, inbox_dir, ledger)
+    app_settings = getattr(request.app.state, "settings", None) or settings
+    settle = float(getattr(app_settings, "inbox_settle_seconds", 60))
+    # Same window "Review all" uses, so a row's in_flight cue agrees with whether
+    # that button would actually import it.
+    items = await run_in_threadpool(
+        partial(list_inbox, inbox_dir, ledger, settle_seconds=settle, now=time.time())
+    )
     return InboxListing(items=items)
 
 

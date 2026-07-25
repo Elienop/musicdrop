@@ -7478,6 +7478,11 @@
               }
             ],
             "title": "Outcome"
+          },
+          "in_flight": {
+            "type": "boolean",
+            "title": "In Flight",
+            "default": false
           }
         },
         "type": "object",

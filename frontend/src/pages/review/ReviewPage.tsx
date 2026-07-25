@@ -315,8 +315,13 @@ function InboxSection({
           // The inbox doesn't track where a folder came from (it just lists a
           // directory), so the only honest subtitle is its outcome — set-aside
           // or failed — and nothing for a fresh drop.
-          const subtitle =
-            item.outcome === "set_aside"
+          // A folder still receiving files says so FIRST: "Review all" skips it,
+          // and the per-row Review below is an explicit override — importing a
+          // half-arrived album files a partial copy, so the choice must be
+          // informed rather than blind.
+          const subtitle = item.in_flight
+            ? "Still downloading — importing now may catch only part of it"
+            : item.outcome === "set_aside"
               ? "Set aside"
               : item.outcome === "failed"
                 ? "Import failed"
@@ -337,7 +342,7 @@ function InboxSection({
                       start(() => reviewOne.mutate(item.name, mutateOpts))
                     }
                   >
-                    {starting ? "Starting…" : "Review"}
+                    {starting ? "Starting…" : item.in_flight ? "Review anyway" : "Review"}
                   </Button>
                 }
               />

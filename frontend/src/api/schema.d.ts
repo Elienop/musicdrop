@@ -2947,6 +2947,11 @@ export interface components {
             track_count: number;
             /** Outcome */
             outcome?: ("imported" | "set_aside" | "failed") | null;
+            /**
+             * In Flight
+             * @default false
+             */
+            in_flight: boolean;
         };
         /**
          * InboxListing

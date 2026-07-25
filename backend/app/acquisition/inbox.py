@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from pathlib import Path
 
 from app.acquisition.ledger import AcquisitionLedger
@@ -244,7 +245,13 @@ def settled_folders(inbox_dir: Path, *, settle_seconds: float, now: float) -> li
     return settled
 
 
-def list_inbox(inbox_dir: Path, ledger: AcquisitionLedger | None) -> list[InboxItem]:
+def list_inbox(
+    inbox_dir: Path,
+    ledger: AcquisitionLedger | None,
+    *,
+    settle_seconds: float = 0.0,
+    now: float | None = None,
+) -> list[InboxItem]:
     """Top-level non-hidden inbox dirs holding audio, ledger-annotated (never filtered).
 
     An item = one immediate child directory with >=1 audio file beneath it (empty
@@ -274,6 +281,13 @@ def list_inbox(inbox_dir: Path, ledger: AcquisitionLedger | None) -> list[InboxI
         except OSError:
             continue
         folder = Path(entry.path).resolve()
+        in_flight = False
+        if settle_seconds > 0:
+            newest = _newest_mtime(Path(entry.path))
+            reference = time.time() if now is None else now
+            # Unreadable (None) reads as in-flight, matching settled_folders:
+            # we cannot know it is finished, so we must not imply it is.
+            in_flight = newest is None or reference - min(newest, reference) < settle_seconds
         outcome: LedgerOutcome | None = None
         for row in ledger_rows:
             if row.outcome not in ("set_aside", "failed"):
@@ -292,6 +306,7 @@ def list_inbox(inbox_dir: Path, ledger: AcquisitionLedger | None) -> list[InboxI
                 size=size,
                 track_count=tracks,
                 outcome=outcome,
+                in_flight=in_flight,
             )
         )
     items.sort(key=lambda i: i.mtime, reverse=True)
