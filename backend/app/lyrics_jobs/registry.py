@@ -15,6 +15,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
+from app import library_busy
 from app.jobs import JobState, SingleSlotRegistry
 from app.models.lyrics import ItemLyricsOutcome, LyricsBackfillPhase, LyricsBackfillStatus
 
@@ -34,10 +35,12 @@ class _BackfillJob(JobState):
 class LyricsBackfillRegistry(SingleSlotRegistry[_BackfillJob]):
     """Holds the active (or last) backfill job."""
 
+    job_type = library_busy.LYRICS
+
     def start(
         self, *, writes_enabled: bool, album_id: int | None = None, scope_label: str = "library"
     ) -> str:
-        with self._lock:
+        with self._claim("a lyrics backfill or another library operation is already running"):
             if self._job is not None and self._job.phase == "running":
                 raise RuntimeError("a lyrics backfill is already running")
             job = _BackfillJob(

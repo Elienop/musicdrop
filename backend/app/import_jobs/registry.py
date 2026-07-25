@@ -217,7 +217,20 @@ class ImportJobRegistry:
         # call sites stay untouched.
         if options is not None and options.sweep:
             origin = "sweep"
-        with self._lock:
+        # The union check and the slot claim are ONE atomic step: the background
+        # producers (bank apply, inbox drain) pass their gate, then spend real
+        # time — a folder fingerprint walks a NAS — before reaching this line, and
+        # an unlocked check let a user-started reorganize claim its own slot in
+        # that window. Both would then run: a beets import moving files into the
+        # library beside a sweep moving those same folders, one SQLite DB, two
+        # writer threads. Released before ``runner.run`` below, which spawns the
+        # worker — a global lock must never span a thread start.
+        from app.library_busy import IMPORT, claim_slot
+
+        with (
+            claim_slot(IMPORT, message="another library operation is already running"),
+            self._lock,
+        ):
             if self._job is not None and self._job.phase in _ACTIVE_PHASES:
                 raise RuntimeError("an import is already running")
             job = ImportJob(

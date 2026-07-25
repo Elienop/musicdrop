@@ -17,9 +17,10 @@ beets-free by construction — no beets import belongs here.
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import ClassVar, Generic, TypeVar
 
 
 @dataclass
@@ -54,6 +55,26 @@ class SingleSlotRegistry(Generic[JobT]):
     def __init__(self) -> None:
         self._job: JobT | None = None
         self._lock = threading.Lock()
+
+    # The name this job type answers to in ``library_busy``'s union (and in the
+    # ``exclude`` that drops its own slot). Subclasses MUST set it — an unset
+    # value would make a registry exclude nothing and refuse itself.
+    job_type: ClassVar[str] = ""
+
+    @contextmanager
+    def _claim(self, message: str) -> Iterator[None]:
+        """Hold the cross-job claim lock + this registry's lock while claiming.
+
+        Every single-slot job funnels its claim through here so the union check
+        ("is any OTHER library job running?") and the slot claim happen as ONE
+        atomic step. Checking them separately let a daemon-started import slip
+        between a user-started sweep's check and its claim, running a beets
+        import and a whole-library reorganize over the same files at once.
+        """
+        from app.library_busy import claim_slot
+
+        with claim_slot(self.job_type, message=message), self._lock:
+            yield
 
     def is_running(self) -> bool:
         with self._lock:

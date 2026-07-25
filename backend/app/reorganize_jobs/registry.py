@@ -15,6 +15,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 
+from app import library_busy
 from app.jobs import JobState, SingleSlotRegistry
 from app.models.reorganize import (
     ReorganizeBackfillStatus,
@@ -45,6 +46,8 @@ class _ReorganizeJob(JobState):
 class ReorganizeRegistry(SingleSlotRegistry[_ReorganizeJob]):
     """Holds the active (or last) reorganize job."""
 
+    job_type = library_busy.REORGANIZE
+
     def start(
         self,
         *,
@@ -53,7 +56,7 @@ class ReorganizeRegistry(SingleSlotRegistry[_ReorganizeJob]):
         album_id: int | None,
         scope_label: str,
     ) -> str:
-        with self._lock:
+        with self._claim("a reorganize or another library operation is already running"):
             if self._job is not None and self._job.phase == "running":
                 raise RuntimeError("a reorganize is already running")
             job = _ReorganizeJob(
