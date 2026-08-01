@@ -297,6 +297,11 @@ def fetch_item_lyrics(
     # recheck_misses, and deliberately independent of lyrics_checked — beets'
     # 2.13 migration flags pre-existing instrumentals without setting it.
     if not force and _is_instrumental(item):
+        # Cleanup, not classification: tracks beets' migration flagged arrive
+        # with old "[Instrumental]" sidecars that Plex keeps reading, and since
+        # flagged tracks are never re-searched, this skip is the only sweep
+        # path that can ever remove them. Idempotent (two stats when clean).
+        remove_lyric_sidecars(item)
         return ItemLyricsOutcome(
             item_id=item_id, status="skipped_instrumental", source=None, written=False
         )
