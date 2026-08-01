@@ -209,6 +209,7 @@ function lyricsRow(
       id, kind: "lyrics", label, scope: status.scope_label, state: "done",
       countsText: outcomeCounts([
         [status.found, "found"],
+        [status.instrumental, "instrumental"],
         [status.not_found, "not found"],
         [status.skipped, "skipped"],
         [status.failed, "failed"],

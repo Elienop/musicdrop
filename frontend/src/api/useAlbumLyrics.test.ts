@@ -14,8 +14,8 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 const status: LyricsBackfillStatus = {
-  phase: "running", job_id: "j1", total: 12, processed: 0, found: 0, not_found: 0,
-  failed: 0, skipped: 0, current: null, writes_enabled: true, error: null,
+  phase: "running", job_id: "j1", total: 12, processed: 0, found: 0, instrumental: 0,
+  not_found: 0, failed: 0, skipped: 0, current: null, writes_enabled: true, error: null,
   album_id: 7, scope_label: "*NSYNC — *NSYNC",
 };
 

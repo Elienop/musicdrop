@@ -576,6 +576,10 @@ function LyricsStatus({
         <Spinner className="text-muted-foreground size-4 shrink-0 animate-spin" aria-hidden="true" />
         <span className="text-muted-foreground text-sm">
           Fetching lyrics… {job.processed} / {job.total} · found {job.found}
+          {/* Shown only when there is one — this line stays deliberately terse,
+              but on an album of instrumentals a bare "found 0" reads as a stall
+              rather than as answers landing. */}
+          {job.instrumental > 0 && ` · instrumental ${job.instrumental}`}
         </span>
         <Button variant="outline" size="sm" onClick={() => stop.mutate()} disabled={stop.isPending}>
           Stop
@@ -610,7 +614,10 @@ function LyricsStatus({
       )}
       {terminalThis && job && (
         <span className="text-muted-foreground text-sm" role="status">
-          {job.found} added · {job.not_found} none · {job.failed} failed
+          {/* Skips are named because a track flagged instrumental is skipped by
+              every fetch — without the counter such an album reports all zeros. */}
+          {job.found} added · {job.instrumental} instrumental · {job.not_found} none ·{" "}
+          {job.failed} failed · {job.skipped} skipped
           {job.writes_enabled ? "" : " · not written to files (enable writes in config)"}
         </span>
       )}

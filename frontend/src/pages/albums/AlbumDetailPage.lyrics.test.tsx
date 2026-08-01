@@ -16,7 +16,7 @@ const album: AlbumDetail = {
 
 const idleStatus: LyricsBackfillStatus = {
   phase: "idle", job_id: null, total: 0, processed: 0, found: 0,
-  not_found: 0, failed: 0, skipped: 0, current: null,
+  instrumental: 0, not_found: 0, failed: 0, skipped: 0, current: null,
   writes_enabled: false, error: null, album_id: null, scope_label: "library",
 };
 let statusData: LyricsBackfillStatus = idleStatus;
@@ -106,5 +106,38 @@ describe("AlbumDetailPage lyrics", () => {
     await renderPage();
     expect(await screen.findByText(/Fetching lyrics… 3 \/ 12 · found 2/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /stop/i })).toBeInTheDocument();
+  });
+
+  it("names instrumentals live so an all-instrumental album doesn't read as a stall", async () => {
+    statusData = {
+      ...idleStatus, phase: "running", album_id: 7, scope_label: "Radiohead — In Rainbows",
+      processed: 3, total: 12, found: 0, instrumental: 3,
+    };
+    await renderPage();
+    expect(
+      await screen.findByText(/Fetching lyrics… 3 \/ 12 · found 0 · instrumental 3/),
+    ).toBeInTheDocument();
+  });
+
+  it("tallies instrumentals apart from misses when this album's job ends", async () => {
+    statusData = {
+      ...idleStatus, phase: "done", album_id: 7, scope_label: "Radiohead — In Rainbows",
+      processed: 7, total: 7, found: 1, instrumental: 4, not_found: 2,
+    };
+    await renderPage();
+    expect(
+      await screen.findByText(/1 added · 4 instrumental · 2 none · 0 failed/),
+    ).toBeInTheDocument();
+  });
+
+  // Tracks flagged instrumental before this run are skipped, not re-searched.
+  // Without a skipped counter the whole run reports zeros and reads as broken.
+  it("reports skips so an already-flagged album doesn't come back all zeros", async () => {
+    statusData = {
+      ...idleStatus, phase: "done", album_id: 7, scope_label: "Radiohead — In Rainbows",
+      processed: 5, total: 5, skipped: 5,
+    };
+    await renderPage();
+    expect(await screen.findByText(/0 added .* 5 skipped/)).toBeInTheDocument();
   });
 });

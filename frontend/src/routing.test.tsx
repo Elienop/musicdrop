@@ -169,6 +169,7 @@ function appHandlers() {
         total: 0,
         processed: 0,
         found: 0,
+        instrumental: 0,
         not_found: 0,
         failed: 0,
         skipped: 0,

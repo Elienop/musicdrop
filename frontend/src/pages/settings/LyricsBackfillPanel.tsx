@@ -40,8 +40,11 @@ export function LyricsBackfillPanel() {
         const c = coverage.data;
         if (!c) return undefined;
         const parts = [`Coverage ${c.percent}% (${c.with_lyrics} of ${c.total} tracks)`];
+        if (c.instrumental > 0) parts.push(`${c.instrumental} instrumental`);
         if (c.checked_no_lyrics > 0) parts.push(`${c.checked_no_lyrics} with no lyrics found`);
-        const left = c.total - c.with_lyrics - c.checked_no_lyrics;
+        // Instrumental is an answer, not a gap — no sweep re-searches one, so it
+        // leaves the to-do count alongside the tracks already searched in vain.
+        const left = c.total - c.with_lyrics - c.instrumental - c.checked_no_lyrics;
         if (left > 0) parts.push(`${left} left to check`);
         return parts.join(" · ");
       })()}
@@ -53,7 +56,9 @@ export function LyricsBackfillPanel() {
             <Spinner className="text-muted-foreground size-4 shrink-0 animate-spin" aria-hidden="true" />
             <span className="flex-1">
               Backfilling… {status.data.processed} / {status.data.total} · found{" "}
-              {status.data.found} · none {status.data.not_found} · failed {status.data.failed}
+              {status.data.found} · instrumental {status.data.instrumental} · none{" "}
+              {status.data.not_found} · failed {status.data.failed} · skipped{" "}
+              {status.data.skipped}
             </span>
             <Button variant="outline" size="sm" onClick={() => stop.mutate()} disabled={stop.isPending}>
               Stop
@@ -96,12 +101,16 @@ export function LyricsBackfillPanel() {
             </span>
           )}
           {/* A finished or interrupted run shows its tally so the user knows
-              what happened without watching the live feed. */}
+              what happened without watching the live feed. Every outcome is
+              named, skips included: tracks already flagged instrumental are
+              skipped by every sweep, and a tally that dropped them would leave
+              hundreds of processed tracks unaccounted for. */}
           {status.data && status.data.album_id == null &&
             (status.data.phase === "done" || status.data.phase === "stopped") && (
             <span className="text-muted-foreground text-sm" role="status">
-              {status.data.phase === "done" ? "Done" : "Stopped"}: found {status.data.found} · none{" "}
-              {status.data.not_found} · failed {status.data.failed}
+              {status.data.phase === "done" ? "Done" : "Stopped"}: found {status.data.found} ·
+              instrumental {status.data.instrumental} · none {status.data.not_found} · failed{" "}
+              {status.data.failed} · skipped {status.data.skipped}
             </span>
           )}
           {/* A failed job surfaces its error inline so a 409/library-locked

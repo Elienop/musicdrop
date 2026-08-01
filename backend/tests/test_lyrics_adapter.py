@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import requests
 from beets.library import Library
-from beets.util.lyrics import Lyrics
+from beets.util.lyrics import INSTRUMENTAL_LYRICS, Lyrics
 from beetsplug._utils.requests import HTTPNotFoundError
 from mediafile import MediaFile
 
@@ -242,6 +243,144 @@ def test_fetch_item_skips_checked_unless_recheck(edit_lib: Library) -> None:
     out2 = fetch_item_lyrics(plugin, item, force=False, write=True, recheck_misses=True)
     assert out2.status == "not_found"
     assert empty.calls > after_first  # recheck re-searches
+
+
+# --- instrumental: a definitive answer, not a miss ---------------------------
+
+
+def _instrumental(backend: str = "lrclib") -> Lyrics:
+    """What a backend really hands back for an instrumental: beets' Lyrics
+    normalises the "[Instrumental]" marker to text="" + instrumental=True."""
+    lyr = Lyrics(INSTRUMENTAL_LYRICS, backend, "https://lrclib.net/api/get/1")
+    assert lyr.text == "" and lyr.instrumental is True  # guards the beets contract
+    return lyr
+
+
+def test_fetch_item_instrumental_stops_searching_and_flags(edit_lib: Library) -> None:
+    from app.beets.lyrics import fetch_item_lyrics
+
+    item = _first_item(edit_lib)
+    hit = _FakeBackend(result=_instrumental())
+    never = _FakeBackend(result=Lyrics("should never be reached", "genius", "u"))
+    plugin = _FakePlugin([hit, never])
+
+    out = fetch_item_lyrics(plugin, item, force=False, write=True)
+
+    assert out.status == "instrumental"
+    assert out.source == "lrclib"
+    assert out.written is False
+    # Definitive: the very first hit ends the search — no second backend, and no
+    # further search pairs (search_pairs yields several titles per item).
+    assert hit.calls == 1
+    assert never.calls == 0
+    assert item.lyrics == ""
+    assert item.get("lyrics_instrumental")  # flagged the way beets flags it
+    assert item.get("lyrics_checked")  # and marked searched
+
+
+def test_fetch_item_instrumental_clears_stale_lyrics_and_sidecars(edit_lib: Library) -> None:
+    """A force re-fetch of a track that still carries the old "[Instrumental]"
+    text must end with an empty lyrics field and no sidecars — but the audio
+    file's own tag is out of scope and stays untouched."""
+    from app.beets.lyrics import fetch_item_lyrics
+
+    item = _first_item(edit_lib)
+    item.lyrics = INSTRUMENTAL_LYRICS
+    item.try_write()  # the stale marker also sits in the FILE tag
+    item.store()
+    base, _ext = os.path.splitext(os.fsdecode(item.path))
+    Path(base + ".lrc").write_text("[00:01.00] [Instrumental]\n", encoding="utf-8")
+    Path(base + ".txt").write_text("[Instrumental]\n", encoding="utf-8")
+
+    out = fetch_item_lyrics(
+        _FakePlugin([_FakeBackend(result=_instrumental())]), item, force=True, write=True
+    )
+
+    assert out.status == "instrumental"
+    assert item.lyrics == ""
+    row = edit_lib.get_item(item.id)
+    assert row is not None and row.lyrics == ""  # persisted, not just in memory
+    assert not Path(base + ".lrc").exists()
+    assert not Path(base + ".txt").exists()
+    assert INSTRUMENTAL_LYRICS in (MediaFile(os.fsdecode(item.path)).lyrics or "")
+
+
+def test_fetch_item_instrumental_sidecar_removal_noop_when_none(edit_lib: Library) -> None:
+    from app.beets.lyrics import fetch_item_lyrics
+
+    item = _first_item(edit_lib)
+    base, _ext = os.path.splitext(os.fsdecode(item.path))
+    assert not Path(base + ".lrc").exists() and not Path(base + ".txt").exists()
+
+    out = fetch_item_lyrics(
+        _FakePlugin([_FakeBackend(result=_instrumental())]), item, force=False, write=True
+    )
+
+    assert out.status == "instrumental"  # no sidecar to delete is not an error
+    assert not Path(base + ".lrc").exists() and not Path(base + ".txt").exists()
+
+
+def test_fetch_item_skips_known_instrumental_even_on_recheck(edit_lib: Library) -> None:
+    """The migrated shape: beets' 2.13 migration sets the flex flag and empties
+    ``lyrics`` but leaves NO ``lyrics_checked``, so only the instrumental gate
+    can keep those tracks out of a recheck-misses sweep."""
+    from app.beets.lyrics import fetch_item_lyrics
+
+    seed = _first_item(edit_lib)
+    seed["lyrics_instrumental"] = 1
+    seed.store()
+    item = edit_lib.get_item(seed.id)  # reload: the flex value reads back as "1"
+    assert item is not None
+    assert not item.get("lyrics_checked")
+
+    backend = _FakeBackend(result=Lyrics("late-arriving lyrics", "lrclib", "u"))
+    plugin = _FakePlugin([backend])
+
+    assert fetch_item_lyrics(plugin, item, force=False, write=True).status == (
+        "skipped_instrumental"
+    )
+    assert (
+        fetch_item_lyrics(plugin, item, force=False, write=True, recheck_misses=True).status
+        == "skipped_instrumental"
+    )
+    assert backend.calls == 0  # neither sweep re-searched it
+
+    forced = fetch_item_lyrics(plugin, item, force=True, write=True)
+    assert forced.status == "found"  # force is the one way back in
+    assert backend.calls == 1
+
+    # ...and the way back in must STICK: a found result clears the stale verdict
+    # (beets' own plugin writes lyrics_instrumental=False on every found track).
+    # Without the reset, every later sweep mislabels this track
+    # skipped_instrumental, and clearing its lyrics again would lock it out of
+    # recheck sweeps entirely.
+    from app.beets.lyrics import _is_instrumental
+
+    refetched = edit_lib.get_item(seed.id)
+    assert refetched is not None
+    assert not _is_instrumental(refetched)
+    after = fetch_item_lyrics(plugin, refetched, force=False, write=True)
+    assert after.status == "skipped_existing"
+
+
+def test_fetch_item_false_instrumental_flag_is_not_a_skip(edit_lib: Library) -> None:
+    """beets writes ``lyrics_instrumental`` = False on tracks it found real
+    lyrics for, and that reads back as the string "0" — which is truthy in
+    Python. Those tracks must still be searched."""
+    from app.beets.lyrics import fetch_item_lyrics
+
+    seed = _first_item(edit_lib)
+    seed["lyrics_instrumental"] = False
+    seed.store()
+    item = edit_lib.get_item(seed.id)
+    assert item is not None
+    assert item.get("lyrics_instrumental") in (False, "0", 0)
+
+    backend = _FakeBackend(result=Lyrics("real lyrics", "lrclib", "u"))
+    out = fetch_item_lyrics(_FakePlugin([backend]), item, force=False, write=True)
+
+    assert out.status == "found"
+    assert backend.calls == 1
 
 
 def test_fetch_item_runs_from_worker_thread(edit_lib: Library) -> None:
