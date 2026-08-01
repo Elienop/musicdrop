@@ -6,13 +6,17 @@ case here starts from a clean confuse singleton.
 """
 
 import copy
+import datetime as dt
 import os
 from collections.abc import Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import beets
+import confuse
 import pytest
+import yaml
 
 from app.beets.config_snapshot import build_config_snapshot
 from app.beets.library import LibraryHandle, close_library
@@ -136,36 +140,186 @@ def test_snapshot_does_not_mutate_live_config(loaded_handle: LibraryHandle) -> N
 
     ``flatten()`` copies the mapping levels but hands back the LIVE list objects
     for non-mapping views, so masking the flattened result in place used to
-    overwrite a list-nested credential (e.g. ``kodiupdate.kodi[].pwd``) with the
-    redaction tombstone in the running process — merely opening Settings
-    destroyed the credential until the next Apply/restart.
+    overwrite a list-nested credential with the redaction tombstone in the
+    running process — merely opening Settings destroyed the credential until the
+    next Apply/restart.
 
-    A top-level secret would NOT catch this (flatten rebuilds each mapping
-    level), so the shape under test is deliberately list-nested. Asserting only
-    on the rendered output — as the other redaction tests do — is exactly how
-    this slipped through, so this one asserts on the LIVE config as well.
+    The shape is the real ``kodi`` section (``beetsplug/kodiupdate.py`` registers
+    ``kodi``, not ``kodiupdate``, and its default is a list of instances). A
+    scalar under a mapping would NOT catch this — flatten rebuilds each mapping
+    level, so only the list is shared:
+    ``beets.config.flatten(redact=True)["kodi"] is beets.config["kodi"].get()``
+    is True. Asserting only on the rendered output — as the other redaction
+    tests do — is exactly how this slipped through, so this one asserts on the
+    LIVE config as well.
     """
-    original = [{"host": "kodi.local", "user": "kodi", "pwd": "kodi-leak"}]
-    beets.config["kodiupdate"]["kodi"].set(copy.deepcopy(original))
+    original = [{"host": "kodi.local", "port": 8080, "user": "kodi", "pwd": "kodi-leak"}]
+    beets.config["kodi"].set(copy.deepcopy(original))
 
     snap = build_config_snapshot(loaded_handle)
 
     # The live config still holds the real credential, untouched.
-    assert beets.config["kodiupdate"]["kodi"].get() == original
+    assert beets.config["kodi"].get() == original
     # ...and the read-only view still redacts it.
     assert "kodi-leak" not in snap.effective_yaml
     assert "REDACTED" in snap.effective_yaml
 
 
 def test_safety_net_masks_pwd_and_apisecret_variants(loaded_handle: LibraryHandle) -> None:
-    """Real bundled plugins use ``pwd`` (kodiupdate) and ``apisecret`` (beatport).
+    """Both key names come from real bundled plugins, at their real paths.
+
+    ``beetsplug/beatport.py`` marks ``apisecret`` (and ``apikey``) under the
+    section ``beatport``; ``beetsplug/kodiupdate.py`` marks ``pwd`` under the
+    section ``kodi``, whose value is a LIST of instances.
 
     The previous anchored pattern missed both; this test pins the chosen
     permissive substring pattern so a future "tighten the regex" change can't
     silently regress coverage on these real keys.
     """
     beets.config["beatport"]["apisecret"].set("bp-leak")
-    beets.config["kodiupdate"]["pwd"].set("kodi-leak")
+    beets.config["kodi"].set([{"host": "kodi.local", "pwd": "kodi-leak"}])
     snap = build_config_snapshot(loaded_handle)
     assert "bp-leak" not in snap.effective_yaml
     assert "kodi-leak" not in snap.effective_yaml
+
+
+@pytest.mark.parametrize(
+    ("label", "leaked"),
+    [
+        ("int", 4815162342),
+        ("float", 1.5),
+        ("bool", True),
+        ("bytes", b"kodi-leak"),
+        ("set", {"kodi-leak"}),
+        ("str", "kodi-leak"),
+    ],
+)
+def test_safety_net_masks_secret_of_any_scalar_type(
+    loaded_handle: LibraryHandle, label: str, leaked: Any
+) -> None:
+    """A value under a secret-matching key is masked whatever type YAML parsed it as.
+
+    The safety-net used to fire only on ``str`` leaves, so an UNQUOTED numeric
+    password (``pwd: 4815162342`` — YAML gives an ``int``) rendered verbatim in
+    the "Effective config" pane under a caption promising redacted secrets.
+    ``float``/``bool``/``!!binary``/``!!set`` leaked the same way.
+
+    Asserting on the PARSED document, not on a substring of the text: a
+    ``bytes`` leak dumps as base64 (``!!binary a29kaS1sZWFr``), so a naive
+    ``"kodi-leak" not in effective_yaml`` passes while the credential is right
+    there in the pane.
+    """
+    beets.config["mything"]["pwd"].set(leaked)
+    snap = build_config_snapshot(loaded_handle)
+    parsed = yaml.safe_load(snap.effective_yaml)
+    assert parsed["mything"]["pwd"] == "REDACTED", f"{label} secret survived redaction"
+
+
+def test_safety_net_leaves_null_secret_as_null(loaded_handle: LibraryHandle) -> None:
+    """A secret-matching key set to null must stay null, NOT become "REDACTED".
+
+    It is a cost/benefit call: a null holds no credential, so masking it cannot
+    prevent a leak, while the safety-net matches on KEY NAME alone and
+    over-matches by design (``spotify.tokenfile`` is a filename) — so masking
+    would make a pane captioned "with secrets redacted" claim a credential is
+    configured on a field we only guessed was secret.
+
+    Pass 1 disagrees: it renders a ``.redact``-marked null as "REDACTED", so a
+    bundled plugin's unset credential never reaches this pass. See the
+    ``_plain_redacted`` docstring for why that asymmetry is the safe one.
+
+    Note this is the ONE input on which the two passes disagree: confuse's own
+    pass 1 renders a null ``.redact`` field as "REDACTED"
+    (``config["x"]["api_key"].set(None)`` + ``.redact = True`` flattens to
+    ``"REDACTED"``). That is upstream behaviour, and the disagreement is in the
+    safe direction — pass 2 reveals a null, never a value.
+    """
+    beets.config["mything"]["password"].set(None)
+    snap = build_config_snapshot(loaded_handle)
+    parsed = yaml.safe_load(snap.effective_yaml)
+    assert parsed["mything"]["password"] is None
+
+
+def test_confuse_pass1_ignores_redact_on_a_list_shaped_section() -> None:
+    """Pin the upstream fact the safety-net exists for (``beetsplug/kodiupdate.py``).
+
+    The plugin registers the section ``kodi`` and adds a LIST as its default,
+    then marks ``pwd.redact = True``. Because the view is not a mapping,
+    ``View.flatten`` falls back to ``view.get()`` and the flag is ignored — so
+    pass 1 hands the credential through in cleartext, AND hands back the live
+    list. If a future confuse/beets makes pass 1 honour this, that is a real
+    change to why ``_plain_redacted`` is load-bearing, and this test says so.
+    """
+    beets.config["kodi"].set([{"host": "kodi.local", "pwd": 4815162342}])
+    beets.config["kodi"]["pwd"].redact = True
+
+    with pytest.raises(confuse.ConfigTypeError):
+        beets.config["kodi"].flatten(redact=True)
+
+    flat = beets.config.flatten(redact=True)
+    assert flat["kodi"] == [{"host": "kodi.local", "pwd": 4815162342}]  # unredacted
+    assert flat["kodi"] is beets.config["kodi"].get()  # ...and the LIVE list
+
+
+def test_confuse_pass1_masks_a_null_redact_field() -> None:
+    """Pin the asymmetry documented on the null carve-out.
+
+    ``_plain_redacted`` leaves a null under a secret-matching key alone, and its
+    docstring justifies that while acknowledging pass 1 does the opposite. This
+    asserts the "opposite" half so the justification can't quietly go stale.
+    """
+    beets.config["mything"]["api_key"].set(None)
+    beets.config["mything"]["api_key"].redact = True
+
+    assert beets.config.flatten(redact=True)["mything"]["api_key"] == "REDACTED"
+
+
+def test_non_string_mapping_key_does_not_raise(loaded_handle: LibraryHandle) -> None:
+    """A non-``str`` YAML key with a ``str`` value under it must not 500 Settings.
+
+    The key guard was ``key is not None``, so ``pattern.search(key)`` got handed
+    an ``int``/``bool`` and raised ``TypeError: expected string or bytes-like
+    object``. Real configs hit this: ``substitute: {112: One Twelve}`` (112, 311
+    and 702 are band names) or ``types: {no: int}``, where YAML 1.1 resolves the
+    bare key ``no`` to boolean ``False``. The result was a permanent HTTP 500 on
+    the page that is both the default landing page and the only in-app way to
+    edit the config that causes it.
+
+    The value under each key MUST be a ``str`` — with an ``int`` value the old
+    code short-circuited on ``isinstance(value, str)`` and never reached the
+    regex, so an int-valued case would pass against the bug and prove nothing.
+    """
+    beets.config["substitute"].set(
+        {
+            112: "One Twelve",  # int key
+            False: "int",  # bool key (YAML 1.1 `no:`)
+            1.5: "one and a half",  # float key
+            dt.date(1996, 1, 1): "a date",  # date key
+        }
+    )
+
+    snap = build_config_snapshot(loaded_handle)  # must not raise
+
+    # The dump is still valid YAML and round-trips every exotic key type.
+    parsed = yaml.safe_load(snap.effective_yaml)
+    assert parsed["substitute"] == {
+        112: "One Twelve",
+        False: "int",
+        1.5: "one and a half",
+        dt.date(1996, 1, 1): "a date",
+    }
+
+
+def test_safety_net_leaves_bare_list_of_strings_alone(
+    loaded_handle: LibraryHandle,
+) -> None:
+    """A list does NOT propagate its own key to its items — deliberate, pinned.
+
+    ``passwords: ["a", "b"]`` stays intact because list items are recursed with
+    ``key=None``. Broadening the leaf rule to non-``str`` values must not quietly
+    drag this along with it.
+    """
+    beets.config["mything"]["passwords"].set(["alpha", "beta"])
+    snap = build_config_snapshot(loaded_handle)
+    parsed = yaml.safe_load(snap.effective_yaml)
+    assert parsed["mything"]["passwords"] == ["alpha", "beta"]
