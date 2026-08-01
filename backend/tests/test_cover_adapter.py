@@ -10,11 +10,13 @@ import pytest
 from beets.library import Library
 from mediafile import MediaFile
 
+from app.beets.library import _require_id
+
 PNG = Path(__file__).parent / "fixtures" / "cover.png"
 
 
 def _album_id(lib: Library) -> int:
-    return int(next(iter(lib.albums())).id)
+    return _require_id(next(iter(lib.albums())).id)
 
 
 def test_make_fetchart_plugin_restores_auto(edit_lib: Library) -> None:

@@ -115,6 +115,77 @@ def test_present_but_non_bool_asciify_does_not_error_rows(naming_lib: Library) -
     assert rendered[0].sample_path == "Adele/25/01 Hello.flac"
 
 
+_PARITY_TMPL = "$albumartist/$album/$track $title"
+
+
+def _parity_lib(tmp_path: Path, title: str) -> tuple[Library, Item]:
+    """A one-album library whose single track carries ``title``."""
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "l.db"), str(music), path_format=_PARITY_TMPL)
+    base = music / "raw"
+    base.mkdir(parents=True)
+    f = base / "x.flac"
+    f.write_bytes(b"\x00")
+    it = Item(album="Vespertine", albumartist="Björk", artist="Björk", title=title, track=1, disc=1)
+    it.path = os.fsencode(str(f))
+    lib.add_album([it]).store()
+    return lib, it
+
+
+def _saved_replace_rules() -> list[ReplaceRuleInput]:
+    """The saved ``replace:`` map as draft rows, so the preview legalizes against
+    the same replacements ``Library.get_replacements`` handed the real item."""
+    import beets
+
+    return [
+        ReplaceRuleInput(pattern=pattern, replacement=repl or "")
+        for pattern, repl in beets.config["replace"].get(dict).items()
+    ]
+
+
+def _destination(lib: Library, item: Item) -> str:
+    with lib.music_dir_context():
+        return os.fsdecode(item.destination(relative_to_libdir=True))
+
+
+def test_asciify_preview_matches_beets_destination(tmp_path: Path) -> None:
+    # The preview is only worth showing if it renders what an import would
+    # actually write, so it must mirror ``Item.destination``. Two SEPARATE
+    # separator substitutions are in play: the literal "/" in the title (handled
+    # by ``evaluate_template``) and the "/" unidecode INTRODUCES expanding "½"
+    # (handled inside ``asciify_path``). Miss the second and the preview sprouts
+    # a directory level the import would never create.
+    import beets
+
+    beets.config["asciify_paths"] = True
+    lib, item = _parity_lib(tmp_path, "Réplica/á ½")
+    rules = [NamingRuleInput(query="default", template=_PARITY_TMPL)]
+
+    rendered, errs = render_samples(lib, rules=rules, replace=_saved_replace_rules())
+
+    assert errs == []
+    assert rendered[0].error is None
+    assert rendered[0].sample_path == _destination(lib, item)
+    assert rendered[0].sample_path == "Bjork/Vespertine/01 Replica_a  1_2.flac"
+
+
+def test_without_asciify_unicode_form_is_untouched(tmp_path: Path) -> None:
+    # beets 2.13 normalizes Unicode INSIDE ``asciify_path``; with asciify off it
+    # does not normalize at all, so a decomposed title must survive verbatim.
+    import beets
+
+    beets.config["asciify_paths"] = False
+    decomposed = "Re\u0301plica"  # NFD: "e" + combining acute, NOT a composed "\u00e9"
+    lib, item = _parity_lib(tmp_path, decomposed)
+    rules = [NamingRuleInput(query="default", template=_PARITY_TMPL)]
+
+    rendered, errs = render_samples(lib, rules=rules, replace=_saved_replace_rules())
+
+    assert errs == []
+    assert rendered[0].sample_path == _destination(lib, item)
+    assert rendered[0].sample_path == f"Björk/Vespertine/01 {decomposed}.flac"
+
+
 def test_compile_replacements_splits_valid_and_bad() -> None:
     valid, errs = compile_replacements(
         [

@@ -7,7 +7,7 @@ import pytest
 from beets.library import Item, Library
 from fastapi.testclient import TestClient
 
-from app.beets.library import LibraryHandle
+from app.beets.library import LibraryHandle, _require_id
 from app.import_jobs.fakes import FakeImportRunner
 from app.import_jobs.registry import reset_registry
 from app.models.import_models import (
@@ -74,7 +74,7 @@ def _add_album(lib: Library, *, artist: str, album: str, mb: str | None, n: int)
     ]
     al = lib.add_album(items)  # adds items too
     al.store()
-    return int(al.id)
+    return _require_id(al.id)
 
 
 def _start_and_wait(client: TestClient, parked: list[ParkedAlbum]) -> str:

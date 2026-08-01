@@ -17,6 +17,7 @@ from app.beets.delete import (
     delete_album_op,
     delete_artist,
 )
+from app.beets.library import _require_id
 from app.beets.trash import album_folder
 
 
@@ -25,7 +26,7 @@ def test_delete_album_trashes_whole_folder_and_drops(
 ) -> None:
     trash = tmp_path / "trash"
     album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
-    album_id = int(album.id)
+    album_id = _require_id(album.id)
     folder = album_folder(duplicates_lib, list(album.items()))
     (Path(folder) / "cover-extra.lrc").write_text("[00:01.00] x", encoding="utf-8")
 
@@ -47,7 +48,7 @@ def test_delete_album_ghost_folder_already_gone(duplicates_lib: Library, tmp_pat
     """
     trash = tmp_path / "trash"
     album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
-    album_id = int(album.id)
+    album_id = _require_id(album.id)
     folder = album_folder(duplicates_lib, list(album.items()))
     shutil.rmtree(folder)  # ghost: DB rows remain, the files are gone
 

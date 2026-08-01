@@ -10,13 +10,14 @@ from typing import Any
 from beets.library import Library
 from mediafile import MediaFile
 
+from app.beets.library import _require_id
 from app.models.edit import AlbumEditRequest, AlbumFieldEdits, TrackFieldEdits
 
 
 def _album_id(lib: Library) -> int:
     albums = list(lib.albums())
     assert len(albums) == 1
-    return int(albums[0].id)
+    return _require_id(albums[0].id)
 
 
 def _items(lib: Library, album_id: int) -> list[Any]:
@@ -57,12 +58,14 @@ def test_preview_reports_track_diff(edit_lib: Library) -> None:
     album = edit_lib.get_album(aid)
     assert album is not None
     first = sorted(album.items(), key=lambda i: i.track)[0]
-    req = AlbumEditRequest(tracks=[TrackFieldEdits(item_id=int(first.id), title="15 Step (edit)")])
+    req = AlbumEditRequest(
+        tracks=[TrackFieldEdits(item_id=_require_id(first.id), title="15 Step (edit)")]
+    )
     preview = preview_album_edit(edit_lib, album_id=aid, request=req, move_enabled=False)
 
     assert len(preview.tracks) == 1
     row = preview.tracks[0]
-    assert row.item_id == int(first.id)
+    assert row.item_id == _require_id(first.id)
     assert row.title_before == "15 Step"
     assert row.title_after == "15 Step (edit)"
 

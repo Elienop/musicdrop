@@ -7,7 +7,7 @@ from beets.library import Item
 from fastapi.testclient import TestClient
 
 from app.api.playlists import get_playlists_dir
-from app.beets.library import LibraryHandle
+from app.beets.library import LibraryHandle, _require_id
 from app.models.playlist import PendingTrack
 from app.playlists import store
 from app.playlists.store import StoredEntry
@@ -101,7 +101,7 @@ def _add_track(handle: LibraryHandle, title: str) -> int:
     item = Item(album="Seed", albumartist="Art", artist="Art", title=title, track=1)
     item.path = os.fsencode(path)
     handle.lib.add(item)
-    return int(item.id)
+    return _require_id(item.id)
 
 
 def test_add_tracks_then_detail_resolves(client: TestClient, beets_library: LibraryHandle) -> None:
@@ -760,7 +760,7 @@ def _add_album_track(handle: LibraryHandle, title: str) -> tuple[int, int]:
     item = Item(album=title, albumartist="AA", artist="AA", title=title, track=1)
     item.path = os.fsencode(path)
     album = handle.lib.add_album([item])
-    return int(item.id), int(album.id)
+    return _require_id(item.id), _require_id(album.id)
 
 
 def test_playlist_artwork_lifecycle(client: TestClient) -> None:

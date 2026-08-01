@@ -10,6 +10,7 @@ from beets.library import Library
 from fastapi.testclient import TestClient
 
 from app.api.albums import get_library
+from app.beets.library import _require_id
 from app.main import app
 from tests.conftest import make_test_handle
 
@@ -49,7 +50,7 @@ def test_delete_409_while_disk_sync_runs(
     sync_client: TestClient, edit_lib: Library, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _fake_sync_running(monkeypatch)
-    album_id = int(next(iter(edit_lib.albums())).id)
+    album_id = _require_id(next(iter(edit_lib.albums())).id)
     assert sync_client.delete(f"/api/albums/{album_id}").status_code == 409
 
 

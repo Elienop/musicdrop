@@ -17,7 +17,7 @@ from typing import Literal
 from beets.library import Library
 
 from app.beets.duplicates import normalize
-from app.beets.library import _coerce_duration, _coerce_str
+from app.beets.library import _coerce_duration, _coerce_str, _require_id
 from app.models.playlist_import import ImportEntryPreview, SourceEntry, TrackSummary
 from app.playlists.stem import filename_stem
 
@@ -56,7 +56,7 @@ def build_match_index(lib: Library) -> MatchIndex:
     index = MatchIndex()
     for item in lib.items():
         track = _IndexedTrack(
-            item_id=int(item.id),
+            item_id=_require_id(item.id),
             title=_coerce_str(item.title),
             artist=_coerce_str(item.artist),
             album=_coerce_str(item.album),

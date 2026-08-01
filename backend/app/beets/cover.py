@@ -82,7 +82,8 @@ def install_cover(lib: Library, *, album_id: int, image_bytes: bytes) -> CoverIn
             with os.fdopen(fd, "wb") as fh:
                 fh.write(image_bytes)
             with lib.transaction():
-                album.set_art(tmp)  # copies -> <album dir>/cover.<ext>, sets artpath
+                # set_art takes a bytes path (it fsencodes internally anyway).
+                album.set_art(os.fsencode(tmp))  # copies -> <album dir>/cover.<ext>, sets artpath
                 album.store()  # persist artpath
                 if _embed_enabled():
                     if mime in _EMBEDDABLE:

@@ -21,7 +21,7 @@ from fastapi import HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
 from app.beets.config_editor import _settings, _swap_lock
-from app.beets.library import LibraryHandle, _coerce_str
+from app.beets.library import LibraryHandle, _coerce_str, _require_id
 from app.beets.trash import resolve_trash_dir, trash_album_folder
 from app.library_busy import library_job_active
 from app.models.delete import DeleteResult
@@ -57,7 +57,7 @@ def delete_artist(lib: Library, artist_name: str, *, trash_dir: Path) -> DeleteR
     with lib.music_dir_context():
         target = artist_name.strip()
         album_ids = [
-            int(a.id) for a in lib.albums() if _coerce_str(a.albumartist).strip() == target
+            _require_id(a.id) for a in lib.albums() if _coerce_str(a.albumartist).strip() == target
         ]
         with lib.transaction():
             for album_id in album_ids:

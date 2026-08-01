@@ -7,7 +7,7 @@ dependencies = [
     "fastapi>=0.141.1",
     "uvicorn[standard]>=0.52.0",
     "pydantic-settings>=2.14.2",
-    "beets==2.12.*",
+    "beets==2.13.*",
     "beautifulsoup4>=4.15.0",
     "langdetect>=1.0.9",
     "httpx>=0.28.1",

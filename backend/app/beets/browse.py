@@ -31,6 +31,7 @@ from app.beets.library import (
     _coerce_optional_str,
     _coerce_str,
     _coerce_year,
+    _require_id,
     _to_album_cached,
 )
 from app.models.album import Album
@@ -182,7 +183,7 @@ def _build_row(album: BeetsAlbum) -> BrowseRow:
     albumartist = _coerce_str(album.albumartist)
     genre_raw = _album_genre(album, items)
     return BrowseRow(
-        album_id=int(album.id),
+        album_id=_require_id(album.id),
         artist_key=albumartist.casefold(),
         album_key=_coerce_str(album.album).casefold(),
         albumartist=albumartist,

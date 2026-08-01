@@ -137,6 +137,13 @@ def _coerce_int(value: object) -> int:
     return number
 
 
+def _require_id(value: int | None) -> int:
+    """Narrow a beets row id: objects loaded from the library always have one."""
+    if value is None:  # unreachable for objects fetched from the library
+        raise TypeError("beets object has no id (was never stored in the library)")
+    return value
+
+
 def _coerce_duration(value: object) -> float | None:
     try:
         seconds = float(value)  # type: ignore[arg-type]  # beets value is untyped
@@ -154,7 +161,7 @@ def _album_fields(album: BeetsAlbum, *, track_count: int, genre: str | None) -> 
     already has them — the BrowseRow cache — need not re-query ``album.items()``.
     """
     return {
-        "id": int(album.id),
+        "id": _require_id(album.id),
         "album_artist": _coerce_str(album.albumartist),
         "title": _coerce_str(album.album),
         "year": _coerce_year(album.year),

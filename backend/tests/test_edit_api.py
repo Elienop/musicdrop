@@ -10,6 +10,7 @@ from beets.library import Library
 from fastapi.testclient import TestClient
 
 from app.api.albums import get_library
+from app.beets.library import _require_id
 from app.main import app
 from tests.conftest import make_test_handle
 
@@ -26,7 +27,7 @@ def edit_client(edit_lib: Library, tmp_path: Path) -> Iterator[TestClient]:
 
 
 def _album_id(lib: Library) -> int:
-    return int(next(iter(lib.albums())).id)
+    return _require_id(next(iter(lib.albums())).id)
 
 
 def test_preview_returns_diff(edit_client: TestClient, edit_lib: Library) -> None:

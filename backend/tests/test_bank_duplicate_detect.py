@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 from app.bank import store
 from app.beets.duplicates import find_import_duplicates
-from app.beets.library import LibraryHandle
+from app.beets.library import LibraryHandle, _require_id
 from app.config import settings
 from app.models.import_models import (
     AlbumChange,
@@ -35,7 +35,7 @@ def _add_album(lib: Library, *, artist: str, album: str, mb: str | None, n: int)
     ]
     al = lib.add_album(items)  # adds items too
     al.store()
-    return int(al.id)
+    return _require_id(al.id)
 
 
 # ----- adapter (uses the beets_library fixture directly) -----
@@ -89,7 +89,7 @@ def _add_album_with_paths(lib: Library, *, artist: str, album: str, base: Path, 
         items.append(it)
     al = lib.add_album(items)
     al.store()
-    return int(al.id)
+    return _require_id(al.id)
 
 
 def test_exclude_under_drops_a_reimport_of_the_same_folder(

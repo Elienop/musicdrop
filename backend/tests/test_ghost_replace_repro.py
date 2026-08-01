@@ -33,6 +33,7 @@ from beets.autotag.match import Recommendation as BeetsRec
 from beets.library import Item, Library
 
 from app.beets.import_session import ImportBridge
+from app.beets.library import _require_id
 from app.import_jobs.runner import BeetsImportRunner
 from app.models.import_models import (
     DuplicateAction,
@@ -76,7 +77,7 @@ def _seed_ghost(lib: Library, music: Path, *, artist: str, album: str, folder: s
     item.path = os.fsencode(str(f))
     al = lib.add_album([item])
     al.store()
-    ghost_id = int(al.id)
+    ghost_id = _require_id(al.id)
     shutil.rmtree(base)  # the folder is deleted OUTSIDE the app -> ghost
     return ghost_id
 

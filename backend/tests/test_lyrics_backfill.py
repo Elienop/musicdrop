@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 from beets.library import Library
 
+from app.beets.library import _require_id
 from app.models.lyrics import ItemLyricsOutcome, ItemLyricsStatus
 from tests.conftest import make_test_handle
 
@@ -290,7 +291,7 @@ def test_sweep_album_scope_only_touches_that_album(edit_lib: Library, tmp_path: 
         album="Other", albumartist="Someone", artist="Someone", title="Solo", track=1, disc=1
     )
     edit_lib.add_album([extra])
-    target_id = int(next(iter(edit_lib.albums())).id)  # Radiohead album (first added)
+    target_id = _require_id(next(iter(edit_lib.albums())).id)  # Radiohead album (first added)
 
     reg = LyricsBackfillRegistry()
     reg.start(writes_enabled=False, album_id=target_id, scope_label="Radiohead — In Rainbows")
@@ -417,7 +418,7 @@ def test_sweep_album_scope_keeps_genius(edit_lib: Library, tmp_path: Path) -> No
     from app.lyrics_jobs.runner import sweep
 
     reg = LyricsBackfillRegistry()
-    aid = int(next(iter(edit_lib.albums())).id)
+    aid = _require_id(next(iter(edit_lib.albums())).id)
     reg.start(writes_enabled=False, album_id=aid, scope_label="x")
     seen: dict[str, bool] = {}
 
