@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.playlists import get_playlists_dir
-from app.beets.library import LibraryHandle
+from app.beets.library import LibraryHandle, _require_id
 from app.models.playlist_import import ParsedPlaylist, SourceEntry
 from app.playlists import store
 
@@ -36,7 +36,7 @@ def _seed(
         path=(f"/lib/{artist}/{filename or title}.mp3").encode(),
     )
     item.add(lib)
-    return int(item.id)
+    return _require_id(item.id)
 
 
 def test_preview_from_files_matches_and_counts(

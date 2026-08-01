@@ -404,7 +404,7 @@ def _beets_default_naming() -> tuple[dict[str, str], dict[str, str]]:
     between a naming Save and an Apply (Apply has not reloaded beets yet), so
     reading it would show the pre-Save values and make the panel revert the
     user's just-saved edit. The bundled file is static and version-pinned
-    (``beets==2.11.*``), never contaminated by the loaded user config, so
+    (``beets==2.13.*``), never contaminated by the loaded user config, so
     "on-disk override ?? bundled default" is correct both with no override AND
     immediately after a Save.
 

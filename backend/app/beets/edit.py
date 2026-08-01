@@ -24,6 +24,7 @@ from beets.library import Library
 from beets.util import MoveOperation
 from fastapi import Request
 
+from app.beets.library import _require_id
 from app.models.edit import (
     AlbumDiffSide,
     AlbumEditPreview,
@@ -173,17 +174,17 @@ def preview_album_edit(
         if album is None:
             raise AlbumNotFoundError(f"album {album_id} not found")
         items = sorted(album.items(), key=lambda it: (int(it.disc or 0), int(it.track or 0)))
-        by_id = {int(it.id): it for it in items}
+        by_id = {_require_id(it.id): it for it in items}
 
         album_edits = _album_edits(request)
         track_edits = _track_edits(request)
         _validate_track_ids(request, by_id)
 
         before_album = _album_side(album)
-        before_titles = {int(it.id): str(it.title) for it in items}
-        before_tracknums = {int(it.id): int(it.track or 0) for it in items}
-        before_artists = {int(it.id): str(it.artist) for it in items}
-        before_paths = {int(it.id): _abs(it) for it in items}
+        before_titles = {_require_id(it.id): str(it.title) for it in items}
+        before_tracknums = {_require_id(it.id): int(it.track or 0) for it in items}
+        before_artists = {_require_id(it.id): str(it.artist) for it in items}
+        before_paths = {_require_id(it.id): _abs(it) for it in items}
 
         _apply_in_memory(album, items, album_edits, track_edits)
 
@@ -196,7 +197,7 @@ def preview_album_edit(
 
         track_rows: list[EditTrackChange] = []
         for item in items:
-            iid = int(item.id)
+            iid = _require_id(item.id)
             t_before, t_after = before_titles[iid], str(item.title)
             n_before, n_after = before_tracknums[iid], int(item.track or 0)
             a_before, a_after = before_artists[iid], str(item.artist)
@@ -223,7 +224,7 @@ def preview_album_edit(
             # ``Item._cached_album`` / ``Model.load`` early-exit semantics).
             shadow = _shadow_album(lib, album_id, album_edits)
             for item in items:
-                iid = int(item.id)
+                iid = _require_id(item.id)
                 if shadow is not None:
                     item._cached_album = shadow
                 new_path = os.fsdecode(item.destination(basedir=lib.directory))
@@ -298,7 +299,7 @@ def apply_album_edit(
         if album is None:
             raise AlbumNotFoundError(f"album {album_id} not found")
         items = sorted(album.items(), key=lambda it: (int(it.disc or 0), int(it.track or 0)))
-        by_id = {int(it.id): it for it in items}
+        by_id = {_require_id(it.id): it for it in items}
 
         album_edits = _album_edits(request)
         track_edits = _track_edits(request)
@@ -333,7 +334,7 @@ def apply_album_edit(
                 item.store()
                 results.append(
                     ItemWriteResult(
-                        item_id=int(item.id),
+                        item_id=_require_id(item.id),
                         track=int(item.track or 0),
                         title=str(item.title),
                         written=written,

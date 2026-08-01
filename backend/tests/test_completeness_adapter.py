@@ -16,6 +16,7 @@ import pytest
 import requests
 from beets.library import Item, Library
 
+from app.beets.library import _require_id
 from tests.conftest import build_library
 
 
@@ -87,7 +88,7 @@ def _clear_cache() -> None:
 
 
 def _aid(lib: Library) -> int:
-    return int(next(iter(lib.albums())).id)
+    return _require_id(next(iter(lib.albums())).id)
 
 
 def test_classifies_present_and_missing(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.api.albums import get_library
 from app.artist_art_jobs.registry import reset_artist_art_backfill
+from app.beets.library import _require_id
 from app.main import app
 from tests.conftest import make_test_handle
 
@@ -32,7 +33,7 @@ def test_cover_install_409_when_artist_art_running(
     # reuse the cover test fixtures; start an artist-art job, then cover must 409
     reg = reset_artist_art_backfill()
     reg.start(force=False)  # occupy the slot
-    aid = int(next(iter(edit_lib.albums())).id)
+    aid = _require_id(next(iter(edit_lib.albums())).id)
     r = cover_client.post(
         f"/api/albums/{aid}/cover",
         files={"file": ("c.png", PNG.read_bytes(), "image/png")},

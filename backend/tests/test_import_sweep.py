@@ -27,6 +27,7 @@ import app.beets.import_session as session_mod
 from app.bank import store
 from app.bank.fingerprint import folder_fingerprint
 from app.beets.import_session import ImportBridge, WebImportSession
+from app.beets.library import _require_id
 from app.models.import_models import Recommendation
 
 
@@ -199,7 +200,7 @@ def test_sweep_banks_duplicate_prompt_then_skips(
     assert row.parked is None
     assert row.duplicate is not None
     assert row.duplicate.incoming.album == "OK Computer"
-    assert [e.album_id for e in row.duplicate.existing] == [int(existing_album.id)]
+    assert [e.album_id for e in row.duplicate.existing] == [_require_id(existing_album.id)]
 
 
 def test_sweep_without_folder_banks_nothing(

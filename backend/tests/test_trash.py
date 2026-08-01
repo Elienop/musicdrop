@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
+from beets.dbcore.query import Query
+from beets.dbcore.sort import Sort
 from beets.library import Library
 
-from app.beets.library import _abs_path
+from app.beets.library import _abs_path, _require_id
 from app.beets.trash import (
     _album_root,
     _folder_is_shared,
@@ -23,7 +26,7 @@ from app.beets.trash import (
 def test_trash_album_moves_files_and_drops_db(duplicates_lib: Library, tmp_path: Path) -> None:
     trash = tmp_path / "trash"
     album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
-    album_id = int(album.id)
+    album_id = _require_id(album.id)
 
     with duplicates_lib.transaction():
         trash_path = trash_album(duplicates_lib, album, trash_dir=trash)
@@ -54,7 +57,7 @@ def test_trash_album_folder_takes_whole_folder_incl_sidecars(
 ) -> None:
     trash = tmp_path / "trash"
     album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
-    album_id = int(album.id)
+    album_id = _require_id(album.id)
     src_folder = album_folder(duplicates_lib, list(album.items()))
     # An untracked lyric sidecar next to the tracks — beets has no idea it exists,
     # so the per-item trash would orphan it. The whole-folder move must take it.
@@ -74,7 +77,7 @@ def test_trash_album_folder_ghost_folder_already_gone_drops_rows(
 ) -> None:
     trash = tmp_path / "trash"
     album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
-    album_id = int(album.id)
+    album_id = _require_id(album.id)
     src_folder = album_folder(duplicates_lib, list(album.items()))
     # The user deleted the album's folder on disk (e.g. over SMB); the DB rows
     # are all that's left. Trashing the "ghost" must drop the rows, not raise
@@ -117,9 +120,11 @@ def test_folder_shared_never_materializes_the_item_table(
     calls = {"n": 0}
     real_items = Library.items
 
-    def counting_items(self: Library, *a: object, **k: object) -> object:
+    def counting_items(
+        self: Library, query: str | Sequence[str] | Query | None = None, sort: Sort | None = None
+    ) -> object:
         calls["n"] += 1
-        return real_items(self, *a, **k)
+        return real_items(self, query, sort)
 
     # Resolve album + root BEFORE arming the spy — Album.items() delegates to
     # Library.items internally, and only _folder_is_shared itself is under test.
@@ -189,7 +194,7 @@ def test_folder_shared_matches_an_absolute_stored_row(duplicates_lib: Library) -
     with duplicates_lib.transaction() as tx:
         tx.mutate(
             "UPDATE items SET path = ? WHERE id = ?",
-            (_os.fsencode(_os.path.join(root, "98 Legacy.mp3")), int(intruder.id)),
+            (_os.fsencode(_os.path.join(root, "98 Legacy.mp3")), _require_id(intruder.id)),
         )
     assert _folder_is_shared(duplicates_lib, album, root) is True
 
@@ -214,7 +219,7 @@ def test_folder_shared_weird_path_row_falls_back_to_full_normalization(
     with duplicates_lib.transaction() as tx:
         tx.mutate(
             "UPDATE items SET path = ? WHERE id = ?",
-            (_os.fsencode(rel_weird), int(intruder.id)),
+            (_os.fsencode(rel_weird), _require_id(intruder.id)),
         )
     assert _folder_is_shared(duplicates_lib, album, root) is True
 

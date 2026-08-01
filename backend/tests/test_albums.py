@@ -11,7 +11,13 @@ from fastapi.testclient import TestClient
 
 import app.api.albums as albums_mod
 from app.api.albums import get_library
-from app.beets.library import close_library, get_album_cover, get_album_detail, list_albums
+from app.beets.library import (
+    _require_id,
+    close_library,
+    get_album_cover,
+    get_album_detail,
+    list_albums,
+)
 from app.config import settings
 from app.main import app
 from tests.conftest import make_test_handle
@@ -162,7 +168,7 @@ def test_album_cover_from_artpath(temp_library: Library, tmp_path: Path) -> None
     art_file = tmp_path / "cover.png"
     art_file.write_bytes(_TINY_PNG)
 
-    albums = sorted(temp_library.albums(), key=lambda a: int(a.id))
+    albums = sorted(temp_library.albums(), key=lambda a: _require_id(a.id))
     album = albums[0]
     album["artpath"] = os.fsencode(str(art_file))
     album.store()
@@ -190,7 +196,7 @@ def test_album_cover_matching_if_none_match_returns_304(
     art_file = tmp_path / "cover.png"
     art_file.write_bytes(_TINY_PNG)
 
-    albums = sorted(temp_library.albums(), key=lambda a: int(a.id))
+    albums = sorted(temp_library.albums(), key=lambda a: _require_id(a.id))
     album = albums[0]
     album["artpath"] = os.fsencode(str(art_file))
     album.store()
@@ -223,7 +229,7 @@ def test_album_cover_stale_if_none_match_returns_fresh_bytes(
     art_file = tmp_path / "cover.png"
     art_file.write_bytes(_TINY_PNG)
 
-    albums = sorted(temp_library.albums(), key=lambda a: int(a.id))
+    albums = sorted(temp_library.albums(), key=lambda a: _require_id(a.id))
     album = albums[0]
     album["artpath"] = os.fsencode(str(art_file))
     album.store()
@@ -467,7 +473,7 @@ def test_lifespan_opens_library_from_settings(
 def test_album_detail_exposes_musicbrainz_ids(edit_lib: "Library") -> None:
     from app.beets.library import get_album_detail
 
-    aid = int(next(iter(edit_lib.albums())).id)
+    aid = _require_id(next(iter(edit_lib.albums())).id)
     detail = get_album_detail(edit_lib, aid)
     assert detail is not None
     assert detail.mb_albumid == "mb-edit"
@@ -488,7 +494,7 @@ def test_album_detail_exposes_release_identity(temp_library: "Library") -> None:
     album.mb_albumid = "rel-xyz"
     album.store()
 
-    detail = get_album_detail(temp_library, int(album.id))
+    detail = get_album_detail(temp_library, _require_id(album.id))
     assert detail is not None and detail.release is not None
     r = detail.release
     assert r.data_source == "MusicBrainz"
@@ -515,7 +521,7 @@ def test_list_albums_offloads_scan_to_threadpool(
 def test_album_detail_offloads_load_to_threadpool(
     client: TestClient, temp_library: Library, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    album_id = int(next(iter(temp_library.albums())).id)
+    album_id = _require_id(next(iter(temp_library.albums())).id)
     spy = _threadpool_spy(monkeypatch)
     resp = client.get(f"/api/albums/{album_id}")
     assert resp.status_code == 200
@@ -527,7 +533,7 @@ def test_album_cover_offloads_read_to_threadpool(
 ) -> None:
     # The cover read (blocking file open().read() up to 10 MB / MediaFile parse)
     # is offloaded even on the 404 path — the fixture albums carry no artpath.
-    album_id = int(next(iter(temp_library.albums())).id)
+    album_id = _require_id(next(iter(temp_library.albums())).id)
     spy = _threadpool_spy(monkeypatch)
     resp = client.get(f"/api/albums/{album_id}/cover")
     assert resp.status_code == 404
@@ -541,7 +547,7 @@ def test_album_detail_track_has_lyrics_flag(temp_library: "Library") -> None:
     # Pick the multi-track album (ABBA / Arrival) so both the True and False cases
     # are exercised; iteration order otherwise yields the single-track album.
     album = next(a for a in temp_library.albums() if len(a.items()) >= 2)
-    album_id = int(album.id)
+    album_id = _require_id(album.id)
     items = sorted(album.items(), key=lambda it: it.track)
     items[0].lyrics = "Hello, it's me"
     items[0].store()

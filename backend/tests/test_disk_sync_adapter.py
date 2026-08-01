@@ -16,6 +16,7 @@ from beets.library import Library
 from mediafile import MediaFile
 
 from app.beets.disk_sync import LibraryRootUnavailableError, plan_disk_sync
+from app.beets.library import _require_id
 
 
 @pytest.fixture(autouse=True)
@@ -147,7 +148,7 @@ def test_run_removes_missing_row_keeps_album_with_survivors(edit_lib: Library) -
 
 def test_run_prunes_album_when_all_files_gone(edit_lib: Library) -> None:
     album = next(iter(edit_lib.albums()))
-    album_id = int(album.id)
+    album_id = _require_id(album.id)
     for it in album.items():
         os.remove(it.path)
     _outcomes, emptied = _run(edit_lib)
@@ -172,13 +173,13 @@ def test_run_refreshes_changed_tags_and_realigns_album(edit_lib: Library) -> Non
         mf.save()
         os.utime(p, (future, future))
     outcomes, _ = _run(edit_lib)
-    refreshed = edit_lib.get_item(item.id)
+    refreshed = edit_lib.get_item(_require_id(item.id))
     assert refreshed is not None
     assert refreshed.title == "Fresh Title From Disk" and refreshed.year == 1987
     updated = [o for o in outcomes if o.status == "updated"]
     assert updated and any("title" in o.fields for o in updated)
     # Album-level realign: year is an Album.item_keys field.
-    realigned = edit_lib.get_album(int(album.id))
+    realigned = edit_lib.get_album(_require_id(album.id))
     assert realigned is not None and realigned.year == 1987
 
 

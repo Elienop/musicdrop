@@ -4,7 +4,7 @@ import shutil
 import threading
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import beets.importer.tasks as beets_tasks
 import pytest
@@ -16,7 +16,7 @@ from beets.autotag.match import Recommendation as BeetsRec
 from beets.importer.actions import Action
 from beets.importer.actions import DuplicateAction as BeetsDuplicateAction
 from beets.importer.tasks import ImportTask
-from beets.library import Item, Library
+from beets.library import Album, Item, Library
 
 from app.beets.import_mapping import embedded_art
 from app.beets.import_session import (
@@ -1213,7 +1213,7 @@ def test_next_choose_match_flushes_previous_applied_album_id(
     # beets' user_query stage then runs _apply_choice -> task.add(lib), which
     # sets task.album; simulate that before the next task arrives (the
     # sequential pipeline guarantees this ordering).
-    task1.album = _AddedAlbum(42)
+    task1.album = cast(Album, _AddedAlbum(42))
 
     # Task 2 entering choose_match flushes task 1's follow-up outcome.
     task2 = _make_task(match, monkeypatch, BeetsRec.strong)
@@ -1241,7 +1241,7 @@ def test_run_flushes_the_final_album_id_after_super_run(
     def fake_super_run(self: ImportSession) -> None:
         # The "pipeline": choose the task, then beets adds it to the library.
         task.choose_match(self)
-        task.album = _AddedAlbum(7)
+        task.album = cast(Album, _AddedAlbum(7))
 
     # Patch the PARENT run; WebImportSession.run's super().run() resolves to it.
     monkeypatch.setattr(ImportSession, "run", fake_super_run)
@@ -1267,7 +1267,7 @@ def test_decided_apply_also_gains_album_id_via_flush(
 
     def fake_super_run(self: ImportSession) -> None:
         task.choose_match(self)  # parks; unblocked by push_choice below
-        task.album = _AddedAlbum(9)
+        task.album = cast(Album, _AddedAlbum(9))
 
     monkeypatch.setattr(ImportSession, "run", fake_super_run)
 
@@ -1628,7 +1628,7 @@ def test_directive_apply_gains_album_id_follow_up(monkeypatch: pytest.MonkeyPatc
     session._directive = BankApplyDirective(action="apply", search_id="rel-1")
     task = _make_task(match, monkeypatch, BeetsRec.medium)
     task.choose_match(session)
-    task.album = _AddedAlbum(13)  # beets' task.add ran (sequential pipeline)
+    task.album = cast(Album, _AddedAlbum(13))  # beets' task.add ran (sequential pipeline)
     session._flush_album_ids()
     follow_ups = [o for o in bridge.drain_outcomes() if o.album_id is not None]
     assert [o.album_id for o in follow_ups] == [13]

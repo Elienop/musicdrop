@@ -1,9 +1,13 @@
 import os
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
+from beets.dbcore.query import Query
+from beets.dbcore.sort import Sort
 from beets.library import Item, Library
 
+from app.beets.library import _require_id
 from app.beets.playlists import (
     TrackRef,
     cover_album_ids,
@@ -50,7 +54,7 @@ def _lib_with_items(tmp_path: Path) -> tuple[Library, list[int]]:
         length=200.0,
     )
     lib.add_album([a, b])
-    return lib, [int(a.id), int(b.id)]
+    return lib, [_require_id(a.id), _require_id(b.id)]
 
 
 def _lib_with_albums_and_singleton(tmp_path: Path) -> tuple[object, dict[str, int]]:
@@ -83,12 +87,12 @@ def _lib_with_albums_and_singleton(tmp_path: Path) -> tuple[object, dict[str, in
     lib.add(si)
     handle = make_test_handle(lib, tmp_path)
     return handle, {
-        "a1": int(a1.id),
-        "a2": int(a2.id),
-        "b1": int(b1.id),
-        "solo": int(si.id),
-        "album_a": int(alb_a.id),
-        "album_b": int(alb_b.id),
+        "a1": _require_id(a1.id),
+        "a2": _require_id(a2.id),
+        "b1": _require_id(b1.id),
+        "solo": _require_id(si.id),
+        "album_a": _require_id(alb_a.id),
+        "album_b": _require_id(alb_b.id),
     }
 
 
@@ -195,9 +199,11 @@ def test_resolve_entries_uses_one_batched_query_not_per_entry(
     counts = {"items": 0}
     real_items = lib.items
 
-    def spy_items(query: object) -> object:
+    def spy_items(
+        query: str | Sequence[str] | Query | None = None, sort: Sort | None = None
+    ) -> object:
         counts["items"] += 1
-        return real_items(query)
+        return real_items(query, sort)
 
     def boom_get_item(item_id: int) -> object:
         raise AssertionError("resolve_entries must not call get_item per entry")
@@ -285,5 +291,5 @@ def test_track_match_refs_track_zero_becomes_none(tmp_path: Path) -> None:
     it = Item(album="Al", albumartist="Ar", artist="Ar", title="T", track=0, length=10.0)
     it.path = os.fsencode(str(f))
     lib.add(it)
-    refs = track_match_refs(lib, [int(it.id)])
+    refs = track_match_refs(lib, [_require_id(it.id)])
     assert refs[0].track is None  # absent/zero track number -> None

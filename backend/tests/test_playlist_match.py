@@ -1,6 +1,6 @@
 from typing import Any
 
-from app.beets.library import LibraryHandle
+from app.beets.library import LibraryHandle, _require_id
 from app.beets.playlist_match import build_match_index, match_entries
 
 
@@ -24,7 +24,7 @@ def _seed(
         path=(f"/lib/{artist}/{filename or title}.mp3").encode(),
     )
     item.add(lib)
-    return int(item.id)
+    return _require_id(item.id)
 
 
 def _entry(position: int = 0, **kwargs: Any) -> Any:

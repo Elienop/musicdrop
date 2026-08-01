@@ -17,7 +17,7 @@ from typing import Any
 from beets.dbcore.query import MatchQuery, OrQuery
 from beets.library import Library
 
-from app.beets.library import LibraryHandle, _abs_path, _coerce_duration, _coerce_str
+from app.beets.library import LibraryHandle, _abs_path, _coerce_duration, _coerce_str, _require_id
 from app.models.playlist import PlaylistTrack
 from app.playlists.m3u import M3uEntry
 from app.playlists.store import StoredEntry  # store never imports beets - no cycle
@@ -149,7 +149,7 @@ def _items_by_id(lib: Library, ids: Iterable[int]) -> dict[int, Any]:
         chunk = unique[start : start + _ID_FETCH_CHUNK]
         try:
             for item in lib.items(OrQuery([MatchQuery("id", i) for i in chunk])):
-                out[int(item.id)] = item
+                out[_require_id(item.id)] = item
         except Exception:  # a bad row aborts this chunk's remainder; those ids degrade
             continue
     return out
