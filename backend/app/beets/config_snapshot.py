@@ -14,9 +14,12 @@ The snapshot carries two YAML views:
      masks any string value whose KEY matches the pattern — protection against
      third-party plugins that forgot to mark their fields ``.redact = True``.
 
-The flattened mapping is a confuse ``OrderedDict`` (a ``dict`` subclass);
-PyYAML's ``safe_dump`` refuses non-plain ``dict`` subclasses, so ``_to_plain``
-recursively converts every level before rendering.
+``_plain_redacted`` applies that second pass while COPYING: ``flatten()`` only
+rebuilds mapping levels and returns the live object for everything else, so
+masking in place reached back into ``beets.config`` and destroyed list-nested
+credentials in the running process. The same pass also converts every confuse
+``OrderedDict`` (a ``dict`` subclass) to a plain ``dict``, which PyYAML's
+``safe_dump`` requires.
 """
 
 from __future__ import annotations
@@ -60,8 +63,8 @@ def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
     # ``redact`` flag, then the SECRET_KEY_PATTERN safety-net for third-party
     # plugins that forgot to mark their fields ``.redact = True``.
     flat = beets.config.flatten(redact=True)
-    _mask_secrets_in_place(flat, SECRET_KEY_PATTERN)
-    effective_yaml = yaml.safe_dump(_to_plain(flat), sort_keys=False, default_flow_style=False)
+    plain = _plain_redacted(flat, None, SECRET_KEY_PATTERN)
+    effective_yaml = yaml.safe_dump(plain, sort_keys=False, default_flow_style=False)
 
     # Editable document — the user's own config.yaml, byte-for-byte (comments,
     # anchors, key order and quoting preserved). Served RAW, NOT redacted: Save
@@ -103,40 +106,41 @@ def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
     )
 
 
-def _mask_secrets_in_place(d: Any, pattern: re.Pattern[str]) -> None:
-    """Recursively walk a flattened-confuse mapping and mask matching keys.
+def _plain_redacted(value: Any, key: str | None, pattern: re.Pattern[str]) -> Any:
+    """Return a fresh, plain, secret-masked copy of a flattened-confuse value.
 
-    Descends into both ``dict`` values AND ``list`` values; without the list
-    branch a plugin config like ``accounts: [{api_token: "..."}, ...]`` would
-    slip through unredacted. Other leaf types (``int``/``bool``) under a
-    matching key are left as-is — they're not secrets in any plugin we've seen,
-    and forcing them to a string would change the rendered YAML's shape.
+    Masking and plain-ifying are ONE pass on purpose: masking in place is not an
+    option here. ``View.flatten()`` rebuilds each *mapping* level but falls back
+    to ``view.get()`` for anything that isn't a mapping, which hands back the
+    LIVE object — so a list-nested credential (``kodiupdate.kodi[].pwd``) lives
+    in the same list the running config holds. Writing the tombstone into it
+    destroyed that credential in-process on every Settings load. Building new
+    containers on the way out means the returned tree shares no ``dict`` or
+    ``list`` with ``beets.config``, so the mutation is structurally impossible
+    rather than merely avoided by discipline. (An exotic mutable leaf — a
+    ``!!set`` in the YAML — is still passed through by identity, but nothing
+    here writes into a leaf, only rebinds the key above it.) (The same masking-in-place mistake once
+    ate comments and list-nested credentials on the editable document; the
+    effective view had kept its own copy of the bug.)
 
-    Matching leaves are replaced with confuse's own ``REDACTED_TOMBSTONE``
-    sentinel so the two redaction passes agree on a single rendered marker.
+    Plain-ifying is required by PyYAML: ``yaml.safe_dump`` only represents plain
+    ``dict``/``list``/scalars, and any subclass — including the confuse
+    ``OrderedDict`` every flattened level is — raises a ``RepresenterError``.
+
+    Masking rules (unchanged): a ``str`` leaf whose own KEY matches ``pattern``
+    becomes confuse's ``REDACTED_TOMBSTONE``, so both redaction passes render
+    one marker. ``dict`` and ``list`` values are recursed into — without the
+    list branch a plugin config like ``accounts: [{api_token: "..."}, ...]``
+    would slip through. A list does NOT propagate its own key to its items
+    (``key=None``), so a bare list of strings under a matching key is left
+    alone, matching the previous behavior. Non-``str`` leaves (``int``/``bool``)
+    under a matching key stay as-is — they're not secrets in any plugin we've
+    seen, and stringifying them would change the rendered YAML's shape.
     """
-    if isinstance(d, list):
-        for item in d:
-            _mask_secrets_in_place(item, pattern)
-        return
-    if not isinstance(d, dict):
-        return
-    for k, v in list(d.items()):
-        if isinstance(v, dict | list):
-            _mask_secrets_in_place(v, pattern)
-        elif isinstance(v, str) and pattern.search(k):
-            d[k] = REDACTED_TOMBSTONE
-
-
-def _to_plain(d: Any) -> Any:
-    """Convert nested confuse ``OrderedDict`` to plain ``dict`` for PyYAML.
-
-    ``yaml.safe_dump`` only knows how to represent plain ``dict``/``list``/
-    scalars; any subclass (including stdlib ``OrderedDict``) raises a
-    ``RepresenterError``. Recurse so every nested mapping is converted.
-    """
-    if isinstance(d, dict):
-        return {k: _to_plain(v) for k, v in d.items()}
-    if isinstance(d, list):
-        return [_to_plain(v) for v in d]
-    return d
+    if isinstance(value, dict):
+        return {k: _plain_redacted(v, k, pattern) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_plain_redacted(item, None, pattern) for item in value]
+    if key is not None and isinstance(value, str) and pattern.search(key):
+        return REDACTED_TOMBSTONE
+    return value

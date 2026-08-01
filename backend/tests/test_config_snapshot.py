@@ -5,6 +5,7 @@ resets ``beets.config`` and the plugin registry between every test, so each
 case here starts from a clean confuse singleton.
 """
 
+import copy
 import os
 from collections.abc import Iterator
 from datetime import datetime, timedelta
@@ -127,6 +128,32 @@ def test_safety_net_recurses_into_lists_of_dicts(loaded_handle: LibraryHandle) -
     beets.config["mything"]["accounts"].set([{"token": "leakme"}])
     snap = build_config_snapshot(loaded_handle)
     assert "leakme" not in snap.effective_yaml
+    assert "REDACTED" in snap.effective_yaml
+
+
+def test_snapshot_does_not_mutate_live_config(loaded_handle: LibraryHandle) -> None:
+    """Building the snapshot must leave ``beets.config`` byte-identical.
+
+    ``flatten()`` copies the mapping levels but hands back the LIVE list objects
+    for non-mapping views, so masking the flattened result in place used to
+    overwrite a list-nested credential (e.g. ``kodiupdate.kodi[].pwd``) with the
+    redaction tombstone in the running process — merely opening Settings
+    destroyed the credential until the next Apply/restart.
+
+    A top-level secret would NOT catch this (flatten rebuilds each mapping
+    level), so the shape under test is deliberately list-nested. Asserting only
+    on the rendered output — as the other redaction tests do — is exactly how
+    this slipped through, so this one asserts on the LIVE config as well.
+    """
+    original = [{"host": "kodi.local", "user": "kodi", "pwd": "kodi-leak"}]
+    beets.config["kodiupdate"]["kodi"].set(copy.deepcopy(original))
+
+    snap = build_config_snapshot(loaded_handle)
+
+    # The live config still holds the real credential, untouched.
+    assert beets.config["kodiupdate"]["kodi"].get() == original
+    # ...and the read-only view still redacts it.
+    assert "kodi-leak" not in snap.effective_yaml
     assert "REDACTED" in snap.effective_yaml
 
 
