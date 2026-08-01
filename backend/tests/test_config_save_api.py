@@ -147,10 +147,13 @@ def test_save_writes_list_nested_secret_verbatim(
     """Regression for the list-nested secret-destruction bug: saving the raw
     document writes real credentials back verbatim — the literal ``REDACTED``
     never lands on disk (the old redacted-merge wrote it over list-nested
-    secrets like ``kodi: [{pwd: ...}]``)."""
+    secrets like ``kodi: [{pwd: ...}]``).
+
+    The fixture is the real kodiupdate shape: that plugin registers the section
+    ``kodi`` (not ``kodiupdate``) and its config is a LIST of instances."""
     text = (
         beets_library_config_path.read_text()
-        + "\nkodiupdate:\n  kodi:\n    - host: 10.0.0.5\n      pwd: REAL_KODI_PW\n"
+        + "\nkodi:\n  - host: 10.0.0.5\n    port: 8080\n    pwd: REAL_KODI_PW\n"
     )
     beets_library_config_path.write_text(text)
     sha = _cas(client)

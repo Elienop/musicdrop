@@ -95,7 +95,7 @@ const routes = [
 function appHandlers() {
   return [
     http.get(HEALTH_URL, () =>
-      HttpResponse.json({ status: "ok", version: "0.1.0" }),
+      HttpResponse.json({ status: "ok", version: "v0.29.1" }),
     ),
     http.get(STATS_URL, () =>
       HttpResponse.json({

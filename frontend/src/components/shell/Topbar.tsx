@@ -138,9 +138,24 @@ async function fetchHealth() {
 }
 
 /**
+ * Render the backend's reported version for display. The two shapes it
+ * actually arrives in are BOTH already display-ready:
+ *   - a release image: the Docker build arg is the git tag, so "v0.29.1" —
+ *     prefixing again gave the "vv0.29.1" that shipped;
+ *   - a dev / CI build: settings.version's default, the literal "dev" —
+ *     prefixing that would give the equally wrong "vdev".
+ * So only a bare numeric version (never produced today, but the obvious way
+ * for the tag scheme to change) gets a "v" added.
+ */
+function formatVersion(version: string): string {
+  return /^\d/.test(version) ? `v${version}` : version;
+}
+
+/**
  * Compact backend health indicator. Status is conveyed by THREE carriers,
  * not color alone (WCAG 1.4.1): a shape-distinct icon (check / x-circle /
- * spinner), a short visible text label, and the dot color.
+ * spinner), a short visible text label, and the dot color. The running
+ * version trails on the right of the same row (expanded sidebar only).
  */
 export function HealthStatus({ compact = false }: { compact?: boolean }) {
   const { data, isPending, isError } = useQuery({
@@ -150,49 +165,85 @@ export function HealthStatus({ compact = false }: { compact?: boolean }) {
 
   const reachable = !isError && !isPending;
   const label = isPending ? "Checking" : reachable ? "Online" : "Offline";
+  const version = reachable && data ? formatVersion(data.version) : null;
+  // REACHABILITY decides the wording; the version is only decoration on top of
+  // it. Keying this off `version` instead made a reachable backend reporting an
+  // empty version (`settings.version` is a plain `str`, overridable at runtime
+  // via MUSICDROP_VERSION) render a green check labelled "Online" while its
+  // accessible name said "Backend unreachable". No version → no empty parens.
   const description = isPending
     ? "Checking backend"
-    : reachable
-      ? `Backend online (v${data.version})`
-      : "Backend unreachable";
+    : !reachable
+      ? "Backend unreachable"
+      : version
+        ? `Backend online (${version})`
+        : "Backend online";
 
   const Icon = isPending ? Spinner : reachable ? Online : ErrorIcon;
 
   return (
+    // `w-full` (expanded only) so the version can sit at the right edge of the
+    // sidebar's health row; the collapsed rail stays shrink-to-fit.
     <span
-      className="flex items-center gap-3 text-sm"
-      title={description}
-      aria-label={description}
-      role="status"
+      className={cn("flex items-center gap-3 text-sm", !compact && "w-full")}
     >
-      <Icon
-        aria-hidden="true"
-        className={cn(
-          "size-5",
-          isPending
-            ? "text-muted-foreground animate-spin"
-            : reachable
-              ? "text-success"
-              : "text-destructive",
-        )}
-      />
-      {/* Visually icon-only when `compact` (the collapsed sidebar rail) —
-          but sr-only, NOT hidden: live regions announce content changes, not
-          aria-label changes, so the role="status" wrapper must keep text for
-          an Online→Offline flip to announce. Below sm the label is simply
-          hidden; the wrapper's title + aria-label carry on-demand status. */}
+      {/* The live region is the STATUS only — see the version note below.
+          `shrink-0` fixes which half degrades when the row runs out of width:
+          the status (icon + "Online") is the meaning and stays intact, so an
+          over-long version truncates alone instead of squeezing the label. */}
       <span
-        className={cn(
-          compact ? "sr-only" : "hidden sm:inline",
-          isPending
-            ? "text-muted-foreground"
-            : reachable
-              ? "text-success"
-              : "text-destructive",
-        )}
+        className="flex shrink-0 items-center gap-3"
+        title={description}
+        aria-label={description}
+        role="status"
       >
-        {label}
+        <Icon
+          aria-hidden="true"
+          className={cn(
+            "size-5 shrink-0",
+            isPending
+              ? "text-muted-foreground animate-spin"
+              : reachable
+                ? "text-success"
+                : "text-destructive",
+          )}
+        />
+        {/* Visually icon-only when `compact` (the collapsed sidebar rail) —
+            but sr-only, NOT hidden: live regions announce content changes, not
+            aria-label changes, so the role="status" wrapper must keep text for
+            an Online→Offline flip to announce. (The `sm:` breakpoint on the
+            expanded branch never fires: the only mount is Sidebar's aside,
+            which is itself `hidden md:flex`, so this label is never rendered
+            below sm — it is inert, not a live small-screen design.) */}
+        <span
+          className={cn(
+            compact ? "sr-only" : "hidden sm:inline",
+            isPending
+              ? "text-muted-foreground"
+              : reachable
+                ? "text-success"
+                : "text-destructive",
+          )}
+        >
+          {label}
+        </span>
       </span>
+      {/* Version: reference info, deliberately OUTSIDE the live region — it
+          never changes while the app runs, so putting a static string inside
+          role="status" only risks it being re-announced on every
+          Online→Offline flip. `aria-hidden` because the identical string is
+          already in the wrapper's aria-label/title, which is ALSO the only
+          carrier in the collapsed rail; without it AT would hear the version
+          twice, once as a contextless "v0.29.1". Not rendered when compact:
+          the narrow rail has no room for it. */}
+      {!compact && version && (
+        <span
+          aria-hidden="true"
+          className="text-muted-foreground ml-auto min-w-0 truncate text-xs"
+        >
+          {version}
+        </span>
+      )}
     </span>
   );
 }
