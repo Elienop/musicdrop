@@ -3081,6 +3081,8 @@ export interface components {
             processed: number;
             /** Found */
             found: number;
+            /** Instrumental */
+            instrumental: number;
             /** Not Found */
             not_found: number;
             /** Failed */
@@ -3098,12 +3100,20 @@ export interface components {
             /** Scope Label */
             scope_label: string;
         };
-        /** LyricsCoverage */
+        /**
+         * LyricsCoverage
+         * @description Mutually exclusive buckets over every library track.
+         *
+         *     A track lands in at most one of with_lyrics / instrumental /
+         *     checked_no_lyrics; the remainder has simply never been searched.
+         */
         LyricsCoverage: {
             /** Total */
             total: number;
             /** With Lyrics */
             with_lyrics: number;
+            /** Instrumental */
+            instrumental: number;
             /** Checked No Lyrics */
             checked_no_lyrics: number;
             /** Percent */
@@ -4061,6 +4071,8 @@ export interface components {
             mb_trackid: string | null;
             /** Has Lyrics */
             has_lyrics: boolean;
+            /** Instrumental */
+            instrumental: boolean;
             /** Format */
             format?: string | null;
         };

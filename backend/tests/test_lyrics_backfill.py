@@ -14,7 +14,7 @@ from tests.conftest import make_test_handle
 def test_backfill_status_model() -> None:
     from app.models.lyrics import LyricsBackfillStatus, LyricsCoverage
 
-    cov = LyricsCoverage(total=10, with_lyrics=7, checked_no_lyrics=2, percent=70.0)
+    cov = LyricsCoverage(total=10, with_lyrics=7, instrumental=1, checked_no_lyrics=2, percent=70.0)
     assert cov.percent == 70.0
 
     status = LyricsBackfillStatus(
@@ -23,6 +23,7 @@ def test_backfill_status_model() -> None:
         total=10,
         processed=4,
         found=3,
+        instrumental=0,
         not_found=1,
         failed=0,
         skipped=0,
@@ -59,6 +60,20 @@ def test_registry_lifecycle_counts() -> None:
     reg.finish("done")
     assert reg.is_running() is False
     assert reg.state().phase == "done"
+
+
+def test_registry_counts_instrumental_apart_from_found_and_skipped() -> None:
+    from app.lyrics_jobs.registry import LyricsBackfillRegistry
+
+    reg = LyricsBackfillRegistry()
+    reg.start(writes_enabled=True)
+    reg.record(_outcome("found"))
+    reg.record(_outcome("instrumental"))
+    reg.record(_outcome("skipped_instrumental"))
+
+    s = reg.state()
+    assert (s.found, s.instrumental, s.skipped, s.processed) == (1, 1, 1, 3)
+    assert s.not_found == 0 and s.failed == 0
 
 
 def test_registry_rejects_second_start() -> None:
@@ -192,6 +207,68 @@ def test_lyrics_coverage_counts_checked_no_lyrics_flex_attr(edit_lib: Library) -
     cov = lyrics_coverage(edit_lib)
     assert cov.total == 3
     assert cov.with_lyrics == 1
+    assert cov.checked_no_lyrics == 1
+
+
+def test_lyrics_coverage_buckets_are_mutually_exclusive(edit_lib: Library) -> None:
+    """with_lyrics / instrumental / checked_no_lyrics must never double-count.
+
+    The instrumental bucket does NOT depend on ``lyrics_checked``: beets' 2.13
+    migration flags existing instrumentals without it, and those tracks have to
+    read as instrumental immediately, before any sweep runs.
+    """
+    from beets.library import Item
+
+    from app.beets.lyrics import lyrics_coverage
+
+    tracks = sorted(next(iter(edit_lib.albums())).items(), key=lambda it: it.track)
+    tracks[0].lyrics = "x"  # has lyrics
+    tracks[0].store()
+    tracks[1]["lyrics_instrumental"] = 1  # migrated shape: flag only, no lyrics_checked
+    tracks[1].store()
+    tracks[2]["lyrics_checked"] = 1  # searched, found nothing
+    tracks[2].store()
+    both = Item(
+        album="In Rainbows", albumartist="Radiohead", artist="Radiohead", title="B", track=4
+    )
+    edit_lib.add(both)
+    both["lyrics_instrumental"] = 1  # instrumental AND checked -> counts once
+    both["lyrics_checked"] = 1
+    both.store()
+    edit_lib.add(  # neither: never searched
+        Item(album="In Rainbows", albumartist="Radiohead", artist="Radiohead", title="N", track=5)
+    )
+    stale = Item(  # real lyrics AND a stale instrumental flag -> with_lyrics ONLY
+        album="In Rainbows", albumartist="Radiohead", artist="Radiohead", title="S", track=6
+    )
+    edit_lib.add(stale)
+    stale.lyrics = "real words"
+    stale["lyrics_instrumental"] = 1
+    stale.store()
+
+    cov = lyrics_coverage(edit_lib)
+
+    assert cov.total == 6
+    assert cov.with_lyrics == 2
+    assert cov.instrumental == 2
+    assert cov.checked_no_lyrics == 1
+    assert cov.with_lyrics + cov.instrumental + cov.checked_no_lyrics <= cov.total
+    assert cov.percent == pytest.approx(33.3, abs=0.1)  # percent stays with_lyrics/total
+
+
+def test_lyrics_coverage_ignores_a_false_instrumental_flag(edit_lib: Library) -> None:
+    # beets writes lyrics_instrumental=False on tracks it DID find lyrics for;
+    # that reads back as the string "0", which is truthy in Python.
+    from app.beets.lyrics import lyrics_coverage
+
+    tracks = sorted(next(iter(edit_lib.albums())).items(), key=lambda it: it.track)
+    tracks[0]["lyrics_instrumental"] = False
+    tracks[0]["lyrics_checked"] = 1
+    tracks[0].store()
+
+    cov = lyrics_coverage(edit_lib)
+
+    assert cov.instrumental == 0
     assert cov.checked_no_lyrics == 1
 
 

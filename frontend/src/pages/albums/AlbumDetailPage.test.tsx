@@ -23,6 +23,7 @@ function makeTrack(overrides: Partial<Track> = {}): Track {
     artist: "Radiohead",
     mb_trackid: null,
     has_lyrics: false,
+    instrumental: false,
     ...overrides,
   };
 }

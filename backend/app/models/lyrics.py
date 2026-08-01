@@ -9,14 +9,18 @@ from typing import Literal
 from pydantic import BaseModel
 
 #: Per-track fetch outcome. found -> written (if writes on); the rest leave the
-#: file untouched. skipped_existing = already had lyrics (skip-existing default);
-#: skipped_no_metadata = no usable artist/title to search.
+#: file untouched. instrumental = a backend answered "this track has no lyrics by
+#: nature" (definitive, so the search stops there); skipped_instrumental = already
+#: flagged as one, so no sweep re-searches it. skipped_existing = already had
+#: lyrics (skip-existing default); skipped_no_metadata = no usable artist/title.
 ItemLyricsStatus = Literal[
     "found",
+    "instrumental",
     "not_found",
     "fetch_failed",
     "skipped_existing",
     "skipped_checked",
+    "skipped_instrumental",
     "skipped_no_metadata",
 ]
 
@@ -29,10 +33,17 @@ class ItemLyricsOutcome(BaseModel):
 
 
 class LyricsCoverage(BaseModel):
+    """Mutually exclusive buckets over every library track.
+
+    A track lands in at most one of with_lyrics / instrumental /
+    checked_no_lyrics; the remainder has simply never been searched.
+    """
+
     total: int
     with_lyrics: int
-    checked_no_lyrics: int  # no lyrics, but already searched (lyrics_checked set)
-    percent: float  # 0.0-100.0, rounded to 1 dp
+    instrumental: int  # no lyrics BY NATURE (beets' lyrics_instrumental flag)
+    checked_no_lyrics: int  # no lyrics, already searched, not instrumental
+    percent: float  # with_lyrics/total, 0.0-100.0, rounded to 1 dp
 
 
 #: idle = never run / reset; running = sweeping; done/stopped/failed = terminal.
@@ -45,6 +56,7 @@ class LyricsBackfillStatus(BaseModel):
     total: int
     processed: int
     found: int
+    instrumental: int  # answered "instrumental" this run (not a miss)
     not_found: int
     failed: int
     skipped: int

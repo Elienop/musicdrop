@@ -7784,6 +7784,10 @@
             "type": "integer",
             "title": "Found"
           },
+          "instrumental": {
+            "type": "integer",
+            "title": "Instrumental"
+          },
           "not_found": {
             "type": "integer",
             "title": "Not Found"
@@ -7845,6 +7849,7 @@
           "total",
           "processed",
           "found",
+          "instrumental",
           "not_found",
           "failed",
           "skipped",
@@ -7866,6 +7871,10 @@
             "type": "integer",
             "title": "With Lyrics"
           },
+          "instrumental": {
+            "type": "integer",
+            "title": "Instrumental"
+          },
           "checked_no_lyrics": {
             "type": "integer",
             "title": "Checked No Lyrics"
@@ -7879,10 +7888,12 @@
         "required": [
           "total",
           "with_lyrics",
+          "instrumental",
           "checked_no_lyrics",
           "percent"
         ],
-        "title": "LyricsCoverage"
+        "title": "LyricsCoverage",
+        "description": "Mutually exclusive buckets over every library track.\n\nA track lands in at most one of with_lyrics / instrumental /\nchecked_no_lyrics; the remainder has simply never been searched."
       },
       "MergePreview": {
         "properties": {
@@ -10210,6 +10221,10 @@
             "type": "boolean",
             "title": "Has Lyrics"
           },
+          "instrumental": {
+            "type": "boolean",
+            "title": "Instrumental"
+          },
           "format": {
             "anyOf": [
               {
@@ -10231,7 +10246,8 @@
           "duration_seconds",
           "artist",
           "mb_trackid",
-          "has_lyrics"
+          "has_lyrics",
+          "instrumental"
         ],
         "title": "Track"
       },

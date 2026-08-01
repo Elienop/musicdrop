@@ -21,7 +21,7 @@ const idleAcquisition: AcquisitionQueueStatus = {
 };
 const idleLyrics: LyricsBackfillStatus = {
   phase: "idle", job_id: null, total: 0, processed: 0, found: 0,
-  not_found: 0, failed: 0, skipped: 0, current: null,
+  instrumental: 0, not_found: 0, failed: 0, skipped: 0, current: null,
   writes_enabled: false, error: null, album_id: null, scope_label: "library",
 };
 const idleArtistArt: ArtistArtBackfillStatus = {
@@ -187,7 +187,7 @@ describe("useActivity", () => {
   it("keeps terminal done rows while the hook reports them, with nonzero outcome counts", () => {
     lyricsData = {
       ...idleLyrics, phase: "done", job_id: "L1", total: 10, processed: 10,
-      found: 5, skipped: 2,
+      found: 5, instrumental: 4, skipped: 2,
     };
     reorganizeData = {
       ...idleReorganize, phase: "running", job_id: "r1",
@@ -196,8 +196,9 @@ describe("useActivity", () => {
     const { result } = renderActivity();
     const states = result.current.activity.rows.map((r) => r.state);
     expect(states).toEqual(["done", "running"]);
+    // Instrumentals sit beside found, never folded into the miss count.
     expect(result.current.activity.rows[0]?.countsText).toBe(
-      "5 found · 2 skipped",
+      "5 found · 4 instrumental · 2 skipped",
     );
     expect(result.current.activity.runningCount).toBe(1);
   });

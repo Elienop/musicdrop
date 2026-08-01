@@ -33,7 +33,7 @@ export function useLyricsBackfillStatus() {
         return (
           queryClient.getQueryData<LyricsBackfillStatus>(["lyrics", "backfill"]) ?? {
             phase: "idle", job_id: null, total: 0, processed: 0, found: 0,
-            not_found: 0, failed: 0, skipped: 0, current: null,
+            instrumental: 0, not_found: 0, failed: 0, skipped: 0, current: null,
             writes_enabled: false, error: null, album_id: null, scope_label: "library",
           }
         );

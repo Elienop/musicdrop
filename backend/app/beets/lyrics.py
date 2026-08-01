@@ -30,7 +30,7 @@ from beets.library import Library
 from beets.util.lyrics import Lyrics
 from beetsplug._utils.requests import HTTPNotFoundError
 
-from app.beets.library import LibraryHandle
+from app.beets.library import LibraryHandle, _is_instrumental
 from app.models.lyrics import (
     ItemLyricsOutcome,
     ItemLyricsStatus,
@@ -163,6 +163,32 @@ def _has_sidecar(item: Any) -> bool:
     return os.path.exists(base + ".lrc") or os.path.exists(base + ".txt")
 
 
+def remove_lyric_sidecars(item: Any) -> list[str]:
+    """Delete this track's own ``.lrc``/``.txt`` sidecars; return the paths removed.
+
+    Scoped to exactly the two siblings :func:`write_lyric_sidecar` could have
+    written, so an instrumental verdict can't leave Plex serving a stale
+    "[Instrumental]" file. A path-less item, a missing sidecar or an unlink
+    error is a no-op (logged) rather than an error — never raises, and never
+    touches the audio file or a neighbouring track's sidecar.
+    """
+    base = _sidecar_base(item)
+    if base is None:
+        return []
+    removed: list[str] = []
+    for ext in (".lrc", ".txt"):
+        path = Path(base + ext)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            _log.warning("lyric sidecar removal failed: %s", path, exc_info=True)
+            continue
+        removed.append(str(path))
+    return removed
+
+
 def write_lyric_sidecar(item: Any, lyrics: Lyrics) -> str | None:
     """Write a Plex-readable lyric sidecar next to the track; return its path or None.
 
@@ -195,6 +221,33 @@ def write_lyric_sidecar(item: Any, lyrics: Lyrics) -> str | None:
     return str(dst)
 
 
+def _set_source_flex(item: Any, lyrics: Lyrics) -> None:
+    """Record which backend answered (and where), skipping keys it left unset."""
+    for key in ("backend", "url", "language"):
+        value = getattr(lyrics, key, None)
+        if value:
+            item[f"lyrics_{key}"] = value
+
+
+def _store_instrumental(item: Any, lyrics: Lyrics) -> None:
+    """Record a backend's definitive "this track has no lyrics by nature" verdict.
+
+    Flags the track the way beets does (``lyrics_instrumental``), keeps
+    MusicDrop's ``lyrics_checked`` bookkeeping so both sweep gates agree, clears
+    any stale lyrics text off the DB row, and deletes the track's sidecars —
+    Plex reads those, and an old "[Instrumental]" marker file would otherwise
+    outlive the verdict. The audio file's own tag is deliberately left alone
+    (no ``try_write``): a stale tag is inert, and rewriting tags is not this
+    feature's job.
+    """
+    item.lyrics = ""
+    item["lyrics_instrumental"] = 1
+    item["lyrics_checked"] = 1
+    _set_source_flex(item, lyrics)
+    item.store()
+    remove_lyric_sidecars(item)
+
+
 def _store_lyrics(item: Any, lyrics: Lyrics, *, write: bool) -> bool:
     """Persist beets-style: item.lyrics + flex fields, DB store, gated file write,
     and a Plex-readable ``.lrc``/``.txt`` sidecar.
@@ -206,10 +259,11 @@ def _store_lyrics(item: Any, lyrics: Lyrics, *, write: bool) -> bool:
     is non-destructive and is the whole point for Plex.
     """
     item.lyrics = "\n".join(lyrics.text_lines)
-    for key in ("backend", "url", "language"):
-        value = getattr(lyrics, key, None)
-        if value:
-            item[f"lyrics_{key}"] = value
+    # A found result overrides a stale instrumental verdict (beets' plugin writes
+    # this flag on every found track too) — without the reset, later sweeps would
+    # keep reporting skipped_instrumental for a track that now has real lyrics.
+    item["lyrics_instrumental"] = 0
+    _set_source_flex(item, lyrics)
     # Write the file tag BEFORE the DB store (beets' Item.try_sync order): try_write
     # bumps the file's mtime and sets item.mtime = current_mtime() in memory, so the
     # store AFTER it persists that fresh mtime. Storing first left the DB mtime behind
@@ -229,13 +283,23 @@ def fetch_item_lyrics(
 
     Skip-existing unless ``force``. A track previously searched with no result
     carries a ``lyrics_checked`` flag and is skipped (``skipped_checked``) on bulk
-    runs unless ``recheck_misses``/``force`` — so instrumentals/obscure tracks
-    aren't re-searched every backfill. A clean ``not_found`` sets the flag; a
-    network error stays ``fetch_failed`` (transient) and is NOT marked.
+    runs unless ``recheck_misses``/``force`` — so obscure tracks aren't
+    re-searched every backfill. A clean ``not_found`` sets the flag; a network
+    error stays ``fetch_failed`` (transient) and is NOT marked. A track already
+    flagged instrumental is skipped by EVERY sweep (``recheck_misses`` included)
+    — an instrumental is an answer, not a miss; only ``force`` re-searches one.
     """
     from beetsplug.lyrics import search_pairs
 
     item_id = int(item.id)
+    # Answered already, definitively: beets (or a previous run of ours) flagged
+    # this track as having no lyrics by nature. Deliberately NOT gated on
+    # recheck_misses, and deliberately independent of lyrics_checked — beets'
+    # 2.13 migration flags pre-existing instrumentals without setting it.
+    if not force and _is_instrumental(item):
+        return ItemLyricsOutcome(
+            item_id=item_id, status="skipped_instrumental", source=None, written=False
+        )
     # Already complete: has a lyrics tag AND a Plex sidecar.
     if not force and item.lyrics and _has_sidecar(item):
         return ItemLyricsOutcome(
@@ -272,13 +336,27 @@ def fetch_item_lyrics(
                     )
                     failed = True
                     continue
+                if result is None:
+                    continue
+                # Instrumental is DEFINITIVE: stop here, no further backends and
+                # no further search pairs. beets normalises the backend's
+                # "[Instrumental]" marker to text="" + instrumental=True, so this
+                # must be checked BEFORE the empty-text fall-through below.
+                if getattr(result, "instrumental", False):
+                    _store_instrumental(item, result)
+                    return ItemLyricsOutcome(
+                        item_id=item_id,
+                        status="instrumental",
+                        source=result.backend,
+                        written=False,
+                    )
                 # beets 2.12's LRCLib can return a Lyrics whose ``.text`` is None
                 # (a best candidate with null plainLyrics and synced not selected);
                 # its own ``Lyrics.text_lines`` then does ``None.splitlines()`` and
                 # raises, which would abort the whole backfill on that one track.
                 # Treat empty/blank text as no usable match — fall through to the
                 # next pair/backend and ultimately ``not_found``.
-                if result is not None and (result.text or "").strip():
+                if (result.text or "").strip():
                     written = _store_lyrics(item, result, write=write)
                     return ItemLyricsOutcome(
                         item_id=item_id, status="found", source=result.backend, written=written
@@ -389,16 +467,32 @@ async def start_album_lyrics_op(
     return reg.state()
 
 
-# One aggregate for the three coverage counts. `lyrics` is a column on `items`
-# (empty string when unset); `lyrics_checked` is a flex attr in `item_attributes`,
-# so the empty-lyrics-but-checked count is a correlated EXISTS subquery. Mirrors
-# the old per-Item scan (item.lyrics truthy; else the lyrics_checked flex truthy)
-# without materializing every one of 15k-75k Items on each panel mount.
-_LYRICS_COVERAGE_SQL = """
+# `lyrics_instrumental` is a flex attr, so presence is a correlated EXISTS. The
+# value test excludes '0'/'false' because beets writes the flag as FALSE on every
+# track it DID find lyrics for — a bare "row exists" test would count those as
+# instrumental. Deliberately NOT joined to `lyrics_checked`: beets' 2.13 migration
+# flags pre-existing instrumentals without it, and they must count immediately.
+_INSTRUMENTAL_EXISTS = """EXISTS (
+        SELECT 1 FROM item_attributes a
+        WHERE a.entity_id = items.id AND a.key = 'lyrics_instrumental'
+          AND a.value NOT IN ('', '0', 'false', 'False')
+    )"""
+
+# One aggregate for the four coverage counts. `lyrics` is a column on `items`
+# (empty string when unset); `lyrics_checked`/`lyrics_instrumental` are flex attrs
+# in `item_attributes`, so both empty-lyrics counts are correlated EXISTS
+# subqueries. The buckets are mutually exclusive by construction: non-empty
+# lyrics wins, then instrumental, then checked-but-empty. No per-Item
+# construction — this runs on every panel mount over 15k-75k tracks.
+_LYRICS_COVERAGE_SQL = f"""
 SELECT
     COUNT(*),
     COALESCE(SUM(CASE WHEN lyrics IS NOT NULL AND lyrics != '' THEN 1 ELSE 0 END), 0),
-    COALESCE(SUM(CASE WHEN (lyrics IS NULL OR lyrics = '') AND EXISTS (
+    COALESCE(SUM(CASE WHEN (lyrics IS NULL OR lyrics = '')
+        AND {_INSTRUMENTAL_EXISTS} THEN 1 ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN (lyrics IS NULL OR lyrics = '')
+        AND NOT {_INSTRUMENTAL_EXISTS}
+        AND EXISTS (
         SELECT 1 FROM item_attributes a
         WHERE a.entity_id = items.id AND a.key = 'lyrics_checked' AND a.value != ''
     ) THEN 1 ELSE 0 END), 0)
@@ -407,12 +501,19 @@ FROM items
 
 
 def lyrics_coverage(lib: Library) -> LyricsCoverage:
-    """Count items with lyrics vs. known-empty vs. total. One SQL aggregate; no
-    network, no per-Item construction (see :data:`_LYRICS_COVERAGE_SQL`)."""
+    """Count items with lyrics vs. instrumental vs. known-empty vs. total. One SQL
+    aggregate; no network, no per-Item construction (see
+    :data:`_LYRICS_COVERAGE_SQL`). ``percent`` stays with_lyrics/total —
+    instrumentals are reported separately, not folded into coverage."""
     with lib.transaction() as tx:
         row = tx.query(_LYRICS_COVERAGE_SQL)[0]
-    total, with_lyrics, checked_no_lyrics = int(row[0]), int(row[1]), int(row[2])
+    total, with_lyrics = int(row[0]), int(row[1])
+    instrumental, checked_no_lyrics = int(row[2]), int(row[3])
     percent = round(100.0 * with_lyrics / total, 1) if total else 0.0
     return LyricsCoverage(
-        total=total, with_lyrics=with_lyrics, checked_no_lyrics=checked_no_lyrics, percent=percent
+        total=total,
+        with_lyrics=with_lyrics,
+        instrumental=instrumental,
+        checked_no_lyrics=checked_no_lyrics,
+        percent=percent,
     )

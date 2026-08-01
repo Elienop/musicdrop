@@ -24,6 +24,7 @@ from app.models.lyrics import ItemLyricsOutcome, LyricsBackfillPhase, LyricsBack
 class _BackfillJob(JobState):
     phase: LyricsBackfillPhase = "running"
     found: int = 0
+    instrumental: int = 0
     not_found: int = 0
     failed: int = 0
     skipped: int = 0
@@ -60,11 +61,13 @@ class LyricsBackfillRegistry(SingleSlotRegistry[_BackfillJob]):
             job.processed += 1
             if outcome.status == "found":
                 job.found += 1
+            elif outcome.status == "instrumental":
+                job.instrumental += 1  # an answer, not a miss
             elif outcome.status == "not_found":
                 job.not_found += 1
             elif outcome.status == "fetch_failed":
                 job.failed += 1
-            else:  # skipped_existing / skipped_no_metadata
+            else:  # skipped_existing / skipped_checked / skipped_instrumental / no_metadata
                 job.skipped += 1
 
     def state(self) -> LyricsBackfillStatus:
@@ -77,6 +80,7 @@ class LyricsBackfillRegistry(SingleSlotRegistry[_BackfillJob]):
                     total=0,
                     processed=0,
                     found=0,
+                    instrumental=0,
                     not_found=0,
                     failed=0,
                     skipped=0,
@@ -92,6 +96,7 @@ class LyricsBackfillRegistry(SingleSlotRegistry[_BackfillJob]):
                 total=job.total,
                 processed=job.processed,
                 found=job.found,
+                instrumental=job.instrumental,
                 not_found=job.not_found,
                 failed=job.failed,
                 skipped=job.skipped,

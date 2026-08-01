@@ -557,3 +557,66 @@ def test_album_detail_track_has_lyrics_flag(temp_library: "Library") -> None:
     by_track = {t.track: t.has_lyrics for t in detail.tracks}
     assert by_track[1] is True
     assert by_track[2] is False
+
+
+def _instrumental_by_track(lib: "Library", album_id: int) -> dict[int, bool]:
+    detail = get_album_detail(lib, album_id)
+    assert detail is not None
+    return {t.track: t.instrumental for t in detail.tracks}
+
+
+def test_album_detail_track_instrumental_flag(temp_library: "Library") -> None:
+    """A flagged track reports instrumental=True; the "0" flag beets writes on
+    every FOUND track must NOT (it is a truthy Python string)."""
+    album = next(a for a in temp_library.albums() if len(a.items()) >= 2)
+    album_id = _require_id(album.id)
+    items = sorted(album.items(), key=lambda it: it.track)
+    items[0]["lyrics_instrumental"] = 1
+    items[0].store()
+    items[1]["lyrics_instrumental"] = False  # beets' "searched, found real lyrics" value
+    items[1].store()
+
+    by_track = _instrumental_by_track(temp_library, album_id)
+    assert by_track[1] is True
+    assert by_track[2] is False
+
+
+def test_album_detail_track_instrumental_defaults_false_without_the_flag(
+    temp_library: "Library",
+) -> None:
+    """A track beets never searched carries no flex row at all -> not instrumental."""
+    album = next(a for a in temp_library.albums() if len(a.items()) >= 2)
+    by_track = _instrumental_by_track(temp_library, _require_id(album.id))
+    assert by_track == {1: False, 2: False}
+
+
+def test_album_detail_real_lyrics_beat_a_stale_instrumental_flag(temp_library: "Library") -> None:
+    """Non-empty lyrics win over the flag — the same precedence the coverage SQL's
+    mutually-exclusive buckets use. The two fields are never both true."""
+    album = next(a for a in temp_library.albums() if len(a.items()) >= 2)
+    album_id = _require_id(album.id)
+    item = sorted(album.items(), key=lambda it: it.track)[0]
+    item.lyrics = "Hello, it's me"
+    item["lyrics_instrumental"] = 1  # stale verdict left behind by an earlier sweep
+    item.store()
+
+    detail = get_album_detail(temp_library, album_id)
+    assert detail is not None
+    track = next(t for t in detail.tracks if t.track == 1)
+    assert track.has_lyrics is True
+    assert track.instrumental is False
+
+
+def test_instrumental_predicate_has_exactly_one_implementation() -> None:
+    """The lyrics adapter, the album mapper and the browse facet MUST test the flag
+    the same way. A second copy is how the "0"-is-truthy bug comes back on one path
+    only, so pin that all three name the SAME function object (``vars`` rather than
+    attribute access: the name is private, so mypy forbids reading it off a module
+    that only re-exports it)."""
+    from app.beets import browse as browse_mod
+    from app.beets import library as library_mod
+    from app.beets import lyrics as lyrics_mod
+
+    predicate = vars(library_mod)["_is_instrumental"]
+    assert vars(lyrics_mod)["_is_instrumental"] is predicate
+    assert vars(browse_mod)["_is_instrumental"] is predicate

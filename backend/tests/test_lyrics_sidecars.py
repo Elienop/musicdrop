@@ -123,6 +123,53 @@ def test_empty_body_no_file(tmp_path: Path) -> None:
     assert not (tmp_path / "t.lrc").exists()
 
 
+# --- the remover (instrumental verdicts drop stale sidecars) ------------------
+
+
+def test_remove_sidecars_deletes_both_extensions(tmp_path: Path) -> None:
+    from app.beets.lyrics import remove_lyric_sidecars
+
+    track = tmp_path / "t.flac"
+    track.write_bytes(b"")
+    (tmp_path / "t.lrc").write_text("[00:01.00] old", encoding="utf-8")
+    (tmp_path / "t.txt").write_text("old", encoding="utf-8")
+
+    removed = remove_lyric_sidecars(_fake_item(track))
+
+    assert sorted(removed) == sorted([str(tmp_path / "t.lrc"), str(tmp_path / "t.txt")])
+    assert not (tmp_path / "t.lrc").exists()
+    assert not (tmp_path / "t.txt").exists()
+    assert track.exists()  # never the audio file
+
+
+def test_remove_sidecars_noop_when_none_exist(tmp_path: Path) -> None:
+    from app.beets.lyrics import remove_lyric_sidecars
+
+    track = tmp_path / "t.flac"
+    track.write_bytes(b"")
+    assert remove_lyric_sidecars(_fake_item(track)) == []
+    assert track.exists()
+
+
+def test_remove_sidecars_leaves_neighbours_alone(tmp_path: Path) -> None:
+    from app.beets.lyrics import remove_lyric_sidecars
+
+    track = tmp_path / "t.flac"
+    track.write_bytes(b"")
+    neighbour = tmp_path / "other.lrc"
+    neighbour.write_text("someone else's lyrics", encoding="utf-8")
+
+    assert remove_lyric_sidecars(_fake_item(track)) == []
+    assert neighbour.exists()  # only this track's own siblings are in scope
+
+
+def test_remove_sidecars_no_path_no_raise() -> None:
+    from app.beets.lyrics import remove_lyric_sidecars
+
+    assert remove_lyric_sidecars(SimpleNamespace(path=b"")) == []
+    assert remove_lyric_sidecars(SimpleNamespace(path=None)) == []
+
+
 # --- Task 2: force synced fetching -------------------------------------------
 
 
