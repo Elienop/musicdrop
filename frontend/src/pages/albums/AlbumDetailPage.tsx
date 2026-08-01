@@ -84,7 +84,16 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
   const multiDisc = discs.length > 1;
 
   const withLyrics = album.tracks.filter((t) => t.has_lyrics).length;
-  const missingLyrics = album.tracks.length - withLyrics;
+  // Instrumental is an answer, not a gap: no fetch re-searches one, so it leaves
+  // the to-do count (the Settings coverage line makes the same split). Counted
+  // by filter rather than subtraction so the three buckets always sum to the
+  // tracklist even if a track ever arrives flagged both ways.
+  const instrumental = album.tracks.filter(
+    (t) => t.instrumental && !t.has_lyrics,
+  ).length;
+  const missingLyrics = album.tracks.filter(
+    (t) => !t.has_lyrics && !t.instrumental,
+  ).length;
 
   const [editing, setEditing] = useState(false);
   const [editingCover, setEditingCover] = useState(false);
@@ -278,6 +287,7 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
               albumId={album.id}
               total={album.tracks.length}
               withLyrics={withLyrics}
+              instrumental={instrumental}
               missing={missingLyrics}
             />
           </div>
@@ -340,6 +350,9 @@ function TrackRow({
   albumArtist: string;
 }) {
   const showArtist = track.artist !== albumArtist;
+  // Real lyrics beat a stale flag (the backend resolves the same way), so a
+  // track that has both is simply a track with lyrics.
+  const instrumental = track.instrumental && !track.has_lyrics;
   return (
     <TableRow>
       <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
@@ -348,12 +361,32 @@ function TrackRow({
         {track.track || "-"}
       </TableCell>
       <TableCell>
-        <div className="flex min-w-0 flex-col">
-          <span className="truncate">{track.title}</span>
-          {showArtist && (
-            <span className="text-muted-foreground truncate text-sm">
-              {track.artist}
-            </span>
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-col">
+            <span className="truncate">{track.title}</span>
+            {showArtist && (
+              <span className="text-muted-foreground truncate text-sm">
+                {track.artist}
+              </span>
+            )}
+          </div>
+          {/* The state rides beside the title (the missing-row idiom) because
+              the Lyrics column is too narrow for the word, and a bare dash
+              there would be indistinguishable from an unanswered gap. */}
+          {instrumental && (
+            <>
+              {/* sr-only carries the phrase: aria-label on the Badge's generic
+                  <span> is spec-ignored by some AT, so the badge is hidden from
+                  the tree and the visible word stays purely visual. */}
+              <span className="sr-only">Instrumental, no lyrics expected</span>
+              <Badge
+                variant="outline"
+                aria-hidden="true"
+                className="shrink-0 text-xs font-normal"
+              >
+                instrumental
+              </Badge>
+            </>
           )}
         </div>
       </TableCell>
@@ -372,6 +405,12 @@ function TrackRow({
             />
             <span className="sr-only">Has lyrics</span>
           </>
+        ) : instrumental ? (
+          // The badge beside the title already answers this cell; a second
+          // "No lyrics" here would announce the gap the badge just ruled out.
+          <span className="text-muted-foreground" aria-hidden="true">
+            -
+          </span>
         ) : (
           <>
             <span className="text-muted-foreground" aria-hidden="true">
@@ -544,11 +583,13 @@ function LyricsStatus({
   albumId,
   total,
   withLyrics,
+  instrumental,
   missing,
 }: {
   albumId: number;
   total: number;
   withLyrics: number;
+  instrumental: number;
   missing: number;
 }) {
   const queryClient = useQueryClient();
@@ -592,6 +633,9 @@ function LyricsStatus({
     <div className="flex flex-wrap items-center gap-3">
       <span className="text-muted-foreground text-sm">
         {withLyrics} of {total} tracks have lyrics
+        {/* Named only when there are any: the fetch button counts only real
+            gaps, so without this the two numbers look like a miscount. */}
+        {instrumental > 0 && ` · ${instrumental} instrumental`}
       </span>
       {missing > 0 && (
         <Button

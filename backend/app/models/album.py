@@ -27,6 +27,9 @@ class Track(BaseModel):
     artist: str
     mb_trackid: str | None
     has_lyrics: bool
+    # Mutually exclusive with has_lyrics: a track with real lyrics is never
+    # reported instrumental, even if a stale flag says so (see _to_track).
+    instrumental: bool
     format: str | None = None
 
 

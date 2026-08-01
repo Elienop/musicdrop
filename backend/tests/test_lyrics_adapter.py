@@ -354,7 +354,7 @@ def test_fetch_item_skips_known_instrumental_even_on_recheck(edit_lib: Library) 
     # Without the reset, every later sweep mislabels this track
     # skipped_instrumental, and clearing its lyrics again would lock it out of
     # recheck sweeps entirely.
-    from app.beets.lyrics import _is_instrumental
+    from app.beets.library import _is_instrumental
 
     refetched = edit_lib.get_item(seed.id)
     assert refetched is not None

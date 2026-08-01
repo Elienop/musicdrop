@@ -31,6 +31,7 @@ from app.beets.library import (
     _coerce_optional_str,
     _coerce_str,
     _coerce_year,
+    _is_instrumental,
     _require_id,
     _to_album_cached,
 )
@@ -131,8 +132,15 @@ def _album_format(items: list[Any]) -> str:
 
 
 def _album_lyrics_bucket(items: list[Any]) -> str:
-    """Complete (every track has lyrics) / Partial / Missing (none, or no tracks)."""
-    have = sum(1 for it in items if _coerce_str(it.get("lyrics")).strip())
+    """Complete (every track answered) / Partial / Missing (none, or no tracks).
+
+    A track is answered when it carries lyrics OR beets flagged it instrumental:
+    an instrumental has no lyrics BY NATURE, so counting it as missing left
+    albums stuck at Partial with nothing left to fetch. Value-tested via
+    ``_is_instrumental`` — the flag reads back as the string ``"0"`` on every
+    track beets DID find lyrics for, and ``"0"`` is truthy.
+    """
+    have = sum(1 for it in items if _coerce_str(it.get("lyrics")).strip() or _is_instrumental(it))
     if not items or have == 0:
         return "Missing"
     return "Complete" if have == len(items) else "Partial"

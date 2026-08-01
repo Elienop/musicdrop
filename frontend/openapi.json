@@ -10221,6 +10221,10 @@
             "type": "boolean",
             "title": "Has Lyrics"
           },
+          "instrumental": {
+            "type": "boolean",
+            "title": "Instrumental"
+          },
           "format": {
             "anyOf": [
               {
@@ -10242,7 +10246,8 @@
           "duration_seconds",
           "artist",
           "mb_trackid",
-          "has_lyrics"
+          "has_lyrics",
+          "instrumental"
         ],
         "title": "Track"
       },

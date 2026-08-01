@@ -30,7 +30,7 @@ from beets.library import Library
 from beets.util.lyrics import Lyrics
 from beetsplug._utils.requests import HTTPNotFoundError
 
-from app.beets.library import LibraryHandle
+from app.beets.library import LibraryHandle, _is_instrumental
 from app.models.lyrics import (
     ItemLyricsOutcome,
     ItemLyricsStatus,
@@ -219,20 +219,6 @@ def write_lyric_sidecar(item: Any, lyrics: Lyrics) -> str | None:
         with suppress(OSError):
             other.unlink()
     return str(dst)
-
-
-def _is_instrumental(item: Any) -> bool:
-    """Whether beets' ``lyrics_instrumental`` flag is set on this track.
-
-    The flex value reads back as a real bool when beets' LyricsPlugin is loaded
-    (it registers the field as BOOLEAN) and as the raw string ``"1"``/``"0"``
-    when it isn't — and ``"0"`` is a truthy Python string, so a plain truth test
-    would read a track beets explicitly marked NOT instrumental as instrumental.
-    """
-    value = item.get("lyrics_instrumental")
-    if isinstance(value, str):
-        return value.strip().lower() not in {"", "0", "false"}
-    return bool(value)
 
 
 def _set_source_flex(item: Any, lyrics: Lyrics) -> None:

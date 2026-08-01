@@ -4071,6 +4071,8 @@ export interface components {
             mb_trackid: string | null;
             /** Has Lyrics */
             has_lyrics: boolean;
+            /** Instrumental */
+            instrumental: boolean;
             /** Format */
             format?: string | null;
         };

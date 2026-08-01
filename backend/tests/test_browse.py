@@ -42,6 +42,8 @@ def _add(
     country: str | None = None,
     original_year: int | None = None,
     lyrics_on: int = 0,
+    instrumental_tracks: set[int] | None = None,
+    not_instrumental_tracks: set[int] | None = None,
     added: float | None = None,
     tracktotal: int = 0,
     discs: int = 1,
@@ -56,6 +58,12 @@ def _add(
             it.format = fmt
         if i <= lyrics_on:
             it.lyrics = "la la la"
+        if instrumental_tracks and i in instrumental_tracks:
+            it["lyrics_instrumental"] = 1
+        if not_instrumental_tracks and i in not_instrumental_tracks:
+            # What beets writes on a track it DID find lyrics for; reads back as
+            # the string "0", which is truthy in Python.
+            it["lyrics_instrumental"] = False
         if tracktotal:
             it.tracktotal = tracktotal
         if discs > 1:
@@ -583,6 +591,94 @@ def test_broker_publish_library_changed_drops_the_browse_cache(
         assert "Ska" in {v.value for v in browse_facets(browse_lib).genres}
     finally:
         loop.close()
+
+
+def _lyrics_counts(lib: Library) -> dict[str, int]:
+    return {v.value: v.count for v in browse_facets(lib).lyrics}
+
+
+def test_lyrics_facet_counts_instrumentals_as_satisfied(tmp_path: Path) -> None:
+    """An instrumental has no lyrics BY NATURE, so it must not read as missing —
+    otherwise the album sits at Partial forever with nothing left to fetch.
+
+    Goes through ``browse_facets`` (not the bucket helper) on a real library, so
+    it also proves the flex attr survives the cache scan's ``album.items()``
+    materialization.
+    """
+    lib = Library(str(tmp_path / "l.db"), directory=str(tmp_path / "m"))
+    _add(lib, tmp_path, artist="A", album="AllInstrumental", tracks=2, instrumental_tracks={1, 2})
+    _add(
+        lib,
+        tmp_path,
+        artist="B",
+        album="HalfAndHalf",
+        tracks=2,
+        lyrics_on=1,
+        instrumental_tracks={2},
+    )
+    _add(lib, tmp_path, artist="C", album="OneStillMissing", tracks=2, instrumental_tracks={1})
+    _add(lib, tmp_path, artist="D", album="NothingYet", tracks=2)
+
+    assert _lyrics_counts(lib) == {"Complete": 2, "Partial": 1, "Missing": 1}
+
+
+def test_lyrics_facet_ignores_the_false_instrumental_flag(tmp_path: Path) -> None:
+    """beets writes ``lyrics_instrumental`` = False on every track it found lyrics
+    for; that reads back as the truthy string "0". A bare truth test would count
+    those searched-and-empty tracks as instrumental and report Complete."""
+    lib = Library(str(tmp_path / "l.db"), directory=str(tmp_path / "m"))
+    _add(lib, tmp_path, artist="A", album="Searched", tracks=2, not_instrumental_tracks={1, 2})
+
+    assert _lyrics_counts(lib) == {"Missing": 1}
+
+
+def test_lyrics_facet_still_partial_when_only_some_tracks_are_answered(tmp_path: Path) -> None:
+    """The bucket stays three-valued: instrumental only ADDS to the satisfied set."""
+    lib = Library(str(tmp_path / "l.db"), directory=str(tmp_path / "m"))
+    _add(lib, tmp_path, artist="A", album="Three", tracks=3, lyrics_on=1, instrumental_tracks={2})
+
+    assert _lyrics_counts(lib) == {"Partial": 1}
+
+
+def test_backfill_instrumental_write_invalidates_the_browse_cache(tmp_path: Path) -> None:
+    """A backfill that resolves a track as INSTRUMENTAL writes only a flex flag —
+    no lyrics text — and that must refresh Browse exactly like a text write does.
+
+    Both writes happen inside the same sweep, whose terminal ``on_complete`` is
+    what ``app/api/lyrics.py`` binds to ``emit_library_changed``; this drives the
+    real sweep to prove the flag-write inherits that invalidation.
+    """
+    from beets.util.lyrics import Lyrics
+
+    from app.beets.lyrics import _store_instrumental
+    from app.lyrics_jobs.registry import LyricsBackfillRegistry
+    from app.lyrics_jobs.runner import sweep
+    from app.models.lyrics import ItemLyricsOutcome
+
+    lib = Library(str(tmp_path / "sweep.db"), directory=str(tmp_path / "m"))
+    _add(lib, tmp_path, artist="A", album="Solo", tracks=1)
+    assert _lyrics_counts(lib) == {"Missing": 1}  # warms the cache
+
+    def _resolve_instrumental(_plugin: Any, item: Any, **_kw: Any) -> ItemLyricsOutcome:
+        _store_instrumental(item, Lyrics("", "lrclib", "u"))
+        return ItemLyricsOutcome(
+            item_id=int(item.id), status="instrumental", source=None, written=False
+        )
+
+    reg = LyricsBackfillRegistry()
+    reg.start(writes_enabled=False)
+    sweep(
+        reg,
+        make_test_handle(lib, tmp_path),
+        delay=0.0,
+        write=False,
+        fetch_one=_resolve_instrumental,
+        make_plugin=lambda **_kw: object(),
+        on_complete=lambda: emit_library_changed(SimpleNamespace(state=SimpleNamespace())),
+    )
+
+    assert reg.state().phase == "done"
+    assert _lyrics_counts(lib) == {"Complete": 1}
 
 
 def test_facets_endpoint_includes_new_facets(client: TestClient) -> None:

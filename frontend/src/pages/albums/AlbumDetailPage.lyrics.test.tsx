@@ -1,18 +1,39 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { AlbumDetail } from "@/api/useAlbum";
+import type { AlbumDetail, Track } from "@/api/useAlbum";
 import type { LyricsBackfillStatus } from "@/api/useLyricsBackfill";
 
-const album: AlbumDetail = {
+/** A tracklist row at the wire shape — every field the contract requires. */
+function track(id: number, title: string, overrides: Partial<Track> = {}): Track {
+  return {
+    id, title, track: id, disc: 1, duration_seconds: 100, artist: "Radiohead",
+    mb_trackid: `t${id}`, has_lyrics: false, instrumental: false, ...overrides,
+  };
+}
+
+const baseAlbum: AlbumDetail = {
   id: 7, album_artist: "Radiohead", title: "In Rainbows", year: 2007,
   track_count: 2, genre: "Rock", mb_albumid: "rel-1",
-  tracks: [
-    { id: 1, title: "15 Step", track: 1, disc: 1, duration_seconds: 100, artist: "Radiohead", mb_trackid: "t1", has_lyrics: true },
-    { id: 2, title: "Bodysnatchers", track: 2, disc: 1, duration_seconds: 100, artist: "Radiohead", mb_trackid: "t2", has_lyrics: false },
-  ],
+  tracks: [track(1, "15 Step", { has_lyrics: true }), track(2, "Bodysnatchers")],
 };
+/** 1 track with lyrics, 2 genuinely missing, 1 instrumental. */
+function mixedAlbum(): AlbumDetail {
+  return {
+    ...baseAlbum,
+    track_count: 4,
+    tracks: [
+      track(1, "15 Step", { has_lyrics: true }),
+      track(2, "Bodysnatchers"),
+      track(3, "Nude"),
+      track(4, "Videotape", { instrumental: true }),
+    ],
+  };
+}
+
+// Swapped per test — the useAlbum mock reads it at render time — reset in beforeEach.
+let album: AlbumDetail = baseAlbum;
 
 const idleStatus: LyricsBackfillStatus = {
   phase: "idle", job_id: null, total: 0, processed: 0, found: 0,
@@ -66,6 +87,7 @@ async function renderPage() {
 describe("AlbumDetailPage lyrics", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    album = baseAlbum;
     statusData = idleStatus;
     startState = { mutate: mutateMock, isPending: false, isError: false, error: null };
   });
@@ -139,5 +161,77 @@ describe("AlbumDetailPage lyrics", () => {
     };
     await renderPage();
     expect(await screen.findByText(/0 added .* 5 skipped/)).toBeInTheDocument();
+  });
+
+  // An instrumental track is an answer, not a gap — no fetch re-searches one, so
+  // counting it as missing would offer work that does nothing.
+  it("leaves instrumental tracks out of the fetch count", async () => {
+    album = mixedAlbum();
+    await renderPage();
+    expect(
+      await screen.findByRole("button", { name: /fetch missing lyrics \(2\)/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("names the instrumentals so the coverage line still adds up", async () => {
+    album = mixedAlbum();
+    await renderPage();
+    expect(
+      await screen.findByText(/1 of 4 tracks have lyrics · 1 instrumental/),
+    ).toBeInTheDocument();
+  });
+
+  it("offers nothing to fetch on an all-instrumental album", async () => {
+    album = {
+      ...baseAlbum,
+      tracks: [
+        track(1, "Treefingers", { instrumental: true }),
+        track(2, "Hunting Bears", { instrumental: true }),
+      ],
+    };
+    await renderPage();
+    expect(await screen.findByText(/0 of 2 tracks have lyrics/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /fetch missing lyrics/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("marks an instrumental row instead of showing it as a lyrics gap", async () => {
+    album = mixedAlbum();
+    await renderPage();
+    const row = (await screen.findByText("Videotape")).closest("tr") as HTMLElement;
+    expect(within(row).getByText("instrumental")).toBeInTheDocument();
+    expect(within(row).queryByText("No lyrics")).not.toBeInTheDocument();
+    expect(within(row).queryByText("Has lyrics")).not.toBeInTheDocument();
+    // A track that simply has none found still reads as a gap.
+    const gap = screen.getByText("Nude").closest("tr") as HTMLElement;
+    expect(within(gap).getByText("No lyrics")).toBeInTheDocument();
+    expect(within(gap).queryByText("instrumental")).not.toBeInTheDocument();
+  });
+
+  it("leaves a track that has lyrics unmarked", async () => {
+    album = mixedAlbum();
+    await renderPage();
+    const row = (await screen.findByText("15 Step")).closest("tr") as HTMLElement;
+    expect(within(row).getByText("Has lyrics")).toBeInTheDocument();
+    expect(within(row).queryByText("instrumental")).not.toBeInTheDocument();
+  });
+
+  // The contract forbids both flags at once. Should one ever slip through, real
+  // lyrics win: the row can't claim both, and the three buckets have to keep
+  // partitioning the tracklist or the coverage line stops adding up.
+  it("treats a track flagged both ways as one that has lyrics", async () => {
+    album = {
+      ...baseAlbum,
+      tracks: [
+        track(1, "15 Step", { has_lyrics: true, instrumental: true }),
+        track(2, "Bodysnatchers"),
+      ],
+    };
+    await renderPage();
+    expect(await screen.findByText("1 of 2 tracks have lyrics")).toBeInTheDocument();
+    const row = screen.getByText("15 Step").closest("tr") as HTMLElement;
+    expect(within(row).getByText("Has lyrics")).toBeInTheDocument();
+    expect(within(row).queryByText("instrumental")).not.toBeInTheDocument();
   });
 });
