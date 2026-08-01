@@ -28,7 +28,7 @@ const DISK_SYNC_URL = `${window.location.origin}/api/disk-sync/status`;
 function idleShellHandlers() {
   return [
     http.get(HEALTH_URL, () =>
-      HttpResponse.json({ status: "ok", version: "0.1.0" }),
+      HttpResponse.json({ status: "ok", version: "v0.29.1" }),
     ),
     http.get(ARTISTS_URL, () => HttpResponse.json([])),
     http.get(ACTIVE_IMPORT_URL, () =>
@@ -123,7 +123,7 @@ describe("HealthStatus", () => {
   test("conveys a reachable backend with a non-color text label", async () => {
     server.use(
       http.get(HEALTH_URL, () =>
-        HttpResponse.json({ status: "ok", version: "0.1.0" }),
+        HttpResponse.json({ status: "ok", version: "v0.29.1" }),
       ),
     );
 
