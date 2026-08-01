@@ -193,6 +193,48 @@ def test_fetch_item_skips_when_lyrics_and_sidecar_exist_unless_forced(edit_lib: 
     assert forced.status == "found"
 
 
+def test_skip_instrumental_cleans_a_stale_sidecar(edit_lib: Library) -> None:
+    """beets' 2.13 migration leaves already-instrumental tracks flagged, and
+    sweeps skip flagged tracks without re-searching — so the skip gate is the
+    ONLY place their old "[Instrumental]" sidecars (which Plex keeps reading)
+    can ever be cleaned up."""
+    from app.beets.lyrics import _sidecar_base, fetch_item_lyrics
+
+    seed = _first_item(edit_lib)
+    seed["lyrics_instrumental"] = 1
+    seed.store()
+    item = edit_lib.get_item(seed.id)
+    assert item is not None
+    base = _sidecar_base(item)
+    assert base is not None
+    stale = Path(base + ".txt")
+    stale.write_text("[Instrumental]", encoding="utf-8")
+    never = _FakeBackend(result=Lyrics("should not be fetched", "lrclib", "u"))
+
+    out = fetch_item_lyrics(_FakePlugin([never]), item, force=False, write=True)
+
+    assert out.status == "skipped_instrumental"
+    assert never.calls == 0  # still no re-search — cleanup only
+    assert not stale.exists()
+
+
+def test_skip_existing_keeps_its_sidecar(edit_lib: Library) -> None:
+    """The cleanup lives ONLY in the instrumental gate: a track skipped for
+    having lyrics + sidecar must keep that sidecar."""
+    from app.beets.lyrics import _sidecar_base, fetch_item_lyrics
+
+    item = _first_item(edit_lib)
+    plugin = _FakePlugin([_FakeBackend(result=Lyrics("real", "lrclib", "u"))])
+    assert fetch_item_lyrics(plugin, item, force=False, write=True).status == "found"
+    base = _sidecar_base(item)
+    assert base is not None
+    sidecar = Path(base + ".lrc" if Path(base + ".lrc").exists() else base + ".txt")
+    assert sidecar.exists()
+
+    assert fetch_item_lyrics(plugin, item, force=False, write=True).status == "skipped_existing"
+    assert sidecar.exists()
+
+
 def test_fetch_item_reprocesses_lyrics_without_sidecar(edit_lib: Library) -> None:
     # Embedded lyrics but no sidecar (the pre-feature state) -> NOT skipped.
     from app.beets.lyrics import fetch_item_lyrics
