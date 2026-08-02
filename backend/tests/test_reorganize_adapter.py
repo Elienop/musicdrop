@@ -1,5 +1,7 @@
 # backend/tests/test_reorganize_adapter.py
+import logging
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,8 @@ from app.beets.reorganize import (
     plan_reorganize,
 )
 from tests.conftest import build_library
+
+SAMPLE_FLAC = Path(__file__).parent / "fixtures" / "silent.flac"
 
 
 def _album(lib: Library, name: str) -> Album:
@@ -232,3 +236,309 @@ def test_reorganize_album_destination_collision_fails(tmp_path: Path) -> None:
     assert "already taken by another track" in (outcome.error or "")
     # Documents the ping-pong: the diverted track landed at the .1 name on disk.
     assert (music / "X" / "Collide" / "01 Song.1.mp3").exists()
+
+
+# --- lyric sidecars follow the audio ------------------------------------------
+#
+# beets moves audio + album art only. MusicDrop's own .lrc/.txt sidecars (the
+# files Plex actually reads) are named after the AUDIO STEM, so every move and
+# every in-place rename orphans them: they stay in the vacated folder, the
+# post-run orphan sweep classifies it as an audio-empty husk, and the lyrics go
+# to Trash while the job reports success.
+
+
+def _seed_flac_album(
+    lib: Library,
+    music: Path,
+    *,
+    folder: str,
+    artist: str,
+    album: str,
+    titles: list[str],
+) -> Album:
+    """One album of REAL flac files under ``folder``, filenames a.flac/b.flac/...
+
+    Real audio (copies of the silent.flac fixture) and a real ``lib.add_album`` so
+    the move under test is beets' own, unmocked. The raw stems guarantee every
+    track's destination filename differs from its current one.
+    """
+    base = music / folder
+    base.mkdir(parents=True, exist_ok=True)
+    items = []
+    for i, title in enumerate(titles, start=1):
+        f = base / f"{chr(ord('a') + i - 1)}.flac"
+        shutil.copyfile(SAMPLE_FLAC, f)
+        it = Item(album=album, albumartist=artist, artist=artist, title=title, track=i, disc=1)
+        it.path = os.fsencode(str(f))
+        items.append(it)
+    return lib.add_album(items)
+
+
+def _ir_lib(tmp_path: Path) -> tuple[Library, Path, Album]:
+    """(lib, music_dir, album) with a mis-filed 3-track In Rainbows in junk/ir."""
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    album = _seed_flac_album(
+        lib,
+        music,
+        folder="junk/ir",
+        artist="Radiohead",
+        album="In Rainbows",
+        titles=["15 Step", "Bodysnatchers", "Nude"],
+    )
+    return lib, music, album
+
+
+def test_reorganize_album_carries_lyric_sidecars(tmp_path: Path) -> None:
+    """Folder move: each track's .lrc/.txt lands beside it under its NEW name."""
+    lib, music, album = _ir_lib(tmp_path)
+    src = music / "junk" / "ir"
+    (src / "a.lrc").write_text("[00:01.00] step\n", encoding="utf-8")
+    (src / "b.txt").write_text("bodysnatchers\n", encoding="utf-8")
+
+    with lib.music_dir_context():
+        outcome = reorg.reorganize_album(lib, album)
+
+    assert outcome.status == "moved"
+    dest = music / "Radiohead" / "In Rainbows"
+    assert (dest / "01 15 Step.lrc").read_text(encoding="utf-8") == "[00:01.00] step\n"
+    assert (dest / "02 Bodysnatchers.txt").read_text(encoding="utf-8") == "bodysnatchers\n"
+    # Track 3 had no sidecar: none is invented for it.
+    assert not (dest / "03 Nude.lrc").exists()
+    assert not (dest / "03 Nude.txt").exists()
+    # Vacated folder is gone, so the orphan sweep has no husk to trash.
+    assert not src.exists()
+
+
+def test_reorganize_album_rename_in_place_carries_sidecars(tmp_path: Path) -> None:
+    """Same directory, filenames only: the sidecar must be renamed alongside."""
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    album = _seed_flac_album(
+        lib,
+        music,
+        folder="Boards of Canada/Geogaddi",
+        artist="Boards of Canada",
+        album="Geogaddi",
+        titles=["Ready Lets Go", "Music Is Math"],
+    )
+    base = music / "Boards of Canada" / "Geogaddi"
+    (base / "a.lrc").write_text("[00:02.00] ready\n", encoding="utf-8")
+
+    with lib.music_dir_context():
+        outcome = reorg.reorganize_album(lib, album)
+
+    assert outcome.status == "moved"
+    assert (base / "01 Ready Lets Go.lrc").read_text(encoding="utf-8") == "[00:02.00] ready\n"
+    assert not (base / "a.lrc").exists()
+    # The album's own folder still holds its audio — the re-prune never eats a live dir.
+    assert (base / "01 Ready Lets Go.flac").exists()
+
+
+def test_reorganize_singleton_carries_lyric_sidecars(tmp_path: Path) -> None:
+    """The singleton path moves sidecars too — both extensions when both exist."""
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    loose = music / "loose"
+    loose.mkdir(parents=True)
+    audio = loose / "z.flac"
+    shutil.copyfile(SAMPLE_FLAC, audio)
+    item = Item(artist="Aphex Twin", albumartist="Aphex Twin", title="Xtal", track=1)
+    item.path = os.fsencode(str(audio))
+    lib.add(item)
+    (loose / "z.lrc").write_text("[00:03.00] xtal\n", encoding="utf-8")
+    (loose / "z.txt").write_text("xtal plain\n", encoding="utf-8")
+
+    with lib.music_dir_context():
+        outcome = reorg.reorganize_singleton(lib, item)
+
+    assert outcome.status == "moved"
+    dest = music / "Non-Album" / "Aphex Twin"  # beets' built-in singleton: format
+    assert (dest / "Xtal.lrc").read_text(encoding="utf-8") == "[00:03.00] xtal\n"
+    assert (dest / "Xtal.txt").read_text(encoding="utf-8") == "xtal plain\n"
+    assert not loose.exists()
+
+
+def test_reorganize_album_sidecar_move_never_clobbers(tmp_path: Path) -> None:
+    """A sidecar already at the destination wins; the source one is left in place
+    (two different lyrics for what is now the same track name — losing either
+    silently is worse than leaving one behind where the user can see it)."""
+    lib, music, album = _ir_lib(tmp_path)
+    src = music / "junk" / "ir"
+    (src / "a.lrc").write_text("SOURCE\n", encoding="utf-8")
+    dest = music / "Radiohead" / "In Rainbows"
+    dest.mkdir(parents=True)
+    (dest / "01 15 Step.lrc").write_text("KEEP\n", encoding="utf-8")
+
+    with lib.music_dir_context():
+        outcome = reorg.reorganize_album(lib, album)
+
+    assert outcome.status == "moved"  # the audio move is unaffected
+    assert (dest / "01 15 Step.lrc").read_text(encoding="utf-8") == "KEEP\n"
+    assert (src / "a.lrc").read_text(encoding="utf-8") == "SOURCE\n"
+
+
+def test_reorganize_album_sidecar_failure_does_not_fail_the_audio_move(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An OSError moving a sidecar is logged, never raised: the audio has already
+    moved, so the unit's outcome must stay truthful about the audio."""
+    lib, music, album = _ir_lib(tmp_path)
+    src = music / "junk" / "ir"
+    (src / "a.lrc").write_text("[00:01.00] step\n", encoding="utf-8")
+
+    def boom(*a: object, **k: object) -> None:
+        raise OSError("read-only file system")
+
+    # beets' own util.move uses os.replace (+ copyfileobj), never shutil.move, so
+    # this breaks ONLY the sidecar move.
+    monkeypatch.setattr(shutil, "move", boom)
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.sidecars"):
+        with lib.music_dir_context():
+            outcome = reorg.reorganize_album(lib, album)
+
+    assert outcome.status == "moved"
+    assert (music / "Radiohead" / "In Rainbows" / "01 15 Step.flac").exists()
+    assert (src / "a.lrc").exists()  # left behind, not destroyed
+    assert "a.lrc" in caplog.text
+    assert any(r.exc_info for r in caplog.records)  # the traceback reaches the logs
+
+
+def test_reorganize_album_leaves_non_sidecar_files_alone(tmp_path: Path) -> None:
+    """Only stem-matched .lrc/.txt travel: art, an unrelated sidecar and any other
+    file stay exactly where they are."""
+    lib, music, album = _ir_lib(tmp_path)
+    src = music / "junk" / "ir"
+    (src / "a.lrc").write_text("[00:01.00] step\n", encoding="utf-8")
+    (src / "scan.jpg").write_bytes(b"\xff\xd8")
+    (src / "unrelated.lrc").write_text("not a track here\n", encoding="utf-8")
+
+    with lib.music_dir_context():
+        outcome = reorg.reorganize_album(lib, album)
+
+    assert outcome.status == "moved"
+    dest = music / "Radiohead" / "In Rainbows"
+    assert (dest / "01 15 Step.lrc").exists()
+    assert (src / "scan.jpg").exists()
+    assert (src / "unrelated.lrc").exists()
+    assert not (dest / "scan.jpg").exists()
+    assert not (dest / "unrelated.lrc").exists()
+
+
+def test_reorganize_album_leaves_a_non_moving_items_sidecar_alone(tmp_path: Path) -> None:
+    """A track beets silently skipped (source file gone) keeps its sidecar where it
+    is, while its album-mates' sidecars still travel — the carry runs even when
+    verification is about to report the unit failed."""
+    lib, music, album = _ir_lib(tmp_path)
+    src = music / "junk" / "ir"
+    (src / "a.lrc").write_text("stranded\n", encoding="utf-8")
+    (src / "b.lrc").write_text("travels\n", encoding="utf-8")
+    os.remove(src / "a.flac")  # beets 2.13 skips this item's move, no exception
+
+    with lib.music_dir_context():
+        outcome = reorg.reorganize_album(lib, album)
+
+    assert outcome.status == "failed"  # the missing file is reported, not hidden
+    assert (src / "a.lrc").read_text(encoding="utf-8") == "stranded\n"
+    dest = music / "Radiohead" / "In Rainbows"
+    assert (dest / "02 Bodysnatchers.lrc").read_text(encoding="utf-8") == "travels\n"
+
+
+def test_move_sidecars_same_path_is_a_noop(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An item whose path did not change must not even look like a collision —
+    a naive implementation would see the sidecar at its own destination and log a
+    bogus 'destination exists' warning on every run."""
+    from app.beets.sidecars import move_sidecars
+
+    audio = tmp_path / "01 Song.flac"
+    audio.write_bytes(b"\x00")
+    (tmp_path / "01 Song.lrc").write_text("[00:01.00] la\n", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.sidecars"):
+        assert move_sidecars(str(audio), str(audio)) == []
+
+    assert (tmp_path / "01 Song.lrc").exists()
+    assert caplog.records == []
+
+
+def test_reorganize_album_crash_midway_still_carries_moved_items_sidecars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Album.move moves+stores one item at a time, and beets commits the
+    transaction even while an exception propagates — so items moved before a
+    mid-album crash are permanently re-pathed and never re-enter ``pending`` on a
+    later run. Their sidecars must be carried from the except path, or they are
+    stranded for good and the orphan sweep eventually trashes them."""
+    from beets import util as beets_util
+
+    lib, music, album = _ir_lib(tmp_path)
+    src = music / "junk" / "ir"
+    for stem in ("a", "b", "c"):
+        (src / f"{stem}.lrc").write_text(f"{stem}-lyrics\n", encoding="utf-8")
+
+    real_move = beets_util.move
+    calls = {"n": 0}
+
+    def move_then_die(sour: bytes, dest: bytes, replace: bool = False) -> None:
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise beets_util.FilesystemError(
+                OSError(28, "No space left on device"), "move", (sour, dest)
+            )
+        real_move(sour, dest, replace)
+
+    # Breaks the SECOND audio move only; sidecars go through shutil.move.
+    monkeypatch.setattr(beets_util, "move", move_then_die)
+
+    with lib.music_dir_context():
+        outcome = reorg.reorganize_album(lib, album)
+
+    assert outcome.status == "failed"  # the crash is reported, not hidden
+    dest = music / "Radiohead" / "In Rainbows"
+    moved_audio = [p for p in dest.glob("*.flac")] if dest.exists() else []
+    assert len(moved_audio) == 1  # exactly one item moved before the crash
+    # THE point: the moved item's sidecar followed it despite the crash...
+    lrc = moved_audio[0].with_suffix(".lrc")
+    assert lrc.exists()
+    # ...and the unmoved items keep audio + sidecars intact at the old location.
+    assert len(list(src.glob("*.flac"))) == 2
+    assert len(list(src.glob("*.lrc"))) == 2
+
+
+def test_reorganize_album_collision_diverted_file_keeps_its_lyrics(tmp_path: Path) -> None:
+    """The carry keys off the ACTUAL landing path: when unique_path diverts the
+    collision loser to `01 Song.1.mp3`, its own sidecar must land at
+    `01 Song.1.lrc` — paired by content, whichever item won the plain name."""
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    base = music / "junk" / "col"
+    base.mkdir(parents=True, exist_ok=True)
+    audio_to_lyrics = {b"\x00A": "lyrics-A\n", b"\x00B": "lyrics-B\n"}
+    items = []
+    for fname, (audio_bytes, lyrics) in zip(
+        ("01 Song.mp3", "01 Song other.mp3"), audio_to_lyrics.items(), strict=True
+    ):
+        f = base / fname
+        f.write_bytes(audio_bytes)
+        (base / fname).with_suffix(".lrc").write_text(lyrics, encoding="utf-8")
+        it = Item(album="Collide", albumartist="X", artist="X", title="Song", track=1, disc=1)
+        it.path = os.fsencode(str(f))
+        items.append(it)
+    lib.add_album(items).store()
+
+    with lib.music_dir_context():
+        outcome = reorg.reorganize_album(lib, next(iter(lib.albums())))
+
+    assert outcome.status == "failed"  # the collision is still reported
+    dest = music / "X" / "Collide"
+    # Both audio files landed (one plain, one diverted) and each kept ITS lyrics.
+    for audio_name, lrc_name in (
+        ("01 Song.mp3", "01 Song.lrc"),
+        ("01 Song.1.mp3", "01 Song.1.lrc"),
+    ):
+        audio_bytes = (dest / audio_name).read_bytes()
+        assert (dest / lrc_name).read_text(encoding="utf-8") == audio_to_lyrics[audio_bytes]
+    assert list(base.glob("*.lrc")) == []  # nothing stranded behind

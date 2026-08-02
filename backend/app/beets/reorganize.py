@@ -11,14 +11,18 @@ library dir and re-expands them via a ContextVar a worker thread does not inheri
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
-from beets.util import FilesystemError, MoveOperation
+import beets
+from beets.util import FilesystemError, MoveOperation, prune_dirs
 
 from app.beets.library import LibraryHandle
 from app.beets.orphans import find_orphan_folders
+from app.beets.sidecars import move_sidecars
 from app.models.reorganize import (
     OrphanFolder,
     ReorganizeMove,
@@ -26,6 +30,8 @@ from app.models.reorganize import (
     ReorganizePlan,
     ReorganizeScope,
 )
+
+_log = logging.getLogger(__name__)
 
 #: Detailed preview rows are capped here; counts stay exact, truncated=True past it.
 PREVIEW_ROW_CAP = 1000
@@ -91,6 +97,43 @@ def _verify_moves(pending: list[tuple[int, bytes, bytes]], after: dict[int, byte
                 "; two tracks share the same track number and title"
             )
     return problems
+
+
+def _carry_sidecars(
+    lib: Any, pending: list[tuple[int, bytes, bytes]], after: dict[int, bytes]
+) -> None:
+    """Move each relocated item's lyric sidecars to its new location, then re-prune.
+
+    beets moves audio + album art and nothing else, so MusicDrop's own
+    ``.lrc``/``.txt`` sidecars (the files Plex actually reads) stay in the vacated
+    folder — which the post-run orphan sweep then classifies as an audio-empty
+    husk and moves to Trash, losing the lyrics while the job reports success. The
+    same stranding happens on an in-place rename, where there is no husk at all
+    and the sidecar simply stops matching its track.
+
+    Keyed off the ACTUAL landing path rather than the computed destination, so a
+    collision-diverted ``.1`` file keeps its lyrics.
+
+    The re-prune is not cosmetic: beets prunes the vacated dir DURING the move,
+    while the sidecars are still sitting in it, so that prune is a no-op and the
+    now-empty dir would outlive every future sweep (``find_orphan_folders``
+    deliberately ignores empty dirs). Pruning again with beets' own arguments
+    makes the on-disk result identical to a sidecar-free move. Never raises: the
+    audio has already moved and the unit's outcome must stay truthful about it.
+    """
+    vacated: set[bytes] = set()
+    for item_id, old_path, _dest in pending:
+        # Default = the old path: an item beets silently skipped (source file
+        # missing) has not moved, and ``move_sidecars`` no-ops on an unchanged
+        # path, so its sidecars stay put. ONE gate for that, tested there.
+        new_path = after.get(item_id, old_path)
+        if move_sidecars(old_path, new_path):
+            vacated.add(os.path.dirname(old_path))
+    for directory in vacated:
+        try:
+            prune_dirs(directory, lib.directory, clutter=beets.config["clutter"].as_str_seq())
+        except OSError:
+            _log.warning("pruning vacated dir failed: %r", directory, exc_info=True)
 
 
 def _commonpath_of_dirs(paths: list[bytes]) -> str:
@@ -247,6 +290,7 @@ def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
     items + art, prunes the vacated dirs, and updates DB paths (store=True).
     """
     label = album_label(album)
+    pending: list[tuple[int, bytes, bytes]] = []  # bound before try: the except path reads it
     with lib.music_dir_context():
         try:
             items = list(album.items())
@@ -263,6 +307,7 @@ def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
             # Album.move re-fetches its own item objects; the local `items` list is
             # NOT mutated, so re-read the album's items to see the post-move paths.
             after = {int(i.id): bytes(i.path) for i in album.items()}
+            _carry_sidecars(lib, pending, after)
             problems = _verify_moves(pending, after)
             if problems:
                 return ReorganizeOutcome(status="failed", label=label, error="; ".join(problems))
@@ -271,6 +316,17 @@ def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
         # subclasses HumanReadableError(Exception), NOT OSError — catch it too, or
         # one bad album escapes this "never raises" adapter and aborts the whole sweep.
         except (ValueError, OSError, FilesystemError) as exc:
+            # Album.move moves+stores ONE ITEM AT A TIME, and beets' Transaction
+            # commits even while an exception propagates (dbcore/db.py __exit__ has
+            # no rollback branch). Items moved before a mid-album crash are
+            # therefore permanently re-pathed — they never re-enter `pending` on a
+            # later run, so this is the ONLY chance to carry their sidecars before
+            # the vacated folder decays into a husk the orphan sweep trashes.
+            # Suppress everything: this adapter never raises, and no carry problem
+            # may displace the original failure being reported in `exc`.
+            if pending:
+                with contextlib.suppress(Exception):
+                    _carry_sidecars(lib, pending, {int(i.id): bytes(i.path) for i in album.items()})
             return ReorganizeOutcome(
                 status="failed", label=label, error=str(exc) or exc.__class__.__name__
             )
@@ -279,6 +335,7 @@ def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
 def reorganize_singleton(lib: Any, item: Any) -> ReorganizeOutcome:
     """Move one singleton (album_id is None) to match the config. Never raises."""
     label = singleton_label(item)
+    pending: list[tuple[int, bytes, bytes]] = []  # bound before try: the except path reads it
     with lib.music_dir_context():
         try:
             if not _item_moves(lib, item):
@@ -286,16 +343,24 @@ def reorganize_singleton(lib: Any, item: Any) -> ReorganizeOutcome:
             source_dir = os.path.dirname(os.fsdecode(item.path))  # before the move
             old_path = bytes(item.path)
             dest = bytes(item.destination(basedir=lib.directory))
+            pending = [(int(item.id), old_path, dest)]
             with lib.transaction():
                 item.move(MoveOperation.MOVE, with_album=False, store=True)
             # item.move mutates this same object's `.path`, so compare it directly.
-            problems = _verify_moves(
-                [(int(item.id), old_path, dest)], {int(item.id): bytes(item.path)}
-            )
+            after = {int(item.id): bytes(item.path)}
+            _carry_sidecars(lib, pending, after)
+            problems = _verify_moves(pending, after)
             if problems:
                 return ReorganizeOutcome(status="failed", label=label, error="; ".join(problems))
             return ReorganizeOutcome(status="moved", label=label, source_dir=source_dir or None)
         except (ValueError, OSError, FilesystemError) as exc:  # see reorganize_album
+            # Same crash-carry as reorganize_album. A failed single-file move
+            # usually leaves item.path unchanged, making this a no-op — but a
+            # partially-applied move (art moved, then store raised) is cheap to
+            # cover with the identical best-effort pass.
+            if pending:
+                with contextlib.suppress(Exception):
+                    _carry_sidecars(lib, pending, {int(item.id): bytes(item.path)})
             return ReorganizeOutcome(
                 status="failed", label=label, error=str(exc) or exc.__class__.__name__
             )
