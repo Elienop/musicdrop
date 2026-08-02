@@ -969,6 +969,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/reorganize/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss Reorganize
+         * @description Clear a FINISHED job's result (its failure rows) from the slot.
+         *
+         *     NO ``_gate_busy`` on purpose: this touches the in-memory registry only —
+         *     never the library, never beets — so an import or another sweep running
+         *     elsewhere has no reason to hold a stale error message on screen.
+         *
+         *     Idempotent: dismissing an already-empty slot returns the idle status rather
+         *     than 404. The caller is asking for "nothing displayed", and that is exactly
+         *     what it gets; a 404 would make the UI special-case a state indistinguishable
+         *     from success (a double click, a retry, or a concurrent tab that dismissed
+         *     first). Returns the post-dismiss status so the caller can seed its cache
+         *     without a follow-up GET.
+         */
+        post: operations["dismiss_reorganize_api_reorganize_dismiss_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/disk-sync/preview": {
         parameters: {
             query?: never;
@@ -3684,6 +3715,8 @@ export interface components {
             orphans_trashed: number;
             /** Failures */
             failures: components["schemas"]["ReorganizeUnitFailure"][];
+            /** Finished At */
+            finished_at: string | null;
         };
         /** ReorganizeCollision */
         ReorganizeCollision: {
@@ -6018,6 +6051,26 @@ export interface operations {
         };
     };
     stop_reorganize_api_reorganize_stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReorganizeBackfillStatus"];
+                };
+            };
+        };
+    };
+    dismiss_reorganize_api_reorganize_dismiss_post: {
         parameters: {
             query?: never;
             header?: never;

@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { client } from "@/api/client";
+import { formatTimestamp } from "@/lib/format";
 import { ReorganizeControl } from "./ReorganizeControl";
 
 function wrap(ui: React.ReactNode) {
@@ -27,6 +28,7 @@ const idle = {
   album_id: null,
   scope_label: "library",
   failures: [],
+  finished_at: null,
 };
 
 beforeEach(() => {
@@ -229,31 +231,178 @@ test("rail: the trigger stays focusable while the plan is open and swallows re-c
   expect(previewCalls()).toBe(before);
 });
 
-test("renders per-file failures when this scope's job is terminal", async () => {
-  const doneWithFailures = {
-    ...idle,
-    phase: "done",
-    scope: "library",
-    job_id: "j1",
-    total: 2,
-    processed: 2,
-    moved: 1,
-    failed: 1,
-    failures: [
-      { label: "Arcane — Get Jinxed", error: "file not found on disk after move" },
-    ],
-  };
+// ——— a terminal job's result ————————————————————————————————————————————
+// The single slot keeps the last job until the next one starts, so this block
+// is what the user is still staring at days after they fixed the cause — hence
+// the finish time (is this stale?) and the explicit way out.
+
+const FINISHED_AT = "2026-08-02T13:53:00Z";
+
+const doneWithFailures = {
+  ...idle,
+  phase: "done",
+  scope: "library",
+  job_id: "j1",
+  total: 2,
+  processed: 2,
+  moved: 1,
+  failed: 1,
+  failures: [
+    { label: "Arcane — Get Jinxed", error: "file not found on disk after move" },
+  ],
+  finished_at: FINISHED_AT,
+};
+
+/** Point the status endpoint at one job body; nothing else answers. */
+function mockStatus(body: unknown) {
   vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
     if (path === "/api/reorganize/status")
-      return { data: doneWithFailures, response: { ok: true, status: 200 } } as never;
+      return { data: body, response: { ok: true, status: 200 } } as never;
     return { data: undefined, response: { ok: false, status: 404 } } as never;
   });
+}
+
+test("renders per-file failures when this scope's job is terminal", async () => {
+  mockStatus(doneWithFailures);
   wrap(<ReorganizeControl scope={{ scope: "library" }} />);
   const list = await screen.findByRole("alert", {
     name: /files that could not be reorganized/i,
   });
   expect(list).toHaveTextContent("Arcane — Get Jinxed");
   expect(list).toHaveTextContent(/file not found on disk after move/i);
+});
+
+test("the failure block dates the run that produced it", async () => {
+  mockStatus(doneWithFailures);
+  wrap(<ReorganizeControl scope={{ scope: "library" }} />);
+  // The lead-in owns the sentence; the timestamp is its own <time> child, so
+  // match the prefix and read the whole line's text.
+  const line = await screen.findByText(/from the reorganize that finished/i);
+  // Whitespace-normalise both sides: en-US puts a narrow no-break space before
+  // "PM", which a naive substring match would miss.
+  const flat = (s: string) => s.replace(/\s+/g, " ");
+  expect(flat(line.textContent ?? "")).toContain(flat(formatTimestamp(FINISHED_AT)));
+  // Never the raw wire value.
+  expect(line.textContent).not.toContain(FINISHED_AT);
+});
+
+test("dismissing a terminal result clears it and moves focus to the trigger", async () => {
+  // The slot really empties, so the poll that follows the dismiss must not
+  // hand the same failures back.
+  let statusBody: unknown = doneWithFailures;
+  vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
+    if (path === "/api/reorganize/status")
+      return { data: statusBody, response: { ok: true, status: 200 } } as never;
+    return { data: undefined, response: { ok: false, status: 404 } } as never;
+  });
+  vi.spyOn(client, "POST").mockImplementation(async (path: string) => {
+    if (path === "/api/reorganize/dismiss") {
+      statusBody = idle;
+      return { data: idle, response: { ok: true, status: 200 } } as never;
+    }
+    return { data: undefined, response: { ok: false, status: 404 } } as never;
+  });
+
+  wrap(<ReorganizeControl scope={{ scope: "library" }} />);
+  await screen.findByRole("alert", {
+    name: /files that could not be reorganized/i,
+  });
+  await userEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+
+  expect(client.POST).toHaveBeenCalledWith("/api/reorganize/dismiss");
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("alert", { name: /files that could not be reorganized/i }),
+    ).toBeNull(),
+  );
+  expect(screen.queryByText(/from the reorganize that finished/i)).toBeNull();
+  // The block took the button that was just pressed with it — focus lands on
+  // the control's own trigger instead of dropping to <body>.
+  expect(screen.getByRole("button", { name: /reorganize files/i })).toHaveFocus();
+});
+
+test("dismissing while a preview is open hands focus to the plan, not <body>", async () => {
+  // The inline variant swaps its trigger out for Confirm/Cancel while a plan is
+  // open, so the trigger fallback does not exist — focus must land on the plan
+  // container (the file's other managed focus target) when the list unmounts.
+  let statusBody: unknown = doneWithFailures;
+  vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
+    if (path === "/api/reorganize/status")
+      return { data: statusBody, response: { ok: true, status: 200 } } as never;
+    if (path === "/api/reorganize/preview")
+      return {
+        data: {
+          scope: "library",
+          scope_label: "library",
+          total: 1,
+          will_move: 1,
+          already_in_place: 0,
+          truncated: false,
+          moves: [
+            {
+              kind: "album",
+              label: "Radiohead — In Rainbows",
+              from_path: "/m/junk/ir",
+              to_path: "/m/Radiohead/In Rainbows",
+              track_count: 3,
+            },
+          ],
+          orphans: [],
+          orphans_total: 0,
+          conflicts: [],
+          conflicts_total: 0,
+        },
+        response: { ok: true, status: 200 },
+      } as never;
+    return { data: undefined, response: { ok: false, status: 404 } } as never;
+  });
+  vi.spyOn(client, "POST").mockImplementation(async (path: string) => {
+    if (path === "/api/reorganize/dismiss") {
+      statusBody = idle;
+      return { data: idle, response: { ok: true, status: 200 } } as never;
+    }
+    return { data: undefined, response: { ok: false, status: 404 } } as never;
+  });
+
+  wrap(<ReorganizeControl scope={{ scope: "library" }} />);
+  await screen.findByRole("alert", {
+    name: /files that could not be reorganized/i,
+  });
+  await userEvent.click(screen.getByRole("button", { name: /reorganize files/i }));
+  await screen.findByText(/1 will move/i);
+
+  await userEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("alert", { name: /files that could not be reorganized/i }),
+    ).toBeNull(),
+  );
+  expect(document.body).not.toHaveFocus();
+  expect(screen.getByText(/1 will move/i).closest('[tabindex="-1"]')).toHaveFocus();
+});
+
+test("a running job offers no dismiss and claims no finish time", async () => {
+  mockStatus({
+    ...idle,
+    phase: "running",
+    scope: "library",
+    job_id: "r1",
+    total: 4,
+    processed: 2,
+    moved: 1,
+    failed: 1,
+    // A live job can already have failed a unit; its result is not final and
+    // there is nothing to clear yet — the running UI stays as it was.
+    failures: [
+      { label: "Arcane — Get Jinxed", error: "file not found on disk after move" },
+    ],
+    finished_at: null,
+  });
+  wrap(<ReorganizeControl scope={{ scope: "library" }} />);
+  expect(await screen.findByRole("button", { name: /^stop$/i })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /dismiss/i })).toBeNull();
+  expect(screen.queryByText(/finished/i)).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 // ——— refused units (collision pre-flight) ———————————————————————————————

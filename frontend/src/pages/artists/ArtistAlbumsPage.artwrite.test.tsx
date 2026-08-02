@@ -32,6 +32,7 @@ vi.mock("@/api/useReorganize", () => ({
   usePreviewReorganize: () => ({ mutate: vi.fn(), isPending: false }),
   useStartReorganize: () => ({ mutate: vi.fn(), isPending: false }),
   useStopReorganize: () => ({ mutate: vi.fn(), isPending: false }),
+  useDismissReorganize: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 const writeSettings = { enabled: true };

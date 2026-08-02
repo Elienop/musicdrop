@@ -1,6 +1,11 @@
 import { describe, expect, test } from "vitest";
 
-import { formatBytes, formatDuration, formatTotalDuration } from "@/lib/format";
+import {
+  formatBytes,
+  formatDuration,
+  formatTimestamp,
+  formatTotalDuration,
+} from "@/lib/format";
 
 describe("formatTotalDuration", () => {
   test("days for >= 1 day", () => {
@@ -50,5 +55,26 @@ describe("formatDuration", () => {
   });
   test("en-dash for a missing duration", () => {
     expect(formatDuration(null)).toBe("-");
+  });
+});
+
+describe("formatTimestamp", () => {
+  // The locale and the time zone belong to the reader (CI runs UTC/en-US, a
+  // laptop does not), so these assert the SHAPE of the output rather than one
+  // runner's exact wording.
+  test("renders a wire timestamp as a date and time, never the raw ISO", () => {
+    const iso = "2026-08-02T13:53:00Z";
+    const out = formatTimestamp(iso);
+    expect(out).not.toContain(iso);
+    expect(out).toContain("2026"); // the year survives every locale
+    expect(out).toMatch(/\d{1,2}[:.]\d{2}/); // ...and so does an hour:minute
+  });
+
+  test("two instants an hour apart never render the same", () => {
+    // Guards the time half: a date-only format collapses these into one string,
+    // and a result from this morning would read exactly like one from tonight.
+    expect(formatTimestamp("2026-08-02T13:53:00Z")).not.toBe(
+      formatTimestamp("2026-08-02T14:53:00Z"),
+    );
   });
 });

@@ -5,6 +5,7 @@ progress). ``ReorganizeOutcome`` is internal (runner -> registry), not on the wi
 Scope is carried by route + ``?artist=`` query, so there is no request model.
 """
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel
@@ -114,3 +115,10 @@ class ReorganizeBackfillStatus(BaseModel):
     scope_label: str  # "library" / artist name / "Artist - Album"
     orphans_trashed: int  # husks moved to Trash this run (0 until the post-move pass)
     failures: list[ReorganizeUnitFailure]  # first FAILURE_ROW_CAP failed units (label + reason)
+    # When this job reached done/stopped/failed (UTC ISO 8601 on the wire); None
+    # while idle or running. The slot keeps the last job until the next start
+    # replaces it, so a failure can be on screen long after the user fixed its
+    # cause — this is how the UI dates what it is showing. Required and nullable
+    # (never absent), like every other field here; the config_api/bank precedent
+    # for carrying a real ``datetime`` on the wire.
+    finished_at: datetime | None

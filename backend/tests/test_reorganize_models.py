@@ -81,6 +81,8 @@ def test_status_idle_shape() -> None:
         scope_label="library",
         orphans_trashed=0,
         failures=[],
+        finished_at=None,
     )
     assert s.phase == "idle"
     assert s.artist is None and s.album_id is None
+    assert s.finished_at is None  # nothing has finished, so nothing is dated

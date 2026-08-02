@@ -210,5 +210,6 @@ def test_reorganize_models_carry_orphan_fields() -> None:
         scope_label="library",
         orphans_trashed=3,
         failures=[],
+        finished_at=None,
     )
     assert status.orphans_trashed == 3

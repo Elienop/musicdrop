@@ -1,4 +1,5 @@
 # backend/tests/test_reorganize_jobs.py
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -116,6 +117,91 @@ def test_stop_is_cooperative() -> None:
     assert reg.should_stop() is False
     reg.request_stop()
     assert reg.should_stop() is True
+
+
+def test_dismiss_clears_a_terminal_job_back_to_idle() -> None:
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    reg.record(ReorganizeOutcome(status="failed", label="A — B", error="boom"))
+    reg.finish("done")
+    reg.dismiss()
+    s = reg.state()
+    assert s.phase == "idle"
+    assert s.job_id is None and s.failed == 0 and s.failures == []
+
+
+def test_dismiss_refuses_a_running_job_and_leaves_it_intact() -> None:
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    reg.record(ReorganizeOutcome(status="failed", label="A — B", error="boom"))
+    with pytest.raises(RuntimeError):
+        reg.dismiss()
+    s = reg.state()
+    assert s.phase == "running"
+    assert s.failed == 1 and [f.label for f in s.failures] == ["A — B"]
+
+
+def test_dismiss_on_an_empty_slot_is_a_no_op() -> None:
+    reg = ReorganizeRegistry()
+    reg.dismiss()
+    assert reg.state().phase == "idle"
+
+
+def test_dismiss_is_idempotent() -> None:
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    reg.finish("done")
+    reg.dismiss()
+    reg.dismiss()  # second press must not raise
+    assert reg.state().phase == "idle"
+
+
+def _assert_utc_now(ts: datetime | None, *, not_before: datetime) -> None:
+    assert ts is not None
+    assert ts.utcoffset() == timedelta(0)  # aware AND UTC
+    assert not_before <= ts <= datetime.now(UTC)
+
+
+def test_finished_at_is_stamped_when_a_job_completes() -> None:
+    reg = ReorganizeRegistry()
+    before = datetime.now(UTC)
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    assert reg.state().finished_at is None  # a running job has not finished
+    reg.finish("done")
+    _assert_utc_now(reg.state().finished_at, not_before=before)
+
+
+def test_finished_at_is_stamped_when_a_job_is_stopped() -> None:
+    reg = ReorganizeRegistry()
+    before = datetime.now(UTC)
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    reg.request_stop()
+    reg.finish("stopped")
+    _assert_utc_now(reg.state().finished_at, not_before=before)
+
+
+def test_finished_at_is_stamped_when_a_job_fails() -> None:
+    reg = ReorganizeRegistry()
+    before = datetime.now(UTC)
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    reg.fail("kaboom")
+    _assert_utc_now(reg.state().finished_at, not_before=before)
+
+
+def test_idle_invents_no_finished_at() -> None:
+    assert ReorganizeRegistry().state().finished_at is None
+
+
+def test_a_new_job_clears_the_previous_finished_at_until_it_ends() -> None:
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    reg.finish("done")
+    first = reg.state().finished_at
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    assert reg.state().finished_at is None  # the new run has not finished yet
+    reg.finish("done")
+    second = reg.state().finished_at
+    assert first is not None and second is not None and second >= first
 
 
 def test_module_global_active_and_reset() -> None:

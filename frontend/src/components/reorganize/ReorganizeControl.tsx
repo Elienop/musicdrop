@@ -9,6 +9,7 @@ import {
   type ReorganizePlan,
   type ReorganizeScope,
   type ReorganizeUnitFailure,
+  useDismissReorganize,
   usePreviewReorganize,
   useReorganizeStatus,
   useStartReorganize,
@@ -17,6 +18,7 @@ import {
 import { Reorganize, Spinner, Stop as StopIcon } from "@/components/icons";
 import { IconAction } from "@/components/system/IconAction";
 import { Button } from "@/components/ui/button";
+import { formatTimestamp } from "@/lib/format";
 
 function jobMatches(
   job: ReorganizeBackfillStatus | undefined,
@@ -111,21 +113,57 @@ function ConflictList({ plan }: { plan: ReorganizePlan }) {
 }
 
 /** The per-unit failures a terminal job carries (label + reason) — this is
- * what finally shows the user WHICH file is stuck and WHY. */
-function FailureList({ failures }: { failures: ReorganizeUnitFailure[] }) {
+ * what finally shows the user WHICH file is stuck and WHY.
+ *
+ * Dated and dismissable because the slot holds this result until the NEXT job
+ * starts, and a clean preview starts no job: without the finish time the user
+ * can't tell yesterday's failure from one they just caused, and without the
+ * dismiss they'd have to run a reorganize they don't need to clear it. Only a
+ * terminal job gets here — a running one keeps its live UI. */
+function FailureList({
+  failures,
+  finishedAt,
+  onDismiss,
+  dismissPending,
+}: {
+  failures: ReorganizeUnitFailure[];
+  finishedAt: string | null;
+  onDismiss: () => void;
+  dismissPending: boolean;
+}) {
   return (
-    <ul
-      role="alert"
-      aria-label="Files that could not be reorganized"
-      className="text-destructive flex max-w-prose flex-col gap-1 text-sm"
-    >
-      {failures.map((f, i) => (
-        <li key={`${f.label}-${i}`}>
-          <span className="font-medium">{f.label}</span>
-          <span className="text-muted-foreground">: {f.error}</span>
-        </li>
-      ))}
-    </ul>
+    <div className="flex max-w-prose flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        {finishedAt != null && (
+          <p className="text-muted-foreground text-xs">
+            From the reorganize that finished{" "}
+            <time dateTime={finishedAt}>{formatTimestamp(finishedAt)}</time>:
+          </p>
+        )}
+        {/* Never `disabled`: it holds focus at the moment it is pressed. */}
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-disabled={dismissPending || undefined}
+          className="aria-disabled:opacity-50"
+          onClick={onDismiss}
+        >
+          {dismissPending ? "Dismissing…" : "Dismiss"}
+        </Button>
+      </div>
+      <ul
+        role="alert"
+        aria-label="Files that could not be reorganized"
+        className="text-destructive flex flex-col gap-1 text-sm"
+      >
+        {failures.map((f, i) => (
+          <li key={`${f.label}-${i}`}>
+            <span className="font-medium">{f.label}</span>
+            <span className="text-muted-foreground">: {f.error}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -214,6 +252,7 @@ export function ReorganizeControl({
   const preview = usePreviewReorganize();
   const start = useStartReorganize();
   const stop = useStopReorganize();
+  const dismiss = useDismissReorganize();
   const [plan, setPlan] = useState<ReorganizePlan | null>(null);
   const [message, setMessage] = useState<ActionMessage | null>(null);
 
@@ -241,21 +280,19 @@ export function ReorganizeControl({
 
   // Once THIS scope's job is terminal, surface its per-unit failures (label +
   // reason) under the controls — counts alone can't say which file is stuck.
-  const failures =
-    isThis && (phase === "done" || phase === "stopped" || phase === "failed")
-      ? (job?.failures ?? [])
-      : [];
+  const isTerminal =
+    phase === "done" || phase === "stopped" || phase === "failed";
+  const failures = isThis && isTerminal ? (job?.failures ?? []) : [];
+  // Non-null only on a terminal job, so the block can date itself.
+  const finishedAt = isThis && isTerminal ? (job?.finished_at ?? null) : null;
 
   // Files moved + DB paths changed — refresh the album/artist rosters that show
   // those paths once THIS scope's job reaches a terminal state.
   useEffect(() => {
-    if (
-      isThis &&
-      (phase === "done" || phase === "stopped" || phase === "failed")
-    ) {
+    if (isThis && isTerminal) {
       invalidateLibraryContent(queryClient);
     }
-  }, [isThis, phase, queryClient]);
+  }, [isThis, isTerminal, queryClient]);
 
   // A preview with moves, orphan husks to sweep, OR refused units opens the
   // inline review; only a truly empty preview shows the inline info note (no
@@ -305,6 +342,20 @@ export function ReorganizeControl({
   const onStop = () => {
     if (stop.isPending) return; // in flight — swallow
     stop.mutate();
+  };
+  // Clearing the slot unmounts the button being pressed, so hand focus to the
+  // control's own trigger first (the same place Cancel returns it to) —
+  // otherwise the whole block vanishes and keyboard focus falls to <body>.
+  // With a preview plan open the inline variant does not mount the trigger at
+  // all (Confirm/Cancel stand in for it), so fall back to the plan container,
+  // which is this file's other managed focus target.
+  const onDismiss = () => {
+    if (dismiss.isPending) return; // in flight — swallow
+    setMessage(null);
+    dismiss.mutate(undefined, {
+      onSuccess: () => (triggerRef.current ?? planRef.current)?.focus(),
+      onError: onActionError,
+    });
   };
 
   // `null` on an all-refusals plan: nothing may be offered to run, so the plan
@@ -386,7 +437,14 @@ export function ReorganizeControl({
             {message.text}
           </span>
         )}
-        {failures.length > 0 && <FailureList failures={failures} />}
+        {failures.length > 0 && (
+          <FailureList
+            failures={failures}
+            finishedAt={finishedAt}
+            onDismiss={onDismiss}
+            dismissPending={dismiss.isPending}
+          />
+        )}
       </div>
     );
   }
@@ -456,7 +514,14 @@ export function ReorganizeControl({
           </span>
         )}
       </div>
-      {failures.length > 0 && <FailureList failures={failures} />}
+      {failures.length > 0 && (
+        <FailureList
+          failures={failures}
+          finishedAt={finishedAt}
+          onDismiss={onDismiss}
+          dismissPending={dismiss.isPending}
+        />
+      )}
     </div>
   );
 }

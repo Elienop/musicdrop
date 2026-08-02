@@ -32,7 +32,7 @@ export function useReorganizeStatus() {
           qc.getQueryData<ReorganizeBackfillStatus>(REORGANIZE_STATUS_KEY) ?? {
             phase: "idle", job_id: null, scope: null, total: 0, processed: 0, moved: 0,
             skipped: 0, failed: 0, orphans_trashed: 0, current: null, error: null, artist: null,
-            album_id: null, scope_label: "library", failures: [],
+            album_id: null, scope_label: "library", failures: [], finished_at: null,
           }
         );
       }
@@ -93,6 +93,20 @@ export function useStopReorganize() {
   return useMutation<ReorganizeBackfillStatus, Error, void>({
     mutationFn: async (): Promise<ReorganizeBackfillStatus> =>
       unwrap(await client.POST("/api/reorganize/stop"), "Failed to stop"),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: REORGANIZE_STATUS_KEY }),
+  });
+}
+
+/** Clear a FINISHED job out of the single slot, which otherwise holds its
+ * failure rows until the next job starts — so a fixed problem keeps showing.
+ * Idempotent server-side (an empty slot answers 200 with the idle status), and
+ * refused with 409 while a job is running. Same invalidation as stop: the
+ * status query is the one source of truth for what the control renders. */
+export function useDismissReorganize() {
+  const qc = useQueryClient();
+  return useMutation<ReorganizeBackfillStatus, Error, void>({
+    mutationFn: async (): Promise<ReorganizeBackfillStatus> =>
+      unwrap(await client.POST("/api/reorganize/dismiss"), "Failed to dismiss the result"),
     onSuccess: () => void qc.invalidateQueries({ queryKey: REORGANIZE_STATUS_KEY }),
   });
 }

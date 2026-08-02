@@ -30,6 +30,18 @@ export function formatBytes(bytes: number): string {
   return `${value.toFixed(1)} ${units[i]}`;
 }
 
+/** A wire timestamp (UTC ISO 8601, e.g. "2026-08-02T13:53:00Z") as a local
+ * date AND time: "Aug 2, 2026, 1:53 PM" in en-US. Both halves matter — a job
+ * result is only readable as STALE next to the moment it was produced, and a
+ * date alone can't tell this morning's run from tonight's. Rendered in the
+ * reader's own zone and locale, since the wire value is always UTC. */
+export function formatTimestamp(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
 /** Track length as `m:ss` (e.g. 284 -> "4:44", 5 -> "0:05"). Returns an
  * en-dash for a missing duration so untimed rows still align. Distinct from
  * formatTotalDuration above: this is per-track, never rolls into hours. */

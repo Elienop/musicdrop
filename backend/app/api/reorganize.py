@@ -166,3 +166,29 @@ async def stop_reorganize(
 ) -> ReorganizeBackfillStatus:
     reg.request_stop()
     return reg.state()
+
+
+@router.post("/reorganize/dismiss", response_model=ReorganizeBackfillStatus)
+async def dismiss_reorganize(
+    reg: Annotated[ReorganizeRegistry, Depends(get_reorganize_backfill)],
+) -> ReorganizeBackfillStatus:
+    """Clear a FINISHED job's result (its failure rows) from the slot.
+
+    NO ``_gate_busy`` on purpose: this touches the in-memory registry only —
+    never the library, never beets — so an import or another sweep running
+    elsewhere has no reason to hold a stale error message on screen.
+
+    Idempotent: dismissing an already-empty slot returns the idle status rather
+    than 404. The caller is asking for "nothing displayed", and that is exactly
+    what it gets; a 404 would make the UI special-case a state indistinguishable
+    from success (a double click, a retry, or a concurrent tab that dismissed
+    first). Returns the post-dismiss status so the caller can seed its cache
+    without a follow-up GET.
+    """
+    try:
+        reg.dismiss()
+    except RuntimeError:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "A reorganize is running; stop it before dismissing"
+        ) from None
+    return reg.state()

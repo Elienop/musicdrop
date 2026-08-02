@@ -2518,6 +2518,28 @@
         }
       }
     },
+    "/api/reorganize/dismiss": {
+      "post": {
+        "tags": [
+          "reorganize"
+        ],
+        "summary": "Dismiss Reorganize",
+        "description": "Clear a FINISHED job's result (its failure rows) from the slot.\n\nNO ``_gate_busy`` on purpose: this touches the in-memory registry only \u2014\nnever the library, never beets \u2014 so an import or another sweep running\nelsewhere has no reason to hold a stale error message on screen.\n\nIdempotent: dismissing an already-empty slot returns the idle status rather\nthan 404. The caller is asking for \"nothing displayed\", and that is exactly\nwhat it gets; a 404 would make the UI special-case a state indistinguishable\nfrom success (a double click, a retry, or a concurrent tab that dismissed\nfirst). Returns the post-dismiss status so the caller can seed its cache\nwithout a follow-up GET.",
+        "operationId": "dismiss_reorganize_api_reorganize_dismiss_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReorganizeBackfillStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/disk-sync/preview": {
       "get": {
         "tags": [
@@ -9372,6 +9394,18 @@
             },
             "type": "array",
             "title": "Failures"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
           }
         },
         "type": "object",
@@ -9390,7 +9424,8 @@
           "album_id",
           "scope_label",
           "orphans_trashed",
-          "failures"
+          "failures",
+          "finished_at"
         ],
         "title": "ReorganizeBackfillStatus"
       },
