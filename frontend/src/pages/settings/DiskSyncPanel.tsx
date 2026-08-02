@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { invalidateLibraryContent } from "@/api/useEventStream";
 import {
+  type DiskSyncEmptiedAlbum,
   type DiskSyncPlan,
   type DiskSyncReadError,
   usePreviewDiskSync,
@@ -34,6 +35,14 @@ function planHeadline(plan: DiskSyncPlan): string {
     );
   }
   return clauses.join(" · ");
+}
+
+/** The detail line under an emptied album's label. Two album rows can carry the
+ * SAME label (a real album plus a phantom row holding a stray duplicate), so the
+ * row's own track count and folder are what tell them apart. */
+function emptiedDetail(album: DiskSyncEmptiedAlbum): string {
+  const n = album.track_count;
+  return `${n} track${n === 1 ? "" : "s"} · ${album.path}`;
 }
 
 /** The per-item read failures a terminal job carries (label + reason) — mirrors
@@ -111,13 +120,19 @@ function PlanView({ plan }: { plan: DiskSyncPlan }) {
           <p className="text-muted-foreground text-xs">
             Albums that become empty:
           </p>
-          <ul className="max-h-40 overflow-auto rounded-md border px-3 text-sm">
-            {plan.emptied_albums.map((label, i) => (
+          <ul
+            aria-label="Albums that become empty"
+            className="max-h-40 overflow-auto rounded-md border px-3 text-sm"
+          >
+            {plan.emptied_albums.map((a, i) => (
               <li
-                key={`${label}-${i}`}
-                className="truncate border-b py-1.5 last:border-b-0"
+                key={`${a.path}-${i}`}
+                className="flex flex-col gap-0.5 border-b py-1.5 last:border-b-0"
               >
-                {label}
+                <span className="font-medium">{a.label}</span>
+                <span className="text-muted-foreground truncate text-xs">
+                  {emptiedDetail(a)}
+                </span>
               </li>
             ))}
             {plan.truncated &&

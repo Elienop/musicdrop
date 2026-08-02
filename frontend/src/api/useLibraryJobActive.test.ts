@@ -58,6 +58,7 @@ const idleReorganize: ReorganizeBackfillStatus = {
   album_id: null,
   scope_label: "library",
   failures: [],
+  finished_at: null,
 };
 const idleDiskSync: DiskSyncStatus = {
   phase: "idle",

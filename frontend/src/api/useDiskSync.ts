@@ -8,6 +8,8 @@ import { unwrap } from "./lib";
 export type DiskSyncPlan = components["schemas"]["DiskSyncPlan"];
 export type DiskSyncStatus = components["schemas"]["DiskSyncStatus"];
 export type DiskSyncReadError = components["schemas"]["DiskSyncReadError"];
+export type DiskSyncEmptiedAlbum =
+  components["schemas"]["DiskSyncEmptiedAlbum"];
 
 export const DISK_SYNC_STATUS_KEY = ["disk-sync", "status"] as const;
 

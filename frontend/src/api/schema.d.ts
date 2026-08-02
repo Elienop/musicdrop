@@ -969,6 +969,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/reorganize/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss Reorganize
+         * @description Clear a FINISHED job's result (its failure rows) from the slot.
+         *
+         *     NO ``_gate_busy`` on purpose: this touches the in-memory registry only —
+         *     never the library, never beets — so an import or another sweep running
+         *     elsewhere has no reason to hold a stale error message on screen.
+         *
+         *     Idempotent: dismissing an already-empty slot returns the idle status rather
+         *     than 404. The caller is asking for "nothing displayed", and that is exactly
+         *     what it gets; a 404 would make the UI special-case a state indistinguishable
+         *     from success (a double click, a retry, or a concurrent tab that dismissed
+         *     first). Returns the post-dismiss status so the caller can seed its cache
+         *     without a follow-up GET.
+         */
+        post: operations["dismiss_reorganize_api_reorganize_dismiss_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/disk-sync/preview": {
         parameters: {
             query?: never;
@@ -2349,6 +2380,22 @@ export interface components {
             /** Fields */
             fields: string[];
         };
+        /**
+         * DiskSyncEmptiedAlbum
+         * @description An album row that loses its LAST item — beets prunes it.
+         *
+         *     Two album rows can carry the same label (a real album plus a phantom row
+         *     holding a stray duplicate), so the label alone cannot say which row is
+         *     meant. ``track_count`` + ``path`` are read off THAT row's own items.
+         */
+        DiskSyncEmptiedAlbum: {
+            /** Label */
+            label: string;
+            /** Track Count */
+            track_count: number;
+            /** Path */
+            path: string;
+        };
         /** DiskSyncPlan */
         DiskSyncPlan: {
             /** Total Items */
@@ -2358,7 +2405,7 @@ export interface components {
             /** Will Update */
             will_update: number;
             /** Emptied Albums */
-            emptied_albums: string[];
+            emptied_albums: components["schemas"]["DiskSyncEmptiedAlbum"][];
             /** Emptied Total */
             emptied_total: number;
             /** Removals */
@@ -3684,6 +3731,39 @@ export interface components {
             orphans_trashed: number;
             /** Failures */
             failures: components["schemas"]["ReorganizeUnitFailure"][];
+            /** Finished At */
+            finished_at: string | null;
+        };
+        /** ReorganizeCollision */
+        ReorganizeCollision: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "intra_unit" | "cross_unit";
+            /** Path */
+            path: string;
+            /** Detail */
+            detail: string;
+        };
+        /**
+         * ReorganizeConflict
+         * @description A unit reorganize REFUSES to move: beets would divert a file to a ``.N``
+         *     sibling, renaming something nobody asked to rename. Never also a
+         *     ``ReorganizeMove`` — a conflicted unit is reported here instead.
+         */
+        ReorganizeConflict: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "album" | "singleton";
+            /** Label */
+            label: string;
+            /** From Path */
+            from_path: string;
+            /** Collisions */
+            collisions: components["schemas"]["ReorganizeCollision"][];
         };
         /** ReorganizeMove */
         ReorganizeMove: {
@@ -3724,6 +3804,10 @@ export interface components {
             orphans: components["schemas"]["OrphanFolder"][];
             /** Orphans Total */
             orphans_total: number;
+            /** Conflicts */
+            conflicts: components["schemas"]["ReorganizeConflict"][];
+            /** Conflicts Total */
+            conflicts_total: number;
         };
         /** ReorganizeUnitFailure */
         ReorganizeUnitFailure: {
@@ -5983,6 +6067,26 @@ export interface operations {
         };
     };
     stop_reorganize_api_reorganize_stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReorganizeBackfillStatus"];
+                };
+            };
+        };
+    };
+    dismiss_reorganize_api_reorganize_dismiss_post: {
         parameters: {
             query?: never;
             header?: never;

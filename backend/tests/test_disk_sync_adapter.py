@@ -72,7 +72,53 @@ def test_plan_flags_whole_album_as_emptied(edit_lib: Library) -> None:
         os.remove(it.path)
     plan = plan_disk_sync(edit_lib)
     assert plan.emptied_total == 1
-    assert plan.emptied_albums and album.album in plan.emptied_albums[0]
+    assert plan.emptied_albums and album.album in plan.emptied_albums[0].label
+    assert plan.emptied_albums[0].track_count == 3  # the fixture album's rows
+    assert plan.emptied_albums[0].path == os.path.join("Radiohead", "In Rainbows")
+
+
+def _add_phantom_row(lib: Library, folder: str, title: str) -> str:
+    """Seed a SECOND album row carrying one duplicate item, in its own folder.
+
+    Reproduces the incident: two album rows share the label
+    "Radiohead - In Rainbows" — the real 3-track album and a phantom holding a
+    single duplicate track. Returns the phantom item's absolute path.
+    """
+    import shutil
+
+    from beets.library import Item
+
+    sample = os.path.join(os.path.dirname(__file__), "fixtures", "silent.flac")
+    base = os.path.join(os.fsdecode(lib.directory), *folder.split("/"))
+    os.makedirs(base, exist_ok=True)
+    path = os.path.join(base, f"03 {title}.flac")
+    shutil.copyfile(sample, path)
+    item = Item(
+        album="In Rainbows", albumartist="Radiohead", artist="Radiohead", title=title, track=3
+    )
+    item.path = os.fsencode(path)
+    lib.add_album([item]).store()
+    return path
+
+
+def test_plan_emptied_row_identifies_which_album_row(edit_lib: Library) -> None:
+    """Two album ROWS can carry the same label, so a bare label cannot say which
+    one gets pruned — the user read "1 album becomes empty" as their whole
+    17-track album vanishing. Each emptied row must carry the track count and
+    the folder of THAT row, not of its same-named twin."""
+    twin_track = _items(edit_lib)[0]  # a track of the real 3-track album
+    path = _add_phantom_row(edit_lib, "Radiohead/In Rainbows (1)", "Nude")
+    os.remove(path)  # the phantom row's single file is gone...
+    os.remove(twin_track.path)  # ...and one track of the 3-track twin
+
+    plan = plan_disk_sync(edit_lib)
+
+    assert plan.will_remove == 2  # library-wide; the twin keeps 2 rows, survives
+    assert plan.emptied_total == 1
+    row = plan.emptied_albums[0]
+    assert row.label == "Radiohead - In Rainbows"  # ambiguous on its own
+    assert row.track_count == 1  # the phantom row, NOT the 3-track twin
+    assert row.path == os.path.join("Radiohead", "In Rainbows (1)")
 
 
 def test_plan_lists_changed_tags_with_field_names(edit_lib: Library) -> None:

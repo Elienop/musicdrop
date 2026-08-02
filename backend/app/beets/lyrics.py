@@ -31,6 +31,7 @@ from beets.util.lyrics import Lyrics
 from beetsplug._utils.requests import HTTPNotFoundError
 
 from app.beets.library import LibraryHandle, _is_instrumental
+from app.beets.sidecars import PLAIN_EXT, SIDECAR_EXTS, SYNCED_EXT, sidecar_base
 from app.models.lyrics import (
     ItemLyricsOutcome,
     ItemLyricsStatus,
@@ -145,14 +146,12 @@ def _atomic_write_text(dst: Path, text: str) -> None:
 def _sidecar_base(item: Any) -> str | None:
     """The track path without its extension, for building a sibling sidecar path.
 
+    Item-level wrapper over :func:`app.beets.sidecars.sidecar_base` (the single
+    definition of the stem rule, shared with reorganize's sidecar carry).
     ``item.path`` is beets' bytes path; an absent/empty path yields None (e.g. a
     singleton not yet on disk) so the caller no-ops instead of writing garbage.
     """
-    raw = getattr(item, "path", None)
-    if not raw:
-        return None
-    base, _ext = os.path.splitext(os.fsdecode(raw))
-    return base or None
+    return sidecar_base(getattr(item, "path", None))
 
 
 def _has_sidecar(item: Any) -> bool:
@@ -160,7 +159,7 @@ def _has_sidecar(item: Any) -> bool:
     base = _sidecar_base(item)
     if base is None:
         return False
-    return os.path.exists(base + ".lrc") or os.path.exists(base + ".txt")
+    return any(os.path.exists(base + ext) for ext in SIDECAR_EXTS)
 
 
 def remove_lyric_sidecars(item: Any) -> list[str]:
@@ -176,7 +175,7 @@ def remove_lyric_sidecars(item: Any) -> list[str]:
     if base is None:
         return []
     removed: list[str] = []
-    for ext in (".lrc", ".txt"):
+    for ext in SIDECAR_EXTS:
         path = Path(base + ext)
         try:
             path.unlink()
@@ -202,14 +201,14 @@ def write_lyric_sidecar(item: Any, lyrics: Lyrics) -> str | None:
     if base is None:
         return None
     if lyrics.synced:
-        ext, body = ".lrc", lyrics.text
+        ext, body = SYNCED_EXT, lyrics.text
     else:
-        ext, body = ".txt", "\n".join(lyrics.text_lines)
+        ext, body = PLAIN_EXT, "\n".join(lyrics.text_lines)
     body = body.strip()
     if not body:
         return None
     dst = Path(base + ext)
-    other = Path(base + (".txt" if ext == ".lrc" else ".lrc"))
+    other = Path(base + (PLAIN_EXT if ext == SYNCED_EXT else SYNCED_EXT))
     try:
         _atomic_write_text(dst, body + "\n")
     except OSError:

@@ -2,6 +2,7 @@
 
 from app.models.disk_sync import (
     DiskSyncChange,
+    DiskSyncEmptiedAlbum,
     DiskSyncOutcome,
     DiskSyncPlan,
     DiskSyncReadError,
@@ -15,7 +16,11 @@ def test_plan_shape() -> None:
         total_items=10,
         will_remove=2,
         will_update=1,
-        emptied_albums=["blink-182 — blink-182"],
+        emptied_albums=[
+            DiskSyncEmptiedAlbum(
+                label="blink-182 — blink-182", track_count=13, path="blink-182/blink-182"
+            )
+        ],
         emptied_total=1,
         removals=[
             DiskSyncRemoval(
@@ -27,6 +32,8 @@ def test_plan_shape() -> None:
         truncated=False,
     )
     assert plan.will_remove == 2 and plan.changes[0].fields == ["title", "year"]
+    assert plan.emptied_albums[0].track_count == 13
+    assert plan.emptied_albums[0].path == "blink-182/blink-182"
 
 
 def test_status_idle_shape() -> None:

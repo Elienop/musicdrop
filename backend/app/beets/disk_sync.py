@@ -28,6 +28,7 @@ from beets.library import ReadError
 from app.beets.reorganize import PREVIEW_ROW_CAP
 from app.models.disk_sync import (
     DiskSyncChange,
+    DiskSyncEmptiedAlbum,
     DiskSyncOutcome,
     DiskSyncPlan,
     DiskSyncReadError,
@@ -89,6 +90,11 @@ def _rel_path(lib: Any, item: Any) -> str:
         return path
 
 
+def _rel_dir(lib: Any, item: Any) -> str:
+    """The folder holding ``item``, relative to the music dir (display only)."""
+    return os.path.dirname(_rel_path(lib, item)) or "."
+
+
 def _file_missing(item: Any) -> bool:
     return not item.path or not os.path.exists(item.path)
 
@@ -125,10 +131,16 @@ def plan_disk_sync(lib: Any) -> DiskSyncPlan:
         will_update = 0
         album_totals: dict[int, int] = {}
         album_missing: dict[int, int] = {}
+        album_dirs: dict[int, str] = {}
         for item in items:
             album_id = item.album_id
             if album_id is not None:
                 album_totals[album_id] = album_totals.get(album_id, 0) + 1
+                if album_id not in album_dirs:
+                    # First item's folder stands in for the row: a multi-disc
+                    # layout shows its first disc dir, which still separates
+                    # label twins — the list's whole purpose.
+                    album_dirs[album_id] = _rel_dir(lib, item)
             if _file_missing(item):
                 will_remove += 1
                 if album_id is not None:
@@ -153,21 +165,29 @@ def plan_disk_sync(lib: Any) -> DiskSyncPlan:
         emptied_ids = [
             aid for aid, total in album_totals.items() if album_missing.get(aid, 0) == total
         ]
-        emptied_labels: list[str] = []
+        emptied: list[DiskSyncEmptiedAlbum] = []
         for aid in emptied_ids[:PREVIEW_ROW_CAP]:
             album = lib.get_album(aid)
             if album is not None:
-                emptied_labels.append(_album_label(album))
+                # Count and folder come from THIS row's own items (album_totals /
+                # album_dirs are keyed by album_id), never from a same-named twin.
+                emptied.append(
+                    DiskSyncEmptiedAlbum(
+                        label=_album_label(album),
+                        track_count=album_totals[aid],
+                        path=album_dirs[aid],
+                    )
+                )
         truncated = (
             will_remove > len(removals)
             or will_update > len(changes)
-            or len(emptied_ids) > len(emptied_labels)
+            or len(emptied_ids) > len(emptied)
         )
         return DiskSyncPlan(
             total_items=len(items),
             will_remove=will_remove,
             will_update=will_update,
-            emptied_albums=emptied_labels,
+            emptied_albums=emptied,
             emptied_total=len(emptied_ids),
             removals=removals,
             changes=changes,

@@ -15,6 +15,19 @@ class DiskSyncRemoval(BaseModel):
     path: str  # relative to the music dir where possible (display only)
 
 
+class DiskSyncEmptiedAlbum(BaseModel):
+    """An album row that loses its LAST item — beets prunes it.
+
+    Two album rows can carry the same label (a real album plus a phantom row
+    holding a stray duplicate), so the label alone cannot say which row is
+    meant. ``track_count`` + ``path`` are read off THAT row's own items.
+    """
+
+    label: str  # "Artist - Album" — not unique across album rows
+    track_count: int  # items this row holds; all of them missing, by definition
+    path: str  # the row's folder, relative to the music dir where possible
+
+
 class DiskSyncChange(BaseModel):
     label: str  # "Artist - Title"
     fields: list[str]  # sorted media-field names whose value differs on disk
@@ -29,7 +42,7 @@ class DiskSyncPlan(BaseModel):
     total_items: int  # items examined
     will_remove: int  # exact count of missing-file rows
     will_update: int  # exact count of tag-refresh rows
-    emptied_albums: list[str]  # capped labels ("Artist - Album")
+    emptied_albums: list[DiskSyncEmptiedAlbum]  # capped rows
     emptied_total: int  # exact
     removals: list[DiskSyncRemoval]  # capped at PREVIEW_ROW_CAP
     changes: list[DiskSyncChange]  # capped

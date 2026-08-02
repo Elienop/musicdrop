@@ -1,5 +1,6 @@
 # backend/tests/test_reorganize_api.py
 from collections.abc import Iterator
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,8 @@ from fastapi.testclient import TestClient
 
 from app.api.albums import get_library
 from app.main import app
+from app.models.reorganize import ReorganizeOutcome, ReorganizePhase
+from app.reorganize_jobs.registry import ReorganizeRegistry, get_reorganize_backfill
 from tests.conftest import make_test_handle
 
 
@@ -108,6 +111,105 @@ def test_status_includes_failures(reorg_client: TestClient) -> None:
     r = reorg_client.get("/api/reorganize/status")
     assert r.status_code == 200
     assert r.json()["failures"] == []
+
+
+def _seed_terminal_job(phase: ReorganizePhase = "failed") -> ReorganizeRegistry:
+    """Drive the LIVE registry to a terminal phase carrying one failure row.
+
+    The registry is a process-global single slot (reset around every test by the
+    autouse conftest fixture), so the routes' ``Depends(get_reorganize_backfill)``
+    hands back this very instance.
+    """
+    reg = get_reorganize_backfill()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    reg.record(ReorganizeOutcome(status="failed", label="A — B", error="boom"))
+    if phase == "failed":
+        reg.fail("boom")
+    else:
+        reg.finish(phase)
+    return reg
+
+
+def test_dismiss_clears_a_terminal_jobs_failures(reorg_client: TestClient) -> None:
+    _seed_terminal_job()
+    assert reorg_client.get("/api/reorganize/status").json()["failures"] != []
+
+    resp = reorg_client.post("/api/reorganize/dismiss")
+    assert resp.status_code == 200
+    assert resp.json()["phase"] == "idle" and resp.json()["failures"] == []
+
+    after = reorg_client.get("/api/reorganize/status").json()
+    assert after["phase"] == "idle" and after["failures"] == []
+
+
+def test_dismiss_while_running_is_refused_and_the_job_survives(reorg_client: TestClient) -> None:
+    reg = get_reorganize_backfill()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    reg.record(ReorganizeOutcome(status="failed", label="A — B", error="boom"))
+
+    resp = reorg_client.post("/api/reorganize/dismiss")
+    assert resp.status_code == 409
+
+    after = reorg_client.get("/api/reorganize/status").json()
+    assert after["phase"] == "running" and len(after["failures"]) == 1
+
+
+def test_dismiss_with_no_job_is_idempotent(reorg_client: TestClient) -> None:
+    first = reorg_client.post("/api/reorganize/dismiss")
+    assert first.status_code == 200 and first.json()["phase"] == "idle"
+    second = reorg_client.post("/api/reorganize/dismiss")
+    assert second.status_code == 200 and second.json()["phase"] == "idle"
+
+
+def test_dismiss_is_not_gated_by_another_library_job(reorg_client: TestClient) -> None:
+    # Dismiss touches the in-memory registry only — never the library — so the
+    # busy gate that guards start must NOT hold it hostage.
+    from app.lyrics_jobs.registry import get_lyrics_backfill
+
+    _seed_terminal_job()
+    lyrics = get_lyrics_backfill()
+    lyrics.start(writes_enabled=False)
+    try:
+        resp = reorg_client.post("/api/reorganize/dismiss")
+    finally:
+        lyrics.finish("done")
+    assert resp.status_code == 200 and resp.json()["phase"] == "idle"
+
+
+def test_reading_status_and_preview_never_clears_the_failure(reorg_client: TestClient) -> None:
+    # Clearing is an explicit user action: a clean preview is evidence, not consent.
+    _seed_terminal_job()
+    assert reorg_client.get("/api/reorganize/preview").status_code == 200
+    first = reorg_client.get("/api/reorganize/status").json()
+    second = reorg_client.get("/api/reorganize/status").json()
+    assert first["failures"] == second["failures"] != []
+    assert second["phase"] == "failed"
+
+
+@pytest.mark.parametrize("phase", ["done", "stopped", "failed"])
+def test_status_carries_finished_at_for_a_terminal_job(
+    reorg_client: TestClient, phase: ReorganizePhase
+) -> None:
+    before = datetime.now(tz=None).astimezone()
+    _seed_terminal_job(phase)
+    body = reorg_client.get("/api/reorganize/status").json()
+    assert body["phase"] == phase
+    stamped = datetime.fromisoformat(body["finished_at"])
+    assert stamped.utcoffset() == timedelta(0)  # aware AND UTC on the wire
+    assert before <= stamped <= datetime.now(tz=None).astimezone()
+
+
+def test_idle_status_invents_no_finished_at(reorg_client: TestClient) -> None:
+    body = reorg_client.get("/api/reorganize/status").json()
+    assert body["phase"] == "idle" and body["finished_at"] is None
+
+
+def test_running_status_invents_no_finished_at(reorg_client: TestClient) -> None:
+    get_reorganize_backfill().start(
+        scope="library", artist=None, album_id=None, scope_label="library"
+    )
+    body = reorg_client.get("/api/reorganize/status").json()
+    assert body["phase"] == "running" and body["finished_at"] is None
 
 
 def test_preview_does_not_list_playlists_export_dir(

@@ -187,6 +187,8 @@ def test_reorganize_models_carry_orphan_fields() -> None:
         truncated=False,
         orphans=[of],
         orphans_total=1,
+        conflicts=[],
+        conflicts_total=0,
     )
     assert plan.orphans[0].file_count == 2 and plan.orphans_total == 1
     out = ReorganizeOutcome(status="moved", label="A — B", source_dir="/m/A/B")
@@ -208,5 +210,6 @@ def test_reorganize_models_carry_orphan_fields() -> None:
         scope_label="library",
         orphans_trashed=3,
         failures=[],
+        finished_at=None,
     )
     assert status.orphans_trashed == 3

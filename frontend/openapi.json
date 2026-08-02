@@ -2518,6 +2518,28 @@
         }
       }
     },
+    "/api/reorganize/dismiss": {
+      "post": {
+        "tags": [
+          "reorganize"
+        ],
+        "summary": "Dismiss Reorganize",
+        "description": "Clear a FINISHED job's result (its failure rows) from the slot.\n\nNO ``_gate_busy`` on purpose: this touches the in-memory registry only \u2014\nnever the library, never beets \u2014 so an import or another sweep running\nelsewhere has no reason to hold a stale error message on screen.\n\nIdempotent: dismissing an already-empty slot returns the idle status rather\nthan 404. The caller is asking for \"nothing displayed\", and that is exactly\nwhat it gets; a 404 would make the UI special-case a state indistinguishable\nfrom success (a double click, a retry, or a concurrent tab that dismissed\nfirst). Returns the post-dismiss status so the caller can seed its cache\nwithout a follow-up GET.",
+        "operationId": "dismiss_reorganize_api_reorganize_dismiss_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReorganizeBackfillStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/disk-sync/preview": {
       "get": {
         "tags": [
@@ -6054,6 +6076,30 @@
         ],
         "title": "DiskSyncChange"
       },
+      "DiskSyncEmptiedAlbum": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "track_count": {
+            "type": "integer",
+            "title": "Track Count"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "track_count",
+          "path"
+        ],
+        "title": "DiskSyncEmptiedAlbum",
+        "description": "An album row that loses its LAST item \u2014 beets prunes it.\n\nTwo album rows can carry the same label (a real album plus a phantom row\nholding a stray duplicate), so the label alone cannot say which row is\nmeant. ``track_count`` + ``path`` are read off THAT row's own items."
+      },
       "DiskSyncPlan": {
         "properties": {
           "total_items": {
@@ -6070,7 +6116,7 @@
           },
           "emptied_albums": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/DiskSyncEmptiedAlbum"
             },
             "type": "array",
             "title": "Emptied Albums"
@@ -9372,6 +9418,18 @@
             },
             "type": "array",
             "title": "Failures"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
           }
         },
         "type": "object",
@@ -9390,9 +9448,73 @@
           "album_id",
           "scope_label",
           "orphans_trashed",
-          "failures"
+          "failures",
+          "finished_at"
         ],
         "title": "ReorganizeBackfillStatus"
+      },
+      "ReorganizeCollision": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "intra_unit",
+              "cross_unit"
+            ],
+            "title": "Kind"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "path",
+          "detail"
+        ],
+        "title": "ReorganizeCollision"
+      },
+      "ReorganizeConflict": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "album",
+              "singleton"
+            ],
+            "title": "Kind"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "from_path": {
+            "type": "string",
+            "title": "From Path"
+          },
+          "collisions": {
+            "items": {
+              "$ref": "#/components/schemas/ReorganizeCollision"
+            },
+            "type": "array",
+            "title": "Collisions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "label",
+          "from_path",
+          "collisions"
+        ],
+        "title": "ReorganizeConflict",
+        "description": "A unit reorganize REFUSES to move: beets would divert a file to a ``.N``\nsibling, renaming something nobody asked to rename. Never also a\n``ReorganizeMove`` \u2014 a conflicted unit is reported here instead."
       },
       "ReorganizeMove": {
         "properties": {
@@ -9479,6 +9601,17 @@
           "orphans_total": {
             "type": "integer",
             "title": "Orphans Total"
+          },
+          "conflicts": {
+            "items": {
+              "$ref": "#/components/schemas/ReorganizeConflict"
+            },
+            "type": "array",
+            "title": "Conflicts"
+          },
+          "conflicts_total": {
+            "type": "integer",
+            "title": "Conflicts Total"
           }
         },
         "type": "object",
@@ -9491,7 +9624,9 @@
           "moves",
           "truncated",
           "orphans",
-          "orphans_total"
+          "orphans_total",
+          "conflicts",
+          "conflicts_total"
         ],
         "title": "ReorganizePlan"
       },

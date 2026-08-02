@@ -1,10 +1,11 @@
 // frontend/src/pages/settings/DiskSyncPanel.test.tsx
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { client } from "@/api/client";
+import type { DiskSyncPlan } from "@/api/useDiskSync";
 import { DiskSyncPanel } from "./DiskSyncPanel";
 
 function wrap(ui: React.ReactNode) {
@@ -27,12 +28,25 @@ const idle = {
   failures: [],
 };
 
+// The two emptied rows deliberately share a label: a real 17-track album and a
+// phantom 1-track row are indistinguishable by label alone.
 const plan = {
   total_items: 600,
   will_remove: 2,
   will_update: 1,
-  emptied_albums: ["Some Artist — Ghost Album"],
-  emptied_total: 1,
+  emptied_albums: [
+    {
+      label: "Some Artist — Ghost Album",
+      track_count: 17,
+      path: "Some Artist/Ghost Album",
+    },
+    {
+      label: "Some Artist — Ghost Album",
+      track_count: 1,
+      path: "Some Artist/Ghost Album (1)",
+    },
+  ],
+  emptied_total: 2,
   removals: [
     {
       label: "blink-182 — I Miss You",
@@ -42,7 +56,7 @@ const plan = {
   changes: [{ label: "Cher — Believe", fields: ["title"] }],
   read_errors: [],
   truncated: false,
-};
+} satisfies DiskSyncPlan;
 
 const emptyPlan = {
   total_items: 14,
@@ -54,7 +68,7 @@ const emptyPlan = {
   changes: [],
   read_errors: [],
   truncated: false,
-};
+} satisfies DiskSyncPlan;
 
 beforeEach(() => {
   vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
@@ -94,6 +108,25 @@ test("preview shows the headline counts, rows, and a confirm button", async () =
   // Confirm button = will_remove + will_update.
   expect(
     screen.getByRole("button", { name: /sync 3 items/i }),
+  ).toBeInTheDocument();
+});
+
+test("an emptied row carries its own track count and folder", async () => {
+  wrap(<DiskSyncPanel />);
+  await userEvent.click(screen.getByRole("button", { name: /preview sync/i }));
+  const list = await screen.findByRole("list", {
+    name: /albums that become empty/i,
+  });
+  // Both rows carry the same label, so only the detail line tells them apart:
+  // the real album's 17 tracks vs the phantom row's single one.
+  expect(
+    within(list).getAllByText("Some Artist — Ghost Album"),
+  ).toHaveLength(2);
+  expect(
+    within(list).getByText("17 tracks · Some Artist/Ghost Album"),
+  ).toBeInTheDocument();
+  expect(
+    within(list).getByText("1 track · Some Artist/Ghost Album (1)"),
   ).toBeInTheDocument();
 });
 

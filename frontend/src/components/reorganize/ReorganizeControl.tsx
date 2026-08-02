@@ -9,6 +9,7 @@ import {
   type ReorganizePlan,
   type ReorganizeScope,
   type ReorganizeUnitFailure,
+  useDismissReorganize,
   usePreviewReorganize,
   useReorganizeStatus,
   useStartReorganize,
@@ -17,6 +18,7 @@ import {
 import { Reorganize, Spinner, Stop as StopIcon } from "@/components/icons";
 import { IconAction } from "@/components/system/IconAction";
 import { Button } from "@/components/ui/button";
+import { formatTimestamp } from "@/lib/format";
 
 function jobMatches(
   job: ReorganizeBackfillStatus | undefined,
@@ -31,11 +33,16 @@ function jobMatches(
 }
 
 /** The confirm button's label: a real move plan counts items; an orphan-only
- * plan (no moves, only husk folders to sweep) counts folders to clean up. */
-function confirmLabel(plan: ReorganizePlan): string {
+ * plan (no moves, only husk folders to sweep) counts folders to clean up.
+ * `null` when the plan has nothing to DO — an all-refusals preview, which opens
+ * so the conflicts can be READ. `will_move` already excludes refused units, so
+ * the count here can never promise to move one. */
+function confirmLabel(plan: ReorganizePlan): string | null {
   if (plan.will_move > 0)
     return `Reorganize ${plan.will_move} item${plan.will_move === 1 ? "" : "s"}`;
-  return `Clean up ${plan.orphans_total} folder${plan.orphans_total === 1 ? "" : "s"}`;
+  if (plan.orphans_total > 0)
+    return `Clean up ${plan.orphans_total} folder${plan.orphans_total === 1 ? "" : "s"}`;
+  return null;
 }
 
 function MoveRow({ m }: { m: ReorganizeMove }) {
@@ -57,31 +64,125 @@ function MoveRow({ m }: { m: ReorganizeMove }) {
   );
 }
 
-/** The per-unit failures a terminal job carries (label + reason) — this is
- * what finally shows the user WHICH file is stuck and WHY. */
-function FailureList({ failures }: { failures: ReorganizeUnitFailure[] }) {
+/** Units the pre-flight REFUSES to move: their computed destination is already
+ * taken, so moving would rename a file nobody asked to rename. Never a move row
+ * — the backend keeps these out of `moves` AND out of `will_move` — so this
+ * carries the same destructive treatment as FailureList rather than the neutral
+ * MoveRow one. No `role="alert"` though: that is reserved for a terminal job's
+ * failures, which arrive unbidden, whereas this sits inside the preview the
+ * user just opened and focus has already moved into. */
+function ConflictList({ plan }: { plan: ReorganizePlan }) {
+  const hidden = plan.conflicts_total - plan.conflicts.length;
   return (
-    <ul
-      role="alert"
-      aria-label="Files that could not be reorganized"
-      className="text-destructive flex max-w-prose flex-col gap-1 text-sm"
-    >
-      {failures.map((f, i) => (
-        <li key={`${f.label}-${i}`}>
-          <span className="font-medium">{f.label}</span>
-          <span className="text-muted-foreground">: {f.error}</span>
-        </li>
-      ))}
-    </ul>
+    <div className="flex flex-col gap-1">
+      <p className="text-muted-foreground text-xs">
+        Cannot be moved (the destination name is already taken):{" "}
+        <span className="text-destructive font-medium">
+          {plan.conflicts_total}
+        </span>
+      </p>
+      <ul
+        aria-label="Items that cannot be reorganized"
+        className="text-destructive max-h-56 overflow-auto rounded-md border px-3 text-sm"
+      >
+        {plan.conflicts.map((c, i) => (
+          <li
+            key={`${c.label}-${i}`}
+            className="flex flex-col gap-0.5 border-b py-1.5 last:border-b-0"
+          >
+            <span className="font-medium">{c.label}</span>
+            <span className="text-muted-foreground truncate text-xs">
+              {c.from_path}
+            </span>
+            {/* `detail` repeats its own path, so each sentence reads alone. */}
+            <ul className="text-muted-foreground flex flex-col gap-0.5 text-xs">
+              {c.collisions.map((col, j) => (
+                <li key={`${col.path}-${j}`}>{col.detail}</li>
+              ))}
+            </ul>
+          </li>
+        ))}
+        {hidden > 0 && (
+          <li className="text-muted-foreground py-1.5 text-xs">
+            + {hidden} more…
+          </li>
+        )}
+      </ul>
+    </div>
+  );
+}
+
+/** The per-unit failures a terminal job carries (label + reason) — this is
+ * what finally shows the user WHICH file is stuck and WHY.
+ *
+ * Dated and dismissable because the slot holds this result until the NEXT job
+ * starts, and a clean preview starts no job: without the finish time the user
+ * can't tell yesterday's failure from one they just caused, and without the
+ * dismiss they'd have to run a reorganize they don't need to clear it. Only a
+ * terminal job gets here — a running one keeps its live UI. */
+function FailureList({
+  failures,
+  finishedAt,
+  onDismiss,
+  dismissPending,
+}: {
+  failures: ReorganizeUnitFailure[];
+  finishedAt: string | null;
+  onDismiss: () => void;
+  dismissPending: boolean;
+}) {
+  return (
+    <div className="flex max-w-prose flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        {finishedAt != null && (
+          <p className="text-muted-foreground text-xs">
+            From the reorganize that finished{" "}
+            <time dateTime={finishedAt}>{formatTimestamp(finishedAt)}</time>:
+          </p>
+        )}
+        {/* Never `disabled`: it holds focus at the moment it is pressed. */}
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-disabled={dismissPending || undefined}
+          className="aria-disabled:opacity-50"
+          onClick={onDismiss}
+        >
+          {dismissPending ? "Dismissing…" : "Dismiss"}
+        </Button>
+      </div>
+      <ul
+        role="alert"
+        aria-label="Files that could not be reorganized"
+        className="text-destructive flex flex-col gap-1 text-sm"
+      >
+        {failures.map((f, i) => (
+          <li key={`${f.label}-${i}`}>
+            <span className="font-medium">{f.label}</span>
+            <span className="text-muted-foreground">: {f.error}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
 function PlanView({ plan }: { plan: ReorganizePlan }) {
   return (
     <div className="flex flex-col gap-2" aria-label="Reorganize preview">
+      {/* The three counts partition the scope:
+          total == will_move + already_in_place + conflicts_total. */}
       <p className="text-sm">
         <span className="font-medium">{plan.will_move} will move</span> ·{" "}
         {plan.already_in_place} already in place
+        {plan.conflicts_total > 0 && (
+          <>
+            {" · "}
+            <span className="text-destructive font-medium">
+              {plan.conflicts_total} cannot be moved
+            </span>
+          </>
+        )}
       </p>
       {plan.moves.length > 0 && (
         <ul className="max-h-72 overflow-auto rounded-md border px-3 text-sm">
@@ -95,6 +196,7 @@ function PlanView({ plan }: { plan: ReorganizePlan }) {
           )}
         </ul>
       )}
+      {plan.conflicts_total > 0 && <ConflictList plan={plan} />}
       {plan.orphans.length > 0 && (
         <div className="flex flex-col gap-1">
           <p className="text-muted-foreground text-xs">
@@ -150,6 +252,7 @@ export function ReorganizeControl({
   const preview = usePreviewReorganize();
   const start = useStartReorganize();
   const stop = useStopReorganize();
+  const dismiss = useDismissReorganize();
   const [plan, setPlan] = useState<ReorganizePlan | null>(null);
   const [message, setMessage] = useState<ActionMessage | null>(null);
 
@@ -177,26 +280,30 @@ export function ReorganizeControl({
 
   // Once THIS scope's job is terminal, surface its per-unit failures (label +
   // reason) under the controls — counts alone can't say which file is stuck.
-  const failures =
-    isThis && (phase === "done" || phase === "stopped" || phase === "failed")
-      ? (job?.failures ?? [])
-      : [];
+  const isTerminal =
+    phase === "done" || phase === "stopped" || phase === "failed";
+  const failures = isThis && isTerminal ? (job?.failures ?? []) : [];
+  // Non-null only on a terminal job, so the block can date itself.
+  const finishedAt = isThis && isTerminal ? (job?.finished_at ?? null) : null;
 
   // Files moved + DB paths changed — refresh the album/artist rosters that show
   // those paths once THIS scope's job reaches a terminal state.
   useEffect(() => {
-    if (
-      isThis &&
-      (phase === "done" || phase === "stopped" || phase === "failed")
-    ) {
+    if (isThis && isTerminal) {
       invalidateLibraryContent(queryClient);
     }
-  }, [isThis, phase, queryClient]);
+  }, [isThis, isTerminal, queryClient]);
 
-  // A preview with moves OR orphan husks to sweep opens the inline review; a
-  // truly empty preview shows an inline info note instead (no plan, no Done).
+  // A preview with moves, orphan husks to sweep, OR refused units opens the
+  // inline review; only a truly empty preview shows the inline info note (no
+  // plan, no Done). An all-refusals preview has nothing to confirm but is NOT
+  // "nothing to reorganize" — the user has to see WHY those units are stuck.
   function onPreviewed(result: ReorganizePlan) {
-    if (result.will_move > 0 || result.orphans_total > 0) {
+    if (
+      result.will_move > 0 ||
+      result.orphans_total > 0 ||
+      result.conflicts_total > 0
+    ) {
       setPlan(result);
     } else {
       setMessage({
@@ -236,6 +343,24 @@ export function ReorganizeControl({
     if (stop.isPending) return; // in flight — swallow
     stop.mutate();
   };
+  // Clearing the slot unmounts the button being pressed, so hand focus to the
+  // control's own trigger first (the same place Cancel returns it to) —
+  // otherwise the whole block vanishes and keyboard focus falls to <body>.
+  // With a preview plan open the inline variant does not mount the trigger at
+  // all (Confirm/Cancel stand in for it), so fall back to the plan container,
+  // which is this file's other managed focus target.
+  const onDismiss = () => {
+    if (dismiss.isPending) return; // in flight — swallow
+    setMessage(null);
+    dismiss.mutate(undefined, {
+      onSuccess: () => (triggerRef.current ?? planRef.current)?.focus(),
+      onError: onActionError,
+    });
+  };
+
+  // `null` on an all-refusals plan: nothing may be offered to run, so the plan
+  // renders read-only with Cancel as its only exit.
+  const confirmText = plan != null ? confirmLabel(plan) : null;
 
   if (variant === "rail") {
     return (
@@ -280,14 +405,16 @@ export function ReorganizeControl({
             <div ref={planRef} tabIndex={-1} className="outline-none">
               <PlanView plan={plan} />
             </div>
-            <Button
-              size="sm"
-              aria-disabled={start.isPending || otherRunning || undefined}
-              className="aria-disabled:opacity-50"
-              onClick={onConfirmStart}
-            >
-              {start.isPending ? "Starting…" : confirmLabel(plan)}
-            </Button>
+            {confirmText != null && (
+              <Button
+                size="sm"
+                aria-disabled={start.isPending || otherRunning || undefined}
+                className="aria-disabled:opacity-50"
+                onClick={onConfirmStart}
+              >
+                {start.isPending ? "Starting…" : confirmText}
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
@@ -310,7 +437,14 @@ export function ReorganizeControl({
             {message.text}
           </span>
         )}
-        {failures.length > 0 && <FailureList failures={failures} />}
+        {failures.length > 0 && (
+          <FailureList
+            failures={failures}
+            finishedAt={finishedAt}
+            onDismiss={onDismiss}
+            dismissPending={dismiss.isPending}
+          />
+        )}
       </div>
     );
   }
@@ -347,14 +481,16 @@ export function ReorganizeControl({
           </Button>
         ) : (
           <>
-            <Button
-              size="sm"
-              aria-disabled={start.isPending || otherRunning || undefined}
-              className="aria-disabled:opacity-50"
-              onClick={onConfirmStart}
-            >
-              {start.isPending ? "Starting…" : confirmLabel(plan)}
-            </Button>
+            {confirmText != null && (
+              <Button
+                size="sm"
+                aria-disabled={start.isPending || otherRunning || undefined}
+                className="aria-disabled:opacity-50"
+                onClick={onConfirmStart}
+              >
+                {start.isPending ? "Starting…" : confirmText}
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
@@ -378,7 +514,14 @@ export function ReorganizeControl({
           </span>
         )}
       </div>
-      {failures.length > 0 && <FailureList failures={failures} />}
+      {failures.length > 0 && (
+        <FailureList
+          failures={failures}
+          finishedAt={finishedAt}
+          onDismiss={onDismiss}
+          dismissPending={dismiss.isPending}
+        />
+      )}
     </div>
   );
 }

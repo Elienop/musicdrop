@@ -20,6 +20,7 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import ClassVar, Generic, TypeVar
 
 
@@ -39,6 +40,13 @@ class JobState:
     current: str | None = None
     error: str | None = None
     stop_requested: bool = False
+    # When this job reached a terminal phase (UTC), or None while it still runs.
+    # Stamped by ``finish``/``fail`` — the only two terminal transitions — so a
+    # slot holding a finished job can say WHEN its result was produced. A job's
+    # result outlives the run (the slot keeps the last job until the next start
+    # replaces it), and without this the UI cannot tell a result from five
+    # seconds ago from one produced before the user fixed the problem.
+    finished_at: datetime | None = None
 
 
 JobT = TypeVar("JobT", bound=JobState)
@@ -104,13 +112,21 @@ class SingleSlotRegistry(Generic[JobT]):
             if self._job is not None and self._job.phase == "running":
                 self._job.phase = phase
                 self._job.current = None
+                self._job.finished_at = datetime.now(UTC)
 
     def fail(self, message: str) -> None:
         with self._lock:
+            # Deliberately NOT gated on running (unlike finish, pinned by
+            # test_fail_overrides_a_finished_job): the runner's except clause is
+            # the only reporter of a crash raised after finish() — a context
+            # manager's __exit__ on the way out — and gating here would swallow
+            # that error without a trace. The rare double-stamp of finished_at is
+            # the price of never hiding a crash behind a green phase.
             if self._job is not None:
                 self._job.phase = "failed"
                 self._job.error = message
                 self._job.current = None
+                self._job.finished_at = datetime.now(UTC)
 
     def spawn_worker(self, target: Callable[[], None], *, name: str) -> None:
         """Spawn the job's daemon worker, freeing the slot if the thread refuses.

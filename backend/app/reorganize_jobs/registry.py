@@ -91,6 +91,30 @@ class ReorganizeRegistry(SingleSlotRegistry[_ReorganizeJob]):
             if self._job is not None:
                 self._job.orphans_trashed += n
 
+    def dismiss(self) -> None:
+        """Drop a FINISHED job from the slot, returning ``state()`` to idle.
+
+        The slot holds the last job forever, and a terminal job's failure rows
+        are the only place the UI learns which unit is stuck — so the user was
+        left staring at a failure from before their fix with no way to clear it
+        (a clean preview starts no new job, so nothing ever replaced it). This
+        is that way out, and it is deliberately an explicit action: a still-real
+        failure must never vanish on its own.
+
+        Refuses a RUNNING job with ``RuntimeError`` (the API maps it to 409) —
+        clearing the slot mid-run would strand the worker writing counters into
+        a job nobody is watching, and ``library_busy`` would stop seeing the
+        reorganize that is still moving files. An empty slot is a no-op: the
+        display is already clear, which is all the caller asked for.
+        """
+        with self._lock:
+            job = self._job
+            if job is None:
+                return
+            if job.phase == "running":
+                raise RuntimeError("a reorganize is still running")
+            self._job = None
+
     def state(self) -> ReorganizeBackfillStatus:
         with self._lock:
             job = self._job
@@ -111,6 +135,7 @@ class ReorganizeRegistry(SingleSlotRegistry[_ReorganizeJob]):
                     scope_label="library",
                     orphans_trashed=0,
                     failures=[],
+                    finished_at=None,
                 )
             return ReorganizeBackfillStatus(
                 phase=job.phase,
@@ -128,6 +153,7 @@ class ReorganizeRegistry(SingleSlotRegistry[_ReorganizeJob]):
                 scope_label=job.scope_label,
                 orphans_trashed=job.orphans_trashed,
                 failures=list(job.failures),
+                finished_at=job.finished_at,
             )
 
 
