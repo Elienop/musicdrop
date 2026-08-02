@@ -36,8 +36,15 @@ def _serial() -> Iterator[None]:
 def _tagged_flac(dst: Path, *, artist: str, album: str, title: str, track: int) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(SAMPLE, dst)
+    _tagged_flac_raw(os.fsencode(str(dst)), artist=artist, album=album, title=title, track=track)
+
+
+def _tagged_flac_raw(dst: bytes, *, artist: str, album: str, title: str, track: int) -> None:
+    """Tag a copy of the sample at a RAW path — the name need not be valid UTF-8."""
+    if not os.path.exists(dst):
+        shutil.copyfile(SAMPLE, os.fsdecode(dst))
     item = Item(album=album, albumartist=artist, artist=artist, title=title, track=track)
-    item.path = os.fsencode(str(dst))
+    item.path = dst
     item.write()
 
 
@@ -181,6 +188,61 @@ def test_restore_imports_as_is_and_empties_folder(tmp_path: Path) -> None:
     landed = list((tmp_path / "music" / "2 Brothers" / "Dreams").glob("*.flac"))
     assert len(landed) == 1
     assert not list(folder.rglob("*.flac"))  # moved out of Trash
+
+
+def test_restore_lands_the_album_when_the_user_config_disables_autotag(tmp_path: Path) -> None:
+    # beets swaps the lookup_candidates + user_query stages for import_asis when
+    # `import: autotag: no` (session.py run()), and user_query is the ONLY stage
+    # that calls choose_match — the sole place an outcome is stashed for the
+    # album-id follow-up. Without the worker forcing autotag on, beets imports
+    # the album for real (files moved, DB row created) while restore_album sees
+    # zero outcomes and reports could_not_restore: a successful restore the UI
+    # tells the user failed, with the files already gone from Trash.
+    config["import"]["autotag"] = False
+    lib = _new_library(tmp_path)
+    trash = tmp_path / "trash"
+    folder = trash / "2 Brothers - Dreams"
+    _tagged_flac(
+        folder / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
+    )
+
+    result = restore_album(lib, str(folder), trash_dir=trash)
+
+    assert result.restored is True
+    assert result.reason == "restored"
+    assert result.album_id is not None
+    landed = list((tmp_path / "music" / "2 Brothers" / "Dreams").glob("*.flac"))
+    assert len(landed) == 1
+    assert not list(folder.rglob("*.flac"))  # moved out of Trash
+
+
+def test_restore_lands_an_album_whose_folder_name_is_not_valid_utf8(tmp_path: Path) -> None:
+    # POSIX names are bytes: b"Old Caf\xe9" is not valid UTF-8, so it reaches the
+    # app as a lone surrogate. The whole import path — beets' walk, the task
+    # paths, the move — has to stay bytes-exact, or an album is strandable in
+    # Trash with no way to get it back. Asserts the FILES landed, not just the
+    # status field.
+    lib = _new_library(tmp_path)
+    trash = tmp_path / "trash"
+    trash.mkdir(parents=True)
+    raw_folder = os.path.join(os.fsencode(str(trash)), b"Old Caf\xe9")
+    os.makedirs(raw_folder)
+    _tagged_flac_raw(
+        os.path.join(raw_folder, b"01 Dreams.flac"),
+        artist="2 Brothers",
+        album="Dreams",
+        title="Dreams",
+        track=1,
+    )
+
+    result = restore_album(lib, os.fsdecode(raw_folder), trash_dir=trash)
+
+    assert result.restored is True
+    assert result.reason == "restored"
+    assert result.album_id is not None
+    landed = list((tmp_path / "music" / "2 Brothers" / "Dreams").glob("*.flac"))
+    assert len(landed) == 1
+    assert not os.listdir(raw_folder)  # moved out of Trash, by the real bytes name
 
 
 def test_restore_duplicate_skips_and_keeps_files(tmp_path: Path) -> None:

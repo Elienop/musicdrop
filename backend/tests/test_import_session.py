@@ -1086,6 +1086,35 @@ def test_run_import_worker_forces_duplicate_action_ask() -> None:
     assert seen["dup_action"] == "ask"
 
 
+def test_run_import_worker_forces_autotag_on_and_restores_it() -> None:
+    """The worker must force import.autotag=yes so MusicDrop's hooks fire at all.
+
+    With autotag off, beets replaces the lookup_candidates + user_query stages
+    with import_asis (session.py run()), and user_query is the ONLY stage that
+    calls choose_match — so no outcome is ever emitted, no bank row written and
+    no album id reported, while beets imports the files for real. Same bug class
+    as the singletons forcing next to it, but total.
+    """
+    from app.beets.import_session import run_import_worker
+
+    config["import"]["autotag"] = False  # hostile user config
+    seen: dict[str, Any] = {}
+
+    class FakeSession:
+        lib = None
+        paths: ClassVar[list[bytes]] = []
+        _replace_album_ids: ClassVar[set[int]] = set()
+        _trash_dir = None
+
+        def run(self) -> None:
+            seen["autotag"] = config["import"]["autotag"].get(bool)
+
+    run_import_worker(FakeSession())  # type: ignore[arg-type]  # minimal stand-in
+    assert seen["autotag"] is True
+    # Snapshot/restore: the user's own value is back after the run.
+    assert config["import"]["autotag"].get(bool) is False
+
+
 def test_run_import_worker_trashes_replace_ids_after_run(monkeypatch: pytest.MonkeyPatch) -> None:
     """Recorded Replace ids are moved to Trash AFTER run() returns, by id."""
     from pathlib import Path
