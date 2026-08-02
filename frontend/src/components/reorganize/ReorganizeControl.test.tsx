@@ -526,10 +526,15 @@ test("an all-refusals preview opens the plan instead of the nothing-to-do note",
   // The cap is visible rather than silently swallowed.
   expect(within(refused).getByText(/\+ 1 more/i)).toBeInTheDocument();
 
-  // Nothing to confirm: no button may offer to move or clean up anything.
-  expect(screen.queryByRole("button", { name: /^reorganize \d/i })).toBeNull();
-  expect(screen.queryByRole("button", { name: /clean up/i })).toBeNull();
-  expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument();
+  // Nothing to confirm: Cancel must be the ONLY action offered. Asserting on
+  // the full button set (not label patterns) so a confirm button with ANY
+  // label — "Reorganize", "Reorganize 0 items" — fails this, not just ones
+  // matching a digit-shaped regex.
+  const buttons = screen
+    .getAllByRole("button")
+    .map((b) => b.textContent?.trim())
+    .filter((t) => t === "Cancel" || /reorganize|clean up/i.test(t ?? ""));
+  expect(buttons).toEqual(["Cancel"]);
 });
 
 test("the confirm button counts only movable units, never refused ones", async () => {

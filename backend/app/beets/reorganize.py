@@ -205,6 +205,12 @@ def collisions_by_dest(
         # alias is only safe when it names a mate that itself vacates this run
         # (one divert, settles next sweep); an alias of a STAYING mate's file
         # holds the name forever and beets would divert on every sweep.
+        #
+        # The self check is SUBSUMED by the moving_paths check today: reaching
+        # here means key != this item's own path, which is exactly what puts that
+        # path into moving_paths. It stays as the explicit beets-parity anchor —
+        # if the wider exemption below is ever narrowed, this line is the part
+        # that must survive to keep case-only renames from being refused.
         if samefile(key, os.path.normpath(bytes(item.path))):
             continue
         if any(samefile(key, p) for p in moving_paths):
