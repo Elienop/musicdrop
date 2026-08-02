@@ -2380,6 +2380,22 @@ export interface components {
             /** Fields */
             fields: string[];
         };
+        /**
+         * DiskSyncEmptiedAlbum
+         * @description An album row that loses its LAST item — beets prunes it.
+         *
+         *     Two album rows can carry the same label (a real album plus a phantom row
+         *     holding a stray duplicate), so the label alone cannot say which row is
+         *     meant. ``track_count`` + ``path`` are read off THAT row's own items.
+         */
+        DiskSyncEmptiedAlbum: {
+            /** Label */
+            label: string;
+            /** Track Count */
+            track_count: number;
+            /** Path */
+            path: string;
+        };
         /** DiskSyncPlan */
         DiskSyncPlan: {
             /** Total Items */
@@ -2389,7 +2405,7 @@ export interface components {
             /** Will Update */
             will_update: number;
             /** Emptied Albums */
-            emptied_albums: string[];
+            emptied_albums: components["schemas"]["DiskSyncEmptiedAlbum"][];
             /** Emptied Total */
             emptied_total: number;
             /** Removals */

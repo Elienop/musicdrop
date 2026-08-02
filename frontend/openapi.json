@@ -6076,6 +6076,30 @@
         ],
         "title": "DiskSyncChange"
       },
+      "DiskSyncEmptiedAlbum": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "track_count": {
+            "type": "integer",
+            "title": "Track Count"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "track_count",
+          "path"
+        ],
+        "title": "DiskSyncEmptiedAlbum",
+        "description": "An album row that loses its LAST item \u2014 beets prunes it.\n\nTwo album rows can carry the same label (a real album plus a phantom row\nholding a stray duplicate), so the label alone cannot say which row is\nmeant. ``track_count`` + ``path`` are read off THAT row's own items."
+      },
       "DiskSyncPlan": {
         "properties": {
           "total_items": {
@@ -6092,7 +6116,7 @@
           },
           "emptied_albums": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/DiskSyncEmptiedAlbum"
             },
             "type": "array",
             "title": "Emptied Albums"
