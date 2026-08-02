@@ -314,6 +314,26 @@ def test_reorganize_album_refuses_when_a_settled_track_owns_the_destination(
         assert "2 tracks resolve to this same name" in (outcome.error or "")
 
 
+def test_a_destination_tripping_both_arms_is_reported_once_as_intra_unit(
+    tmp_path: Path,
+) -> None:
+    """One destination can trip both arms at once: two tracks render onto it AND a
+    stranger already holds the name. It must yield ONE row, the intra-unit one —
+    naming both tracks is what the user can act on, and a second row for the same
+    destination would double every message that quotes it."""
+    lib, music, _base = _collide_pair_lib(tmp_path)
+    squat = music / "X" / "Collide"
+    squat.mkdir(parents=True)
+    (squat / "01 Song.mp3").write_bytes(b"\x00SQUAT")  # unknown to the library
+
+    plan = reorg.plan_reorganize(lib, scope="library", artist=None, album_id=None)
+
+    assert plan.conflicts_total == 1
+    collisions = plan.conflicts[0].collisions
+    assert [c.kind for c in collisions] == ["intra_unit"]
+    assert "2 tracks resolve to this same name" in collisions[0].detail
+
+
 def _two_album_rows_lib(tmp_path: Path) -> tuple[Library, Path, int, int]:
     """(lib, music, settled album id, colliding album id) — the real-world incident:
     two ALBUM ROWS whose tracks render to the same folder AND filename."""

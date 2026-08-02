@@ -7,6 +7,12 @@ the move (Task 4) is ``Album.move``/``Item.move`` with ``MoveOperation.MOVE``, w
 relocates files + art and prunes the vacated dirs. Every op binds
 ``lib.music_dir_context()`` because beets 2.11 stores DB paths relative to the
 library dir and re-expands them via a ContextVar a worker thread does not inherit.
+
+Two of the helpers here are the move-hygiene contract for the WHOLE app, not just
+this feature: ``collisions_by_dest`` (would beets divert this move to a ``.N``
+sibling?) and ``carry_sidecars`` (lyrics follow their audio). ``app/beets/edit.py``
+imports both, because a tag edit that renames a file performs the same move under
+a different trigger, and a second copy of either would drift out of agreement.
 """
 
 from __future__ import annotations
@@ -126,8 +132,17 @@ def _occupant_desc(lib: Any, dest: bytes) -> str:
     return f"holds track {occupant.track} {str(occupant.title or '')!r} of {owner}"
 
 
-def _collisions(lib: Any, dests: list[tuple[Any, bytes]]) -> list[ReorganizeCollision]:
-    """Every destination in this unit that beets would divert to a ``.N`` sibling.
+def collisions_by_dest(
+    lib: Any, dests: list[tuple[Any, bytes]]
+) -> dict[bytes, ReorganizeCollision]:
+    """Every destination in this batch that beets would divert to a ``.N`` sibling,
+    keyed by that (normalized) destination.
+
+    Keyed rather than listed because the tag-edit move path reports per TRACK and
+    has to attribute a collision back to the item that computed it; reorganize
+    refuses whole units and takes the values (``_collisions``). The key is always
+    ``os.path.normpath`` of a destination that was passed in, so a caller can look
+    its own items up without re-deriving anything.
 
     ``Item.move_file`` calls ``util.unique_path`` when the destination exists and
     renames the loser silently, so detecting it afterwards is useless: the loser
@@ -157,23 +172,19 @@ def _collisions(lib: Any, dests: list[tuple[Any, bytes]]) -> list[ReorganizeColl
     for item, dest in dests:
         groups.setdefault(os.path.normpath(dest), []).append(item)
 
-    found: list[ReorganizeCollision] = []
-    reported: set[bytes] = set()
+    found: dict[bytes, ReorganizeCollision] = {}
     for dest, group in groups.items():
         if len(group) < 2:
             continue
         rel = _rel_to_music(lib, dest)
-        found.append(
-            ReorganizeCollision(
-                kind="intra_unit",
-                path=rel,
-                detail=(
-                    f"{rel}: {len(group)} tracks resolve to this same name: "
-                    + ", ".join(_track_desc(i) for i in group)
-                ),
-            )
+        found[dest] = ReorganizeCollision(
+            kind="intra_unit",
+            path=rel,
+            detail=(
+                f"{rel}: {len(group)} tracks resolve to this same name: "
+                + ", ".join(_track_desc(i) for i in group)
+            ),
         )
-        reported.add(dest)
 
     for item, dest in dests:
         key = os.path.normpath(dest)
@@ -184,7 +195,7 @@ def _collisions(lib: Any, dests: list[tuple[Any, bytes]]) -> list[ReorganizeColl
         # that same path and the intra-unit arm above has already reported it.
         # Order matters — samefile costs two stats per non-matching pair, so it
         # must not run for the overwhelmingly common free destination.
-        if key in reported or key in own_paths:
+        if key in found or key in own_paths:
             continue
         if not os.path.exists(syspath(key)):
             continue
@@ -199,15 +210,18 @@ def _collisions(lib: Any, dests: list[tuple[Any, bytes]]) -> list[ReorganizeColl
         if any(samefile(key, p) for p in moving_paths):
             continue
         rel = _rel_to_music(lib, key)
-        found.append(
-            ReorganizeCollision(
-                kind="cross_unit",
-                path=rel,
-                detail=f"{rel}: already exists on disk and {_occupant_desc(lib, key)}",
-            )
+        found[key] = ReorganizeCollision(
+            kind="cross_unit",
+            path=rel,
+            detail=f"{rel}: already exists on disk and {_occupant_desc(lib, key)}",
         )
-        reported.add(key)
     return found
+
+
+def _collisions(lib: Any, dests: list[tuple[Any, bytes]]) -> list[ReorganizeCollision]:
+    """This unit's collisions as a flat list — reorganize refuses the whole unit,
+    so which destination produced which row does not matter here."""
+    return list(collisions_by_dest(lib, dests).values())
 
 
 def _collision_error(collisions: list[ReorganizeCollision]) -> str:
@@ -251,10 +265,8 @@ def _verify_moves(pending: list[tuple[int, bytes, bytes]], after: dict[int, byte
     return problems
 
 
-def _carry_sidecars(
-    lib: Any, pending: list[tuple[int, bytes, bytes]], after: dict[int, bytes]
-) -> None:
-    """Move each relocated item's lyric sidecars to its new location, then re-prune.
+def carry_sidecars(lib: Any, old_path: bytes, new_path: bytes) -> None:
+    """Move ONE relocated item's lyric sidecars to its new location, then re-prune.
 
     beets moves audio + album art and nothing else, so MusicDrop's own
     ``.lrc``/``.txt`` sidecars (the files Plex actually reads) stay in the vacated
@@ -273,19 +285,24 @@ def _carry_sidecars(
     makes the on-disk result identical to a sidecar-free move. Never raises: the
     audio has already moved and the unit's outcome must stay truthful about it.
     """
-    vacated: set[bytes] = set()
+    if not move_sidecars(old_path, new_path):
+        return
+    directory = os.path.dirname(old_path)
+    try:
+        prune_dirs(directory, lib.directory, clutter=beets.config["clutter"].as_str_seq())
+    except OSError:
+        _log.warning("pruning vacated dir failed: %r", directory, exc_info=True)
+
+
+def _carry_sidecars(
+    lib: Any, pending: list[tuple[int, bytes, bytes]], after: dict[int, bytes]
+) -> None:
+    """``carry_sidecars`` for every item of a unit that beets has just moved."""
     for item_id, old_path, _dest in pending:
         # Default = the old path: an item beets silently skipped (source file
         # missing) has not moved, and ``move_sidecars`` no-ops on an unchanged
         # path, so its sidecars stay put. ONE gate for that, tested there.
-        new_path = after.get(item_id, old_path)
-        if move_sidecars(old_path, new_path):
-            vacated.add(os.path.dirname(old_path))
-    for directory in vacated:
-        try:
-            prune_dirs(directory, lib.directory, clutter=beets.config["clutter"].as_str_seq())
-        except OSError:
-            _log.warning("pruning vacated dir failed: %r", directory, exc_info=True)
+        carry_sidecars(lib, old_path, after.get(item_id, old_path))
 
 
 def _commonpath_of_dirs(paths: list[bytes]) -> str:
