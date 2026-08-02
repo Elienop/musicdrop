@@ -583,6 +583,92 @@ def test_apply_refused_move_carries_no_sidecars(edit_lib: Library) -> None:
     assert not (base / "03 Nude (Live).lrc").exists()
 
 
+# --- Preview: the same refusal, before anything is touched -------------------
+# Apply refuses a collision-bound rename honestly, but the user only learned that
+# AFTER pressing Apply: the preview showed the same rename as a plain move. The
+# preview runs the SAME pre-flight (``_move_refusals`` over
+# ``reorganize.collisions_by_dest``) and partitions its move rows into the
+# renames that will happen and the ones apply will refuse — so the two surfaces
+# cannot disagree about which track is refused, or why.
+
+
+def test_preview_refuses_the_same_track_the_apply_refuses(edit_lib: Library) -> None:
+    """One draft, two surfaces: the preview names the refused track and what it
+    collides with, and applying that same draft refuses exactly that track with
+    exactly that reason."""
+    from app.beets.edit import apply_album_edit, preview_album_edit
+
+    aid = _album_id(edit_lib)
+    items = _sorted_items(edit_lib, aid)
+    settled, mover = _require_id(items[1].id), _require_id(items[2].id)
+    base = _album_dir(edit_lib, aid)
+    before = _names(base)
+
+    # Track 3 edited into track 2's identity -> both resolve to "02 Bodysnatchers.flac".
+    req = AlbumEditRequest(tracks=[TrackFieldEdits(item_id=mover, title="Bodysnatchers", track=2)])
+    preview = preview_album_edit(edit_lib, album_id=aid, request=req, move_enabled=True)
+
+    assert [r.item_id for r in preview.move_refusals] == [mover]
+    refusal = preview.move_refusals[0]
+    assert refusal.old_path.endswith("03 Nude.flac")
+    assert refusal.new_path.endswith("02 Bodysnatchers.flac")
+    # The detail names BOTH colliders: the contested name, and each file that
+    # resolves to it — the mate holding it and the track being renamed onto it.
+    assert "02 Bodysnatchers.flac" in refusal.detail
+    assert "03 Nude.flac" in refusal.detail
+    assert preview.move_plan == []  # a refused rename is NOT counted as a move
+    assert _names(base) == before  # the preview moved nothing
+
+    result = apply_album_edit(edit_lib, album_id=aid, request=req, write=True, move=True)
+
+    rows = {r.item_id: r for r in result.items}
+    assert result.move_failures == 1
+    # Same track, same sentence — the preview's promise is what apply reports.
+    assert rows[mover].error == f"move refused: {refusal.detail}"
+    assert rows[settled].error is None  # never blamed by either surface
+
+
+def test_preview_reports_no_refusals_when_nothing_collides(edit_lib: Library) -> None:
+    """The happy path is untouched: every rename lands in the move plan and the
+    refusal list is empty."""
+    from app.beets.edit import preview_album_edit
+
+    aid = _album_id(edit_lib)
+    req = AlbumEditRequest(album=AlbumFieldEdits(album_artist="Radiohead (Live)"))
+    preview = preview_album_edit(edit_lib, album_id=aid, request=req, move_enabled=True)
+
+    assert preview.move_refusals == []
+    assert len(preview.move_plan) == 3
+    for change in preview.move_plan:
+        assert "Radiohead (Live)" in change.new_path
+
+
+def test_preview_does_not_refuse_a_swap_the_apply_settles(edit_lib: Library) -> None:
+    """Two tracks renamed into each other's current names: each destination is
+    occupied only until its holder moves, so apply settles the cycle. The preview
+    must promise both moves rather than refusing a transient collision."""
+    from app.beets.edit import apply_album_edit, preview_album_edit
+
+    aid = _album_id(edit_lib)
+    items = _sorted_items(edit_lib, aid)
+    one, two = _require_id(items[0].id), _require_id(items[1].id)
+
+    req = AlbumEditRequest(
+        tracks=[
+            TrackFieldEdits(item_id=one, title="Bodysnatchers", track=2),
+            TrackFieldEdits(item_id=two, title="15 Step", track=1),
+        ]
+    )
+    preview = preview_album_edit(edit_lib, album_id=aid, request=req, move_enabled=True)
+
+    assert preview.move_refusals == []
+    assert {r.item_id for r in preview.move_plan} == {one, two}
+
+    result = apply_album_edit(edit_lib, album_id=aid, request=req, write=True, move=True)
+    assert result.move_failures == 0
+    assert {r.item_id for r in result.items if r.moved} == {one, two}
+
+
 def test_apply_sidecar_failure_does_not_fail_the_move(
     edit_lib: Library, monkeypatch: Any, caplog: Any
 ) -> None:

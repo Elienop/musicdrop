@@ -1879,6 +1879,8 @@ export interface components {
             move_enabled: boolean;
             /** Move Plan */
             move_plan: components["schemas"]["TrackPathChange"][];
+            /** Move Refusals */
+            move_refusals: components["schemas"]["TrackMoveRefusal"][];
         };
         /**
          * AlbumEditRequest
@@ -4198,6 +4200,27 @@ export interface components {
             track?: number | null;
             /** Artist */
             artist?: string | null;
+        };
+        /**
+         * TrackMoveRefusal
+         * @description A rename the apply will REFUSE: beets would divert this file to a ``.N``
+         *     sibling, renaming something nobody asked to rename.
+         *
+         *     ``detail`` is the same sentence the apply reports on the track's own row
+         *     (``move refused: <detail>``) — it names the contested destination and what
+         *     else resolves to it, so the row reads on its own.
+         */
+        TrackMoveRefusal: {
+            /** Item Id */
+            item_id: number;
+            /** Track */
+            track?: number | null;
+            /** Old Path */
+            old_path: string;
+            /** New Path */
+            new_path: string;
+            /** Detail */
+            detail: string;
         };
         /**
          * TrackPathChange

@@ -44,6 +44,7 @@ describe("AlbumEditPanel", () => {
         tracks: [],
         move_enabled: false,
         move_plan: [],
+        move_refusals: [],
       }),
     );
 
@@ -67,6 +68,7 @@ describe("AlbumEditPanel", () => {
         tracks: [],
         move_enabled: true,
         move_plan: [{ item_id: 1, track: 1, old_path: "/a/x.flac", new_path: "/b/x.flac" }],
+        move_refusals: [],
       }),
     );
 
@@ -76,6 +78,173 @@ describe("AlbumEditPanel", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /preview/i }));
     await waitFor(() => expect(screen.getByText(/1 file will be moved/i)).toBeInTheDocument());
+
+    // Nothing refusal-related exists on a clean plan: no list, no count line, and
+    // the notice does not trail a "0 others cannot be moved" clause.
+    expect(screen.queryByRole("list", { name: /cannot be moved/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/cannot be moved/i)).not.toBeInTheDocument();
+  });
+
+  it("lists refused moves with their reason, apart from the moved count", async () => {
+    vi.spyOn(client, "POST").mockResolvedValue(
+      ok({
+        changed_fields: [],
+        album_before: {},
+        album_after: {},
+        tracks: [
+          {
+            item_id: 2,
+            title_before: "Bodysnatchers",
+            title_after: "15 Step",
+            track_before: 2,
+            track_after: 2,
+            artist_before: "Radiohead",
+            artist_after: "Radiohead",
+          },
+        ],
+        move_enabled: true,
+        // The backend partitions: two renames can happen, one cannot. `move_plan`
+        // never carries the refused one, so the headline count is already honest.
+        move_plan: [
+          {
+            item_id: 3,
+            track: 3,
+            old_path: "/music/Radiohead/In Rainbows/03 Nude.flac",
+            new_path: "/music/Radiohead/In Rainbows/03 Nude (remastered).flac",
+          },
+          {
+            item_id: 4,
+            track: 4,
+            old_path: "/music/Radiohead/In Rainbows/04 Reckoner.flac",
+            new_path: "/music/Radiohead/In Rainbows/04 Reckoner (remastered).flac",
+          },
+        ],
+        move_refusals: [
+          {
+            item_id: 2,
+            track: 2,
+            old_path: "/music/Radiohead/In Rainbows/02 Bodysnatchers.flac",
+            new_path: "/music/Radiohead/In Rainbows/01 15 Step.flac",
+            detail:
+              "Radiohead/In Rainbows/01 15 Step.flac: already exists on disk and holds 15 Step",
+          },
+        ],
+      }),
+    );
+
+    renderPanel();
+    fireEvent.change(screen.getByLabelText(/title of track 2/i), {
+      target: { value: "15 Step" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+
+    // The moved count counts only what will actually move; the refusal is counted
+    // separately and never folded into it.
+    const notice = await screen.findByText(/2 files will be moved/i);
+    expect(notice).toHaveTextContent(/1 other file cannot be moved/i);
+
+    // The refused rename is named per-track, with the self-contained reason.
+    const refused = screen.getByRole("list", { name: /files that cannot be moved/i });
+    expect(refused).toHaveClass("text-destructive");
+    const row = within(refused).getByText(/02 Bodysnatchers\.flac → 01 15 Step\.flac/);
+    expect(row).toHaveTextContent(/^#2 /);
+    expect(
+      within(refused).getByText(/already exists on disk and holds 15 Step/),
+    ).toBeInTheDocument();
+
+    // A user-opened preview never shouts: the refusal block is not an alert.
+    expect(refused.closest("[role='alert']")).toBeNull();
+
+    // The header states the consequence, so a partly-refused edit does not read
+    // as dangerous and the apply banner is not new news.
+    expect(
+      screen.getByText(/tags will still be updated.*keep their current names/i),
+    ).toBeInTheDocument();
+
+    // Refusals do not gate the edit — the tags still write.
+    expect(screen.getByRole("button", { name: /apply/i })).not.toBeDisabled();
+  });
+
+  it("names the parent folder when a refused move leaves the file name unchanged", async () => {
+    vi.spyOn(client, "POST").mockResolvedValue(
+      ok({
+        changed_fields: ["title"],
+        album_before: { title: "In Rainbows" },
+        album_after: { title: "In Rainbows (Remaster)" },
+        tracks: [],
+        move_enabled: true,
+        move_plan: [],
+        // An album-title edit relocates the DIRECTORY: every basename is
+        // unchanged, so basenames alone would read "01 15 Step.flac → 01 15
+        // Step.flac" — a rename to itself.
+        move_refusals: [
+          {
+            item_id: 1,
+            track: 1,
+            old_path: "/music/Radiohead/In Rainbows/01 15 Step.flac",
+            new_path: "/music/Radiohead/In Rainbows (Remaster)/01 15 Step.flac",
+            detail:
+              "Radiohead/In Rainbows (Remaster)/01 15 Step.flac: already exists on disk and holds 15 Step",
+          },
+        ],
+      }),
+    );
+
+    renderPanel();
+    fireEvent.change(screen.getByLabelText(/album title/i), {
+      target: { value: "In Rainbows (Remaster)" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+
+    const refused = await screen.findByRole("list", { name: /files that cannot be moved/i });
+    const row = within(refused).getByText(/01 15 Step\.flac →/);
+    expect(row).toHaveTextContent(
+      "#1 In Rainbows/01 15 Step.flac → In Rainbows (Remaster)/01 15 Step.flac",
+    );
+  });
+
+  it("shows the refusal block even when nothing can move", async () => {
+    vi.spyOn(client, "POST").mockResolvedValue(
+      ok({
+        changed_fields: [],
+        album_before: {},
+        album_after: {},
+        tracks: [
+          {
+            item_id: 2,
+            title_before: "Bodysnatchers",
+            title_after: "15 Step",
+            track_before: 2,
+            track_after: 2,
+            artist_before: "Radiohead",
+            artist_after: "Radiohead",
+          },
+        ],
+        move_enabled: true,
+        move_plan: [],
+        move_refusals: [
+          {
+            item_id: 2,
+            track: 2,
+            old_path: "/music/Radiohead/In Rainbows/02 Bodysnatchers.flac",
+            new_path: "/music/Radiohead/In Rainbows/01 15 Step.flac",
+            detail:
+              "Radiohead/In Rainbows/01 15 Step.flac: 2 tracks resolve to this same name: 01 15 Step, 02 Bodysnatchers",
+          },
+        ],
+      }),
+    );
+
+    renderPanel();
+    fireEvent.change(screen.getByLabelText(/title of track 2/i), {
+      target: { value: "15 Step" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+
+    const refused = await screen.findByRole("list", { name: /files that cannot be moved/i });
+    expect(within(refused).getByText(/2 tracks resolve to this same name/)).toBeInTheDocument();
+    // An empty move plan drops the notice entirely rather than promising 0 moves.
+    expect(screen.queryByText(/will be moved on disk/i)).not.toBeInTheDocument();
   });
 
   it("renders per-track before/after rows in the diff table", async () => {
@@ -97,6 +266,7 @@ describe("AlbumEditPanel", () => {
         ],
         move_enabled: false,
         move_plan: [],
+        move_refusals: [],
       }),
     );
 
@@ -121,6 +291,7 @@ describe("AlbumEditPanel", () => {
         tracks: [],
         move_enabled: false,
         move_plan: [],
+        move_refusals: [],
       }),
     );
 
@@ -138,6 +309,7 @@ describe("AlbumEditPanel", () => {
         tracks: [],
         move_enabled: false,
         move_plan: [],
+        move_refusals: [],
       }),
     );
 
@@ -170,6 +342,7 @@ describe("AlbumEditPanel", () => {
         tracks: [],
         move_enabled: false,
         move_plan: [],
+        move_refusals: [],
       }),
     );
     post.mockResolvedValueOnce(
@@ -205,6 +378,52 @@ describe("AlbumEditPanel", () => {
     expect(screen.getByText(/Bodysnatchers/i)).toBeInTheDocument();
   });
 
+  it("omits the track number on an apply row for an untracked file", async () => {
+    const post = vi.spyOn(client, "POST");
+    post.mockResolvedValueOnce(
+      ok({
+        changed_fields: ["title"],
+        album_before: { title: "In Rainbows" },
+        album_after: { title: "In Rainbows (R)" },
+        tracks: [],
+        move_enabled: false,
+        move_plan: [],
+        move_refusals: [],
+      }),
+    );
+    post.mockResolvedValueOnce(
+      ok({
+        album,
+        // beets reports a file with no track number as 0, not null — the preview
+        // already suppresses it, so the apply row must not print "#0".
+        items: [
+          {
+            item_id: 9,
+            track: 0,
+            title: "Hidden Track",
+            written: false,
+            moved: false,
+            error: "permission denied",
+          },
+        ],
+        write_failures: 1,
+        move_failures: 0,
+      }),
+    );
+
+    renderPanel();
+    fireEvent.change(screen.getByLabelText(/album title/i), {
+      target: { value: "In Rainbows (R)" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+    await screen.findByRole("region", { name: /pending changes/i });
+    fireEvent.click(screen.getByRole("button", { name: /apply/i }));
+
+    const row = await screen.findByText(/Hidden Track/);
+    expect(row).toHaveTextContent("Hidden Track: permission denied");
+    expect(row).not.toHaveTextContent("#0");
+  });
+
   it("clears the apply-outcome banner when a field is edited after apply", async () => {
     const post = vi.spyOn(client, "POST");
     post.mockResolvedValueOnce(
@@ -215,6 +434,7 @@ describe("AlbumEditPanel", () => {
         tracks: [],
         move_enabled: false,
         move_plan: [],
+        move_refusals: [],
       }),
     );
     post.mockResolvedValueOnce(
@@ -258,6 +478,7 @@ describe("AlbumEditPanel", () => {
         tracks: [],
         move_enabled: false,
         move_plan: [],
+        move_refusals: [],
       }),
     );
     post.mockResolvedValueOnce(
@@ -294,6 +515,7 @@ describe("AlbumEditPanel", () => {
         tracks: [],
         move_enabled: false,
         move_plan: [],
+        move_refusals: [],
       }),
     );
     // Apply never resolves during the assertion window.
@@ -336,6 +558,7 @@ describe("AlbumEditPanel", () => {
         tracks: [],
         move_enabled: false,
         move_plan: [],
+        move_refusals: [],
       }),
     );
 

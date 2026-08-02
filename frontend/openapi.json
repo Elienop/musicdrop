@@ -4707,6 +4707,13 @@
             },
             "type": "array",
             "title": "Move Plan"
+          },
+          "move_refusals": {
+            "items": {
+              "$ref": "#/components/schemas/TrackMoveRefusal"
+            },
+            "type": "array",
+            "title": "Move Refusals"
           }
         },
         "type": "object",
@@ -4716,7 +4723,8 @@
           "album_after",
           "tracks",
           "move_enabled",
-          "move_plan"
+          "move_plan",
+          "move_refusals"
         ],
         "title": "AlbumEditPreview",
         "description": "The preview of a pending edit: field diff + move plan. Persists nothing."
@@ -10529,6 +10537,46 @@
         ],
         "title": "TrackFieldEdits",
         "description": "Per-track fields to change, keyed by the track's beets item id."
+      },
+      "TrackMoveRefusal": {
+        "properties": {
+          "item_id": {
+            "type": "integer",
+            "title": "Item Id"
+          },
+          "track": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track"
+          },
+          "old_path": {
+            "type": "string",
+            "title": "Old Path"
+          },
+          "new_path": {
+            "type": "string",
+            "title": "New Path"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "old_path",
+          "new_path",
+          "detail"
+        ],
+        "title": "TrackMoveRefusal",
+        "description": "A rename the apply will REFUSE: beets would divert this file to a ``.N``\nsibling, renaming something nobody asked to rename.\n\n``detail`` is the same sentence the apply reports on the track's own row\n(``move refused: <detail>``) \u2014 it names the contested destination and what\nelse resolves to it, so the row reads on its own."
       },
       "TrackPathChange": {
         "properties": {
