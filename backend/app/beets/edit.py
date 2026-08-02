@@ -250,13 +250,19 @@ def preview_album_edit(
                     item._cached_album = shadow
             # Destinations stay BYTES here — the shared collision predicate keys on
             # them — and are computed once per item for both the pre-flight and the
-            # rows below.
-            dests = [(it, bytes(it.destination(basedir=lib.directory))) for it in items]
+            # rows below. Filtered to INSIDE-library tracks up front: apply's move
+            # phase skips outside files entirely, so a plan row for one would
+            # promise a move that never happens.
+            dests = [
+                (it, bytes(it.destination(basedir=lib.directory)))
+                for it in items
+                if _inside_library(lib, it)
+            ]
             # The same pre-flight the apply runs, over the same input: every
-            # INSIDE-library track, including the ones whose path does not change,
+            # inside-library track, including the ones whose path does not change,
             # because a track sitting on its name is exactly what makes a mate's
             # rename divert. Read-only — it stats paths and queries, nothing else.
-            refusals = _move_refusals(lib, [(it, d) for it, d in dests if _inside_library(lib, it)])
+            refusals = _move_refusals(lib, dests)
             for item, dest in dests:
                 iid = _require_id(item.id)
                 new_path = os.fsdecode(dest)

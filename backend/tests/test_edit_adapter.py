@@ -700,3 +700,35 @@ def test_apply_sidecar_failure_does_not_fail_the_move(
     assert (dest / "01 15 Step.flac").exists()
     assert (base / "01 15 Step.lrc").exists()  # left behind, not destroyed
     assert "15 Step.lrc" in caplog.text
+
+
+def test_preview_plans_moves_only_for_files_apply_will_move(edit_lib: Library) -> None:
+    """A track whose file lives OUTSIDE the library gets no move-plan row.
+
+    Apply's move phase filters to inside-library files and silently skips the
+    rest, so a preview row for an outside file promises a move that never
+    happens ("3 files will be moved" -> "moved 2 files", with nothing
+    explaining the third). Both surfaces must consume ONE filtered input.
+    """
+    from app.beets.edit import apply_album_edit, preview_album_edit
+
+    aid = _album_id(edit_lib)
+    stray = _sorted_items(edit_lib, aid)[0]
+    outside = Path(os.fsdecode(bytes(edit_lib.directory))).parent / "elsewhere"
+    outside.mkdir()
+    new_home = outside / "01 15 Step.flac"
+    Path(os.fsdecode(bytes(stray.path))).rename(new_home)
+    stray.path = os.fsencode(str(new_home))
+    stray.store()
+
+    req = AlbumEditRequest(album=AlbumFieldEdits(album_artist="Radiohead (Live)"))
+    preview = preview_album_edit(edit_lib, album_id=aid, request=req, move_enabled=True)
+
+    planned = {c.item_id for c in preview.move_plan}
+    assert _require_id(stray.id) not in planned
+    assert len(preview.move_plan) == 2
+    assert preview.move_refusals == []
+
+    result = apply_album_edit(edit_lib, album_id=aid, request=req, write=True, move=True)
+    moved = {r.item_id for r in result.items if r.moved}
+    assert moved == planned  # the preview promised exactly what the apply did

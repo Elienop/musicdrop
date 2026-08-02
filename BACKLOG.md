@@ -69,10 +69,6 @@ next bulk import.)_
   any future route-level `response_class=` or hand-built `JSONResponse` bypasses both halves
   of the net.
 
-- **Edit preview lists outside-library tracks as "will move".** `preview_album_edit` builds
-  move_plan rows from ALL items, but apply's `_inside_library` filter never moves an
-  outside-library file (reports moved=False, no error). The new refusal pre-flight mirrors
-  apply's filter correctly; only the move_plan row over-promises. Rare state, pre-existing.
 
 - **Untested defensive lines** (deep-review survivors, all currently benign — pin when
   touched next): broken-symlink sidecar carry (`sidecars.py` `lexists`), singleton
@@ -110,6 +106,11 @@ next bulk import.)_
 - ConflictList and MoveRefusalList scroll containers have no focusable children/tabindex, so
   Safari keyboard users can't scroll them (Chrome/Firefox auto-focus scrollers). Shared
   idiom — fix both together or neither.
+- Trash/inbox rows key on the scrubbed display name (`key={album.folder}` /
+  `key={item.name}`), so two differently-damaged non-UTF-8 siblings share a React key
+  (duplicate-key warning, possible node reuse). Cosmetic — either row's action 409s cleanly.
+- `empty_trash_one` resolves the display name outside the swap lock (`restore` resolves
+  inside it); the placeholder scandir path widens that pre-existing TOCTOU window slightly.
 
 ## Recently shipped
 
