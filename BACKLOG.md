@@ -13,22 +13,9 @@ _Last groomed: 2026-08-02, after the reorganize collision wave._
 
 ## Next up
 
-- **Non-UTF-8 paths 500 JSON endpoints (app-wide, pre-existing).** `os.fsdecode` turns
-  undecodable path bytes into lone surrogates; Starlette renders JSON with
-  `ensure_ascii=False` and UTF-8-encodes, which raises → any library path that is not valid
-  UTF-8 500s `GET /api/reorganize/preview` today (proven on main with an executed probe: an
-  undecodable *directory* name, zero collisions involved). Fix is one `display_path()` helper
-  (`os.fsdecode(p).encode("utf-8", "replace").decode()`) applied at every path-to-wire
-  boundary: reorganize `_rel_to_music` / `_commonpath_of_dirs` / `_track_desc` /
-  `_occupant_desc` / `_verify_moves`, `OrphanFolder`, `disk_sync._rel_path` — and audit the
-  rest of the app for more. Trap for the tester: probe through `TestClient`, never bare
-  `json.dumps` (its default `ensure_ascii=True` escapes surrogates and hides the bug).
-
-- **Edit preview shows a collision-bound rename as a plain move.** Apply refuses it with an
-  honest per-track error (#124 wave), but the preview still says "1 file will be moved" —
-  the user learns at apply time. Needs the collision pre-flight mirrored into
-  `preview_album_edit` and a conflict signal in `AlbumEditPreview` (contract change:
-  openapi.json + gen:api).
+_(empty — pick the next slice from Open bugs / hardening or Open questions below. The
+phantom-album-row origin question is the one with a deadline of sorts: it matters before the
+next bulk import.)_
 
 ## Open bugs / hardening
 
@@ -40,7 +27,48 @@ _Last groomed: 2026-08-02, after the reorganize collision wave._
 - **CSRF/Origin posture on state-changing POSTs.** `/api/reorganize` (starts a library-wide
   move), `/stop`, and `/dismiss` are all CORS-simple POSTs with no origin check
   (`verify_upload_origin` covers multipart uploads only). Harden all three together or
-  accept the posture deliberately — do not fix one route in isolation.
+  accept the posture deliberately — do not fix one route in isolation. 2026-08-02 addendum
+  from the wire-safety audit: display-name resolution makes undecodable-named trash/inbox
+  folders addressable by a *guessable* display string (previously unaddressable over HTTP at
+  all — Starlette percent-decodes queries with `errors="replace"`). Bounded (ambiguity
+  refuses, no fan-out), inherent to making such folders restorable; weigh it when the origin
+  decision is made.
+
+- **`.m3u8` playlist export still violates the no-500 invariant.** `write_atomic_text` opens
+  `encoding="utf-8"` strict, so a playlist rewrite 500s on an undecodable track path. The
+  right fix is writing raw bytes (`surrogateescape`), NOT a U+FFFD placeholder — a
+  placeholder inside an `.m3u8` silently points the player at a nonexistent file — and the
+  primitive is shared with the JSON stores, so it needs its own slice.
+
+- **Bank rows cannot be persisted when the source folder name is not valid UTF-8** —
+  `store.py` `model_dump_json` raises `PydanticSerializationError` (different sink from the
+  wire; the response-class net does not cover files on disk). Pre-existing; surfaces only
+  when an undecodable folder enters the bank.
+
+- **MusicDrop-driven imports store ABSOLUTE item paths.** The import worker never binds
+  `lib.music_dir_context()` around `session.run()` (only `_trash_replaced_albums` does), so
+  imported rows store absolute paths while beets' `relative_path` migration expects
+  music-dir-relative ones — likely defeats library portability for every album imported
+  through MusicDrop. Flagged by the 2026-08-02 restore debugging; consequences not yet
+  chased.
+
+- **Config editor accepts `import.autotag` that MusicDrop now ignores.** `run_import_worker`
+  force-enables autotag (with snapshot/restore) because beets swaps out the `user_query`
+  stage under `autotag: no` — the only stage that fires `choose_match`, the sole hook
+  MusicDrop's outcome tracking hangs on (restore reported `could_not_restore` after a
+  SUCCESSFUL import). The setting is still accepted silently; the editor should say it has
+  no effect on MusicDrop-driven imports. Note: sweep/bank breakage under `autotag: no` was
+  reasoned from the stage list, demonstrated only for restore.
+
+- **ENAMETOOLONG is a 500 on trash/inbox endpoints** (pre-existing): `Path.exists()` only
+  swallows ENOENT/ENOTDIR/EBADF/ELOOP, so a >255-byte name component re-raises where a 404
+  was intended. Needs guards at the `exists()` call sites.
+
+- **Wire-safety net coverage caveats** (by design, recorded so nobody assumes otherwise):
+  SSE `/api/events` bypasses the response class (scopes are tag-derived today, never paths);
+  any future route-level `response_class=` or hand-built `JSONResponse` bypasses both halves
+  of the net.
+
 
 - **Untested defensive lines** (deep-review survivors, all currently benign — pin when
   touched next): broken-symlink sidecar carry (`sidecars.py` `lexists`), singleton
@@ -70,9 +98,34 @@ _Last groomed: 2026-08-02, after the reorganize collision wave._
 - PlaylistDetail stale-snapshot move-PUT (self-heals on refetch).
 - Remove-to-empty stale focus; playlist-import focus-after-resolve.
 - Trash restore leaves `.lrc`/`.txt` sidecars behind in Trash (v1 limitation, noted in #67).
+- Trash restore leaves the emptied source folder behind as a 0-track husk row in the listing
+  (name-independent; beets moves the files but never prunes the dir — Empty clears it).
+- MoveNotice in AlbumEditPanel is legacy hand-rolled banner markup that StatusBanner's own
+  docstring claims to generalize (rounded-md/gap-2/size-4 vs canonical rounded-xl/gap-3/
+  size-5) — mechanical migration to `<StatusBanner tone="warning">`, flagged 2026-08-02.
+- ConflictList and MoveRefusalList scroll containers have no focusable children/tabindex, so
+  Safari keyboard users can't scroll them (Chrome/Firefox auto-focus scrollers). Shared
+  idiom — fix both together or neither.
+- Trash/inbox rows key on the scrubbed display name (`key={album.folder}` /
+  `key={item.name}`), so two differently-damaged non-UTF-8 siblings share a React key
+  (duplicate-key warning, possible node reuse). Cosmetic — either row's action 409s cleanly.
+- `empty_trash_one` resolves the display name outside the swap lock (`restore` resolves
+  inside it); the placeholder scandir path widens that pre-existing TOCTOU window slightly.
 
 ## Recently shipped
 
+- **2026-08-02 — wire-safety + edit-preview wave** (branch `fix/utf8-paths-and-edit-preview`):
+  non-UTF-8 paths no longer 500 any JSON endpoint — sink-level scrub
+  (`SurrogateSafeJSONResponse` + scrubbed HTTPException/RequestValidationError handlers),
+  with Trash/inbox display-name keys resolved back to real on-disk entries (409 on ambiguous
+  display twins, incl. a literal-U+FFFD folder shadowing a damaged one; NUL-safe). Found and
+  fixed along the way: `run_import_worker` now force-pins `import.autotag` on — under
+  `autotag: no` beets drops the only stage that fires `choose_match`, so every import surface
+  reported nothing-happened after a successful import (restore said `could_not_restore` while
+  the files landed). And the edit preview now mirrors apply's collision pre-flight: new
+  `AlbumEditPreview.move_refusals` contract field, refusals rendered in the ConflictList
+  idiom with per-track detail plus the partial-application consequence stated ("tags still
+  write; files keep their names"). Detail: memory `wire-safety-serialization-gotchas`.
 - **2026-08-02 — reorganize collision wave** (branch `fix/reorganize-collision-wave`):
   proven `.1↔.2` rename churn on destination collisions, killed by a pre-flight that refuses
   before moving; sidecars follow audio through every reorganize/edit move (they used to be

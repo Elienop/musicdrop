@@ -77,6 +77,22 @@ class TrackPathChange(BaseModel):
     new_path: str
 
 
+class TrackMoveRefusal(BaseModel):
+    """A rename the apply will REFUSE: beets would divert this file to a ``.N``
+    sibling, renaming something nobody asked to rename.
+
+    ``detail`` is the same sentence the apply reports on the track's own row
+    (``move refused: <detail>``) — it names the contested destination and what
+    else resolves to it, so the row reads on its own.
+    """
+
+    item_id: int
+    track: int | None = None
+    old_path: str
+    new_path: str  # where the rename was headed, and could not go
+    detail: str
+
+
 class AlbumEditPreview(BaseModel):
     """The preview of a pending edit: field diff + move plan. Persists nothing."""
 
@@ -85,7 +101,12 @@ class AlbumEditPreview(BaseModel):
     album_after: AlbumDiffSide
     tracks: list[EditTrackChange]
     move_enabled: bool
+    # The two move lists PARTITION the pending renames — a refused one is never
+    # also a ``move_plan`` row — so ``move_plan`` alone answers "how many files
+    # will move". Both are required on the wire (no default), so a client cannot
+    # read the plan while quietly ignoring the refusals.
     move_plan: list[TrackPathChange]
+    move_refusals: list[TrackMoveRefusal]
 
 
 class ItemWriteResult(BaseModel):

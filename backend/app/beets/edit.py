@@ -17,6 +17,11 @@ reports that on the track's own row, leaving its tag write standing; and every
 move that does happen carries the track's ``.lrc``/``.txt`` lyric sidecars, which
 beets itself knows nothing about.
 
+The PREVIEW runs that same pre-flight over the same input, so it splits its move
+rows into the renames that will happen and the ones the apply will refuse, with
+the same reason. One predicate, two surfaces — they cannot drift apart, and the
+user does not learn about a refusal only after pressing Apply.
+
 Off-main-thread safety: every op binds ``lib.music_dir_context()`` because beets
 2.11 stores DB paths relative to the library dir and re-expands them via a
 ``ContextVar`` that a FastAPI threadpool thread does not inherit (memory
@@ -45,6 +50,7 @@ from app.models.edit import (
     AlbumEditResult,
     EditTrackChange,
     ItemWriteResult,
+    TrackMoveRefusal,
     TrackPathChange,
 )
 
@@ -228,6 +234,7 @@ def preview_album_edit(
                 )
 
         move_plan: list[TrackPathChange] = []
+        move_refusals: list[TrackMoveRefusal] = []
         if move_enabled:
             # ``item.destination()`` resolves album-level path fields (e.g.
             # ``$albumartist``) from ``item._cached_album``, which beets reloads
@@ -235,20 +242,54 @@ def preview_album_edit(
             # a clean, revision-aligned shadow album carrying the edited fields so
             # the move plan reflects album-header changes (see beets 2.11
             # ``Item._cached_album`` / ``Model.load`` early-exit semantics).
+            # The apply gets away without this because it has already STORED the
+            # edits before its move phase runs; the preview stores nothing.
             shadow = _shadow_album(lib, album_id, album_edits)
-            for item in items:
-                iid = _require_id(item.id)
-                if shadow is not None:
+            if shadow is not None:
+                for item in items:
                     item._cached_album = shadow
-                new_path = os.fsdecode(item.destination(basedir=lib.directory))
+            # Destinations stay BYTES here — the shared collision predicate keys on
+            # them — and are computed once per item for both the pre-flight and the
+            # rows below. Filtered to INSIDE-library tracks up front: apply's move
+            # phase skips outside files entirely, so a plan row for one would
+            # promise a move that never happens.
+            dests = [
+                (it, bytes(it.destination(basedir=lib.directory)))
+                for it in items
+                if _inside_library(lib, it)
+            ]
+            # The same pre-flight the apply runs, over the same input: every
+            # inside-library track, including the ones whose path does not change,
+            # because a track sitting on its name is exactly what makes a mate's
+            # rename divert. Read-only — it stats paths and queries, nothing else.
+            refusals = _move_refusals(lib, dests)
+            for item, dest in dests:
+                iid = _require_id(item.id)
+                new_path = os.fsdecode(dest)
                 old_path = before_paths[iid]
-                if new_path != old_path:
+                # Ordered as the apply orders it: a track already sitting on its
+                # destination is not moving, so it is never refused either — even
+                # when it is the mate whose name a refused rename collides with.
+                if new_path == old_path:
+                    continue
+                detail = refusals.get(iid)
+                if detail is None:
                     move_plan.append(
                         TrackPathChange(
                             item_id=iid,
                             track=int(item.track or 0),
                             old_path=old_path,
                             new_path=new_path,
+                        )
+                    )
+                else:
+                    move_refusals.append(
+                        TrackMoveRefusal(
+                            item_id=iid,
+                            track=int(item.track or 0),
+                            old_path=old_path,
+                            new_path=new_path,
+                            detail=detail,
                         )
                     )
 
@@ -259,6 +300,7 @@ def preview_album_edit(
             tracks=track_rows,
             move_enabled=move_enabled,
             move_plan=move_plan,
+            move_refusals=move_refusals,
         )
 
 

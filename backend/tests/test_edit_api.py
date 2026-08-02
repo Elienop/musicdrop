@@ -41,6 +41,36 @@ def test_preview_returns_diff(edit_client: TestClient, edit_lib: Library) -> Non
     assert body["album_after"]["title"] == "In Rainbows (R)"
 
 
+def test_preview_returns_move_refusals(
+    edit_client: TestClient, edit_lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal partition reaches the wire: a collision-bound rename is absent
+    from move_plan and present in move_refusals, with the reason attached."""
+    import beets.ui
+
+    monkeypatch.setattr(beets.ui, "should_move", lambda _opt: True)
+    aid = _album_id(edit_lib)
+    album = edit_lib.get_album(aid)
+    assert album is not None
+    items = sorted(album.items(), key=lambda i: int(i.track))
+    mover = _require_id(items[2].id)
+
+    # Track 3 edited into track 2's identity -> both resolve to one file name.
+    r = edit_client.post(
+        f"/api/albums/{aid}/edit/preview",
+        json={"tracks": [{"item_id": mover, "title": "Bodysnatchers", "track": 2}]},
+    )
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["move_enabled"] is True
+    assert body["move_plan"] == []
+    assert [row["item_id"] for row in body["move_refusals"]] == [mover]
+    refusal = body["move_refusals"][0]
+    assert refusal["new_path"].endswith("02 Bodysnatchers.flac")
+    assert "02 Bodysnatchers.flac" in refusal["detail"]
+
+
 def test_edit_applies_and_returns_album(edit_client: TestClient, edit_lib: Library) -> None:
     aid = _album_id(edit_lib)
     r = edit_client.post(f"/api/albums/{aid}/edit", json={"album": {"title": "In Rainbows (R)"}})

@@ -29,6 +29,7 @@ from app.beets.trash_manage import (
 from app.events.emit import emit_library_changed
 from app.library_busy import raise_if_library_busy
 from app.models.trash import EmptyResult, RestoreRequest, RestoreResult, TrashListing
+from app.wire import AmbiguousDisplayName
 
 router = APIRouter(tags=["trash"])
 
@@ -50,6 +51,17 @@ def _child_or_404(app: Any, folder: str) -> tuple[LibraryHandle, Path]:
     trash_dir = resolve_trash_dir(_settings(app), handle)
     try:
         return handle, resolve_trash_child(trash_dir, folder)
+    except AmbiguousDisplayName:
+        # Two trashed folders whose names are not valid UTF-8 can display
+        # identically. Restoring or deleting the wrong one is irreversible, so
+        # refuse and say how to break the tie.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Two trashed folders display under the same name because their names are "
+                "not valid UTF-8. Rename one on disk to tell them apart."
+            ),
+        ) from None
     except ValueError:
         raise HTTPException(status_code=404, detail="Not in Trash") from None
 

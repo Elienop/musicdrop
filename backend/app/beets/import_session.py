@@ -1003,11 +1003,23 @@ def run_import_worker(
 ) -> None:
     """Run one import session serially on the calling (worker) thread.
 
-    Forces single-threaded execution and ``import.duplicate_action: ask`` (so the
+    Forces single-threaded execution, ``import.duplicate_action: ask`` (so the
     duplicate hook always fires, regardless of the user's config — the web review
-    IS the "ask"), then runs beets. After run() returns, moves any album the
-    Replace action recorded to the reversible Trash, by stable id — beets imports
-    the new album first, so the old copy is only touched once the new one is safe.
+    IS the "ask") and ``import.autotag: yes``, then runs beets. After run()
+    returns, moves any album the Replace action recorded to the reversible Trash,
+    by stable id — beets imports the new album first, so the old copy is only
+    touched once the new one is safe.
+
+    ``autotag`` is forced (snapshot/restore, like the flags below) because beets
+    swaps the ``lookup_candidates`` + ``user_query`` stages for ``import_asis``
+    when it is off, and ``user_query`` is the ONLY stage that calls
+    ``choose_match``. That hook is where every album outcome, bank row and
+    landed-album-id follow-up originates, so a user config of ``autotag: no``
+    (settable from MusicDrop's own config editor) makes beets import the files
+    for real while the app records nothing: an empty review feed, a sweep that
+    banks nothing yet history-marks every folder done, and a Trash restore that
+    reports ``could_not_restore`` after it has already emptied the folder. Same
+    silent-loss class as the ``singletons`` forcing below, but total.
 
     ``move`` scopes the file operation to this one run: ``True`` forces a move
     (``copy=False``), ``False`` forces a copy (``move=False``). Because
@@ -1069,6 +1081,8 @@ def run_import_worker(
     orig_resume = config["import"]["resume"].get()  # bool OR "ask" - restore verbatim
     orig_singletons = config["import"]["singletons"].get(bool)
     orig_search_ids = config["import"]["search_ids"].get()  # restore verbatim
+    orig_autotag = config["import"]["autotag"].get(bool)
+    config["import"]["autotag"] = True
     if move is not None:
         config["import"]["move"] = move
         config["import"]["copy"] = not move
@@ -1090,6 +1104,7 @@ def run_import_worker(
         config["import"]["resume"] = orig_resume
         config["import"]["singletons"] = orig_singletons
         config["import"]["search_ids"] = orig_search_ids
+        config["import"]["autotag"] = orig_autotag
     # The album is in the library the moment session.run() returns; a failure
     # moving a Replace-superseded copy to Trash must annotate, not invalidate.
     # Reporting a committed import as failed would re-trigger duplicate

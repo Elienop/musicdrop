@@ -21,6 +21,7 @@ type AlbumEditRequest = components["schemas"]["AlbumEditRequest"];
 type AlbumEditPreview = components["schemas"]["AlbumEditPreview"];
 type EditTrackChange = components["schemas"]["EditTrackChange"];
 type ItemWriteResult = components["schemas"]["ItemWriteResult"];
+type TrackMoveRefusal = components["schemas"]["TrackMoveRefusal"];
 
 /** Human label for an album-header field in the diff (vs the raw beets key). */
 const FIELD_LABEL: Record<string, string> = {
@@ -197,7 +198,8 @@ export function AlbumEditPanel({ album, onClose }: { album: AlbumDetail; onClose
 }
 
 /** The full before -> after diff for a pending edit: album-header fields, the
- * per-track changes, and a move warning when files will be relocated. */
+ * per-track changes, a move warning when files will be relocated, and the
+ * renames the apply will refuse because their destination is already taken. */
 function PreviewDiff({ preview }: { preview: AlbumEditPreview }) {
   const before = preview.album_before;
   const after = preview.album_after;
@@ -241,7 +243,14 @@ function PreviewDiff({ preview }: { preview: AlbumEditPreview }) {
       {preview.tracks.length > 0 && <TrackDiffTable tracks={preview.tracks} />}
 
       {preview.move_enabled && preview.move_plan.length > 0 && (
-        <MoveNotice count={preview.move_plan.length} />
+        <MoveNotice
+          count={preview.move_plan.length}
+          refused={preview.move_refusals.length}
+        />
+      )}
+
+      {preview.move_refusals.length > 0 && (
+        <MoveRefusalList refusals={preview.move_refusals} />
       )}
     </section>
   );
@@ -287,8 +296,12 @@ function TrackDiffTable({ tracks }: { tracks: EditTrackChange[] }) {
 }
 
 /** A warning that files will be relocated on disk, styled with the project's
- * --warning token (matches the Replace action elsewhere). */
-function MoveNotice({ count }: { count: number }) {
+ * --warning token (matches the Replace action elsewhere).
+ *
+ * `count` is the move plan, which the backend keeps free of refused renames, so
+ * the two counts partition the pending moves and this headline can never read a
+ * refusal as a file that will move. */
+function MoveNotice({ count, refused }: { count: number; refused: number }) {
   return (
     <div
       role="alert"
@@ -298,9 +311,96 @@ function MoveNotice({ count }: { count: number }) {
       <span>
         {count} file{count === 1 ? "" : "s"} will be moved on disk to match the new tags;
         this relocates the files in your library.
+        {refused > 0 && (
+          <>
+            {" "}
+            <span className="text-destructive font-medium">
+              {refused} other file{refused === 1 ? "" : "s"} cannot be moved.
+            </span>
+          </>
+        )}
       </span>
     </div>
   );
+}
+
+/** The renames the apply will REFUSE: each computed destination is already taken,
+ * so moving would rename a file nobody asked to rename. The backend keeps these
+ * out of `move_plan`, so a refusal is never also a pending move — hence the
+ * destructive treatment of reorganize's ConflictList rather than MoveNotice's
+ * warning one, and the same vocabulary ("cannot be moved"), since both features
+ * refuse for the same reason.
+ *
+ * No `role="alert"`: that is for results arriving unbidden, and this sits inside
+ * a preview the user just opened. Apply stays enabled either way — the tags
+ * still write, and the apply reports this same sentence on the track's own row.
+ *
+ * DIVERGES from ConflictList in exactly one place, deliberately: the intro says
+ * what apply still does. An edit applies PARTIALLY — the tags write and only the
+ * rename is refused — so without that sentence a safe edit reads as dangerous,
+ * and the "N move failures" banner afterwards reads as fresh bad news rather
+ * than the outcome just predicted. Reorganize refuses whole units and does
+ * nothing to them, so its ConflictList must NOT carry this sentence. */
+function MoveRefusalList({ refusals }: { refusals: TrackMoveRefusal[] }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="text-muted-foreground text-xs">
+        Cannot be moved (the destination name is already taken):{" "}
+        <span className="text-destructive font-medium">{refusals.length}</span>. Their tags will
+        still be updated; these files just keep their current names.
+      </p>
+      <ul
+        aria-label="Files that cannot be moved"
+        className="text-destructive max-h-56 overflow-auto rounded-md border px-3 text-sm"
+      >
+        {refusals.map((r) => (
+          <li key={r.item_id} className="flex flex-col gap-0.5 border-b py-1.5 last:border-b-0">
+            <span className="font-medium">{refusalLabel(r)}</span>
+            {/* `detail` names the contested destination itself, so it reads alone. */}
+            <span className="text-muted-foreground text-xs">{r.detail}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Which track, and the rename that cannot happen. Basenames only: both paths are
+ * absolute, while `detail` below already spells the destination out relative to
+ * the library. */
+function refusalLabel(r: TrackMoveRefusal): string {
+  const num = trackTag(r.track);
+  const rename = renameSummary(r.old_path, r.new_path);
+  return num === null ? rename : `${num} ${rename}`;
+}
+
+/** The shortest pair of path tails that still shows a difference. An album-title
+ * or artist edit relocates the DIRECTORY, leaving every basename untouched, so
+ * basenames alone would render the headline as a rename to itself. */
+function renameSummary(oldPath: string, newPath: string): string {
+  if (baseName(oldPath) !== baseName(newPath)) {
+    return `${baseName(oldPath)} → ${baseName(newPath)}`;
+  }
+  return `${parentAndName(oldPath)} → ${parentAndName(newPath)}`;
+}
+
+function baseName(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i === -1 ? p : p.slice(i + 1);
+}
+
+/** `parent/name`; the whole path when it has no parent segment to drop. */
+function parentAndName(p: string): string {
+  const i = p.lastIndexOf("/");
+  if (i === -1) return p;
+  return p.slice(p.lastIndexOf("/", i - 1) + 1);
+}
+
+/** `#N`, or null when there is no track number to show. beets reports a file with
+ * no track number as 0, so the sentinel is suppressed the same way an absent one
+ * is — otherwise one untracked file reads "#0 Title" here and bare there. */
+function trackTag(track: number | null | undefined): string | null {
+  return track === null || track === undefined || track === 0 ? null : `#${track}`;
 }
 
 /** The per-item outcome of an apply: counts + any failed tracks (never hidden). */
@@ -350,8 +450,7 @@ function ApplyOutcome({
 }
 
 function failureLabel(item: ItemWriteResult): string {
-  const num = item.track === null || item.track === undefined ? null : `#${item.track}`;
-  const parts = [num, item.title].filter(Boolean);
+  const parts = [trackTag(item.track), item.title].filter(Boolean);
   return parts.length ? parts.join(" ") : `Item ${item.item_id}`;
 }
 
