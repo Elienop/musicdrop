@@ -13,22 +13,9 @@ _Last groomed: 2026-08-02, after the reorganize collision wave._
 
 ## Next up
 
-- **Non-UTF-8 paths 500 JSON endpoints (app-wide, pre-existing).** `os.fsdecode` turns
-  undecodable path bytes into lone surrogates; Starlette renders JSON with
-  `ensure_ascii=False` and UTF-8-encodes, which raises → any library path that is not valid
-  UTF-8 500s `GET /api/reorganize/preview` today (proven on main with an executed probe: an
-  undecodable *directory* name, zero collisions involved). Fix is one `display_path()` helper
-  (`os.fsdecode(p).encode("utf-8", "replace").decode()`) applied at every path-to-wire
-  boundary: reorganize `_rel_to_music` / `_commonpath_of_dirs` / `_track_desc` /
-  `_occupant_desc` / `_verify_moves`, `OrphanFolder`, `disk_sync._rel_path` — and audit the
-  rest of the app for more. Trap for the tester: probe through `TestClient`, never bare
-  `json.dumps` (its default `ensure_ascii=True` escapes surrogates and hides the bug).
-
-- **Edit preview shows a collision-bound rename as a plain move.** Apply refuses it with an
-  honest per-track error (#124 wave), but the preview still says "1 file will be moved" —
-  the user learns at apply time. Needs the collision pre-flight mirrored into
-  `preview_album_edit` and a conflict signal in `AlbumEditPreview` (contract change:
-  openapi.json + gen:api).
+_(empty — pick the next slice from Open bugs / hardening or Open questions below. The
+phantom-album-row origin question is the one with a deadline of sorts: it matters before the
+next bulk import.)_
 
 ## Open bugs / hardening
 
@@ -82,6 +69,11 @@ _Last groomed: 2026-08-02, after the reorganize collision wave._
   any future route-level `response_class=` or hand-built `JSONResponse` bypasses both halves
   of the net.
 
+- **Edit preview lists outside-library tracks as "will move".** `preview_album_edit` builds
+  move_plan rows from ALL items, but apply's `_inside_library` filter never moves an
+  outside-library file (reports moved=False, no error). The new refusal pre-flight mirrors
+  apply's filter correctly; only the move_plan row over-promises. Rare state, pre-existing.
+
 - **Untested defensive lines** (deep-review survivors, all currently benign — pin when
   touched next): broken-symlink sidecar carry (`sidecars.py` `lexists`), singleton
   crash-path sidecar carry, `edit.py` `_inside_library` guard (pre-existing from main),
@@ -112,9 +104,27 @@ _Last groomed: 2026-08-02, after the reorganize collision wave._
 - Trash restore leaves `.lrc`/`.txt` sidecars behind in Trash (v1 limitation, noted in #67).
 - Trash restore leaves the emptied source folder behind as a 0-track husk row in the listing
   (name-independent; beets moves the files but never prunes the dir — Empty clears it).
+- MoveNotice in AlbumEditPanel is legacy hand-rolled banner markup that StatusBanner's own
+  docstring claims to generalize (rounded-md/gap-2/size-4 vs canonical rounded-xl/gap-3/
+  size-5) — mechanical migration to `<StatusBanner tone="warning">`, flagged 2026-08-02.
+- ConflictList and MoveRefusalList scroll containers have no focusable children/tabindex, so
+  Safari keyboard users can't scroll them (Chrome/Firefox auto-focus scrollers). Shared
+  idiom — fix both together or neither.
 
 ## Recently shipped
 
+- **2026-08-02 — wire-safety + edit-preview wave** (branch `fix/utf8-paths-and-edit-preview`):
+  non-UTF-8 paths no longer 500 any JSON endpoint — sink-level scrub
+  (`SurrogateSafeJSONResponse` + scrubbed HTTPException/RequestValidationError handlers),
+  with Trash/inbox display-name keys resolved back to real on-disk entries (409 on ambiguous
+  display twins, incl. a literal-U+FFFD folder shadowing a damaged one; NUL-safe). Found and
+  fixed along the way: `run_import_worker` now force-pins `import.autotag` on — under
+  `autotag: no` beets drops the only stage that fires `choose_match`, so every import surface
+  reported nothing-happened after a successful import (restore said `could_not_restore` while
+  the files landed). And the edit preview now mirrors apply's collision pre-flight: new
+  `AlbumEditPreview.move_refusals` contract field, refusals rendered in the ConflictList
+  idiom with per-track detail plus the partial-application consequence stated ("tags still
+  write; files keep their names"). Detail: memory `wire-safety-serialization-gotchas`.
 - **2026-08-02 — reorganize collision wave** (branch `fix/reorganize-collision-wave`):
   proven `.1↔.2` rename churn on destination collisions, killed by a pre-flight that refuses
   before moving; sidecars follow audio through every reorganize/edit move (they used to be
