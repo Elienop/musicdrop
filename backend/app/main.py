@@ -37,6 +37,7 @@ from app.beets.setup import setup_beets
 from app.body_limit import BodySizeLimitMiddleware
 from app.config import resolve_artist_image_cache_dir, settings
 from app.static_files import mount_static
+from app.wire import SurrogateSafeJSONResponse, install_wire_safety
 
 # Shutdown grace: after the inbox drain is stopped, poll the import slot for up
 # to TICKS * INTERVAL seconds (~5s) so an import already in flight gets a
@@ -220,7 +221,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         del app.state.event_broker
 
 
-app = FastAPI(title=settings.app_name, version=settings.version, lifespan=lifespan)
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.version,
+    lifespan=lifespan,
+    # A filesystem path that is not valid UTF-8 must degrade to a placeholder,
+    # never 500 the endpoint that mentions it — see app/wire.py for why the
+    # scrub lives at the sink rather than at each path-to-wire boundary.
+    default_response_class=SurrogateSafeJSONResponse,
+)
+install_wire_safety(app)
 
 app.add_middleware(
     CORSMiddleware,

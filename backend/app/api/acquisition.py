@@ -35,6 +35,7 @@ from app.models.acquisition import (
     ReviewInboxResponse,
 )
 from app.models.import_models import ImportOptions
+from app.wire import AmbiguousDisplayName, resolve_display_path
 
 router = APIRouter(tags=["acquisition"])
 
@@ -155,7 +156,21 @@ async def import_inbox_item(
     inbox_dir: Path | None = getattr(request.app.state, "inbox_dir", None)
     if inbox_dir is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found")
-    contained = contain(str(inbox_dir / body.name), inbox_dir, strict=True)
+    # ``name`` is the display-safe value the listing emitted, so a folder whose
+    # name is not valid UTF-8 comes back carrying placeholders; map it onto the
+    # real entry before containing it, and refuse rather than guess when two
+    # folders display alike.
+    try:
+        target = resolve_display_path(inbox_dir, body.name)
+    except AmbiguousDisplayName:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Two inbox folders display under the same name because their names are "
+                "not valid UTF-8. Rename one on disk to tell them apart."
+            ),
+        ) from None
+    contained = contain(str(target), inbox_dir, strict=True)
     if contained is None or not contained.is_dir():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found")
     try:

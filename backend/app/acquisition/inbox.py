@@ -27,6 +27,7 @@ from app.acquisition.ledger import AcquisitionLedger
 from app.beets.library import LibraryHandle
 from app.config import Settings
 from app.models.acquisition import InboxItem, LedgerOutcome
+from app.wire import display_path
 
 # A leaf folder slskd fires a separate completion for: "CD1", "Disc 2",
 # "disk_3", "CD-04". A multi-disc album fragments into one event per disc, so we
@@ -301,7 +302,9 @@ def list_inbox(
                 break
         items.append(
             InboxItem(
-                name=entry.name,
+                # Display-safe: the name is also the import key the client hands
+                # back, which ``resolve_display_path`` maps onto the real entry.
+                name=display_path(entry.name),
                 mtime=st.st_mtime,
                 size=size,
                 track_count=tracks,

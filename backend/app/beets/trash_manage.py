@@ -21,6 +21,7 @@ from app.beets.library import _coerce_int, _coerce_optional_str, _coerce_str
 from app.models.bank import BankApplyDirective
 from app.models.import_models import AlbumOutcomeStatus
 from app.models.trash import EmptyResult, RestoreResult, TrashedAlbum
+from app.wire import display_path, resolve_display_path
 
 
 def list_trashed_albums(trash_dir: Path) -> list[TrashedAlbum]:
@@ -53,7 +54,9 @@ def list_trashed_albums(trash_dir: Path) -> list[TrashedAlbum]:
         first = items[0]
         albums.append(
             TrashedAlbum(
-                folder=folder,
+                # Grouping stays keyed on the RAW name; only the emitted key is
+                # made display-safe, and ``resolve_trash_child`` maps it back.
+                folder=display_path(folder),
                 album_artist=_coerce_str(first.albumartist) or None,
                 album=_coerce_str(first.album) or None,
                 year=_coerce_int(getattr(first, "year", 0)) or None,
@@ -71,7 +74,7 @@ def list_trashed_albums(trash_dir: Path) -> list[TrashedAlbum]:
         if entry.is_dir() and not entry.name.startswith(".") and entry.name not in groups:
             albums.append(
                 TrashedAlbum(
-                    folder=entry.name,
+                    folder=display_path(entry.name),
                     album_artist=None,
                     album=None,
                     year=None,
@@ -111,9 +114,15 @@ def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
 
     These paths are ``rm -rf`` / import targets, so reject traversal (``../``),
     the Trash root itself, and a non-existent child by raising ``ValueError``.
+
+    ``rel`` is the ``folder`` the listing emitted, which is display-safe — so a
+    folder whose real name is not valid UTF-8 comes back carrying placeholders.
+    ``resolve_display_path`` maps that onto the real entry (and raises
+    ``AmbiguousDisplayName`` rather than guess when two folders display alike),
+    keeping such an album restorable instead of stranding it in Trash.
     """
     base = trash_dir.resolve()
-    dest = (trash_dir / rel).resolve()
+    dest = resolve_display_path(trash_dir, rel).resolve()
     if dest == base or not dest.is_relative_to(base) or not dest.exists():
         raise ValueError(f"{rel!r} is not a trashed album")
     return dest
