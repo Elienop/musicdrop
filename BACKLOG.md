@@ -40,7 +40,47 @@ _Last groomed: 2026-08-02, after the reorganize collision wave._
 - **CSRF/Origin posture on state-changing POSTs.** `/api/reorganize` (starts a library-wide
   move), `/stop`, and `/dismiss` are all CORS-simple POSTs with no origin check
   (`verify_upload_origin` covers multipart uploads only). Harden all three together or
-  accept the posture deliberately — do not fix one route in isolation.
+  accept the posture deliberately — do not fix one route in isolation. 2026-08-02 addendum
+  from the wire-safety audit: display-name resolution makes undecodable-named trash/inbox
+  folders addressable by a *guessable* display string (previously unaddressable over HTTP at
+  all — Starlette percent-decodes queries with `errors="replace"`). Bounded (ambiguity
+  refuses, no fan-out), inherent to making such folders restorable; weigh it when the origin
+  decision is made.
+
+- **`.m3u8` playlist export still violates the no-500 invariant.** `write_atomic_text` opens
+  `encoding="utf-8"` strict, so a playlist rewrite 500s on an undecodable track path. The
+  right fix is writing raw bytes (`surrogateescape`), NOT a U+FFFD placeholder — a
+  placeholder inside an `.m3u8` silently points the player at a nonexistent file — and the
+  primitive is shared with the JSON stores, so it needs its own slice.
+
+- **Bank rows cannot be persisted when the source folder name is not valid UTF-8** —
+  `store.py` `model_dump_json` raises `PydanticSerializationError` (different sink from the
+  wire; the response-class net does not cover files on disk). Pre-existing; surfaces only
+  when an undecodable folder enters the bank.
+
+- **MusicDrop-driven imports store ABSOLUTE item paths.** The import worker never binds
+  `lib.music_dir_context()` around `session.run()` (only `_trash_replaced_albums` does), so
+  imported rows store absolute paths while beets' `relative_path` migration expects
+  music-dir-relative ones — likely defeats library portability for every album imported
+  through MusicDrop. Flagged by the 2026-08-02 restore debugging; consequences not yet
+  chased.
+
+- **Config editor accepts `import.autotag` that MusicDrop now ignores.** `run_import_worker`
+  force-enables autotag (with snapshot/restore) because beets swaps out the `user_query`
+  stage under `autotag: no` — the only stage that fires `choose_match`, the sole hook
+  MusicDrop's outcome tracking hangs on (restore reported `could_not_restore` after a
+  SUCCESSFUL import). The setting is still accepted silently; the editor should say it has
+  no effect on MusicDrop-driven imports. Note: sweep/bank breakage under `autotag: no` was
+  reasoned from the stage list, demonstrated only for restore.
+
+- **ENAMETOOLONG is a 500 on trash/inbox endpoints** (pre-existing): `Path.exists()` only
+  swallows ENOENT/ENOTDIR/EBADF/ELOOP, so a >255-byte name component re-raises where a 404
+  was intended. Needs guards at the `exists()` call sites.
+
+- **Wire-safety net coverage caveats** (by design, recorded so nobody assumes otherwise):
+  SSE `/api/events` bypasses the response class (scopes are tag-derived today, never paths);
+  any future route-level `response_class=` or hand-built `JSONResponse` bypasses both halves
+  of the net.
 
 - **Untested defensive lines** (deep-review survivors, all currently benign — pin when
   touched next): broken-symlink sidecar carry (`sidecars.py` `lexists`), singleton
@@ -70,6 +110,8 @@ _Last groomed: 2026-08-02, after the reorganize collision wave._
 - PlaylistDetail stale-snapshot move-PUT (self-heals on refetch).
 - Remove-to-empty stale focus; playlist-import focus-after-resolve.
 - Trash restore leaves `.lrc`/`.txt` sidecars behind in Trash (v1 limitation, noted in #67).
+- Trash restore leaves the emptied source folder behind as a 0-track husk row in the listing
+  (name-independent; beets moves the files but never prunes the dir — Empty clears it).
 
 ## Recently shipped
 
