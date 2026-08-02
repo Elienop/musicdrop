@@ -9394,6 +9394,69 @@
         ],
         "title": "ReorganizeBackfillStatus"
       },
+      "ReorganizeCollision": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "intra_unit",
+              "cross_unit"
+            ],
+            "title": "Kind"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "path",
+          "detail"
+        ],
+        "title": "ReorganizeCollision"
+      },
+      "ReorganizeConflict": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "album",
+              "singleton"
+            ],
+            "title": "Kind"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "from_path": {
+            "type": "string",
+            "title": "From Path"
+          },
+          "collisions": {
+            "items": {
+              "$ref": "#/components/schemas/ReorganizeCollision"
+            },
+            "type": "array",
+            "title": "Collisions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "label",
+          "from_path",
+          "collisions"
+        ],
+        "title": "ReorganizeConflict",
+        "description": "A unit reorganize REFUSES to move: beets would divert a file to a ``.N``\nsibling, renaming something nobody asked to rename. Never also a\n``ReorganizeMove`` \u2014 a conflicted unit is reported here instead."
+      },
       "ReorganizeMove": {
         "properties": {
           "kind": {
@@ -9479,6 +9542,17 @@
           "orphans_total": {
             "type": "integer",
             "title": "Orphans Total"
+          },
+          "conflicts": {
+            "items": {
+              "$ref": "#/components/schemas/ReorganizeConflict"
+            },
+            "type": "array",
+            "title": "Conflicts"
+          },
+          "conflicts_total": {
+            "type": "integer",
+            "title": "Conflicts Total"
           }
         },
         "type": "object",
@@ -9491,7 +9565,9 @@
           "moves",
           "truncated",
           "orphans",
-          "orphans_total"
+          "orphans_total",
+          "conflicts",
+          "conflicts_total"
         ],
         "title": "ReorganizePlan"
       },

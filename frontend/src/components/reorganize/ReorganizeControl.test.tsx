@@ -1,6 +1,6 @@
 // frontend/src/components/reorganize/ReorganizeControl.test.tsx
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
@@ -62,6 +62,8 @@ beforeEach(() => {
             { name: "Old Artist feat. X", path: "Old Artist feat. X", file_count: 2 },
           ],
           orphans_total: 1,
+          conflicts: [],
+          conflicts_total: 0,
         },
         response: { ok: true, status: 200 },
       } as never;
@@ -125,6 +127,8 @@ test("orphan-only preview opens the plan and confirms as a folder clean-up", asy
             { name: "Ghost Album", path: "Ghost Album", file_count: 1 },
           ],
           orphans_total: 2,
+          conflicts: [],
+          conflicts_total: 0,
         },
         response: { ok: true, status: 200 },
       } as never;
@@ -161,6 +165,10 @@ test("zero-move preview shows an inline notice — no review, no Done button", a
           already_in_place: 14,
           truncated: false,
           moves: [],
+          orphans: [],
+          orphans_total: 0,
+          conflicts: [],
+          conflicts_total: 0,
         },
         response: { ok: true, status: 200 },
       } as never;
@@ -246,6 +254,167 @@ test("renders per-file failures when this scope's job is terminal", async () => 
   });
   expect(list).toHaveTextContent("Arcane — Get Jinxed");
   expect(list).toHaveTextContent(/file not found on disk after move/i);
+});
+
+// ——— refused units (collision pre-flight) ———————————————————————————————
+// A conflicted unit is a refusal-to-be, never a move: the backend keeps it out
+// of `moves` and out of `will_move`, so the UI must show it as its own thing.
+
+/** Point the preview endpoint at one plan body; status stays idle. */
+function mockPreview(plan: unknown) {
+  vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
+    if (path === "/api/reorganize/status")
+      return { data: idle, response: { ok: true, status: 200 } } as never;
+    if (path === "/api/reorganize/preview")
+      return { data: plan, response: { ok: true, status: 200 } } as never;
+    return { data: undefined, response: { ok: false, status: 404 } } as never;
+  });
+}
+
+const intraUnitConflict = {
+  kind: "album",
+  label: "X — Collide",
+  from_path: "/m/X/Collide",
+  collisions: [
+    {
+      kind: "intra_unit",
+      path: "X/Collide/01 Song.mp3",
+      detail:
+        "X/Collide/01 Song.mp3: 2 tracks resolve to this same name: " +
+        "track 1 'Song' (01 Song.mp3), track 1 'Song' (01 Song other.mp3)",
+    },
+  ],
+};
+
+const crossUnitConflict = {
+  kind: "singleton",
+  label: "Y — Stray",
+  from_path: "/m/Y",
+  collisions: [
+    {
+      kind: "cross_unit",
+      path: "Y/01 Stray.mp3",
+      detail:
+        "Y/01 Stray.mp3: already exists on disk and holds " +
+        "track 1 'Stray' of X - Collide (album 1)",
+    },
+  ],
+};
+
+test("preview lists refused units with their label and collision detail", async () => {
+  mockPreview({
+    scope: "library",
+    scope_label: "library",
+    total: 3,
+    will_move: 1,
+    already_in_place: 0,
+    truncated: false,
+    moves: [
+      {
+        kind: "album",
+        label: "Radiohead — In Rainbows",
+        from_path: "/m/junk/ir",
+        to_path: "/m/Radiohead/In Rainbows",
+        track_count: 3,
+      },
+    ],
+    orphans: [],
+    orphans_total: 0,
+    conflicts: [intraUnitConflict, crossUnitConflict],
+    conflicts_total: 2,
+  });
+  wrap(<ReorganizeControl scope={{ scope: "library" }} />);
+  await userEvent.click(screen.getByRole("button", { name: /reorganize files/i }));
+
+  // Scoped to the refusal list: "X — Collide" also appears inside the OTHER
+  // conflict's occupant sentence, and "cannot be moved" is in the summary too.
+  const refused = await screen.findByRole("list", {
+    name: /cannot be reorganized/i,
+  });
+  expect(within(refused).getByText("X — Collide")).toBeInTheDocument();
+  expect(within(refused).getByText("Y — Stray")).toBeInTheDocument();
+  expect(
+    within(refused).getByText(/2 tracks resolve to this same name/i),
+  ).toBeInTheDocument();
+  expect(
+    within(refused).getByText(/already exists on disk and holds/i),
+  ).toBeInTheDocument();
+
+  // A refusal must never read as the benign "renamed in place" move row: it
+  // carries the danger treatment FailureList uses, not MoveRow's neutral one.
+  expect(within(refused).queryByText(/renamed in place/i)).toBeNull();
+  expect(refused).toHaveClass("text-destructive");
+  // The summary partitions the scope, so the refused units are counted apart.
+  expect(screen.getByText(/1 will move/i)).toBeInTheDocument();
+  expect(screen.getByText(/2 cannot be moved/i)).toBeInTheDocument();
+});
+
+test("an all-refusals preview opens the plan instead of the nothing-to-do note", async () => {
+  mockPreview({
+    scope: "library",
+    scope_label: "library",
+    total: 3,
+    will_move: 0,
+    already_in_place: 0,
+    truncated: false,
+    moves: [],
+    orphans: [],
+    orphans_total: 0,
+    // conflicts[] is capped; conflicts_total is exact.
+    conflicts: [intraUnitConflict, crossUnitConflict],
+    conflicts_total: 3,
+  });
+  wrap(<ReorganizeControl scope={{ scope: "library" }} />);
+  await userEvent.click(screen.getByRole("button", { name: /reorganize files/i }));
+
+  // Nothing WILL move, but something is wrong — the user has to see it, so this
+  // must not fall into the "everything already matches your config" branch.
+  const refused = await screen.findByRole("list", {
+    name: /cannot be reorganized/i,
+  });
+  expect(within(refused).getByText("X — Collide")).toBeInTheDocument();
+  expect(screen.queryByRole("status")).toBeNull();
+  // The cap is visible rather than silently swallowed.
+  expect(within(refused).getByText(/\+ 1 more/i)).toBeInTheDocument();
+
+  // Nothing to confirm: no button may offer to move or clean up anything.
+  expect(screen.queryByRole("button", { name: /^reorganize \d/i })).toBeNull();
+  expect(screen.queryByRole("button", { name: /clean up/i })).toBeNull();
+  expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument();
+});
+
+test("the confirm button counts only movable units, never refused ones", async () => {
+  mockPreview({
+    scope: "library",
+    scope_label: "library",
+    total: 3,
+    will_move: 1,
+    already_in_place: 0,
+    truncated: false,
+    moves: [
+      {
+        kind: "album",
+        label: "Radiohead — In Rainbows",
+        from_path: "/m/junk/ir",
+        to_path: "/m/Radiohead/In Rainbows",
+        track_count: 3,
+      },
+    ],
+    orphans: [],
+    orphans_total: 0,
+    conflicts: [intraUnitConflict, crossUnitConflict],
+    conflicts_total: 2,
+  });
+  wrap(<ReorganizeControl scope={{ scope: "library" }} />);
+  await userEvent.click(screen.getByRole("button", { name: /reorganize files/i }));
+  await screen.findByRole("list", { name: /cannot be reorganized/i });
+
+  // will_move already excludes the refused units — the button must not promise
+  // the 3 units in scope, only the 1 that can actually move.
+  expect(
+    screen.getByRole("button", { name: "Reorganize 1 item" }),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /reorganize 3 items/i })).toBeNull();
 });
 
 test("a failed preview shows an inline error next to the buttons", async () => {

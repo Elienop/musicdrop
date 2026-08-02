@@ -1,5 +1,7 @@
 from app.models.reorganize import (
     ReorganizeBackfillStatus,
+    ReorganizeCollision,
+    ReorganizeConflict,
     ReorganizeMove,
     ReorganizeOutcome,
     ReorganizePlan,
@@ -23,16 +25,38 @@ def test_plan_counts_and_truncation() -> None:
         scope="library",
         scope_label="library",
         total=50,
-        will_move=42,
+        will_move=41,
         already_in_place=8,
         moves=[],
         truncated=True,
         orphans=[],
         orphans_total=0,
+        conflicts=[],
+        conflicts_total=1,
     )
     assert p.scope == "library"
     assert p.already_in_place == 8
     assert p.truncated is True
+    # The three buckets partition the scope: a conflicted unit is neither a move
+    # nor "already in place".
+    assert p.will_move + p.already_in_place + p.conflicts_total == p.total
+
+
+def test_conflict_carries_its_collisions() -> None:
+    c = ReorganizeConflict(
+        kind="album",
+        label="X - Collide",
+        from_path="/m/junk/dup",
+        collisions=[
+            ReorganizeCollision(
+                kind="cross_unit",
+                path="X/Collide/01 Song.mp3",
+                detail="X/Collide/01 Song.mp3: already exists on disk and holds track 1 'Song'",
+            )
+        ],
+    )
+    assert c.kind == "album"
+    assert c.collisions[0].kind == "cross_unit"
 
 
 def test_outcome_defaults_error_none() -> None:

@@ -8,6 +8,7 @@ import pytest
 from beets.library import Album, Item, Library
 
 from app.beets import reorganize as reorg
+from app.beets.library import _require_id
 from app.beets.reorganize import (
     _describe_album,
     _item_moves,
@@ -15,6 +16,7 @@ from app.beets.reorganize import (
     collect_units,
     plan_reorganize,
 )
+from app.models.reorganize import ReorganizeMove
 from tests.conftest import build_library
 
 SAMPLE_FLAC = Path(__file__).parent / "fixtures" / "silent.flac"
@@ -22,6 +24,17 @@ SAMPLE_FLAC = Path(__file__).parent / "fixtures" / "silent.flac"
 
 def _album(lib: Library, name: str) -> Album:
     return next(a for a in lib.albums() if a.album == name)
+
+
+def _tree(root: Path) -> dict[str, bytes]:
+    """Every file under ``root`` as {relative path: content} — the churn detector.
+
+    Paths AND bytes, so a rename shows up as a changed key and a swap as changed
+    values; a refused unit must leave this dict byte-identical.
+    """
+    return {
+        str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()
+    }
 
 
 def test_album_label(reorganize_lib: Library) -> None:
@@ -40,7 +53,7 @@ def test_item_moves_detects_misfiled(reorganize_lib: Library) -> None:
 def test_describe_album_misfiled_has_distinct_dirs(reorganize_lib: Library) -> None:
     with reorganize_lib.music_dir_context():
         m = _describe_album(reorganize_lib, _album(reorganize_lib, "In Rainbows"))
-        assert m is not None
+        assert isinstance(m, ReorganizeMove)
         assert m.kind == "album"
         assert m.track_count == 3
         assert m.from_path != m.to_path
@@ -55,7 +68,7 @@ def test_describe_album_already_in_place_is_none(reorganize_lib: Library) -> Non
 def test_describe_album_rename_in_place_same_dir(reorganize_lib: Library) -> None:
     with reorganize_lib.music_dir_context():
         m = _describe_album(reorganize_lib, _album(reorganize_lib, "Geogaddi"))
-        assert m is not None
+        assert isinstance(m, ReorganizeMove)
         assert m.from_path == m.to_path  # only filenames change
 
 
@@ -101,7 +114,7 @@ def test_multidisc_to_path_is_album_root(tmp_path: Path) -> None:
     with lib.music_dir_context():
         album = next(iter(lib.albums()))
         m = reorg._describe_album(lib, album)
-    assert m is not None
+    assert isinstance(m, ReorganizeMove)
     # New layout splits across Disc 1/ Disc 2/, but the reported root is the album dir.
     assert m.to_path.endswith("PF/Wall")
     assert m.track_count == 2
@@ -212,18 +225,293 @@ def test_reorganize_album_missing_source_fails(reorganize_lib: Library) -> None:
     assert "not found on disk" in (outcome.error or "")
 
 
-def test_reorganize_album_destination_collision_fails(tmp_path: Path) -> None:
-    """Two tracks share track#+title, so both compute the SAME destination. beets
-    diverts the second to a `.1`-suffixed name (unique_path) — no exception, and the
-    preview re-flags it forever. Verification must report `failed`."""
+# --- collision pre-flight: refuse BEFORE any file is touched -------------------
+#
+# beets' Item.move_file diverts a move whose destination is occupied to a
+# `.N` sibling (util.unique_path) without raising. Detecting that AFTER the fact
+# is useless: the loser vacates the slot it held, unique_path always restarts its
+# scan at `.1`, so every sweep renames a real file forever (.1 <-> .2). The unit
+# must therefore be refused BEFORE album.move/item.move runs.
+
+
+def _collide_pair_lib(tmp_path: Path) -> tuple[Library, Path, Path]:
+    """(lib, music, album dir) for ONE album whose two tracks render to one name."""
     music = tmp_path / "music"
     lib = build_library(str(tmp_path / "library.db"), str(music))
     base = music / "junk" / "col"
     base.mkdir(parents=True, exist_ok=True)
     items = []
-    for fname in ("01 Song.mp3", "01 Song other.mp3"):
+    for fname, content in (("01 Song.mp3", b"\x00A"), ("01 Song other.mp3", b"\x00B")):
         f = base / fname
-        f.write_bytes(b"\x00")
+        f.write_bytes(content)
+        it = Item(album="Collide", albumartist="X", artist="X", title="Song", track=1, disc=1)
+        it.path = os.fsencode(str(f))
+        items.append(it)
+    lib.add_album(items).store()
+    return lib, music, base
+
+
+def test_reorganize_album_intra_unit_collision_refused_every_run(tmp_path: Path) -> None:
+    """Two tracks of one album compute the SAME destination. Every run must refuse
+    the unit untouched — no rename, no `.1`, no churn — and say what collided."""
+    lib, music, _base = _collide_pair_lib(tmp_path)
+    before = _tree(music)
+
+    for _run in range(3):
+        plan = reorg.plan_reorganize(lib, scope="library", artist=None, album_id=None)
+        with lib.music_dir_context():
+            outcome = reorg.reorganize_album(lib, next(iter(lib.albums())))
+
+        assert outcome.status == "failed"
+        error = outcome.error or ""
+        assert "01 Song other.mp3" in error and "'Song'" in error  # BOTH tracks named
+        assert "track number and title" not in error  # no hardcoded guess
+        assert _tree(music) == before  # zero renames, zero new files
+        assert not (music / "X").exists()  # the destination folder was never created
+
+        # ...and the preview calls it a conflict, never an ordinary move.
+        assert plan.will_move == 0
+        assert plan.conflicts_total == 1
+        assert [c.label for c in plan.conflicts] == ["X - Collide"]
+        assert [c.kind for c in plan.conflicts[0].collisions] == ["intra_unit"]
+        assert plan.conflicts[0].collisions[0].path == os.path.join("X", "Collide", "01 Song.mp3")
+        assert plan.total == plan.will_move + plan.already_in_place + plan.conflicts_total
+
+
+def test_reorganize_album_refuses_when_a_settled_track_owns_the_destination(
+    tmp_path: Path,
+) -> None:
+    """The ping-pong steady state, and the reason the check reads ALL of the unit's
+    items: one twin already SITS at the shared destination (so it is not moving and a
+    moving-only view never sees it), the other sits at the `.1` name. Treating the
+    occupied slot as a unit-mate relocating this run would rename the loser again."""
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    base = music / "X" / "Collide"
+    base.mkdir(parents=True)
+    items = []
+    for fname, content in (("01 Song.mp3", b"\x00A"), ("01 Song.1.mp3", b"\x00B")):
+        f = base / fname
+        f.write_bytes(content)
+        it = Item(album="Collide", albumartist="X", artist="X", title="Song", track=1, disc=1)
+        it.path = os.fsencode(str(f))
+        items.append(it)
+    lib.add_album(items).store()
+    before = _tree(music)
+
+    for _run in range(3):
+        plan = reorg.plan_reorganize(lib, scope="library", artist=None, album_id=None)
+        with lib.music_dir_context():
+            outcome = reorg.reorganize_album(lib, next(iter(lib.albums())))
+        assert outcome.status == "failed"
+        assert _tree(music) == before  # no .2, no .3 — the churn is over
+        assert plan.conflicts_total == 1 and plan.will_move == 0
+        # Classified by the ALL-items duplicate check, NOT as a foreign occupant:
+        # the settled twin is a unit-mate, so the on-disk arm deliberately exempts
+        # it (that exemption is what lets a genuine swap self-heal) and only the
+        # duplicate-destination arm is left to catch this.
+        assert [c.kind for c in plan.conflicts[0].collisions] == ["intra_unit"]
+        assert "2 tracks resolve to this same name" in (outcome.error or "")
+
+
+def _two_album_rows_lib(tmp_path: Path) -> tuple[Library, Path, int, int]:
+    """(lib, music, settled album id, colliding album id) — the real-world incident:
+    two ALBUM ROWS whose tracks render to the same folder AND filename."""
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    settled_dir = music / "X" / "Collide"
+    settled_dir.mkdir(parents=True)
+    (settled_dir / "01 Song.mp3").write_bytes(b"\x00SETTLED")
+    a = Item(album="Collide", albumartist="X", artist="X", title="Song", track=1, disc=1)
+    a.path = os.fsencode(str(settled_dir / "01 Song.mp3"))
+    album_a = lib.add_album([a])
+    other_dir = music / "junk" / "dup"
+    other_dir.mkdir(parents=True)
+    (other_dir / "raw.mp3").write_bytes(b"\x00OTHER")
+    b = Item(album="Collide", albumartist="X", artist="X", title="Song", track=1, disc=1)
+    b.path = os.fsencode(str(other_dir / "raw.mp3"))
+    album_b = lib.add_album([b])
+    return lib, music, _require_id(album_a.id), _require_id(album_b.id)
+
+
+def test_reorganize_cross_unit_collision_refused_every_run(tmp_path: Path) -> None:
+    """Unit A is settled at the destination; unit B renders onto it. B is refused
+    every run, A is never touched, and no file is ever renamed."""
+    lib, music, a_id, b_id = _two_album_rows_lib(tmp_path)
+    before = _tree(music)
+
+    for _run in range(3):
+        plan = reorg.plan_reorganize(lib, scope="library", artist=None, album_id=None)
+        with lib.music_dir_context():
+            albums = {_require_id(al.id): al for al in lib.albums()}
+            out_a = reorg.reorganize_album(lib, albums[a_id])
+            out_b = reorg.reorganize_album(lib, albums[b_id])
+
+        assert out_a.status == "skipped"  # already in place, untouched
+        assert out_b.status == "failed"
+        error = out_b.error or ""
+        assert "already exists" in error
+        assert f"album {a_id}" in error  # names the OTHER album row, not a guess
+        assert _tree(music) == before
+
+        assert plan.total == 2
+        assert plan.will_move == 0
+        assert plan.already_in_place == 1
+        assert plan.conflicts_total == 1
+        assert [c.kind for c in plan.conflicts[0].collisions] == ["cross_unit"]
+
+
+def test_reorganize_singleton_refuses_a_destination_held_by_a_stranger(tmp_path: Path) -> None:
+    """Singletons get the same pre-flight. Here the occupant is not in the library
+    at all, so the message must say exactly that instead of naming a track."""
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    loose = music / "loose"
+    loose.mkdir(parents=True)
+    audio = loose / "z.mp3"
+    audio.write_bytes(b"\x00LOOSE")
+    item = Item(artist="Aphex Twin", albumartist="Aphex Twin", title="Xtal", track=1)
+    item.path = os.fsencode(str(audio))
+    lib.add(item)
+    squatter = music / "Non-Album" / "Aphex Twin"  # beets' built-in singleton: format
+    squatter.mkdir(parents=True)
+    (squatter / "Xtal.mp3").write_bytes(b"\x00STRANGER")
+    before = _tree(music)
+
+    for _run in range(2):
+        plan = reorg.plan_reorganize(lib, scope="library", artist=None, album_id=None)
+        with lib.music_dir_context():
+            fresh = next(iter(lib.items("singleton:true")))
+            outcome = reorg.reorganize_singleton(lib, fresh)
+        assert outcome.status == "failed"
+        assert "not a file in the library" in (outcome.error or "")
+        assert _tree(music) == before
+        assert plan.conflicts_total == 1
+        assert [c.kind for c in plan.conflicts] == ["singleton"]
+
+
+def test_reorganize_album_allows_a_swap_between_its_own_tracks(tmp_path: Path) -> None:
+    """The self-healing case the pre-flight must NOT refuse: each track's
+    destination is held by a unit-mate that is itself relocating this run. beets
+    diverts once and the next run settles it; refusing would freeze the album in the
+    swapped state forever."""
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    base = music / "X" / "Swap"
+    base.mkdir(parents=True)
+    # track 1 "A" currently lives at "02 B.mp3" and vice versa.
+    items = []
+    for fname, content, track, title in (
+        ("02 B.mp3", b"\x00ONE", 1, "A"),
+        ("01 A.mp3", b"\x00TWO", 2, "B"),
+    ):
+        f = base / fname
+        f.write_bytes(content)
+        it = Item(album="Swap", albumartist="X", artist="X", title=title, track=track, disc=1)
+        it.path = os.fsencode(str(f))
+        items.append(it)
+    lib.add_album(items).store()
+
+    # Not refused: the preview offers it as a move, not a conflict.
+    plan = reorg.plan_reorganize(lib, scope="library", artist=None, album_id=None)
+    assert plan.conflicts_total == 0 and plan.will_move == 1
+
+    for _run in range(3):
+        with lib.music_dir_context():
+            reorg.reorganize_album(lib, next(iter(lib.albums())))
+
+    # Settled: each track under its own name, one divert absorbed on the way.
+    assert _tree(music) == {
+        os.path.join("X", "Swap", "01 A.mp3"): b"\x00ONE",
+        os.path.join("X", "Swap", "02 B.mp3"): b"\x00TWO",
+    }
+    with lib.music_dir_context():
+        assert not any(_item_moves(lib, i) for i in next(iter(lib.albums())).items())
+
+
+def test_reorganize_album_allows_a_destination_that_is_the_same_file(tmp_path: Path) -> None:
+    """beets does not divert when the destination IS the file being moved
+    (``move_file`` guards with ``util.samefile``), so the pre-flight must not refuse
+    it. Stand-in for the real trigger — a case-only rename on a case-insensitive
+    filesystem, where path and destination differ as strings but name one file."""
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    base = music / "X" / "Alias"
+    base.mkdir(parents=True)
+    real = base / "01 Song.mp3"  # the item's own destination
+    real.write_bytes(b"\x00A")
+    alias = base / "alias.mp3"
+    alias.symlink_to(real)
+    it = Item(album="Alias", albumartist="X", artist="X", title="Song", track=1, disc=1)
+    it.path = os.fsencode(str(alias))  # DB points at the symlink
+    lib.add_album([it]).store()
+
+    plan = reorg.plan_reorganize(lib, scope="library", artist=None, album_id=None)
+
+    assert plan.conflicts_total == 0
+    assert plan.will_move == 1
+
+
+def test_reorganize_album_refuses_a_destination_aliasing_a_staying_mates_file(
+    tmp_path: Path,
+) -> None:
+    """The samefile exemption must be as narrow as the beets guard it mirrors:
+    ``move_file`` skips ``unique_path`` only when the destination IS the moving
+    item's OWN file. A destination that aliases a unit-mate's file (symlink here;
+    a case-insensitive NAS mount in the wild) is only safe when that mate itself
+    vacates this run — a mate that is STAYING holds the name forever, beets
+    diverts to `.N` on every sweep, and the churn this wave kills survives."""
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    base = music / "X" / "Alias2"
+    base.mkdir(parents=True)
+    keeper = base / "02 Keeper.mp3"  # settled: its own computed destination
+    keeper.write_bytes(b"\x00KEEP")
+    # An on-disk alias of the keeper occupies the mover's destination name.
+    (base / "01 Song.mp3").symlink_to(keeper)
+    src = music / "junk"
+    src.mkdir()
+    mover = src / "b.mp3"
+    mover.write_bytes(b"\x00MOVE")
+    items = []
+    for path, track, title in ((keeper, 2, "Keeper"), (mover, 1, "Song")):
+        it = Item(album="Alias2", albumartist="X", artist="X", title=title, track=track, disc=1)
+        it.path = os.fsencode(str(path))
+        items.append(it)
+    lib.add_album(items).store()
+
+    plan = reorg.plan_reorganize(lib, scope="library", artist=None, album_id=None)
+    assert plan.conflicts_total == 1
+    assert plan.conflicts[0].collisions[0].kind == "cross_unit"
+    assert plan.will_move == 0
+
+    before = _tree(music)
+    for _run in range(2):
+        with lib.music_dir_context():
+            outcome = reorg.reorganize_album(lib, next(iter(lib.albums())))
+        assert outcome.status == "failed"
+        assert _tree(music) == before  # never a .1/.2 rename, run after run
+
+
+def test_carry_follows_a_diverted_landing_when_preflight_misses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A race the pre-flight cannot see (the occupant appears between the check and
+    the move) still diverts inside beets; the carry keys off the ACTUAL landing, so
+    the diverted file keeps ITS lyrics. Simulated by blinding the pre-flight."""
+    monkeypatch.setattr(reorg, "_collisions", lambda lib, dests: [])
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    base = music / "junk" / "col"
+    base.mkdir(parents=True)
+    audio_to_lyrics = {b"\x00A": "lyrics-A\n", b"\x00B": "lyrics-B\n"}
+    items = []
+    for fname, (audio_bytes, lyrics) in zip(
+        ("01 Song.mp3", "01 Song other.mp3"), audio_to_lyrics.items(), strict=True
+    ):
+        f = base / fname
+        f.write_bytes(audio_bytes)
+        f.with_suffix(".lrc").write_text(lyrics, encoding="utf-8")
         it = Item(album="Collide", albumartist="X", artist="X", title="Song", track=1, disc=1)
         it.path = os.fsencode(str(f))
         items.append(it)
@@ -232,10 +520,57 @@ def test_reorganize_album_destination_collision_fails(tmp_path: Path) -> None:
     with lib.music_dir_context():
         outcome = reorg.reorganize_album(lib, next(iter(lib.albums())))
 
+    assert outcome.status == "failed"  # the backstop still reports the divert
+    dest = music / "X" / "Collide"
+    # One item won the plain name, the diverted one landed at .1 — and each audio
+    # file kept its OWN lyrics, paired by content.
+    for audio_name, lrc_name in (
+        ("01 Song.mp3", "01 Song.lrc"),
+        ("01 Song.1.mp3", "01 Song.1.lrc"),
+    ):
+        audio_bytes = (dest / audio_name).read_bytes()
+        assert (dest / lrc_name).read_text(encoding="utf-8") == audio_to_lyrics[audio_bytes]
+    assert list(base.glob("*.lrc")) == []  # nothing stranded behind
+
+
+def test_reorganize_album_collision_error_caps_its_detail_rows(tmp_path: Path) -> None:
+    """A whole-folder collision produces one detail per track; the failure message
+    stays bounded while the preview keeps every collision."""
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    base = music / "junk" / "many"
+    base.mkdir(parents=True)
+    items = []
+    for n in range(4):  # 4 duplicated titles -> 4 intra-unit collisions
+        for side in ("a", "b"):
+            f = base / f"{side}{n}.mp3"
+            f.write_bytes(f"\x00{side}{n}".encode())
+            it = Item(album="Many", albumartist="X", artist="X", title=f"S{n}", track=n + 1)
+            it.path = os.fsencode(str(f))
+            items.append(it)
+    lib.add_album(items).store()
+
+    plan = reorg.plan_reorganize(lib, scope="library", artist=None, album_id=None)
+    with lib.music_dir_context():
+        outcome = reorg.reorganize_album(lib, next(iter(lib.albums())))
+
     assert outcome.status == "failed"
-    assert "already taken by another track" in (outcome.error or "")
-    # Documents the ping-pong: the diverted track landed at the .1 name on disk.
-    assert (music / "X" / "Collide" / "01 Song.1.mp3").exists()
+    error = outcome.error or ""
+    assert error.count("resolve to this same name") == reorg.COLLISION_ERROR_CAP
+    assert "1 more" in error
+    assert len(plan.conflicts[0].collisions) == 4  # the preview keeps them all
+
+
+def test_verify_moves_divert_message_states_only_what_it_knows() -> None:
+    """The backstop still fires on a divert the pre-flight cannot see (a race), but
+    it only knows the name was taken and where the file landed — NOT why."""
+    problems = reorg._verify_moves(
+        [(1, b"/m/junk/raw.mp3", b"/m/X/A/01 Song.mp3")], {1: b"/m/X/A/01 Song.1.mp3"}
+    )
+    assert len(problems) == 1
+    assert "01 Song.1.mp3" in problems[0]
+    assert "already taken" in problems[0]
+    assert "two tracks share the same track number and title" not in problems[0]
 
 
 # --- lyric sidecars follow the audio ------------------------------------------
@@ -508,37 +843,17 @@ def test_reorganize_album_crash_midway_still_carries_moved_items_sidecars(
     assert len(list(src.glob("*.lrc"))) == 2
 
 
-def test_reorganize_album_collision_diverted_file_keeps_its_lyrics(tmp_path: Path) -> None:
-    """The carry keys off the ACTUAL landing path: when unique_path diverts the
-    collision loser to `01 Song.1.mp3`, its own sidecar must land at
-    `01 Song.1.lrc` — paired by content, whichever item won the plain name."""
-    music = tmp_path / "music"
-    lib = build_library(str(tmp_path / "library.db"), str(music))
-    base = music / "junk" / "col"
-    base.mkdir(parents=True, exist_ok=True)
-    audio_to_lyrics = {b"\x00A": "lyrics-A\n", b"\x00B": "lyrics-B\n"}
-    items = []
-    for fname, (audio_bytes, lyrics) in zip(
-        ("01 Song.mp3", "01 Song other.mp3"), audio_to_lyrics.items(), strict=True
-    ):
-        f = base / fname
-        f.write_bytes(audio_bytes)
+def test_reorganize_album_collision_refusal_leaves_sidecars_in_place(tmp_path: Path) -> None:
+    """The refusal happens before anything moves, so the sidecar carry must not run
+    at all: every .lrc stays beside its own (unmoved) audio file."""
+    lib, music, base = _collide_pair_lib(tmp_path)
+    for fname, lyrics in (("01 Song.mp3", "lyrics-A\n"), ("01 Song other.mp3", "lyrics-B\n")):
         (base / fname).with_suffix(".lrc").write_text(lyrics, encoding="utf-8")
-        it = Item(album="Collide", albumartist="X", artist="X", title="Song", track=1, disc=1)
-        it.path = os.fsencode(str(f))
-        items.append(it)
-    lib.add_album(items).store()
+    before = _tree(music)
 
     with lib.music_dir_context():
         outcome = reorg.reorganize_album(lib, next(iter(lib.albums())))
 
-    assert outcome.status == "failed"  # the collision is still reported
-    dest = music / "X" / "Collide"
-    # Both audio files landed (one plain, one diverted) and each kept ITS lyrics.
-    for audio_name, lrc_name in (
-        ("01 Song.mp3", "01 Song.lrc"),
-        ("01 Song.1.mp3", "01 Song.1.lrc"),
-    ):
-        audio_bytes = (dest / audio_name).read_bytes()
-        assert (dest / lrc_name).read_text(encoding="utf-8") == audio_to_lyrics[audio_bytes]
-    assert list(base.glob("*.lrc")) == []  # nothing stranded behind
+    assert outcome.status == "failed"
+    assert _tree(music) == before  # audio AND lyrics untouched
+    assert not (music / "X").exists()

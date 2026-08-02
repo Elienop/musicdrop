@@ -3685,6 +3685,37 @@ export interface components {
             /** Failures */
             failures: components["schemas"]["ReorganizeUnitFailure"][];
         };
+        /** ReorganizeCollision */
+        ReorganizeCollision: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "intra_unit" | "cross_unit";
+            /** Path */
+            path: string;
+            /** Detail */
+            detail: string;
+        };
+        /**
+         * ReorganizeConflict
+         * @description A unit reorganize REFUSES to move: beets would divert a file to a ``.N``
+         *     sibling, renaming something nobody asked to rename. Never also a
+         *     ``ReorganizeMove`` — a conflicted unit is reported here instead.
+         */
+        ReorganizeConflict: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "album" | "singleton";
+            /** Label */
+            label: string;
+            /** From Path */
+            from_path: string;
+            /** Collisions */
+            collisions: components["schemas"]["ReorganizeCollision"][];
+        };
         /** ReorganizeMove */
         ReorganizeMove: {
             /**
@@ -3724,6 +3755,10 @@ export interface components {
             orphans: components["schemas"]["OrphanFolder"][];
             /** Orphans Total */
             orphans_total: number;
+            /** Conflicts */
+            conflicts: components["schemas"]["ReorganizeConflict"][];
+            /** Conflicts Total */
+            conflicts_total: number;
         };
         /** ReorganizeUnitFailure */
         ReorganizeUnitFailure: {

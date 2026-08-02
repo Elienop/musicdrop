@@ -18,14 +18,17 @@ from pathlib import Path
 from typing import Any
 
 import beets
-from beets.util import FilesystemError, MoveOperation, prune_dirs
+from beets.util import FilesystemError, MoveOperation, prune_dirs, samefile, syspath
 
 from app.beets.library import LibraryHandle
 from app.beets.orphans import find_orphan_folders
 from app.beets.sidecars import move_sidecars
 from app.models.reorganize import (
     OrphanFolder,
+    ReorganizeCollision,
+    ReorganizeConflict,
     ReorganizeMove,
+    ReorganizeMoveKind,
     ReorganizeOutcome,
     ReorganizePlan,
     ReorganizeScope,
@@ -35,6 +38,11 @@ _log = logging.getLogger(__name__)
 
 #: Detailed preview rows are capped here; counts stay exact, truncated=True past it.
 PREVIEW_ROW_CAP = 1000
+
+#: Collision details quoted in a refused unit's error string. A whole-folder
+#: collision yields one per track and every failed unit's message is carried in the
+#: job status, so the string stays bounded; the preview keeps them all.
+COLLISION_ERROR_CAP = 3
 
 
 def _albums_for_scope(
@@ -73,11 +81,155 @@ def _item_moves(lib: Any, item: Any) -> bool:
     return bool(item.path != item.destination(basedir=lib.directory))
 
 
+def _unit_dests(lib: Any, items: list[Any]) -> list[tuple[Any, bytes]]:
+    """(item, computed destination) for every item of a unit.
+
+    ``destination()`` evaluates a path template per item, so it is computed ONCE
+    here and shared by the move filter, the collision pre-flight and the preview
+    row rather than recomputed at each site.
+    """
+    return [(i, bytes(i.destination(basedir=lib.directory))) for i in items]
+
+
+def _rel_to_music(lib: Any, path: bytes) -> str:
+    """``path`` shown relative to the music root (absolute if it lies outside it)."""
+    p = os.fsdecode(path)
+    prefix = os.fsdecode(lib.directory) + os.sep
+    return p[len(prefix) :] if p.startswith(prefix) else p
+
+
+def _track_desc(item: Any) -> str:
+    """``track 1 'Song' (a.mp3)`` — the tags that built the name, and the file
+    they named, so the user can act on either end."""
+    name = os.path.basename(os.fsdecode(item.path))
+    return f"track {item.track} {str(item.title or '')!r} ({name})"
+
+
+def _occupant_desc(lib: Any, dest: bytes) -> str:
+    """What is sitting at ``dest``: a library track (named with its owning unit) or
+    a file the library knows nothing about. One query per collision, which is fine
+    because a collision is rare — this never runs on the happy path."""
+    from beets.dbcore.query import PathQuery
+
+    # Exact-path lookup: PathQuery's other arm matches a DIRECTORY prefix, which a
+    # file path can never satisfy. It also handles beets' relative DB path storage.
+    occupant = lib.items(PathQuery("path", dest)).get()
+    if occupant is None:
+        return "is not a file in the library"
+    if occupant.album_id:
+        artist = str(occupant.albumartist or occupant.artist or "").strip() or "Unknown"
+        # The album id disambiguates the real-world case: two album ROWS with
+        # identical tags, whose labels alone read as one album.
+        owner = f"{artist} - {occupant.album} (album {occupant.album_id})"
+    else:
+        owner = singleton_label(occupant)
+    return f"holds track {occupant.track} {str(occupant.title or '')!r} of {owner}"
+
+
+def _collisions(lib: Any, dests: list[tuple[Any, bytes]]) -> list[ReorganizeCollision]:
+    """Every destination in this unit that beets would divert to a ``.N`` sibling.
+
+    ``Item.move_file`` calls ``util.unique_path`` when the destination exists and
+    renames the loser silently, so detecting it afterwards is useless: the loser
+    vacates the slot it held and ``unique_path`` restarts its scan at ``.1``, which
+    is why an untreated collision renames a real file on EVERY sweep.
+
+    Two independent classes, both evaluated over ALL of the unit's items — from the
+    second run onward a moving-only view no longer sees the duplicate, because the
+    twin that won the name now sits on it and no longer "moves":
+
+    a. INTRA-UNIT: two items compute the same destination.
+    b. CROSS-UNIT: the destination exists on disk and is not one of this unit's own
+       current file paths. A path the unit itself holds is deliberately allowed —
+       an item relocating this run vacates it, so beets diverts at most once and
+       the next run settles it; refusing would freeze that state forever.
+
+    Mirrors ``unique_path``'s own existence test and ``move_file``'s ``samefile``
+    guard, so this predicts a divert instead of guessing at one.
+    """
+    own_paths = {os.path.normpath(bytes(i.path)) for i, _dest in dests}
+    # Paths this run will vacate. Only these may absorb a samefile alias below: a
+    # STAYING mate holds its name forever, so an alias of it diverts every sweep.
+    moving_paths = {
+        p for i, dest in dests if (p := os.path.normpath(bytes(i.path))) != os.path.normpath(dest)
+    }
+    groups: dict[bytes, list[Any]] = {}
+    for item, dest in dests:
+        groups.setdefault(os.path.normpath(dest), []).append(item)
+
+    found: list[ReorganizeCollision] = []
+    reported: set[bytes] = set()
+    for dest, group in groups.items():
+        if len(group) < 2:
+            continue
+        rel = _rel_to_music(lib, dest)
+        found.append(
+            ReorganizeCollision(
+                kind="intra_unit",
+                path=rel,
+                detail=(
+                    f"{rel}: {len(group)} tracks resolve to this same name: "
+                    + ", ".join(_track_desc(i) for i in group)
+                ),
+            )
+        )
+        reported.add(dest)
+
+    for item, dest in dests:
+        key = os.path.normpath(dest)
+        # ``key in own_paths`` is a byte-equal fast path, not a separate rule: an
+        # item already sitting at its destination or a mate's slot are settled
+        # without a syscall, and the dangerous byte-equal case — a STAYING mate's
+        # path — cannot reach here, because a settled mate's destination equals
+        # that same path and the intra-unit arm above has already reported it.
+        # Order matters — samefile costs two stats per non-matching pair, so it
+        # must not run for the overwhelmingly common free destination.
+        if key in reported or key in own_paths:
+            continue
+        if not os.path.exists(syspath(key)):
+            continue
+        # Byte-unequal yet the same file. beets skips unique_path only when the
+        # destination IS the moving item's own file (``move_file``'s guard) — the
+        # case-only rename on a case-insensitive filesystem. Wider than that, an
+        # alias is only safe when it names a mate that itself vacates this run
+        # (one divert, settles next sweep); an alias of a STAYING mate's file
+        # holds the name forever and beets would divert on every sweep.
+        if samefile(key, os.path.normpath(bytes(item.path))):
+            continue
+        if any(samefile(key, p) for p in moving_paths):
+            continue
+        rel = _rel_to_music(lib, key)
+        found.append(
+            ReorganizeCollision(
+                kind="cross_unit",
+                path=rel,
+                detail=f"{rel}: already exists on disk and {_occupant_desc(lib, key)}",
+            )
+        )
+        reported.add(key)
+    return found
+
+
+def _collision_error(collisions: list[ReorganizeCollision]) -> str:
+    """The refused unit's error string (see COLLISION_ERROR_CAP)."""
+    shown = [c.detail for c in collisions[:COLLISION_ERROR_CAP]]
+    hidden = len(collisions) - len(shown)
+    if hidden:
+        shown.append(f"and {hidden} more collision{'s' if hidden > 1 else ''}")
+    return "; ".join(shown)
+
+
 def _verify_moves(pending: list[tuple[int, bytes, bytes]], after: dict[int, bytes]) -> list[str]:
-    """Post-move verification: beets 2.12 silently skips a move whose source file is
-    absent (models.py:1142) and silently diverts to a `.N`-suffixed name when the
-    destination is occupied (unique_path) — both leave the unit eternally re-flagged
-    by the preview. Returns one human-readable problem per affected file."""
+    """Post-move verification: beets silently skips a move whose source file is
+    absent and silently diverts to a `.N`-suffixed name when the destination is
+    occupied (unique_path) — both leave the unit eternally re-flagged by the
+    preview. Returns one human-readable problem per affected file.
+
+    The BACKSTOP, not the defence: ``_collisions`` refuses a divertable unit before
+    anything moves, so a divert reaching here means the destination was taken
+    between the pre-flight and the move. This code therefore knows only that the
+    name was taken and where the file landed — never why — and says exactly that.
+    """
     problems: list[str] = []
     for item_id, old_path, dest in pending:
         new_path = after.get(item_id, old_path)
@@ -92,9 +244,9 @@ def _verify_moves(pending: list[tuple[int, bytes, bytes]], after: dict[int, byte
                 problems.append(f"{name}: move did not take effect")
         elif new_path != dest:
             problems.append(
-                f"{name}: computed filename is already taken by another track"
-                f" (landed at {os.path.basename(os.fsdecode(new_path))!r})"
-                "; two tracks share the same track number and title"
+                f"{name}: the computed file name was already taken on disk, so the file"
+                f" landed at {os.path.basename(os.fsdecode(new_path))!r}"
+                "; check this album's folder for what is holding that name"
             )
     return problems
 
@@ -173,34 +325,40 @@ def album_scope_label(handle: LibraryHandle, album_id: int) -> str | None:
     return album_label(album)
 
 
-def _describe_album(lib: Any, album: Any) -> ReorganizeMove | None:
-    items = list(album.items())
-    moving = [i for i in items if _item_moves(lib, i)]
+def _describe_unit(
+    lib: Any, *, kind: ReorganizeMoveKind, label: str, items: list[Any]
+) -> ReorganizeMove | ReorganizeConflict | None:
+    """One preview row for a unit: a CONFLICT (would be refused), a MOVE, or None
+    when it is already in place. A conflicted unit is never also a move — the
+    preview must not offer a refusal as an ordinary relocation."""
+    if not items:
+        return None
+    dests = _unit_dests(lib, items)
+    moving = [i for i, dest in dests if bytes(i.path) != dest]
     if not moving:
         return None
-    from_path = _commonpath_of_dirs([i.path for i in items])
-    to_path = _commonpath_of_dirs([i.destination(basedir=lib.directory) for i in items])
+    # commonpath over the item DIRS: for a lone singleton that is just its dir.
+    from_path = _commonpath_of_dirs([i.path for i, _dest in dests])
+    collisions = _collisions(lib, dests)
+    if collisions:
+        return ReorganizeConflict(
+            kind=kind, label=label, from_path=from_path, collisions=collisions
+        )
     return ReorganizeMove(
-        kind="album",
-        label=album_label(album),
+        kind=kind,
+        label=label,
         from_path=from_path,
-        to_path=to_path,
+        to_path=_commonpath_of_dirs([dest for _i, dest in dests]),
         track_count=len(moving),
     )
 
 
-def _describe_singleton(lib: Any, item: Any) -> ReorganizeMove | None:
-    if not _item_moves(lib, item):
-        return None
-    from_path = os.path.dirname(os.fsdecode(item.path))
-    to_path = os.path.dirname(os.fsdecode(item.destination(basedir=lib.directory)))
-    return ReorganizeMove(
-        kind="singleton",
-        label=singleton_label(item),
-        from_path=from_path,
-        to_path=to_path,
-        track_count=1,
-    )
+def _describe_album(lib: Any, album: Any) -> ReorganizeMove | ReorganizeConflict | None:
+    return _describe_unit(lib, kind="album", label=album_label(album), items=list(album.items()))
+
+
+def _describe_singleton(lib: Any, item: Any) -> ReorganizeMove | ReorganizeConflict | None:
+    return _describe_unit(lib, kind="singleton", label=singleton_label(item), items=[item])
 
 
 def _scope_label(
@@ -257,15 +415,16 @@ def plan_reorganize(
         singletons = _singletons_for_scope(lib, scope=scope)
         total = len(albums) + len(singletons)
         all_moves: list[ReorganizeMove] = []
-        for album in albums:
-            m = _describe_album(lib, album)
-            if m is not None:
-                all_moves.append(m)
-        for item in singletons:
-            m = _describe_singleton(lib, item)
-            if m is not None:
-                all_moves.append(m)
+        all_conflicts: list[ReorganizeConflict] = []
+        rows = [_describe_album(lib, a) for a in albums]
+        rows += [_describe_singleton(lib, i) for i in singletons]
+        for row in rows:
+            if isinstance(row, ReorganizeMove):
+                all_moves.append(row)
+            elif isinstance(row, ReorganizeConflict):
+                all_conflicts.append(row)
         will_move = len(all_moves)
+        conflicts_total = len(all_conflicts)
         moves = all_moves[:PREVIEW_ROW_CAP]
         orphans, orphans_total = _orphan_preview(
             lib, scope=scope, trash_dir=trash_dir, ignore_dirs=ignore_dirs
@@ -275,32 +434,43 @@ def plan_reorganize(
             scope_label=_scope_label(scope=scope, artist=artist, album_id=album_id, albums=albums),
             total=total,
             will_move=will_move,
-            already_in_place=total - will_move,
+            already_in_place=total - will_move - conflicts_total,
             moves=moves,
             truncated=will_move > len(moves),
             orphans=orphans,
             orphans_total=orphans_total,
+            conflicts=all_conflicts[:PREVIEW_ROW_CAP],
+            conflicts_total=conflicts_total,
         )
 
 
 def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
     """Move one album to match the current path config. Never raises.
 
-    Skips empty albums and already-organized albums. ``Album.move`` relocates all
-    items + art, prunes the vacated dirs, and updates DB paths (store=True).
+    Skips empty albums and already-organized albums, and REFUSES a colliding one:
+    a unit whose move would make beets divert a file to a ``.N`` sibling is failed
+    before ``Album.move`` runs, so nothing on disk and nothing in the DB is touched
+    (see ``_collisions``). Otherwise ``Album.move`` relocates all items + art,
+    prunes the vacated dirs, and updates DB paths (store=True).
     """
     label = album_label(album)
     pending: list[tuple[int, bytes, bytes]] = []  # bound before try: the except path reads it
     with lib.music_dir_context():
         try:
             items = list(album.items())
-            if not items or not any(_item_moves(lib, i) for i in items):
+            if not items:
                 return ReorganizeOutcome(status="skipped", label=label)
+            dests = _unit_dests(lib, items)
+            if not any(bytes(i.path) != dest for i, dest in dests):
+                return ReorganizeOutcome(status="skipped", label=label)
+            collisions = _collisions(lib, dests)
+            if collisions:
+                return ReorganizeOutcome(
+                    status="failed", label=label, error=_collision_error(collisions)
+                )
             source_dir = _commonpath_of_dirs([i.path for i in items])  # before the move
             pending = [
-                (int(i.id), bytes(i.path), bytes(i.destination(basedir=lib.directory)))
-                for i in items
-                if _item_moves(lib, i)
+                (int(i.id), bytes(i.path), dest) for i, dest in dests if bytes(i.path) != dest
             ]
             with lib.transaction():
                 album.move(MoveOperation.MOVE, store=True)
@@ -333,16 +503,24 @@ def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
 
 
 def reorganize_singleton(lib: Any, item: Any) -> ReorganizeOutcome:
-    """Move one singleton (album_id is None) to match the config. Never raises."""
+    """Move one singleton (album_id is None) to match the config. Never raises.
+
+    Same collision pre-flight as ``reorganize_album``: a destination already held
+    by anything but this item's own file is refused before the move."""
     label = singleton_label(item)
     pending: list[tuple[int, bytes, bytes]] = []  # bound before try: the except path reads it
     with lib.music_dir_context():
         try:
-            if not _item_moves(lib, item):
-                return ReorganizeOutcome(status="skipped", label=label)
-            source_dir = os.path.dirname(os.fsdecode(item.path))  # before the move
             old_path = bytes(item.path)
             dest = bytes(item.destination(basedir=lib.directory))
+            if old_path == dest:
+                return ReorganizeOutcome(status="skipped", label=label)
+            collisions = _collisions(lib, [(item, dest)])
+            if collisions:
+                return ReorganizeOutcome(
+                    status="failed", label=label, error=_collision_error(collisions)
+                )
+            source_dir = os.path.dirname(os.fsdecode(item.path))  # before the move
             pending = [(int(item.id), old_path, dest)]
             with lib.transaction():
                 item.move(MoveOperation.MOVE, with_album=False, store=True)

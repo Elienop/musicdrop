@@ -28,6 +28,31 @@ class ReorganizeMove(BaseModel):
     track_count: int  # items in this unit whose path changes
 
 
+#: Why a unit's move would land a file somewhere it was not asked to go.
+#: ``intra_unit`` = two items OF THIS UNIT compute the same destination.
+#: ``cross_unit`` = the destination already exists on disk and is held by
+#: something that is not one of this unit's own files (another album's track, a
+#: singleton, or a file the library does not know about).
+ReorganizeCollisionKind = Literal["intra_unit", "cross_unit"]
+
+
+class ReorganizeCollision(BaseModel):
+    kind: ReorganizeCollisionKind
+    path: str  # the contested destination, relative to the music root (display only)
+    detail: str  # one sentence naming what collides (repeats ``path`` so it reads alone)
+
+
+class ReorganizeConflict(BaseModel):
+    """A unit reorganize REFUSES to move: beets would divert a file to a ``.N``
+    sibling, renaming something nobody asked to rename. Never also a
+    ``ReorganizeMove`` — a conflicted unit is reported here instead."""
+
+    kind: ReorganizeMoveKind  # "album" / "singleton", as for a move row
+    label: str  # "Artist - Album" / "Artist - Title"
+    from_path: str  # where the unit's files sit now (its album-root dir)
+    collisions: list[ReorganizeCollision]  # at least one; every collision found
+
+
 class OrphanFolder(BaseModel):
     name: str  # basename shown in the preview, e.g. "Old Artist feat. X"
     path: str  # path relative to the music root (display only)
@@ -38,12 +63,17 @@ class ReorganizePlan(BaseModel):
     scope: ReorganizeScope  # which set of files this plan describes
     scope_label: str  # "library" / artist name / "Artist - Album"
     total: int  # units in scope (albums [+ singletons at library scope])
-    will_move: int  # exact
+    will_move: int  # exact; EXCLUDES conflicted units
     already_in_place: int  # exact
     moves: list[ReorganizeMove]  # capped at PREVIEW_ROW_CAP
     truncated: bool  # True when moves[] is shorter than will_move
     orphans: list[OrphanFolder]  # audio-empty husks that would be moved to Trash (capped)
     orphans_total: int  # exact husk count (orphans[] may be truncated)
+    # Units that would be REFUSED (a move here would rename a file nobody asked to
+    # rename). The three counts partition the scope:
+    # total == will_move + already_in_place + conflicts_total.
+    conflicts: list[ReorganizeConflict]  # capped at PREVIEW_ROW_CAP
+    conflicts_total: int  # exact conflicted-unit count (conflicts[] may be truncated)
 
 
 #: Per-unit outcome (internal). moved = relocated; skipped = already organized /
