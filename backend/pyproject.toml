@@ -5,7 +5,7 @@ description = "A self-hosted web UI for beets — browse your music library, run
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.141.1",
-    "uvicorn[standard]>=0.52.0",
+    "uvicorn[standard]>=0.52.1",
     "pydantic-settings>=2.14.2",
     "beets==2.13.*",
     "beautifulsoup4>=4.15.0",
@@ -19,7 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "mypy>=2.3.0",
-    "ruff>=0.16.0",
+    "ruff>=0.16.1",
     "pytest>=9.1.1",
     "respx>=0.23.1",
 ]
