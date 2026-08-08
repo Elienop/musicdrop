@@ -139,11 +139,17 @@ next bulk import.)_
   click-to-edit; there's a minor spinner style delta from the original design.
 - Artists A-Z index: the active-letter tint omits `SegmentedControl`'s `shadow-xs`; CJK/
   Cyrillic artist names fall into `#` (documented limitation, not a bug).
-- Browse cache rebuild: lyrics `TEXT` is pulled whole per rebuild (~25MB at 45k tracks —
-  `TRIM` in SQL instead); two `item_attributes` scans could be one `key IN (...)` scan (halves
-  the pass); a transient wrong-row window exists when an album commits between the facts
-  snapshot and the albums scan (self-healing via the generation bump); `_EMPTY_FACTS` and the
-  format tie-break are untested; one single-implementation guard test's name over-claims.
+- Browse cache rebuild: the whole `lyrics` `TEXT` column is pulled per rebuild (~25MB at 45k
+  tracks) only to test emptiness — the fix is to answer the emptiness question in SQL and
+  return a flag instead of the text. **Do NOT reach for the obvious `TRIM(lyrics) != ''`:**
+  SQLite's `TRIM` strips *spaces only*, while the Python side is `_coerce_str(lyrics).strip()`,
+  which strips all whitespace — so a lyrics value of `"\n"` would flip that track from Missing
+  to answered and silently move album lyrics buckets. Any SQL form must strip `\t\n\r`
+  explicitly (or trim against a character set) and be pinned by a whitespace-only-lyrics test.
+- Browse cache rebuild (rest): a transient wrong-row window exists when an album commits
+  between the facts snapshot and the albums scan (self-healing via the generation bump);
+  `_EMPTY_FACTS` and the format tie-break are untested; one single-implementation guard test's
+  name over-claims.
 - Genre facet play-order: a NULL-vs-0 disc/track tie can diverge from SQL's NULL-first order
   (narrow edge, untested); `duplicates.py`'s genre consumer isn't directly exercised by the
   consistency test (it shares the call shape with what is tested).
