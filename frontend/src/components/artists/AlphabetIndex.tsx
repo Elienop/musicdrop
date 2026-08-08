@@ -11,7 +11,13 @@ const LETTERS = ["#", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"] as const;
  * the name after stripping combining diacritics, uppercased. This must
  * mirror the roster's casefold sort order from the backend — so "*NSYNC"
  * and "10cc" (which sort before letters) bucket to "#" alongside anything
- * else outside A-Z, and "Édith Piaf" buckets to "E".
+ * else outside A-Z, and "Édith Piaf" buckets to "E" (the backend's
+ * `list_artists` sorts on `normalize_artist_name` — NFKD accent-fold — as
+ * its primary key precisely so this holds). Non-Latin scripts (CJK,
+ * Cyrillic, ...) still fall outside A-Z here and bucket to "#" — the
+ * backend sorts them after "z" too, so the "#" bucket at least stays
+ * honest about what's actually on each page; a proper script-aware index
+ * is out of scope.
  */
 function bucketOf(name: string): string {
   const first = name
@@ -26,9 +32,12 @@ function bucketOf(name: string): string {
  * A-Z jump strip above the Artists grid: one button per bucket letter (plus
  * "#" for symbols/digits), disabled when the roster has nothing in that
  * bucket. Clicking a letter jumps the page to wherever that letter's first
- * artist lives, using the same offset math as the pager. Letters whose
- * bucket falls on the currently visible page get the SegmentedControl
- * active-tint treatment via `aria-pressed`.
+ * artist lives, using the same offset math as the pager. A letter reads as
+ * pressed (SegmentedControl's active-tint treatment via `aria-pressed`)
+ * exactly when an artist of that bucket is visible on the CURRENT page —
+ * derived by bucketing the page slice itself, not just each bucket's first
+ * occurrence, so a bucket spanning more than one page (e.g. 50+ artists all
+ * starting with the same letter) reads pressed on every page it touches.
  */
 export function AlphabetIndex({
   artists,
@@ -50,6 +59,11 @@ export function AlphabetIndex({
     return map;
   }, [artists]);
 
+  const pressedLetters = useMemo(() => {
+    const visible = artists.slice(offset, offset + pageSize);
+    return new Set(visible.map((artist) => bucketOf(artist.name)));
+  }, [artists, offset, pageSize]);
+
   return (
     <nav
       aria-label="Jump to artists by letter"
@@ -58,8 +72,7 @@ export function AlphabetIndex({
       {LETTERS.map((letter) => {
         const index = firstIndex.get(letter);
         const isEmpty = index === undefined;
-        const isPressed =
-          !isEmpty && index >= offset && index < offset + pageSize;
+        const isPressed = pressedLetters.has(letter);
         return (
           <Button
             key={letter}
