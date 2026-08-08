@@ -274,6 +274,8 @@ describe("Pagination compact variant", () => {
     await userEvent.clear(input);
     await userEvent.type(input, "30{Enter}");
     expect(onOffsetChange).toHaveBeenCalledWith(48 * 29);
+    expect(onOffsetChange).toHaveBeenCalledTimes(1); // no double-commit via Enter+blur
+    expect(screen.getByRole("button", { name: /go to page/i })).toHaveFocus();
   });
 
   it("compact: out-of-range commits clamp, Escape reverts", async () => {
@@ -295,6 +297,7 @@ describe("Pagination compact variant", () => {
     await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /go to page/i })).toHaveFocus();
   });
 });
 
