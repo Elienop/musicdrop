@@ -94,6 +94,59 @@ next bulk import.)_
 
 ## Deferred minors (cosmetic / self-healing — carried from earlier waves)
 
+- Warm Browse/list pages still do a per-row `lib.get_album` (~2 queries/row); batch the
+  id-IN load or widen `BrowseRow` instead.
+- No next-page prefetch on Browse/Artists — a page flip waits a round trip
+  (`placeholderData` already prevents blanking, so this is latency, not breakage).
+- Cold artist-image pages resolve inside the request under the 5/s source limiter — first-ever
+  view of an uncached page takes ~10s to fill. Consider respond-fast + background fill; pairs
+  with the planned per-artist re-fetch feature.
+- `ArtistImage` remounts every card on any `art:changed` (global assetVersion key) — near-free
+  now that 304s are stat-cheap, but a scoped identity would need the normalized-name mapping.
+- Browse-side A-Z index would need a per-filter letter-to-offset endpoint (Artists-only
+  shipped in the perf wave).
+- `_stat_tag` (artwork) duplicates `library.py`'s `_stat_etag` (Path vs str param) — polish
+  only, same behavior.
+- Stat-then-read ETag race on the artwork cache (self-healing, mirrors the covers precedent);
+  its integration test only exercises the hash-fallback branch.
+- Thumb edge-case paths (animated/palette/CMYK/tiny source images) were verified by reviewer
+  probes but are unpinned by tests; the alpha test only checks image mode.
+- `.thumb.src`/`.thumb.bin` pair is not atomic as a unit (a `clear_override` tag-revisit
+  corner); served-tag vs. served-bytes TOCTOU is inherited from the cover cache class (fix:
+  `get_thumb` should return its src_tag, which also drops a stat); the 304-path + off-loop
+  constraints are unpinned by tests; an empty-mime sidecar plus an undecodable source causes a
+  re-derive loop (suggest `mime or "application/octet-stream"`).
+- `get_artist_image_cache`'s sibling has no lazy fallback (same latent isolated-run fragility
+  the cover dep fix addressed); `cover_client` has a pre-existing beets_library state leak; no
+  eviction of cover thumbs on album delete (parity with the artist cache is missing); both
+  siblings' `.src` read only catches `OSError`, missing `UnicodeDecodeError`.
+- `AlreadyInLibrary` thumb URL has no test file; `ArtistImage.tsx:33`'s "160px header"
+  docblock is stale (pre-existing misconception, predates the full-size hero fix).
+- Pagination: numbered-window `aria-label="Page N"` vs. the visible "N" is a WCAG 2.5.3
+  label-in-name partial mismatch; the icon-sm caret width is tight for 3-digit page numbers.
+- Pagination: the compact pager's busy state is no longer in the readout's accessible name
+  (`aria-label` wins over the sr-only child) — consider `aria-live` or a busy-aware label; the
+  NaN/empty-commit jump-input path is untested; a component docstring is stale re
+  click-to-edit; there's a minor spinner style delta from the original design.
+- Artists A-Z index: the active-letter tint omits `SegmentedControl`'s `shadow-xs`; CJK/
+  Cyrillic artist names fall into `#` (documented limitation, not a bug).
+- Browse cache rebuild: lyrics `TEXT` is pulled whole per rebuild (~25MB at 45k tracks —
+  `TRIM` in SQL instead); two `item_attributes` scans could be one `key IN (...)` scan (halves
+  the pass); a transient wrong-row window exists when an album commits between the facts
+  snapshot and the albums scan (self-healing via the generation bump); `_EMPTY_FACTS` and the
+  format tie-break are untested; one single-implementation guard test's name over-claims.
+- Genre facet play-order: a NULL-vs-0 disc/track tie can diverge from SQL's NULL-first order
+  (narrow edge, untested); `duplicates.py`'s genre consumer isn't directly exercised by the
+  consistency test (it shares the call shape with what is tested).
+- Genre: legacy flex `genre` (singular) rows are now unreadable post-fix — zero exist in the
+  real library, informational only; an `assert isinstance` vanishes under `python -O`; the
+  `_collect_facts` docstring says "`_coerce_*` helper" but genres actually go through
+  `_genre_values`.
+- **Genre facet is PRIMARY-genre-only** (deliberate tradeoff, preserves the counts-sum
+  invariant): on the real library 17/36 albums are multi-genre, so tag *order* decides the
+  bucket (`Hip Hop\0Gangsta Rap` vs. `Gangsta Rap\0Hip Hop` land in different buckets), and
+  selecting "Rock" won't surface an album tagged `["Pop", "Rock"]`. Multi-bucket faceting
+  would break the counts-sum invariant — flagged for awareness, not scheduled.
 - 413 responses carry no CORS headers (dev-only annoyance).
 - PlaylistDetail stale-snapshot move-PUT (self-heals on refetch).
 - Remove-to-empty stale focus; playlist-import focus-after-resolve.
@@ -114,6 +167,23 @@ next bulk import.)_
 
 ## Recently shipped
 
+- **2026-08-08 — perf: images, pager, cache wave** (branch `feat/perf-images-pager-cache`):
+  artist-image and album-cover 304s now answer from a file stat (no read, no hash, off the
+  event loop); new 320px WebP thumb variant (`?size=thumb|full`) — grids/tiles request thumbs,
+  the two detail-page heroes deliberately keep full-size art. `Pagination.tsx` gained
+  first/last double-caret jumps, a numbered ellipsis window, and a click-to-edit jump-to-page
+  input; new A-Z index on the Artists page; roster sort is diacritic-insensitive. `/api/stats`
+  now answers from SQL aggregates independent of the browse cache; the browse-cache rebuild is
+  one aggregate pass (~4-5 queries, no more per-album `items()`); SSE invalidation bursts
+  coalesce (300ms debounce, ~2s max-wait, cancelled on reconnect); SSE-invalidated query
+  families get a 5-minute staleTime. Along the way: **I17 (event-loop stall from the
+  browse-cache rebuild) is CLOSED as originally stated** — the 2026-08-08 perf investigation
+  refuted the loop-stall theory (invalidation is an O(1) generation bump; only the paying
+  request stalls), and this wave fixes the real cost, the rebuild's own N+1 query expense.
+  Also fixed in-scope: the beets 2.13 genre pipeline was dead end-to-end (beets 2.13 has no
+  `genre` field; Item/Album both use `genres`) — the Genre facet, `Album.genre`, and the edit
+  panel now read/write `genres`, replacing "Unknown" for the entire library with real genre
+  values (see the multi-genre primary-bucket tradeoff noted under Deferred minors).
 - **2026-08-02 — wire-safety + edit-preview wave** (branch `fix/utf8-paths-and-edit-preview`):
   non-UTF-8 paths no longer 500 any JSON endpoint — sink-level scrub
   (`SurrogateSafeJSONResponse` + scrubbed HTTPException/RequestValidationError handlers),
