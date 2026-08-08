@@ -29,9 +29,13 @@ function monogram(name: string): string {
  * - `decorative`: `alt=""` + `aria-hidden` fallback — for when an adjacent
  *   heading already names the artist (the artist-albums header).
  *
- * `className` sizes/rounds the box (roster: `aspect-square w-full rounded-t-xl`;
- * header: `size-40 rounded-xl`). `monogramClassName` sizes the letter so it
- * looks right at both scales (small grid card vs the 160px header).
+ * `className` sizes/rounds the box, and the two call sites are exactly why the
+ * `size` prop exists: the roster card (ArtistCard) passes `size-32 rounded-lg`
+ * — 128 px, so it asks for `"thumb"`; the artist-detail hero
+ * (ArtistAlbumsPage) passes `aspect-square w-full` inside a `w-96` rail — 384
+ * CSS px, past what a 320px thumb covers even at 1x DPI, so it deliberately
+ * stays full-size. `monogramClassName` sizes the letter to match
+ * (`text-2xl` on the card, `text-8xl` on the hero).
  */
 export function ArtistImage({
   name,
@@ -50,9 +54,9 @@ export function ArtistImage({
    * endpoint now revalidates (ETag) instead of long-caching. */
   version?: number;
   /** `"thumb"` requests the backend's 320px WebP derivation instead of the
-   * full-size original — for any render at grid/header scale, where a
-   * multi-hundred-KB original is wasted bytes. Default `"full"` (e.g. the
-   * edit-panel preview, which inspects the real asset). */
+   * full-size original — for any render at grid-card scale, where a
+   * multi-hundred-KB original is wasted bytes. Default `"full"`, which is what
+   * the 384px detail hero needs. */
   size?: "full" | "thumb";
 }) {
   const [failed, setFailed] = useState(false);
