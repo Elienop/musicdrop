@@ -20,9 +20,9 @@ def is_header_safe_content_type(value: str) -> bool:
     """Whether ``value`` can be sent as a Content-Type header at all.
 
     Every content-type this app serves arrives from OUTSIDE it — a third-party
-    CDN's response header, or a ``.mime``/``.src`` sidecar written from one —
-    and reaches a response header untouched. Two shapes break that, and neither
-    needs disk corruption to arrive:
+    CDN's response header, a ``.mime``/``.src`` sidecar written from one, or a
+    media file's embedded picture MIME — and reaches a response header
+    untouched. Three shapes break that, and none needs disk corruption:
 
     * **non-ASCII** (``image/日本語``): Starlette encodes header values as
       latin-1, so building the response raises ``UnicodeEncodeError`` and the
@@ -32,18 +32,32 @@ def is_header_safe_content_type(value: str) -> bool:
     * **an embedded newline** (``image/png\\nX-Injected: yes``): a
       response-splitting attempt. Starlette passes it through and h11 refuses
       the frame, dropping the connection with no response at all.
+    * **empty or whitespace-only**: legal on the wire, so nothing breaks
+      loudly — the browser just sniffs the body, which is what a declared type
+      exists to prevent. Whitespace-only is stripped here rather than left to
+      each caller, because a ``.thumb.src`` of ``"<tag>   "`` HITS on the next
+      read and so would never re-derive.
 
     ``isprintable()`` is the part that rejects ``\\n``, ``\\r`` and ``\\x00``
     while still accepting a legitimately parameterised type
-    (``image/svg+xml; charset=utf-8``). Empty is rejected too — an empty
-    Content-Type makes browsers sniff the body.
+    (``image/svg+xml; charset=utf-8``).
 
-    NOTE for whoever tests a caller of this: Starlette's TestClient never
-    encodes response headers, so BOTH failures above return a green 200 through
-    it. A TestClient assertion cannot see this class of bug; assert on the
-    content-type value that gets served, and unit-test this predicate directly.
+    NOTE for whoever tests a caller of this — the two failures are NOT equally
+    visible under Starlette's TestClient:
+
+    * the non-ASCII encode happens in ``Response.init_headers``, INSIDE the app,
+      so TestClient does surface it (raises ``UnicodeEncodeError``, or 500s with
+      ``raise_server_exceptions=False``);
+    * the newline shapes are passed through untouched and only die at h11, so
+      they return a green 200 through TestClient and fail only on a real server.
+
+    So a TestClient status assertion is enough for one shape and useless for the
+    other. Assert on the content-type VALUE that gets served, and unit-test this
+    predicate directly — and pass the raw value, not a pre-stripped one, or the
+    test stops asserting about the input it names.
     """
-    return bool(value) and value.isascii() and value.isprintable()
+    stripped = value.strip()
+    return bool(stripped) and stripped.isascii() and stripped.isprintable()
 
 
 def sniff_image_mime(data: bytes) -> str | None:

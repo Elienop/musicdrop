@@ -58,8 +58,21 @@ def test_header_safe_accepts_real_content_types(value: str) -> None:
         ("image/png\x00", "NUL is not printable"),
         ("image/png\tx", "tab is not printable"),
         ("", "empty Content-Type makes browsers sniff the body"),
-        ("   ", "whitespace-only survives .strip() as empty"),
+        ("   ", "whitespace-only: isascii() and isprintable() are both True for it"),
+        ("\n", "a bare newline strips to empty"),
     ],
 )
 def test_header_safe_rejects_unsendable_content_types(value: str, why: str) -> None:
-    assert is_header_safe_content_type(value.strip()) is False, why
+    # Pass the value RAW. An earlier version of this test called
+    # `is_header_safe_content_type(value.strip())`, so the "   " case actually
+    # asserted about "" — production accepted whitespace-only and the test went
+    # green anyway. A transformation between a parameter and its assertion is
+    # invisible to mutation testing, which only asks whether SOME test fails.
+    assert is_header_safe_content_type(value) is False, why
+
+
+def test_header_safe_strips_before_judging() -> None:
+    """Padding is not a reason to drop a perfectly good type — and stripping has
+    to happen HERE, not in each caller, or a ``.thumb.src`` of ``"<tag>   "``
+    hits on the next read and never re-derives."""
+    assert is_header_safe_content_type("  image/png  ") is True
