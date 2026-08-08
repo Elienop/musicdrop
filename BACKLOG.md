@@ -127,7 +127,7 @@ next bulk import.)_
   click-to-edit; there's a minor spinner style delta from the original design.
 - Artists A-Z index: the active-letter tint omits `SegmentedControl`'s `shadow-xs`; CJK/
   Cyrillic artist names fall into `#` (documented limitation, not a bug).
-- Browse cache rebuild (rest): a transient wrong-row window exists when an album commits
+- Browse cache rebuild: a transient wrong-row window exists when an album commits
   between the facts snapshot and the albums scan (self-healing via the generation bump);
   `_EMPTY_FACTS` and the format tie-break are untested; one single-implementation guard test's
   name over-claims.
