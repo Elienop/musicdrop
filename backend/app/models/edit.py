@@ -21,8 +21,10 @@ _MAX_TEXT = 1000
 class AlbumFieldEdits(BaseModel):
     """Album-header fields to change; only set (non-None) keys are applied.
 
-    These propagate to every track (beets ``inherit``). Clearing a field (set
-    to null) is out of scope, so None means "leave unchanged".
+    These propagate to every track (beets ``inherit``). ``None`` means "leave
+    unchanged" — it is not a clear. An EMPTY STRING is a clear: no field here
+    sets ``min_length``, so ``""`` is submitted and stored, which for the
+    list-valued ``genre`` means storing no genres at all.
     """
 
     album_artist: str | None = Field(default=None, max_length=_MAX_TEXT)

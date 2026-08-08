@@ -1136,7 +1136,7 @@ def test_genre_fallback_agrees_across_every_endpoint(tmp_path: Path) -> None:
 
 
 def _genre_pipeline_lib(tmp_path: Path) -> Library:
-    """Four albums, one per genre case. See the test's docstring."""
+    """Five albums, one per genre case. See the test's docstring."""
     lib = Library(str(tmp_path / "genres.db"), directory=str(tmp_path / "music"))
 
     single = lib.add_album([_char_item(tmp_path, artist="Single", album="One", n=1)])
@@ -1160,6 +1160,23 @@ def _genre_pipeline_lib(tmp_path: Path) -> Library:
 
     bare = lib.add_album([_char_item(tmp_path, artist="Bare", album="Four", n=1)])
     bare.store()
+
+    # The album's OWN genres disagree with its track's. Without this album the
+    # precedence half of the contract is untestable: every other fixture here
+    # stores the album genres and lets store() fan them to the tracks, so the
+    # album read and the track fallback answer identically and a mutation that
+    # drops the album read is invisible.
+    #
+    # ``store(inherit=False)`` is what keeps them apart — a plain store() would
+    # fan 'Rock' down and erase the track's 'Jazz', which is the trap
+    # _characterization_lib's album B documents. Reachable in a real library:
+    # disk sync rewrites per-track genres from the files without touching the
+    # album row (tests/test_disk_sync_adapter.py).
+    precedence = lib.add_album(
+        [_char_item(tmp_path, artist="Precedence", album="Five", n=1, genre="Jazz")]
+    )
+    precedence["genres"] = ["Rock"]
+    precedence.store(inherit=False)
     return lib
 
 
@@ -1171,14 +1188,18 @@ def test_genre_pipeline_reads_beets_genres(tmp_path: Path) -> None:
     ``genre`` still "works" — it resolves through the FLEX path and answers
     ``None`` for every album in a real library — so the Browse genre facet read
     "Unknown" library-wide, every ``Album.genre`` on the wire was null, and the
-    edit panel showed the field empty. Four albums, one per case:
+    edit panel showed the field empty. Five albums, one per case:
 
-    * Single   — album ``genres`` ``['Rock']``.
-    * Multi    — album ``genres`` ``['Rock', 'Pop']``: the FACET is the primary
-      genre alone (one value per album, so counts still sum to the album total)
-      while the ``Album`` model carries beets' own ``"; "`` display join.
-    * Fallback — no album genres; track 1 has none, track 2 has two.
-    * Bare     — nothing anywhere: facet "Unknown", model ``None``.
+    * Single     — album ``genres`` ``['Rock']``.
+    * Multi      — album ``genres`` ``['Rock', 'Pop']``: the FACET is the
+      primary genre alone (one value per album, so counts still sum to the
+      album total) while the ``Album`` model carries beets' ``"; "`` join.
+    * Fallback   — no album genres; track 1 has none, track 2 has two.
+    * Bare       — nothing anywhere: facet "Unknown", model ``None``.
+    * Precedence — album ``['Rock']`` vs track ``['Jazz']``: the ALBUM wins.
+      This is the only fixture where the album read and the track fallback give
+      different answers, so it is the only one that can catch a regression that
+      drops the album read and silently rides the fallback.
     """
     from app.beets import browse as browse_mod
     from app.beets.edit import preview_album_edit
@@ -1190,8 +1211,8 @@ def test_genre_pipeline_reads_beets_genres(tmp_path: Path) -> None:
 
     # The facet buckets each album under ONE value: the primary genre.
     counts = {f.value: f.count for f in browse_facets(lib).genres}
-    assert counts == {"Rock": 2, "Jazz": 1, "Unknown": 1}
-    assert sum(counts.values()) == 4
+    assert counts == {"Rock": 3, "Jazz": 1, "Unknown": 1}
+    assert sum(counts.values()) == 5
 
     # The Album model carries the display join, and stays nullable.
     albums, _ = browse_albums(lib, genres=[], decades=[], formats=[], limit=50, offset=0)
@@ -1200,11 +1221,12 @@ def test_genre_pipeline_reads_beets_genres(tmp_path: Path) -> None:
         "Two": "Rock; Pop",
         "Three": "Jazz; Funk",
         "Four": None,
+        "Five": "Rock",  # the ALBUM's genres, NOT its track's 'Jazz'
     }
 
     # Filtering by the facet value finds the multi-genre album by its primary.
     filtered, _ = browse_albums(lib, genres=["Rock"], decades=[], formats=[], limit=50, offset=0)
-    assert {a.title for a in filtered} == {"One", "Two"}
+    assert {a.title for a in filtered} == {"One", "Two", "Five"}
 
     # Detail, the uncached mapper and the edit panel's read side all agree.
     by_title = {a.title: a.id for a in albums}
@@ -1213,6 +1235,8 @@ def test_genre_pipeline_reads_beets_genres(tmp_path: Path) -> None:
         ("Two", "Rock; Pop"),
         ("Three", "Jazz; Funk"),
         ("Four", None),
+        # Album beats track everywhere, not just on the Browse row.
+        ("Five", "Rock"),
     ):
         album_id = by_title[title]
         detail = get_album_detail(lib, album_id)

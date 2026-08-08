@@ -158,6 +158,35 @@ def test_genre_round_trips_through_beets_multi_valued_genres(edit_lib: Library) 
     assert again.changed_fields == []
 
 
+def test_clearing_genre_empties_the_field_and_reports_the_change(edit_lib: Library) -> None:
+    """An empty genre string CLEARS the genres, and says so in the diff.
+
+    ``None`` means "leave unchanged", so an empty string is the only way to
+    remove a genre. It has to reach the field as an empty LIST — not the string
+    "" stored as a one-element genre — and it must be reported as a change, or
+    the user presses Apply on a diff that claims nothing will happen.
+    """
+    from app.beets.edit import apply_album_edit, preview_album_edit
+
+    aid = _album_id(edit_lib)
+    req = AlbumEditRequest(album=AlbumFieldEdits(genre=""))
+
+    preview = preview_album_edit(edit_lib, album_id=aid, request=req, move_enabled=False)
+    assert preview.album_before.genre == "Alternative Rock"
+    assert preview.changed_fields == ["genre"]
+    assert preview.album_after.genre is None
+
+    result = apply_album_edit(edit_lib, album_id=aid, request=req, write=True, move=False)
+    assert result.write_failures == 0
+    assert result.album.genre is None
+
+    album = edit_lib.get_album(aid)
+    assert album is not None
+    assert list(album["genres"]) == []
+    for item in _items(edit_lib, aid):
+        assert list(item["genres"]) == []
+
+
 def test_apply_per_track_title_changes_only_that_track(edit_lib: Library) -> None:
     from app.beets.edit import apply_album_edit
 

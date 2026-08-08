@@ -174,11 +174,6 @@ def _genre_join(values: list[str]) -> str | None:
     return _GENRE_DISPLAY_DELIMITER.join(values) or None
 
 
-def _genre_display(value: object) -> str | None:
-    """A raw beets ``genres`` value as the display string. Read side, one call."""
-    return _genre_join(_genre_values(value))
-
-
 def _album_genre(album: BeetsAlbum, items: list[Any]) -> str | None:
     """Read album-level genres, falling back to the album's tracks.
 
