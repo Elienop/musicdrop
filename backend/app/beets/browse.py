@@ -154,16 +154,24 @@ _EMPTY_FACTS = _AlbumFacts(
     per_disc_tracktotal=0,
 )
 
-# ONE pass over every album's tracks, ordered so each album's rows arrive
-# contiguous and in play order. ``genre`` is NOT a column here: beets 2.13 moved
-# single-valued ``genre`` into ``item_attributes`` (the ``genres`` column holds
-# the multi-value form), so it is read as a flex attr below and matched back to
-# these rows by item id — which keeps THIS query the single source of track
-# order. ``lyrics`` IS a column, and can be NULL.
+# ONE pass over every album's tracks. ``genre`` is NOT a column here: beets 2.13
+# dropped single-valued ``genre`` from ``Item._fields`` in favour of the
+# multi-valued ``genres`` column, so `item.genre = x` now falls through to the
+# flex table like any unregistered field. (``MultiGenreFieldMigration`` does NOT
+# put it there — it only reads the LEGACY ``items.genre`` column and backfills
+# ``items.genres``.) So genre is read from ``item_attributes`` below and matched
+# back to these rows by item id, which keeps THIS query the single source of
+# track order. ``lyrics`` IS a column, and can be NULL.
 _ITEM_FACTS_SQL = """
     SELECT id, album_id, format, lyrics, disc, tracktotal
     FROM items
     WHERE album_id IS NOT NULL
+    -- album_id first so each album's rows arrive contiguous for groupby.
+    -- Then PLAY order, deliberately: the per-album album.items() build this
+    -- replaced inherited beets' user-configurable `sort_item` DISPLAY sort, so
+    -- an album's genre fallback / tied format vote / "first" tracktotal could
+    -- shift with a display preference. library._album_genre sorts by the same
+    -- key so every endpoint gives one answer per album.
     ORDER BY album_id, disc, track, id
 """
 

@@ -1094,3 +1094,37 @@ def test_item_order_is_play_order_not_the_display_sort(tmp_path: Path) -> None:
     browse_mod.invalidate_browse_cache()
     (row,) = browse_mod._rows(lib)
     assert row.genre_raw == "Jazz"  # track 1's genre, NOT the display sort's first
+
+
+def test_genre_fallback_agrees_across_every_endpoint(tmp_path: Path) -> None:
+    """ONE genre answer per album, whichever endpoint asks.
+
+    The Browse cache resolves the item-genre fallback from SQL in play order,
+    while ``get_album_detail`` / ``_to_album`` / the duplicates report resolve it
+    through ``_album_genre`` over ``list(album.items())`` — which beets returns
+    in ``sort_item`` DISPLAY order. On a compilation (tracks with different
+    artists) those two orders disagree, so the same album reported one genre on
+    the Browse grid and a different one on its own detail page. Pinned here
+    because the bug is invisible from inside either endpoint alone.
+    """
+    from app.beets import browse as browse_mod
+    from app.beets.library import _to_album, get_album_detail
+
+    lib = Library(str(tmp_path / "comp.db"), directory=str(tmp_path / "music"))
+    # Track 1 is 'Zed'/Jazz, track 2 is 'Abe'/Pop: the display sort puts Abe
+    # first, play order puts track 1 first.
+    lib.add_album(
+        [
+            _char_item(tmp_path, artist=artist, album="Comp", n=n, genre=genre)
+            for n, artist, genre in ((1, "Zed", "Jazz"), (2, "Abe", "Pop"))
+        ]
+    ).store()
+
+    browse_mod.invalidate_browse_cache()
+    (row,) = browse_mod._rows(lib)
+    detail = get_album_detail(lib, row.album_id)
+    assert detail is not None
+    album = lib.get_album(row.album_id)
+    assert album is not None
+
+    assert row.genre_raw == detail.genre == _to_album(album).genre == "Jazz"

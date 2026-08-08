@@ -114,16 +114,37 @@ def _coerce_year(value: object) -> int | None:
     return year or None
 
 
+def _play_order(item: Any) -> tuple[int, int, int]:
+    """Sort key putting an album's tracks in play order: ``(disc, track, id)``.
+
+    The order every genre fallback resolves in — see :func:`_album_genre`.
+    """
+    return (
+        _coerce_int(item.get("disc")),
+        _coerce_int(item.get("track")),
+        _coerce_int(item.get("id")),
+    )
+
+
 def _album_genre(album: BeetsAlbum, items: list[Any]) -> str | None:
     """Read album-level genre, falling back to the album's tracks.
 
     Heuristic: the first track with a non-empty genre wins (not a mode/majority
     vote). Items are passed in so we don't re-fetch them from the database.
+
+    The fallback resolves in PLAY order, not the order ``items`` happens to
+    arrive in. Callers pass ``list(album.items())``, which beets returns in the
+    user-configurable ``sort_item`` DISPLAY order (``artist+ album+ disc+
+    track+`` by default) — so on an album whose tracks carry different artists
+    the alphabetically-first artist's genre used to win, and the answer moved
+    with a display preference. ``app/beets/browse.py``'s cache reads the same
+    fallback straight from SQL in play order; sorting here is what keeps every
+    endpoint (Browse rows, album detail, duplicates) on ONE answer per album.
     """
     genre = _coerce_optional_str(album.get("genre"))
     if genre is not None:
         return genre
-    for item in items:
+    for item in sorted(items, key=_play_order):
         item_genre = _coerce_optional_str(item.get("genre"))
         if item_genre is not None:
             return item_genre
