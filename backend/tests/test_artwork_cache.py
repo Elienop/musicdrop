@@ -520,10 +520,13 @@ def test_a_dropped_positive_is_served_from_memory(cache: ArtistImageCache, tmp_p
 def test_a_recovered_cache_dir_takes_authority_back_from_memory(
     cache: ArtistImageCache, tmp_path: Path
 ) -> None:
-    """Fixing the permissions must be enough — no restart.
+    """Fixing the permissions must be enough — no restart — and the stand-in has
+    to be DROPPED, not merely out-voted.
 
-    The stand-in is dropped on the first write that succeeds, so a stale
-    in-memory entry can never shadow what is now on disk.
+    Reading disk first already means a live disk entry wins, so that alone
+    proves nothing about the discard. The seam is what happens once the disk
+    entry goes away again: without the drop, ``get`` falls through to a
+    months-old in-memory copy and resurrects an image the cache no longer has.
     """
     if os.getuid() == 0:
         pytest.skip("running as root: a read-only dir does not deny writes")
@@ -532,12 +535,14 @@ def test_a_recovered_cache_dir_takes_authority_back_from_memory(
         cache.store_positive("ABBA", b"from-memory", "image/png")
     finally:
         os.chmod(tmp_path, 0o755)
+
     cache.store_positive("ABBA", b"from-disk", "image/png")
-
     got = cache.get("ABBA")
-
     assert isinstance(got, CachedImage) and got.data == b"from-disk"
-    assert (tmp_path / next(p.name for p in tmp_path.glob("*.bin"))).read_bytes() == b"from-disk"
+
+    for stored in tmp_path.iterdir():
+        stored.unlink()
+    assert cache.get("ABBA") is None, "a stale stand-in must not outlive its disk entry"
 
 
 def test_the_memory_fallback_is_bounded_by_bytes(cache: ArtistImageCache, tmp_path: Path) -> None:
