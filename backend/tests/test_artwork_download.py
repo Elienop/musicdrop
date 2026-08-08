@@ -28,6 +28,38 @@ async def test_download_ok(client: httpx.AsyncClient) -> None:
 
 @pytest.mark.anyio
 @respx.mock
+@pytest.mark.parametrize(
+    "declared",
+    ["image/日本語".encode(), b"image/png\nX-Injected: yes"],
+    ids=["non-ascii", "response-splitting"],
+)
+async def test_download_refuses_to_store_an_unsendable_content_type(
+    client: httpx.AsyncClient, declared: bytes
+) -> None:
+    """The write end of the poisoned-slot hazard.
+
+    ``startswith("image/")`` passes both of these — httpx decodes non-ASCII
+    header BYTES as UTF-8 — and the value was then stored verbatim, so ONE
+    hostile or broken CDN response permanently poisoned that artist's cache slot
+    with something that 500s (non-ASCII) or drops the connection (newline) on
+    every later request. The image is still an image, so it is kept under the
+    generic type rather than benched as a failed download.
+
+    The header is declared as raw bytes because httpx's own Response constructor
+    ASCII-encodes a ``str`` value and would reject the hostile input outright —
+    which is not what a real socket does.
+    """
+    respx.get("https://img/x.jpg").mock(
+        return_value=httpx.Response(200, content=b"IMG", headers=[(b"content-type", declared)])
+    )
+
+    assert await download_image(client, "https://img/x.jpg") == ResolvedImage(
+        data=b"IMG", content_type="application/octet-stream"
+    )
+
+
+@pytest.mark.anyio
+@respx.mock
 async def test_download_non_image_is_transient(client: httpx.AsyncClient) -> None:
     respx.get("https://img/x").mock(
         return_value=httpx.Response(200, content=b"<html>", headers={"content-type": "text/html"})
