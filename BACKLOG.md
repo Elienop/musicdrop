@@ -119,18 +119,6 @@ next bulk import.)_
   the cover dep fix addressed); `cover_client` has a pre-existing beets_library state leak; no
   eviction of cover thumbs on album delete (parity with the artist cache is missing).
 - `AlreadyInLibrary` thumb URL has no test file.
-- The thumb degrade path is **entirely silent** — neither `cache.py`'s nor `cover_thumbs.py`'s
-  `except ThumbError` logs. Before `make_thumb`'s guard was widened to `except Exception`, a
-  systemic encoder failure (Pillow built without WebP, a format-plugin break) surfaced as a
-  500: loud and diagnosable. It now degrades every image to full-size forever with no signal,
-  which looks exactly like the perf feature never having been deployed. Fix is a log line at
-  the two catch sites, NOT a narrower `except` — the blanket guard is the right shape.
-- `ArtistImageCache._read_image` reads the `.mime` sidecar with `read_text(encoding="utf-8")`
-  unguarded, so a non-UTF-8 `.mime` still 500s the artist-image endpoint. This also means
-  `get_thumb`'s "beats a 500" promise is not airtight: its re-derive path calls `self.get()`,
-  so the `.thumb.src` self-heal can still be aborted by the sidecar next door. Two-line fix,
-  same shape as the `.src` widening (`except (OSError, ValueError)` + the
-  `application/octet-stream` fallback).
 - Pagination: numbered-window `aria-label="Page N"` vs. the visible "N" is a WCAG 2.5.3
   label-in-name partial mismatch; the icon-sm caret width is tight for 3-digit page numbers.
 - Pagination: the compact pager's busy state is no longer in the readout's accessible name
@@ -139,13 +127,6 @@ next bulk import.)_
   click-to-edit; there's a minor spinner style delta from the original design.
 - Artists A-Z index: the active-letter tint omits `SegmentedControl`'s `shadow-xs`; CJK/
   Cyrillic artist names fall into `#` (documented limitation, not a bug).
-- Browse cache rebuild: the whole `lyrics` `TEXT` column is pulled per rebuild (~25MB at 45k
-  tracks) only to test emptiness — the fix is to answer the emptiness question in SQL and
-  return a flag instead of the text. **Do NOT reach for the obvious `TRIM(lyrics) != ''`:**
-  SQLite's `TRIM` strips *spaces only*, while the Python side is `_coerce_str(lyrics).strip()`,
-  which strips all whitespace — so a lyrics value of `"\n"` would flip that track from Missing
-  to answered and silently move album lyrics buckets. Any SQL form must strip `\t\n\r`
-  explicitly (or trim against a character set) and be pinned by a whitespace-only-lyrics test.
 - Browse cache rebuild (rest): a transient wrong-row window exists when an album commits
   between the facts snapshot and the albums scan (self-healing via the generation bump);
   `_EMPTY_FACTS` and the format tie-break are untested; one single-implementation guard test's
