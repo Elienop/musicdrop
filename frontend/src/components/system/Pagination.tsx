@@ -154,12 +154,12 @@ export function Pagination({
           </>
         )}
       </span>
-      <span
-        className="hidden items-center gap-1 sm:flex"
-        aria-hidden={busy ? true : undefined}
-      >
+      <span className="hidden items-center gap-1 sm:flex">
         {busy ? (
-          <Spinner className="size-4 animate-spin" aria-hidden="true" />
+          <>
+            <Spinner className="size-4 animate-spin" aria-hidden="true" />
+            <span className="sr-only">Loading page&hellip;</span>
+          </>
         ) : (
           <>
             <span className="sr-only">

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -123,6 +123,40 @@ describe("Pagination", () => {
     expect(current).toHaveAttribute("aria-current", "page");
     await userEvent.click(screen.getByRole("button", { name: "Page 48" }));
     expect(onOffsetChange).toHaveBeenCalledWith(48 * 47);
+  });
+
+  it("full: the sm+ numbered window also announces loading for screen readers", () => {
+    const { container, rerender } = render(
+      <Pagination
+        total={48 * 48}
+        offset={48 * 29}
+        limit={48}
+        onOffsetChange={() => {}}
+      />,
+    );
+    // The numbered window (sm:flex) is distinct from the below-sm readout
+    // (sm:hidden) — scope into it specifically since jsdom renders both
+    // regardless of the Tailwind breakpoint classes.
+    const numberedWindow = container.querySelector(
+      "span.hidden.items-center.gap-1",
+    );
+    expect(numberedWindow).not.toBeNull();
+    expect(
+      within(numberedWindow as HTMLElement).queryByText("Loading page…"),
+    ).not.toBeInTheDocument();
+
+    rerender(
+      <Pagination
+        total={48 * 48}
+        offset={48 * 29}
+        limit={48}
+        onOffsetChange={() => {}}
+        busy
+      />,
+    );
+    expect(
+      within(numberedWindow as HTMLElement).getByText("Loading page…"),
+    ).toBeInTheDocument();
   });
 });
 
