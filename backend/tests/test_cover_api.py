@@ -28,11 +28,21 @@ def cover_client(edit_lib: Library, tmp_path: Path) -> Iterator[TestClient]:
     # TestClient(app) skips the lifespan, so app.state.cover_thumb_cache is
     # never built — wire a hermetic cache under its own tmp subdir (separate
     # from the library dir make_test_handle already carved out of tmp_path).
+    # Save/restore whatever was there before (mirrors conftest.py's `client`
+    # fixture) so this module-global `app` doesn't leak state into tests that
+    # never wire their own cache — get_cover_thumb_cache degrades gracefully on
+    # a missing attribute, but leaving a stale one set is still cross-test
+    # pollution other suites shouldn't have to route around.
+    prior_thumb_cache = getattr(app.state, "cover_thumb_cache", None)
     app.state.cover_thumb_cache = CoverThumbCache(tmp_path / "cover-thumbs")
     try:
         yield TestClient(app)
     finally:
         app.dependency_overrides.clear()
+        if prior_thumb_cache is None:
+            del app.state.cover_thumb_cache
+        else:
+            app.state.cover_thumb_cache = prior_thumb_cache
 
 
 def _aid(lib: Library) -> int:
@@ -126,6 +136,36 @@ def test_cover_size_thumb_serves_webp_and_304s(cover_client: TestClient, edit_li
         headers={"If-None-Match": thumb.headers["etag"]},
     )
     assert again.status_code == 304
+
+
+def test_cover_size_thumb_ignores_full_etag_on_if_none_match(
+    cover_client: TestClient, edit_lib: Library
+) -> None:
+    """A `size=thumb` request must validate against the THUMB tag only. The full
+    and thumb images are different entities (different bytes) sharing one URL
+    family — a client that still holds the FULL etag (e.g. it fetched size=full
+    before switching to thumbnails) must not get a bodiless 304 that claims the
+    thumb is unchanged; it has never even seen the thumb yet."""
+    aid = _aid(edit_lib)
+    cover_client.post(
+        f"/api/albums/{aid}/cover",
+        files={"file": ("cover.png", _png(1200, 1200), "image/png")},
+    )
+    full = cover_client.get(f"/api/albums/{aid}/cover")
+    full_etag = full.headers["etag"]
+
+    resp = cover_client.get(
+        f"/api/albums/{aid}/cover",
+        params={"size": "thumb"},
+        headers={"If-None-Match": full_etag},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/webp"
+    assert resp.headers["etag"] != full_etag
+    assert (
+        resp.content
+        == cover_client.get(f"/api/albums/{aid}/cover", params={"size": "thumb"}).content
+    )
 
 
 def test_cover_upload_read_is_size_bounded(
