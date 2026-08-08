@@ -660,6 +660,28 @@ def test_lyrics_facet_treats_whitespace_only_lyrics_as_missing(tmp_path: Path) -
     assert _lyrics_counts(lib) == {"Missing": 2}
 
 
+def test_lyrics_facet_counts_a_null_lyrics_column_as_missing(tmp_path: Path) -> None:
+    """NULL is a live state, not a theoretical one.
+
+    beets adds a newly-introduced fixed field with ``ALTER TABLE items ADD
+    COLUMN <name> TEXT`` and no DEFAULT (``dbcore/db.py`` ``_make_table``), so
+    every row predating the column reads NULL — beets' own migration guards on
+    ``WHERE lyrics IS NOT NULL AND lyrics != ''`` for exactly that reason. A
+    track beets writes TODAY stores ``''``, which is why no other test in this
+    file reaches this arm, and why the value is planted by raw SQL here.
+
+    Without ``WHEN lyrics IS NULL THEN 0`` the row falls to ELSE 1 (``typeof``
+    of NULL is 'null', not 'text'), and a whole migrated library flips Missing
+    -> Complete with nothing left to fetch.
+    """
+    lib = Library(str(tmp_path / "l.db"), directory=str(tmp_path / "m"))
+    _add(lib, tmp_path, artist="A", album="Migrated", tracks=1)
+    with lib.transaction() as tx:
+        tx.mutate("UPDATE items SET lyrics = NULL")
+
+    assert _lyrics_counts(lib) == {"Missing": 1}
+
+
 def test_lyrics_facet_keeps_a_non_text_lyrics_value_answered(tmp_path: Path) -> None:
     """Parity with the Python test the SQL replaced, not a verdict on BLOBs:
     ``_coerce_str`` is ``str(value)``, so a non-TEXT value stringifies to
