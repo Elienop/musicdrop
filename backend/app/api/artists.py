@@ -6,7 +6,12 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.api.albums import get_library
 from app.api.csrf import verify_upload_origin
-from app.api.http_cache import revalidating_image_response
+from app.api.http_cache import (
+    if_none_match_hit,
+    image_response,
+    not_modified,
+    revalidating_image_response,
+)
 from app.artist_art_jobs.registry import (
     ArtistArtBackfillRegistry,
     get_artist_art_backfill,
@@ -90,7 +95,17 @@ async def get_artist_image_endpoint(
     name: Annotated[str, Query(min_length=1)],
     service: Annotated[ArtistImageService, Depends(get_artist_image_service)],
     handle: Annotated[LibraryHandle, Depends(get_library)],
+    cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
 ) -> Response:
+    # Validate off a CHEAP stat-based ETag first: the roster revalidates every
+    # portrait on every paint (no ?v= buster, no max-age), and the old path
+    # re-read the cached bytes and re-hashed them just to answer a 304.
+    # cache.validator stats the winning slot (override > positive) instead, so
+    # an unchanged portrait answers 304 without touching the bytes at all.
+    validator = await run_in_threadpool(cache.validator, name)
+    if validator is not None and if_none_match_hit(request, validator):
+        return not_modified(validator)
+
     # Query param (not path) so "AC/DC" works. The MBID is resolved lazily — the
     # service only invokes get_mbid on a cache miss (fanart.tv is MBID-keyed).
     result = await service.get_artist_image(
@@ -102,10 +117,15 @@ async def get_artist_image_endpoint(
         raise HTTPException(status_code=404, detail="Artist image not found")
 
     image_bytes, mime = result
-    # Revalidate every time (no max-age) so a freshly-set override shows up
-    # immediately — no hard refresh, and correct even for consumers that don't
-    # pass the ?v= buster (the roster cards). See app.api.http_cache.
-    return revalidating_image_response(request, image_bytes, mime)
+    if validator is None:
+        # First serve after a fresh network resolve — the positive slot was just
+        # written, so a re-stat yields the tag the NEXT request will validate on.
+        validator = await run_in_threadpool(cache.validator, name)
+    if validator is not None:
+        return image_response(image_bytes, mime, validator)
+    # No file to stat (override raced away underneath us, etc.) — fall back to
+    # the content-hash ETag, computed OFF the event loop (sha256 of up to 10 MB).
+    return await run_in_threadpool(revalidating_image_response, request, image_bytes, mime)
 
 
 @router.get("/artists/image/settings", response_model=ArtistImageSettings)

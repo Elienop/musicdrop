@@ -1,6 +1,6 @@
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import httpx
 import pytest
@@ -9,7 +9,7 @@ from fastapi.concurrency import run_in_threadpool as _real_run_in_threadpool
 from fastapi.testclient import TestClient
 
 from app.api.albums import get_library
-from app.api.artists import get_artist_image_service
+from app.api.artists import get_artist_image_cache, get_artist_image_service
 from app.artwork.cache import ArtistImageCache
 from app.artwork.deezer import DeezerArtistImageSource
 from app.artwork.rate_limit import TokenBucketLimiter
@@ -37,9 +37,20 @@ class _StubHandle:
     lib = object()
 
 
+class _EmptyCache:
+    """Stub cache with nothing to stat. The byte-stub ``_StubService`` fixtures
+    below don't route through a real ``ArtistImageCache``, so this keeps their
+    validator lookup a clean miss — exercising the content-hash fallback path,
+    same as before the stat-based validator existed."""
+
+    def validator(self, name: str) -> str | None:
+        return None
+
+
 def _client_with(service: object) -> Iterator[TestClient]:
     app.dependency_overrides[get_artist_image_service] = lambda: service
     app.dependency_overrides[get_library] = lambda: _StubHandle()
+    app.dependency_overrides[get_artist_image_cache] = lambda: _EmptyCache()
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -52,6 +63,38 @@ def hit_client() -> Iterator[TestClient]:
 @pytest.fixture
 def miss_client() -> Iterator[TestClient]:
     yield from _client_with(_StubService(None))
+
+
+@pytest.fixture
+def artist_image_cache(tmp_path: Path) -> ArtistImageCache:
+    return ArtistImageCache(tmp_path)
+
+
+@pytest.fixture
+def client(artist_image_cache: ArtistImageCache) -> Iterator[TestClient]:
+    """A client wired to a REAL ArtistImageService + cache (not the byte-stub
+    fixtures above), so the stat-based validator has an actual file to stat."""
+
+    class _NoNetworkSource:
+        """These tests pre-populate the cache directly; a real resolve() call
+        would mean the endpoint skipped the cache — fail loudly instead."""
+
+        async def resolve(self, name: str, *, mbid: str | None) -> None:
+            raise AssertionError("resolve() should not run; the cache is pre-populated")
+
+    service = ArtistImageService(
+        source=_NoNetworkSource(),  # type: ignore[arg-type]  # stub implements only resolve()
+        cache=artist_image_cache,
+        limiter=TokenBucketLimiter(rate_per_sec=1000.0, max_concurrency=2),
+        is_enabled=lambda: True,
+        negative_ttl_seconds=3600,
+        transient_ttl_seconds=600,
+    )
+    app.dependency_overrides[get_artist_image_service] = lambda: service
+    app.dependency_overrides[get_artist_image_cache] = lambda: artist_image_cache
+    app.dependency_overrides[get_library] = lambda: _StubHandle()
+    yield TestClient(app)
+    app.dependency_overrides.clear()
 
 
 def test_hit_returns_image_bytes_and_media_type(hit_client: TestClient) -> None:
@@ -108,6 +151,70 @@ def test_stale_if_none_match_returns_fresh_bytes(hit_client: TestClient) -> None
     )
     assert resp.status_code == 200
     assert resp.content == b"JPEGBYTES"
+
+
+def test_conditional_get_304_without_reading_image(
+    client: TestClient, artist_image_cache: ArtistImageCache
+) -> None:
+    artist_image_cache.store_positive("ABBA", b"image-bytes", "image/png")
+    first = client.get("/api/artists/image", params={"name": "ABBA"})
+    assert first.status_code == 200
+    etag = first.headers["etag"]
+    # Prove the 304 path never opens the image: make read_bytes explode.
+    with patch.object(
+        Path, "read_bytes", side_effect=AssertionError("304 path must not read the image")
+    ):
+        second = client.get(
+            "/api/artists/image", params={"name": "ABBA"}, headers={"If-None-Match": etag}
+        )
+    assert second.status_code == 304
+    assert second.headers["etag"] == etag
+    assert second.content == b""
+
+
+def test_etag_changes_when_image_changes(
+    client: TestClient, artist_image_cache: ArtistImageCache
+) -> None:
+    artist_image_cache.store_positive("ABBA", b"old", "image/png")
+    etag = client.get("/api/artists/image", params={"name": "ABBA"}).headers["etag"]
+    artist_image_cache.store_positive("ABBA", b"new-and-longer", "image/png")
+    resp = client.get(
+        "/api/artists/image", params={"name": "ABBA"}, headers={"If-None-Match": etag}
+    )
+    assert resp.status_code == 200
+    assert resp.headers["etag"] != etag
+
+
+def test_hash_fallback_runs_off_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    # When there is nothing to stat (e.g. an override raced away underneath us),
+    # the endpoint falls back to revalidating_image_response's content hash —
+    # that hash must be offloaded, not run on the event loop.
+    import app.api.artists as artists_mod
+
+    class _NoValidatorCache:
+        def validator(self, name: str) -> str | None:
+            return None
+
+    real = _real_run_in_threadpool
+    spy = Mock(side_effect=lambda fn, *a, **k: real(fn, *a, **k))
+    monkeypatch.setattr(artists_mod, "run_in_threadpool", spy)
+
+    app.dependency_overrides[get_artist_image_service] = lambda: _StubService(
+        (b"JPEGBYTES", "image/jpeg")
+    )
+    app.dependency_overrides[get_library] = lambda: _StubHandle()
+    app.dependency_overrides[get_artist_image_cache] = lambda: _NoValidatorCache()
+    try:
+        resp = TestClient(app).get("/api/artists/image", params={"name": "ABBA"})
+        assert resp.status_code == 200
+        assert resp.headers["etag"]
+    finally:
+        app.dependency_overrides.clear()
+
+    from app.api.http_cache import revalidating_image_response
+
+    offloaded = [call.args[0] for call in spy.call_args_list]
+    assert revalidating_image_response in offloaded
 
 
 def test_slash_in_name_works_as_query_param(hit_client: TestClient) -> None:
@@ -251,6 +358,7 @@ def test_endpoint_passes_artist_mbid_to_service() -> None:
 
     app.dependency_overrides[get_artist_image_service] = lambda: _RecordingService()
     app.dependency_overrides[get_library] = lambda: _Handle()
+    app.dependency_overrides[get_artist_image_cache] = lambda: _EmptyCache()
     mp = pytest.MonkeyPatch()
     mp.setattr(library_mod, "get_artist_mbid", fake_get_artist_mbid)
     try:
