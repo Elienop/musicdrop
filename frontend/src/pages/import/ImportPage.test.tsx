@@ -281,6 +281,18 @@ describe("ImportPage — live feed", () => {
     expect(screen.getByText("Needs review")).toBeInTheDocument();
   });
 
+  test("feed row covers request the thumb, not the full-size original", async () => {
+    server.use(http.get(JOB_URL, () => HttpResponse.json(makeJob())));
+    renderAt("/import?job=job-1");
+
+    await screen.findByText("OK Computer");
+    // AlbumRow renders CoverArt at size-10 (40 CSS px) and the feed shows
+    // dozens of rows at once — the densest cover consumer in the app. A
+    // full-size original here is multi-hundred KB per row for nothing.
+    const cover = document.querySelector('img[data-slot="cover-art"]');
+    expect(cover?.getAttribute("src")).toBe("/api/albums/41/cover?size=thumb");
+  });
+
   test("pins the needs-review album to the top of the feed", async () => {
     server.use(http.get(JOB_URL, () => HttpResponse.json(makeJob())));
     renderAt("/import?job=job-1");

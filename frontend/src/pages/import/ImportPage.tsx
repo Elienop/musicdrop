@@ -548,8 +548,12 @@ function FeedRow({
   return (
     // Highlight stays with the caller (AlbumRow contract).
     <div className={cn((needsReview || needsDup) && "bg-primary/5")}>
+      {/* ?size=thumb: AlbumRow renders the cover at size-10 (40 CSS px) and
+          this feed shows dozens of rows at once — the densest cover consumer
+          in the app. CoverArt never appends a query of its own, so a literal
+          append is safe. */}
       <AlbumRow
-        cover={albumId !== null ? `/api/albums/${albumId}/cover` : null}
+        cover={albumId !== null ? `/api/albums/${albumId}/cover?size=thumb` : null}
         coverAssetKey={albumId !== null ? `album:${albumId}` : undefined}
         title={title}
         subtitle={album.artist ?? "Unknown artist"}

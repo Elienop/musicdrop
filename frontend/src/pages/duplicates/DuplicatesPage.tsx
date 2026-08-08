@@ -387,8 +387,11 @@ function MemberRow({
         aria-label={`Keep ${album.title} (${album.track_count} tracks)`}
       />
       <div className="min-w-0 flex-1">
+        {/* ?size=thumb: AlbumRow renders the cover at size-10 (40 CSS px), so
+            the 320px derivation already covers 2x DPI. CoverArt never appends
+            a query of its own, so a literal append is safe. */}
         <AlbumRow
-          cover={`/api/albums/${album.id}/cover`}
+          cover={`/api/albums/${album.id}/cover?size=thumb`}
           coverAssetKey={`album:${album.id}`}
           title={album.title}
           subtitle={album.album_artist}
