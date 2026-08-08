@@ -221,8 +221,11 @@ class ArtistImageCache:
             stored_tag, _, stored_mime = stored.partition(" ")
             if stored_tag == src_tag and stored_mime and thumb_path.exists():
                 return CachedImage(data=thumb_path.read_bytes(), content_type=stored_mime)
-        except OSError:
-            pass  # missing/corrupt sidecar — rederive below
+        except (OSError, ValueError):
+            # Missing/unreadable sidecar — rederive below. ValueError covers
+            # UnicodeDecodeError (a non-UTF-8 body): this cache self-heals, and
+            # the image endpoint has no guard that would keep that off the wire.
+            pass
         source = self.get(name)
         if not isinstance(source, CachedImage):
             return None
@@ -230,7 +233,10 @@ class ArtistImageCache:
             data = make_thumb(source.data)
             mime = THUMB_MIME
         except ThumbError:
-            data, mime = source.data, source.content_type
+            # Never store a blank mime: it round-trips through .thumb.src as a
+            # trailing space, reads back falsy, and the entry then re-derives on
+            # every single request. Same guard as CoverThumbCache.
+            data, mime = source.data, source.content_type or "application/octet-stream"
         self._ensure_dir()
         _atomic_write_bytes(thumb_path, data)
         _atomic_write_bytes(src_path, f"{src_tag} {mime}".encode())

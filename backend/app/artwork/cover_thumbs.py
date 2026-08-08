@@ -63,8 +63,12 @@ class CoverThumbCache:
             stored_tag, _, stored_mime = stored.partition(" ")
             if stored_tag == source_tag and stored_mime and bin_path.exists():
                 return CachedImage(data=bin_path.read_bytes(), content_type=stored_mime)
-        except OSError:
-            pass  # missing/corrupt sidecar — rederive below
+        except (OSError, ValueError):
+            # Missing/unreadable sidecar — rederive below. ValueError covers
+            # UnicodeDecodeError (a non-UTF-8 body): this cache is safe to
+            # delete entirely, so anything unreadable simply rebuilds rather
+            # than 500ing the cover endpoint.
+            pass
 
         original = load_original()
         if original is None:

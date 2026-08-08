@@ -275,3 +275,36 @@ def test_get_thumb_falls_back_to_original_on_undecodable_source(
         again = cache.get_thumb("ABBA")
     assert again is not None and again.data == b"corrupt-not-an-image"
     assert again.content_type == "image/png"
+
+
+def test_get_thumb_degrade_with_blank_mime_still_caches(cache: ArtistImageCache) -> None:
+    """A blank source mime must not disable the thumb cache forever.
+
+    A whitespace-only ``.mime`` sidecar reads back stripped to ``""``. Written
+    bare into ``.thumb.src`` that leaves a trailing space, so the next read's
+    ``stored_mime`` is falsy and the entry never hits — the thumb re-derives on
+    EVERY request. CoverThumbCache already falls back to
+    ``application/octet-stream`` here; the artist side must match.
+    """
+    cache.store_positive("ABBA", b"corrupt-not-an-image", "   ")
+    thumb = cache.get_thumb("ABBA")
+    assert thumb is not None and thumb.content_type == "application/octet-stream"
+    with unittest.mock.patch("app.artwork.cache.make_thumb", side_effect=AssertionError):
+        again = cache.get_thumb("ABBA")
+    assert again is not None and again.data == b"corrupt-not-an-image"
+
+
+def test_get_thumb_self_heals_from_corrupt_src_sidecar(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """A non-UTF-8 ``.thumb.src`` re-derives instead of 500ing the endpoint.
+
+    ``read_text`` raises UnicodeDecodeError, which ``except OSError`` does not
+    catch — and the image endpoint has no guard of its own.
+    """
+    cache.store_positive("ABBA", _png(400, 400), "image/png")
+    assert cache.get_thumb("ABBA") is not None
+    (src_path,) = tmp_path.glob("*.thumb.src")
+    src_path.write_bytes(b"\xff\xfe not utf-8")
+    healed = cache.get_thumb("ABBA")
+    assert healed is not None and healed.content_type == "image/webp"

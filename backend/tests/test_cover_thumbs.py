@@ -43,3 +43,17 @@ def test_missing_original_returns_none(tmp_path: Path) -> None:
 def test_undecodable_original_degrades_to_original_bytes(tmp_path: Path) -> None:
     got = CoverThumbCache(tmp_path).get(7, '"1-1"', lambda: (b"garbage", "image/png"))
     assert got is not None and got.data == b"garbage" and got.content_type == "image/png"
+
+
+def test_corrupt_src_sidecar_self_heals(tmp_path: Path) -> None:
+    """A non-UTF-8 ``.src`` re-derives instead of 500ing the cover endpoint.
+
+    ``read_text`` raises UnicodeDecodeError, which ``except OSError`` does not
+    catch — and this cache is documented as safe to delete entirely, so any
+    unreadable sidecar must simply rebuild.
+    """
+    cache = CoverThumbCache(tmp_path)
+    assert cache.get(7, '"1-1"', lambda: (_png(400, 400), "image/png")) is not None
+    (tmp_path / "7.src").write_bytes(b"\xff\xfe not utf-8")
+    healed = cache.get(7, '"1-1"', lambda: (_png(400, 400), "image/png"))
+    assert healed is not None and healed.content_type == "image/webp"
