@@ -1,7 +1,7 @@
 import io
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageOps
 
 from app.artwork.thumbs import THUMB_MAX_DIM, ThumbError, make_thumb
 
@@ -34,6 +34,39 @@ def test_alpha_survives() -> None:
 def test_undecodable_raises_thumberror() -> None:
     with pytest.raises(ThumbError):
         make_thumb(b"not an image at all")
+
+
+def test_decompression_bomb_raises_thumberror(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pixel bomb degrades like any other bad input.
+
+    Pillow's DecompressionBombError derives straight from Exception (NOT from
+    OSError/ValueError), so an enumerated except-tuple lets it escape past the
+    callers' degrade path and 500 the image endpoint. Lowering MAX_IMAGE_PIXELS
+    is how a bomb is reproduced without allocating one.
+    """
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 10)
+    with pytest.raises(ThumbError):
+        make_thumb(_png(100, 100))
+
+
+def test_no_exception_type_other_than_thumberror_escapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole pipeline — not just decode — is inside the guard.
+
+    exif_transpose/convert/thumbnail/save run on attacker-supplied pixels too,
+    so anything they raise must arrive at the caller as ThumbError; the caches
+    promise serve-or-degrade, never a 500.
+    """
+
+    def _boom(_image: Image.Image) -> Image.Image:
+        raise RuntimeError("pipeline blew up")
+
+    # thumbs.py holds the same PIL.ImageOps module object and resolves the
+    # attribute at call time, so patching it here reaches the call there.
+    monkeypatch.setattr(ImageOps, "exif_transpose", _boom)
+    with pytest.raises(ThumbError):
+        make_thumb(_png(400, 400))
 
 
 def test_thumb_is_smaller_than_a_real_photo_original() -> None:
