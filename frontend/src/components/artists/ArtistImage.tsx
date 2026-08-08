@@ -39,6 +39,7 @@ export function ArtistImage({
   monogramClassName = "text-2xl",
   decorative = false,
   version,
+  size = "full",
 }: {
   name: string;
   className?: string;
@@ -48,6 +49,11 @@ export function ArtistImage({
    * image with an unchanged src won't refetch on its own, even though the
    * endpoint now revalidates (ETag) instead of long-caching. */
   version?: number;
+  /** `"thumb"` requests the backend's 320px WebP derivation instead of the
+   * full-size original — for any render at grid/header scale, where a
+   * multi-hundred-KB original is wasted bytes. Default `"full"` (e.g. the
+   * edit-panel preview, which inspects the real asset). */
+  size?: "full" | "thumb";
 }) {
   const [failed, setFailed] = useState(false);
   // Scoped to THIS artist: a portrait saved for someone else in another tab
@@ -87,6 +93,7 @@ export function ArtistImage({
 
   const src =
     `/api/artists/image?name=${encodeURIComponent(name)}` +
+    (size === "thumb" ? "&size=thumb" : "") +
     (version !== undefined ? `&v=${version}` : "");
 
   return (

@@ -102,7 +102,9 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
   // ?v= forces the rail <img> to re-request after a cover install — a mounted
   // image with an unchanged src won't refetch even though /cover now revalidates
   // (ETag) instead of long-caching.
-  const coverSrc = `/api/albums/${album.id}/cover${coverVersion ? `?v=${coverVersion}` : ""}`;
+  const coverSrc =
+    `/api/albums/${album.id}/cover?size=thumb` +
+    (coverVersion ? `&v=${coverVersion}` : "");
 
   // Spec §4 disclosure pattern: opening an inline panel moves focus into it so
   // keyboard/SR users land on what just appeared. Closing from INSIDE the

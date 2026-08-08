@@ -52,6 +52,13 @@ describe("AlbumCard (borderless)", () => {
     ).toBeNull();
   });
 
+  test("cover request includes the thumb size variant", () => {
+    renderWithProviders(<AlbumCard album={ALBUM} />);
+
+    const img = screen.getByAltText("OK Computer cover");
+    expect(img).toHaveAttribute("src", "/api/albums/7/cover?size=thumb");
+  });
+
   test("info column: title, artist, one compact fact line", () => {
     renderWithProviders(<AlbumCard album={ALBUM} />);
 

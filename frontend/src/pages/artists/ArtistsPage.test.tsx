@@ -60,14 +60,14 @@ describe("ArtistsPage", () => {
     const poster = await screen.findByAltText("Radiohead portrait");
     expect(poster).toHaveAttribute(
       "src",
-      "/api/artists/image?name=Radiohead",
+      "/api/artists/image?name=Radiohead&size=thumb",
     );
     expect(poster).toHaveAttribute("loading", "lazy");
 
     // Encoded for non-ASCII names.
     expect(screen.getByAltText("Sigur Rós portrait")).toHaveAttribute(
       "src",
-      `/api/artists/image?name=${encodeURIComponent("Sigur Rós")}`,
+      `/api/artists/image?name=${encodeURIComponent("Sigur Rós")}&size=thumb`,
     );
   });
 

@@ -187,17 +187,23 @@ describe("existing-copy cover invalidation", () => {
     const { container } = render(
       <DuplicateComparison prompt={makePrompt()} incomingCoverUrl={null} />,
     );
-    const img = container.querySelector('img[src="/api/albums/1/cover"]');
+    const img = container.querySelector('img[src="/api/albums/1/cover?size=thumb"]');
     expect(img).not.toBeNull();
     fireEvent.error(img as HTMLImageElement);
-    expect(container.querySelector('img[src="/api/albums/1/cover"]')).toBeNull();
+    expect(
+      container.querySelector('img[src="/api/albums/1/cover?size=thumb"]'),
+    ).toBeNull();
 
     // Another album's cover changed — this panel must NOT remount.
     act(() => bumpAssetVersion("album:999"));
-    expect(container.querySelector('img[src="/api/albums/1/cover"]')).toBeNull();
+    expect(
+      container.querySelector('img[src="/api/albums/1/cover?size=thumb"]'),
+    ).toBeNull();
 
     // Its OWN album's cover changed — it must come back.
     act(() => bumpAssetVersion("album:1"));
-    expect(container.querySelector('img[src="/api/albums/1/cover"]')).not.toBeNull();
+    expect(
+      container.querySelector('img[src="/api/albums/1/cover?size=thumb"]'),
+    ).not.toBeNull();
   });
 });

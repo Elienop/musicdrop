@@ -117,7 +117,7 @@ describe("AlbumDetailPage", () => {
     // Header cover image points at the album's /cover endpoint. It's
     // decorative (alt="") since the <h2> already names the album, so it's
     // queried by src rather than alt text.
-    const cover = document.querySelector('img[src="/api/albums/1/cover"]');
+    const cover = document.querySelector('img[src="/api/albums/1/cover?size=thumb"]');
     expect(cover).not.toBeNull();
     expect(cover).toHaveAttribute("alt", "");
   });
@@ -576,7 +576,7 @@ describe("AlbumDetailPage", () => {
 
     // Exactly one cover img — the old hero's blurred backdrop layer is gone.
     expect(
-      document.querySelectorAll('img[src="/api/albums/1/cover"]'),
+      document.querySelectorAll('img[src="/api/albums/1/cover?size=thumb"]'),
     ).toHaveLength(1);
 
     // The eased fade overlay (shared with the artist rail) is decorative-only.

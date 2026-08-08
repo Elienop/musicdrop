@@ -105,6 +105,21 @@ describe("ArtistAlbumsPage", () => {
     expect(poster).toHaveAttribute("alt", "");
   });
 
+  test("rail poster requests the thumb variant", async () => {
+    server.use(http.get(ALBUMS_URL, () => HttpResponse.json(makePage())));
+
+    const { container } = renderAt("Radiohead");
+
+    await screen.findByRole("heading", { level: 1, name: "Radiohead" });
+    const poster = container.querySelector(
+      'img[src^="/api/artists/image?name=Radiohead"]',
+    );
+    expect(poster).toHaveAttribute(
+      "src",
+      expect.stringContaining("&size=thumb"),
+    );
+  });
+
   test("decodes a URL-encoded artist name from the route", async () => {
     let seenArtist: string | null = null;
     server.use(

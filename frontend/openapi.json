@@ -367,6 +367,20 @@
               "type": "integer",
               "title": "Album Id"
             }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "full",
+                "thumb"
+              ],
+              "type": "string",
+              "default": "full",
+              "title": "Size"
+            }
           }
         ],
         "responses": {
@@ -609,6 +623,20 @@
               "type": "string",
               "minLength": 1,
               "title": "Name"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "full",
+                "thumb"
+              ],
+              "type": "string",
+              "default": "full",
+              "title": "Size"
             }
           }
         ],

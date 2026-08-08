@@ -27,6 +27,7 @@ export function ArtistCard({ artist }: { artist: Artist }) {
           tint on hover. */}
       <ArtistImage
         name={displayName}
+        size="thumb"
         className="border-border size-32 shrink-0 rounded-lg border"
       />
       <div className="flex min-w-0 flex-col gap-1 text-left">

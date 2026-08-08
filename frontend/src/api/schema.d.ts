@@ -4646,7 +4646,9 @@ export interface operations {
     };
     get_album_cover_endpoint_api_albums__album_id__cover_get: {
         parameters: {
-            query?: never;
+            query?: {
+                size?: "full" | "thumb";
+            };
             header?: never;
             path: {
                 album_id: number;
@@ -4827,6 +4829,7 @@ export interface operations {
         parameters: {
             query: {
                 name: string;
+                size?: "full" | "thumb";
             };
             header?: never;
             path?: never;

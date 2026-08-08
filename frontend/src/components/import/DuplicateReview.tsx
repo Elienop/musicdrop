@@ -57,7 +57,7 @@ export function DuplicateComparison({
             id={`existing-${album.album_id}`}
             heading="Already in library"
             album={album}
-            coverUrl={`/api/albums/${album.album_id}/cover`}
+            coverUrl={`/api/albums/${album.album_id}/cover?size=thumb`}
             coverAssetKey={`album:${album.album_id}`}
           />
         ))}

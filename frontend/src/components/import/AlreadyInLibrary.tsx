@@ -31,7 +31,7 @@ export function AlreadyInLibrary({
               id={`upfront-${album.album_id}`}
               heading="Already in library"
               album={album}
-              coverUrl={`/api/albums/${album.album_id}/cover`}
+              coverUrl={`/api/albums/${album.album_id}/cover?size=thumb`}
               coverAssetKey={`album:${album.album_id}`}
             />
             {album.tracks.length > 0 && <ExistingTracklist tracks={album.tracks} />}

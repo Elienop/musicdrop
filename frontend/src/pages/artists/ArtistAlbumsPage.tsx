@@ -124,6 +124,7 @@ export function ArtistAlbumsPage() {
               name={displayName}
               decorative
               version={imageVersion}
+              size="thumb"
               className="aspect-square w-full"
               monogramClassName="text-8xl"
             />
