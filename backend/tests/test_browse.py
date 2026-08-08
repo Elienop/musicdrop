@@ -1065,3 +1065,32 @@ def test_rebuild_issues_no_per_album_items_queries(
 
     assert calls == []  # the aggregate build never calls album.items()
     assert sum(v.count for v in facets.genres) == 4  # and it really built all four rows
+
+
+def test_item_order_is_play_order_not_the_display_sort(tmp_path: Path) -> None:
+    """DELIBERATE CHANGE from the per-album ``album.items()`` build.
+
+    ``album.items()`` returns tracks in beets' ``sort_item`` DISPLAY order
+    (``artist+ album+ disc+ track+`` by default), so on a compilation — tracks
+    with different artists — the alphabetically-first artist came first, not
+    track 1. The order-sensitive facts (genre fallback, a tied format vote,
+    which disc's ``tracktotal`` is "first") therefore moved with a user's
+    display-sort preference. The aggregate build reads ``(disc, track, id)``
+    instead, so a compilation's facets are stable play order.
+
+    Here artist 'Zed' holds track 1 and 'Abe' holds track 2: the old build read
+    genre 'Pop' (Abe's, sorted first), this one reads 'Jazz' (track 1's).
+    """
+    from app.beets import browse as browse_mod
+
+    lib = Library(str(tmp_path / "comp.db"), directory=str(tmp_path / "music"))
+    lib.add_album(
+        [
+            _char_item(tmp_path, artist=artist, album="Comp", n=n, genre=genre)
+            for n, artist, genre in ((1, "Zed", "Jazz"), (2, "Abe", "Pop"))
+        ]
+    ).store()
+
+    browse_mod.invalidate_browse_cache()
+    (row,) = browse_mod._rows(lib)
+    assert row.genre_raw == "Jazz"  # track 1's genre, NOT the display sort's first
