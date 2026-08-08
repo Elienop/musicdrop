@@ -19,7 +19,7 @@ from beets.library import Item, Library
 from fastapi.testclient import TestClient
 
 from app.api.albums import get_library
-from app.beets.browse import BrowseRow, browse_albums, browse_facets
+from app.beets.browse import _PYTHON_WHITESPACE, BrowseRow, browse_albums, browse_facets
 from app.events.broker import EventBroker
 from app.events.emit import emit_library_changed
 from app.main import app
@@ -42,6 +42,7 @@ def _add(
     country: str | None = None,
     original_year: int | None = None,
     lyrics_on: int = 0,
+    lyrics_text: str = "la la la",
     instrumental_tracks: set[int] | None = None,
     not_instrumental_tracks: set[int] | None = None,
     added: float | None = None,
@@ -59,7 +60,7 @@ def _add(
         if fmt is not None:
             it.format = fmt
         if i <= lyrics_on:
-            it.lyrics = "la la la"
+            it.lyrics = lyrics_text
         if instrumental_tracks and i in instrumental_tracks:
             it["lyrics_instrumental"] = 1
         if not_instrumental_tracks and i in not_instrumental_tracks:
@@ -640,6 +641,54 @@ def test_lyrics_facet_still_partial_when_only_some_tracks_are_answered(tmp_path:
     _add(lib, tmp_path, artist="A", album="Three", tracks=3, lyrics_on=1, instrumental_tracks={2})
 
     assert _lyrics_counts(lib) == {"Partial": 1}
+
+
+def test_lyrics_facet_treats_whitespace_only_lyrics_as_missing(tmp_path: Path) -> None:
+    """Whitespace-only lyrics are no lyrics — the emptiness answer moved into SQL
+    and has to keep matching Python's ``str.strip()``.
+
+    Neither value contains a space, deliberately: SQLite's one-argument ``TRIM``
+    strips spaces ONLY, so a spaces-only value passes under the wrong
+    implementation too and would leave the trap unpinned. The second album
+    carries NBSP + ideographic space, which pins the bound character set beyond
+    the ASCII three.
+    """
+    lib = Library(str(tmp_path / "l.db"), directory=str(tmp_path / "m"))
+    _add(lib, tmp_path, artist="A", album="Blank", tracks=1, lyrics_on=1, lyrics_text="\n\t")
+    _add(lib, tmp_path, artist="B", album="Exotic", tracks=1, lyrics_on=1, lyrics_text="\xa0\u3000")
+
+    assert _lyrics_counts(lib) == {"Missing": 2}
+
+
+def test_lyrics_facet_keeps_a_non_text_lyrics_value_answered(tmp_path: Path) -> None:
+    """Parity with the Python test the SQL replaced, not a verdict on BLOBs:
+    ``_coerce_str`` is ``str(value)``, so a non-TEXT value stringifies to
+    something TRUTHY (``b""`` -> ``"b''"``) and counted as answered.
+
+    The ``typeof(lyrics) = 'text'`` arm is what keeps that true — drop it and
+    SQLite coerces the BLOB to text, trims it to empty, and the album silently
+    moves to Missing.
+    """
+    lib = Library(str(tmp_path / "l.db"), directory=str(tmp_path / "m"))
+    _add(lib, tmp_path, artist="A", album="Blob", tracks=1)
+    with lib.transaction() as tx:
+        tx.mutate("UPDATE items SET lyrics = ?", (b"",))
+
+    assert _lyrics_counts(lib) == {"Complete": 1}
+
+
+def test_stored_whitespace_constant_matches_python() -> None:
+    """The hardcoded ``TRIM`` argument must stay exactly what ``str.strip()``
+    removes.
+
+    Derived here by scanning every codepoint rather than at import time (that
+    scan costs ~1.1M iterations), so a future Python that adds a whitespace
+    character fails loudly here instead of silently moving one album between
+    lyrics buckets. ``str.isspace()`` yields the identical set.
+    """
+    assert _PYTHON_WHITESPACE == "".join(
+        chr(code) for code in range(0x110000) if chr(code).strip() == ""
+    )
 
 
 def test_backfill_instrumental_write_invalidates_the_browse_cache(tmp_path: Path) -> None:

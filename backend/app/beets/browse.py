@@ -20,7 +20,7 @@ import threading
 from collections import Counter
 from itertools import groupby
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import Final, Literal, NamedTuple
 
 from beets import config
 from beets.library import Album as BeetsAlbum
@@ -158,16 +158,53 @@ _EMPTY_FACTS = _AlbumFacts(
     per_disc_tracktotal=0,
 )
 
+# Every character Python's ``str.strip()`` removes — the argument for SQLite's
+# two-argument ``TRIM(X, Y)``, which strips any character appearing in ``Y`` and
+# is UTF-8 aware, so the whole set travels as one bound parameter. Hardcoded
+# rather than derived: recomputing it means testing ~1.1M codepoints at import.
+# ``test_stored_whitespace_constant_matches_python`` re-derives it and asserts
+# equality, so a future Python that adds a whitespace character fails loudly
+# instead of silently mis-bucketing one album.
+_PYTHON_WHITESPACE: Final[str] = (
+    "\t\n\x0b\x0c\r\x1c\x1d\x1e\x1f \x85\xa0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007"
+    "\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+)
+
 # ONE pass over every album's tracks. ``genres`` is a real COLUMN in beets 2.13
 # (single-valued ``genre`` was dropped from ``Item._fields``, so reading it now
 # falls through to the flex table and answers nothing), which is why it is
 # selected here rather than fetched from ``item_attributes`` — one fewer full
 # scan of that table, and this query stays the single source of track order.
 # Raw column values arrive as the delimiter-joined string beets stores, and are
-# split by ``library._genre_values`` using beets' own field type. ``lyrics`` IS
-# a column too, and can be NULL.
+# split by ``library._genre_values`` using beets' own field type.
+#
+# ``lyrics`` is a column too, but the only question ever asked of it here is
+# WHETHER the track has any — so the answer is computed in SQL and the text
+# never crosses the boundary (~25 MB of strings decoded into Python objects and
+# thrown away per rebuild at 45k tracks, and a rebuild follows every mutation).
+#
+# Do NOT "simplify" this to ``TRIM(lyrics) != ''``. One-argument TRIM strips
+# SPACES ONLY, while the Python test it replaces was ``_coerce_str(lyrics)
+# .strip()``, which strips all 29 characters Python calls whitespace: a lyrics
+# value of "\n" would flip from Missing to answered and move its album between
+# lyrics buckets with the whole suite still green. The ``typeof`` arm is
+# load-bearing for the same reason in the other direction — ``_coerce_str`` is
+# ``str(value)``, so a non-TEXT value stringifies to something truthy (an
+# INTEGER 0 reads as "0") and has to stay answered.
 _ITEM_FACTS_SQL = """
-    SELECT id, album_id, format, lyrics, disc, tracktotal, genres
+    SELECT
+        id,
+        album_id,
+        format,
+        CASE
+            WHEN lyrics IS NULL THEN 0
+            WHEN typeof(lyrics) = 'text' AND TRIM(lyrics, ?) = '' THEN 0
+            ELSE 1
+        END AS has_lyrics,
+        disc,
+        tracktotal,
+        genres
     FROM items
     WHERE album_id IS NOT NULL
     -- album_id first so each album's rows arrive contiguous for groupby.
@@ -200,7 +237,7 @@ def _collect_facts(lib: Library) -> dict[int, _AlbumFacts]:
     with the user's display-sort preference.
     """
     with lib.transaction() as tx:
-        item_rows = tx.query(_ITEM_FACTS_SQL)
+        item_rows = tx.query(_ITEM_FACTS_SQL, (_PYTHON_WHITESPACE,))
         instrumental_rows = tx.query(_FLEX_SQL, ("lyrics_instrumental",))
 
     # Value-tested, never presence-tested: beets writes the flag as FALSE (which
@@ -220,7 +257,7 @@ def _collect_facts(lib: Library) -> dict[int, _AlbumFacts]:
         first_tracktotal = 0
         per_disc_tracktotal = 0
         seen_discs: set[int] = set()
-        for raw_id, _album_id, fmt, lyrics, disc, tracktotal, raw_genres in rows:
+        for raw_id, _album_id, fmt, has_lyrics, disc, tracktotal, raw_genres in rows:
             item_id = _coerce_int(raw_id)
             track_count += 1
             if (value := _coerce_optional_str(fmt)) is not None:
@@ -230,7 +267,9 @@ def _collect_facts(lib: Library) -> dict[int, _AlbumFacts]:
             # A track is ANSWERED when it carries lyrics or beets flagged it
             # instrumental: an instrumental has no lyrics BY NATURE, so counting
             # it as missing left albums stuck at Partial with nothing to fetch.
-            if _coerce_str(lyrics).strip() or item_id in instrumental:
+            # ``has_lyrics`` is SQL's 0/1 answer to the first half — see
+            # _ITEM_FACTS_SQL for why the text itself never comes back.
+            if _coerce_int(has_lyrics) or item_id in instrumental:
                 answered += 1
             total = _coerce_int(tracktotal)
             if track_count == 1:
