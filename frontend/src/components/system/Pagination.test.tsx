@@ -257,6 +257,45 @@ describe("Pagination compact variant", () => {
     await userEvent.click(screen.getByRole("button", { name: "Last page" }));
     expect(onOffsetChange).toHaveBeenCalledWith(432);
   });
+
+  it("compact: readout edits into a page jump", async () => {
+    const onOffsetChange = vi.fn();
+    render(
+      <Pagination
+        compact
+        total={48 * 48}
+        offset={48}
+        limit={48}
+        onOffsetChange={onOffsetChange}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
+    const input = screen.getByRole("spinbutton", { name: /go to page/i });
+    await userEvent.clear(input);
+    await userEvent.type(input, "30{Enter}");
+    expect(onOffsetChange).toHaveBeenCalledWith(48 * 29);
+  });
+
+  it("compact: out-of-range commits clamp, Escape reverts", async () => {
+    const onOffsetChange = vi.fn();
+    render(
+      <Pagination
+        compact
+        total={48 * 48}
+        offset={48}
+        limit={48}
+        onOffsetChange={onOffsetChange}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
+    const input = screen.getByRole("spinbutton", { name: /go to page/i });
+    await userEvent.clear(input);
+    await userEvent.type(input, "999{Enter}");
+    expect(onOffsetChange).toHaveBeenCalledWith(48 * 47); // clamped to last page
+    await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+  });
 });
 
 describe("PageSizeSelect", () => {

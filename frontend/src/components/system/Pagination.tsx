@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import {
   Back,
   Expand,
@@ -53,6 +55,7 @@ export function Pagination({
   const page = Math.min(totalPages, Math.floor(offset / limit) + 1);
   const canPrev = offset > 0;
   const canNext = offset + limit < total;
+  const [editing, setEditing] = useState(false);
 
   const go = (next: number) => {
     if (busy) return; // in flight — keep focus, swallow the re-click
@@ -86,22 +89,52 @@ export function Pagination({
         >
           <Back aria-hidden="true" />
         </Button>
-        <span className="text-muted-foreground min-w-12 text-center text-sm tabular-nums">
-          {busy ? (
-            <>
-              <Spinner
-                className="inline size-4 animate-spin"
-                aria-hidden="true"
-              />
-              <span className="sr-only">Loading page&hellip;</span>
-            </>
-          ) : (
-            <>
-              <span className="sr-only">Page </span>
-              {page} / {totalPages}
-            </>
-          )}
-        </span>
+        {busy ? (
+          <span className="text-muted-foreground min-w-12 text-center text-sm tabular-nums">
+            <Spinner
+              className="inline size-4 animate-spin"
+              aria-hidden="true"
+            />
+            <span className="sr-only">Loading page&hellip;</span>
+          </span>
+        ) : editing ? (
+          <input
+            type="number"
+            min={1}
+            max={totalPages}
+            defaultValue={page}
+            autoFocus
+            aria-label={`Go to page (1–${totalPages})`}
+            className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-14 rounded-md border px-1 text-center text-sm tabular-nums shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
+            onFocus={(e) => e.currentTarget.select()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                const n = Number((e.target as HTMLInputElement).value);
+                setEditing(false);
+                if (Number.isFinite(n) && n >= 1)
+                  go(
+                    (Math.min(totalPages, Math.max(1, Math.round(n))) - 1) *
+                      limit,
+                  );
+              } else if (e.key === "Escape") {
+                setEditing(false);
+              }
+            }}
+            onBlur={() => setEditing(false)}
+          />
+        ) : (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="min-w-12 tabular-nums"
+            aria-label={`Go to page (1–${totalPages})`}
+            onClick={() => setEditing(true)}
+          >
+            <span className="sr-only">Page </span>
+            {page} / {totalPages}
+          </Button>
+        )}
         <Button
           type="button"
           variant="outline"
