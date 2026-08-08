@@ -17,7 +17,7 @@ async function fetchStats(): Promise<LibraryStatsResponse> {
  * These families are invalidated by SSE the moment the library actually
  * changes (and on SSE reconnect), so the clock is not their freshness
  * signal; five minutes only bounds staleness if the event stream is silently
- * broken (e.g. a proxy buffering SSE). See useArtists for the same rationale.
+ * broken (e.g. a proxy buffering SSE).
  */
 export function useStats() {
   return useQuery({
