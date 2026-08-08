@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 import time
 from collections.abc import Iterator
@@ -8,8 +9,10 @@ from pathlib import Path
 import pytest
 from beets.library import Library
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app.api.albums import get_library
+from app.artwork.cover_thumbs import CoverThumbCache
 from app.beets.library import _require_id
 from app.main import app
 from tests.conftest import make_test_handle
@@ -22,6 +25,10 @@ def cover_client(edit_lib: Library, tmp_path: Path) -> Iterator[TestClient]:
     handle = make_test_handle(edit_lib, tmp_path)
     app.dependency_overrides[get_library] = lambda: handle
     app.state.beets_library = handle
+    # TestClient(app) skips the lifespan, so app.state.cover_thumb_cache is
+    # never built — wire a hermetic cache under its own tmp subdir (separate
+    # from the library dir make_test_handle already carved out of tmp_path).
+    app.state.cover_thumb_cache = CoverThumbCache(tmp_path / "cover-thumbs")
     try:
         yield TestClient(app)
     finally:
@@ -30,6 +37,12 @@ def cover_client(edit_lib: Library, tmp_path: Path) -> Iterator[TestClient]:
 
 def _aid(lib: Library) -> int:
     return _require_id(next(iter(lib.albums())).id)
+
+
+def _png(width: int, height: int, color: str = "red") -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), color).save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def test_upload_install_sets_cover(cover_client: TestClient, edit_lib: Library) -> None:
@@ -93,6 +106,26 @@ def test_cover_stale_etag_after_change_returns_200(
     resp = cover_client.get(f"/api/albums/{aid}/cover", headers={"If-None-Match": etag1})
     assert resp.status_code == 200  # stale tag, not a false 304
     assert resp.headers["etag"] != etag1
+
+
+def test_cover_size_thumb_serves_webp_and_304s(cover_client: TestClient, edit_lib: Library) -> None:
+    aid = _aid(edit_lib)
+    cover_client.post(
+        f"/api/albums/{aid}/cover",
+        files={"file": ("cover.png", _png(1200, 1200), "image/png")},
+    )
+    full = cover_client.get(f"/api/albums/{aid}/cover")
+    thumb = cover_client.get(f"/api/albums/{aid}/cover", params={"size": "thumb"})
+    assert thumb.status_code == 200
+    assert thumb.headers["content-type"] == "image/webp"
+    assert len(thumb.content) < len(full.content)
+    assert thumb.headers["etag"] != full.headers["etag"]
+    again = cover_client.get(
+        f"/api/albums/{aid}/cover",
+        params={"size": "thumb"},
+        headers={"If-None-Match": thumb.headers["etag"]},
+    )
+    assert again.status_code == 304
 
 
 def test_cover_upload_read_is_size_bounded(

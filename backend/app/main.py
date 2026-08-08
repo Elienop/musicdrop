@@ -28,6 +28,7 @@ from app.api.slskd import router as slskd_router
 from app.api.stats import router as stats_router
 from app.api.trash import router as trash_router
 from app.artwork.cache import ArtistImageCache
+from app.artwork.cover_thumbs import CoverThumbCache
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
@@ -35,7 +36,7 @@ from app.bank.store import reconcile_interrupted
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
 from app.body_limit import BodySizeLimitMiddleware
-from app.config import resolve_artist_image_cache_dir, settings
+from app.config import resolve_artist_image_cache_dir, resolve_cover_thumb_cache_dir, settings
 from app.static_files import mount_static
 from app.wire import SurrogateSafeJSONResponse, install_wire_safety
 
@@ -168,6 +169,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # the SAME instances the service uses. The cache dir is created lazily on
     # first write, so no startup mkdir.
     cache = ArtistImageCache(resolve_artist_image_cache_dir())
+    # Derived album-cover thumbnails — a separate on-disk cache (the cover
+    # ITSELF isn't cached here; that's beets' library, not this cache's job).
+    # Dir is created lazily on first write, same as the artist-image cache.
+    app.state.cover_thumb_cache = CoverThumbCache(resolve_cover_thumb_cache_dir())
     toggle = ArtistImageToggle(
         resolve_artist_image_cache_dir() / "_enabled.json", default=settings.artist_images_enabled
     )

@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -10,6 +10,7 @@ from app.api.http_cache import (
     not_modified,
     revalidating_image_response,
 )
+from app.artwork.cover_thumbs import CoverThumbCache
 from app.beets.completeness import missing_report_op
 from app.beets.cover import fetch_cover_op, install_cover_op
 from app.beets.delete import delete_album_op
@@ -46,6 +47,12 @@ def get_library(request: Request) -> LibraryHandle:
     """
     handle: LibraryHandle = request.app.state.beets_library
     return handle
+
+
+def get_cover_thumb_cache(request: Request) -> CoverThumbCache:
+    """The process-wide cover-thumb disk cache, built in the app lifespan."""
+    cache: CoverThumbCache = request.app.state.cover_thumb_cache
+    return cache
 
 
 @router.get("/albums", response_model=AlbumPage)
@@ -111,6 +118,8 @@ async def get_album_cover_endpoint(
     album_id: int,
     request: Request,
     handle: Annotated[LibraryHandle, Depends(get_library)],
+    thumb_cache: Annotated[CoverThumbCache, Depends(get_cover_thumb_cache)],
+    size: Annotated[Literal["full", "thumb"], Query()] = "full",
 ) -> Response:
     lib = handle.lib
     # Validate off a CHEAP stat-based ETag first: the album grid revalidates every
@@ -122,6 +131,22 @@ async def get_album_cover_endpoint(
     if validator is not None and if_none_match_hit(request, validator):
         return not_modified(validator)
 
+    if size == "thumb" and validator is not None:
+        # The thumb is a DIFFERENT entity than the full image (distinct bytes), so
+        # it needs its own ETag under the same URL family — splice a "-t" marker
+        # inside the closing quote so the tag stays one opaque quoted string (see
+        # the artist-image endpoint's identical scheme).
+        thumb_etag = f'{validator[:-1]}-t"'
+        if if_none_match_hit(request, thumb_etag):
+            return not_modified(thumb_etag)
+        thumb = await run_in_threadpool(
+            thumb_cache.get, album_id, validator, lambda: get_album_cover(lib, album_id)
+        )
+        if thumb is None:
+            raise HTTPException(status_code=404, detail="Cover not found")
+        return image_response(thumb.data, thumb.content_type, thumb_etag)
+
+    # size == "full" OR no stat validator (odd source / a race): existing flow.
     cover = await run_in_threadpool(get_album_cover, lib, album_id)
     if cover is None:
         raise HTTPException(status_code=404, detail="Cover not found")
