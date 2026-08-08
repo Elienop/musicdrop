@@ -27,17 +27,31 @@ export interface BrowseFilters {
 /** Album ordering for the browse grid. */
 export type BrowseSort = "artist" | "added";
 
-/** Poll the facet values (cached — absolute counts rarely change between visits). */
+/**
+ * Poll the facet values (cached — absolute counts rarely change between visits).
+ *
+ * These families are invalidated by SSE the moment the library actually
+ * changes (and on SSE reconnect), so the clock is not their freshness
+ * signal; five minutes only bounds staleness if the event stream is silently
+ * broken (e.g. a proxy buffering SSE). See useStats for the same rationale.
+ */
 export function useBrowseFacets() {
   return useQuery<BrowseFacets>({
     queryKey: ["browse", "facets"],
     queryFn: async () =>
       unwrap(await client.GET("/api/browse/facets"), "Failed to load facets"),
-    staleTime: 60_000,
+    staleTime: 5 * 60_000,
   });
 }
 
-/** The filtered, paginated album page for the current filters + sort + offset. */
+/**
+ * The filtered, paginated album page for the current filters + sort + offset.
+ *
+ * These families are invalidated by SSE the moment the library actually
+ * changes (and on SSE reconnect), so the clock is not their freshness
+ * signal; five minutes only bounds staleness if the event stream is silently
+ * broken (e.g. a proxy buffering SSE). See useStats for the same rationale.
+ */
 export function useBrowseAlbums(
   filters: BrowseFilters,
   sort: BrowseSort,
@@ -70,5 +84,6 @@ export function useBrowseAlbums(
       ),
     // Keep the current grid visible while a filter toggle refetches.
     placeholderData: (prev) => prev,
+    staleTime: 5 * 60_000,
   });
 }
