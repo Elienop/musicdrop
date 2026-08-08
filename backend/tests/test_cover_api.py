@@ -138,6 +138,38 @@ def test_cover_size_thumb_serves_webp_and_304s(cover_client: TestClient, edit_li
     assert again.status_code == 304
 
 
+@pytest.mark.parametrize(
+    "poison",
+    ["image/日本語", "image/png\nX-Injected: yes", ""],
+    ids=["non-ascii", "response-splitting", "empty"],
+)
+def test_full_cover_never_serves_an_unsendable_content_type(
+    cover_client: TestClient, edit_lib: Library, monkeypatch: pytest.MonkeyPatch, poison: str
+) -> None:
+    """The full-size cover mime comes from the MEDIA FILE, not a cache sidecar —
+    the one content-type sink that reached ``image_response`` unguarded.
+
+    Not reachable today (the artpath extension map is fixed, and mediafile
+    re-derives an embedded picture's type from its magic bytes), so this is
+    defence in depth — but ``is_header_safe_content_type``'s docstring claims to
+    enumerate every sink, and that claim is only true with this guard in place.
+    A non-ASCII value 500s here; a newline produces NO RESPONSE AT ALL on a real
+    server, which TestClient cannot show.
+    """
+    import app.api.albums as albums_mod
+
+    aid = _aid(edit_lib)
+    _install(cover_client, aid)
+    monkeypatch.setattr(
+        albums_mod, "get_album_cover", lambda lib, album_id: (PNG.read_bytes(), poison)
+    )
+
+    resp = cover_client.get(f"/api/albums/{aid}/cover")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/octet-stream"
+
+
 def test_cover_size_thumb_ignores_full_etag_on_if_none_match(
     cover_client: TestClient, edit_lib: Library
 ) -> None:

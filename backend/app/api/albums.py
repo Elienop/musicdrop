@@ -11,6 +11,7 @@ from app.api.http_cache import (
     revalidating_image_response,
 )
 from app.artwork.cover_thumbs import CoverThumbCache
+from app.artwork.images import FALLBACK_CONTENT_TYPE, is_header_safe_content_type
 from app.beets.completeness import missing_report_op
 from app.beets.cover import fetch_cover_op, install_cover_op
 from app.beets.delete import delete_album_op
@@ -165,6 +166,16 @@ async def get_album_cover_endpoint(
     if cover is None:
         raise HTTPException(status_code=404, detail="Cover not found")
     image_bytes, mime = cover
+    # The last unguarded content-type sink. This mime comes from the MEDIA FILE
+    # (artpath extension, or an embedded picture's declared MIME) rather than a
+    # cache sidecar, and today neither can produce an unsendable value — the
+    # extension map is fixed, and mediafile re-derives an embedded picture's
+    # type from its magic bytes. Defence in depth, then: a value that cannot be
+    # a header 500s this endpoint (non-ASCII) or drops the connection with no
+    # response at all (embedded newline), and the predicate's docstring claims
+    # to enumerate every sink — which is only true if this one is covered.
+    if not is_header_safe_content_type(mime):
+        mime = FALLBACK_CONTENT_TYPE
     if validator is not None:
         return image_response(image_bytes, mime, validator)
     # No stat validator (odd source / a race): fall back to the content-hash ETag.
