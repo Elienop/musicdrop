@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
@@ -96,6 +96,7 @@ async def get_artist_image_endpoint(
     service: Annotated[ArtistImageService, Depends(get_artist_image_service)],
     handle: Annotated[LibraryHandle, Depends(get_library)],
     cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
+    size: Annotated[Literal["full", "thumb"], Query()] = "full",
 ) -> Response:
     # Validate off a CHEAP stat-based ETag first: the roster revalidates every
     # portrait on every paint (no ?v= buster, no max-age), and the old path
@@ -103,11 +104,42 @@ async def get_artist_image_endpoint(
     # cache.validator stats the winning slot (override > positive) instead, so
     # an unchanged portrait answers 304 without touching the bytes at all.
     validator = await run_in_threadpool(cache.validator, name)
-    if validator is not None and if_none_match_hit(request, validator):
-        return not_modified(validator)
+    # The thumb is a DIFFERENT entity than the full image (distinct bytes), so
+    # it needs its own ETag under the same URL family — splice a "-t" marker
+    # inside the closing quote so the tag stays one opaque quoted string. A
+    # shared tag would let a cache/proxy serve a thumb response for a full
+    # request (or vice versa) on a matching If-None-Match.
+    etag = validator if size == "full" else (f'{validator[:-1]}-t"' if validator else None)
+    if etag is not None and if_none_match_hit(request, etag):
+        return not_modified(etag)
 
-    # Query param (not path) so "AC/DC" works. The MBID is resolved lazily — the
-    # service only invokes get_mbid on a cache miss (fanart.tv is MBID-keyed).
+    if size == "thumb":
+        thumb = await run_in_threadpool(cache.get_thumb, name)
+        if thumb is None:
+            # Nothing cached yet — resolve (network) once, then derive from it.
+            resolved = await service.get_artist_image(
+                name, get_mbid=lambda: beets_library.get_artist_mbid(handle.lib, name)
+            )
+            if resolved is None:
+                raise HTTPException(status_code=404, detail="Artist image not found")
+            thumb = await run_in_threadpool(cache.get_thumb, name)
+            if thumb is None:
+                # Override raced away underneath us, etc. — serve what we just
+                # resolved rather than 404 after a successful resolve.
+                data, mime = resolved
+                return await run_in_threadpool(revalidating_image_response, request, data, mime)
+            validator = await run_in_threadpool(cache.validator, name)
+            etag = f'{validator[:-1]}-t"' if validator else None
+        if etag is not None:
+            return image_response(thumb.data, thumb.content_type, etag)
+        # No file to stat — fall back to the content-hash ETag, off-loop.
+        return await run_in_threadpool(
+            revalidating_image_response, request, thumb.data, thumb.content_type
+        )
+
+    # size == "full": query param (not path) so "AC/DC" works. The MBID is
+    # resolved lazily — the service only invokes get_mbid on a cache miss
+    # (fanart.tv is MBID-keyed).
     result = await service.get_artist_image(
         name, get_mbid=lambda: beets_library.get_artist_mbid(handle.lib, name)
     )

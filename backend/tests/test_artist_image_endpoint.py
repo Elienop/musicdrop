@@ -1,3 +1,4 @@
+import io
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -7,6 +8,7 @@ import pytest
 import respx
 from fastapi.concurrency import run_in_threadpool as _real_run_in_threadpool
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app.api.albums import get_library
 from app.api.artists import get_artist_image_cache, get_artist_image_service
@@ -45,6 +47,12 @@ class _EmptyCache:
 
     def validator(self, name: str) -> str | None:
         return None
+
+
+def _png(width: int, height: int, color: str = "red") -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), color).save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def _client_with(service: object) -> Iterator[TestClient]:
@@ -334,6 +342,73 @@ def test_service_offloads_blocking_work_to_threadpool(
     offloaded = [call.args[0] for call in spy.call_args_list]
     assert cache.get in offloaded  # the cache disk read
     assert get_mbid in offloaded  # the beets mbid query
+
+
+def test_size_thumb_serves_webp_with_its_own_etag(
+    client: TestClient, artist_image_cache: ArtistImageCache
+) -> None:
+    artist_image_cache.store_positive("ABBA", _png(1000, 1000), "image/png")
+    full = client.get("/api/artists/image", params={"name": "ABBA"})
+    thumb = client.get("/api/artists/image", params={"name": "ABBA", "size": "thumb"})
+    assert thumb.status_code == 200
+    assert thumb.headers["content-type"] == "image/webp"
+    assert len(thumb.content) < len(full.content)
+    assert thumb.headers["etag"] != full.headers["etag"]
+    # Conditional GET on the thumb tag 304s.
+    again = client.get(
+        "/api/artists/image",
+        params={"name": "ABBA", "size": "thumb"},
+        headers={"If-None-Match": thumb.headers["etag"]},
+    )
+    assert again.status_code == 304
+
+
+def test_size_thumb_resolves_and_derives_when_uncached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Nothing cached yet: size=thumb must resolve (network) once, then derive
+    # and serve the thumb — not 404 just because get_thumb() started as None.
+    from app.artwork.rate_limit import TokenBucketLimiter
+    from app.artwork.service import ArtistImageService
+    from app.artwork.source import ResolvedImage
+    from app.beets import library as library_mod
+
+    class _StubSource:
+        async def resolve(self, name: str, *, mbid: str | None) -> ResolvedImage:
+            return ResolvedImage(data=_png(1000, 1000), content_type="image/png")
+
+    cache = ArtistImageCache(tmp_path)
+    service = ArtistImageService(
+        source=_StubSource(),  # type: ignore[arg-type]  # stub implements only resolve()
+        cache=cache,
+        limiter=TokenBucketLimiter(rate_per_sec=1000.0, max_concurrency=2),
+        is_enabled=lambda: True,
+        negative_ttl_seconds=3600,
+        transient_ttl_seconds=600,
+    )
+    monkeypatch.setattr(library_mod, "get_artist_mbid", lambda lib, name: None)
+    app.dependency_overrides[get_artist_image_service] = lambda: service
+    app.dependency_overrides[get_artist_image_cache] = lambda: cache
+    app.dependency_overrides[get_library] = lambda: _StubHandle()
+    try:
+        resp = TestClient(app).get("/api/artists/image", params={"name": "ABBA", "size": "thumb"})
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/webp"
+        assert Image.open(io.BytesIO(resp.content)).size == (320, 320)
+        assert resp.headers["etag"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_size_defaults_to_full(hit_client: TestClient) -> None:
+    resp = hit_client.get("/api/artists/image", params={"name": "ABBA"})
+    assert resp.status_code == 200
+    assert resp.content == b"JPEGBYTES"
+
+
+def test_invalid_size_is_422(hit_client: TestClient) -> None:
+    resp = hit_client.get("/api/artists/image", params={"name": "ABBA", "size": "huge"})
+    assert resp.status_code == 422
 
 
 def test_endpoint_passes_artist_mbid_to_service() -> None:

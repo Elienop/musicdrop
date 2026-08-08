@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import os
+import unittest.mock
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from app.artwork.cache import NEGATIVE, ArtistImageCache, CachedImage
 
 _StrPath = str | os.PathLike[str]
+
+
+def _png(width: int, height: int, color: str = "red") -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), color).save(buf, format="PNG")
+    return buf.getvalue()
 
 
 @pytest.fixture
@@ -226,3 +235,43 @@ def test_validator_prefers_override(cache: ArtistImageCache) -> None:
     assert override_tag != auto_tag
     cache.clear_override("ABBA")
     assert cache.validator("ABBA") == auto_tag
+
+
+def test_get_thumb_derives_and_reuses(cache: ArtistImageCache) -> None:
+    cache.store_positive("ABBA", _png(1000, 1000), "image/png")
+    thumb = cache.get_thumb("ABBA")
+    assert thumb is not None and thumb.content_type == "image/webp"
+    assert Image.open(io.BytesIO(thumb.data)).size == (320, 320)
+    # Second call serves the stored derivation (no re-encode): patching
+    # make_thumb to explode proves it isn't called again.
+    with unittest.mock.patch("app.artwork.cache.make_thumb", side_effect=AssertionError):
+        again = cache.get_thumb("ABBA")
+    assert again is not None and again.data == thumb.data
+
+
+def test_get_thumb_regenerates_when_source_changes(cache: ArtistImageCache) -> None:
+    cache.store_positive("ABBA", _png(1000, 1000, "red"), "image/png")
+    first = cache.get_thumb("ABBA")
+    cache.write_override("ABBA", _png(900, 900, "blue"), "image/png")
+    second = cache.get_thumb("ABBA")
+    assert second is not None and first is not None and second.data != first.data
+
+
+def test_get_thumb_none_when_uncached(cache: ArtistImageCache) -> None:
+    assert cache.get_thumb("Nobody") is None
+
+
+def test_get_thumb_falls_back_to_original_on_undecodable_source(
+    cache: ArtistImageCache,
+) -> None:
+    cache.store_positive("ABBA", b"corrupt-not-an-image", "image/png")
+    thumb = cache.get_thumb("ABBA")
+    # Serve-or-degrade: a source Pillow can't read serves the original bytes.
+    assert thumb is not None and thumb.data == b"corrupt-not-an-image"
+    assert thumb.content_type == "image/png"
+    # The degrade result is cached too (keyed to the source tag) — a second
+    # call must not attempt make_thumb again either.
+    with unittest.mock.patch("app.artwork.cache.make_thumb", side_effect=AssertionError):
+        again = cache.get_thumb("ABBA")
+    assert again is not None and again.data == b"corrupt-not-an-image"
+    assert again.content_type == "image/png"

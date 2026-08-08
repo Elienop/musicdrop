@@ -7,6 +7,9 @@ Layout (under the configured cache dir), keyed by ``sha1(normalized_name)``::
     <key>.bin           auto-fetched image bytes   — positive slot
     <key>.mime          content-type of the positive image
     <key>.miss          negative marker; body is an absolute expiry timestamp
+    <key>.thumb.bin      derived 320px WebP of the winning slot (or, degraded,
+                         a verbatim copy of the source bytes — see get_thumb)
+    <key>.thumb.src      "<source validator> <content-type of .thumb.bin>"
 
 Pure filesystem; no network. The mime is stored in a sidecar text file so the
 binary slot stays a plain image (cheap to ``sendfile`` later).
@@ -28,6 +31,7 @@ from pathlib import Path
 from typing import Final
 
 from app.artwork.normalize import normalize_artist_name
+from app.artwork.thumbs import THUMB_MIME, ThumbError, make_thumb
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -199,3 +203,35 @@ class ArtistImageCache:
             if path.exists():
                 return _stat_tag(path)
         return None
+
+    def get_thumb(self, name: str) -> CachedImage | None:
+        """The 320px WebP derivation of what get() would serve, deriving (and
+        caching) it if the stored one is missing or was built from different
+        source bytes. None when no source image is cached (the caller resolves
+        first, then retries). An undecodable source degrades to the original
+        bytes — a grid that shows SOME image beats a 500."""
+        src_tag = self.validator(name)
+        if src_tag is None:
+            return None
+        key = self._key(name)
+        thumb_path = self._dir / f"{key}.thumb.bin"
+        src_path = self._dir / f"{key}.thumb.src"
+        try:
+            stored = src_path.read_text(encoding="utf-8")
+            stored_tag, _, stored_mime = stored.partition(" ")
+            if stored_tag == src_tag and stored_mime and thumb_path.exists():
+                return CachedImage(data=thumb_path.read_bytes(), content_type=stored_mime)
+        except OSError:
+            pass  # missing/corrupt sidecar — rederive below
+        source = self.get(name)
+        if not isinstance(source, CachedImage):
+            return None
+        try:
+            data = make_thumb(source.data)
+            mime = THUMB_MIME
+        except ThumbError:
+            data, mime = source.data, source.content_type
+        self._ensure_dir()
+        _atomic_write_bytes(thumb_path, data)
+        _atomic_write_bytes(src_path, f"{src_tag} {mime}".encode())
+        return CachedImage(data=data, content_type=mime)
