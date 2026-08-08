@@ -78,6 +78,17 @@ class _Negative:
 NEGATIVE: Final[_Negative] = _Negative()
 
 
+def _stat_tag(path: Path) -> str | None:
+    """A strong ETag from mtime_ns+size — no read. None if the file vanished
+    (stat races the backfill daemon's atomic replace; the caller just serves
+    the full body with a content-hash fallback)."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return f'"{st.st_mtime_ns}-{st.st_size}"'
+
+
 class ArtistImageCache:
     def __init__(self, cache_dir: Path | str) -> None:
         self._dir = Path(cache_dir)
@@ -174,3 +185,17 @@ class ArtistImageCache:
             else "application/octet-stream"
         )
         return CachedImage(data=data, content_type=content_type)
+
+    def validator(self, name: str) -> str | None:
+        """Cheap revalidation tag for the image get() would serve: the override
+        slot when present, else the positive slot. None when neither exists (miss
+        or negative — the caller falls through to the resolve path). Same
+        stat-based scheme as the album cover's cover_validator: any writer
+        replaces the file (atomic rename bumps mtime), so a stale tag can never
+        yield a false 304."""
+        key = self._key(name)
+        for slot in (f"{key}.override", f"{key}.bin"):
+            path = self._dir / slot
+            if path.exists():
+                return _stat_tag(path)
+        return None

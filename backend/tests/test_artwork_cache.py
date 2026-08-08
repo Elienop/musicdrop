@@ -202,3 +202,27 @@ def test_write_override_publishes_via_atomic_replace(
     assert isinstance(result, CachedImage)
     assert result.data == b"SECOND"
     assert result.content_type == "image/jpeg"
+
+
+def test_validator_none_when_uncached(cache: ArtistImageCache) -> None:
+    assert cache.validator("ABBA") is None
+
+
+def test_validator_tracks_positive_slot(cache: ArtistImageCache) -> None:
+    cache.store_positive("ABBA", b"png-bytes", "image/png")
+    tag = cache.validator("ABBA")
+    assert tag is not None and tag.startswith('"') and tag.endswith('"')
+    # Unchanged file -> same tag; rewritten file -> different tag.
+    assert cache.validator("ABBA") == tag
+    cache.store_positive("ABBA", b"other-bytes-longer", "image/png")
+    assert cache.validator("ABBA") != tag
+
+
+def test_validator_prefers_override(cache: ArtistImageCache) -> None:
+    cache.store_positive("ABBA", b"auto", "image/png")
+    auto_tag = cache.validator("ABBA")
+    cache.write_override("ABBA", b"manual-bytes", "image/jpeg")
+    override_tag = cache.validator("ABBA")
+    assert override_tag != auto_tag
+    cache.clear_override("ABBA")
+    assert cache.validator("ABBA") == auto_tag
