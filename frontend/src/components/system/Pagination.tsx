@@ -1,5 +1,13 @@
-import { Back, Expand, Forward, Spinner } from "@/components/icons";
+import {
+  Back,
+  Expand,
+  Forward,
+  SkipBack,
+  SkipForward,
+  Spinner,
+} from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { pageWindow } from "@/lib/pageWindow";
 
 /** The default library page size — surfaces without a size selector use it. */
 export const PAGE_SIZE = 48;
@@ -63,6 +71,16 @@ export function Pagination({
           variant="outline"
           size="icon-sm"
           disabled={!canPrev}
+          aria-label="First page"
+          onClick={() => go(0)}
+        >
+          <SkipBack aria-hidden="true" />
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon-sm"
+          disabled={!canPrev}
           aria-label="Previous page"
           onClick={() => go(Math.max(0, offset - limit))}
         >
@@ -94,6 +112,16 @@ export function Pagination({
         >
           <Forward aria-hidden="true" />
         </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon-sm"
+          disabled={!canNext}
+          aria-label="Last page"
+          onClick={() => go((totalPages - 1) * limit)}
+        >
+          <SkipForward aria-hidden="true" />
+        </Button>
       </nav>
     );
   }
@@ -114,7 +142,7 @@ export function Pagination({
         <Back aria-hidden="true" />
         Previous
       </Button>
-      <span className="text-muted-foreground flex items-center gap-2 text-sm tabular-nums">
+      <span className="text-muted-foreground flex items-center gap-2 text-sm tabular-nums sm:hidden">
         {busy ? (
           <>
             <Spinner className="size-4 animate-spin" aria-hidden="true" />
@@ -123,6 +151,47 @@ export function Pagination({
         ) : (
           <>
             Page {page} of {totalPages}
+          </>
+        )}
+      </span>
+      <span
+        className="hidden items-center gap-1 sm:flex"
+        aria-hidden={busy ? true : undefined}
+      >
+        {busy ? (
+          <Spinner className="size-4 animate-spin" aria-hidden="true" />
+        ) : (
+          <>
+            <span className="sr-only">
+              <span>Page </span>
+              <span>{page}</span>
+              <span> of </span>
+              <span>{totalPages}</span>
+            </span>
+            {pageWindow(page, totalPages).map((entry, i) =>
+              entry === "gap" ? (
+                <span
+                  key={`gap-${i}`}
+                  aria-hidden="true"
+                  className="text-muted-foreground px-1"
+                >
+                  &hellip;
+                </span>
+              ) : (
+                <Button
+                  key={entry}
+                  type="button"
+                  size="icon-sm"
+                  variant={entry === page ? "secondary" : "ghost"}
+                  aria-label={`Page ${entry}`}
+                  aria-current={entry === page ? "page" : undefined}
+                  className="tabular-nums"
+                  onClick={() => go((entry - 1) * limit)}
+                >
+                  {entry}
+                </Button>
+              ),
+            )}
           </>
         )}
       </span>

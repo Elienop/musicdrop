@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -107,6 +108,22 @@ describe("Pagination", () => {
     );
     expect(screen.getByRole("button", { name: "Next" })).toHaveFocus();
   });
+
+  it("full: numbered window navigates and marks the current page", async () => {
+    const onOffsetChange = vi.fn();
+    render(
+      <Pagination
+        total={48 * 48}
+        offset={48 * 29}
+        limit={48}
+        onOffsetChange={onOffsetChange}
+      />,
+    );
+    const current = screen.getByRole("button", { name: "Page 30" });
+    expect(current).toHaveAttribute("aria-current", "page");
+    await userEvent.click(screen.getByRole("button", { name: "Page 48" }));
+    expect(onOffsetChange).toHaveBeenCalledWith(48 * 47);
+  });
 });
 
 describe("Pagination compact variant", () => {
@@ -188,6 +205,23 @@ describe("Pagination compact variant", () => {
     expect(next).toBeEnabled();
     fireEvent.click(next);
     expect(onOffsetChange).not.toHaveBeenCalled();
+  });
+
+  it("compact: first/last jump to the bounds", async () => {
+    const onOffsetChange = vi.fn();
+    render(
+      <Pagination
+        compact
+        total={480}
+        offset={96}
+        limit={48}
+        onOffsetChange={onOffsetChange}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "First page" }));
+    expect(onOffsetChange).toHaveBeenCalledWith(0);
+    await userEvent.click(screen.getByRole("button", { name: "Last page" }));
+    expect(onOffsetChange).toHaveBeenCalledWith(432);
   });
 });
 
