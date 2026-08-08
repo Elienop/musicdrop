@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -8,6 +9,25 @@ import {
   PageSizeSelect,
   Pagination,
 } from "@/components/system/Pagination";
+
+/** Mimics a real caller (BrowsePage) whose onOffsetChange synchronously
+ * flips `busy` true in the same state update that applies the new offset —
+ * TanStack Query's isFetching flips true the instant a new query key is
+ * requested, batched with the offset change React processes for the
+ * commit. */
+function BusyOnCommitHarness() {
+  const [state, setState] = useState({ offset: 48, busy: false });
+  return (
+    <Pagination
+      compact
+      total={48 * 48}
+      offset={state.offset}
+      limit={48}
+      busy={state.busy}
+      onOffsetChange={(o) => setState({ offset: o, busy: true })}
+    />
+  );
+}
 
 describe("Pagination", () => {
   it("exports the one library page size", () => {
@@ -298,6 +318,35 @@ describe("Pagination compact variant", () => {
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /go to page/i })).toHaveFocus();
+  });
+
+  it("compact: Enter-commit that flips busy synchronously (like isFetching) still refocuses the readout", async () => {
+    render(<BusyOnCommitHarness />);
+    await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
+    const input = screen.getByRole("spinbutton", { name: /go to page/i });
+    await userEvent.clear(input);
+    await userEvent.type(input, "30{Enter}");
+    // The readout stays mounted (as the busy spinner) rather than being
+    // replaced by a separate element, so the deferred refocus has a live
+    // node to land on.
+    const readout = screen.getByRole("button", { name: /go to page/i });
+    expect(readout).toBeInTheDocument();
+    await waitFor(() => expect(document.activeElement).toBe(readout));
+  });
+
+  it("compact: clicking the readout while busy does not open the input", async () => {
+    render(<BusyOnCommitHarness />);
+    await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
+    const input = screen.getByRole("spinbutton", { name: /go to page/i });
+    await userEvent.clear(input);
+    await userEvent.type(input, "30{Enter}");
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /go to page/i }),
+      ).toHaveFocus(),
+    );
+    await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
   });
 });
 

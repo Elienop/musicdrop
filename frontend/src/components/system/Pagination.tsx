@@ -128,15 +128,7 @@ export function Pagination({
         >
           <Back aria-hidden="true" />
         </Button>
-        {busy ? (
-          <span className="text-muted-foreground min-w-12 text-center text-sm tabular-nums">
-            <Spinner
-              className="inline size-4 animate-spin"
-              aria-hidden="true"
-            />
-            <span className="sr-only">Loading page&hellip;</span>
-          </span>
-        ) : editing ? (
+        {editing ? (
           <input
             type="number"
             min={1}
@@ -162,6 +154,13 @@ export function Pagination({
             onBlur={() => setEditing(false)}
           />
         ) : (
+          // Mounted in BOTH busy and idle states — only its CONTENT swaps.
+          // A caller's onOffsetChange can flip `busy` true synchronously in
+          // the same render that closes `editing` (e.g. BrowsePage's
+          // isFetching, set inside the same state update as the new
+          // offset), so this can never be the thing that disappears on
+          // commit: goToPageRef needs a live node across that transition
+          // for the deferred refocus effect above to land on.
           <Button
             ref={goToPageRef}
             type="button"
@@ -169,10 +168,24 @@ export function Pagination({
             size="sm"
             className="min-w-12 tabular-nums"
             aria-label={`Go to page (1–${totalPages})`}
-            onClick={() => setEditing(true)}
+            onClick={() => {
+              if (!busy) setEditing(true); // no-op re-click while in flight
+            }}
           >
-            <span className="sr-only">Page </span>
-            {page} / {totalPages}
+            {busy ? (
+              <>
+                <Spinner
+                  className="size-4 animate-spin"
+                  aria-hidden="true"
+                />
+                <span className="sr-only">Loading page&hellip;</span>
+              </>
+            ) : (
+              <>
+                <span className="sr-only">Page </span>
+                {page} / {totalPages}
+              </>
+            )}
           </Button>
         )}
         <Button
