@@ -19,6 +19,7 @@ from beets.library import Album as BeetsAlbum
 from beets.library import Library
 from mediafile import MediaFile
 
+from app.artwork.normalize import normalize_artist_name
 from app.beets.release_identity import release_identity
 from app.models.album import Album, AlbumDetail, Track
 from app.models.artist import Artist
@@ -255,7 +256,13 @@ def list_artists(lib: Library) -> list[Artist]:
     shared ``BrowseRow`` cache (ONE scan, invalidated on every
     ``emit_library_changed``) rather than a fresh ``lib.albums()`` materialization
     — the roster is rebuilt on every debounced search keystroke, and the cache
-    already holds ``albumartist`` per album. Sorted by name (case-insensitive).
+    already holds ``albumartist`` per album. Sorted diacritic-insensitively
+    (``normalize_artist_name``: NFKD accent-fold + casefold), so e.g. "Édith
+    Piaf" lands in the "E" run rather than after "Z" — plain ``casefold()``
+    breaks ties for determinism when two names normalize identically. The
+    frontend A-Z jump strip (``AlphabetIndex``) buckets on this same
+    diacritic-folded first letter, so its buckets stay contiguous runs of
+    this order.
     """
     # Lazy import: browse.py imports helpers from this module at import time, so a
     # top-level import back would cycle (mirrors list_albums).
@@ -270,7 +277,7 @@ def list_artists(lib: Library) -> list[Artist]:
             continue
         counts[name] = counts.get(name, 0) + 1
     artists = [Artist(name=name, album_count=count) for name, count in counts.items()]
-    artists.sort(key=lambda a: a.name.casefold())
+    artists.sort(key=lambda a: (normalize_artist_name(a.name), a.name.casefold()))
     return artists
 
 
