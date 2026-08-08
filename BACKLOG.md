@@ -114,14 +114,23 @@ next bulk import.)_
 - `.thumb.src`/`.thumb.bin` pair is not atomic as a unit (a `clear_override` tag-revisit
   corner); served-tag vs. served-bytes TOCTOU is inherited from the cover cache class (fix:
   `get_thumb` should return its src_tag, which also drops a stat); the 304-path + off-loop
-  constraints are unpinned by tests; an empty-mime sidecar plus an undecodable source causes a
-  re-derive loop (suggest `mime or "application/octet-stream"`).
+  constraints are unpinned by tests.
 - `get_artist_image_cache`'s sibling has no lazy fallback (same latent isolated-run fragility
   the cover dep fix addressed); `cover_client` has a pre-existing beets_library state leak; no
-  eviction of cover thumbs on album delete (parity with the artist cache is missing); both
-  siblings' `.src` read only catches `OSError`, missing `UnicodeDecodeError`.
-- `AlreadyInLibrary` thumb URL has no test file; `ArtistImage.tsx:33`'s "160px header"
-  docblock is stale (pre-existing misconception, predates the full-size hero fix).
+  eviction of cover thumbs on album delete (parity with the artist cache is missing).
+- `AlreadyInLibrary` thumb URL has no test file.
+- The thumb degrade path is **entirely silent** — neither `cache.py`'s nor `cover_thumbs.py`'s
+  `except ThumbError` logs. Before `make_thumb`'s guard was widened to `except Exception`, a
+  systemic encoder failure (Pillow built without WebP, a format-plugin break) surfaced as a
+  500: loud and diagnosable. It now degrades every image to full-size forever with no signal,
+  which looks exactly like the perf feature never having been deployed. Fix is a log line at
+  the two catch sites, NOT a narrower `except` — the blanket guard is the right shape.
+- `ArtistImageCache._read_image` reads the `.mime` sidecar with `read_text(encoding="utf-8")`
+  unguarded, so a non-UTF-8 `.mime` still 500s the artist-image endpoint. This also means
+  `get_thumb`'s "beats a 500" promise is not airtight: its re-derive path calls `self.get()`,
+  so the `.thumb.src` self-heal can still be aborted by the sidecar next door. Two-line fix,
+  same shape as the `.src` widening (`except (OSError, ValueError)` + the
+  `application/octet-stream` fallback).
 - Pagination: numbered-window `aria-label="Page N"` vs. the visible "N" is a WCAG 2.5.3
   label-in-name partial mismatch; the icon-sm caret width is tight for 3-digit page numbers.
 - Pagination: the compact pager's busy state is no longer in the readout's accessible name

@@ -1,11 +1,23 @@
 """Derived-thumbnail engine: full-size art in, small WebP out.
 
-Grid cards render at 128-160 CSS px; the sources are 1000px+ originals
-(fanart.tv / Deezer XL / album art files), commonly 100 KB-1 MB each. A 320px
-WebP (~10-40 KB) covers 2x-DPI cards and the 160px detail headers. Pure
-function of the input bytes - callers cache the output keyed by a validator of
-the SOURCE file (see ArtistImageCache.get_thumb / CoverThumbCache), so a thumb
-never needs regenerating while its source is unchanged.
+Thumbs serve the dense, repeated renders: 40 CSS px list rows (AlbumRow — the
+import feed, duplicate groups, review decisions), 128 px grid cards (album
+grid, artist roster), playlist collage tiles, up to the 192 px duplicate-review
+comparison panel. Sources are 1000px+ originals (fanart.tv / Deezer XL / album
+art files), commonly 100 KB-1 MB each, so a 320px WebP (~10-40 KB) is 2.5x the
+grid card and still 1.7x that largest consumer.
+
+The detail heroes deliberately opt OUT — there is no small header anywhere in
+the app. Both the album cover and the artist portrait render at up to 384 CSS
+px in a `w-96` rail, past what 320px covers even at 1x DPI, and at one image
+per page the byte saving is worth nothing against the visible quality loss.
+See the "full-size on purpose" comments in AlbumDetailPage and
+ArtistAlbumsPage before wiring a hero to this engine.
+
+Pure function of the input bytes - callers cache the output keyed by a
+validator of the SOURCE file (see ArtistImageCache.get_thumb /
+CoverThumbCache), so a thumb never needs regenerating while its source is
+unchanged.
 """
 
 from __future__ import annotations
