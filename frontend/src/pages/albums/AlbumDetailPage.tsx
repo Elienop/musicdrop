@@ -99,12 +99,13 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
   const [editingCover, setEditingCover] = useState(false);
   const [coverVersion, setCoverVersion] = useState(0);
 
-  // ?v= forces the rail <img> to re-request after a cover install — a mounted
-  // image with an unchanged src won't refetch even though /cover now revalidates
-  // (ETag) instead of long-caching.
-  const coverSrc =
-    `/api/albums/${album.id}/cover?size=thumb` +
-    (coverVersion ? `&v=${coverVersion}` : "");
+  // Full-size on purpose (no ?size=thumb): this is the ONE hero cover on the
+  // page, rendered at up to 384 CSS px (the w-96 rail) — a 320px thumb there
+  // is a visible quality regression for zero byte-count benefit at that
+  // single-image scale. ?v= forces the rail <img> to re-request after a cover
+  // install — a mounted image with an unchanged src won't refetch even though
+  // /cover now revalidates (ETag) instead of long-caching.
+  const coverSrc = `/api/albums/${album.id}/cover${coverVersion ? `?v=${coverVersion}` : ""}`;
 
   // Spec §4 disclosure pattern: opening an inline panel moves focus into it so
   // keyboard/SR users land on what just appeared. Closing from INSIDE the

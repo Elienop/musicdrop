@@ -105,7 +105,10 @@ describe("ArtistAlbumsPage", () => {
     expect(poster).toHaveAttribute("alt", "");
   });
 
-  test("rail poster requests the thumb variant", async () => {
+  test("rail poster requests the FULL-size image, not the thumb", async () => {
+    // Regression: this hero renders up to 384 CSS px (the w-96 rail) — a
+    // 320px thumb there is a visible quality regression, unlike the roster's
+    // ArtistCard (128px), which correctly opts into size=thumb.
     server.use(http.get(ALBUMS_URL, () => HttpResponse.json(makePage())));
 
     const { container } = renderAt("Radiohead");
@@ -114,9 +117,9 @@ describe("ArtistAlbumsPage", () => {
     const poster = container.querySelector(
       'img[src^="/api/artists/image?name=Radiohead"]',
     );
-    expect(poster).toHaveAttribute(
+    expect(poster).not.toHaveAttribute(
       "src",
-      expect.stringContaining("&size=thumb"),
+      expect.stringContaining("size=thumb"),
     );
   });
 
