@@ -80,6 +80,21 @@ next bulk import.)_
   multi-disc emptied album reads `Artist/Album/CD1`. Still separates label twins (the
   feature's purpose); commonpath would be nicer.
 
+- **Artist-image cache: after a broken cache dir is repaired, affected artists never return
+  to disk.** The in-memory stand-in (`ArtistImageCache._MemoryFallback`, added in the
+  perf/images wave) is dropped by `store_positive`/`store_negative` on a write that succeeds —
+  but a memory HIT satisfies the request without ever calling either, so for those keys the
+  write never happens and the discard never fires. Measured: 5 decode+resizes for 5
+  post-repair requests vs 1 for a healthy control, with the artist's slot still absent from
+  disk. Bounded (the map is capped) and off the event loop, so this is a silent CPU/latency
+  regression, not a correctness one — but it persists for the process lifetime and there is no
+  log after repair, because the writes stopped failing. Note that `cache.py`'s
+  `_or_remember` docstring ("hands authority back to disk without a restart") is true only for
+  keys that get written again, which these never are. **Needs a design call before anyone
+  codes it:** re-write to disk on a memory hit (simple, but puts a write on the read path), or
+  periodically re-probe the dir and flush (more moving parts, keeps reads read-only). Do not
+  assume either.
+
 ## Open questions
 
 - **Where did the phantom one-track album row come from?** The 2026-08-01 incident's origin:
@@ -94,6 +109,27 @@ next bulk import.)_
 
 ## Deferred minors (cosmetic / self-healing — carried from earlier waves)
 
+- Artwork degrade logging: three of the six log sites are pinned by no test — mutations that
+  silence `cover_thumbs.py`'s thumb-cache-unwritable line, `cache.py`'s
+  `mime-sidecar-unsendable` line and `cache.py`'s thumb-cache-unwritable line all SURVIVE.
+  The `mime-sidecar-unsendable` one matters most: it REVERSES an earlier decision in the same
+  wave that was explicitly argued in a comment ("deliberately NOT logged here", to avoid
+  per-request spam) and later made safe by the throttle. Nothing pins the reversal, so a
+  future reader who finds the old reasoning can delete the line and the suite stays green.
+- `_MemoryFallback`: the 512-entry cap, the byte decrement in `_discard_locked`, and the
+  refusal of a single image larger than the whole budget are all untested (mutations survive;
+  only the byte budget's eviction is pinned). The entry cap is the ONLY bound on negatives,
+  since they are not charged bytes — so an unwritable cache dir plus a large library can grow
+  the map by one entry per no-match artist until the cap catches it.
+- Artwork degrade logging discards fault SCALE. The throttle keys on the condition, so one
+  corrupt artist out of 5,000 and "WebP support is gone across all 5,000" produce
+  indistinguishable output, and a systemic fault arriving behind a single bad file inside the
+  same 60s window is silenced entirely. Cheap fix when touched: carry a suppressed-since count
+  in the message.
+- `"cache-write"` is one throttle key across four sites in two different cache directories
+  (artist images and cover thumbs), so for the first 60s of a fault the emitted line can name
+  the wrong subsystem. There is also no "recovered" line anywhere, which compounds the
+  never-returns-to-disk item above: nothing marks the end of a degraded period.
 - Warm Browse/list pages still do a per-row `lib.get_album` (~2 queries/row); batch the
   id-IN load or widen `BrowseRow` instead.
 - No next-page prefetch on Browse/Artists — a page flip waits a round trip
