@@ -53,7 +53,9 @@ def _add(
         it = Item(album=album, albumartist=artist, artist=artist, title=f"T{i}", track=i)
         it.path = os.fsencode(str(directory / f"{artist} - {album} - {i}.x"))
         if genre is not None:
-            it.genre = genre
+            # beets 2.13 field: multi-valued ``genres``. A "; "-joined string is
+            # split by the field's own normalize, so "Rock; Pop" seeds two.
+            it.genres = genre
         if fmt is not None:
             it.format = fmt
         if i <= lyrics_on:
@@ -73,7 +75,7 @@ def _add(
         items.append(it)
     al = lib.add_album(items)
     if genre is not None:
-        al["genre"] = genre
+        al["genres"] = genre
     al.year = year or 0
     if albumtype is not None:
         al.albumtype = albumtype
@@ -828,7 +830,7 @@ def _char_item(
     if fmt is not None:
         it.format = fmt
     if genre is not None:
-        it.genre = genre
+        it.genres = genre
     if lyrics is not None:
         it.lyrics = lyrics
     if instrumental is not None:
@@ -853,7 +855,7 @@ def _characterization_lib(tmp_path: Path) -> Library:
             for n in (1, 2)
         ]
     )
-    a["genre"] = "Rock"
+    a["genres"] = "Rock"
     a.year = 1994
     a.original_year = 1989
     a.albumtype = "album"
@@ -890,8 +892,11 @@ def _characterization_lib(tmp_path: Path) -> Library:
             ),
         ]
     )
-    # No album-level genre on purpose: an album flex `genre` propagates DOWN to
-    # every item on store(), which would erase the per-item fallback this pins.
+    # No album-level genre on purpose: `genres` is one of Album.item_keys, so
+    # assigning it here would propagate DOWN to every item on store() and erase
+    # the per-item fallback this pins. (Leaving it untouched is safe: add_album
+    # seeds the album's genres from item 1 but leaves the field CLEAN, and
+    # store(inherit=True) only fans out DIRTY keys.)
     b.added = 200.0
     b.store()
 
@@ -920,7 +925,7 @@ def _characterization_lib(tmp_path: Path) -> Library:
             for n, disc, tracktotal in ((1, 1, 2), (2, 2, 3), (3, 1, 2), (4, 2, 3))
         ]
     )
-    d["genre"] = "Metal"
+    d["genres"] = "Metal"
     d.year = 2011
     d.disctotal = 2
     d.added = 400.0
@@ -1128,3 +1133,95 @@ def test_genre_fallback_agrees_across_every_endpoint(tmp_path: Path) -> None:
     assert album is not None
 
     assert row.genre_raw == detail.genre == _to_album(album).genre == "Jazz"
+
+
+def _genre_pipeline_lib(tmp_path: Path) -> Library:
+    """Four albums, one per genre case. See the test's docstring."""
+    lib = Library(str(tmp_path / "genres.db"), directory=str(tmp_path / "music"))
+
+    single = lib.add_album([_char_item(tmp_path, artist="Single", album="One", n=1)])
+    single["genres"] = ["Rock"]
+    single.store()
+
+    multi = lib.add_album([_char_item(tmp_path, artist="Multi", album="Two", n=1)])
+    multi["genres"] = ["Rock", "Pop"]
+    multi.store()
+
+    # No album-level genres: track 1 has none, track 2 does. The FIRST track
+    # with any wins, in play order (see _characterization_lib's album B on why
+    # the album's own genres must stay untouched here).
+    fallback = lib.add_album(
+        [
+            _char_item(tmp_path, artist="Fallback", album="Three", n=1),
+            _char_item(tmp_path, artist="Fallback", album="Three", n=2, genre="Jazz; Funk"),
+        ]
+    )
+    fallback.store()
+
+    bare = lib.add_album([_char_item(tmp_path, artist="Bare", album="Four", n=1)])
+    bare.store()
+    return lib
+
+
+def test_genre_pipeline_reads_beets_genres(tmp_path: Path) -> None:
+    """Genre is read from beets 2.13's ``genres``, end to end.
+
+    beets 2.13 dropped the single-valued ``genre`` field from both ``Item`` and
+    ``Album`` in favour of multi-valued ``genres`` (a real column). Reading
+    ``genre`` still "works" — it resolves through the FLEX path and answers
+    ``None`` for every album in a real library — so the Browse genre facet read
+    "Unknown" library-wide, every ``Album.genre`` on the wire was null, and the
+    edit panel showed the field empty. Four albums, one per case:
+
+    * Single   — album ``genres`` ``['Rock']``.
+    * Multi    — album ``genres`` ``['Rock', 'Pop']``: the FACET is the primary
+      genre alone (one value per album, so counts still sum to the album total)
+      while the ``Album`` model carries beets' own ``"; "`` display join.
+    * Fallback — no album genres; track 1 has none, track 2 has two.
+    * Bare     — nothing anywhere: facet "Unknown", model ``None``.
+    """
+    from app.beets import browse as browse_mod
+    from app.beets.edit import preview_album_edit
+    from app.beets.library import _to_album, get_album_detail
+    from app.models.edit import AlbumEditRequest
+
+    lib = _genre_pipeline_lib(tmp_path)
+    browse_mod.invalidate_browse_cache()
+
+    # The facet buckets each album under ONE value: the primary genre.
+    counts = {f.value: f.count for f in browse_facets(lib).genres}
+    assert counts == {"Rock": 2, "Jazz": 1, "Unknown": 1}
+    assert sum(counts.values()) == 4
+
+    # The Album model carries the display join, and stays nullable.
+    albums, _ = browse_albums(lib, genres=[], decades=[], formats=[], limit=50, offset=0)
+    assert {a.title: a.genre for a in albums} == {
+        "One": "Rock",
+        "Two": "Rock; Pop",
+        "Three": "Jazz; Funk",
+        "Four": None,
+    }
+
+    # Filtering by the facet value finds the multi-genre album by its primary.
+    filtered, _ = browse_albums(lib, genres=["Rock"], decades=[], formats=[], limit=50, offset=0)
+    assert {a.title for a in filtered} == {"One", "Two"}
+
+    # Detail, the uncached mapper and the edit panel's read side all agree.
+    by_title = {a.title: a.id for a in albums}
+    for title, expected in (
+        ("One", "Rock"),
+        ("Two", "Rock; Pop"),
+        ("Three", "Jazz; Funk"),
+        ("Four", None),
+    ):
+        album_id = by_title[title]
+        detail = get_album_detail(lib, album_id)
+        assert detail is not None
+        beets_album = lib.get_album(album_id)
+        assert beets_album is not None
+        preview = preview_album_edit(
+            lib, album_id=album_id, request=AlbumEditRequest(), move_enabled=False
+        )
+        assert detail.genre == expected, title
+        assert _to_album(beets_album).genre == expected, title
+        assert preview.album_before.genre == expected, title

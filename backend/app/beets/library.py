@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import Any
 
 from beets.dbcore.query import MatchQuery, ParsingError
+from beets.dbcore.types import DelimitedString
 from beets.library import Album as BeetsAlbum
+from beets.library import Item as BeetsItem
 from beets.library import Library
 from mediafile import MediaFile
 
@@ -126,11 +128,63 @@ def _play_order(item: Any) -> tuple[int, int, int]:
     )
 
 
-def _album_genre(album: BeetsAlbum, items: list[Any]) -> str | None:
-    """Read album-level genre, falling back to the album's tracks.
+# beets 2.13 dropped the single-valued ``genre`` field from BOTH ``Item`` and
+# ``Album`` in favour of multi-valued ``genres``: a real column holding a
+# ``DelimitedString`` — a ``list[str]`` in Python, joined by ``"\␀"`` in the DB
+# and by ``"; "`` for display. Reading ``genre`` still "works" (it falls through
+# to the flex path) but answers ``None`` for every row in a real library, so
+# every genre read in this app goes through the helpers below.
+#
+# The delimiter and the split rule are taken from beets' OWN field type rather
+# than restated here: the browse cache reads the column as raw SQL, bypassing
+# beets' type layer, and a second hand-rolled convention is exactly how the two
+# paths would drift apart on a beets change.
+_GENRES_TYPE = BeetsItem._fields["genres"]
+assert isinstance(_GENRES_TYPE, DelimitedString)  # beets 2.13 contract, asserted once
+_GENRE_DISPLAY_DELIMITER = _GENRES_TYPE.fmt_delimiter
 
-    Heuristic: the first track with a non-empty genre wins (not a mode/majority
-    vote). Items are passed in so we don't re-fetch them from the database.
+
+def _genre_values(value: object) -> list[str]:
+    """Every genre in a beets ``genres`` value, whatever shape it arrives in.
+
+    ONE reader, because three layers hand this over differently: beets returns
+    the field's ``model_type`` (a ``list``), ``browse.py``'s aggregate SQL pass
+    returns the raw delimiter-joined column string, and a row written before the
+    multi-genre migration can still hold a single bare genre. Strings are split
+    by beets' own ``DelimitedString.parse`` (DB delimiter when present, else
+    ``"; "``); blanks are dropped so a trailing delimiter can't invent a genre.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts: list[str] = _GENRES_TYPE.parse(value)
+    elif isinstance(value, list | tuple):
+        parts = [str(part) for part in value]
+    else:
+        parts = [str(value)]
+    return [text for text in (str(part).strip() for part in parts) if text]
+
+
+def _genre_join(values: list[str]) -> str | None:
+    """Genres as ONE display string — beets' own ``"; "`` join.
+
+    ``None`` when there are none, so ``Album.genre`` stays nullable on the wire
+    (a genre-less album must not read as an empty-string genre).
+    """
+    return _GENRE_DISPLAY_DELIMITER.join(values) or None
+
+
+def _genre_display(value: object) -> str | None:
+    """A raw beets ``genres`` value as the display string. Read side, one call."""
+    return _genre_join(_genre_values(value))
+
+
+def _album_genre(album: BeetsAlbum, items: list[Any]) -> str | None:
+    """Read album-level genres, falling back to the album's tracks.
+
+    Heuristic: the first track with any genre wins (not a mode/majority vote),
+    and its genres are taken WHOLE. Items are passed in so we don't re-fetch
+    them from the database.
 
     The fallback resolves in PLAY order, not the order ``items`` happens to
     arrive in. Callers pass ``list(album.items())``, which beets returns in the
@@ -141,14 +195,13 @@ def _album_genre(album: BeetsAlbum, items: list[Any]) -> str | None:
     fallback straight from SQL in play order; sorting here is what keeps every
     endpoint (Browse rows, album detail, duplicates) on ONE answer per album.
     """
-    genre = _coerce_optional_str(album.get("genre"))
-    if genre is not None:
-        return genre
-    for item in sorted(items, key=_play_order):
-        item_genre = _coerce_optional_str(item.get("genre"))
-        if item_genre is not None:
-            return item_genre
-    return None
+    genres = _genre_values(album.get("genres"))
+    if not genres:
+        for item in sorted(items, key=_play_order):
+            genres = _genre_values(item.get("genres"))
+            if genres:
+                break
+    return _genre_join(genres)
 
 
 def _coerce_int(value: object) -> int:

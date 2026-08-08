@@ -378,7 +378,7 @@ def edit_lib(tmp_path: "Path") -> "Library":
         items.append(it)
     album = lib.add_album(items)
     album["mb_albumid"] = "mb-edit"
-    album["genre"] = "Alternative Rock"
+    album["genres"] = "Alternative Rock"
     album["year"] = 2007
     album.store()
     return lib

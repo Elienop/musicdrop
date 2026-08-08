@@ -114,6 +114,50 @@ def test_apply_writes_album_field_to_every_track(edit_lib: Library) -> None:
     assert MediaFile(os.fsdecode(first.path)).album == "In Rainbows (Deluxe)"
 
 
+def test_genre_round_trips_through_beets_multi_valued_genres(edit_lib: Library) -> None:
+    """Read -> edit -> apply -> read gives back what the user typed.
+
+    beets 2.13 dropped the single-valued ``genre`` field: the real one is
+    ``genres``, a list. So the panel reads beets' own ``"; "`` join, and the
+    submitted string is parsed back into a list — otherwise the edit landed in a
+    dead flex key that nothing reads, and the file's tag never changed at all.
+    The MediaFile assertions are the point: ``genres`` IS one of beets'
+    ``Item._media_fields``, so the value must reach the audio file.
+    """
+    from app.beets.edit import apply_album_edit, preview_album_edit
+
+    aid = _album_id(edit_lib)
+    seeded = AlbumEditRequest(album=AlbumFieldEdits(genre="Alternative Rock"))
+
+    # Read side: the seeded single genre, and re-submitting it is NOT a change.
+    unchanged = preview_album_edit(edit_lib, album_id=aid, request=seeded, move_enabled=False)
+    assert unchanged.album_before.genre == "Alternative Rock"
+    assert "genre" not in unchanged.changed_fields
+
+    req = AlbumEditRequest(album=AlbumFieldEdits(genre="Art Rock; Experimental Rock"))
+    preview = preview_album_edit(edit_lib, album_id=aid, request=req, move_enabled=False)
+    assert preview.changed_fields == ["genre"]
+    assert preview.album_after.genre == "Art Rock; Experimental Rock"
+
+    result = apply_album_edit(edit_lib, album_id=aid, request=req, write=True, move=False)
+    assert result.write_failures == 0
+    assert result.album.genre == "Art Rock; Experimental Rock"
+
+    # DB: stored as a real LIST on the album and on every track it fanned to.
+    album = edit_lib.get_album(aid)
+    assert album is not None
+    assert list(album["genres"]) == ["Art Rock", "Experimental Rock"]
+    for item in _items(edit_lib, aid):
+        assert list(item["genres"]) == ["Art Rock", "Experimental Rock"]
+        # File: the tag write actually landed on disk.
+        assert MediaFile(os.fsdecode(item.path)).genres == ["Art Rock", "Experimental Rock"]
+
+    # Read back: exactly what was typed, and now a no-op edit.
+    again = preview_album_edit(edit_lib, album_id=aid, request=req, move_enabled=False)
+    assert again.album_before.genre == "Art Rock; Experimental Rock"
+    assert again.changed_fields == []
+
+
 def test_apply_per_track_title_changes_only_that_track(edit_lib: Library) -> None:
     from app.beets.edit import apply_album_edit
 

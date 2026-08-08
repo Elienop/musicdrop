@@ -31,6 +31,8 @@ from app.beets.library import (
     _coerce_optional_str,
     _coerce_str,
     _coerce_year,
+    _genre_join,
+    _genre_values,
     _instrumental_value,
     _require_id,
     _to_album_cached,
@@ -131,8 +133,10 @@ class _AlbumFacts(NamedTuple):
     track_count: int
     # Predominant item format ("FLAC"); "Unknown" when no track carries one.
     format: str
-    # First non-empty ITEM genre, for albums with no genre of their own.
-    genre_fallback: str | None
+    # The genres of the FIRST track that has any, for albums with none of their
+    # own. A tuple (not a list) because ``_EMPTY_FACTS`` below is module-level
+    # and shared by every track-less album.
+    genre_fallback: tuple[str, ...]
     # Complete / Partial / Missing.
     lyrics: str
     # The first track's ``tracktotal`` — the expectation for a single-disc album
@@ -148,22 +152,22 @@ class _AlbumFacts(NamedTuple):
 _EMPTY_FACTS = _AlbumFacts(
     track_count=0,
     format="Unknown",
-    genre_fallback=None,
+    genre_fallback=(),
     lyrics="Missing",
     first_tracktotal=0,
     per_disc_tracktotal=0,
 )
 
-# ONE pass over every album's tracks. ``genre`` is NOT a column here: beets 2.13
-# dropped single-valued ``genre`` from ``Item._fields`` in favour of the
-# multi-valued ``genres`` column, so `item.genre = x` now falls through to the
-# flex table like any unregistered field. (``MultiGenreFieldMigration`` does NOT
-# put it there — it only reads the LEGACY ``items.genre`` column and backfills
-# ``items.genres``.) So genre is read from ``item_attributes`` below and matched
-# back to these rows by item id, which keeps THIS query the single source of
-# track order. ``lyrics`` IS a column, and can be NULL.
+# ONE pass over every album's tracks. ``genres`` is a real COLUMN in beets 2.13
+# (single-valued ``genre`` was dropped from ``Item._fields``, so reading it now
+# falls through to the flex table and answers nothing), which is why it is
+# selected here rather than fetched from ``item_attributes`` — one fewer full
+# scan of that table, and this query stays the single source of track order.
+# Raw column values arrive as the delimiter-joined string beets stores, and are
+# split by ``library._genre_values`` using beets' own field type. ``lyrics`` IS
+# a column too, and can be NULL.
 _ITEM_FACTS_SQL = """
-    SELECT id, album_id, format, lyrics, disc, tracktotal
+    SELECT id, album_id, format, lyrics, disc, tracktotal, genres
     FROM items
     WHERE album_id IS NOT NULL
     -- album_id first so each album's rows arrive contiguous for groupby.
@@ -179,7 +183,7 @@ _FLEX_SQL = "SELECT entity_id, value FROM item_attributes WHERE key = ?"
 
 
 def _collect_facts(lib: Library) -> dict[int, _AlbumFacts]:
-    """Per-album track facts for the whole library, in three queries.
+    """Per-album track facts for the whole library, in two queries.
 
     Replaces one ``album.items()`` query (plus a full beets ``Item`` build per
     track) per album — ~4.5k queries and 18k model instantiations on a real
@@ -197,10 +201,8 @@ def _collect_facts(lib: Library) -> dict[int, _AlbumFacts]:
     """
     with lib.transaction() as tx:
         item_rows = tx.query(_ITEM_FACTS_SQL)
-        genre_rows = tx.query(_FLEX_SQL, ("genre",))
         instrumental_rows = tx.query(_FLEX_SQL, ("lyrics_instrumental",))
 
-    genres = {_coerce_int(entity_id): value for entity_id, value in genre_rows}
     # Value-tested, never presence-tested: beets writes the flag as FALSE (which
     # reads back as the TRUTHY string "0") on every track it DID find lyrics for.
     instrumental = {
@@ -213,18 +215,18 @@ def _collect_facts(lib: Library) -> dict[int, _AlbumFacts]:
     for album_id, rows in groupby(item_rows, key=lambda row: _coerce_int(row["album_id"])):
         track_count = 0
         formats: list[str] = []
-        genre_fallback: str | None = None
+        genre_fallback: tuple[str, ...] = ()
         answered = 0
         first_tracktotal = 0
         per_disc_tracktotal = 0
         seen_discs: set[int] = set()
-        for raw_id, _album_id, fmt, lyrics, disc, tracktotal in rows:
+        for raw_id, _album_id, fmt, lyrics, disc, tracktotal, raw_genres in rows:
             item_id = _coerce_int(raw_id)
             track_count += 1
             if (value := _coerce_optional_str(fmt)) is not None:
                 formats.append(value)
-            if genre_fallback is None:
-                genre_fallback = _coerce_optional_str(genres.get(item_id))
+            if not genre_fallback:
+                genre_fallback = tuple(_genre_values(raw_genres))
             # A track is ANSWERED when it carries lyrics or beets flagged it
             # instrumental: an instrumental has no lyrics BY NATURE, so counting
             # it as missing left albums stuck at Partial with nothing to fetch.
@@ -287,9 +289,9 @@ def _coerce_added(value: object) -> float:
 
 def _build_row(album: BeetsAlbum, facts: _AlbumFacts) -> BrowseRow:
     albumartist = _coerce_str(album.albumartist)
-    # ``_album_genre``'s heuristic, against facts instead of items: album genre
-    # wins, else the FIRST track with a non-empty one (not a majority vote).
-    genre_raw = _coerce_optional_str(album.get("genre")) or facts.genre_fallback
+    # ``_album_genre``'s heuristic, against facts instead of items: the album's
+    # own genres win, else the FIRST track with any (not a majority vote).
+    genres = _genre_values(album.get("genres")) or list(facts.genre_fallback)
     return BrowseRow(
         album_id=_require_id(album.id),
         artist_key=albumartist.casefold(),
@@ -297,8 +299,14 @@ def _build_row(album: BeetsAlbum, facts: _AlbumFacts) -> BrowseRow:
         albumartist=albumartist,
         added=_coerce_added(album.get("added")),
         track_count=facts.track_count,
-        genre_raw=genre_raw,
-        genre=genre_raw or "Unknown",
+        # These two DELIBERATELY differ on a multi-genre album. ``genre_raw``
+        # feeds the ``Album`` model, so it is beets' full display join
+        # ("Gangsta Rap; Hip Hop; G-Funk"). The facet is the PRIMARY genre
+        # alone: one representative value per album keeps the counts summing to
+        # the album total, and buckets the user can actually click ("Rock", not
+        # a seven-genre string only one album will ever match).
+        genre_raw=_genre_join(genres),
+        genre=genres[0] if genres else "Unknown",
         # "80s" means the music's era: original release year, falling back to
         # the (possibly reissue) release year when beets has no original_year.
         decade=_album_decade(_coerce_year(album.get("original_year")) or _coerce_year(album.year)),

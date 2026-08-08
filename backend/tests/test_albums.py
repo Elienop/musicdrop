@@ -44,7 +44,8 @@ def _make_item(
         album=album,
         albumartist=albumartist,
         year=year,
-        genre=genre,
+        # beets 2.13 field: multi-valued ``genres`` (``genre`` was dropped).
+        genres=genre,
         title=title,
         track=track,
     )
@@ -80,7 +81,7 @@ def temp_library(tmp_path: Path) -> Library:
         ),
     ]
     album_a = lib.add_album(arrival)
-    album_a["genre"] = "Pop"
+    album_a["genres"] = "Pop"
     album_a.store()
 
     # Album B: a-ha / Hunting High and Low (1985, Synthpop) — one track
@@ -96,7 +97,7 @@ def temp_library(tmp_path: Path) -> Library:
         ),
     ]
     album_b = lib.add_album(hunting)
-    album_b["genre"] = "Synthpop"
+    album_b["genres"] = "Synthpop"
     album_b.store()
 
     return lib
@@ -309,7 +310,7 @@ def test_album_detail_returns_album_with_sorted_tracklist(
         _track_item(title="No Length", track=3, disc=1, length=0.0, artist="Daft Punk"),
     ]
     album = temp_library.add_album(out_of_order)
-    album["genre"] = "House"
+    album["genres"] = "House"
     album.store()
 
     resp = client.get(f"/api/albums/{album.id}")
@@ -376,7 +377,7 @@ def test_albums_filter_paginates_over_filtered_set(
             )
         ]
     )
-    second["genre"] = "Pop"
+    second["genres"] = "Pop"
     second.store()
 
     page1 = client.get("/api/albums?artist=ABBA&limit=1&offset=0").json()
