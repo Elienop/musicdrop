@@ -400,6 +400,80 @@ def test_size_thumb_resolves_and_derives_when_uncached(
         app.dependency_overrides.clear()
 
 
+def test_corrupt_mime_sidecar_serves_the_image_instead_of_500ing(
+    client: TestClient, artist_image_cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """A non-UTF-8 ``.mime`` used to put a UnicodeDecodeError straight on the
+    wire from both sizes — and the hole was on the self-heal path the never-500
+    promise exists for: ``get_thumb`` reaches its source through ``get()``, so
+    the sidecar next door could abort a ``.thumb.src`` rebuild too.
+
+    The full image keeps its bytes and falls back to the generic content-type;
+    the thumb is derived from those same bytes, so it declares WebP as usual.
+    """
+    artist_image_cache.store_positive("ABBA", _png(400, 400), "image/png")
+    (mime_path,) = tmp_path.glob("*.mime")
+    mime_path.write_bytes(b"\xff\xfe")
+
+    full = client.get("/api/artists/image", params={"name": "ABBA"})
+    assert full.status_code == 200
+    assert full.headers["content-type"] == "application/octet-stream"
+
+    thumb = client.get("/api/artists/image", params={"name": "ABBA", "size": "thumb"})
+    assert thumb.status_code == 200
+    assert thumb.headers["content-type"] == "image/webp"
+
+
+def test_unreadable_cache_bytes_self_heal_instead_of_500ing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable positive slot has to read as "nothing cached", not raise:
+    the endpoint then re-resolves and the entry rebuilds, instead of an OSError
+    from the ``exists()``-then-``read_bytes()`` window reaching the client.
+    """
+    from app.artwork.cache import CachedImage
+    from app.artwork.source import ResolvedImage
+    from app.beets import library as library_mod
+
+    class _StubSource:
+        async def resolve(self, name: str, *, mbid: str | None) -> ResolvedImage:
+            return ResolvedImage(data=_png(120, 120), content_type="image/png")
+
+    cache = ArtistImageCache(tmp_path)
+    cache.store_positive("ABBA", b"unreadable", "image/png")
+    service = ArtistImageService(
+        source=_StubSource(),  # type: ignore[arg-type]  # stub implements only resolve()
+        cache=cache,
+        limiter=TokenBucketLimiter(rate_per_sec=1000.0, max_concurrency=2),
+        is_enabled=lambda: True,
+        negative_ttl_seconds=3600,
+        transient_ttl_seconds=600,
+    )
+    monkeypatch.setattr(library_mod, "get_artist_mbid", lambda lib, name: None)
+    app.dependency_overrides[get_artist_image_service] = lambda: service
+    app.dependency_overrides[get_artist_image_cache] = lambda: cache
+    app.dependency_overrides[get_library] = lambda: _StubHandle()
+
+    real_read_bytes = Path.read_bytes
+
+    def failing_read_bytes(self: Path) -> bytes:
+        # Only the cached image slot is unreadable — everything else on the
+        # request path must keep working, or the test proves nothing.
+        if self.suffix == ".bin":
+            raise OSError(5, "simulated I/O error")
+        return real_read_bytes(self)
+
+    try:
+        with patch.object(Path, "read_bytes", failing_read_bytes):
+            resp = TestClient(app).get("/api/artists/image", params={"name": "ABBA"})
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/png"
+        healed = cache.get("ABBA")
+        assert isinstance(healed, CachedImage) and healed.data != b"unreadable"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_size_defaults_to_full(hit_client: TestClient) -> None:
     resp = hit_client.get("/api/artists/image", params={"name": "ABBA"})
     assert resp.status_code == 200

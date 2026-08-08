@@ -183,14 +183,41 @@ class ArtistImageCache:
 
     @staticmethod
     def _read_image(data_path: Path, mime_path: Path) -> CachedImage | None:
+        """One slot's bytes + content-type, or None when the slot is unusable.
+
+        Nothing in here may raise. Both image endpoints call this through
+        ``get()`` with no guard of their own, and ``get_thumb`` reaches its
+        SOURCE through it too — so its "degrades to the original, never a 500"
+        promise is only as airtight as this read, and a corrupt ``.mime``
+        sidecar could abort the very self-heal that promise exists for.
+
+        The two failure modes answer differently on purpose: unreadable BYTES
+        read as "nothing cached" so the caller re-resolves and the entry
+        rebuilds, while an unreadable SIDECAR must not cost the image — it takes
+        the same generic content-type a missing one does. ``UnicodeDecodeError``
+        is a ``ValueError``, so one guard covers a non-UTF-8 body and a vanished
+        file (the shape ``get_thumb`` already uses on ``.thumb.src``).
+        """
         if not data_path.exists():
             return None
-        data = data_path.read_bytes()
-        content_type = (
-            mime_path.read_text(encoding="utf-8").strip()
-            if mime_path.exists()
-            else "application/octet-stream"
-        )
+        try:
+            data = data_path.read_bytes()
+        except OSError as exc:
+            # exists()-then-read is a window the backfill daemon's atomic
+            # replace — and clear_override's unlink — can move under us.
+            _log.warning("artist-image cache slot %s is unreadable: %s", data_path.name, exc)
+            return None
+        content_type = "application/octet-stream"
+        if mime_path.exists():
+            try:
+                content_type = mime_path.read_text(encoding="utf-8").strip()
+            except (OSError, ValueError) as exc:
+                _log.warning(
+                    "artist-image mime sidecar %s is unreadable, serving the image as %s: %s",
+                    mime_path.name,
+                    content_type,
+                    exc,
+                )
         return CachedImage(data=data, content_type=content_type)
 
     def validator(self, name: str) -> str | None:

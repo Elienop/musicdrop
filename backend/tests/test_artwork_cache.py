@@ -238,6 +238,48 @@ def test_validator_prefers_override(cache: ArtistImageCache) -> None:
     assert cache.validator("ABBA") == auto_tag
 
 
+def test_get_survives_a_non_utf8_mime_sidecar(
+    cache: ArtistImageCache, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A corrupt sidecar must not cost the image.
+
+    ``read_text`` raises UnicodeDecodeError — a ValueError, so ``except
+    OSError`` would not have caught it — and neither image endpoint guards its
+    own call, so this was a 500 on the wire. The image itself is still perfectly
+    good; it just loses its declared type.
+    """
+    cache.store_positive("ABBA", b"image-bytes", "image/png")
+    (mime_path,) = tmp_path.glob("*.mime")
+    mime_path.write_bytes(b"\xff\xfe")
+
+    with caplog.at_level(logging.WARNING, logger="musicdrop.artwork"):
+        got = cache.get("ABBA")
+
+    assert isinstance(got, CachedImage)
+    assert got.data == b"image-bytes"
+    assert got.content_type == "application/octet-stream"
+    assert [r.name for r in caplog.records] == ["musicdrop.artwork"]
+
+
+def test_get_treats_unreadable_bytes_as_nothing_cached(
+    cache: ArtistImageCache, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``exists()`` then ``read_bytes()`` is a window the backfill daemon's
+    atomic replace can move under us. Answering None (rather than raising) sends
+    the caller down its normal resolve path, so the entry self-heals.
+    """
+    cache.store_positive("ABBA", b"image-bytes", "image/png")
+
+    with (
+        unittest.mock.patch.object(Path, "read_bytes", side_effect=OSError(5, "I/O error")),
+        caplog.at_level(logging.WARNING, logger="musicdrop.artwork"),
+    ):
+        got = cache.get("ABBA")
+
+    assert got is None
+    assert [r.name for r in caplog.records] == ["musicdrop.artwork"]
+
+
 def test_get_thumb_derives_and_reuses(cache: ArtistImageCache) -> None:
     cache.store_positive("ABBA", _png(1000, 1000), "image/png")
     thumb = cache.get_thumb("ABBA")
