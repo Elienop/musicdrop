@@ -22,6 +22,7 @@ treated as already-stale so a corrupt marker self-heals on the next lookup.
 """
 
 import hashlib
+import logging
 import os
 import secrets
 import time
@@ -32,6 +33,8 @@ from typing import Final
 
 from app.artwork.normalize import normalize_artist_name
 from app.artwork.thumbs import THUMB_MIME, ThumbError, make_thumb
+
+_log = logging.getLogger("musicdrop.artwork")
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -232,7 +235,19 @@ class ArtistImageCache:
         try:
             data = make_thumb(source.data)
             mime = THUMB_MIME
-        except ThumbError:
+        except ThumbError as exc:
+            # Degrading is right; being silent about it was not. Before
+            # make_thumb's guard was widened to `except Exception`, a SYSTEMIC
+            # encoder failure (Pillow built without WebP, a broken format
+            # plugin) surfaced as a 500 — loud and diagnosable. Unlogged it
+            # would serve every image full-size forever, indistinguishable from
+            # the thumb feature never having been deployed.
+            #
+            # WARNING, not INFO: nothing in this app configures the root logger,
+            # so under uvicorn's default config anything below WARNING is
+            # dropped entirely. Not spam either — the degraded bytes are stored
+            # below, so this fires once per source version, not per request.
+            _log.warning("artist-image thumbnail degraded to the original for %r: %s", name, exc)
             # Never store a blank mime: it round-trips through .thumb.src as a
             # trailing space, reads back falsy, and the entry then re-derives on
             # every single request. Same guard as CoverThumbCache.

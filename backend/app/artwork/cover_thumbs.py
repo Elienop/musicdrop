@@ -25,11 +25,14 @@ since both derive from the same source bytes the result is the same either way.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
 
 from app.artwork.cache import CachedImage, _atomic_write_bytes
 from app.artwork.thumbs import THUMB_MIME, ThumbError, make_thumb
+
+_log = logging.getLogger("musicdrop.artwork")
 
 
 class CoverThumbCache:
@@ -77,7 +80,14 @@ class CoverThumbCache:
         try:
             thumb_data = make_thumb(data)
             thumb_mime = THUMB_MIME
-        except ThumbError:
+        except ThumbError as exc:
+            # Logged for the same reason as ArtistImageCache.get_thumb's degrade
+            # (see there): a systemic encoder failure used to be a 500, and
+            # silent full-size fallback looks exactly like an undeployed
+            # feature. Once per source version — the fallback is cached below.
+            _log.warning(
+                "album-cover thumbnail degraded to the original for album %s: %s", album_id, exc
+            )
             thumb_data, thumb_mime = data, mime or "application/octet-stream"
 
         self._ensure_dir()

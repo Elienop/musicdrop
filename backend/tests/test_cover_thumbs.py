@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import io
+import logging
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from app.artwork.cover_thumbs import CoverThumbCache
@@ -43,6 +45,24 @@ def test_missing_original_returns_none(tmp_path: Path) -> None:
 def test_undecodable_original_degrades_to_original_bytes(tmp_path: Path) -> None:
     got = CoverThumbCache(tmp_path).get(7, '"1-1"', lambda: (b"garbage", "image/png"))
     assert got is not None and got.data == b"garbage" and got.content_type == "image/png"
+
+
+def test_degrade_leaves_an_operator_visible_trace(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Same promise as the artist cache: a degrade names the album and the
+    reason, and does not change what is served. A systemic encoder failure has
+    to be findable — silently serving full-size covers forever looks exactly
+    like the thumb feature never shipping.
+    """
+    with caplog.at_level(logging.WARNING, logger="musicdrop.artwork"):
+        got = CoverThumbCache(tmp_path).get(7, '"1-1"', lambda: (b"garbage", "image/png"))
+
+    assert got is not None and got.data == b"garbage" and got.content_type == "image/png"
+    (record,) = [r for r in caplog.records if r.name == "musicdrop.artwork"]
+    assert record.levelno == logging.WARNING
+    assert "album 7" in record.getMessage()
+    assert "UnidentifiedImageError" in record.getMessage()
 
 
 def test_corrupt_src_sidecar_self_heals(tmp_path: Path) -> None:

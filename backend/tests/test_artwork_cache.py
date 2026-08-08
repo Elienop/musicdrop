@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import logging
 import os
 import unittest.mock
 from pathlib import Path
@@ -275,6 +276,29 @@ def test_get_thumb_falls_back_to_original_on_undecodable_source(
         again = cache.get_thumb("ABBA")
     assert again is not None and again.data == b"corrupt-not-an-image"
     assert again.content_type == "image/png"
+
+
+def test_get_thumb_degrade_leaves_an_operator_visible_trace(
+    cache: ArtistImageCache, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A degrade is correct but must not be silent: if Pillow ever loses WebP,
+    every image degrades to full-size forever and the symptom is
+    indistinguishable from the thumb feature never having been deployed.
+
+    The record has to name WHICH entity degraded and WHY (ThumbError carries the
+    underlying exception's type name), and must not change what is served.
+    """
+    cache.store_positive("ABBA", b"corrupt-not-an-image", "image/png")
+    with caplog.at_level(logging.WARNING, logger="musicdrop.artwork"):
+        thumb = cache.get_thumb("ABBA")
+
+    assert thumb is not None
+    assert thumb.data == b"corrupt-not-an-image"
+    assert thumb.content_type == "image/png"
+    (record,) = [r for r in caplog.records if r.name == "musicdrop.artwork"]
+    assert record.levelno == logging.WARNING
+    assert "ABBA" in record.getMessage()
+    assert "UnidentifiedImageError" in record.getMessage()
 
 
 def test_get_thumb_degrade_with_blank_mime_still_caches(cache: ArtistImageCache) -> None:
