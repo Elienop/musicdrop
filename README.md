@@ -96,7 +96,7 @@ MusicDrop has no built-in backup, deliberately: its state is plain files under t
 
 | Host path | Mount | Holds |
 |---|---|---|
-| `./data` | `/data` | `beets/` — library DB, config, bank, playlists, settings, Trash — plus `cache/artist-images/` |
+| `./data` | `/data` | `beets/` — library DB, config, bank, playlists, settings, Trash — plus `cache/artist-images/` and `cache/cover-thumbs/` |
 | your music share | `/music` | the audio files, their embedded tags, `cover.<ext>`, `.lrc`/`.txt` lyric sidecars, `artist-poster.*` / `artist-background.*` |
 | slskd downloads *(acquisition only)* | `/inbox` | `.musicdrop-ledger.json` — which drops were already handled; without it, old downloads re-import |
 
@@ -120,6 +120,8 @@ Those are the shipped image's paths (`MUSICDROP_BEETS_DIR=/data/beets`, `MUSICDR
 **Regenerable** — don't worry about these:
 
 - `data/cache/artist-images/*.bin` · `*.mime` · `*.miss` — the auto-fetch cache and its negative markers, refetched on demand.
+- `data/cache/artist-images/*.thumb.bin` · `*.thumb.src` — the 320px WebP portraits the grids and rosters render, re-derived from the `*.override` or `*.bin` beside them the moment the sidecar's source tag stops matching.
+- `data/cache/cover-thumbs/` — the same derivation for album covers (`MUSICDROP_COVER_THUMB_CACHE_DIR=/data/cache/cover-thumbs` in the shipped image). Nothing authoritative is here at all: unlike the artist cache this one never owns an original — every cover it thumbnails lives in the music tree, as an art file or an embedded tag. Delete the whole directory and the next page view rebuilds what it needs.
 - import, backfill and sweep jobs — in memory only; they don't survive a restart anyway.
 
 **Snapshot consistency**
