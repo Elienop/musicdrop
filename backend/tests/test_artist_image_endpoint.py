@@ -1,4 +1,5 @@
 import io
+import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -417,11 +418,13 @@ def test_corrupt_mime_sidecar_serves_the_image_instead_of_500ing(
     falls back to the generic content-type; the thumb is derived from those same
     bytes, so it declares WebP as usual.
 
-    ASSERT ON THE CONTENT-TYPE, NOT JUST THE STATUS. TestClient never encodes
-    response headers, so `image/日本語` (which raises UnicodeEncodeError inside
-    a real Response) and `image/png\\nX-Injected: yes` (which makes h11 drop the
-    connection) BOTH return a green 200 through it. Verified separately against
-    a real uvicorn; do not "confirm" this class of fix with a status assertion.
+    ASSERT ON THE CONTENT-TYPE, NOT JUST THE STATUS — the two poison shapes are
+    not equally visible here. `image/日本語` is encoded latin-1 inside
+    `Response.init_headers`, i.e. within the app, so TestClient DOES surface it.
+    `image/png\\nX-Injected: yes` is passed through untouched and only dies at
+    h11, so it returns a green 200 through TestClient and fails only on a real
+    server. A status assertion therefore covers one shape and nothing at all for
+    the other; both were verified separately against a real uvicorn.
     """
     artist_image_cache.store_positive("ABBA", _png(400, 400), "image/png")
     (mime_path,) = tmp_path.glob("*.mime")
@@ -484,6 +487,52 @@ def test_unreadable_cache_bytes_self_heal_instead_of_500ing(
         assert isinstance(healed, CachedImage) and healed.data != b"unreadable"
     finally:
         app.dependency_overrides.clear()
+
+
+def test_size_thumb_still_serves_a_thumb_when_the_cache_cannot_store_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Losing the cache must cost cache HITS, not the feature.
+
+    With an unwritable cache dir there is nothing to stat, so ``get_thumb``
+    bails before it can help — and it genuinely cannot help, because the source
+    bytes exist only in the value the endpoint just resolved. Left alone, a
+    ``?size=thumb`` request quietly served the 1200px original: the exact
+    symptom the degrade log exists to name, reached without ever touching that
+    log line, and a loud 500 before the cache-dir guards landed.
+    """
+    if os.getuid() == 0:
+        pytest.skip("running as root: a read-only dir does not deny writes")
+    from app.artwork.source import ResolvedImage
+    from app.beets import library as library_mod
+
+    class _StubSource:
+        async def resolve(self, name: str, *, mbid: str | None) -> ResolvedImage:
+            return ResolvedImage(data=_png(1200, 1200), content_type="image/png")
+
+    cache = ArtistImageCache(tmp_path)
+    service = ArtistImageService(
+        source=_StubSource(),  # type: ignore[arg-type]  # stub implements only resolve()
+        cache=cache,
+        limiter=TokenBucketLimiter(rate_per_sec=1000.0, max_concurrency=2),
+        is_enabled=lambda: True,
+        negative_ttl_seconds=3600,
+        transient_ttl_seconds=600,
+    )
+    monkeypatch.setattr(library_mod, "get_artist_mbid", lambda lib, name: None)
+    app.dependency_overrides[get_artist_image_service] = lambda: service
+    app.dependency_overrides[get_artist_image_cache] = lambda: cache
+    app.dependency_overrides[get_library] = lambda: _StubHandle()
+    os.chmod(tmp_path, 0o500)
+    try:
+        resp = TestClient(app).get("/api/artists/image", params={"name": "ABBA", "size": "thumb"})
+    finally:
+        os.chmod(tmp_path, 0o755)
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/webp"
+    assert Image.open(io.BytesIO(resp.content)).size == (320, 320)
 
 
 def test_size_defaults_to_full(hit_client: TestClient) -> None:

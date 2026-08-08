@@ -296,7 +296,7 @@ def test_get_thumb_derives_and_reuses(cache: ArtistImageCache) -> None:
     assert Image.open(io.BytesIO(thumb.data)).size == (320, 320)
     # Second call serves the stored derivation (no re-encode): patching
     # make_thumb to explode proves it isn't called again.
-    with unittest.mock.patch("app.artwork.cache.make_thumb", side_effect=AssertionError):
+    with unittest.mock.patch("app.artwork.degrade.make_thumb", side_effect=AssertionError):
         again = cache.get_thumb("ABBA")
     assert again is not None and again.data == thumb.data
 
@@ -323,7 +323,7 @@ def test_get_thumb_falls_back_to_original_on_undecodable_source(
     assert thumb.content_type == "image/png"
     # The degrade result is cached too (keyed to the source tag) — a second
     # call must not attempt make_thumb again either.
-    with unittest.mock.patch("app.artwork.cache.make_thumb", side_effect=AssertionError):
+    with unittest.mock.patch("app.artwork.degrade.make_thumb", side_effect=AssertionError):
         again = cache.get_thumb("ABBA")
     assert again is not None and again.data == b"corrupt-not-an-image"
     assert again.content_type == "image/png"
@@ -377,7 +377,7 @@ def test_get_thumb_degrade_with_blank_mime_still_caches(
 
     thumb = cache.get_thumb("ABBA")
     assert thumb is not None and thumb.content_type == "application/octet-stream"
-    with unittest.mock.patch("app.artwork.cache.make_thumb", side_effect=AssertionError):
+    with unittest.mock.patch("app.artwork.degrade.make_thumb", side_effect=AssertionError):
         again = cache.get_thumb("ABBA")
     assert again is not None and again.data == b"corrupt-not-an-image"
 
@@ -463,6 +463,100 @@ def test_get_thumb_rederives_from_an_unsendable_stored_thumb_mime(
     healed = cache.get_thumb("ABBA")
 
     assert healed is not None and healed.content_type == "image/webp"
+
+
+def test_a_dropped_negative_marker_still_bounds_refetches(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """The expensive half of a broken cache dir is the marker it cannot write.
+
+    ``.miss`` is the ONLY brake on re-fetching a confirmed no-match. Swallowing
+    a failed write turns a 7-day TTL into an upstream call on every request,
+    forever and invisibly — and one no-match resolve walks fanart.tv -> Spotify
+    -> Deezer, so a 48-card roster paint becomes up to 144 third-party calls
+    against a 5/s limiter. The in-memory stand-in is what keeps the TTL a TTL.
+    """
+    if os.getuid() == 0:
+        pytest.skip("running as root: a read-only dir does not deny writes")
+    os.chmod(tmp_path, 0o500)
+    try:
+        cache.store_negative("Nobody", ttl_seconds=3600)
+        assert cache.get("Nobody") is NEGATIVE  # would be None -> re-resolve
+    finally:
+        os.chmod(tmp_path, 0o755)
+    assert not list(tmp_path.glob("*.miss"))  # nothing reached disk
+
+
+def test_an_in_memory_negative_still_expires(cache: ArtistImageCache, tmp_path: Path) -> None:
+    """The stand-in carries the TTL, not just the fact — an expired one must let
+    the caller re-resolve exactly as an expired ``.miss`` body does."""
+    if os.getuid() == 0:
+        pytest.skip("running as root: a read-only dir does not deny writes")
+    os.chmod(tmp_path, 0o500)
+    try:
+        cache.store_negative("Nobody", ttl_seconds=-1)
+        assert cache.get("Nobody") is None
+    finally:
+        os.chmod(tmp_path, 0o755)
+
+
+def test_a_dropped_positive_is_served_from_memory(cache: ArtistImageCache, tmp_path: Path) -> None:
+    """A found artist re-resolves per request too, so the stand-in holds
+    positives as well — that is the difference between "degraded to a smaller
+    cache" and "no cache at all"."""
+    if os.getuid() == 0:
+        pytest.skip("running as root: a read-only dir does not deny writes")
+    os.chmod(tmp_path, 0o500)
+    try:
+        cache.store_positive("ABBA", b"image-bytes", "image/png")
+        got = cache.get("ABBA")
+    finally:
+        os.chmod(tmp_path, 0o755)
+
+    assert isinstance(got, CachedImage)
+    assert got.data == b"image-bytes" and got.content_type == "image/png"
+
+
+def test_a_recovered_cache_dir_takes_authority_back_from_memory(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """Fixing the permissions must be enough — no restart.
+
+    The stand-in is dropped on the first write that succeeds, so a stale
+    in-memory entry can never shadow what is now on disk.
+    """
+    if os.getuid() == 0:
+        pytest.skip("running as root: a read-only dir does not deny writes")
+    os.chmod(tmp_path, 0o500)
+    try:
+        cache.store_positive("ABBA", b"from-memory", "image/png")
+    finally:
+        os.chmod(tmp_path, 0o755)
+    cache.store_positive("ABBA", b"from-disk", "image/png")
+
+    got = cache.get("ABBA")
+
+    assert isinstance(got, CachedImage) and got.data == b"from-disk"
+    assert (tmp_path / next(p.name for p in tmp_path.glob("*.bin"))).read_bytes() == b"from-disk"
+
+
+def test_the_memory_fallback_is_bounded_by_bytes(cache: ArtistImageCache, tmp_path: Path) -> None:
+    """Bounded on purpose: this exists to stop a broken cache dir multiplying
+    upstream traffic, not to turn a disk fault into an OOM. Oldest goes first."""
+    if os.getuid() == 0:
+        pytest.skip("running as root: a read-only dir does not deny writes")
+    from app.artwork.cache import _FALLBACK_MAX_BYTES
+
+    chunk = _FALLBACK_MAX_BYTES // 4 + 1  # 4 of these overflow the budget
+    os.chmod(tmp_path, 0o500)
+    try:
+        for i in range(4):
+            cache.store_positive(f"Artist{i}", b"x" * chunk, "image/png")
+        survivors = [i for i in range(4) if isinstance(cache.get(f"Artist{i}"), CachedImage)]
+    finally:
+        os.chmod(tmp_path, 0o755)
+
+    assert survivors == [1, 2, 3], "the oldest entry must be the one evicted"
 
 
 def test_an_unreadable_cache_dir_degrades_instead_of_raising(

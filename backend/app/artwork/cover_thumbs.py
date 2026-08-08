@@ -25,16 +25,12 @@ since both derive from the same source bytes the result is the same either way.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
-from contextlib import suppress
 from pathlib import Path
 
 from app.artwork.cache import CachedImage, _atomic_write_bytes
-from app.artwork.images import FALLBACK_CONTENT_TYPE, is_header_safe_content_type
-from app.artwork.thumbs import THUMB_MIME, ThumbError, make_thumb
-
-_log = logging.getLogger("musicdrop.artwork")
+from app.artwork.degrade import derive_thumb_or_degrade, warn_throttled
+from app.artwork.images import is_header_safe_content_type
 
 
 class CoverThumbCache:
@@ -87,25 +83,14 @@ class CoverThumbCache:
         if original is None:
             return None
         data, mime = original
-        try:
-            thumb_data = make_thumb(data)
-            thumb_mime = THUMB_MIME
-        except ThumbError as exc:
-            # Logged for the same reason as ArtistImageCache.get_thumb's degrade
-            # (see there): a systemic encoder failure used to be a 500, and
-            # silent full-size fallback looks exactly like an undeployed
-            # feature. Once per source version — the fallback is cached below.
-            _log.warning(
-                "album-cover thumbnail degraded to the original for album %s: %s", album_id, exc
-            )
-            # The ORIGINAL's mime now goes on the wire and into .src, so it has
-            # to clear the same bar a stored one does.
-            thumb_data = data
-            thumb_mime = mime if is_header_safe_content_type(mime) else FALLBACK_CONTENT_TYPE
+        # One shared decision (see ArtistImageCache.get_thumb): degrade to the
+        # original, log it, and sanitise the ORIGINAL's mime — on this path it
+        # goes both on the wire and into .src.
+        thumb_data, thumb_mime = derive_thumb_or_degrade(data, mime, subject=f"album {album_id}")
 
         # Caching is best-effort: the thumb exists in memory either way, so a
         # read-only cache dir must cost the caching, not the cover.
-        with suppress(OSError):
+        try:
             self._ensure_dir()
             # .bin BEFORE .src: the .src tag is what makes an entry "hit" on the
             # next get(), so a crash between the two writes must leave the tag
@@ -113,4 +98,6 @@ class CoverThumbCache:
             # leaving a fresh tag pointing at stale (previous-source) bytes.
             _atomic_write_bytes(bin_path, thumb_data)
             _atomic_write_bytes(src_path, f"{source_tag} {thumb_mime}".encode())
+        except OSError as exc:
+            warn_throttled("cache-write", "album-cover thumb cache is unwritable: %s", exc)
         return CachedImage(data=thumb_data, content_type=thumb_mime)

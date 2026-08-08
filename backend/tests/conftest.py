@@ -183,6 +183,22 @@ def reset_bank_index() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def reset_artwork_log_throttle() -> Iterator[None]:
+    """Forget throttled artwork conditions around every test.
+
+    The throttle keys on the CONDITION and is module-global, so without this one
+    test's warning silently suppresses the next test's — the suite would pass or
+    fail on ordering, which is exactly the kind of failure a log assertion is
+    supposed to catch rather than cause.
+    """
+    from app.artwork.degrade import reset_log_throttle
+
+    reset_log_throttle()
+    yield
+    reset_log_throttle()
+
+
+@pytest.fixture(autouse=True)
 def reset_browse_cache() -> Iterator[None]:
     """Drop the browse cache's module-level rows around every test.
 
