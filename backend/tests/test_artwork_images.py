@@ -71,8 +71,11 @@ def test_header_safe_rejects_unsendable_content_types(value: str, why: str) -> N
     assert is_header_safe_content_type(value) is False, why
 
 
-def test_header_safe_strips_before_judging() -> None:
-    """Padding is not a reason to drop a perfectly good type — and stripping has
-    to happen HERE, not in each caller, or a ``.thumb.src`` of ``"<tag>   "``
-    hits on the next read and never re-derives."""
+def test_header_safe_accepts_a_padded_but_real_content_type() -> None:
+    """A FORWARD guard, not a regression test: no mutation of the current line
+    kills it, because the strip's only observable effect is the whitespace-only
+    case above. It exists because the obvious wrong way to reject ``"   "`` is
+    to reject anything that is not already stripped, which would throw away a
+    perfectly serveable ``" image/png "`` from a sloppy CDN.
+    """
     assert is_header_safe_content_type("  image/png  ") is True
