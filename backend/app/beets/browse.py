@@ -18,20 +18,20 @@ from __future__ import annotations
 import os
 import threading
 from collections import Counter
+from itertools import groupby
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from typing import Literal, NamedTuple
 
 from beets import config
 from beets.library import Album as BeetsAlbum
 from beets.library import Library
 
 from app.beets.library import (
-    _album_genre,
     _coerce_int,
     _coerce_optional_str,
     _coerce_str,
     _coerce_year,
-    _is_instrumental,
+    _instrumental_value,
     _require_id,
     _to_album_cached,
 )
@@ -68,9 +68,9 @@ class BrowseRow(NamedTuple):
     genre_raw: str | None
 
 
-# Two locks so invalidation NEVER waits on a scan. The whole-library build takes
-# seconds on an HDD (one albums() scan + per-album items()), and
-# invalidate_browse_cache() is called synchronously ON THE EVENT LOOP by every
+# Two locks so invalidation NEVER waits on a scan. The whole-library build is
+# still a multi-second job on an HDD (one albums() scan + the aggregate item
+# pass), and invalidate_browse_cache() is called synchronously ON THE EVENT LOOP by every
 # mutating endpoint (via emit_library_changed / broker.publish_library_changed).
 # With a single lock held across the build, one open Browse tab rebuilding the
 # cache in a threadpool thread froze the entire asyncio loop the moment any
@@ -119,64 +119,155 @@ def _album_decade(year: int | None) -> str:
     return f"{(year // 10) * 10}s"
 
 
-def _album_format(items: list[Any]) -> str:
-    """The album's predominant item format (``"FLAC"``); no item format -> ``"Unknown"``.
+class _AlbumFacts(NamedTuple):
+    """Everything a ``BrowseRow`` needs from an album's tracks.
 
-    ``format`` is a beets item field set at import from the file's MediaFile;
-    a mixed-format album takes its most common value (one value per album).
+    Derived once for the WHOLE library by :func:`_collect_facts`, so the row
+    build never touches ``album.items()``. The two track totals are both carried
+    because choosing between them needs ``disctotal``, an ALBUM field the item
+    pass never sees — :func:`_tracks_bucket` picks one.
     """
-    formats = [f for it in items if (f := _coerce_optional_str(it.get("format"))) is not None]
-    if not formats:
-        return "Unknown"
-    return Counter(formats).most_common(1)[0][0]
+
+    track_count: int
+    # Predominant item format ("FLAC"); "Unknown" when no track carries one.
+    format: str
+    # First non-empty ITEM genre, for albums with no genre of their own.
+    genre_fallback: str | None
+    # Complete / Partial / Missing.
+    lyrics: str
+    # The first track's ``tracktotal`` — the expectation for a single-disc album
+    # or one numbered straight through.
+    first_tracktotal: int
+    # One ``tracktotal`` per DISTINCT disc — the expectation under
+    # ``per_disc_numbering``.
+    per_disc_tracktotal: int
 
 
-def _album_lyrics_bucket(items: list[Any]) -> str:
-    """Complete (every track answered) / Partial / Missing (none, or no tracks).
+# An album with no tracks at all: the values the old per-album build produced
+# from an empty ``items`` list.
+_EMPTY_FACTS = _AlbumFacts(
+    track_count=0,
+    format="Unknown",
+    genre_fallback=None,
+    lyrics="Missing",
+    first_tracktotal=0,
+    per_disc_tracktotal=0,
+)
 
-    A track is answered when it carries lyrics OR beets flagged it instrumental:
-    an instrumental has no lyrics BY NATURE, so counting it as missing left
-    albums stuck at Partial with nothing left to fetch. Value-tested via
-    ``_is_instrumental`` — the flag reads back as the string ``"0"`` on every
-    track beets DID find lyrics for, and ``"0"`` is truthy.
+# ONE pass over every album's tracks, ordered so each album's rows arrive
+# contiguous and in play order. ``genre`` is NOT a column here: beets 2.13 moved
+# single-valued ``genre`` into ``item_attributes`` (the ``genres`` column holds
+# the multi-value form), so it is read as a flex attr below and matched back to
+# these rows by item id — which keeps THIS query the single source of track
+# order. ``lyrics`` IS a column, and can be NULL.
+_ITEM_FACTS_SQL = """
+    SELECT id, album_id, format, lyrics, disc, tracktotal
+    FROM items
+    WHERE album_id IS NOT NULL
+    ORDER BY album_id, disc, track, id
+"""
+
+_FLEX_SQL = "SELECT entity_id, value FROM item_attributes WHERE key = ?"
+
+
+def _collect_facts(lib: Library) -> dict[int, _AlbumFacts]:
+    """Per-album track facts for the whole library, in three queries.
+
+    Replaces one ``album.items()`` query (plus a full beets ``Item`` build per
+    track) per album — ~4.5k queries and 18k model instantiations on a real
+    library, repaid after EVERY mutation because the cache is dropped on
+    ``emit_library_changed``. Values come out of raw SQL, so they bypass beets'
+    type layer entirely and every one goes through a ``_coerce_*`` helper.
+
+    Track order is ``(disc, track, id)`` — play order, and deliberately NOT
+    beets' ``sort_item`` display sort (``artist+ album+ disc+ track+`` by
+    default), which the old ``album.items()`` build inherited. The two differ
+    only WITHIN an album whose tracks carry different artists, and only for the
+    order-sensitive facts below (genre fallback, a tied format vote, which
+    disc's ``tracktotal`` comes first); a compilation's facets no longer shift
+    with the user's display-sort preference.
     """
-    have = sum(1 for it in items if _coerce_str(it.get("lyrics")).strip() or _is_instrumental(it))
-    if not items or have == 0:
-        return "Missing"
-    return "Complete" if have == len(items) else "Partial"
+    with lib.transaction() as tx:
+        item_rows = tx.query(_ITEM_FACTS_SQL)
+        genre_rows = tx.query(_FLEX_SQL, ("genre",))
+        instrumental_rows = tx.query(_FLEX_SQL, ("lyrics_instrumental",))
+
+    genres = {_coerce_int(entity_id): value for entity_id, value in genre_rows}
+    # Value-tested, never presence-tested: beets writes the flag as FALSE (which
+    # reads back as the TRUTHY string "0") on every track it DID find lyrics for.
+    instrumental = {
+        _coerce_int(entity_id)
+        for entity_id, value in instrumental_rows
+        if _instrumental_value(value)
+    }
+
+    facts: dict[int, _AlbumFacts] = {}
+    for album_id, rows in groupby(item_rows, key=lambda row: _coerce_int(row["album_id"])):
+        track_count = 0
+        formats: list[str] = []
+        genre_fallback: str | None = None
+        answered = 0
+        first_tracktotal = 0
+        per_disc_tracktotal = 0
+        seen_discs: set[int] = set()
+        for raw_id, _album_id, fmt, lyrics, disc, tracktotal in rows:
+            item_id = _coerce_int(raw_id)
+            track_count += 1
+            if (value := _coerce_optional_str(fmt)) is not None:
+                formats.append(value)
+            if genre_fallback is None:
+                genre_fallback = _coerce_optional_str(genres.get(item_id))
+            # A track is ANSWERED when it carries lyrics or beets flagged it
+            # instrumental: an instrumental has no lyrics BY NATURE, so counting
+            # it as missing left albums stuck at Partial with nothing to fetch.
+            if _coerce_str(lyrics).strip() or item_id in instrumental:
+                answered += 1
+            total = _coerce_int(tracktotal)
+            if track_count == 1:
+                first_tracktotal = total
+            if (disc_no := _coerce_int(disc)) not in seen_discs:
+                seen_discs.add(disc_no)
+                per_disc_tracktotal += total
+        facts[album_id] = _AlbumFacts(
+            track_count=track_count,
+            # A mixed-format album takes its most common value (one per album);
+            # ``Counter`` breaks a tie on first appearance, i.e. play order.
+            format=Counter(formats).most_common(1)[0][0] if formats else "Unknown",
+            genre_fallback=genre_fallback,
+            lyrics=(
+                "Missing"
+                if answered == 0
+                else ("Complete" if answered == track_count else "Partial")
+            ),
+            first_tracktotal=first_tracktotal,
+            per_disc_tracktotal=per_disc_tracktotal,
+        )
+    return facts
 
 
-def _album_tracks_bucket(album: BeetsAlbum, items: list[Any]) -> str:
+def _tracks_bucket(album: BeetsAlbum, facts: _AlbumFacts) -> str:
     """Complete / Incomplete / Unknown vs the matched release's track count.
 
     Mirrors beets' ``Album.albumtotal`` (the ``missing`` plugin's completeness
-    source): expected = ``items[0].tracktotal`` for single-disc / non-per-disc
-    numbering, else one ``tracktotal`` per distinct disc — computed from the
-    items already in hand so the cache scan issues no extra queries. As-is /
+    source): expected = the first track's ``tracktotal`` for single-disc /
+    non-per-disc numbering, else one ``tracktotal`` per distinct disc. As-is /
     unmatched imports carry no ``tracktotal`` -> ``Unknown``. Inherited beets
     caveat: an album missing an ENTIRE disc undercounts ``expected`` (no item
     exists to carry that disc's total).
     """
-    if not items:
+    if facts.track_count == 0:
         return "Unknown"
     disctotal = _coerce_int(album.get("disctotal"))
     # Read the flag by confuse truthiness, NOT .get(bool): a value beets tolerates
     # but that isn't a canonical bool (e.g. `per_disc_numbering: on`) makes the
     # bool template raise ConfigTypeError, crashing the whole browse-cache build.
     if disctotal <= 1 or not bool(config["per_disc_numbering"]):
-        expected = _coerce_int(items[0].get("tracktotal"))
+        expected = facts.first_tracktotal
     else:
-        seen: set[int] = set()
-        expected = 0
-        for it in items:
-            disc = _coerce_int(it.get("disc"))
-            if disc in seen:
-                continue
-            seen.add(disc)
-            expected += _coerce_int(it.get("tracktotal"))
+        expected = facts.per_disc_tracktotal
     if expected <= 0:
         return "Unknown"
-    return "Complete" if len(items) >= expected else "Incomplete"
+    return "Complete" if facts.track_count >= expected else "Incomplete"
 
 
 def _coerce_added(value: object) -> float:
@@ -186,29 +277,30 @@ def _coerce_added(value: object) -> float:
         return 0.0
 
 
-def _build_row(album: BeetsAlbum) -> BrowseRow:
-    items = list(album.items())
+def _build_row(album: BeetsAlbum, facts: _AlbumFacts) -> BrowseRow:
     albumartist = _coerce_str(album.albumartist)
-    genre_raw = _album_genre(album, items)
+    # ``_album_genre``'s heuristic, against facts instead of items: album genre
+    # wins, else the FIRST track with a non-empty one (not a majority vote).
+    genre_raw = _coerce_optional_str(album.get("genre")) or facts.genre_fallback
     return BrowseRow(
         album_id=_require_id(album.id),
         artist_key=albumartist.casefold(),
         album_key=_coerce_str(album.album).casefold(),
         albumartist=albumartist,
         added=_coerce_added(album.get("added")),
-        track_count=len(items),
+        track_count=facts.track_count,
         genre_raw=genre_raw,
         genre=genre_raw or "Unknown",
         # "80s" means the music's era: original release year, falling back to
         # the (possibly reissue) release year when beets has no original_year.
         decade=_album_decade(_coerce_year(album.get("original_year")) or _coerce_year(album.year)),
-        format=_album_format(items),
+        format=facts.format,
         album_type=_facet_str(album.get("albumtype")),
         source=_facet_str(album.get("data_source")),
         media=_facet_str(album.get("media")),
         country=_facet_str(album.get("country")),
-        lyrics=_album_lyrics_bucket(items),
-        tracks=_album_tracks_bucket(album, items),
+        lyrics=facts.lyrics,
+        tracks=_tracks_bucket(album, facts),
     )
 
 
@@ -234,7 +326,11 @@ def _rows(lib: Library) -> list[BrowseRow]:
             if cached is not None:
                 return cached
             generation = _GENERATION
-        rows = [_build_row(album) for album in lib.albums()]
+        facts = _collect_facts(lib)
+        rows = [
+            _build_row(album, facts.get(_require_id(album.id), _EMPTY_FACTS))
+            for album in lib.albums()
+        ]
         with _STATE_LOCK:
             if _GENERATION == generation:
                 _ROWS[key] = rows

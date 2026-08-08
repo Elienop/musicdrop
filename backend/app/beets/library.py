@@ -153,24 +153,32 @@ def _coerce_duration(value: object) -> float | None:
     return seconds or None
 
 
-def _is_instrumental(item: Any) -> bool:
-    """Whether beets' ``lyrics_instrumental`` flag is set on this track.
+def _instrumental_value(value: object) -> bool:
+    """The truth of a ``lyrics_instrumental`` value, however it arrives.
 
-    The flex value reads back as a real bool when beets' LyricsPlugin is loaded
-    (it registers the field as BOOLEAN) and as the raw string ``"1"``/``"0"``
-    when it isn't — and ``"0"`` is a truthy Python string, so a plain truth test
-    would read a track beets explicitly marked NOT instrumental as instrumental.
-
-    Lives in this module rather than beside the rest of the lyrics adapter
-    because ``lyrics.py`` imports THIS file (a top-level import back would
-    cycle). ``lyrics.py`` and ``browse.py`` both consume it from here — one
-    implementation, the way every other shared helper here is used. A second
-    copy is how the "0"-is-truthy bug comes back on one path only.
+    beets' LyricsPlugin registers the field as BOOLEAN, so a loaded plugin hands
+    back a real ``bool``; without it the flex value is the raw string ``"1"`` /
+    ``"0"`` — and ``"0"`` is a TRUTHY Python string, so a plain truth test would
+    read a track beets explicitly marked NOT instrumental as instrumental. The
+    same two shapes come out of a raw ``item_attributes`` SELECT, which is why
+    this takes a value rather than an item: ``browse.py``'s aggregate cache
+    build reads the flag straight from SQL and must bucket it identically.
     """
-    value = item.get("lyrics_instrumental")
     if isinstance(value, str):
         return value.strip().lower() not in {"", "0", "false"}
     return bool(value)
+
+
+def _is_instrumental(item: Any) -> bool:
+    """Whether beets' ``lyrics_instrumental`` flag is set on this track.
+
+    Lives in this module rather than beside the rest of the lyrics adapter
+    because ``lyrics.py`` imports THIS file (a top-level import back would
+    cycle). ``lyrics.py`` and ``browse.py`` both consume the flag's truth from
+    here — one implementation, the way every other shared helper here is used.
+    A second copy is how the "0"-is-truthy bug comes back on one path only.
+    """
+    return _instrumental_value(item.get("lyrics_instrumental"))
 
 
 def _album_fields(album: BeetsAlbum, *, track_count: int, genre: str | None) -> dict[str, Any]:

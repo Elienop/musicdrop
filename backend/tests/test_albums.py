@@ -1,6 +1,7 @@
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
@@ -610,13 +611,25 @@ def test_album_detail_real_lyrics_beat_a_stale_instrumental_flag(temp_library: "
 def test_instrumental_predicate_has_exactly_one_implementation() -> None:
     """The lyrics adapter, the album mapper and the browse facet MUST test the flag
     the same way. A second copy is how the "0"-is-truthy bug comes back on one path
-    only, so pin that all three name the SAME function object (``vars`` rather than
-    attribute access: the name is private, so mypy forbids reading it off a module
-    that only re-exports it)."""
+    only, so pin that every consumer names the SAME function object (``vars`` rather
+    than attribute access: the name is private, so mypy forbids reading it off a
+    module that only re-exports it).
+
+    ``_instrumental_value`` is the one implementation of the flag's truth.
+    ``_is_instrumental`` is the item-shaped wrapper the beets-object paths use;
+    ``browse`` reads the flag straight out of ``item_attributes`` in its aggregate
+    cache build, so it consumes the value predicate directly."""
     from app.beets import browse as browse_mod
     from app.beets import library as library_mod
     from app.beets import lyrics as lyrics_mod
 
-    predicate = vars(library_mod)["_is_instrumental"]
-    assert vars(lyrics_mod)["_is_instrumental"] is predicate
-    assert vars(browse_mod)["_is_instrumental"] is predicate
+    predicate = vars(library_mod)["_instrumental_value"]
+    assert vars(browse_mod)["_instrumental_value"] is predicate
+
+    on_item = vars(library_mod)["_is_instrumental"]
+    assert vars(lyrics_mod)["_is_instrumental"] is on_item
+    # The item wrapper must not re-derive the truth: the "0"-is-truthy trap and
+    # its opposite have to read identically through both entry points.
+    for raw, expected in (("0", False), ("", False), ("false", False), ("1", True)):
+        assert predicate(raw) is expected
+        assert on_item(SimpleNamespace(get=lambda _key, v=raw: v)) is expected

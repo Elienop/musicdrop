@@ -19,7 +19,7 @@ from beets.library import Item, Library
 from fastapi.testclient import TestClient
 
 from app.api.albums import get_library
-from app.beets.browse import browse_albums, browse_facets
+from app.beets.browse import BrowseRow, browse_albums, browse_facets
 from app.events.broker import EventBroker
 from app.events.emit import emit_library_changed
 from app.main import app
@@ -280,11 +280,11 @@ def test_invalidate_never_blocks_on_an_in_flight_scan(
     build_calls = {"n": 0}
     real_build = browse_mod._build_row
 
-    def parked_build(album: Any) -> Any:
+    def parked_build(album: Any, facts: Any) -> Any:
         build_calls["n"] += 1
         in_build.set()
         assert release_build.wait(timeout=5.0)
-        return real_build(album)
+        return real_build(album, facts)
 
     monkeypatch.setattr(browse_mod, "_build_row", parked_build)
     built: list[list[Any]] = []
@@ -339,9 +339,9 @@ def test_concurrent_cold_cache_calls_scan_once(
     calls = {"n": 0}
     real_build = browse_mod._build_row
 
-    def counting_build(album: Any) -> Any:
+    def counting_build(album: Any, facts: Any) -> Any:
         calls["n"] += 1
-        return real_build(album)
+        return real_build(album, facts)
 
     monkeypatch.setattr(browse_mod, "_build_row", counting_build)
     results: list[list[Any]] = []
@@ -796,3 +796,272 @@ def test_browse_albums_endpoint_tracks_param(client: TestClient) -> None:
     assert complete.json()["total"] == 0
     facets = client.get("/api/browse/facets").json()
     assert "tracks" in facets
+
+
+# ----- characterization: the exact BrowseRow values -----
+#
+# THE REFEREE for the SQL-aggregate rewrite of the cache build. Every other test
+# in this file checks one facet in isolation; this one pins all sixteen
+# BrowseRow fields of four albums at once, so a rewrite that quietly shifts a
+# bucket edge (format tie-break, genre fallback order, the "0"-truthy
+# instrumental trap, per-disc expected-track math) fails here rather than
+# shipping. It passed against the per-album ``album.items()`` build and must
+# keep passing, UNCHANGED, against the aggregate one.
+
+
+def _char_item(
+    directory: Path,
+    *,
+    artist: str,
+    album: str,
+    n: int,
+    fmt: str | None = None,
+    genre: str | None = None,
+    lyrics: str | None = None,
+    instrumental: object | None = None,
+    tracktotal: int | None = None,
+    disc: int | None = None,
+) -> Item:
+    """One item with per-track control the shared ``_add`` helper doesn't offer."""
+    it = Item(album=album, albumartist=artist, artist=artist, title=f"T{n}", track=n)
+    it.path = os.fsencode(str(directory / f"{artist} - {album} - {n}.x"))
+    if fmt is not None:
+        it.format = fmt
+    if genre is not None:
+        it.genre = genre
+    if lyrics is not None:
+        it.lyrics = lyrics
+    if instrumental is not None:
+        it["lyrics_instrumental"] = instrumental
+    if tracktotal is not None:
+        it.tracktotal = tracktotal
+    if disc is not None:
+        it.disc = disc
+    return it
+
+
+def _characterization_lib(tmp_path: Path) -> Library:
+    """The four-album fixture the characterization test pins. See its docstring."""
+    lib = Library(str(tmp_path / "char.db"), directory=str(tmp_path / "music"))
+
+    # A - every field populated, everything Complete.
+    a = lib.add_album(
+        [
+            _char_item(
+                tmp_path, artist="Alpha", album="Anthem", n=n, fmt="FLAC", lyrics="la", tracktotal=2
+            )
+            for n in (1, 2)
+        ]
+    )
+    a["genre"] = "Rock"
+    a.year = 1994
+    a.original_year = 1989
+    a.albumtype = "album"
+    a["data_source"] = "MusicBrainz"
+    a["media"] = "CD"
+    a.country = "SE"
+    a.added = 100.0
+    a.store()
+
+    # B - format majority vote, genre fallback to the FIRST non-empty item genre,
+    # lyrics Partial (one real lyric + one instrumental + one neither).
+    b = lib.add_album(
+        [
+            _char_item(tmp_path, artist="Bravo", album="Beacon", n=1, fmt="MP3", tracktotal=5),
+            _char_item(
+                tmp_path,
+                artist="Bravo",
+                album="Beacon",
+                n=2,
+                fmt="MP3",
+                genre="Pop",
+                lyrics="la",
+                tracktotal=5,
+            ),
+            _char_item(
+                tmp_path,
+                artist="Bravo",
+                album="Beacon",
+                n=3,
+                fmt="FLAC",
+                genre="Jazz",
+                instrumental=1,
+                tracktotal=5,
+            ),
+        ]
+    )
+    # No album-level genre on purpose: an album flex `genre` propagates DOWN to
+    # every item on store(), which would erase the per-item fallback this pins.
+    b.added = 200.0
+    b.store()
+
+    # C - the "0"-is-truthy trap: beets writes lyrics_instrumental=False on every
+    # track it searched and found nothing for, and that reads back as "0".
+    c = lib.add_album(
+        [_char_item(tmp_path, artist="Charlie", album="Cipher", n=1, instrumental=False)]
+    )
+    c.year = 2003
+    c.added = 300.0
+    c.store()
+
+    # D - per_disc_numbering: expected = ONE tracktotal per distinct disc
+    # (2 + 3 = 5), not the first item's alone (2). 4 present -> Incomplete.
+    d = lib.add_album(
+        [
+            _char_item(
+                tmp_path,
+                artist="Delta",
+                album="Delta Box",
+                n=n,
+                fmt="FLAC",
+                disc=disc,
+                tracktotal=tracktotal,
+            )
+            for n, disc, tracktotal in ((1, 1, 2), (2, 2, 3), (3, 1, 2), (4, 2, 3))
+        ]
+    )
+    d["genre"] = "Metal"
+    d.year = 2011
+    d.disctotal = 2
+    d.added = 400.0
+    d.store()
+    return lib
+
+
+# The expected rows, written from the fixture's INTENT rather than copied off a
+# run. Album ids are the insertion order of a fresh temp DB (1..4).
+_EXPECTED_ROWS = [
+    BrowseRow(
+        album_id=1,
+        artist_key="alpha",
+        album_key="anthem",
+        albumartist="Alpha",
+        added=100.0,
+        genre="Rock",
+        decade="1980s",  # original_year 1989 wins over year 1994
+        format="FLAC",
+        album_type="album",
+        source="MusicBrainz",
+        media="CD",
+        country="SE",
+        lyrics="Complete",  # 2 of 2 tracks carry lyrics
+        tracks="Complete",  # 2 present vs tracktotal 2
+        track_count=2,
+        genre_raw="Rock",
+    ),
+    BrowseRow(
+        album_id=2,
+        artist_key="bravo",
+        album_key="beacon",
+        albumartist="Bravo",
+        added=200.0,
+        genre="Pop",  # first non-empty ITEM genre in (disc, track) order
+        decade="Unknown",  # no year at all
+        format="MP3",  # 2x MP3 beats 1x FLAC
+        album_type="Unknown",
+        source="Unknown",
+        media="Unknown",
+        country="Unknown",
+        lyrics="Partial",  # 1 real lyric + 1 instrumental answered, 1 not
+        tracks="Incomplete",  # 3 present vs tracktotal 5
+        track_count=3,
+        genre_raw="Pop",
+    ),
+    BrowseRow(
+        album_id=3,
+        artist_key="charlie",
+        album_key="cipher",
+        albumartist="Charlie",
+        added=300.0,
+        genre="Unknown",
+        decade="2000s",
+        format="Unknown",  # no item carries a format
+        album_type="Unknown",
+        source="Unknown",
+        media="Unknown",
+        country="Unknown",
+        lyrics="Missing",  # the "0" flag must NOT read as instrumental
+        tracks="Unknown",  # no tracktotal
+        track_count=1,
+        genre_raw=None,  # NULL, not "Unknown" - the Album model keeps it nullable
+    ),
+    BrowseRow(
+        album_id=4,
+        artist_key="delta",
+        album_key="delta box",
+        albumartist="Delta",
+        added=400.0,
+        genre="Metal",
+        decade="2010s",
+        format="FLAC",
+        album_type="Unknown",
+        source="Unknown",
+        media="Unknown",
+        country="Unknown",
+        lyrics="Missing",
+        tracks="Incomplete",  # per-disc expected 2+3=5 vs 4 present
+        track_count=4,
+        genre_raw="Metal",
+    ),
+]
+
+
+def test_rows_characterization(tmp_path: Path) -> None:
+    """Pins _build_row's output field-by-field across the SQL-aggregate rewrite.
+
+    A: 2 FLAC tracks, album genre 'Rock', year 1994 + original_year 1989,
+       tracktotal 2, both tracks have lyrics -> everything Complete, decade 1980s.
+    B: 3 tracks (2 MP3 + 1 FLAC -> MP3 by majority), NO album genre, item genres
+       ['', 'Pop', 'Jazz'] -> fallback 'Pop' (first non-empty in disc/track
+       order), no year -> decade Unknown, tracktotal 5 -> Incomplete, one track
+       with lyrics + one flagged instrumental + one neither -> lyrics Partial.
+    C: 1 track, no format, no tracktotal -> Unknown, no lyrics and
+       lyrics_instrumental='0' (the truthy-string trap) -> lyrics Missing.
+    D: 4 tracks across 2 discs under per_disc_numbering, per-disc tracktotals
+       2 and 3 -> expected 5, present 4 -> Incomplete (using only the FIRST
+       item's tracktotal would wrongly read Complete).
+    """
+    from beets import config as beets_config
+
+    from app.beets import browse as browse_mod
+
+    lib = _characterization_lib(tmp_path)
+    beets_config["per_disc_numbering"] = True
+    try:
+        browse_mod.invalidate_browse_cache()
+        rows = sorted(browse_mod._rows(lib), key=lambda r: r.album_id)
+    finally:
+        beets_config["per_disc_numbering"] = False
+
+    assert rows == _EXPECTED_ROWS
+
+
+def test_rebuild_issues_no_per_album_items_queries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cold rebuild must not run one ``album.items()`` query per album.
+
+    That N+1 is the whole cost of the cache: ~4.5k queries and 18k beets Item
+    materializations on a real library, repaid after EVERY mutation because
+    ``emit_library_changed`` drops the cache. The aggregate build reads the item
+    facts in a handful of whole-table queries instead, so this spy stays at zero.
+    """
+    from beets.library import Album as _BeetsAlbum
+
+    from app.beets import browse as browse_mod
+
+    lib = _characterization_lib(tmp_path)
+    browse_mod.invalidate_browse_cache()
+
+    calls: list[int] = []
+    real_items = _BeetsAlbum.items
+
+    def counting_items(self: _BeetsAlbum, *a: Any, **k: Any) -> Any:
+        calls.append(1)
+        return real_items(self, *a, **k)
+
+    monkeypatch.setattr(_BeetsAlbum, "items", counting_items)
+    facets = browse_facets(lib)  # forces the full rebuild
+
+    assert calls == []  # the aggregate build never calls album.items()
+    assert sum(v.count for v in facets.genres) == 4  # and it really built all four rows
