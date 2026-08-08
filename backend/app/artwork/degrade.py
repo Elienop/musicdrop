@@ -19,7 +19,7 @@ import threading
 import time
 from typing import Final
 
-from app.artwork.images import FALLBACK_CONTENT_TYPE, is_header_safe_content_type
+from app.artwork.images import FALLBACK_CONTENT_TYPE, header_safe_content_type
 from app.artwork.thumbs import THUMB_MIME, ThumbError, make_thumb
 
 _log = logging.getLogger("musicdrop.artwork")
@@ -87,5 +87,7 @@ def derive_thumb_or_degrade(data: bytes, content_type: str, *, subject: str) -> 
             subject,
             exc,
         )
-        safe = content_type if is_header_safe_content_type(content_type) else FALLBACK_CONTENT_TYPE
-        return data, safe
+        # The RETURN value, not the input: an original whose type only
+        # needed trimming is served trimmed, and one that cannot be a
+        # header at all takes the generic type.
+        return data, header_safe_content_type(content_type) or FALLBACK_CONTENT_TYPE

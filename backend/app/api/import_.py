@@ -14,6 +14,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 
+from app.artwork.images import FALLBACK_CONTENT_TYPE, header_safe_content_type
 from app.beets.duplicates import find_import_duplicates
 from app.beets.library import LibraryHandle
 from app.import_jobs.registry import ImportJobRegistry, get_registry
@@ -154,7 +155,12 @@ async def get_import_album_cover(
     image_bytes, mime = cover
     return Response(
         content=image_bytes,
-        media_type=mime,
+        # Same provenance as the album-cover sink: a media file's embedded
+        # picture MIME. Safe today (mediafile re-derives it from magic bytes),
+        # guarded anyway so header_safe_content_type's enumeration of the sinks
+        # stays true — a comment claiming completeness is how the next reviewer
+        # stops looking.
+        media_type=header_safe_content_type(mime) or FALLBACK_CONTENT_TYPE,
         headers={"Cache-Control": "no-store"},  # parked-album art is transient
     )
 

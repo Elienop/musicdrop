@@ -104,10 +104,22 @@ def test_derive_degrades_to_the_original_and_says_so(caplog: pytest.LogCaptureFi
     assert "UnidentifiedImageError" in record.getMessage()
 
 
-@pytest.mark.parametrize("poison", ["image/日本語", "image/png\nX-Injected: yes", "", "   "])
+@pytest.mark.parametrize(
+    "poison",
+    ["image/日本語", "image/png\nX-Injected: yes", "image/png\n", "image/png\t", "", "   "],
+)
 def test_derive_sanitises_the_originals_content_type(poison: str) -> None:
     """On the degrade path the ORIGINAL's type is what goes on the wire, so it
     clears the same bar a stored one does."""
     _data, mime = derive_thumb_or_degrade(b"not-an-image", poison, subject="artist 'X'")
 
     assert mime == "application/octet-stream"
+
+
+def test_derive_trims_a_padded_original_content_type() -> None:
+    """The RETURN value of header_safe_content_type, not the input: padding is a
+    framing problem (a dropped connection under the h11 worker), not a reason to
+    throw away a good type."""
+    _data, mime = derive_thumb_or_degrade(b"not-an-image", "  image/png  ", subject="album 7")
+
+    assert mime == "image/png"

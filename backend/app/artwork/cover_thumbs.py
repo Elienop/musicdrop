@@ -30,7 +30,7 @@ from pathlib import Path
 
 from app.artwork.cache import CachedImage, _atomic_write_bytes
 from app.artwork.degrade import derive_thumb_or_degrade, warn_throttled
-from app.artwork.images import is_header_safe_content_type
+from app.artwork.images import header_safe_content_type
 
 
 class CoverThumbCache:
@@ -66,12 +66,10 @@ class CoverThumbCache:
             # re-derive replaces it with THUMB_MIME. A non-UTF-8 .src already
             # self-heals via the guard below, but a VALID-UTF-8 one holding
             # `image/日本語` decodes fine and would 500 the cover endpoint.
-            if (
-                stored_tag == source_tag
-                and is_header_safe_content_type(stored_mime)
-                and bin_path.exists()
-            ):
-                return CachedImage(data=bin_path.read_bytes(), content_type=stored_mime)
+            # One that merely needs trimming hits, and is served trimmed.
+            sendable = header_safe_content_type(stored_mime)
+            if stored_tag == source_tag and sendable is not None and bin_path.exists():
+                return CachedImage(data=bin_path.read_bytes(), content_type=sendable)
         except (OSError, ValueError):
             # Missing/unreadable sidecar — rederive below. ValueError covers
             # UnicodeDecodeError (a non-UTF-8 body): this cache is safe to

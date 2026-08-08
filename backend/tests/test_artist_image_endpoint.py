@@ -489,6 +489,41 @@ def test_unreadable_cache_bytes_self_heal_instead_of_500ing(
         app.dependency_overrides.clear()
 
 
+@pytest.mark.parametrize(
+    ("stored_mime", "served"),
+    [("image/webp\n", "image/webp"), ("  image/webp  ", "image/webp")],
+    ids=["trailing-newline", "padded"],
+)
+def test_thumb_endpoint_never_serves_an_unsendable_stored_mime(
+    client: TestClient,
+    artist_image_cache: ArtistImageCache,
+    tmp_path: Path,
+    stored_mime: str,
+    served: str,
+) -> None:
+    """What the CALLER serves is the assertion that matters.
+
+    ``.thumb.src`` is the one stored content-type nothing strips on read, and
+    both shapes below are a dropped connection on a real server — the newline
+    under both uvicorn workers, the padding under h11 (h11 fullmatches
+    ``([^\\x00\\s]+(?:[ \\t]+[^\\x00\\s]+)*)?``). Neither is visible as a status
+    change through TestClient, which is exactly why this asserts the header
+    VALUE. The two are answered differently on purpose: the newline re-derives,
+    the padding hits and is trimmed.
+    """
+    artist_image_cache.store_positive("ABBA", _png(400, 400), "image/png")
+    warmed = client.get("/api/artists/image", params={"name": "ABBA", "size": "thumb"})
+    assert warmed.status_code == 200
+    (src_path,) = tmp_path.glob("*.thumb.src")
+    stored_tag, _, _ = src_path.read_text(encoding="utf-8").partition(" ")
+    src_path.write_text(f"{stored_tag} {stored_mime}", encoding="utf-8")
+
+    resp = client.get("/api/artists/image", params={"name": "ABBA", "size": "thumb"})
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == served
+
+
 def test_size_thumb_still_serves_a_thumb_when_the_cache_cannot_store_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

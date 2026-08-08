@@ -26,9 +26,10 @@ serving an image it already holds. But swallowing a failed write is not free:
 the ``.miss`` marker is the ONLY thing bounding re-fetches, so a silently
 dropped one turns a 7-day confirmed-no-match into an upstream call on every
 request, forever, invisible. :class:`_MemoryFallback` is what keeps that bounded:
-a write that could not reach disk is remembered in a bounded, process-lifetime
-map instead, so a broken cache dir degrades to a smaller cache rather than to no
-cache at all.
+a write that could not reach disk is remembered in a bounded map instead, so a
+broken cache dir degrades to a smaller cache rather than to no cache at all. The
+map lives on the INSTANCE and for its lifetime — the backfill daemon builds its
+own cache object, so each carries its own budget.
 """
 
 import hashlib
@@ -44,7 +45,7 @@ from pathlib import Path
 from typing import Final
 
 from app.artwork.degrade import derive_thumb_or_degrade, warn_throttled
-from app.artwork.images import FALLBACK_CONTENT_TYPE, is_header_safe_content_type
+from app.artwork.images import FALLBACK_CONTENT_TYPE, header_safe_content_type
 from app.artwork.normalize import normalize_artist_name
 
 
@@ -119,8 +120,10 @@ class _MemoryFallback:
     multiplying upstream traffic, not to become an unbounded second cache that
     turns a disk problem into an OOM.
 
-    Thread-safe: image GETs run in the threadpool while the artist-art backfill
-    daemon writes on its own thread.
+    Thread-safe because concurrent image GETs run in the threadpool and can
+    hit one instance at once. NOT shared with the artist-art backfill daemon:
+    that builds its own ArtistImageCache (artist_art_jobs/runner.py), so it
+    has a separate fallback and its own budget.
     """
 
     def __init__(self, *, max_entries: int, max_bytes: int) -> None:
@@ -326,7 +329,7 @@ class ArtistImageCache:
           file;
         * a sidecar that decodes but holds something that cannot BE a header —
           non-ASCII, or a newline — takes the same fallback. That value comes
-          straight off a CDN (see ``is_header_safe_content_type``), so it is a
+          straight off a CDN (see ``header_safe_content_type``), so it is a
           poisoned-slot case, not a corrupted-disk one.
 
         The ``exists()`` calls are guarded rather than trusted: ``Path.exists()``
@@ -357,7 +360,8 @@ class ArtistImageCache:
                 exc,
             )
             content_type = FALLBACK_CONTENT_TYPE
-        if not is_header_safe_content_type(content_type):
+        sendable = header_safe_content_type(content_type)
+        if sendable is None:
             # Logged like every other degrade now that the throttle exists: this
             # is a READ of stored state that nothing rewrites, so an unthrottled
             # line here repeats on every request for as long as the slot stays
@@ -370,8 +374,10 @@ class ArtistImageCache:
                 content_type,
                 FALLBACK_CONTENT_TYPE,
             )
-            content_type = FALLBACK_CONTENT_TYPE
-        return CachedImage(data=data, content_type=content_type)
+        # The RETURN value: a sidecar that only needed trimming is served
+        # trimmed. The .strip() above already handles the sidecar's own body,
+        # but this is the value that reaches the header, so it takes the rule.
+        return CachedImage(data=data, content_type=sendable or FALLBACK_CONTENT_TYPE)
 
     def validator(self, name: str) -> str | None:
         """Cheap revalidation tag for the image get() would serve: the override
@@ -414,16 +420,15 @@ class ArtistImageCache:
         try:
             stored = src_path.read_text(encoding="utf-8")
             stored_tag, _, stored_mime = stored.partition(" ")
-            # A stored mime that cannot BE a header (non-ASCII, embedded
-            # newline) misses on purpose rather than falling back: re-deriving
+            # A stored mime that cannot BE a header (non-ASCII, a control
+            # character) misses on purpose rather than falling back: re-deriving
             # replaces it with this cache's own THUMB_MIME, which is strictly
-            # better than serving a WebP labelled application/octet-stream.
-            if (
-                stored_tag == src_tag
-                and is_header_safe_content_type(stored_mime)
-                and thumb_path.exists()
-            ):
-                return CachedImage(data=thumb_path.read_bytes(), content_type=stored_mime)
+            # better than serving a WebP labelled application/octet-stream. One
+            # that merely needs trimming HITS, and is served trimmed — the
+            # sendable value, never the stored one.
+            sendable = header_safe_content_type(stored_mime)
+            if stored_tag == src_tag and sendable is not None and thumb_path.exists():
+                return CachedImage(data=thumb_path.read_bytes(), content_type=sendable)
         except (OSError, ValueError):
             # Missing/unreadable sidecar — rederive below. ValueError covers
             # UnicodeDecodeError (a non-UTF-8 body); OSError covers an

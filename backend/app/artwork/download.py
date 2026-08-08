@@ -18,7 +18,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 from fastapi.concurrency import run_in_threadpool
 
-from app.artwork.images import FALLBACK_CONTENT_TYPE, MAX_IMAGE_BYTES, is_header_safe_content_type
+from app.artwork.images import FALLBACK_CONTENT_TYPE, MAX_IMAGE_BYTES, header_safe_content_type
 from app.artwork.source import ResolvedImage, TransientSourceError
 
 _log = logging.getLogger("musicdrop.artwork")
@@ -136,7 +136,8 @@ async def download_image(
             content_type = response.headers.get("content-type", "")
             if not content_type.lower().startswith("image/"):
                 raise TransientSourceError(f"download was not an image: {content_type!r}")
-            if not is_header_safe_content_type(content_type):
+            sendable = header_safe_content_type(content_type)
+            if sendable is None:
                 # The image is fine; only its LABEL is unusable. Storing it
                 # verbatim would poison this artist's cache slot with a value
                 # that 500s (or drops the connection on) every later request —
@@ -148,7 +149,10 @@ async def download_image(
                     content_type,
                     FALLBACK_CONTENT_TYPE,
                 )
-                content_type = FALLBACK_CONTENT_TYPE
+            # The RETURN value, never the input: a type that only needed
+            # trimming must be stored trimmed, or the padding rides along to
+            # every later response.
+            content_type = sendable or FALLBACK_CONTENT_TYPE
 
             data = await _read_capped(response)
     except ValueError as exc:

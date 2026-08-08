@@ -3,7 +3,7 @@ import pytest
 from app.artwork.images import (
     FALLBACK_CONTENT_TYPE,
     MAX_IMAGE_BYTES,
-    is_header_safe_content_type,
+    header_safe_content_type,
     sniff_image_mime,
 )
 
@@ -32,8 +32,8 @@ def test_cap_is_ten_mib() -> None:
     assert MAX_IMAGE_BYTES == 10 * 1024 * 1024
 
 
-# Content-type values that must survive untouched. The parameterised ones are the
-# reason the predicate is not a naive `in {"image/png", ...}` allowlist.
+# Content-type values that must survive UNTOUCHED. The parameterised ones are
+# the reason this is not a naive `in {"image/png", ...}` allowlist.
 @pytest.mark.parametrize(
     "value",
     [
@@ -45,37 +45,50 @@ def test_cap_is_ten_mib() -> None:
         'image/png; name="a b.png"',
     ],
 )
-def test_header_safe_accepts_real_content_types(value: str) -> None:
-    assert is_header_safe_content_type(value) is True
+def test_header_safe_returns_a_real_content_type_unchanged(value: str) -> None:
+    assert header_safe_content_type(value) == value
 
 
 @pytest.mark.parametrize(
     ("value", "why"),
     [
-        ("image/\u65e5\u672c\u8a9e", "non-ASCII: Starlette encodes headers latin-1 -> 500"),
+        ("image/日本語", "non-ASCII: Starlette encodes headers latin-1 -> 500"),
         ("image/png\nX-Injected: yes", "response splitting: h11 drops the connection"),
         ("image/png\r\nX-Injected: yes", "response splitting, CRLF form"),
         ("image/png\x00", "NUL is not printable"),
-        ("image/png\tx", "tab is not printable"),
+        ("image/png\tx", "an embedded tab is not printable"),
+        ("image/png\n", "TRAILING newline: 'Empty reply' under h11 AND httptools"),
+        ("image/png\r", "trailing CR: 'Empty reply' under h11 AND httptools"),
+        ("image/png\t", "trailing tab: h11 fullmatch rejects it"),
+        ("\timage/png", "leading tab: h11 fullmatch rejects it"),
         ("", "empty Content-Type makes browsers sniff the body"),
         ("   ", "whitespace-only: isascii() and isprintable() are both True for it"),
-        ("\n", "a bare newline strips to empty"),
+        ("\n", "a bare newline is not printable"),
     ],
 )
-def test_header_safe_rejects_unsendable_content_types(value: str, why: str) -> None:
+def test_header_safe_refuses_a_value_that_cannot_be_sent(value: str, why: str) -> None:
     # Pass the value RAW. An earlier version of this test called
-    # `is_header_safe_content_type(value.strip())`, so the "   " case actually
+    # `header_safe_content_type(value.strip())`, so the "   " case actually
     # asserted about "" — production accepted whitespace-only and the test went
     # green anyway. A transformation between a parameter and its assertion is
     # invisible to mutation testing, which only asks whether SOME test fails.
-    assert is_header_safe_content_type(value) is False, why
+    assert header_safe_content_type(value) is None, why
 
 
-def test_header_safe_accepts_a_padded_but_real_content_type() -> None:
-    """A FORWARD guard, not a regression test: no mutation of the current line
-    kills it, because the strip's only observable effect is the whitespace-only
-    case above. It exists because the obvious wrong way to reject ``"   "`` is
-    to reject anything that is not already stripped, which would throw away a
-    perfectly serveable ``" image/png "`` from a sloppy CDN.
+def test_header_safe_trims_padding_rather_than_refusing_it() -> None:
+    """Padding is a FRAMING problem, not a bad type — so trim, don't discard.
+
+    ``" image/png "`` is a dropped connection under uvicorn's h11 worker (h11
+    fullmatches ``([^\\x00\\s]+(?:[ \\t]+[^\\x00\\s]+)*)?``, so any leading or
+    trailing whitespace is an illegal field value); httptools tolerates it. Both
+    were measured. An earlier version of this file asserted the padded value was
+    ACCEPTABLE and justified it as protecting a sloppy CDN's header — which is
+    doubly wrong: h11 drops it, and httpx strips OWS on parse so a CDN cannot
+    deliver it in the first place.
+
+    Returning the trimmed VALUE is what makes this safe at every caller. A bool
+    that trimmed internally would have widened acceptance while callers kept
+    sending the original, and no mutation of this function's own line could see
+    that.
     """
-    assert is_header_safe_content_type("  image/png  ") is True
+    assert header_safe_content_type("  image/png  ") == "image/png"

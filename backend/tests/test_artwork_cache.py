@@ -465,6 +465,57 @@ def test_get_thumb_rederives_from_an_unsendable_stored_thumb_mime(
     assert healed is not None and healed.content_type == "image/webp"
 
 
+@pytest.mark.parametrize(
+    "poison",
+    ["image/webp\n", "image/webp\r", "image/webp\t", "\timage/webp"],
+    ids=["trailing-LF", "trailing-CR", "trailing-TAB", "leading-TAB"],
+)
+def test_get_thumb_rederives_when_the_stored_mime_carries_a_control_char(
+    cache: ArtistImageCache, tmp_path: Path, poison: str
+) -> None:
+    """``.thumb.src`` is the one stored value that is NOT stripped on read —
+    ``partition(" ")`` hands back everything after the tag verbatim — so a
+    trailing newline from a backup/restore or an operator edit rides straight
+    into Content-Type.
+
+    Measured on a real uvicorn, ``image/png\\n`` is "Empty reply from server"
+    under BOTH the h11 and httptools workers; h11 also rejects a trailing tab.
+    A re-derive is the right answer: it replaces the label with this cache's own
+    ``image/webp``.
+    """
+    cache.store_positive("ABBA", _png(400, 400), "image/png")
+    assert cache.get_thumb("ABBA") is not None
+    (src_path,) = tmp_path.glob("*.thumb.src")
+    stored_tag, _, _ = src_path.read_text(encoding="utf-8").partition(" ")
+    src_path.write_text(f"{stored_tag} {poison}", encoding="utf-8")
+
+    healed = cache.get_thumb("ABBA")
+
+    assert healed is not None and healed.content_type == "image/webp"
+
+
+def test_get_thumb_serves_a_padded_stored_mime_trimmed_without_rederiving(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """Padding is a framing problem, not a bad type: the entry still HITS, and
+    what it serves is trimmed.
+
+    Refusing it instead would re-derive on every request forever; serving it raw
+    is a dropped connection under the h11 worker. Patching ``make_thumb`` to
+    explode is what proves this took the hit path rather than quietly re-deriving.
+    """
+    cache.store_positive("ABBA", _png(400, 400), "image/png")
+    assert cache.get_thumb("ABBA") is not None
+    (src_path,) = tmp_path.glob("*.thumb.src")
+    stored_tag, _, _ = src_path.read_text(encoding="utf-8").partition(" ")
+    src_path.write_text(f"{stored_tag}   image/webp  ", encoding="utf-8")
+
+    with unittest.mock.patch("app.artwork.degrade.make_thumb", side_effect=AssertionError):
+        served = cache.get_thumb("ABBA")
+
+    assert served is not None and served.content_type == "image/webp"
+
+
 def test_a_dropped_negative_marker_still_bounds_refetches(
     cache: ArtistImageCache, tmp_path: Path
 ) -> None:

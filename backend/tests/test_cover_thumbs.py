@@ -83,6 +83,35 @@ def test_unsendable_stored_mime_rederives(tmp_path: Path) -> None:
     assert healed is not None and healed.content_type == "image/webp"
 
 
+def test_stored_mime_with_a_control_char_rederives(tmp_path: Path) -> None:
+    """``.src`` is not stripped on read, so a trailing newline reaches
+    Content-Type verbatim — "Empty reply from server" on a real uvicorn under
+    both workers. Re-deriving replaces it with ``image/webp``."""
+    cache = CoverThumbCache(tmp_path)
+    assert cache.get(7, '"1-1"', lambda: (_png(400, 400), "image/png")) is not None
+    (tmp_path / "7.src").write_text('"1-1" image/webp\n', encoding="utf-8")
+
+    healed = cache.get(7, '"1-1"', lambda: (_png(400, 400), "image/png"))
+
+    assert healed is not None and healed.content_type == "image/webp"
+
+
+def test_padded_stored_mime_is_served_trimmed(tmp_path: Path) -> None:
+    """Trimmed, not refused: the type is fine, only the framing is not — and
+    refusing would re-derive on every request forever. ``load_original``
+    exploding is what proves this took the HIT path."""
+    cache = CoverThumbCache(tmp_path)
+    assert cache.get(7, '"1-1"', lambda: (_png(400, 400), "image/png")) is not None
+    (tmp_path / "7.src").write_text('"1-1"   image/webp  ', encoding="utf-8")
+
+    def _boom() -> tuple[bytes, str]:
+        raise AssertionError("a padded mime must hit, not re-derive")
+
+    served = cache.get(7, '"1-1"', _boom)
+
+    assert served is not None and served.content_type == "image/webp"
+
+
 def test_degrade_sanitises_the_originals_mime(tmp_path: Path) -> None:
     """On the degrade path the ORIGINAL's mime goes on the wire and into
     ``.src``, so it has to clear the same bar a stored one does."""
