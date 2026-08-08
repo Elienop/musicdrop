@@ -76,6 +76,14 @@ export function useEventStream(): void {
       // drop/sleep) invalidate + refresh images for anything missed. A
       // reconnect is not a burst, so this stays immediate (not coalesced).
       if (connected) {
+        // A message just before the drop may have armed the trailing
+        // debounce; native EventSource reuses this same closure across a
+        // reconnect, so that timer would otherwise survive and fire a
+        // redundant second round after this catch-up already covered it.
+        if (timer !== null) {
+          clearTimeout(timer);
+          timer = null;
+        }
         invalidateLibraryContent(qc);
         // We can't know WHICH assets changed while disconnected → global bump.
         bumpAssetVersion();

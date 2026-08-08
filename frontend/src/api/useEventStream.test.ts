@@ -94,16 +94,25 @@ describe("useEventStream", () => {
     expect(spy).toHaveBeenCalledTimes(LIBRARY_CONTENT_KEY_COUNT); // one round, not three
   });
 
-  it("a continuous stream still flushes every ~2s (max-wait)", () => {
+  it("a continuous stream flushes exactly at the max-wait boundary (1700ms = 2000ms max-wait - 300ms flush-after)", () => {
     vi.useFakeTimers();
     const { spy, es } = setup();
-    for (let t = 0; t < 2100; t += 100) {
+    const emit = () =>
       es().onmessage?.(new MessageEvent("message", { data: '{"type":"library:changed"}' }));
+    emit(); // t=0: pins firstQueuedAt and arms the 300ms trailing debounce
+    // Keep re-arming the debounce every 100ms (< 300ms) so it never gets a
+    // quiet gap to fire on its own — this is the "continuous stream" case.
+    for (let t = 100; t < 1700; t += 100) {
       vi.advanceTimersByTime(100);
+      emit();
+      expect(spy).not.toHaveBeenCalled(); // still short of the max-wait threshold
     }
-    // A continuous drain keeps re-arming the 300ms trailing debounce, which
-    // would otherwise never fire; the max-wait clause forces a flush anyway.
-    expect(spy.mock.calls.length).toBeGreaterThan(0);
+    // now === 1600ms here. One more 100ms tick crosses the threshold
+    // (now - firstQueuedAt >= MAX_WAIT_MS - FLUSH_AFTER_MS, i.e. >= 1700).
+    vi.advanceTimersByTime(100); // now === 1700ms; nothing fires on time alone
+    expect(spy).not.toHaveBeenCalled();
+    emit(); // the message AT the threshold is what triggers the immediate flush
+    expect(spy).toHaveBeenCalledTimes(LIBRARY_CONTENT_KEY_COUNT); // exactly one round
   });
 
   it("art:changed bumps the asset version immediately, before any flush", () => {
@@ -123,6 +132,21 @@ describe("useEventStream", () => {
     view.unmount();
     vi.advanceTimersByTime(2000);
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("cancels a pending debounce timer on reconnect (no double invalidation)", () => {
+    vi.useFakeTimers();
+    const { spy, es } = setup();
+    es().onopen?.(new Event("open")); // first connect: nothing to catch up on
+    // A message arrives and arms the 300ms trailing debounce...
+    es().onmessage?.(new MessageEvent("message", { data: '{"type":"library:changed"}' }));
+    vi.advanceTimersByTime(100); // ...then the connection drops mid-window (timer still pending)
+    es().onopen?.(new Event("open")); // reconnect: immediate catch-up round
+    // Advance well past where the stale queued timer would have fired (it
+    // was armed at +300ms from the message, i.e. long since elapsed) — the
+    // reconnect's catch-up must have cancelled it, not just run alongside it.
+    vi.advanceTimersByTime(2000);
+    expect(spy).toHaveBeenCalledTimes(LIBRARY_CONTENT_KEY_COUNT); // exactly ONE round, not two
   });
 
   it("bumps ONLY the named scope when art:changed carries one", () => {
