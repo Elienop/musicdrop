@@ -26,6 +26,15 @@ def cache(tmp_path: Path) -> ArtistImageCache:
     return ArtistImageCache(tmp_path)
 
 
+def _artwork_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """Records from THIS package's logger only.
+
+    Asserting on ``caplog.records`` wholesale makes a test hostage to any
+    unrelated WARNING any other logger happens to emit during it.
+    """
+    return [record for record in caplog.records if record.name == "musicdrop.artwork"]
+
+
 def test_get_miss_when_empty(cache: ArtistImageCache) -> None:
     assert cache.get("ABBA") is None
 
@@ -258,7 +267,7 @@ def test_get_survives_a_non_utf8_mime_sidecar(
     assert isinstance(got, CachedImage)
     assert got.data == b"image-bytes"
     assert got.content_type == "application/octet-stream"
-    assert [r.name for r in caplog.records] == ["musicdrop.artwork"]
+    assert len(_artwork_records(caplog)) == 1
 
 
 def test_get_treats_unreadable_bytes_as_nothing_cached(
@@ -277,7 +286,7 @@ def test_get_treats_unreadable_bytes_as_nothing_cached(
         got = cache.get("ABBA")
 
     assert got is None
-    assert [r.name for r in caplog.records] == ["musicdrop.artwork"]
+    assert len(_artwork_records(caplog)) == 1
 
 
 def test_get_thumb_derives_and_reuses(cache: ArtistImageCache) -> None:
@@ -343,16 +352,29 @@ def test_get_thumb_degrade_leaves_an_operator_visible_trace(
     assert "UnidentifiedImageError" in record.getMessage()
 
 
-def test_get_thumb_degrade_with_blank_mime_still_caches(cache: ArtistImageCache) -> None:
+def test_get_thumb_degrade_with_blank_mime_still_caches(
+    cache: ArtistImageCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A blank source mime must not disable the thumb cache forever.
 
-    A whitespace-only ``.mime`` sidecar reads back stripped to ``""``. Written
-    bare into ``.thumb.src`` that leaves a trailing space, so the next read's
-    ``stored_mime`` is falsy and the entry never hits — the thumb re-derives on
-    EVERY request. CoverThumbCache already falls back to
-    ``application/octet-stream`` here; the artist side must match.
+    Blank written bare into ``.thumb.src`` leaves a trailing space, so the next
+    read's ``stored_mime`` is unusable and the entry never hits — the thumb
+    re-derives on EVERY request.
+
+    The blank ``CachedImage`` is CONSTRUCTED here rather than reached through a
+    whitespace-only ``.mime`` sidecar, because ``_read_image`` now returns the
+    fallback for that and this test would silently stop exercising anything.
+    ``get_thumb`` does not own ``_read_image``'s invariant, so its own
+    ``or FALLBACK_CONTENT_TYPE`` stays as a second line of defence and this
+    seeds the state that reaches it.
     """
-    cache.store_positive("ABBA", b"corrupt-not-an-image", "   ")
+    cache.store_positive("ABBA", b"corrupt-not-an-image", "image/png")
+
+    def _blank_typed_source(self: ArtistImageCache, name: str) -> CachedImage:
+        return CachedImage(data=b"corrupt-not-an-image", content_type="")
+
+    monkeypatch.setattr(ArtistImageCache, "get", _blank_typed_source)
+
     thumb = cache.get_thumb("ABBA")
     assert thumb is not None and thumb.content_type == "application/octet-stream"
     with unittest.mock.patch("app.artwork.cache.make_thumb", side_effect=AssertionError):
@@ -374,3 +396,113 @@ def test_get_thumb_self_heals_from_corrupt_src_sidecar(
     src_path.write_bytes(b"\xff\xfe not utf-8")
     healed = cache.get_thumb("ABBA")
     assert healed is not None and healed.content_type == "image/webp"
+
+
+@pytest.mark.parametrize(
+    "poison",
+    ["image/日本語", "image/png\nX-Injected: yes"],
+    ids=["non-ascii", "response-splitting"],
+)
+def test_get_serves_the_fallback_for_an_unsendable_stored_mime(
+    cache: ArtistImageCache, tmp_path: Path, poison: str
+) -> None:
+    """A sidecar that DECODES cleanly can still hold something no HTTP response
+    can carry, and that value went straight into Content-Type.
+
+    Both shapes reach disk without corrupting anything: ``download.py`` accepted
+    the CDN's header after only ``startswith("image/")``, and httpx decodes
+    header bytes as UTF-8. Verified against a real uvicorn — non-ASCII 500s at
+    ``Response.init_headers`` (latin-1), and the newline form makes h11 drop the
+    connection with no response at all.
+    """
+    cache.store_positive("ABBA", b"image-bytes", "image/png")
+    (mime_path,) = tmp_path.glob("*.mime")
+    mime_path.write_text(poison, encoding="utf-8")
+
+    got = cache.get("ABBA")
+
+    assert isinstance(got, CachedImage)
+    assert got.data == b"image-bytes"  # the image survives; only its label changes
+    assert got.content_type == "application/octet-stream"
+
+
+def test_get_serves_the_fallback_for_a_blank_stored_mime(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """A readable but EMPTY sidecar must answer like an unreadable one.
+
+    An empty Content-Type is legal on the wire, so nothing 500s — the browser
+    just sniffs the body instead, which is exactly what a declared type exists
+    to prevent.
+    """
+    cache.store_positive("ABBA", b"image-bytes", "image/png")
+    (mime_path,) = tmp_path.glob("*.mime")
+    mime_path.write_bytes(b"")
+
+    got = cache.get("ABBA")
+
+    assert isinstance(got, CachedImage)
+    assert got.content_type == "application/octet-stream"
+
+
+def test_get_thumb_rederives_from_an_unsendable_stored_thumb_mime(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """``.thumb.src`` is the OTHER way a poisoned type reaches the wire.
+
+    A re-derive is the right answer rather than the generic fallback: it
+    replaces the label with this cache's own ``image/webp``, so the entry
+    genuinely heals instead of serving a WebP as octet-stream forever.
+    """
+    cache.store_positive("ABBA", _png(400, 400), "image/png")
+    assert cache.get_thumb("ABBA") is not None
+    (src_path,) = tmp_path.glob("*.thumb.src")
+    stored_tag, _, _ = src_path.read_text(encoding="utf-8").partition(" ")
+    src_path.write_text(f"{stored_tag} image/日本語", encoding="utf-8")
+
+    healed = cache.get_thumb("ABBA")
+
+    assert healed is not None and healed.content_type == "image/webp"
+
+
+def test_an_unreadable_cache_dir_degrades_instead_of_raising(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """Every read path has to survive a cache dir it cannot open.
+
+    ``Path.exists()`` only swallows ENOENT/ENOTDIR/EBADF/ELOOP, so EACCES —
+    an ordinary self-hosted failure, e.g. a container recreate that re-chowns
+    the volume, or a stale network mount — propagated out of ``validator``,
+    ``get`` AND ``get_thumb`` and 500'd both image endpoints. Writes must not
+    raise either: the caller already holds the image it was going to cache.
+    """
+    if os.getuid() == 0:
+        pytest.skip("running as root: mode 000 does not deny access")
+    cache.store_positive("ABBA", b"image-bytes", "image/png")
+    os.chmod(tmp_path, 0o000)
+    try:
+        assert cache.validator("ABBA") is None
+        assert cache.get("ABBA") is None
+        assert cache.get_thumb("ABBA") is None
+        cache.store_positive("ABBA", b"new", "image/png")  # must not raise
+        cache.store_negative("ABBA", ttl_seconds=60)  # must not raise
+    finally:
+        os.chmod(tmp_path, 0o755)
+
+
+def test_get_thumb_still_serves_when_the_cache_dir_is_read_only(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """The thumb is already derived by the time it is written back, so an
+    unwritable dir must cost the CACHING, not the image."""
+    if os.getuid() == 0:
+        pytest.skip("running as root: a read-only dir does not deny writes")
+    cache.store_positive("ABBA", _png(400, 400), "image/png")
+    os.chmod(tmp_path, 0o500)
+    try:
+        thumb = cache.get_thumb("ABBA")
+    finally:
+        os.chmod(tmp_path, 0o755)
+
+    assert thumb is not None and thumb.content_type == "image/webp"
+    assert not list(tmp_path.glob("*.thumb.bin"))  # nothing was cached

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,50 @@ def test_degrade_leaves_an_operator_visible_trace(
     assert record.levelno == logging.WARNING
     assert "album 7" in record.getMessage()
     assert "UnidentifiedImageError" in record.getMessage()
+
+
+def test_unsendable_stored_mime_rederives(tmp_path: Path) -> None:
+    """A VALID-UTF-8 ``.src`` can still hold a type no response can carry.
+
+    The non-UTF-8 case already self-healed through the decode guard; this one
+    decodes fine and went straight into Content-Type, where a non-ASCII value
+    500s the cover endpoint (Starlette encodes headers latin-1). Re-deriving
+    replaces it with ``image/webp`` rather than a generic fallback.
+    """
+    cache = CoverThumbCache(tmp_path)
+    assert cache.get(7, '"1-1"', lambda: (_png(400, 400), "image/png")) is not None
+    (tmp_path / "7.src").write_text('"1-1" image/日本語', encoding="utf-8")
+
+    healed = cache.get(7, '"1-1"', lambda: (_png(400, 400), "image/png"))
+
+    assert healed is not None and healed.content_type == "image/webp"
+
+
+def test_degrade_sanitises_the_originals_mime(tmp_path: Path) -> None:
+    """On the degrade path the ORIGINAL's mime goes on the wire and into
+    ``.src``, so it has to clear the same bar a stored one does."""
+    got = CoverThumbCache(tmp_path).get(7, '"1-1"', lambda: (b"garbage", "image/日本語"))
+
+    assert got is not None and got.data == b"garbage"
+    assert got.content_type == "application/octet-stream"
+    assert (tmp_path / "7.src").read_text(encoding="utf-8") == '"1-1" application/octet-stream'
+
+
+def test_read_only_cache_dir_still_serves_the_thumb(tmp_path: Path) -> None:
+    """The thumb is derived before it is written back, so an unwritable cache
+    dir must cost the caching, not the cover."""
+    if os.getuid() == 0:
+        pytest.skip("running as root: a read-only dir does not deny writes")
+    cache_dir = tmp_path / "covers"
+    cache_dir.mkdir()
+    os.chmod(cache_dir, 0o500)
+    try:
+        got = CoverThumbCache(cache_dir).get(7, '"1-1"', lambda: (_png(400, 400), "image/png"))
+    finally:
+        os.chmod(cache_dir, 0o755)
+
+    assert got is not None and got.content_type == "image/webp"
+    assert not list(cache_dir.glob("*.bin"))  # nothing was cached
 
 
 def test_corrupt_src_sidecar_self_heals(tmp_path: Path) -> None:

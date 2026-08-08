@@ -400,20 +400,32 @@ def test_size_thumb_resolves_and_derives_when_uncached(
         app.dependency_overrides.clear()
 
 
+@pytest.mark.parametrize(
+    "poison",
+    [b"\xff\xfe", "image/日本語".encode(), b"image/png\nX-Injected: yes", b""],
+    ids=["invalid-utf8", "non-ascii", "response-splitting", "empty"],
+)
 def test_corrupt_mime_sidecar_serves_the_image_instead_of_500ing(
-    client: TestClient, artist_image_cache: ArtistImageCache, tmp_path: Path
+    client: TestClient, artist_image_cache: ArtistImageCache, tmp_path: Path, poison: bytes
 ) -> None:
-    """A non-UTF-8 ``.mime`` used to put a UnicodeDecodeError straight on the
-    wire from both sizes — and the hole was on the self-heal path the never-500
-    promise exists for: ``get_thumb`` reaches its source through ``get()``, so
-    the sidecar next door could abort a ``.thumb.src`` rebuild too.
+    """Four ways a ``.mime`` sidecar breaks the response, all of which must end
+    as a served image.
 
-    The full image keeps its bytes and falls back to the generic content-type;
-    the thumb is derived from those same bytes, so it declares WebP as usual.
+    The hole was on the self-heal path the never-500 promise exists for:
+    ``get_thumb`` reaches its source through ``get()``, so the sidecar next door
+    could abort a ``.thumb.src`` rebuild too. The full image keeps its bytes and
+    falls back to the generic content-type; the thumb is derived from those same
+    bytes, so it declares WebP as usual.
+
+    ASSERT ON THE CONTENT-TYPE, NOT JUST THE STATUS. TestClient never encodes
+    response headers, so `image/日本語` (which raises UnicodeEncodeError inside
+    a real Response) and `image/png\\nX-Injected: yes` (which makes h11 drop the
+    connection) BOTH return a green 200 through it. Verified separately against
+    a real uvicorn; do not "confirm" this class of fix with a status assertion.
     """
     artist_image_cache.store_positive("ABBA", _png(400, 400), "image/png")
     (mime_path,) = tmp_path.glob("*.mime")
-    mime_path.write_bytes(b"\xff\xfe")
+    mime_path.write_bytes(poison)
 
     full = client.get("/api/artists/image", params={"name": "ABBA"})
     assert full.status_code == 200

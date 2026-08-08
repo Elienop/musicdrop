@@ -27,9 +27,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 
 from app.artwork.cache import CachedImage, _atomic_write_bytes
+from app.artwork.images import FALLBACK_CONTENT_TYPE, is_header_safe_content_type
 from app.artwork.thumbs import THUMB_MIME, ThumbError, make_thumb
 
 _log = logging.getLogger("musicdrop.artwork")
@@ -64,7 +66,15 @@ class CoverThumbCache:
         try:
             stored = src_path.read_text(encoding="utf-8")
             stored_tag, _, stored_mime = stored.partition(" ")
-            if stored_tag == source_tag and stored_mime and bin_path.exists():
+            # A stored mime that cannot BE a header misses on purpose: a
+            # re-derive replaces it with THUMB_MIME. A non-UTF-8 .src already
+            # self-heals via the guard below, but a VALID-UTF-8 one holding
+            # `image/日本語` decodes fine and would 500 the cover endpoint.
+            if (
+                stored_tag == source_tag
+                and is_header_safe_content_type(stored_mime)
+                and bin_path.exists()
+            ):
                 return CachedImage(data=bin_path.read_bytes(), content_type=stored_mime)
         except (OSError, ValueError):
             # Missing/unreadable sidecar — rederive below. ValueError covers
@@ -88,13 +98,19 @@ class CoverThumbCache:
             _log.warning(
                 "album-cover thumbnail degraded to the original for album %s: %s", album_id, exc
             )
-            thumb_data, thumb_mime = data, mime or "application/octet-stream"
+            # The ORIGINAL's mime now goes on the wire and into .src, so it has
+            # to clear the same bar a stored one does.
+            thumb_data = data
+            thumb_mime = mime if is_header_safe_content_type(mime) else FALLBACK_CONTENT_TYPE
 
-        self._ensure_dir()
-        # .bin BEFORE .src: the .src tag is what makes an entry "hit" on the
-        # next get(), so a crash between the two writes must leave the tag
-        # unwritten/stale — forcing a re-derive next time — rather than leaving
-        # a fresh tag pointing at stale (previous-source) bytes in .bin.
-        _atomic_write_bytes(bin_path, thumb_data)
-        _atomic_write_bytes(src_path, f"{source_tag} {thumb_mime}".encode())
+        # Caching is best-effort: the thumb exists in memory either way, so a
+        # read-only cache dir must cost the caching, not the cover.
+        with suppress(OSError):
+            self._ensure_dir()
+            # .bin BEFORE .src: the .src tag is what makes an entry "hit" on the
+            # next get(), so a crash between the two writes must leave the tag
+            # unwritten/stale — forcing a re-derive next time — rather than
+            # leaving a fresh tag pointing at stale (previous-source) bytes.
+            _atomic_write_bytes(bin_path, thumb_data)
+            _atomic_write_bytes(src_path, f"{source_tag} {thumb_mime}".encode())
         return CachedImage(data=thumb_data, content_type=thumb_mime)
