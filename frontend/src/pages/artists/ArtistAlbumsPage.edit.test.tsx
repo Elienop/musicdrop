@@ -37,6 +37,20 @@ vi.mock("@/api/useArtistImage", () => ({
     isError: false,
     error: null,
   }),
+  // The panel imports these too, and a factory REPLACES the module — a missing
+  // export fails this whole file, not just the panel.
+  useFetchArtistImage: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+    error: null,
+    reset: vi.fn(),
+  }),
+  useArtistImageSources: () => ({
+    data: { sources: [{ id: "deezer", label: "Deezer", available: true, reason: null }] },
+    isPending: false,
+    isError: false,
+  }),
 }));
 
 // The reorganize header control runs a live status useQuery; stub it so this
@@ -88,7 +102,7 @@ describe("ArtistAlbumsPage artist-image edit", () => {
     fireEvent.click(btn);
     // Assert the panel's distinctive copy (both the button AND the panel section
     // carry aria-label "Edit artist image", like CoverEditPanel — so target text).
-    expect(screen.getByText(/upload a custom portrait/i)).toBeInTheDocument();
+    expect(screen.getByText(/choose the portrait for/i)).toBeInTheDocument();
   });
 
   it("hides the Edit button when images are disabled", () => {
@@ -103,11 +117,11 @@ describe("ArtistAlbumsPage artist-image edit", () => {
     renderAt("ABBA");
     const btn = screen.getByRole("button", { name: /edit artist image/i });
     fireEvent.click(btn);
-    expect(screen.getByText(/upload a custom portrait/i)).toBeInTheDocument();
+    expect(screen.getByText(/choose the portrait for/i)).toBeInTheDocument();
     // The in-panel Cancel unmounts the focused button — focus must come back
     // to the disclosure toggle instead of dropping to <body>.
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
-    expect(screen.queryByText(/upload a custom portrait/i)).toBeNull();
+    expect(screen.queryByText(/choose the portrait for/i)).toBeNull();
     expect(btn).toHaveFocus();
   });
 });
