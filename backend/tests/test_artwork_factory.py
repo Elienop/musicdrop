@@ -1,5 +1,7 @@
 import httpx
+import pytest
 
+from app.artwork import factory
 from app.artwork.chained import ChainedArtistImageSource
 from app.artwork.deezer import DeezerArtistImageSource
 from app.artwork.factory import (
@@ -66,15 +68,23 @@ def test_chain_wraps_the_very_same_instances_get_returns() -> None:
     assert len(chain._sources) == 3
 
 
-def test_a_second_chain_wraps_those_same_instances_too() -> None:
-    # Task 2 builds the chain for the service and Task 6 addresses sources by
-    # id off the same registry; if chain() re-BUILT its sources, the two would
-    # hold different Spotify token caches.
-    sources = build_artist_image_sources(httpx.AsyncClient(), _all_configured())
-    first, second = sources.chain(), sources.chain()
-    assert isinstance(first, ChainedArtistImageSource)
-    assert isinstance(second, ChainedArtistImageSource)
-    assert first._sources == second._sources
+def test_build_source_chain_delegates_to_the_one_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Wiring, not style: if the backfill worker's chain were built by a SECOND
+    # construction, a change to which sources are configured (or to how they
+    # are) would land on one path and not the other.
+    real = factory.build_artist_image_sources
+    seen: list[Settings] = []
+
+    def spy(client: httpx.AsyncClient, settings: Settings) -> factory.ArtistImageSources:
+        seen.append(settings)
+        return real(client, settings)
+
+    monkeypatch.setattr(factory, "build_artist_image_sources", spy)
+    settings = _all_configured()
+    chain = factory.build_source_chain(httpx.AsyncClient(), settings)
+    assert isinstance(chain, ChainedArtistImageSource)
+    assert len(seen) == 1
+    assert seen[0] is settings
 
 
 def test_get_returns_none_for_an_unconfigured_source() -> None:
