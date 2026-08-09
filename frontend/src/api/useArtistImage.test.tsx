@@ -1,12 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { client } from "@/api/client";
 import {
   useArtistImageSettings,
-  useResetArtistImageOverride,
+  useArtistImageSources,
+  useFetchArtistImage,
+  useResetArtistImage,
   useSetArtistImageSettings,
   useUploadArtistImageOverride,
 } from "@/api/useArtistImage";
@@ -16,6 +18,26 @@ function wrapper() {
   return ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={qc}>{children}</QueryClientProvider>
   );
+}
+
+// Hand-rolled Response-likes: a real `new Response(jsdomBlob)` calls `.stream()`
+// on the body when consumed, which the jsdom Blob lacks on Node 22 (undici).
+function imageResponse(blob: Blob, source: string | null): Response {
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: (h: string) => (h.toLowerCase() === "x-art-source" ? source : null) },
+    blob: async () => blob,
+  } as unknown as Response;
+}
+
+function jsonResponse(status: number, body: unknown): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: () => null },
+    json: async () => body,
+  } as unknown as Response;
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -45,11 +67,56 @@ describe("useSetArtistImageSettings", () => {
   });
 });
 
+describe("useArtistImageSources", () => {
+  const sources = [
+    { id: "fanarttv", label: "fanart.tv", available: false, reason: "No MusicBrainz ID" },
+    { id: "deezer", label: "Deezer", available: true, reason: null },
+  ];
+
+  it("reports pending-but-NOT-loading while disabled", async () => {
+    // The shape the panel's `vi.mock` has to imitate, pinned against the real
+    // hook so the imitation cannot drift. `isPending` is TRUE for a disabled
+    // query — pending also means "never asked" — so a component branching on
+    // `isPending` paints a skeleton that never resolves. `isLoading` (pending
+    // AND fetching) is the only predicate that means "a request is in the air".
+    const get = vi.spyOn(client, "GET");
+    const { result } = renderHook(() => useArtistImageSources("ABBA", false), {
+      wrapper: wrapper(),
+    });
+    await waitFor(() => expect(result.current.fetchStatus).toBe("idle"));
+    expect(result.current.isPending).toBe(true);
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.data).toBeUndefined();
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("asks for the named artist and hands back the list in chain order", async () => {
+    const get = vi.spyOn(client, "GET").mockResolvedValue({
+      data: { sources },
+      error: undefined,
+      response: { ok: true },
+    } as never);
+    const { result } = renderHook(() => useArtistImageSources("AC/DC"), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.data).toEqual({ sources }));
+    expect(get).toHaveBeenCalledWith("/api/artists/image/sources", {
+      params: { query: { name: "AC/DC" } },
+    });
+  });
+
+  it("stays idle while disabled, so a closed panel asks nothing", () => {
+    const get = vi.spyOn(client, "GET").mockResolvedValue({
+      data: { sources },
+      error: undefined,
+      response: { ok: true },
+    } as never);
+    renderHook(() => useArtistImageSources("ABBA", false), { wrapper: wrapper() });
+    expect(get).not.toHaveBeenCalled();
+  });
+});
+
 describe("useUploadArtistImageOverride", () => {
   it("POSTs multipart to the override endpoint", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue({ ok: true } as Response);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true } as Response);
     const { result } = renderHook(() => useUploadArtistImageOverride("AC/DC"), {
       wrapper: wrapper(),
     });
@@ -58,6 +125,18 @@ describe("useUploadArtistImageOverride", () => {
     expect(String(url)).toContain("/api/artists/image/override?name=AC%2FDC");
     expect((init as RequestInit).method).toBe("POST");
     expect((init as RequestInit).body).toBeInstanceOf(FormData);
+
+    // The FIELD NAME is a contract, not a detail: FastAPI binds `file:
+    // UploadFile` by name, so renaming it here 422s every install in production
+    // while every assertion above still passes. Measured — "file" -> "image"
+    // survived the whole suite.
+    const form = (init as RequestInit).body as FormData;
+    const sent = form.get("file");
+    expect(sent).not.toBeNull();
+    expect(form.get("image")).toBeNull();
+    // The filename rides along; the server never reads it, but a missing third
+    // argument makes the part a plain field rather than a file on some clients.
+    expect((sent as File).name).toBe("artist-image");
   });
 
   it("throws the server detail on failure", async () => {
@@ -72,15 +151,115 @@ describe("useUploadArtistImageOverride", () => {
   });
 });
 
-describe("useResetArtistImageOverride", () => {
-  it("DELETEs the override", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true } as Response);
-    const { result } = renderHook(() => useResetArtistImageOverride("ABBA"), {
-      wrapper: wrapper(),
-    });
+describe("useResetArtistImage", () => {
+  // The route this replaced was `DELETE /api/artists/image/override`, which now
+  // 405s — and a fetch mock never notices, so pin the verb and the path here.
+  it("POSTs to the reset endpoint", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { ok: true, cleared_override: true, cleared_auto: true }));
+    const { result } = renderHook(() => useResetArtistImage("AC/DC"), { wrapper: wrapper() });
     await result.current.mutateAsync();
     const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain("/api/artists/image/override?name=ABBA");
-    expect((init as RequestInit).method).toBe("DELETE");
+    expect(String(url)).toContain("/api/artists/image/reset?name=AC%2FDC");
+    expect((init as RequestInit).method).toBe("POST");
+  });
+
+  it("returns what the server said it cleared", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { ok: true, cleared_override: true, cleared_auto: false }),
+    );
+    const { result } = renderHook(() => useResetArtistImage("ABBA"), { wrapper: wrapper() });
+    result.current.mutate();
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual({
+      ok: true,
+      cleared_override: true,
+      cleared_auto: false,
+    });
+  });
+
+  it("raises the server's sentence when the reset is refused", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(403, { detail: "Cross-origin request refused" }),
+    );
+    const { result } = renderHook(() => useResetArtistImage("ABBA"), { wrapper: wrapper() });
+    result.current.mutate();
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error?.message).toBe("Cross-origin request refused");
+  });
+});
+
+describe("useFetchArtistImage", () => {
+  // Put the real URL back by hand rather than with `vi.unstubAllGlobals()`,
+  // which would also drop the `scrollTo`/`matchMedia`/`EventSource` stubs
+  // `test/setup.ts` installs — and so make this file's correctness depend on
+  // this describe staying last.
+  const RealURL = globalThis.URL;
+  beforeEach(() => {
+    // jsdom implements the URL parser but not the object-URL methods.
+    vi.stubGlobal("URL", { ...RealURL, createObjectURL: () => "blob:x", revokeObjectURL: () => {} });
+  });
+  afterEach(() => vi.stubGlobal("URL", RealURL));
+
+  it("returns the blob and the source label on 200, minting no object URL", async () => {
+    const body = new Blob([new Uint8Array([1, 2, 3])], { type: "image/jpeg" });
+    const createObjectURL = vi.fn(() => "blob:x");
+    vi.stubGlobal("URL", { ...RealURL, createObjectURL, revokeObjectURL: () => {} });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(imageResponse(body, "Deezer"));
+    const { result } = renderHook(() => useFetchArtistImage("ABBA"), { wrapper: wrapper() });
+    result.current.mutate("deezer");
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    // Exact key set: an `objectUrl` creeping back in fails here.
+    expect(result.current.data).toEqual({
+      found: true,
+      blob: expect.anything(),
+      source: "Deezer",
+    });
+    const data = result.current.data;
+    // Identity, not deep equality — two jsdom Blobs deep-equal each other, so
+    // `toEqual({blob: body})` above would hold for ANY blob.
+    expect(data?.found === true ? data.blob : null).toBe(body);
+    // The URL is the CALLER's to mint. TanStack drops a per-call `onSuccess`
+    // once the observer unmounts, so a URL created here would be handed to
+    // nobody and leak on every fetch the user navigated away from.
+    expect(createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it("reports a 404 as found=false carrying the server's sentence", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(404, { detail: "Deezer has no portrait for ABBA" }),
+    );
+    const { result } = renderHook(() => useFetchArtistImage("ABBA"), { wrapper: wrapper() });
+    result.current.mutate("deezer");
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual({
+      found: false,
+      reason: "Deezer has no portrait for ABBA",
+    });
+  });
+
+  it("raises on a 502 so a source outage never reads as 'no image'", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(502, { detail: "Deezer did not answer - try again in a moment" }),
+    );
+    const { result } = renderHook(() => useFetchArtistImage("ABBA"), { wrapper: wrapper() });
+    result.current.mutate("deezer");
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error?.message).toContain("did not answer");
+  });
+
+  it("POSTs the picked source, encoding a slash in the artist name", async () => {
+    const body = new Blob([new Uint8Array([1])], { type: "image/png" });
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(imageResponse(body, "Deezer"));
+    const { result } = renderHook(() => useFetchArtistImage("AC/DC"), { wrapper: wrapper() });
+    result.current.mutate("deezer");
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const [url, init] = spy.mock.calls[0];
+    // Two substrings, so the assertion says nothing about query-param order.
+    expect(String(url)).toContain("/api/artists/image/fetch?");
+    expect(String(url)).toContain("name=AC%2FDC");
+    expect(String(url)).toContain("source=deezer");
+    expect((init as RequestInit).method).toBe("POST");
   });
 });

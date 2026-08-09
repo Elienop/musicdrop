@@ -1,10 +1,20 @@
-"""CSRF guard for the multipart image-upload endpoints.
+"""CSRF guard for the state-changing endpoints a browser can reach WITHOUT a
+preflight.
 
-``multipart/form-data`` is a CORS "simple" content type, so a cross-origin page
-can POST it WITHOUT triggering a preflight — the strict CORS allowlist never gets
-a say. A malicious page the maintainer happens to visit could therefore silently
-overwrite a cover / artist image. (The JSON endpoints are already safe:
-``application/json`` forces a preflight, which the CORS policy rejects.)
+Two shapes qualify, and both are guarded:
+
+* a ``multipart/form-data`` POST — a CORS "simple" content type, so a
+  cross-origin page can upload a cover / artist image without the strict CORS
+  allowlist ever getting a say;
+* a **body-less** POST (query params only, no custom headers) — equally simple,
+  and the shape ``POST /api/artists/image/reset`` takes. It destroys data (it
+  unlinks the user's uploaded override), so it needs this guard just as much.
+
+(The JSON endpoints are already safe: ``application/json`` forces a preflight,
+which the CORS policy rejects. So does any non-simple METHOD — the ``DELETE``
+that the reset POST replaced was protected by its verb alone, which is why
+swapping the verb without adding this dependency would have quietly removed a
+protection.)
 
 ``verify_upload_origin`` closes that gap by checking the ``Origin`` header: a
 browser always sends it on a cross-origin (and same-origin) POST, while non-browser
@@ -22,8 +32,15 @@ _DEV_FRONTEND_ORIGIN = "http://localhost:5173"
 
 
 def verify_upload_origin(request: Request) -> None:
-    """Reject a cross-origin browser upload; allow same-origin, the dev frontend,
-    and non-browser clients (no Origin header)."""
+    """Reject a cross-origin browser POST; allow same-origin, the dev frontend,
+    and non-browser clients (no Origin header).
+
+    Half the routes behind this guard upload nothing - the two artwork fetch
+    previews and the artist-image reset are body-less POSTs - so neither the
+    docstring nor the ``detail`` says "upload". The FUNCTION name still does;
+    renaming it is a mechanical sweep across three routers with no user-visible
+    effect, and the string a user reads is the part that has to be true.
+    """
     origin = request.headers.get("origin")
     if origin is None:
         return  # non-browser client (curl, trusted LAN tooling) — allow
@@ -40,4 +57,4 @@ def verify_upload_origin(request: Request) -> None:
             return
     if origin == _DEV_FRONTEND_ORIGIN:
         return  # the dev frontend (matches the CORS allowlist)
-    raise HTTPException(status_code=403, detail="cross-origin upload rejected")
+    raise HTTPException(status_code=403, detail="cross-origin request rejected")

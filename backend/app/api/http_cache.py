@@ -15,8 +15,24 @@ view re-downloads the full image, defeating the point.
 from __future__ import annotations
 
 import hashlib
+from typing import Final
 
 from fastapi import Request, Response
+
+#: Sent with EVERY image response this app builds.
+#:
+#: None of the content-types here are authored by this app: they come from a
+#: third-party CDN's response header, a ``.mime`` sidecar written from one, or a
+#: media file's embedded picture MIME. ``image/svg+xml`` is a legal answer from
+#: all three, and an SVG rendered from this app's own origin is script
+#: execution, not a picture. ``nosniff`` also stops a browser second-guessing
+#: ``application/octet-stream`` - what a content-type that cannot legally be a
+#: header degrades to - back into something renderable.
+#:
+#: It lives on the two response CONSTRUCTORS rather than at each ``return``:
+#: ``GET /api/artists/image`` alone has six exits, and a header that has to be
+#: remembered six times is a header that will be missed once.
+NO_SNIFF: Final[dict[str, str]] = {"X-Content-Type-Options": "nosniff"}
 
 
 def _opaque(tag: str) -> str:
@@ -38,8 +54,15 @@ def if_none_match_hit(request: Request, etag: str) -> bool:
 
 
 def not_modified(etag: str) -> Response:
-    """A bodiless ``304`` carrying the revalidation headers for ``etag``."""
-    return Response(status_code=304, headers={"Cache-Control": "no-cache", "ETag": etag})
+    """A bodiless ``304`` carrying the revalidation headers for ``etag``.
+
+    Carries ``nosniff`` too, though it has no body to sniff: a uniform "every
+    response out of here is nosniff" is one rule, while "every response except
+    the 304" is a rule plus an exception someone has to re-derive.
+    """
+    return Response(
+        status_code=304, headers={**NO_SNIFF, "Cache-Control": "no-cache", "ETag": etag}
+    )
 
 
 def image_response(image_bytes: bytes, mime: str, etag: str) -> Response:
@@ -47,7 +70,7 @@ def image_response(image_bytes: bytes, mime: str, etag: str) -> Response:
     return Response(
         content=image_bytes,
         media_type=mime,
-        headers={"Cache-Control": "no-cache", "ETag": etag},
+        headers={**NO_SNIFF, "Cache-Control": "no-cache", "ETag": etag},
     )
 
 

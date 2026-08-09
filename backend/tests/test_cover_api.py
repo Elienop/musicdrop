@@ -271,6 +271,88 @@ def test_fetch_via_filesystem_returns_image(cover_client: TestClient, edit_lib: 
     assert r.content == PNG.read_bytes()
 
 
+def test_every_image_response_the_cover_routes_build_carries_nosniff(
+    cover_client: TestClient, edit_lib: Library
+) -> None:
+    """The GET inherits nosniff from the two shared http_cache constructors; the
+    fetch preview builds its own Response and has to spell it out.
+
+    The preview's mime is already one of four literals from sniff_image_mime's
+    magic-byte check, so this header is pure backstop there - but a backstop
+    that covers every image response except one is not a backstop, and "all of
+    them" is an easier rule to keep true than "all except that one".
+    """
+    import os
+
+    aid = _aid(edit_lib)
+    album = edit_lib.get_album(aid)
+    assert album is not None
+    album_dir = os.path.dirname(os.fsdecode(next(iter(album.items())).path))
+    Path(album_dir, "cover.png").write_bytes(PNG.read_bytes())
+    _install(cover_client, aid)
+
+    served = cover_client.get(f"/api/albums/{aid}/cover")
+    revalidated = cover_client.get(
+        f"/api/albums/{aid}/cover", headers={"If-None-Match": served.headers["etag"]}
+    )
+    preview = cover_client.post(f"/api/albums/{aid}/cover/fetch")
+    # Non-vacuity: each arm must be the response it claims to be, or a 404 would
+    # satisfy "carries no sniffable body" for entirely the wrong reason.
+    assert [r.status_code for r in (served, revalidated, preview)] == [200, 304, 200]
+    for resp in (served, revalidated, preview):
+        assert resp.headers["x-content-type-options"] == "nosniff"
+
+
+def test_the_cover_fetch_declares_every_status_it_can_return() -> None:
+    """The generated client only knows what the spec says.
+
+    403 (the Origin guard) and 404 (no album, or no candidate) both render
+    ``{"detail": "..."}`` and neither was declared - an undeclared status
+    generates ``content?: never``. 422 must stay UNDECLARED so FastAPI's
+    ``HTTPValidationError`` survives: the path parameter can fail validation and
+    its ``detail`` is a LIST, a different shape.
+    """
+    operation = app.openapi()["paths"]["/api/albums/{album_id}/cover/fetch"]["post"]
+    responses = operation["responses"]
+    assert sorted(responses) == ["200", "403", "404", "422"]
+    # The 200 is image bytes; before this it offered ONLY a JSON body.
+    assert "image/*" in responses["200"]["content"]
+    for code in ("403", "404"):
+        schema = responses[code]["content"]["application/json"]["schema"]
+        assert schema["$ref"] == "#/components/schemas/ErrorDetail", code
+    assert (
+        responses["422"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/HTTPValidationError"
+    )
+
+
+def test_cross_origin_cover_fetch_is_rejected(cover_client: TestClient, edit_lib: Library) -> None:
+    """A body-less POST is a CORS-simple request, so it reaches this route
+    without a preflight. It writes nothing, but it still drives an outbound
+    cover lookup on this install's behalf - "changes no state" is not "costs
+    nothing to trigger". The same guard the install route has carried since it
+    was written.
+    """
+    import os
+
+    aid = _aid(edit_lib)
+    album = edit_lib.get_album(aid)
+    assert album is not None
+    album_dir = os.path.dirname(os.fsdecode(next(iter(album.items())).path))
+    Path(album_dir, "cover.png").write_bytes(PNG.read_bytes())
+    # Non-vacuity: this exact request WITHOUT the header is the 200 pinned by
+    # test_fetch_via_filesystem_returns_image, so the 403 is the Origin guard
+    # and not a missing cover.
+    r = cover_client.post(f"/api/albums/{aid}/cover/fetch", headers={"Origin": "http://evil.test"})
+    assert r.status_code == 403
+    # This route uploads NOTHING, so the message must not claim an upload was
+    # refused - three of the six routes behind the shared guard are body-less.
+    detail = r.json()["detail"]
+    assert "upload" not in detail
+    assert detail.isascii()
+    assert cover_client.post(f"/api/albums/{aid}/cover/fetch").status_code == 200
+
+
 def test_upload_rejects_oversize_via_content_length(
     cover_client: TestClient, edit_lib: Library
 ) -> None:

@@ -96,14 +96,14 @@ def test_album_cover_install_emits_album_scoped_art_changed(
     assert broker.art_scopes == [f"album:{album_id}"]
 
 
-def test_artist_image_clear_emits_art_changed(
+def test_artist_image_reset_emits_art_changed(
     art_client: tuple[TestClient, _RecordingBroker, ArtistImageCache],
 ) -> None:
     client, broker, cache = art_client
     cache.write_override("ABBA", b"manual", "image/png")
-    resp = client.delete("/api/artists/image/override", params={"name": "ABBA"})
-    assert resp.status_code == 204
-    # Clearing an artist override changes the served image BYTES → art:changed,
+    resp = client.post("/api/artists/image/reset", params={"name": "ABBA"})
+    assert resp.status_code == 200
+    # Resetting an artist portrait changes the served image BYTES → art:changed,
     # UNSCOPED: the portrait is served under a NORMALIZED name, so a raw
     # display name is not a reliable asset identity (see api/artists.py).
     assert broker.events == ["art:changed"]

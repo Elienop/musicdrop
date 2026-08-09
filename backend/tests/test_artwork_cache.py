@@ -656,3 +656,205 @@ def test_get_thumb_still_serves_when_the_cache_dir_is_read_only(
 
     assert thumb is not None and thumb.content_type == "image/webp"
     assert not list(tmp_path.glob("*.thumb.bin"))  # nothing was cached
+
+
+def test_clear_auto_removes_the_positive_slot_and_the_marker(tmp_path: Path) -> None:
+    cache = ArtistImageCache(tmp_path)
+    # ORDER MATTERS: store_positive unlinks .miss, so the marker must be written
+    # second or this test's ".miss is gone" assertion proves nothing.
+    cache.store_positive("ABBA", b"auto-bytes", "image/png")
+    cache.store_negative("ABBA", ttl_seconds=3600)
+    key = cache._key("ABBA")
+    assert (tmp_path / f"{key}.bin").exists() and (tmp_path / f"{key}.miss").exists()
+    assert cache.clear_auto("ABBA") is True
+    assert cache.get("ABBA") is None
+    assert not (tmp_path / f"{key}.bin").exists()
+    assert not (tmp_path / f"{key}.mime").exists()
+    assert not (tmp_path / f"{key}.miss").exists()
+
+
+def test_clear_auto_reports_the_image_slot_never_a_sidecar(tmp_path: Path) -> None:
+    """The answer must be "the IMAGE went away", not "some file went away".
+
+    Task 7 turns this bool into the reset endpoint's answer, so a ``clear_auto``
+    that reported a sidecar's outcome would claim a reset that never happened --
+    the same quiet lie this feature exists to end. Both halves are needed: the
+    orphan proves a sidecar cannot manufacture a True, the bare slot proves a
+    missing sidecar cannot suppress one.
+
+    The orphaned ``.mime`` is reachable, not hypothetical: ``store_positive``
+    publishes the sidecar BEFORE the bytes, so a crash between the two leaves
+    exactly this state (``test_store_positive_crash_before_publish_...`` builds
+    it deliberately).
+    """
+    cache = ArtistImageCache(tmp_path)
+
+    orphan = cache._key("Sidecar Only")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / f"{orphan}.mime").write_text("image/png", encoding="utf-8")
+    assert cache.clear_auto("Sidecar Only") is False
+    assert not (tmp_path / f"{orphan}.mime").exists()  # still swept, just not reported
+
+    bare = cache._key("Bytes Only")
+    (tmp_path / f"{bare}.bin").write_bytes(b"image-bytes")
+    assert cache.clear_auto("Bytes Only") is True
+    assert not (tmp_path / f"{bare}.bin").exists()
+
+
+def test_clear_override_reports_the_image_slot_never_a_sidecar(tmp_path: Path) -> None:
+    """Same guarantee on the override pair, reachable the same way: ``.override``
+    is published after ``.override.mime``, so a crash between them leaves an
+    orphaned sidecar that must not read as "an override was removed"."""
+    cache = ArtistImageCache(tmp_path)
+
+    orphan = cache._key("Sidecar Only")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / f"{orphan}.override.mime").write_text("image/png", encoding="utf-8")
+    assert cache.clear_override("Sidecar Only") is False
+    assert not (tmp_path / f"{orphan}.override.mime").exists()
+
+    bare = cache._key("Bytes Only")
+    (tmp_path / f"{bare}.override").write_bytes(b"image-bytes")
+    assert cache.clear_override("Bytes Only") is True
+    assert not (tmp_path / f"{bare}.override").exists()
+
+
+def test_the_clear_calls_unlink_the_image_before_its_mime_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirror-image of the write order, and now worth pinning rather than only
+    documenting: both clears run through one ``_clear_slots`` loop, so hoisting
+    the sweep above the image is a single-line edit that no other test notices.
+
+    Sweeping the sidecar first opens a window where a concurrent ``get()`` finds
+    image bytes with no mime and serves them as ``application/octet-stream``.
+    Order is not observable through behaviour here -- the window is between two
+    syscalls -- so the call sequence itself is the assertion.
+    """
+    cache = ArtistImageCache(tmp_path)
+    cache.store_positive("ABBA", b"auto", "image/png")
+    cache.write_override("ABBA", b"manual", "image/png")
+    key = cache._key("ABBA")
+
+    order: list[str] = []
+    real_unlink = ArtistImageCache._unlink
+
+    def spy(self: ArtistImageCache, path: Path) -> bool:
+        order.append(path.name)
+        return real_unlink(self, path)
+
+    monkeypatch.setattr(ArtistImageCache, "_unlink", spy)
+    cache.clear_auto("ABBA")
+    cache.clear_override("ABBA")
+
+    assert order.index(f"{key}.bin") < order.index(f"{key}.mime")
+    assert order.index(f"{key}.override") < order.index(f"{key}.override.mime")
+
+
+def test_clear_auto_drops_a_fresh_negative_marker_so_the_next_call_re_resolves(
+    tmp_path: Path,
+) -> None:
+    cache = ArtistImageCache(tmp_path)
+    cache.store_negative("Nobody", ttl_seconds=3600)
+    assert cache.get("Nobody") is NEGATIVE
+    # No .bin existed, so nothing was "cleared", but the marker must still go.
+    assert cache.clear_auto("Nobody") is False
+    assert cache.get("Nobody") is None
+
+
+def test_clear_auto_leaves_a_manual_override_alone(tmp_path: Path) -> None:
+    cache = ArtistImageCache(tmp_path)
+    cache.store_positive("ABBA", b"auto", "image/png")
+    cache.write_override("ABBA", b"manual", "image/jpeg")
+    assert cache.clear_auto("ABBA") is True
+    cached = cache.get("ABBA")
+    assert isinstance(cached, CachedImage)
+    assert cached.data == b"manual"
+
+
+def test_clear_auto_removes_the_derived_thumb(tmp_path: Path) -> None:
+    cache = ArtistImageCache(tmp_path)
+    cache.store_positive("ABBA", _png(600, 600), "image/png")
+    assert cache.get_thumb("ABBA") is not None
+    key = cache._key("ABBA")
+    assert (tmp_path / f"{key}.thumb.bin").exists()
+    cache.clear_auto("ABBA")
+    assert not (tmp_path / f"{key}.thumb.bin").exists()
+    assert not (tmp_path / f"{key}.thumb.src").exists()
+
+
+def test_clear_auto_forgets_an_in_memory_fallback_entry(tmp_path: Path) -> None:
+    # A cache dir that refused the write keeps the image in the bounded memory
+    # map. A reset that only unlinked files would keep serving it forever.
+    cache = ArtistImageCache(tmp_path / "unwritable")
+    cache._memory.put(cache._key("ABBA"), CachedImage(data=b"remembered", content_type="image/png"))
+    assert isinstance(cache.get("ABBA"), CachedImage)
+    cache.clear_auto("ABBA")
+    assert cache.get("ABBA") is None
+
+
+def test_clear_auto_forgets_an_in_memory_negative_marker(tmp_path: Path) -> None:
+    """The stand-in holds NEGATIVES too, and a reset has to drop those as well.
+
+    Companion to the positive case above: on a cache dir that refused the write,
+    an unexpired in-memory ``.miss`` stand-in answers NEGATIVE, so a reset that
+    left it behind would keep short-circuiting the re-resolve for the rest of
+    the TTL — the same lie, just told with a "no image" instead of an image.
+    """
+    if os.getuid() == 0:
+        pytest.skip("running as root: a read-only dir does not deny writes")
+    cache = ArtistImageCache(tmp_path)
+    os.chmod(tmp_path, 0o500)
+    try:
+        cache.store_negative("Nobody", ttl_seconds=3600)
+        assert cache.get("Nobody") is NEGATIVE  # remembered, not on disk
+        cache.clear_auto("Nobody")
+        assert cache.get("Nobody") is None
+    finally:
+        os.chmod(tmp_path, 0o755)
+
+
+def test_clear_override_reports_whether_it_removed_anything(tmp_path: Path) -> None:
+    cache = ArtistImageCache(tmp_path)
+    assert cache.clear_override("ABBA") is False
+    cache.write_override("ABBA", b"manual", "image/png")
+    assert cache.clear_override("ABBA") is True
+    assert cache.get("ABBA") is None
+
+
+def test_clear_calls_never_raise_on_an_unremovable_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # EACCES after a container recreate re-chowned the volume: report False,
+    # never 500 the endpoint.
+    cache = ArtistImageCache(tmp_path)
+    cache.store_positive("ABBA", b"auto", "image/png")
+    cache.write_override("ABBA", b"manual", "image/png")
+
+    def boom(self: Path) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "unlink", boom)
+    assert cache.clear_auto("ABBA") is False
+    assert cache.clear_override("ABBA") is False
+
+
+def test_a_refused_unlink_is_reported_once_not_per_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A refusal has to leave a trace — silently answering False would make an
+    unwritable cache dir indistinguishable from "there was nothing to clear" —
+    but ONE trace, not one per slot file: ``clear_auto`` probes five of them and
+    a broken dir refuses every one, so an unthrottled record turns a single fact
+    into five identical lines per reset."""
+    cache = ArtistImageCache(tmp_path)
+    cache.store_positive("ABBA", b"auto", "image/png")
+
+    def boom(self: Path) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "unlink", boom)
+    with caplog.at_level(logging.WARNING, logger="musicdrop.artwork"):
+        assert cache.clear_auto("ABBA") is False
+
+    assert len(_artwork_records(caplog)) == 1

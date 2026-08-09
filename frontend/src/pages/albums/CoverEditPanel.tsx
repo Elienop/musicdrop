@@ -13,7 +13,25 @@ type Pending = { objectUrl: string; blob: Blob; source: string | null };
 const ACCEPTED_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const MAX_BYTES = 10 * 1024 * 1024;
 
-export function CoverEditPanel({
+/** Keyed on `albumId`, and that is load-bearing rather than tidy. Every piece of
+ * state inside is ABOUT one album — a pending candidate above all — while
+ * `/albums/:albumId` is an unkeyed route element, so React reconciles the same
+ * instance when only the param changes. Without this key a fetched cover
+ * survives an album change and "Use this cover" installs it on whichever album
+ * is now on screen. The key lives here, not at the call site, so the guard
+ * travels with the component instead of depending on every future caller
+ * remembering it; the unmount cleanup releases the abandoned object URL.
+ * Same invariant as ArtistImageEditPanel: a panel holding a pending write must
+ * not outlive the entity it writes to. */
+export function CoverEditPanel(props: {
+  albumId: number;
+  onInstalled: () => void;
+  onClose: () => void;
+}) {
+  return <CoverEditPanelForAlbum key={props.albumId} {...props} />;
+}
+
+function CoverEditPanelForAlbum({
   albumId,
   onInstalled,
   onClose,
@@ -52,7 +70,9 @@ export function CoverEditPanel({
           setNotFound(true);
           return;
         }
-        setPreview({ objectUrl: r.objectUrl, blob: r.blob, source: r.source });
+        // The hook hands back bytes only; the URL is minted here so a fetch the
+        // user navigated away from never creates one. See useAlbumCover.ts.
+        setPreview({ objectUrl: URL.createObjectURL(r.blob), blob: r.blob, source: r.source });
       },
     });
   };

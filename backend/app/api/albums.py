@@ -5,6 +5,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.api.csrf import verify_upload_origin
 from app.api.http_cache import (
+    NO_SNIFF,
     if_none_match_hit,
     image_response,
     not_modified,
@@ -31,6 +32,7 @@ from app.models.completeness import AlbumMissingReport
 from app.models.cover import CoverInstallResult
 from app.models.delete import DeleteResult
 from app.models.edit import AlbumEditPreview, AlbumEditRequest, AlbumEditResult
+from app.models.errors import ErrorDetail
 from app.models.lyrics import LyricsBackfillStatus
 
 router = APIRouter(tags=["albums"])
@@ -182,18 +184,51 @@ async def get_album_cover_endpoint(
     return revalidating_image_response(request, image_bytes, mime)
 
 
-@router.post("/albums/{album_id}/cover/fetch")
+@router.post(
+    "/albums/{album_id}/cover/fetch",
+    dependencies=[Depends(verify_upload_origin)],
+    responses={
+        # The 200 is image bytes; without this entry the generated client is
+        # offered a JSON body and never told about the binary one. (FastAPI adds
+        # the `application/json` key regardless - see the artist fetch route for
+        # why `response_class=Response` is not the answer.)
+        200: {"content": {"image/*": {}}, "description": "The candidate cover. No write."},
+        # Both of these render {"detail": "..."} at runtime and neither was
+        # declared: a description-only entry, or none at all, generates
+        # `content?: never` for a body the client has to read. The 403 is the
+        # Origin guard, which is invisible in the schema, so this sentence is
+        # the only place it is documented.
+        403: {"model": ErrorDetail, "description": "The request came from another origin."},
+        404: {
+            "model": ErrorDetail,
+            "description": "No album with that id, or no cover candidate for it.",
+        },
+        # 422 stays UNDECLARED so FastAPI's HTTPValidationError survives - the
+        # path parameter can fail validation and its `detail` is a LIST.
+    },
+)
 async def fetch_album_cover_endpoint(
     album_id: int,
     request: Request,
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> Response:
-    """Fetch beets' best cover candidate. Returns the image (preview) or 404. No write."""
+    """Fetch beets' best cover candidate. Returns the image (preview) or 404. No write.
+
+    Origin-guarded: a body-less POST is a CORS-simple request, so without this a
+    foreign page could drive this install's outbound cover lookups. It writes
+    nothing, which is why this guard arrived later than the install route's -
+    but "changes no state" is not the same as "costs nothing to trigger".
+    """
     image_bytes, mime, source = await fetch_cover_op(request, album_id)
     return Response(
         content=image_bytes,
         media_type=mime,
-        headers={"Cache-Control": "no-store", "X-Art-Source": source},
+        # The last image response in the app that does not go through the two
+        # http_cache constructors, so it needs nosniff spelled out. This mime is
+        # already one of four literals from sniff_image_mime's magic-byte check,
+        # never a CDN's word - the header is the backstop, and a backstop with
+        # one response missing is not one.
+        headers={**NO_SNIFF, "Cache-Control": "no-store", "X-Art-Source": source},
     )
 
 

@@ -1,4 +1,4 @@
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
@@ -7,6 +7,7 @@ from fastapi.concurrency import run_in_threadpool
 from app.api.albums import get_library
 from app.api.csrf import verify_upload_origin
 from app.api.http_cache import (
+    NO_SNIFF,
     if_none_match_hit,
     image_response,
     not_modified,
@@ -20,8 +21,20 @@ from app.artist_art_jobs.runner import start_backfill as start_art_backfill
 from app.artwork.cache import ArtistImageCache
 from app.artwork.degrade import derive_thumb_or_degrade
 from app.artwork.download import fetch_image_bytes
-from app.artwork.images import MAX_IMAGE_BYTES, sniff_image_mime
+from app.artwork.factory import (
+    FANARTTV,
+    ArtistImageSources,
+    build_artist_image_sources,
+    label_for,
+)
+from app.artwork.images import (
+    FALLBACK_CONTENT_TYPE,
+    MAX_IMAGE_BYTES,
+    header_safe_content_type,
+    sniff_image_mime,
+)
 from app.artwork.service import ArtistImageService
+from app.artwork.source import TransientSourceError
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
 from app.beets import library as beets_library
 from app.beets.delete import delete_artist_op
@@ -33,11 +46,16 @@ from app.library_busy import raise_if_library_busy
 from app.models.artist import (
     Artist,
     ArtistImageOverrideResult,
+    ArtistImageResetResult,
     ArtistImageSettings,
+    ArtistImageSourceId,
+    ArtistImageSourceList,
+    ArtistImageSourceOption,
     ArtistImageUrlOverride,
 )
 from app.models.artist_art import ArtistArtBackfillStatus, ArtistArtWriteSettings
 from app.models.delete import DeleteResult
+from app.models.errors import ErrorDetail
 
 router = APIRouter(tags=["artists"])
 
@@ -71,6 +89,22 @@ def get_artist_image_http_client(request: Request) -> httpx.AsyncClient:
     return client
 
 
+def get_artist_image_sources(request: Request) -> ArtistImageSources:
+    """The process-wide artist-image source registry, built in the lifespan.
+
+    Falls back to a fresh registry over the module settings when unset:
+    ``TestClient(app)`` skips the lifespan, so a hard ``request.app.state``
+    read would make every test that touches these routes lifespan-dependent
+    (the same reason ``get_cover_thumb_cache`` has a fallback). The fallback
+    builds its own httpx client, which is correct for a test and never reached
+    in production - the lifespan always sets this attribute.
+    """
+    sources: ArtistImageSources | None = getattr(request.app.state, "artist_image_sources", None)
+    if sources is None:
+        sources = build_artist_image_sources(httpx.AsyncClient(), _module_settings)
+    return sources
+
+
 def get_artist_art_write_toggle(request: Request) -> ArtistArtWriteToggle:
     """The process-wide persisted write-to-library toggle, built in the lifespan."""
     toggle: ArtistArtWriteToggle = request.app.state.artist_art_write_toggle
@@ -88,7 +122,14 @@ async def list_artists_endpoint(
     "/artists/image",
     responses={
         200: {"content": {"image/*": {}}, "description": "The artist portrait."},
-        404: {"description": "Feature disabled, no verified match, or transient error."},
+        # Names the model for the same reason the fetch route's errors do: a
+        # description-only entry REPLACES the generated response, leaving the
+        # status with no body schema and generating `content?: never` for a
+        # body the client can read.
+        404: {
+            "model": ErrorDetail,
+            "description": "Feature disabled, no verified match, or transient error.",
+        },
     },
 )
 async def get_artist_image_endpoint(
@@ -187,6 +228,227 @@ async def set_artist_image_settings_endpoint(
     return ArtistImageSettings(enabled=toggle.set_enabled(body.enabled))
 
 
+#: fanart.tv answers only by MusicBrainz id, so it is offered-but-blocked rather
+#: than hidden when the artist has none - hiding it would look like a missing
+#: feature, and an empty failure after the user picks it would look like a bug.
+_NO_MBID_REASON = "No MusicBrainz ID for this artist, so fanart.tv cannot be searched"
+
+
+def _source_option(source_id: str, blocked_because: str | None) -> ArtistImageSourceOption:
+    """One entry of the per-artist source list.
+
+    ``available`` is DERIVED from the reason rather than passed alongside it.
+    The model carries no validator tying the two (one was rejected: it would not
+    survive into the generated TypeScript), so ``available=False, reason=None``
+    is a representable response that would render an empty explanation exactly
+    where the user needs a sentence. This is the only place these options are
+    built, so deriving the flag here makes that pair unrepresentable.
+    """
+    return ArtistImageSourceOption(
+        # The factory's ids and the model's Literal are the same three strings,
+        # pinned by test_source_ids_match_what_the_factory_actually_builds; the
+        # factory deliberately keeps plain `str` so app/artwork/ has no
+        # dependency on app/models/.
+        id=cast(ArtistImageSourceId, source_id),
+        label=label_for(source_id),
+        available=blocked_because is None,
+        reason=blocked_because,
+    )
+
+
+@router.get("/artists/image/sources", response_model=ArtistImageSourceList)
+async def list_artist_image_sources_endpoint(
+    name: Annotated[str, Query(min_length=1)],
+    sources: Annotated[ArtistImageSources, Depends(get_artist_image_sources)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> ArtistImageSourceList:
+    """The sources a portrait for ``name`` may be fetched from, in chain order.
+
+    Only CONFIGURED sources are listed (an unset API key is an install-level
+    fact the user cannot act on from this panel). Of those, fanart.tv reports
+    ``available=false`` plus a reason when this artist has no MusicBrainz id.
+    ``name`` is a query param, not a path segment, so "AC/DC" survives routing.
+    """
+    ids = sources.ids()
+    # Only pay the beets query when the answer can change something, and never
+    # on the event loop - it is a blocking sqlite read over every album of the
+    # artist.
+    mbid = (
+        await run_in_threadpool(beets_library.get_artist_mbid, handle.lib, name)
+        if FANARTTV in ids
+        else None
+    )
+    return ArtistImageSourceList(
+        sources=[
+            _source_option(
+                source_id,
+                _NO_MBID_REASON if source_id == FANARTTV and not mbid else None,
+            )
+            for source_id in ids
+        ]
+    )
+
+
+@router.post(
+    "/artists/image/fetch",
+    dependencies=[Depends(verify_upload_origin)],
+    responses={
+        200: {
+            # FastAPI adds `application/json: {schema: {}}` here as well, from
+            # the app-level response class. It cannot be removed except with
+            # `response_class=Response`, and that collides with the wire-safety
+            # invariant (tests/test_wire.py:164) that EVERY api route resolves
+            # to SurrogateSafeJSONResponse - measured: the suite fails. It
+            # generates `unknown`, not `never`, so the type offers a JSON body
+            # nobody reads rather than denying the binary one; the two sibling
+            # binary routes carry the same artifact.
+            "content": {"image/*": {}},
+            "description": "The candidate portrait. Preview only - nothing is stored.",
+        },
+        # Every one of these renders `{"detail": "<sentence>"}` at runtime, so
+        # every one names the model. A description-only entry REPLACES FastAPI's
+        # generated response instead of merging into it, which strips the body
+        # schema and generates `content?: never` - a type saying the body cannot
+        # exist for statuses whose body the client has to read.
+        # TWO causes, and the second one is invisible in the schema: a
+        # `dependencies=[...]` guard emits no OpenAPI security scheme, so this
+        # sentence is the only place the cross-origin refusal is documented.
+        403: {
+            "model": ErrorDetail,
+            "description": "Artist images are turned off, or the request is cross-origin.",
+        },
+        404: {"model": ErrorDetail, "description": "That source has no portrait for this artist."},
+        # TWO causes, like the 403 above: not configured here, or configured and
+        # answering with an image this install cannot store. Both are "the
+        # request is fine, this install cannot serve it"; each raises its own
+        # one-cause sentence, so the description is the only place both appear.
+        409: {
+            "model": ErrorDetail,
+            "description": (
+                "That source is not configured on this install, or its image is in a"
+                " format that cannot be stored."
+            ),
+        },
+        502: {
+            "model": ErrorDetail,
+            "description": "That source failed (timeout, rate limit, bad response).",
+        },
+        # 422 is deliberately ABSENT: declaring it at all would replace
+        # FastAPI's HTTPValidationError (whose `detail` is a LIST of loc/msg
+        # objects, not a sentence) with whatever this dict said.
+    },
+)
+async def fetch_artist_image_endpoint(
+    name: Annotated[str, Query(min_length=1)],
+    source: Annotated[ArtistImageSourceId, Query()],
+    service: Annotated[ArtistImageService, Depends(get_artist_image_service)],
+    sources: Annotated[ArtistImageSources, Depends(get_artist_image_sources)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> Response:
+    """Fetch ONE source's portrait candidate for ``name``. Writes NOTHING.
+
+    The preview half of the manual re-fetch: the response is the image itself
+    (``no-store``, provenance in ``X-Art-Source``), matching the album cover's
+    fetch route so the two panels share one shape. Installing is a SEPARATE
+    call - the client posts the very bytes it previewed to
+    ``POST /api/artists/image/override``, so nothing can substitute a different
+    image between "looks good" and "use it".
+
+    The cache is bypassed in BOTH directions: a fresh ``.miss`` marker does not
+    suppress the call (the user asked for it explicitly), and a result is not
+    stored (an approved image lands in the override slot, a rejected one leaves
+    no trace). The call still takes the service's own rate/concurrency slot, so
+    a burst of manual fetches paces against the same 5/s bucket the automatic
+    chain uses - ``sources.get`` hands back a bare source with no limiter
+    attached, so resolving it directly is the easy thing to write and would
+    double the real outbound rate against fanart.tv / Spotify / Deezer.
+
+    ``source`` is typed as the ``Literal``, not ``str``, and that gate is
+    load-bearing rather than cosmetic: ``label_for`` echoes an unknown id back
+    verbatim and the result lands in the ``X-Art-Source`` header, so a plain
+    ``str`` would let a client put its own bytes in a response header. An id
+    outside the Literal is refused by validation before this body runs.
+
+    Origin-guarded. A body-less POST is a CORS-simple request, so a foreign page
+    can send this one without a preflight - and unlike the album cover's fetch,
+    where the only attacker input is a local album id, here the caller picks the
+    UPSTREAM and the query it is sent, and that request goes out carrying this
+    install's own fanart.tv / Spotify credentials. The route bypasses the cache
+    by design, so repeats are not deduplicated either.
+    """
+    if not service.is_enabled():
+        raise HTTPException(status_code=403, detail="Turn on artist images first")
+    picked = sources.get(source)
+    if picked is None:
+        # 409, NOT 422: the request is well-formed, it is this INSTALL that
+        # cannot serve it. Keeping 422 for validation alone means one body shape
+        # per status - a client branches on the status instead of sniffing
+        # whether `detail` came back a string or a list of validation errors.
+        raise HTTPException(
+            status_code=409, detail=f"{label_for(source)} is not configured on this install"
+        )
+    # fanart.tv is MBID-keyed; the others ignore it. Resolved for every source
+    # because the beets query is one indexed lookup and the branch would only
+    # duplicate the sources endpoint's knowledge of which source needs it.
+    # Off-loop: it is a blocking sqlite read over every album of the artist.
+    mbid = await run_in_threadpool(beets_library.get_artist_mbid, handle.lib, name)
+    try:
+        async with service.limiter_slot():
+            resolved = await picked.resolve(name, mbid=mbid)
+    except TransientSourceError as exc:
+        # NOT a 404: "the source failed" and "the source has no such image" are
+        # different answers, and reporting the first as the second is the exact
+        # lie this feature exists to remove. The source is named because 502 is
+        # also what a proxy emits when this app itself is down.
+        raise HTTPException(
+            status_code=502,
+            detail=f"{label_for(source)} did not answer - try again in a moment",
+        ) from exc
+    if resolved is None:
+        raise HTTPException(
+            status_code=404, detail=f"{label_for(source)} has no portrait for {name}"
+        )
+    if sniff_image_mime(resolved.data) is None:
+        # ONE validation rule for the preview/install pair. The override upload
+        # accepts exactly the four families sniff_image_mime knows, so without
+        # this a source answering with a real BMP previews 200 and then 422s on
+        # approve - the user only discovers it AFTER choosing. Sniffed, not
+        # label-checked, because the install sniffs: a source declaring
+        # image/png and sending something else would otherwise walk straight
+        # through the preview into that same 422.
+        #
+        # 409 joins the unconfigured-source case: the request is well formed and
+        # the source answered, it is THIS install that cannot store the answer.
+        # Not 502 - that one promises "try again in a moment", and a source that
+        # picks deterministically returns the same unusable image forever.
+        declared = header_safe_content_type(resolved.content_type) or FALLBACK_CONTENT_TYPE
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{label_for(source)} returned {declared}, which cannot be stored"
+                " (needs PNG, JPEG, GIF or WebP)"
+            ),
+        )
+    # The third content-type sink header_safe_content_type's docstring counts,
+    # and the only one where the value is a source's OWN answer rather than a
+    # cache sidecar. Every source in the tree routes its download through
+    # app/artwork/download.py, which already guards this - but the source
+    # contract is a Protocol, so nothing stops a future one from returning a
+    # header-hostile type, and that would 500 this route (non-ASCII) or drop the
+    # connection with no response at all (a control character).
+    media_type = header_safe_content_type(resolved.content_type) or FALLBACK_CONTENT_TYPE
+    return Response(
+        content=resolved.data,
+        media_type=media_type,
+        # label_for is safe HERE only because `source` came through the Literal.
+        headers={
+            **NO_SNIFF,
+            "Cache-Control": "no-store",
+            "X-Art-Source": label_for(source),
+        },
+    )
+
+
 @router.post(
     "/artists/image/override",
     response_model=ArtistImageOverrideResult,
@@ -255,13 +517,50 @@ async def set_artist_image_override_from_url_endpoint(
     return ArtistImageOverrideResult(ok=True, content_type=mime)
 
 
-@router.delete("/artists/image/override", status_code=204)
-async def clear_artist_image_override_endpoint(
+def _reset_slots(cache: ArtistImageCache, name: str) -> tuple[bool, bool]:
+    """Clear both stored portraits for ``name`` in ONE threadpool hop.
+
+    Returns ``(cleared_override, cleared_auto)``. A module-level function rather
+    than a lambda so the offload is assertable, and rather than a third cache
+    method so the cache keeps only the two primitives that mean something on
+    their own.
+    """
+    return cache.clear_override(name), cache.clear_auto(name)
+
+
+@router.post(
+    "/artists/image/reset",
+    response_model=ArtistImageResetResult,
+    dependencies=[Depends(verify_upload_origin)],
+    # The Origin guard below is invisible in OpenAPI - a `dependencies=[...]`
+    # entry emits no security scheme - so a status this route really returns
+    # would otherwise be undeclared, and the generated client would be typed as
+    # if it could not happen. 422 stays undeclared on purpose: declaring it
+    # would replace FastAPI's HTTPValidationError, whose `detail` is a list.
+    responses={403: {"model": ErrorDetail, "description": "The request is cross-origin."}},
+)
+async def reset_artist_image_endpoint(
     request: Request,
     name: Annotated[str, Query(min_length=1)],
     cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
-) -> Response:
-    await run_in_threadpool(cache.clear_override, name)
+) -> ArtistImageResetResult:
+    """Forget every stored portrait for ``name`` so it is looked up again.
+
+    Clears the manual override AND the cached automatic image (plus its
+    negative marker and derived thumb). Clearing only the override - which is
+    all this used to do - drops the user straight back onto the automatic image
+    they just rejected, because a present ``.bin`` means the resolve path never
+    runs again.
+
+    The result reports each slot separately: neither may have existed, and on an
+    unwritable cache dir a removal can be refused. The caller shows what
+    actually happened instead of implying a re-fetch that did not occur.
+
+    Origin-guarded: a body-less POST is a CORS-simple request, so without this
+    dependency a foreign page could reset portraits (the DELETE this replaced
+    was preflight-protected by its method alone).
+    """
+    cleared_override, cleared_auto = await run_in_threadpool(_reset_slots, cache, name)
     # UNSCOPED on purpose: the artist image is served under a NORMALIZED name
     # (NFKD accent-fold + casefold + whitespace-collapse — see
     # artwork/normalize.py), so a raw display name is not a reliable identity
@@ -270,7 +569,9 @@ async def clear_artist_image_override_endpoint(
     # would duplicate it across languages (casefold != toLowerCase). Album
     # covers ARE scoped — they key off a stable numeric id.
     emit_art_changed(request.app)
-    return Response(status_code=204)
+    return ArtistImageResetResult(
+        ok=True, cleared_override=cleared_override, cleared_auto=cleared_auto
+    )
 
 
 def _gate_library_busy(app: object) -> None:

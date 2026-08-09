@@ -25,7 +25,7 @@ vi.mock("@/api/useArtistImage", () => ({
     isError: false,
     error: null,
   }),
-  useResetArtistImageOverride: () => ({
+  useResetArtistImage: () => ({
     mutate: vi.fn(),
     isPending: false,
     isError: false,
@@ -36,6 +36,20 @@ vi.mock("@/api/useArtistImage", () => ({
     isPending: false,
     isError: false,
     error: null,
+  }),
+  // The panel imports these too, and a factory REPLACES the module — a missing
+  // export fails this whole file, not just the panel.
+  useFetchArtistImage: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+    error: null,
+    reset: vi.fn(),
+  }),
+  useArtistImageSources: () => ({
+    data: { sources: [{ id: "deezer", label: "Deezer", available: true, reason: null }] },
+    isPending: false,
+    isError: false,
   }),
 }));
 
@@ -50,10 +64,13 @@ vi.mock("@/api/useReorganize", () => ({
   useDismissReorganize: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
-// This suite covers the artist-image edit flow; keep the orthogonal artist-art
-// write toggle OFF so its header action doesn't render here.
+// This suite covers the artist-image edit flow; the orthogonal artist-art write
+// toggle defaults OFF so its header action doesn't render here — but it is
+// mutable, because it is half of the predicate that decides whether the edit
+// button exists at all.
+const artSettings = { enabled: false };
 vi.mock("@/api/useArtistArt", () => ({
-  useArtistArtSettings: () => ({ data: { enabled: false } }),
+  useArtistArtSettings: () => ({ data: artSettings }),
   useArtistArtBackfillStatus: () => ({ data: { phase: "idle", artist: null } }),
   useStartArtistArtApply: () => ({
     mutate: vi.fn(),
@@ -79,6 +96,7 @@ function renderAt(name: string) {
 
 afterEach(() => {
   settings.enabled = true;
+  artSettings.enabled = false;
 });
 
 describe("ArtistAlbumsPage artist-image edit", () => {
@@ -88,26 +106,37 @@ describe("ArtistAlbumsPage artist-image edit", () => {
     fireEvent.click(btn);
     // Assert the panel's distinctive copy (both the button AND the panel section
     // carry aria-label "Edit artist image", like CoverEditPanel — so target text).
-    expect(screen.getByText(/upload a custom portrait/i)).toBeInTheDocument();
+    expect(screen.getByText(/choose the portrait for/i)).toBeInTheDocument();
   });
 
-  it("hides the Edit button when images are disabled", () => {
+  it("hides the Edit button only when BOTH toggles are off", () => {
     settings.enabled = false;
+    artSettings.enabled = false;
     renderAt("ABBA");
     expect(
       screen.queryByRole("button", { name: /edit artist image/i }),
     ).toBeNull();
   });
 
+  it("still offers the Edit button when only the write-to-library toggle is on", () => {
+    // The backend accepts a fetch on image-toggle OR write-toggle. Gating the
+    // way in on the image toggle alone left this combination with a painted
+    // portrait, a route that accepts, and no way to reach either.
+    settings.enabled = false;
+    artSettings.enabled = true;
+    renderAt("ABBA");
+    expect(screen.getByRole("button", { name: /edit artist image/i })).toBeInTheDocument();
+  });
+
   it("closing the panel from inside (Cancel) returns focus to the toggle", () => {
     renderAt("ABBA");
     const btn = screen.getByRole("button", { name: /edit artist image/i });
     fireEvent.click(btn);
-    expect(screen.getByText(/upload a custom portrait/i)).toBeInTheDocument();
+    expect(screen.getByText(/choose the portrait for/i)).toBeInTheDocument();
     // The in-panel Cancel unmounts the focused button — focus must come back
     // to the disclosure toggle instead of dropping to <body>.
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
-    expect(screen.queryByText(/upload a custom portrait/i)).toBeNull();
+    expect(screen.queryByText(/choose the portrait for/i)).toBeNull();
     expect(btn).toHaveFocus();
   });
 });
