@@ -130,8 +130,10 @@ export function useFetchArtistImage(name: string) {
         found: true,
         blob,
         objectUrl: URL.createObjectURL(blob),
-        // Absent in dev: CORSMiddleware sets no `expose_headers`, so the Vite
-        // origin cannot read this header even though production can.
+        // Nullable for real: the backend sets no CORS `expose_headers`, so this
+        // reads only while the request is same-origin — true in prod, and true
+        // in dev ONLY because Vite proxies /api. Point the app at the backend's
+        // own origin and the provenance silently goes null.
         source: res.headers.get("X-Art-Source"),
       };
     },
