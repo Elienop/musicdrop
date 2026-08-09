@@ -238,6 +238,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # subsequent test that skips the lifespan (and therefore has no broker)
         # does not find a stale EventBroker whose loop is already closed.
         del app.state.event_broker
+        # Same hazard for the source registry: its sources hold the httpx client
+        # just closed above, and unlike the other artwork state its getter has a
+        # FALLBACK — a leaked registry would shadow that fallback, so a later
+        # test skipping the lifespan would fetch through a closed client instead
+        # of building its own. Both attributes are set before the `try`, so the
+        # deletes cannot race a half-built lifespan.
+        del app.state.artist_image_sources
 
 
 app = FastAPI(

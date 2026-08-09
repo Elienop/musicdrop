@@ -135,6 +135,37 @@ def test_lifespan_exposes_one_registry_shared_with_the_service(
         assert get_artist_image_sources(_request_for(app)) is sources
 
 
+def test_lifespan_teardown_drops_the_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Teardown must leave no registry behind, or the fallback is unreachable.
+
+    ``main_mod.app`` is a module singleton, so an attribute set in the lifespan
+    outlives it for the whole session. A leaked registry holds sources bound to
+    the CLOSED httpx client, and it SHADOWS the fallback: a later bare
+    ``TestClient(app)`` route test would get the stale registry and fail with
+    ``RuntimeError: Cannot send a request, as the client has been closed`` -
+    raised before the transport, so a respx mock cannot mask it. Same hazard the
+    teardown already documents for ``event_broker``.
+
+    Reading the registry INSIDE the block is what makes this a teardown test:
+    without it, "no attribute afterwards" would also pass if the lifespan had
+    never set one.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    (tmp_path / "config.yaml").write_text(f"directory: {music}\nlibrary: library.db\nplugins: []\n")
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "artist_image_cache_dir", str(tmp_path / "cache"))
+    app = main_mod.app
+    with TestClient(app):
+        built = app.state.artist_image_sources
+        assert isinstance(built, ArtistImageSources)
+    assert not hasattr(app.state, "artist_image_sources")
+    # ...so the dependency reaches the fallback rather than the dead registry.
+    assert get_artist_image_sources(_request_for(app)) is not built
+
+
 def test_get_artist_image_sources_falls_back_without_a_lifespan() -> None:
     # TestClient(app) skips the lifespan, so the dependency must still yield a
     # usable registry rather than raising AttributeError on app.state.
