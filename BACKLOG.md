@@ -141,6 +141,16 @@ next bulk import.)_
   now that 304s are stat-cheap, but a scoped identity would need the normalized-name mapping.
 - Browse-side A-Z index would need a per-filter letter-to-offset endpoint (Artists-only
   shipped in the perf wave).
+- **`tests/test_artist_image_endpoint.py` opens the REAL dev library on every suite run.** It
+  uses `with TestClient(app)` at lines 257 and 298 and contains zero `beets_dir` references, so
+  the lifespan runs `setup_beets` against `MUSICDROP_BEETS_DIR` from `backend/.env` — the live
+  `data/beets`. Nothing autouse guards this: the hermetic `beets_library` fixture
+  (`tests/conftest.py:254`) is opt-in, and 14 other test files do patch `settings.beets_dir`
+  while this one does not. No debris today (beets 2.13 writes `library.db-before-*.bak` only
+  when a migration actually runs, and the dev DB is current), but it holds a SQLite connection
+  to the real corpus and would back it up on the next beets schema bump. Fix is one line:
+  `monkeypatch.setattr(settings, "beets_dir", str(tmp_path))` plus a tmp `config.yaml` +
+  `music/` dir, per the `test_slskd_webhook.py` pattern.
 - `_stat_tag` (artwork) duplicates `library.py`'s `_stat_etag` (Path vs str param) — polish
   only, same behavior.
 - Stat-then-read ETag race on the artwork cache (self-healing, mirrors the covers precedent);
@@ -157,10 +167,11 @@ next bulk import.)_
 - `AlreadyInLibrary` thumb URL has no test file.
 - Pagination: numbered-window `aria-label="Page N"` vs. the visible "N" is a WCAG 2.5.3
   label-in-name partial mismatch; the icon-sm caret width is tight for 3-digit page numbers.
-- Pagination: the compact pager's busy state is no longer in the readout's accessible name
-  (`aria-label` wins over the sr-only child) — consider `aria-live` or a busy-aware label; the
-  NaN/empty-commit jump-input path is untested; a component docstring is stale re
-  click-to-edit; there's a minor spinner style delta from the original design.
+- Pagination: a component docstring is stale re click-to-edit; there's a minor spinner style
+  delta from the original design. (The busy-state-not-in-the-accessible-name and
+  untested-empty-commit items were fixed in v0.33.1 / PR #130 — the competing `aria-label` is
+  gone so the sr-only child wins, and the empty/clamped commit paths are pinned in
+  `Pagination.test.tsx`.)
 - Artists A-Z index: the active-letter tint omits `SegmentedControl`'s `shadow-xs`; CJK/
   Cyrillic artist names fall into `#` (documented limitation, not a bug).
 - Browse cache rebuild: a transient wrong-row window exists when an album commits
