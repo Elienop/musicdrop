@@ -182,13 +182,19 @@ async def get_album_cover_endpoint(
     return revalidating_image_response(request, image_bytes, mime)
 
 
-@router.post("/albums/{album_id}/cover/fetch")
+@router.post("/albums/{album_id}/cover/fetch", dependencies=[Depends(verify_upload_origin)])
 async def fetch_album_cover_endpoint(
     album_id: int,
     request: Request,
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> Response:
-    """Fetch beets' best cover candidate. Returns the image (preview) or 404. No write."""
+    """Fetch beets' best cover candidate. Returns the image (preview) or 404. No write.
+
+    Origin-guarded: a body-less POST is a CORS-simple request, so without this a
+    foreign page could drive this install's outbound cover lookups. It writes
+    nothing, which is why this guard arrived later than the install route's -
+    but "changes no state" is not the same as "costs nothing to trigger".
+    """
     image_bytes, mime, source = await fetch_cover_op(request, album_id)
     return Response(
         content=image_bytes,

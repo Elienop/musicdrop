@@ -345,6 +345,61 @@ def test_service_offloads_blocking_work_to_threadpool(
     assert get_mbid in offloaded  # the beets mbid query
 
 
+def test_every_exit_of_the_image_get_carries_nosniff(
+    client: TestClient, artist_image_cache: ArtistImageCache
+) -> None:
+    """No content-type this endpoint serves is authored by this app.
+
+    They come off a CDN response header, a ``.mime`` sidecar written from one,
+    or a media file's embedded picture MIME - and ``image/svg+xml`` is a legal
+    answer from all three. An SVG rendered from this app's own origin is script
+    execution, not a picture, and this is the EASIER of the two artist-image
+    routes to aim at because it is a GET.
+
+    Six exits reach this assertion (stat-validated 200 and 304, thumb 200 and
+    304, and the two content-hash fallbacks reachable through ``hit_client``
+    below), which is exactly why the header lives on the two response
+    constructors rather than at each ``return``.
+    """
+    artist_image_cache.store_positive("ABBA", _png(1000, 1000), "image/png")
+    full = client.get("/api/artists/image", params={"name": "ABBA"})
+    thumb = client.get("/api/artists/image", params={"name": "ABBA", "size": "thumb"})
+    revalidated = client.get(
+        "/api/artists/image",
+        params={"name": "ABBA"},
+        headers={"If-None-Match": full.headers["etag"]},
+    )
+    thumb_revalidated = client.get(
+        "/api/artists/image",
+        params={"name": "ABBA", "size": "thumb"},
+        headers={"If-None-Match": thumb.headers["etag"]},
+    )
+    # Non-vacuity: assert each arm is the response it claims to be, or a 404
+    # would satisfy "no sniffable body" for the wrong reason.
+    assert [r.status_code for r in (full, thumb, revalidated, thumb_revalidated)] == [
+        200,
+        200,
+        304,
+        304,
+    ]
+    for resp in (full, thumb, revalidated, thumb_revalidated):
+        assert resp.headers["x-content-type-options"] == "nosniff"
+
+
+def test_the_content_hash_fallback_exits_carry_nosniff(hit_client: TestClient) -> None:
+    # The other two exits: no file to stat, so the endpoint falls back to the
+    # content-hash ETag through revalidating_image_response.
+    full = hit_client.get("/api/artists/image", params={"name": "ABBA"})
+    revalidated = hit_client.get(
+        "/api/artists/image",
+        params={"name": "ABBA"},
+        headers={"If-None-Match": full.headers["etag"]},
+    )
+    assert (full.status_code, revalidated.status_code) == (200, 304)
+    assert full.headers["x-content-type-options"] == "nosniff"
+    assert revalidated.headers["x-content-type-options"] == "nosniff"
+
+
 def test_size_thumb_serves_webp_with_its_own_etag(
     client: TestClient, artist_image_cache: ArtistImageCache
 ) -> None:

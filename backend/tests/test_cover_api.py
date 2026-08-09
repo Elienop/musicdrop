@@ -271,6 +271,28 @@ def test_fetch_via_filesystem_returns_image(cover_client: TestClient, edit_lib: 
     assert r.content == PNG.read_bytes()
 
 
+def test_cross_origin_cover_fetch_is_rejected(cover_client: TestClient, edit_lib: Library) -> None:
+    """A body-less POST is a CORS-simple request, so it reaches this route
+    without a preflight. It writes nothing, but it still drives an outbound
+    cover lookup on this install's behalf - "changes no state" is not "costs
+    nothing to trigger". The same guard the install route has carried since it
+    was written.
+    """
+    import os
+
+    aid = _aid(edit_lib)
+    album = edit_lib.get_album(aid)
+    assert album is not None
+    album_dir = os.path.dirname(os.fsdecode(next(iter(album.items())).path))
+    Path(album_dir, "cover.png").write_bytes(PNG.read_bytes())
+    # Non-vacuity: this exact request WITHOUT the header is the 200 pinned by
+    # test_fetch_via_filesystem_returns_image, so the 403 is the Origin guard
+    # and not a missing cover.
+    r = cover_client.post(f"/api/albums/{aid}/cover/fetch", headers={"Origin": "http://evil.test"})
+    assert r.status_code == 403
+    assert cover_client.post(f"/api/albums/{aid}/cover/fetch").status_code == 200
+
+
 def test_upload_rejects_oversize_via_content_length(
     cover_client: TestClient, edit_lib: Library
 ) -> None:

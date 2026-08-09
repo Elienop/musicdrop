@@ -126,6 +126,51 @@ def test_hit_returns_the_bytes_with_provenance_and_no_store() -> None:
     assert resp.headers["content-type"] == "image/jpeg"
     assert resp.headers["x-art-source"] == "Deezer"
     assert resp.headers["cache-control"] == "no-store"
+    # The declared type is the SOURCE's word, not ours: image/svg+xml is a legal
+    # answer, and an SVG rendered from this app's origin executes script.
+    assert resp.headers["x-content-type-options"] == "nosniff"
+
+
+def test_a_cross_origin_fetch_is_rejected_before_any_outbound_call() -> None:
+    """A body-less POST is CORS-simple, so a foreign page needs no preflight.
+
+    Unlike the album cover's fetch - where the only attacker input is a local
+    album id - the caller here picks the UPSTREAM and the query sent to it, and
+    the request goes out with this install's own fanart.tv / Spotify
+    credentials. The route bypasses the cache by design, so N posts are N
+    outbound resolves.
+    """
+    source = _RecordingSource(ResolvedImage(data=b"X", content_type="image/png"))
+    resp = _client(source).post(
+        _URL,
+        params={"name": "ABBA", "source": "deezer"},
+        headers={"Origin": "http://evil.test"},
+    )
+    assert resp.status_code == 403
+    assert source.calls == []  # rejected BEFORE the source was touched
+
+
+def test_a_same_origin_fetch_is_allowed() -> None:
+    # Control arm for the test above: without it, a 403 from the ORIGIN guard is
+    # indistinguishable from the feature-disabled 403, and "calls == []" would
+    # hold for a route that rejects everything.
+    source = _RecordingSource(ResolvedImage(data=b"X", content_type="image/png"))
+    client = _client(source)
+    resp = client.post(
+        _URL,
+        params={"name": "ABBA", "source": "deezer"},
+        headers={"Origin": "http://testserver"},  # TestClient's own Host
+    )
+    assert resp.status_code == 200
+    assert source.calls == [("ABBA", "the-mbid")]
+
+
+def test_a_client_that_sends_no_origin_is_allowed() -> None:
+    # curl and LAN tooling send no Origin; the guard must not lock them out.
+    source = _RecordingSource(ResolvedImage(data=b"X", content_type="image/png"))
+    resp = _client(source).post(_URL, params={"name": "ABBA", "source": "deezer"})
+    assert resp.status_code == 200
+    assert source.calls == [("ABBA", "the-mbid")]
 
 
 def test_the_fetch_writes_nothing_to_the_cache(tmp_path: Path) -> None:
@@ -200,11 +245,20 @@ def test_transient_failure_is_502_not_404() -> None:
     assert detail.isascii()
 
 
-def test_unconfigured_source_is_422_with_a_sentence() -> None:
+def test_unconfigured_source_is_409_not_422() -> None:
+    """One body shape per status.
+
+    The request is well-formed - it is this INSTALL that cannot serve it - so
+    422 stays reserved for validation, whose ``detail`` is a LIST. A client
+    branches on the status instead of sniffing ``typeof detail``.
+    """
     source = _RecordingSource(None)  # the registry holds deezer only
     resp = _client(source).post(_URL, params={"name": "ABBA", "source": "spotify"})
-    assert resp.status_code == 422
-    assert "not configured" in resp.json()["detail"]
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert isinstance(detail, str)
+    assert "not configured" in detail
+    assert detail.isascii()
     assert source.calls == []
 
 
@@ -276,6 +330,41 @@ def test_a_header_hostile_content_type_from_a_source_is_never_sent_verbatim(
     assert resp.status_code == 200
     assert resp.headers["content-type"] == served
     assert resp.content == b"X"
+
+
+def test_every_declared_status_carries_the_body_it_actually_returns() -> None:
+    """The generated TypeScript is downstream of this, so pin the DUMPED spec.
+
+    A ``responses={...}`` entry carrying only a ``description`` REPLACES the
+    response FastAPI generated rather than merging into it, so the status ends
+    up with no ``content`` and ``openapi-typescript`` renders it
+    ``content?: never`` - a type asserting the body cannot exist - while the
+    route returns ``{"detail": ...}``. Verified against openapi-typescript
+    7.13.0, the version the frontend pins.
+
+    The 422 arm is the other half: declaring it AT ALL would strip
+    ``HTTPValidationError``, whose ``detail`` is a list of loc/msg objects.
+    """
+    operation = app.openapi()["paths"]["/api/artists/image/fetch"]["post"]
+    responses = operation["responses"]
+    assert sorted(responses) == ["200", "403", "404", "409", "422", "502"]
+
+    # The 200 offers the image. It also carries FastAPI's `application/json`
+    # artifact from the app-level response class, which cannot be dropped
+    # without `response_class=Response` - and that breaks the wire-safety
+    # invariant at tests/test_wire.py:164 (measured, not assumed). Pinned as it
+    # IS so a future removal is a deliberate edit rather than a silent drift.
+    assert set(responses["200"]["content"]) == {"image/*", "application/json"}
+
+    def ref(code: str) -> str:
+        content = responses[code]["content"]
+        assert set(content) == {"application/json"}, code
+        schema_ref: str = content["application/json"]["schema"]["$ref"]
+        return schema_ref
+
+    for code in ("403", "404", "409", "502"):
+        assert ref(code) == "#/components/schemas/ErrorDetail", code
+    assert ref("422") == "#/components/schemas/HTTPValidationError"
 
 
 @pytest.mark.anyio

@@ -7,6 +7,7 @@ from fastapi.concurrency import run_in_threadpool
 from app.api.albums import get_library
 from app.api.csrf import verify_upload_origin
 from app.api.http_cache import (
+    NO_SNIFF,
     if_none_match_hit,
     image_response,
     not_modified,
@@ -54,6 +55,7 @@ from app.models.artist import (
 )
 from app.models.artist_art import ArtistArtBackfillStatus, ArtistArtWriteSettings
 from app.models.delete import DeleteResult
+from app.models.errors import ErrorDetail
 
 router = APIRouter(tags=["artists"])
 
@@ -282,15 +284,38 @@ async def list_artist_image_sources_endpoint(
 
 @router.post(
     "/artists/image/fetch",
+    dependencies=[Depends(verify_upload_origin)],
     responses={
         200: {
+            # FastAPI adds `application/json: {schema: {}}` here as well, from
+            # the app-level response class. It cannot be removed except with
+            # `response_class=Response`, and that collides with the wire-safety
+            # invariant (tests/test_wire.py:164) that EVERY api route resolves
+            # to SurrogateSafeJSONResponse - measured: the suite fails. It
+            # generates `unknown`, not `never`, so the type offers a JSON body
+            # nobody reads rather than denying the binary one; the two sibling
+            # binary routes carry the same artifact.
             "content": {"image/*": {}},
             "description": "The candidate portrait. Preview only - nothing is stored.",
         },
-        403: {"description": "Artist images are turned off."},
-        404: {"description": "That source has no portrait for this artist."},
-        422: {"description": "Unknown source id, or one not configured on this install."},
-        502: {"description": "That source failed (timeout, rate limit, bad response)."},
+        # Every one of these renders `{"detail": "<sentence>"}` at runtime, so
+        # every one names the model. A description-only entry REPLACES FastAPI's
+        # generated response instead of merging into it, which strips the body
+        # schema and generates `content?: never` - a type saying the body cannot
+        # exist for statuses whose body the client has to read.
+        403: {"model": ErrorDetail, "description": "Artist images are turned off."},
+        404: {"model": ErrorDetail, "description": "That source has no portrait for this artist."},
+        409: {
+            "model": ErrorDetail,
+            "description": "That source is not configured on this install.",
+        },
+        502: {
+            "model": ErrorDetail,
+            "description": "That source failed (timeout, rate limit, bad response).",
+        },
+        # 422 is deliberately ABSENT: declaring it at all would replace
+        # FastAPI's HTTPValidationError (whose `detail` is a LIST of loc/msg
+        # objects, not a sentence) with whatever this dict said.
     },
 )
 async def fetch_artist_image_endpoint(
@@ -323,17 +348,24 @@ async def fetch_artist_image_endpoint(
     verbatim and the result lands in the ``X-Art-Source`` header, so a plain
     ``str`` would let a client put its own bytes in a response header. An id
     outside the Literal is refused by validation before this body runs.
+
+    Origin-guarded. A body-less POST is a CORS-simple request, so a foreign page
+    can send this one without a preflight - and unlike the album cover's fetch,
+    where the only attacker input is a local album id, here the caller picks the
+    UPSTREAM and the query it is sent, and that request goes out carrying this
+    install's own fanart.tv / Spotify credentials. The route bypasses the cache
+    by design, so repeats are not deduplicated either.
     """
     if not service.is_enabled():
         raise HTTPException(status_code=403, detail="Turn on artist images first")
     picked = sources.get(source)
     if picked is None:
-        # Distinct from the Literal's 422: that one is a nonexistent source id,
-        # this one is a real source whose credentials are unset here. Both are
-        # 422 because both mean "do not retry this as sent", and the sources
-        # endpoint is what the UI should have consulted.
+        # 409, NOT 422: the request is well-formed, it is this INSTALL that
+        # cannot serve it. Keeping 422 for validation alone means one body shape
+        # per status - a client branches on the status instead of sniffing
+        # whether `detail` came back a string or a list of validation errors.
         raise HTTPException(
-            status_code=422, detail=f"{label_for(source)} is not configured on this install"
+            status_code=409, detail=f"{label_for(source)} is not configured on this install"
         )
     # fanart.tv is MBID-keyed; the others ignore it. Resolved for every source
     # because the beets query is one indexed lookup and the branch would only
@@ -368,7 +400,11 @@ async def fetch_artist_image_endpoint(
         content=resolved.data,
         media_type=media_type,
         # label_for is safe HERE only because `source` came through the Literal.
-        headers={"Cache-Control": "no-store", "X-Art-Source": label_for(source)},
+        headers={
+            **NO_SNIFF,
+            "Cache-Control": "no-store",
+            "X-Art-Source": label_for(source),
+        },
     )
 
 
