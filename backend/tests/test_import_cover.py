@@ -95,6 +95,11 @@ def test_cover_streams_embedded_art(monkeypatch: pytest.MonkeyPatch) -> None:
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("image/")
     assert r.content == b"PNGDATA"
+    # The backstop behind the content-type guard above it: this mime comes from
+    # a media file's embedded picture MIME, and image/svg+xml is a legal answer.
+    # This is the one image response that reaches neither the http_cache
+    # constructors nor the artwork routes, so it carries the header explicitly.
+    assert r.headers["x-content-type-options"] == "nosniff"
 
 
 @pytest.mark.parametrize(

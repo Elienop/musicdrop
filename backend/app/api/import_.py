@@ -14,6 +14,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 
+from app.api.http_cache import NO_SNIFF
 from app.artwork.images import FALLBACK_CONTENT_TYPE, header_safe_content_type
 from app.beets.duplicates import find_import_duplicates
 from app.beets.library import LibraryHandle
@@ -161,7 +162,11 @@ async def get_import_album_cover(
         # stays true — a comment claiming completeness is how the next reviewer
         # stops looking.
         media_type=header_safe_content_type(mime) or FALLBACK_CONTENT_TYPE,
-        headers={"Cache-Control": "no-store"},  # parked-album art is transient
+        # The fourth and last image response in the app, and the only one that
+        # reaches neither the http_cache constructors nor the artwork routes -
+        # so nosniff is spelled out here too. A backstop that covers every image
+        # response except one is not a backstop.
+        headers={**NO_SNIFF, "Cache-Control": "no-store"},  # parked-album art is transient
     )
 
 
