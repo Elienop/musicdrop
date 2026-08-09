@@ -673,6 +673,52 @@ def test_clear_auto_removes_the_positive_slot_and_the_marker(tmp_path: Path) -> 
     assert not (tmp_path / f"{key}.miss").exists()
 
 
+def test_clear_auto_reports_the_image_slot_never_a_sidecar(tmp_path: Path) -> None:
+    """The answer must be "the IMAGE went away", not "some file went away".
+
+    Task 7 turns this bool into the reset endpoint's answer, so a ``clear_auto``
+    that reported a sidecar's outcome would claim a reset that never happened --
+    the same quiet lie this feature exists to end. Both halves are needed: the
+    orphan proves a sidecar cannot manufacture a True, the bare slot proves a
+    missing sidecar cannot suppress one.
+
+    The orphaned ``.mime`` is reachable, not hypothetical: ``store_positive``
+    publishes the sidecar BEFORE the bytes, so a crash between the two leaves
+    exactly this state (``test_store_positive_crash_before_publish_...`` builds
+    it deliberately).
+    """
+    cache = ArtistImageCache(tmp_path)
+
+    orphan = cache._key("Sidecar Only")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / f"{orphan}.mime").write_text("image/png", encoding="utf-8")
+    assert cache.clear_auto("Sidecar Only") is False
+    assert not (tmp_path / f"{orphan}.mime").exists()  # still swept, just not reported
+
+    bare = cache._key("Bytes Only")
+    (tmp_path / f"{bare}.bin").write_bytes(b"image-bytes")
+    assert cache.clear_auto("Bytes Only") is True
+    assert not (tmp_path / f"{bare}.bin").exists()
+
+
+def test_clear_override_reports_the_image_slot_never_a_sidecar(tmp_path: Path) -> None:
+    """Same guarantee on the override pair, reachable the same way: ``.override``
+    is published after ``.override.mime``, so a crash between them leaves an
+    orphaned sidecar that must not read as "an override was removed"."""
+    cache = ArtistImageCache(tmp_path)
+
+    orphan = cache._key("Sidecar Only")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / f"{orphan}.override.mime").write_text("image/png", encoding="utf-8")
+    assert cache.clear_override("Sidecar Only") is False
+    assert not (tmp_path / f"{orphan}.override.mime").exists()
+
+    bare = cache._key("Bytes Only")
+    (tmp_path / f"{bare}.override").write_bytes(b"image-bytes")
+    assert cache.clear_override("Bytes Only") is True
+    assert not (tmp_path / f"{bare}.override").exists()
+
+
 def test_clear_auto_drops_a_fresh_negative_marker_so_the_next_call_re_resolves(
     tmp_path: Path,
 ) -> None:

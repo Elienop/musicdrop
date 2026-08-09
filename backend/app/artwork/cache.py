@@ -315,13 +315,33 @@ class ArtistImageCache:
             return False
         return True
 
+    def _clear_slots(self, image: Path, *sidecars: Path) -> bool:
+        """Remove an image slot and its sidecars; report ONLY the image slot.
+
+        The image path is a separate parameter rather than the first of a list
+        so the answer cannot drift onto a sidecar: the sidecar results are
+        discarded at the language level, not by convention. That matters because
+        the divergence is reachable — ``store_positive`` and ``write_override``
+        both publish the mime BEFORE the bytes, so a crash between the two
+        leaves an orphaned sidecar, and a clear that answered "something went
+        away" would report a reset that never happened.
+
+        Image before sidecars, so a concurrent ``get()`` never pairs image bytes
+        with a vanished mime.
+        """
+        removed = self._unlink(image)
+        for sidecar in sidecars:
+            self._unlink(sidecar)
+        return removed
+
     def clear_override(self, name: str) -> bool:
         """Remove a manual override -> next get() falls back to auto/cache.
 
         Unlink the BYTES before the MIME (mirror-image of write_override's
         mime-before-bytes order) so a concurrent get() never reads override
         bytes paired with a missing mime sidecar. Returns whether an override
-        was actually removed.
+        was actually removed — the ``.override`` slot's outcome, never the
+        sidecar's (see :meth:`_clear_slots`).
 
         Scoped to the override slot ONLY, which is why it cannot be the whole
         of a "reset to automatic": the ``.bin`` it falls back to is the image
@@ -332,17 +352,16 @@ class ArtistImageCache:
         :class:`_MemoryFallback` and there is nothing of its own to forget.
         """
         key = self._key(name)
-        removed = self._unlink(self._dir / f"{key}.override")
-        self._unlink(self._dir / f"{key}.override.mime")
-        return removed
+        return self._clear_slots(self._dir / f"{key}.override", self._dir / f"{key}.override.mime")
 
     def clear_auto(self, name: str) -> bool:
         """Forget the AUTOMATIC image for ``name`` so the next lookup re-resolves.
 
         Removes the positive slot, its mime sidecar, the negative marker and the
         derived thumb, and drops any in-memory fallback entry for the key.
-        Returns whether a positive slot was actually removed (the marker and the
-        thumb are housekeeping, not the answer the caller reports).
+        Returns whether the POSITIVE SLOT was actually removed — the mime, the
+        marker and the thumb are housekeeping, swept but never reported, which
+        :meth:`_clear_slots` enforces by construction.
 
         Nothing else in this module unlinks ``.bin``: ``store_positive`` only
         runs on a cache MISS, and a present ``.bin`` means there is never a
@@ -358,11 +377,13 @@ class ArtistImageCache:
         re-derives.
         """
         key = self._key(name)
-        removed = self._unlink(self._dir / f"{key}.bin")
-        self._unlink(self._dir / f"{key}.mime")
-        self._unlink(self._dir / f"{key}.miss")
-        self._unlink(self._dir / f"{key}.thumb.bin")
-        self._unlink(self._dir / f"{key}.thumb.src")
+        removed = self._clear_slots(
+            self._dir / f"{key}.bin",
+            self._dir / f"{key}.mime",
+            self._dir / f"{key}.miss",
+            self._dir / f"{key}.thumb.bin",
+            self._dir / f"{key}.thumb.src",
+        )
         self._memory.discard(key)
         return removed
 
