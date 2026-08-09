@@ -139,11 +139,15 @@ function ArtistImageEditPanelForArtist({
     setNote(null);
     setDidReset(false);
     setPickError(null);
+    // The mutation's own error state is a notice too: without this a failed
+    // fetch's red alert sat beside the success line of whatever the user did
+    // next. Every entry point clears everything, rather than each remembering
+    // its own subset.
+    fetchImage.reset();
   };
 
   const onPickFile = (file: File) => {
     clearNotices();
-    fetchImage.reset();
     if (!ACCEPTED_TYPES.includes(file.type)) {
       setPickError("That file isn’t an image we can use. Pick a PNG, JPEG, GIF, or WebP.");
       return;
@@ -250,12 +254,19 @@ function ArtistImageEditPanelForArtist({
         <div className="flex flex-col gap-4">
           {canFetch && (
             <div className="flex flex-col gap-2">
-              <p className="text-sm font-medium">Fetch from a source</p>
+              <h3 className="text-sm font-medium">Fetch from a source</h3>
               <p className="text-muted-foreground text-sm">
                 Each source always returns its own single best match, so picking a different
                 source — not fetching again — is what changes the result.
               </p>
-              {sources.isPending ? (
+              {/* `isLoading`, NOT `isPending`: a DISABLED query reports
+                  `isPending: true` forever (pending also means "never asked"),
+                  so `isPending` here paints a skeleton that never resolves the
+                  moment this subtree renders without its gate. `isLoading` is
+                  pending AND fetching — the only shape that means "a request is
+                  in the air". Measured, not inferred; pinned in
+                  useArtistImage.test.tsx. */}
+              {sources.isLoading ? (
                 <Skeleton className="h-9 w-56" />
               ) : (
                 available.length > 0 && (
@@ -306,7 +317,7 @@ function ArtistImageEditPanelForArtist({
           )}
 
           <div className="flex flex-col gap-2">
-            <p className="text-sm font-medium">Use your own image</p>
+            <h3 className="text-sm font-medium">Use your own image</h3>
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 ref={uploadButtonRef}

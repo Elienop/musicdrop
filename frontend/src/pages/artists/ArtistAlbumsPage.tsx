@@ -179,7 +179,13 @@ export function ArtistAlbumsPage() {
               variant="rail"
               railActions={
                 <>
-                  {imagesEnabled && (
+                  {/* The SAME predicate the fetch route composes (main.py) and
+                      the panel body uses. Gating the way IN on `imagesEnabled`
+                      alone made image-off + write-on unreachable: the portrait
+                      painted, the route accepted, and there was no button —
+                      while a panel test asserting that combination pinned a
+                      state no user could get to. */}
+                  {(imagesEnabled || writeEnabled) && (
                     <IconAction
                       ref={imageToggleRef}
                       label="Edit artist image"

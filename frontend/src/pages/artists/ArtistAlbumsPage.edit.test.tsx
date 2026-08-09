@@ -64,10 +64,13 @@ vi.mock("@/api/useReorganize", () => ({
   useDismissReorganize: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
-// This suite covers the artist-image edit flow; keep the orthogonal artist-art
-// write toggle OFF so its header action doesn't render here.
+// This suite covers the artist-image edit flow; the orthogonal artist-art write
+// toggle defaults OFF so its header action doesn't render here — but it is
+// mutable, because it is half of the predicate that decides whether the edit
+// button exists at all.
+const artSettings = { enabled: false };
 vi.mock("@/api/useArtistArt", () => ({
-  useArtistArtSettings: () => ({ data: { enabled: false } }),
+  useArtistArtSettings: () => ({ data: artSettings }),
   useArtistArtBackfillStatus: () => ({ data: { phase: "idle", artist: null } }),
   useStartArtistArtApply: () => ({
     mutate: vi.fn(),
@@ -93,6 +96,7 @@ function renderAt(name: string) {
 
 afterEach(() => {
   settings.enabled = true;
+  artSettings.enabled = false;
 });
 
 describe("ArtistAlbumsPage artist-image edit", () => {
@@ -105,12 +109,23 @@ describe("ArtistAlbumsPage artist-image edit", () => {
     expect(screen.getByText(/choose the portrait for/i)).toBeInTheDocument();
   });
 
-  it("hides the Edit button when images are disabled", () => {
+  it("hides the Edit button only when BOTH toggles are off", () => {
     settings.enabled = false;
+    artSettings.enabled = false;
     renderAt("ABBA");
     expect(
       screen.queryByRole("button", { name: /edit artist image/i }),
     ).toBeNull();
+  });
+
+  it("still offers the Edit button when only the write-to-library toggle is on", () => {
+    // The backend accepts a fetch on image-toggle OR write-toggle. Gating the
+    // way in on the image toggle alone left this combination with a painted
+    // portrait, a route that accepts, and no way to reach either.
+    settings.enabled = false;
+    artSettings.enabled = true;
+    renderAt("ABBA");
+    expect(screen.getByRole("button", { name: /edit artist image/i })).toBeInTheDocument();
   });
 
   it("closing the panel from inside (Cancel) returns focus to the toggle", () => {

@@ -73,6 +73,23 @@ describe("useArtistImageSources", () => {
     { id: "deezer", label: "Deezer", available: true, reason: null },
   ];
 
+  it("reports pending-but-NOT-loading while disabled", async () => {
+    // The shape the panel's `vi.mock` has to imitate, pinned against the real
+    // hook so the imitation cannot drift. `isPending` is TRUE for a disabled
+    // query — pending also means "never asked" — so a component branching on
+    // `isPending` paints a skeleton that never resolves. `isLoading` (pending
+    // AND fetching) is the only predicate that means "a request is in the air".
+    const get = vi.spyOn(client, "GET");
+    const { result } = renderHook(() => useArtistImageSources("ABBA", false), {
+      wrapper: wrapper(),
+    });
+    await waitFor(() => expect(result.current.fetchStatus).toBe("idle"));
+    expect(result.current.isPending).toBe(true);
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.data).toBeUndefined();
+    expect(get).not.toHaveBeenCalled();
+  });
+
   it("asks for the named artist and hands back the list in chain order", async () => {
     const get = vi.spyOn(client, "GET").mockResolvedValue({
       data: { sources },
@@ -108,6 +125,18 @@ describe("useUploadArtistImageOverride", () => {
     expect(String(url)).toContain("/api/artists/image/override?name=AC%2FDC");
     expect((init as RequestInit).method).toBe("POST");
     expect((init as RequestInit).body).toBeInstanceOf(FormData);
+
+    // The FIELD NAME is a contract, not a detail: FastAPI binds `file:
+    // UploadFile` by name, so renaming it here 422s every install in production
+    // while every assertion above still passes. Measured — "file" -> "image"
+    // survived the whole suite.
+    const form = (init as RequestInit).body as FormData;
+    const sent = form.get("file");
+    expect(sent).not.toBeNull();
+    expect(form.get("image")).toBeNull();
+    // The filename rides along; the server never reads it, but a missing third
+    // argument makes the part a plain field rather than a file on some clients.
+    expect((sent as File).name).toBe("artist-image");
   });
 
   it("throws the server detail on failure", async () => {

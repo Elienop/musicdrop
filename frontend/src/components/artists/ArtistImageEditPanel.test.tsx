@@ -8,11 +8,22 @@ const resetMutate = vi.fn();
 const setFromUrlMutate = vi.fn();
 const fetchMutate = vi.fn();
 const fetchReset = vi.fn();
+/** Mutable so a test can put the fetch mutation in its error state — and so
+ * `reset()` can actually clear it, the way the real hook does. A `reset` spy
+ * that changed nothing would let "the alert is gone" pass on a component that
+ * never cleared it. */
+const fetchState = { isPending: false, isError: false, error: null as Error | null };
 
 // Mutable so a test can flip a toggle without a second mock factory.
 const imageSettings = { enabled: true };
 const artSettings = { enabled: false };
 
+// The three shapes the REAL hook produces, measured against TanStack v5 and
+// pinned by `a disabled sources query is pending but NOT loading` in
+// useArtistImage.test.tsx. The disabled one matters most: `isPending` is TRUE
+// while a query is disabled, so a mock reporting `isPending: false` there
+// models a state that cannot happen — and every assertion downstream of it
+// then passes for the wrong reason.
 const sourcesResult = {
   data: {
     sources: [
@@ -27,9 +38,24 @@ const sourcesResult = {
     ],
   },
   isPending: false,
+  isLoading: false,
   isError: false,
 };
-const noSourcesResult = { data: undefined, isPending: false, isError: false };
+/** `enabled: false` — pending forever, never fetching. */
+const disabledSourcesResult = {
+  data: undefined,
+  isPending: true,
+  isLoading: false,
+  isError: false,
+};
+/** Enabled, request in the air. */
+const loadingSourcesResult = {
+  data: undefined,
+  isPending: true,
+  isLoading: true,
+  isError: false,
+};
+let sourcesLoading = false;
 /** Every (name, enabled) pair the panel asked the sources query for. */
 const sourcesCalls: Array<{ name: string; enabled: boolean }> = [];
 
@@ -57,16 +83,17 @@ vi.mock("@/api/useArtistImage", () => ({
   }),
   useFetchArtistImage: () => ({
     mutate: fetchMutate,
-    isPending: false,
-    isError: false,
-    error: null,
+    isPending: fetchState.isPending,
+    isError: fetchState.isError,
+    error: fetchState.error,
     reset: fetchReset,
   }),
   // Honours `enabled` like the real hook does, so "no source row when the
   // feature is off" cannot pass just because the list was handed over anyway.
   useArtistImageSources: (name: string, enabled = true) => {
     sourcesCalls.push({ name, enabled });
-    return enabled ? sourcesResult : noSourcesResult;
+    if (!enabled) return disabledSourcesResult;
+    return sourcesLoading ? loadingSourcesResult : sourcesResult;
   },
 }));
 
@@ -84,6 +111,14 @@ beforeEach(() => {
   revoked = [];
   sourcesCalls.length = 0;
   minted = 0;
+  fetchState.isPending = false;
+  fetchState.isError = false;
+  fetchState.error = null;
+  // Re-armed every test: afterEach uses resetAllMocks, which drops it.
+  fetchReset.mockImplementation(() => {
+    fetchState.isError = false;
+    fetchState.error = null;
+  });
   // Unique per mint, so "the FIRST preview's URL was released" is a real claim
   // rather than one satisfied by any revoke at all.
   vi.stubGlobal("URL", {
@@ -101,6 +136,7 @@ afterEach(() => {
   vi.resetAllMocks();
   imageSettings.enabled = true;
   artSettings.enabled = false;
+  sourcesLoading = false;
 });
 
 /** A fetch that answers with a portrait. The hook hands back BYTES only — the
@@ -319,6 +355,46 @@ describe("ArtistImageEditPanel", () => {
     expect(screen.getByRole("button", { name: /^done$/i })).toBeInTheDocument();
   });
 
+  it("clears a failed fetch's alert when another action starts", () => {
+    // A red "Spotify did not answer" sat beside the reset's success line,
+    // because clearNotices() cleared the panel's own notices but not the
+    // mutation's error state. Two entry points, because each one used to
+    // remember its own subset of what to clear.
+    const failed = () => {
+      fetchState.isError = true;
+      fetchState.error = new Error("Spotify did not answer - try again in a moment");
+    };
+
+    // The real hook re-renders on reset(); this mock has no subscription to do
+    // that, so the rerender stands in for it. A FRESH element each time — React
+    // bails out of re-rendering when handed the referentially identical one, so
+    // a stored `const panel` would silently render nothing. Same key, so the
+    // panel is re-rendered rather than remounted: its state survives, as in the
+    // app.
+    const panel = () => <ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />;
+
+    failed();
+    const first = render(panel());
+    expect(screen.getByRole("alert")).toHaveTextContent(/did not answer/i);
+    fireEvent.click(screen.getByRole("button", { name: /reset to auto/i }));
+    expect(fetchReset).toHaveBeenCalled();
+    first.rerender(panel());
+    expect(screen.queryByRole("alert")).toBeNull();
+    first.unmount();
+
+    fetchReset.mockClear();
+    failed();
+    const second = render(panel());
+    expect(screen.getByRole("alert")).toHaveTextContent(/did not answer/i);
+    fireEvent.change(screen.getByLabelText(/image url/i), {
+      target: { value: "https://example.test/a.jpg" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^set$/i }));
+    expect(fetchReset).toHaveBeenCalled();
+    second.rerender(panel());
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("clears a stale outcome when another action starts", () => {
     resetMutate.mockImplementation(
       (_v: undefined, opts: { onSuccess: (r: unknown) => void }) =>
@@ -356,11 +432,44 @@ describe("ArtistImageEditPanel", () => {
     // off ships a button whose only possible answer is a 403.
     imageSettings.enabled = false;
     artSettings.enabled = false;
-    render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
+    const { container } = render(
+      <ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />,
+    );
+    // The HEADING is what this test lives on. The control and the group are
+    // hidden by `available.length > 0` whenever the query has no data, so
+    // asserting only on those passed with the gate deleted — measured: the
+    // gate's own mutant survived all 1029 tests. The heading renders on the
+    // gate alone, and with the gate gone a disabled query also paints a
+    // skeleton that never resolves, so both are pinned here.
+    expect(screen.queryByRole("heading", { name: /fetch from a source/i })).toBeNull();
+    expect(container.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(0);
     expect(screen.queryByRole("group", { name: /image source/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^fetch$/i })).toBeNull();
     // ...and the upload/reset half still works.
     expect(screen.getByRole("button", { name: /reset to auto/i })).toBeInTheDocument();
+  });
+
+  it("shows a skeleton only while the sources request is actually in the air", () => {
+    // The skeleton branch had no test at all, which is how `isPending` (true
+    // for a DISABLED query too) survived there as the predicate.
+    sourcesLoading = true;
+    const { container } = render(
+      <ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />,
+    );
+    expect(container.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(1);
+    expect(screen.queryByRole("group", { name: /image source/i })).toBeNull();
+    // The heading is up, so the user knows what is loading.
+    expect(screen.getByRole("heading", { name: /fetch from a source/i })).toBeInTheDocument();
+  });
+
+  it("shows no skeleton once the sources have arrived", () => {
+    // Positive control for the test above: without it, "no skeleton" in the
+    // gate test would hold for a component that never renders one.
+    const { container } = render(
+      <ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />,
+    );
+    expect(container.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(0);
+    expect(screen.getByRole("group", { name: /image source/i })).toBeInTheDocument();
   });
 
   it("asks the sources endpoint nothing about an empty artist name", () => {
