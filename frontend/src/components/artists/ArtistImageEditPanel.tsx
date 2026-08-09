@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Error as ErrorIcon, Reset, Upload } from "@/components/icons";
 
 import {
-  useResetArtistImageOverride,
+  useResetArtistImage,
   useSetArtistImageFromUrl,
   useUploadArtistImageOverride,
 } from "@/api/useArtistImage";
@@ -29,7 +29,7 @@ export function ArtistImageEditPanel({
   const [pending, setPending] = useState<Pending | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
   const upload = useUploadArtistImageOverride(name);
-  const reset = useResetArtistImageOverride(name);
+  const reset = useResetArtistImage(name);
   const fromUrl = useSetArtistImageFromUrl(name);
   const [url, setUrl] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);

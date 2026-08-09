@@ -9,7 +9,7 @@ const setFromUrlMutate = vi.fn();
 
 vi.mock("@/api/useArtistImage", () => ({
   useUploadArtistImageOverride: () => ({ mutate: uploadMutate, isPending: false, isError: false, error: null }),
-  useResetArtistImageOverride: () => ({ mutate: resetMutate, isPending: false, isError: false, error: null }),
+  useResetArtistImage: () => ({ mutate: resetMutate, isPending: false, isError: false, error: null }),
   useSetArtistImageFromUrl: () => ({ mutate: setFromUrlMutate, isPending: false, isError: false, error: null }),
 }));
 

@@ -5,6 +5,10 @@ import { apiUrl, errorDetail, unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 export type ArtistImageSettings = components["schemas"]["ArtistImageSettings"];
+export type ArtistImageSourceList = components["schemas"]["ArtistImageSourceList"];
+export type ArtistImageSourceOption = components["schemas"]["ArtistImageSourceOption"];
+export type ArtistImageSourceId = ArtistImageSourceOption["id"];
+export type ArtistImageResetResult = components["schemas"]["ArtistImageResetResult"];
 
 /** Query key every ArtistImage + the Settings panel share, so flipping the
  * toggle and invalidating this one key re-evaluates every instance. */
@@ -12,6 +16,10 @@ export const ARTIST_IMAGE_SETTINGS_KEY = ["artist-image", "settings"] as const;
 
 /** Fallback when an override request fails without a usable `detail` body. */
 const OVERRIDE_ERROR = "Couldn’t update the artist image";
+
+/** Fallback for the preview fetch, which stores nothing — so "update" would be
+ * the wrong word for what just failed. */
+const FETCH_ERROR = "Couldn’t fetch an image from that source";
 
 async function fetchSettings(): Promise<ArtistImageSettings> {
   return unwrap(
@@ -60,12 +68,92 @@ export function useUploadArtistImageOverride(name: string) {
   });
 }
 
-/** Reset `name` back to the automatic image (clears the override slot). */
-export function useResetArtistImageOverride(name: string) {
-  return useMutation<void, Error, void>({
+/** Which sources can be fetched for THIS artist, in the chain's own fallback
+ * order. Per-artist, not per-install: fanart.tv is MusicBrainz-keyed, so it can
+ * be configured yet come back `available: false` with a `reason` here. Sources
+ * with no credentials are omitted entirely.
+ *
+ * This endpoint is gated on NOTHING server-side, so it answers even when artist
+ * images are switched off — see `useFetchArtistImage` for why that matters. */
+export function useArtistImageSources(name: string, enabled = true) {
+  return useQuery({
+    queryKey: ["artist-image", "sources", name],
+    enabled,
+    queryFn: async (): Promise<ArtistImageSourceList> =>
+      unwrap(
+        await client.GET("/api/artists/image/sources", { params: { query: { name } } }),
+        "Couldn’t load the image sources",
+      ),
+  });
+}
+
+export type FetchedArtistImage =
+  | { found: false; reason: string }
+  | { found: true; blob: Blob; objectUrl: string; source: string | null };
+
+/** Fetch a candidate portrait from ONE source. Preview only — the server stores
+ * nothing, and installing re-posts THESE bytes through the upload hook, so the
+ * image the user approved is the image that lands. Mirrors useFetchAlbumCover.
+ *
+ * The caller owns `objectUrl` and must revoke it.
+ *
+ * Two things this hook cannot learn from the generated types:
+ * - The 403 has TWO causes — the feature is off, or the request was
+ *   cross-origin (an `Origin`-guard dependency emits no OpenAPI security
+ *   scheme). The server's sentence names both; show it rather than guessing.
+ * - "Artist images are on" is not one question. `useArtistImageSettings`
+ *   reports the IMAGE toggle alone, while this route accepts when EITHER that
+ *   or the write-to-library toggle is on. Gating a fetch affordance on
+ *   `settings.enabled` therefore hides a path that would have worked; let the
+ *   sources list decide what to offer and let this 403 explain a refusal.
+ *
+ * `source` rides in the query string as the generated Literal, so an id outside
+ * the three the backend knows cannot be sent. */
+export function useFetchArtistImage(name: string) {
+  return useMutation<FetchedArtistImage, Error, ArtistImageSourceId>({
+    mutationFn: async (source) => {
+      const res = await fetch(
+        apiUrl(
+          `/api/artists/image/fetch?name=${encodeURIComponent(name)}&source=${encodeURIComponent(source)}`,
+        ),
+        { method: "POST" },
+      );
+      // 404 is a real answer ("that source has nothing for this artist"); every
+      // other failure — notably the 502 a source outage produces — is an error,
+      // so an outage never reads as "no image exists".
+      if (res.status === 404) {
+        return { found: false, reason: await errorDetail(res, "That source had no portrait.") };
+      }
+      if (!res.ok) throw new Error(await errorDetail(res, FETCH_ERROR));
+      const blob = await res.blob();
+      return {
+        found: true,
+        blob,
+        objectUrl: URL.createObjectURL(blob),
+        // Absent in dev: CORSMiddleware sets no `expose_headers`, so the Vite
+        // origin cannot read this header even though production can.
+        source: res.headers.get("X-Art-Source"),
+      };
+    },
+  });
+}
+
+/** Forget every stored portrait for `name` — the upload AND the cached
+ * automatic one — so the next serve looks it up again. Clearing only the
+ * override drops the user back onto the automatic image they just rejected.
+ *
+ * The result reports each slot, but the two booleans are NOT a success signal:
+ * a cache dir that refuses the unlink still drops the in-memory entry, so
+ * `false, false` can mean "nothing was stored" or "the files stayed but what is
+ * served changed". Never branch on them to say nothing happened. */
+export function useResetArtistImage(name: string) {
+  return useMutation<ArtistImageResetResult, Error, void>({
     mutationFn: async () => {
-      const res = await fetch(overrideUrl(name), { method: "DELETE" });
+      const res = await fetch(apiUrl(`/api/artists/image/reset?name=${encodeURIComponent(name)}`), {
+        method: "POST",
+      });
       if (!res.ok) throw new Error(await errorDetail(res, OVERRIDE_ERROR));
+      return (await res.json()) as ArtistImageResetResult;
     },
   });
 }

@@ -25,7 +25,7 @@ vi.mock("@/api/useArtistImage", () => ({
     isError: false,
     error: null,
   }),
-  useResetArtistImageOverride: () => ({
+  useResetArtistImage: () => ({
     mutate: vi.fn(),
     isPending: false,
     isError: false,
