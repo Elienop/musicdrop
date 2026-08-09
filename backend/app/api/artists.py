@@ -1,4 +1,4 @@
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
@@ -20,7 +20,12 @@ from app.artist_art_jobs.runner import start_backfill as start_art_backfill
 from app.artwork.cache import ArtistImageCache
 from app.artwork.degrade import derive_thumb_or_degrade
 from app.artwork.download import fetch_image_bytes
-from app.artwork.factory import ArtistImageSources, build_artist_image_sources
+from app.artwork.factory import (
+    FANARTTV,
+    ArtistImageSources,
+    build_artist_image_sources,
+    label_for,
+)
 from app.artwork.images import MAX_IMAGE_BYTES, sniff_image_mime
 from app.artwork.service import ArtistImageService
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
@@ -35,6 +40,9 @@ from app.models.artist import (
     Artist,
     ArtistImageOverrideResult,
     ArtistImageSettings,
+    ArtistImageSourceId,
+    ArtistImageSourceList,
+    ArtistImageSourceOption,
     ArtistImageUrlOverride,
 )
 from app.models.artist_art import ArtistArtBackfillStatus, ArtistArtWriteSettings
@@ -202,6 +210,67 @@ async def set_artist_image_settings_endpoint(
     toggle: Annotated[ArtistImageToggle, Depends(get_artist_image_toggle)],
 ) -> ArtistImageSettings:
     return ArtistImageSettings(enabled=toggle.set_enabled(body.enabled))
+
+
+#: fanart.tv answers only by MusicBrainz id, so it is offered-but-blocked rather
+#: than hidden when the artist has none - hiding it would look like a missing
+#: feature, and an empty failure after the user picks it would look like a bug.
+_NO_MBID_REASON = "No MusicBrainz ID for this artist, so fanart.tv cannot be searched"
+
+
+def _source_option(source_id: str, blocked_because: str | None) -> ArtistImageSourceOption:
+    """One entry of the per-artist source list.
+
+    ``available`` is DERIVED from the reason rather than passed alongside it.
+    The model carries no validator tying the two (one was rejected: it would not
+    survive into the generated TypeScript), so ``available=False, reason=None``
+    is a representable response that would render an empty explanation exactly
+    where the user needs a sentence. This is the only place these options are
+    built, so deriving the flag here makes that pair unrepresentable.
+    """
+    return ArtistImageSourceOption(
+        # The factory's ids and the model's Literal are the same three strings,
+        # pinned by test_source_ids_match_what_the_factory_actually_builds; the
+        # factory deliberately keeps plain `str` so app/artwork/ has no
+        # dependency on app/models/.
+        id=cast(ArtistImageSourceId, source_id),
+        label=label_for(source_id),
+        available=blocked_because is None,
+        reason=blocked_because,
+    )
+
+
+@router.get("/artists/image/sources", response_model=ArtistImageSourceList)
+async def list_artist_image_sources_endpoint(
+    name: Annotated[str, Query(min_length=1)],
+    sources: Annotated[ArtistImageSources, Depends(get_artist_image_sources)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> ArtistImageSourceList:
+    """The sources a portrait for ``name`` may be fetched from, in chain order.
+
+    Only CONFIGURED sources are listed (an unset API key is an install-level
+    fact the user cannot act on from this panel). Of those, fanart.tv reports
+    ``available=false`` plus a reason when this artist has no MusicBrainz id.
+    ``name`` is a query param, not a path segment, so "AC/DC" survives routing.
+    """
+    ids = sources.ids()
+    # Only pay the beets query when the answer can change something, and never
+    # on the event loop - it is a blocking sqlite read over every album of the
+    # artist.
+    mbid = (
+        await run_in_threadpool(beets_library.get_artist_mbid, handle.lib, name)
+        if FANARTTV in ids
+        else None
+    )
+    return ArtistImageSourceList(
+        sources=[
+            _source_option(
+                source_id,
+                _NO_MBID_REASON if source_id == FANARTTV and not mbid else None,
+            )
+            for source_id in ids
+        ]
+    )
 
 
 @router.post(
