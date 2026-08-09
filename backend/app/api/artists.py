@@ -20,6 +20,7 @@ from app.artist_art_jobs.runner import start_backfill as start_art_backfill
 from app.artwork.cache import ArtistImageCache
 from app.artwork.degrade import derive_thumb_or_degrade
 from app.artwork.download import fetch_image_bytes
+from app.artwork.factory import ArtistImageSources, build_artist_image_sources
 from app.artwork.images import MAX_IMAGE_BYTES, sniff_image_mime
 from app.artwork.service import ArtistImageService
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
@@ -69,6 +70,22 @@ def get_artist_image_http_client(request: Request) -> httpx.AsyncClient:
     """The shared artist-image httpx client (built in the lifespan). Overridable in tests."""
     client: httpx.AsyncClient = request.app.state.artist_image_http_client
     return client
+
+
+def get_artist_image_sources(request: Request) -> ArtistImageSources:
+    """The process-wide artist-image source registry, built in the lifespan.
+
+    Falls back to a fresh registry over the module settings when unset:
+    ``TestClient(app)`` skips the lifespan, so a hard ``request.app.state``
+    read would make every test that touches these routes lifespan-dependent
+    (the same reason ``get_cover_thumb_cache`` has a fallback). The fallback
+    builds its own httpx client, which is correct for a test and never reached
+    in production - the lifespan always sets this attribute.
+    """
+    sources: ArtistImageSources | None = getattr(request.app.state, "artist_image_sources", None)
+    if sources is None:
+        sources = build_artist_image_sources(httpx.AsyncClient(), _module_settings)
+    return sources
 
 
 def get_artist_art_write_toggle(request: Request) -> ArtistArtWriteToggle:

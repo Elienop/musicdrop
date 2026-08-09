@@ -29,6 +29,7 @@ from app.api.stats import router as stats_router
 from app.api.trash import router as trash_router
 from app.artwork.cache import ArtistImageCache
 from app.artwork.cover_thumbs import CoverThumbCache
+from app.artwork.factory import ArtistImageSources, build_artist_image_sources
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
@@ -67,16 +68,21 @@ def _resolve_library() -> LibraryHandle:
 
 
 def _build_artist_image_service(
-    client: httpx.AsyncClient, cache: ArtistImageCache, is_enabled: Callable[[], bool]
+    client: httpx.AsyncClient,
+    cache: ArtistImageCache,
+    is_enabled: Callable[[], bool],
+    sources: ArtistImageSources,
 ) -> ArtistImageService:
-    from app.artwork.factory import build_source_chain
-
     limiter = TokenBucketLimiter(
         rate_per_sec=settings.artist_image_rate_per_sec,
         max_concurrency=settings.artist_image_max_concurrency,
     )
     return ArtistImageService(
-        source=build_source_chain(client, settings),
+        # The chain wraps the registry's instances: the manual per-source fetch
+        # addresses the SAME objects, so credentials and Spotify's token cache
+        # exist exactly once. Taking the registry as a parameter (rather than
+        # building one here) is what makes a second construction impossible.
+        source=sources.chain(),
         cache=cache,
         limiter=limiter,
         is_enabled=is_enabled,
@@ -192,10 +198,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         },
     )
     app.state.artist_image_http_client = http_client
+    # ONE set of source objects per httpx client: the automatic chain and the
+    # by-id fetch the API serves both address these instances, so Spotify's
+    # client-credentials token is cached once instead of twice.
+    artist_image_sources = build_artist_image_sources(http_client, settings)
+    app.state.artist_image_sources = artist_image_sources
     # The write toggle ALSO enables fetching (one switch): the engine resolves
     # portraits whenever EITHER the image toggle OR the write toggle is on.
     app.state.artist_image_service = _build_artist_image_service(
-        http_client, cache, lambda: toggle.is_enabled() or art_write_toggle.is_enabled()
+        http_client,
+        cache,
+        lambda: toggle.is_enabled() or art_write_toggle.is_enabled(),
+        artist_image_sources,
     )
     from app.artwork.factory import build_fanart_background_source
 
