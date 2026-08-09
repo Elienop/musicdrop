@@ -197,7 +197,12 @@ describe("ArtistImageEditPanel", () => {
     expect(screen.getByText(/from deezer/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /use this image/i }));
     // The very blob that was previewed — never a re-fetch that could differ.
-    expect(uploadMutate).toHaveBeenCalledWith(blob, expect.anything());
+    // `toBe`, NOT `toHaveBeenCalledWith(blob)`: size and type live on Blob's
+    // prototype, so a Blob has no own enumerable properties and vitest's deep
+    // equality happily matches `new Blob([])` against these three bytes —
+    // measured, and it let a "install different bytes" mutant survive.
+    expect(uploadMutate.mock.calls[0]?.[0]).toBe(blob);
+    expect(uploadMutate.mock.calls).toHaveLength(1);
   });
 
   it("says a source had nothing rather than showing an empty preview", () => {
