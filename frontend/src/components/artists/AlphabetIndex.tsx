@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import type { Artist } from "@/api/useArtists";
 import { Button } from "@/components/ui/button";
@@ -54,6 +54,18 @@ function bucketOf(name: string): string {
  * next (what the owner asked for on mobile). Only when the strip alone is
  * wider than the page do its own buttons wrap onto extra rows. Every bucket
  * stays visible and in the same relative position at every width.
+ *
+ * ROVING TABINDEX — one Tab stop, arrows within. This EXTENDS the house rule
+ * in segmented-control.tsx ("no roving tabindex — Tab moves between options,
+ * which is correct for a short row of real <button>s") rather than
+ * contradicting it: the rule holds while the row is short, and 27 buttons is
+ * where it stops. The letters precede the pager in the DOM because that is
+ * the layout, so plain Tab order would charge a keyboard user ~29 presses to
+ * reach "Next page". The threshold is roughly a handful: keep plain Tab for a
+ * segmented control's 2-5 options, rove once a group is a full alphabet.
+ * ArrowLeft/Right step between FILLED buckets (empty ones are `disabled`,
+ * hence unfocusable) without wrapping around; Home/End go to the first/last
+ * filled bucket; Up/Down are left alone so the page still scrolls.
  */
 export function AlphabetIndex({
   artists,
@@ -80,6 +92,36 @@ export function AlphabetIndex({
     return new Set(visible.map((artist) => bucketOf(artist.name)));
   }, [artists, offset, pageSize]);
 
+  // Only buckets WITH artists take part: the empty ones render `disabled`,
+  // which already makes them unfocusable, so the arrows step over them.
+  const filled = LETTERS.filter((letter) => firstIndex.has(letter));
+  const buttons = useRef(new Map<string, HTMLButtonElement>());
+  const [focused, setFocused] = useState<string | null>(null);
+
+  // The one tabbable button: where the user last was, else the first bucket
+  // ON THIS PAGE, else the first bucket at all — so Tab lands you where you
+  // already are rather than at the far end of the alphabet.
+  const tabStop =
+    (focused !== null && firstIndex.has(focused) ? focused : undefined) ??
+    filled.find((letter) => pressedLetters.has(letter)) ??
+    filled[0];
+
+  const moveTo = (letter: string | undefined) => {
+    if (letter === undefined) return; // already at the end of the run
+    setFocused(letter);
+    buttons.current.get(letter)?.focus();
+  };
+
+  const onArrowKey = (e: KeyboardEvent, letter: string) => {
+    const at = filled.indexOf(letter);
+    if (e.key === "ArrowRight") moveTo(filled[at + 1]);
+    else if (e.key === "ArrowLeft") moveTo(filled[at - 1]);
+    else if (e.key === "Home") moveTo(filled[0]);
+    else if (e.key === "End") moveTo(filled[filled.length - 1]);
+    else return; // Up/Down and everything else keep their page behaviour
+    e.preventDefault();
+  };
+
   return (
     <nav
       aria-label="Jump to artists by letter"
@@ -98,6 +140,13 @@ export function AlphabetIndex({
             disabled={isEmpty}
             aria-label={`Jump to artists starting with ${letter}`}
             aria-pressed={isPressed}
+            tabIndex={letter === tabStop ? 0 : -1}
+            ref={(node) => {
+              if (node) buttons.current.set(letter, node);
+              else buttons.current.delete(letter);
+            }}
+            onFocus={() => setFocused(letter)}
+            onKeyDown={(e) => onArrowKey(e, letter)}
             className={cn(
               isPressed && "bg-primary/15 text-primary-light",
             )}

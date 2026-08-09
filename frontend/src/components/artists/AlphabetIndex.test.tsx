@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -122,6 +122,73 @@ describe("AlphabetIndex", () => {
     expect(nav.classList.contains("mr-auto")).toBe(true);
     // "#" plus A-Z, none of them dropped at any width.
     expect(screen.getAllByRole("button")).toHaveLength(27);
+  });
+
+  it("is ONE tab stop, anchored on the page you are looking at", () => {
+    // 27 buttons ahead of the pager would cost ~29 Tab presses to reach
+    // "Next page", so the strip roves: exactly one button is tabbable and the
+    // arrows move within.
+    const { rerender } = renderWithProviders(
+      <AlphabetIndex
+        artists={roster(["ABBA", "Beck", "Cher"])}
+        pageSize={2}
+        offset={0}
+        onJump={vi.fn()}
+      />,
+    );
+    const tabbable = () =>
+      screen.getAllByRole("button").filter((b) => b.tabIndex === 0);
+    expect(tabbable()).toHaveLength(1);
+    // Page 1 shows ABBA + Beck, so the tab stop is "A" — Tab lands you where
+    // you already are, not at the far end of the alphabet.
+    expect(tabbable()[0]).toHaveAccessibleName(
+      "Jump to artists starting with A",
+    );
+
+    // Page 2 shows only Cher: the anchor follows.
+    rerender(
+      <AlphabetIndex
+        artists={roster(["ABBA", "Beck", "Cher"])}
+        pageSize={2}
+        offset={2}
+        onJump={vi.fn()}
+      />,
+    );
+    expect(tabbable()).toHaveLength(1);
+    expect(tabbable()[0]).toHaveAccessibleName(
+      "Jump to artists starting with C",
+    );
+  });
+
+  it("moves between buckets with the arrows, skipping the empty ones", async () => {
+    // Only A and C have artists — B is disabled, so it can't take focus and
+    // the arrows must step over it rather than dead-ending on it.
+    renderWithProviders(
+      <AlphabetIndex
+        artists={roster(["ABBA", "Cher"])}
+        pageSize={48}
+        offset={0}
+        onJump={vi.fn()}
+      />,
+    );
+    const a = screen.getByRole("button", { name: /starting with A/ });
+    const c = screen.getByRole("button", { name: /starting with C/ });
+    const hash = screen.getByRole("button", { name: /starting with #/ });
+    await act(async () => a.focus());
+
+    await userEvent.keyboard("{ArrowRight}");
+    expect(c).toHaveFocus();
+    expect(c).toHaveAttribute("tabindex", "0"); // the tab stop follows focus
+    expect(a).toHaveAttribute("tabindex", "-1");
+
+    await userEvent.keyboard("{ArrowLeft}");
+    expect(a).toHaveFocus();
+
+    await userEvent.keyboard("{End}");
+    expect(c).toHaveFocus(); // last bucket WITH artists, not "Z"
+    await userEvent.keyboard("{Home}");
+    expect(a).toHaveFocus(); // first bucket with artists, not "#"
+    expect(hash).toBeDisabled();
   });
 
   it("jumps to a diacritic artist's true run once the roster is diacritic-sorted", async () => {

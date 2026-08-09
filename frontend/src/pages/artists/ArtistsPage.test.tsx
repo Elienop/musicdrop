@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, test } from "vitest";
@@ -287,6 +287,34 @@ describe("ArtistsPage", () => {
     // row while doing the opposite of what it exists for.
     expect(band?.firstElementChild).toBe(index);
     expect(band?.lastElementChild).toBe(topPager);
+  });
+
+  test("one Tab crosses the whole letter strip to reach the pager", async () => {
+    localStorage.clear();
+    // Spread across the alphabet on purpose: a roster that all buckets to one
+    // letter leaves 26 DISABLED buttons, which Tab skips anyway — the test
+    // would then pass with no roving tabindex at all.
+    const big: Artist[] = Array.from({ length: 60 }, (_, i) => ({
+      name: `${String.fromCharCode(65 + (i % 26))} artist ${String(i).padStart(2, "0")}`,
+      album_count: 1,
+    }));
+    server.use(http.get(ARTISTS_URL, () => HttpResponse.json(big)));
+
+    renderWithProviders(<ArtistsPage />);
+    await screen.findByText("A artist 00");
+
+    // The letters precede the pager in the DOM (that ordering is the layout),
+    // so without a roving tabindex a keyboard user pays 27 stops to reach the
+    // pager. The strip is one stop. Which pager control catches the focus
+    // depends on which are in-bounds, so assert the crossing, not the target.
+    await act(async () => {
+      screen
+        .getByRole("button", { name: "Jump to artists starting with A" })
+        .focus();
+    });
+    await userEvent.tab();
+    const pager = screen.getByRole("navigation", { name: "Pagination (top)" });
+    expect(pager).toContainElement(document.activeElement as HTMLElement);
   });
 
   test("a small roster gets no toolbar at all", async () => {
