@@ -303,6 +303,29 @@ def test_every_image_response_the_cover_routes_build_carries_nosniff(
         assert resp.headers["x-content-type-options"] == "nosniff"
 
 
+def test_the_cover_fetch_declares_every_status_it_can_return() -> None:
+    """The generated client only knows what the spec says.
+
+    403 (the Origin guard) and 404 (no album, or no candidate) both render
+    ``{"detail": "..."}`` and neither was declared - an undeclared status
+    generates ``content?: never``. 422 must stay UNDECLARED so FastAPI's
+    ``HTTPValidationError`` survives: the path parameter can fail validation and
+    its ``detail`` is a LIST, a different shape.
+    """
+    operation = app.openapi()["paths"]["/api/albums/{album_id}/cover/fetch"]["post"]
+    responses = operation["responses"]
+    assert sorted(responses) == ["200", "403", "404", "422"]
+    # The 200 is image bytes; before this it offered ONLY a JSON body.
+    assert "image/*" in responses["200"]["content"]
+    for code in ("403", "404"):
+        schema = responses[code]["content"]["application/json"]["schema"]
+        assert schema["$ref"] == "#/components/schemas/ErrorDetail", code
+    assert (
+        responses["422"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/HTTPValidationError"
+    )
+
+
 def test_cross_origin_cover_fetch_is_rejected(cover_client: TestClient, edit_lib: Library) -> None:
     """A body-less POST is a CORS-simple request, so it reaches this route
     without a preflight. It writes nothing, but it still drives an outbound
@@ -322,6 +345,11 @@ def test_cross_origin_cover_fetch_is_rejected(cover_client: TestClient, edit_lib
     # and not a missing cover.
     r = cover_client.post(f"/api/albums/{aid}/cover/fetch", headers={"Origin": "http://evil.test"})
     assert r.status_code == 403
+    # This route uploads NOTHING, so the message must not claim an upload was
+    # refused - three of the six routes behind the shared guard are body-less.
+    detail = r.json()["detail"]
+    assert "upload" not in detail
+    assert detail.isascii()
     assert cover_client.post(f"/api/albums/{aid}/cover/fetch").status_code == 200
 
 

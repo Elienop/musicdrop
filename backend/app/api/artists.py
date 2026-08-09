@@ -310,7 +310,13 @@ async def list_artist_image_sources_endpoint(
         # generated response instead of merging into it, which strips the body
         # schema and generates `content?: never` - a type saying the body cannot
         # exist for statuses whose body the client has to read.
-        403: {"model": ErrorDetail, "description": "Artist images are turned off."},
+        # TWO causes, and the second one is invisible in the schema: a
+        # `dependencies=[...]` guard emits no OpenAPI security scheme, so this
+        # sentence is the only place the cross-origin refusal is documented.
+        403: {
+            "model": ErrorDetail,
+            "description": "Artist images are turned off, or the request is cross-origin.",
+        },
         404: {"model": ErrorDetail, "description": "That source has no portrait for this artist."},
         409: {
             "model": ErrorDetail,

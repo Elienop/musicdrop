@@ -366,6 +366,33 @@ def test_every_declared_status_carries_the_body_it_actually_returns() -> None:
         assert ref(code) == "#/components/schemas/ErrorDetail", code
     assert ref("422") == "#/components/schemas/HTTPValidationError"
 
+    # The 403 has TWO causes and the second is invisible in the schema: a
+    # `dependencies=[...]` guard emits no security scheme, so this prose is the
+    # only place the cross-origin refusal is documented. Pinned because Task 9
+    # writes user-facing copy off it and a re-worded description could silently
+    # drop half of what the status means.
+    description = responses["403"]["description"]
+    assert "turned off" in description
+    assert "origin" in description
+    assert description.isascii()
+
+
+def test_both_causes_of_the_403_really_are_reachable() -> None:
+    # The description above claims two causes; this is what stops it becoming a
+    # documented-but-false statement. Distinct bodies, same status.
+    source = _RecordingSource(ResolvedImage(data=b"X", content_type="image/png"))
+    disabled = _client(source, enabled=False).post(
+        _URL, params={"name": "ABBA", "source": "deezer"}
+    )
+    foreign = _client(source).post(
+        _URL,
+        params={"name": "ABBA", "source": "deezer"},
+        headers={"Origin": "http://evil.test"},
+    )
+    assert (disabled.status_code, foreign.status_code) == (403, 403)
+    assert disabled.json()["detail"] != foreign.json()["detail"]
+    assert source.calls == []  # neither cause reached the source
+
 
 @pytest.mark.anyio
 async def test_the_fetch_waits_on_the_automatic_chains_limiter(

@@ -32,6 +32,7 @@ from app.models.completeness import AlbumMissingReport
 from app.models.cover import CoverInstallResult
 from app.models.delete import DeleteResult
 from app.models.edit import AlbumEditPreview, AlbumEditRequest, AlbumEditResult
+from app.models.errors import ErrorDetail
 from app.models.lyrics import LyricsBackfillStatus
 
 router = APIRouter(tags=["albums"])
@@ -183,7 +184,29 @@ async def get_album_cover_endpoint(
     return revalidating_image_response(request, image_bytes, mime)
 
 
-@router.post("/albums/{album_id}/cover/fetch", dependencies=[Depends(verify_upload_origin)])
+@router.post(
+    "/albums/{album_id}/cover/fetch",
+    dependencies=[Depends(verify_upload_origin)],
+    responses={
+        # The 200 is image bytes; without this entry the generated client is
+        # offered a JSON body and never told about the binary one. (FastAPI adds
+        # the `application/json` key regardless - see the artist fetch route for
+        # why `response_class=Response` is not the answer.)
+        200: {"content": {"image/*": {}}, "description": "The candidate cover. No write."},
+        # Both of these render {"detail": "..."} at runtime and neither was
+        # declared: a description-only entry, or none at all, generates
+        # `content?: never` for a body the client has to read. The 403 is the
+        # Origin guard, which is invisible in the schema, so this sentence is
+        # the only place it is documented.
+        403: {"model": ErrorDetail, "description": "The request came from another origin."},
+        404: {
+            "model": ErrorDetail,
+            "description": "No album with that id, or no cover candidate for it.",
+        },
+        # 422 stays UNDECLARED so FastAPI's HTTPValidationError survives - the
+        # path parameter can fail validation and its `detail` is a LIST.
+    },
+)
 async def fetch_album_cover_endpoint(
     album_id: int,
     request: Request,

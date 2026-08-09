@@ -32,8 +32,15 @@ _DEV_FRONTEND_ORIGIN = "http://localhost:5173"
 
 
 def verify_upload_origin(request: Request) -> None:
-    """Reject a cross-origin browser upload; allow same-origin, the dev frontend,
-    and non-browser clients (no Origin header)."""
+    """Reject a cross-origin browser POST; allow same-origin, the dev frontend,
+    and non-browser clients (no Origin header).
+
+    Half the routes behind this guard upload nothing - the two artwork fetch
+    previews and the artist-image reset are body-less POSTs - so neither the
+    docstring nor the ``detail`` says "upload". The FUNCTION name still does;
+    renaming it is a mechanical sweep across three routers with no user-visible
+    effect, and the string a user reads is the part that has to be true.
+    """
     origin = request.headers.get("origin")
     if origin is None:
         return  # non-browser client (curl, trusted LAN tooling) — allow
@@ -50,4 +57,4 @@ def verify_upload_origin(request: Request) -> None:
             return
     if origin == _DEV_FRONTEND_ORIGIN:
         return  # the dev frontend (matches the CORS allowlist)
-    raise HTTPException(status_code=403, detail="cross-origin upload rejected")
+    raise HTTPException(status_code=403, detail="cross-origin request rejected")
