@@ -99,7 +99,7 @@ describe("AlphabetIndex", () => {
     ).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("keeps all 27 buckets on one scrollable line instead of wrapping", () => {
+  it("wraps rather than clipping, so no bucket is ever off-screen", () => {
     renderWithProviders(
       <AlphabetIndex
         artists={roster(["ABBA"])}
@@ -111,15 +111,15 @@ describe("AlphabetIndex", () => {
     const nav = screen.getByRole("navigation", {
       name: "Jump to artists by letter",
     });
-    // The strip shares the toolbar row with the pager now, so wrapping onto a
-    // second line would give back the row the band exists to reclaim. It
-    // scrolls sideways instead — every bucket stays reachable at any width.
-    expect(nav.classList.contains("overflow-x-auto")).toBe(true);
-    expect(nav.classList.contains("flex-wrap")).toBe(false);
-    // And it GROWS into the band's empty left half — without this the strip
-    // sizes to its content and the right-aligned row leaves the gap on the
-    // left, which is the space the whole change exists to use.
-    expect(nav.classList.contains("flex-1")).toBe(true);
+    // This is a TARGETING control: you aim at a remembered position, and the
+    // pressed tint is the only "where am I" signal — on the last page that
+    // signal is V-Z, i.e. exactly what a scroll box would hide. So it grows
+    // taller instead of hiding its tail, and never scrolls or clips.
+    expect(nav.classList.contains("flex-wrap")).toBe(true);
+    expect(nav.classList.contains("overflow-x-auto")).toBe(false);
+    // `mr-auto` is what keeps the letters on the left of the band (and the
+    // pager on the right) without the strip stretching its buttons.
+    expect(nav.classList.contains("mr-auto")).toBe(true);
     // "#" plus A-Z, none of them dropped at any width.
     expect(screen.getAllByRole("button")).toHaveLength(27);
   });
