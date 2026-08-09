@@ -141,6 +141,49 @@ next bulk import.)_
   now that 304s are stat-cheap, but a scoped identity would need the normalized-name mapping.
 - Browse-side A-Z index would need a per-filter letter-to-offset endpoint (Artists-only
   shipped in the perf wave).
+- **No CI guard that `frontend/openapi.json` matches the live spec.** `grep openapi
+  .github/workflows/ci.yml` returns nothing, and `tests/test_config_validate_api.py:60` reads the
+  LIVE spec off a TestClient, so a stale tracked file fails nothing. An *added* path is
+  self-correcting (frontend code cannot compile against a type that was never generated) but a
+  *changed* one is not — a field flipping required→optional keeps generating old TS that still
+  compiles, and the contract is silently wrong. This repo has been bitten by exactly that between
+  #83 and #111. Shape: a backend pytest comparing PARSED DICTS (not serialized text — a byte
+  comparison fails on formatting drift and teaches people to distrust the guard); a missing file
+  must FAIL, not skip; the failure message spells out the two-step regen.
+- **Nothing enforces the CSRF policy for the next body-less POST.** `verify_upload_origin` now
+  guards six routes, but a route-enumeration test ("every POST whose signature has no body param
+  carries `verify_upload_origin`") is what would have caught the artist-fetch gap the day it
+  landed. `csrf.py`'s docstring states the policy in prose, and prose cannot fail.
+- **`download_image` validates only the FIRST and LAST redirect hop, and issues the intermediate
+  request anyway.** Measured: `public → 127.0.0.1:9 → public` returns bytes and the internal GET
+  happens. Its sibling `fetch_image_bytes` (the user-pasted-URL path) does it correctly with
+  `follow_redirects=False` and `assert_public_url` on every hop. So the hardened path is the one
+  handling untrusted input and the CDN path is the loose one. Low severity given the CDNs
+  involved; the fix is to give `download_image` the same manual hop loop.
+- **`tests/test_artist_image_override_endpoint.py::test_uploaded_override_is_served_by_image_get`
+  passes in the full suite and FAILS alone** (`AttributeError: 'State' object has no attribute
+  'beets_library'`). The image GET depends on `get_library` → `request.app.state.beets_library`,
+  which a bare `TestClient(app)` never populates; it only passes because another file leaks that
+  state onto the module-global `app`. This is the INVERSE of the usual tree-pollution shape and
+  the more dangerous direction: the coverage evaporates under `-k`, a file-scoped run, or xdist
+  sharding, while looking green. Two-line fix: `app.dependency_overrides[get_library]`.
+  Confirmed by two independent reviewers running all 158 backend files individually — it is the
+  ONLY isolated failure in the suite.
+- `ArtistImageEditPanel.onPickFile` no longer clears notices and nothing pins it — deleting the
+  call passes all 1034 FE tests. Pick a file after a failed fetch or a reset and a stale note
+  rides onto the preview screen. Not a regression (the pre-fix inline `fetchImage.reset()` was
+  equally unpinned); a third arm on the existing clear-notices test closes it.
+- `aside.w-96` on `ArtistAlbumsPage` overflows a 390px viewport by 18px, reproduced with the
+  panel closed (`App.tsx:53` gives main `px-6`, leaving ~342px for a 384px rail). Fix is
+  `w-full max-w-96 lg:w-96`, not a design change.
+- `SegmentedControl` segments are 28px tall, under the 44px touch-target guidance. Shared
+  component; the artist-image wave made it load-bearing on a mobile flow for the first time.
+  `py-1` → `py-2` reaches ~36px without touching the visual language; 44px needs a design call.
+- Artist-image panel minors, all shipped deliberately: Fetch is `secondary` while the pasted-link
+  Set is the only filled control (ranking reads backwards); the URL input's `aria-label` shadows
+  its visible label (WCAG 2.5.3, pre-existing — fixing it breaks `getByLabelText` in two files);
+  generic `alt="Artist image preview"`; comparing two sources costs a Discard; and a possible
+  live-region/focus contention that needs a real screen reader to settle.
 - **`tests/test_artist_image_endpoint.py` opens the REAL dev library on every suite run.** It
   uses `with TestClient(app)` at lines 257 and 298 and contains zero `beets_dir` references, so
   the lifespan runs `setup_beets` against `MUSICDROP_BEETS_DIR` from `backend/.env` — the live
