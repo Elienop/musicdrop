@@ -445,7 +445,8 @@ describe("ArtistImageEditPanel", () => {
     expect(container.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(0);
     expect(screen.queryByRole("group", { name: /image source/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^fetch$/i })).toBeNull();
-    // ...and the upload/reset half still works.
+    // ...and the upload/reset half still works, heading and all.
+    expect(screen.getByRole("heading", { name: /use your own image/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /reset to auto/i })).toBeInTheDocument();
   });
 
@@ -475,9 +476,18 @@ describe("ArtistImageEditPanel", () => {
   it("asks the sources endpoint nothing about an empty artist name", () => {
     // The server declares `min_length=1` and the hook has no guard, so an empty
     // name must not become a request at all.
-    render(<ArtistImageEditPanel name="" onSaved={() => {}} onClose={() => {}} />);
+    const { container } = render(
+      <ArtistImageEditPanel name="" onSaved={() => {}} onClose={() => {}} />,
+    );
     expect(sourcesCalls.at(-1)).toEqual({ name: "", enabled: false });
     expect(screen.queryByRole("group", { name: /image source/i })).toBeNull();
+    // The ONE state where the query is disabled while this subtree still
+    // renders: the toggles are on, so the gate lets it through, but the empty
+    // name disables the query. A disabled query is pending forever, so
+    // branching on `isPending` here paints a skeleton that never resolves —
+    // and this is the only assertion in the suite that can tell the two
+    // predicates apart.
+    expect(container.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(0);
   });
 
   it("still offers fetch when only the write-to-library toggle is on", () => {
