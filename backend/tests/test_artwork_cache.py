@@ -719,6 +719,38 @@ def test_clear_override_reports_the_image_slot_never_a_sidecar(tmp_path: Path) -
     assert not (tmp_path / f"{bare}.override").exists()
 
 
+def test_the_clear_calls_unlink_the_image_before_its_mime_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirror-image of the write order, and now worth pinning rather than only
+    documenting: both clears run through one ``_clear_slots`` loop, so hoisting
+    the sweep above the image is a single-line edit that no other test notices.
+
+    Sweeping the sidecar first opens a window where a concurrent ``get()`` finds
+    image bytes with no mime and serves them as ``application/octet-stream``.
+    Order is not observable through behaviour here -- the window is between two
+    syscalls -- so the call sequence itself is the assertion.
+    """
+    cache = ArtistImageCache(tmp_path)
+    cache.store_positive("ABBA", b"auto", "image/png")
+    cache.write_override("ABBA", b"manual", "image/png")
+    key = cache._key("ABBA")
+
+    order: list[str] = []
+    real_unlink = ArtistImageCache._unlink
+
+    def spy(self: ArtistImageCache, path: Path) -> bool:
+        order.append(path.name)
+        return real_unlink(self, path)
+
+    monkeypatch.setattr(ArtistImageCache, "_unlink", spy)
+    cache.clear_auto("ABBA")
+    cache.clear_override("ABBA")
+
+    assert order.index(f"{key}.bin") < order.index(f"{key}.mime")
+    assert order.index(f"{key}.override") < order.index(f"{key}.override.mime")
+
+
 def test_clear_auto_drops_a_fresh_negative_marker_so_the_next_call_re_resolves(
     tmp_path: Path,
 ) -> None:
