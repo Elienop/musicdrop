@@ -170,6 +170,11 @@ export interface paths {
         /**
          * Fetch Album Cover Endpoint
          * @description Fetch beets' best cover candidate. Returns the image (preview) or 404. No write.
+         *
+         *     Origin-guarded: a body-less POST is a CORS-simple request, so without this a
+         *     foreign page could drive this install's outbound cover lookups. It writes
+         *     nothing, which is why this guard arrived later than the install route's -
+         *     but "changes no state" is not the same as "costs nothing to trigger".
          */
         post: operations["fetch_album_cover_endpoint_api_albums__album_id__cover_fetch_post"];
         delete?: never;
@@ -258,6 +263,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/artists/image/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Artist Image Sources Endpoint
+         * @description The sources a portrait for ``name`` may be fetched from, in chain order.
+         *
+         *     Only CONFIGURED sources are listed (an unset API key is an install-level
+         *     fact the user cannot act on from this panel). Of those, fanart.tv reports
+         *     ``available=false`` plus a reason when this artist has no MusicBrainz id.
+         *     ``name`` is a query param, not a path segment, so "AC/DC" survives routing.
+         */
+        get: operations["list_artist_image_sources_endpoint_api_artists_image_sources_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/artists/image/fetch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fetch Artist Image Endpoint
+         * @description Fetch ONE source's portrait candidate for ``name``. Writes NOTHING.
+         *
+         *     The preview half of the manual re-fetch: the response is the image itself
+         *     (``no-store``, provenance in ``X-Art-Source``), matching the album cover's
+         *     fetch route so the two panels share one shape. Installing is a SEPARATE
+         *     call - the client posts the very bytes it previewed to
+         *     ``POST /api/artists/image/override``, so nothing can substitute a different
+         *     image between "looks good" and "use it".
+         *
+         *     The cache is bypassed in BOTH directions: a fresh ``.miss`` marker does not
+         *     suppress the call (the user asked for it explicitly), and a result is not
+         *     stored (an approved image lands in the override slot, a rejected one leaves
+         *     no trace). The call still takes the service's own rate/concurrency slot, so
+         *     a burst of manual fetches paces against the same 5/s bucket the automatic
+         *     chain uses - ``sources.get`` hands back a bare source with no limiter
+         *     attached, so resolving it directly is the easy thing to write and would
+         *     double the real outbound rate against fanart.tv / Spotify / Deezer.
+         *
+         *     ``source`` is typed as the ``Literal``, not ``str``, and that gate is
+         *     load-bearing rather than cosmetic: ``label_for`` echoes an unknown id back
+         *     verbatim and the result lands in the ``X-Art-Source`` header, so a plain
+         *     ``str`` would let a client put its own bytes in a response header. An id
+         *     outside the Literal is refused by validation before this body runs.
+         *
+         *     Origin-guarded. A body-less POST is a CORS-simple request, so a foreign page
+         *     can send this one without a preflight - and unlike the album cover's fetch,
+         *     where the only attacker input is a local album id, here the caller picks the
+         *     UPSTREAM and the query it is sent, and that request goes out carrying this
+         *     install's own fanart.tv / Spotify credentials. The route bypasses the cache
+         *     by design, so repeats are not deduplicated either.
+         */
+        post: operations["fetch_artist_image_endpoint_api_artists_image_fetch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/artists/image/override": {
         parameters: {
             query?: never;
@@ -269,8 +348,7 @@ export interface paths {
         put?: never;
         /** Upload Artist Image Override Endpoint */
         post: operations["upload_artist_image_override_endpoint_api_artists_image_override_post"];
-        /** Clear Artist Image Override Endpoint */
-        delete: operations["clear_artist_image_override_endpoint_api_artists_image_override_delete"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -287,6 +365,40 @@ export interface paths {
         put?: never;
         /** Set Artist Image Override From Url Endpoint */
         post: operations["set_artist_image_override_from_url_endpoint_api_artists_image_override_from_url_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/artists/image/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reset Artist Image Endpoint
+         * @description Forget every stored portrait for ``name`` so it is looked up again.
+         *
+         *     Clears the manual override AND the cached automatic image (plus its
+         *     negative marker and derived thumb). Clearing only the override - which is
+         *     all this used to do - drops the user straight back onto the automatic image
+         *     they just rejected, because a present ``.bin`` means the resolve path never
+         *     runs again.
+         *
+         *     The result reports each slot separately: neither may have existed, and on an
+         *     unwritable cache dir a removal can be refused. The caller shows what
+         *     actually happened instead of implying a re-fetch that did not occur.
+         *
+         *     Origin-guarded: a body-less POST is a CORS-simple request, so without this
+         *     dependency a foreign page could reset portraits (the DELETE this replaced
+         *     was preflight-protected by its method alone).
+         */
+        post: operations["reset_artist_image_endpoint_api_artists_image_reset_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2004,12 +2116,64 @@ export interface components {
             content_type: string;
         };
         /**
+         * ArtistImageResetResult
+         * @description What a reset actually did - the whole point of the endpoint.
+         *
+         *     ``cleared_override`` and ``cleared_auto`` are reported separately because
+         *     the two slots are independent and either may have been absent (or, on an
+         *     unwritable cache dir, may have refused to go). The UI says what happened
+         *     instead of implying a re-fetch that did not occur.
+         */
+        ArtistImageResetResult: {
+            /** Ok */
+            ok: boolean;
+            /** Cleared Override */
+            cleared_override: boolean;
+            /** Cleared Auto */
+            cleared_auto: boolean;
+        };
+        /**
          * ArtistImageSettings
          * @description The artist-image feature on/off flag (GET + PUT body + PUT response).
          */
         ArtistImageSettings: {
             /** Enabled */
             enabled: boolean;
+        };
+        /**
+         * ArtistImageSourceList
+         * @description The sources offered for one artist, in the chain's own fallback order.
+         */
+        ArtistImageSourceList: {
+            /** Sources */
+            sources: components["schemas"]["ArtistImageSourceOption"][];
+        };
+        /**
+         * ArtistImageSourceOption
+         * @description One source the UI may offer for ONE artist.
+         *
+         *     ``available`` is per-artist, not per-install: fanart.tv is MBID-keyed and
+         *     returns nothing without one, so it can be fully configured yet unusable for
+         *     a particular artist. ``reason`` carries the sentence the UI shows in that
+         *     case (and is ``None`` when the source is usable). Sources whose credentials
+         *     are unset are OMITTED from the list entirely rather than sent unavailable -
+         *     they are an install-level fact, not something the user can act on here.
+         *
+         *     Every field is required (no Pydantic defaults) so the generated TypeScript
+         *     types them as present rather than optional.
+         */
+        ArtistImageSourceOption: {
+            /**
+             * Id
+             * @enum {string}
+             */
+            id: "fanarttv" | "spotify" | "deezer";
+            /** Label */
+            label: string;
+            /** Available */
+            available: boolean;
+            /** Reason */
+            reason: string | null;
         };
         /**
          * ArtistImageUrlOverride
@@ -2642,6 +2806,14 @@ export interface components {
         EmptyResult: {
             /** Removed */
             removed: number;
+        };
+        /**
+         * ErrorDetail
+         * @description The body of any non-validation error response: one ASCII sentence.
+         */
+        ErrorDetail: {
+            /** Detail */
+            detail: string;
         };
         /**
          * ExistingAlbum
@@ -4725,13 +4897,32 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description The candidate cover. No write. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": unknown;
+                    "image/*": unknown;
+                };
+            };
+            /** @description The request came from another origin. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description No album with that id, or no cover candidate for it. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
             /** @description Validation Error */
@@ -4854,7 +5045,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -4920,6 +5113,106 @@ export interface operations {
             };
         };
     };
+    list_artist_image_sources_endpoint_api_artists_image_sources_get: {
+        parameters: {
+            query: {
+                name: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtistImageSourceList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fetch_artist_image_endpoint_api_artists_image_fetch_post: {
+        parameters: {
+            query: {
+                name: string;
+                source: "fanarttv" | "spotify" | "deezer";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The candidate portrait. Preview only - nothing is stored. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "image/*": unknown;
+                };
+            };
+            /** @description Artist images are turned off, or the request is cross-origin. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description That source has no portrait for this artist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description That source is not configured on this install. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description That source failed (timeout, rate limit, bad response). */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+        };
+    };
     upload_artist_image_override_endpoint_api_artists_image_override_post: {
         parameters: {
             query: {
@@ -4955,35 +5248,6 @@ export interface operations {
             };
         };
     };
-    clear_artist_image_override_endpoint_api_artists_image_override_delete: {
-        parameters: {
-            query: {
-                name: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     set_artist_image_override_from_url_endpoint_api_artists_image_override_from_url_post: {
         parameters: {
             query: {
@@ -5006,6 +5270,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ArtistImageOverrideResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reset_artist_image_endpoint_api_artists_image_reset_post: {
+        parameters: {
+            query: {
+                name: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtistImageResetResult"];
                 };
             };
             /** @description Validation Error */
