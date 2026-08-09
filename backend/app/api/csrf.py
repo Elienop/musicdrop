@@ -1,10 +1,20 @@
-"""CSRF guard for the multipart image-upload endpoints.
+"""CSRF guard for the state-changing endpoints a browser can reach WITHOUT a
+preflight.
 
-``multipart/form-data`` is a CORS "simple" content type, so a cross-origin page
-can POST it WITHOUT triggering a preflight — the strict CORS allowlist never gets
-a say. A malicious page the maintainer happens to visit could therefore silently
-overwrite a cover / artist image. (The JSON endpoints are already safe:
-``application/json`` forces a preflight, which the CORS policy rejects.)
+Two shapes qualify, and both are guarded:
+
+* a ``multipart/form-data`` POST — a CORS "simple" content type, so a
+  cross-origin page can upload a cover / artist image without the strict CORS
+  allowlist ever getting a say;
+* a **body-less** POST (query params only, no custom headers) — equally simple,
+  and the shape ``POST /api/artists/image/reset`` takes. It destroys data (it
+  unlinks the user's uploaded override), so it needs this guard just as much.
+
+(The JSON endpoints are already safe: ``application/json`` forces a preflight,
+which the CORS policy rejects. So does any non-simple METHOD — the ``DELETE``
+that the reset POST replaced was protected by its verb alone, which is why
+swapping the verb without adding this dependency would have quietly removed a
+protection.)
 
 ``verify_upload_origin`` closes that gap by checking the ``Origin`` header: a
 browser always sends it on a cross-origin (and same-origin) POST, while non-browser

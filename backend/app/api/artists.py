@@ -45,6 +45,7 @@ from app.library_busy import raise_if_library_busy
 from app.models.artist import (
     Artist,
     ArtistImageOverrideResult,
+    ArtistImageResetResult,
     ArtistImageSettings,
     ArtistImageSourceId,
     ArtistImageSourceList,
@@ -439,13 +440,44 @@ async def set_artist_image_override_from_url_endpoint(
     return ArtistImageOverrideResult(ok=True, content_type=mime)
 
 
-@router.delete("/artists/image/override", status_code=204)
-async def clear_artist_image_override_endpoint(
+def _reset_slots(cache: ArtistImageCache, name: str) -> tuple[bool, bool]:
+    """Clear both stored portraits for ``name`` in ONE threadpool hop.
+
+    Returns ``(cleared_override, cleared_auto)``. A module-level function rather
+    than a lambda so the offload is assertable, and rather than a third cache
+    method so the cache keeps only the two primitives that mean something on
+    their own.
+    """
+    return cache.clear_override(name), cache.clear_auto(name)
+
+
+@router.post(
+    "/artists/image/reset",
+    response_model=ArtistImageResetResult,
+    dependencies=[Depends(verify_upload_origin)],
+)
+async def reset_artist_image_endpoint(
     request: Request,
     name: Annotated[str, Query(min_length=1)],
     cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
-) -> Response:
-    await run_in_threadpool(cache.clear_override, name)
+) -> ArtistImageResetResult:
+    """Forget every stored portrait for ``name`` so it is looked up again.
+
+    Clears the manual override AND the cached automatic image (plus its
+    negative marker and derived thumb). Clearing only the override - which is
+    all this used to do - drops the user straight back onto the automatic image
+    they just rejected, because a present ``.bin`` means the resolve path never
+    runs again.
+
+    The result reports each slot separately: neither may have existed, and on an
+    unwritable cache dir a removal can be refused. The caller shows what
+    actually happened instead of implying a re-fetch that did not occur.
+
+    Origin-guarded: a body-less POST is a CORS-simple request, so without this
+    dependency a foreign page could reset portraits (the DELETE this replaced
+    was preflight-protected by its method alone).
+    """
+    cleared_override, cleared_auto = await run_in_threadpool(_reset_slots, cache, name)
     # UNSCOPED on purpose: the artist image is served under a NORMALIZED name
     # (NFKD accent-fold + casefold + whitespace-collapse — see
     # artwork/normalize.py), so a raw display name is not a reliable identity
@@ -454,7 +486,9 @@ async def clear_artist_image_override_endpoint(
     # would duplicate it across languages (casefold != toLowerCase). Album
     # covers ARE scoped — they key off a stable numeric id.
     emit_art_changed(request.app)
-    return Response(status_code=204)
+    return ArtistImageResetResult(
+        ok=True, cleared_override=cleared_override, cleared_auto=cleared_auto
+    )
 
 
 def _gate_library_busy(app: object) -> None:

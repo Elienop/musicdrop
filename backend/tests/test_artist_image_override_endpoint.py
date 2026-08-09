@@ -12,7 +12,7 @@ from app.api.artists import (
     get_artist_image_http_client,
     get_artist_image_service,
 )
-from app.artwork.cache import ArtistImageCache, CachedImage
+from app.artwork.cache import NEGATIVE, ArtistImageCache, CachedImage
 from app.artwork.service import ArtistImageService
 from app.main import app
 
@@ -72,17 +72,6 @@ def test_upload_offloads_the_cache_write_to_the_threadpool(
     assert cache.write_override in [call.args[0] for call in spy.call_args_list]
 
 
-def test_delete_offloads_the_cache_clear_to_the_threadpool(
-    client: TestClient, cache: ArtistImageCache, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    cache.write_override("ABBA", b"manual", "image/png")
-    spy = Mock(side_effect=lambda fn, *a, **k: _real_run_in_threadpool(fn, *a, **k))
-    monkeypatch.setattr(artists_mod, "run_in_threadpool", spy, raising=False)
-    resp = client.delete("/api/artists/image/override", params={"name": "ABBA"})
-    assert resp.status_code == 204
-    assert cache.clear_override in [call.args[0] for call in spy.call_args_list]
-
-
 def test_cross_origin_upload_rejected(client: TestClient) -> None:
     # A cross-origin browser POST (multipart is preflight-exempt) must not be able
     # to overwrite an artist image via CSRF — a foreign Origin is rejected 403.
@@ -125,11 +114,79 @@ def test_missing_name_is_422(client: TestClient) -> None:
     assert resp.status_code == 422
 
 
-def test_delete_clears_override(client: TestClient, cache: ArtistImageCache) -> None:
+def test_reset_clears_both_slots_and_reports_what_it_did(
+    client: TestClient, cache: ArtistImageCache
+) -> None:
+    cache.store_positive("ABBA", b"auto", "image/png")
     cache.write_override("ABBA", b"manual", "image/png")
-    resp = client.delete("/api/artists/image/override", params={"name": "ABBA"})
-    assert resp.status_code == 204
+    resp = client.post("/api/artists/image/reset", params={"name": "ABBA"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "cleared_override": True, "cleared_auto": True}
+    # BOTH gone: the next lookup re-resolves instead of falling back to the
+    # automatic image the user just rejected.
     assert cache.get("ABBA") is None
+
+
+def test_reset_clears_an_auto_only_image(client: TestClient, cache: ArtistImageCache) -> None:
+    # THE bug this route exists for: with no override in play, the DELETE it
+    # replaced answered 204 while changing nothing, so the next paint served the
+    # very image the user pressed Reset to get rid of.
+    cache.store_positive("ABBA", b"auto", "image/png")
+    resp = client.post("/api/artists/image/reset", params={"name": "ABBA"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "cleared_override": False, "cleared_auto": True}
+    assert cache.get("ABBA") is None
+
+
+def test_reset_reports_honestly_when_there_was_nothing_to_clear(client: TestClient) -> None:
+    resp = client.post("/api/artists/image/reset", params={"name": "Nobody"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "cleared_override": False, "cleared_auto": False}
+
+
+def test_reset_distinguishes_an_override_only_state(
+    client: TestClient, cache: ArtistImageCache
+) -> None:
+    cache.write_override("ABBA", b"manual", "image/png")
+    body = client.post("/api/artists/image/reset", params={"name": "ABBA"}).json()
+    assert body == {"ok": True, "cleared_override": True, "cleared_auto": False}
+
+
+def test_reset_drops_a_fresh_negative_marker(client: TestClient, cache: ArtistImageCache) -> None:
+    cache.store_negative("Nobody", ttl_seconds=3600)
+    assert cache.get("Nobody") is NEGATIVE
+    client.post("/api/artists/image/reset", params={"name": "Nobody"})
+    assert cache.get("Nobody") is None
+
+
+def test_reset_offloads_the_cache_work_to_the_threadpool(
+    client: TestClient, cache: ArtistImageCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache.write_override("ABBA", b"manual", "image/png")
+    spy = Mock(side_effect=lambda fn, *a, **k: _real_run_in_threadpool(fn, *a, **k))
+    monkeypatch.setattr(artists_mod, "run_in_threadpool", spy, raising=False)
+    resp = client.post("/api/artists/image/reset", params={"name": "ABBA"})
+    assert resp.status_code == 200
+    assert artists_mod._reset_slots in [call.args[0] for call in spy.call_args_list]
+
+
+def test_cross_origin_reset_is_rejected(client: TestClient) -> None:
+    # A body-less POST is a CORS-simple request (no preflight), unlike the
+    # DELETE this replaced - so the Origin guard is load-bearing here.
+    resp = client.post(
+        "/api/artists/image/reset",
+        params={"name": "ABBA"},
+        headers={"Origin": "http://evil.test"},
+    )
+    assert resp.status_code == 403
+
+
+def test_reset_requires_a_name(client: TestClient) -> None:
+    assert client.post("/api/artists/image/reset").status_code == 422
+
+
+def test_the_override_delete_route_is_gone(client: TestClient) -> None:
+    assert client.delete("/api/artists/image/override", params={"name": "ABBA"}).status_code == 405
 
 
 def test_uploaded_override_is_served_by_image_get(
