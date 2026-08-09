@@ -26,8 +26,14 @@ from app.artwork.factory import (
     build_artist_image_sources,
     label_for,
 )
-from app.artwork.images import MAX_IMAGE_BYTES, sniff_image_mime
+from app.artwork.images import (
+    FALLBACK_CONTENT_TYPE,
+    MAX_IMAGE_BYTES,
+    header_safe_content_type,
+    sniff_image_mime,
+)
 from app.artwork.service import ArtistImageService
+from app.artwork.source import TransientSourceError
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
 from app.beets import library as beets_library
 from app.beets.delete import delete_artist_op
@@ -270,6 +276,98 @@ async def list_artist_image_sources_endpoint(
             )
             for source_id in ids
         ]
+    )
+
+
+@router.post(
+    "/artists/image/fetch",
+    responses={
+        200: {
+            "content": {"image/*": {}},
+            "description": "The candidate portrait. Preview only - nothing is stored.",
+        },
+        403: {"description": "Artist images are turned off."},
+        404: {"description": "That source has no portrait for this artist."},
+        422: {"description": "Unknown source id, or one not configured on this install."},
+        502: {"description": "That source failed (timeout, rate limit, bad response)."},
+    },
+)
+async def fetch_artist_image_endpoint(
+    name: Annotated[str, Query(min_length=1)],
+    source: Annotated[ArtistImageSourceId, Query()],
+    service: Annotated[ArtistImageService, Depends(get_artist_image_service)],
+    sources: Annotated[ArtistImageSources, Depends(get_artist_image_sources)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+) -> Response:
+    """Fetch ONE source's portrait candidate for ``name``. Writes NOTHING.
+
+    The preview half of the manual re-fetch: the response is the image itself
+    (``no-store``, provenance in ``X-Art-Source``), matching the album cover's
+    fetch route so the two panels share one shape. Installing is a SEPARATE
+    call - the client posts the very bytes it previewed to
+    ``POST /api/artists/image/override``, so nothing can substitute a different
+    image between "looks good" and "use it".
+
+    The cache is bypassed in BOTH directions: a fresh ``.miss`` marker does not
+    suppress the call (the user asked for it explicitly), and a result is not
+    stored (an approved image lands in the override slot, a rejected one leaves
+    no trace). The call still takes the service's own rate/concurrency slot, so
+    a burst of manual fetches paces against the same 5/s bucket the automatic
+    chain uses - ``sources.get`` hands back a bare source with no limiter
+    attached, so resolving it directly is the easy thing to write and would
+    double the real outbound rate against fanart.tv / Spotify / Deezer.
+
+    ``source`` is typed as the ``Literal``, not ``str``, and that gate is
+    load-bearing rather than cosmetic: ``label_for`` echoes an unknown id back
+    verbatim and the result lands in the ``X-Art-Source`` header, so a plain
+    ``str`` would let a client put its own bytes in a response header. An id
+    outside the Literal is refused by validation before this body runs.
+    """
+    if not service.is_enabled():
+        raise HTTPException(status_code=403, detail="Turn on artist images first")
+    picked = sources.get(source)
+    if picked is None:
+        # Distinct from the Literal's 422: that one is a nonexistent source id,
+        # this one is a real source whose credentials are unset here. Both are
+        # 422 because both mean "do not retry this as sent", and the sources
+        # endpoint is what the UI should have consulted.
+        raise HTTPException(
+            status_code=422, detail=f"{label_for(source)} is not configured on this install"
+        )
+    # fanart.tv is MBID-keyed; the others ignore it. Resolved for every source
+    # because the beets query is one indexed lookup and the branch would only
+    # duplicate the sources endpoint's knowledge of which source needs it.
+    # Off-loop: it is a blocking sqlite read over every album of the artist.
+    mbid = await run_in_threadpool(beets_library.get_artist_mbid, handle.lib, name)
+    try:
+        async with service.limiter_slot():
+            resolved = await picked.resolve(name, mbid=mbid)
+    except TransientSourceError as exc:
+        # NOT a 404: "the source failed" and "the source has no such image" are
+        # different answers, and reporting the first as the second is the exact
+        # lie this feature exists to remove. The source is named because 502 is
+        # also what a proxy emits when this app itself is down.
+        raise HTTPException(
+            status_code=502,
+            detail=f"{label_for(source)} did not answer - try again in a moment",
+        ) from exc
+    if resolved is None:
+        raise HTTPException(
+            status_code=404, detail=f"{label_for(source)} has no portrait for {name}"
+        )
+    # The third content-type sink header_safe_content_type's docstring counts,
+    # and the only one where the value is a source's OWN answer rather than a
+    # cache sidecar. Every source in the tree routes its download through
+    # app/artwork/download.py, which already guards this - but the source
+    # contract is a Protocol, so nothing stops a future one from returning a
+    # header-hostile type, and that would 500 this route (non-ASCII) or drop the
+    # connection with no response at all (a control character).
+    media_type = header_safe_content_type(resolved.content_type) or FALLBACK_CONTENT_TYPE
+    return Response(
+        content=resolved.data,
+        media_type=media_type,
+        # label_for is safe HERE only because `source` came through the Literal.
+        headers={"Cache-Control": "no-store", "X-Art-Source": label_for(source)},
     )
 
 
