@@ -271,6 +271,38 @@ def test_fetch_via_filesystem_returns_image(cover_client: TestClient, edit_lib: 
     assert r.content == PNG.read_bytes()
 
 
+def test_every_image_response_the_cover_routes_build_carries_nosniff(
+    cover_client: TestClient, edit_lib: Library
+) -> None:
+    """The GET inherits nosniff from the two shared http_cache constructors; the
+    fetch preview builds its own Response and has to spell it out.
+
+    The preview's mime is already one of four literals from sniff_image_mime's
+    magic-byte check, so this header is pure backstop there - but a backstop
+    that covers every image response except one is not a backstop, and "all of
+    them" is an easier rule to keep true than "all except that one".
+    """
+    import os
+
+    aid = _aid(edit_lib)
+    album = edit_lib.get_album(aid)
+    assert album is not None
+    album_dir = os.path.dirname(os.fsdecode(next(iter(album.items())).path))
+    Path(album_dir, "cover.png").write_bytes(PNG.read_bytes())
+    _install(cover_client, aid)
+
+    served = cover_client.get(f"/api/albums/{aid}/cover")
+    revalidated = cover_client.get(
+        f"/api/albums/{aid}/cover", headers={"If-None-Match": served.headers["etag"]}
+    )
+    preview = cover_client.post(f"/api/albums/{aid}/cover/fetch")
+    # Non-vacuity: each arm must be the response it claims to be, or a 404 would
+    # satisfy "carries no sniffable body" for entirely the wrong reason.
+    assert [r.status_code for r in (served, revalidated, preview)] == [200, 304, 200]
+    for resp in (served, revalidated, preview):
+        assert resp.headers["x-content-type-options"] == "nosniff"
+
+
 def test_cross_origin_cover_fetch_is_rejected(cover_client: TestClient, edit_lib: Library) -> None:
     """A body-less POST is a CORS-simple request, so it reaches this route
     without a preflight. It writes nothing, but it still drives an outbound

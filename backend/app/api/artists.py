@@ -122,7 +122,14 @@ async def list_artists_endpoint(
     "/artists/image",
     responses={
         200: {"content": {"image/*": {}}, "description": "The artist portrait."},
-        404: {"description": "Feature disabled, no verified match, or transient error."},
+        # Names the model for the same reason the fetch route's errors do: a
+        # description-only entry REPLACES the generated response, leaving the
+        # status with no body schema and generating `content?: never` for a
+        # body the client can read.
+        404: {
+            "model": ErrorDetail,
+            "description": "Feature disabled, no verified match, or transient error.",
+        },
     },
 )
 async def get_artist_image_endpoint(

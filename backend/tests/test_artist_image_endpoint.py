@@ -386,6 +386,24 @@ def test_every_exit_of_the_image_get_carries_nosniff(
         assert resp.headers["x-content-type-options"] == "nosniff"
 
 
+def test_the_image_get_declares_the_body_its_404_actually_returns() -> None:
+    # Same shape the fetch route was fixed for: a description-only entry in
+    # `responses={...}` REPLACES the generated response, so the status carries
+    # no schema and openapi-typescript renders `content?: never` - a type saying
+    # the body cannot exist - for a 404 that returns {"detail": "..."}.
+    responses = app.openapi()["paths"]["/api/artists/image"]["get"]["responses"]
+    assert (
+        responses["404"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/ErrorDetail"
+    )
+    # And 422 must keep the OTHER shape (detail is a list): declaring it at all
+    # is what would strip HTTPValidationError.
+    assert (
+        responses["422"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/HTTPValidationError"
+    )
+
+
 def test_the_content_hash_fallback_exits_carry_nosniff(hit_client: TestClient) -> None:
     # The other two exits: no file to stat, so the endpoint falls back to the
     # content-hash ETag through revalidating_image_response.
