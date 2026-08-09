@@ -74,7 +74,10 @@ export function useUploadArtistImageOverride(name: string) {
  * with no credentials are omitted entirely.
  *
  * This endpoint is gated on NOTHING server-side, so it answers even when artist
- * images are switched off — see `useFetchArtistImage` for why that matters. */
+ * images are switched off — see `useFetchArtistImage` for why that matters.
+ *
+ * `name` carries no guard here and the server declares `min_length=1`, so pass
+ * `enabled={false}` rather than an empty name; an empty one 422s. */
 export function useArtistImageSources(name: string, enabled = true) {
   return useQuery({
     queryKey: ["artist-image", "sources", name],
@@ -98,14 +101,20 @@ export type FetchedArtistImage =
  * The caller owns `objectUrl` and must revoke it.
  *
  * Two things this hook cannot learn from the generated types:
- * - The 403 has TWO causes — the feature is off, or the request was
- *   cross-origin (an `Origin`-guard dependency emits no OpenAPI security
- *   scheme). The server's sentence names both; show it rather than guessing.
  * - "Artist images are on" is not one question. `useArtistImageSettings`
  *   reports the IMAGE toggle alone, while this route accepts when EITHER that
- *   or the write-to-library toggle is on. Gating a fetch affordance on
- *   `settings.enabled` therefore hides a path that would have worked; let the
- *   sources list decide what to offer and let this 403 explain a refusal.
+ *   or the write-to-library toggle is on (main.py composes the predicate). So
+ *   gate a fetch affordance on `imagesEnabled || writeEnabled` — the same pair
+ *   `ArtistImage` composes to decide whether to attempt a portrait at all, and
+ *   the pair `ArtistAlbumsPage` already holds. `settings.enabled` alone hides a
+ *   path that works. No endpoint reports the composed answer, so this stays a
+ *   client-side mirror of the backend's `or`; a toggle flipped in another tab
+ *   mid-session still lands on the 403 below.
+ * - The 403's cause is invisible in the schema: an `Origin`-guard dependency
+ *   emits no OpenAPI security scheme. Only the OpenAPI *description* names both
+ *   causes — at runtime each raises its own one-cause sentence ("Turn on artist
+ *   images first" / "cross-origin request rejected"). Whichever fired, the
+ *   server's sentence names it, so show that rather than guessing.
  *
  * `source` rides in the query string as the generated Literal, so an id outside
  * the three the backend knows cannot be sent. */

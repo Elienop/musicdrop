@@ -161,14 +161,17 @@ describe("useResetArtistImage", () => {
   });
 });
 
-// Last in the file on purpose: the object-URL stand-in is torn down with
-// `vi.unstubAllGlobals()`, which also drops the stubs `test/setup.ts` installed.
 describe("useFetchArtistImage", () => {
+  // Put the real URL back by hand rather than with `vi.unstubAllGlobals()`,
+  // which would also drop the `scrollTo`/`matchMedia`/`EventSource` stubs
+  // `test/setup.ts` installs — and so make this file's correctness depend on
+  // this describe staying last.
+  const RealURL = globalThis.URL;
   beforeEach(() => {
     // jsdom implements the URL parser but not the object-URL methods.
-    vi.stubGlobal("URL", { ...URL, createObjectURL: () => "blob:x", revokeObjectURL: () => {} });
+    vi.stubGlobal("URL", { ...RealURL, createObjectURL: () => "blob:x", revokeObjectURL: () => {} });
   });
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => vi.stubGlobal("URL", RealURL));
 
   it("returns the blob and the source label on 200", async () => {
     const body = new Blob([new Uint8Array([1, 2, 3])], { type: "image/jpeg" });
@@ -214,7 +217,10 @@ describe("useFetchArtistImage", () => {
     result.current.mutate("deezer");
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     const [url, init] = spy.mock.calls[0];
-    expect(String(url)).toContain("/api/artists/image/fetch?name=AC%2FDC&source=deezer");
+    // Two substrings, so the assertion says nothing about query-param order.
+    expect(String(url)).toContain("/api/artists/image/fetch?");
+    expect(String(url)).toContain("name=AC%2FDC");
+    expect(String(url)).toContain("source=deezer");
     expect((init as RequestInit).method).toBe("POST");
   });
 });
