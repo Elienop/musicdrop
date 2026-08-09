@@ -92,13 +92,22 @@ export function useArtistImageSources(name: string, enabled = true) {
 
 export type FetchedArtistImage =
   | { found: false; reason: string }
-  | { found: true; blob: Blob; objectUrl: string; source: string | null };
+  | { found: true; blob: Blob; source: string | null };
 
 /** Fetch a candidate portrait from ONE source. Preview only — the server stores
  * nothing, and installing re-posts THESE bytes through the upload hook, so the
- * image the user approved is the image that lands. Mirrors useFetchAlbumCover.
+ * image the user approved is the image that lands.
  *
- * The caller owns `objectUrl` and must revoke it.
+ * Hands back the BLOB, never an object URL — deliberately unlike
+ * `useFetchAlbumCover`, which still mints one here and carries the leak this
+ * avoids. TanStack skips a per-call `onSuccess` once the observer has unmounted
+ * (`mutationObserver.js` gates `#mutateOptions` on `hasListeners()`), so a URL
+ * created in `mutationFn` would be handed to nobody when the caller unmounts
+ * mid-fetch: created, unrevokable, leaked. Minting it in the caller's own
+ * `onSuccess` means an abandoned fetch creates nothing at all. Revoking from a
+ * hook-level `onSuccess` is NOT the fix — `mutation.js` awaits `this.options`
+ * callbacks unconditionally, before notifying observers, so that would destroy
+ * every preview on the normal path.
  *
  * Two things this hook cannot learn from the generated types:
  * - "Artist images are on" is not one question. `useArtistImageSettings`
@@ -138,11 +147,12 @@ export function useFetchArtistImage(name: string) {
       return {
         found: true,
         blob,
-        objectUrl: URL.createObjectURL(blob),
         // Nullable for real: the backend sets no CORS `expose_headers`, so this
         // reads only while the request is same-origin — true in prod, and true
         // in dev ONLY because Vite proxies /api. Point the app at the backend's
-        // own origin and the provenance silently goes null.
+        // own origin and this goes null — so a caller that needs to SHOW the
+        // provenance falls back to the label of the source it asked for, which
+        // it knows with certainty because it chose it.
         source: res.headers.get("X-Art-Source"),
       };
     },

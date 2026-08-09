@@ -173,18 +173,28 @@ describe("useFetchArtistImage", () => {
   });
   afterEach(() => vi.stubGlobal("URL", RealURL));
 
-  it("returns the blob and the source label on 200", async () => {
+  it("returns the blob and the source label on 200, minting no object URL", async () => {
     const body = new Blob([new Uint8Array([1, 2, 3])], { type: "image/jpeg" });
+    const createObjectURL = vi.fn(() => "blob:x");
+    vi.stubGlobal("URL", { ...RealURL, createObjectURL, revokeObjectURL: () => {} });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(imageResponse(body, "Deezer"));
     const { result } = renderHook(() => useFetchArtistImage("ABBA"), { wrapper: wrapper() });
     result.current.mutate("deezer");
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    // Exact key set: an `objectUrl` creeping back in fails here.
     expect(result.current.data).toEqual({
       found: true,
-      blob: body,
-      objectUrl: "blob:x",
+      blob: expect.anything(),
       source: "Deezer",
     });
+    const data = result.current.data;
+    // Identity, not deep equality — two jsdom Blobs deep-equal each other, so
+    // `toEqual({blob: body})` above would hold for ANY blob.
+    expect(data?.found === true ? data.blob : null).toBe(body);
+    // The URL is the CALLER's to mint. TanStack drops a per-call `onSuccess`
+    // once the observer unmounts, so a URL created here would be handed to
+    // nobody and leak on every fetch the user navigated away from.
+    expect(createObjectURL).not.toHaveBeenCalled();
   });
 
   it("reports a 404 as found=false carrying the server's sentence", async () => {

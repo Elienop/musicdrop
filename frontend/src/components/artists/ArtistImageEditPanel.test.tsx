@@ -78,13 +78,17 @@ vi.mock("@/api/useArtistArt", () => ({
 
 const RealURL = globalThis.URL;
 let revoked: string[] = [];
+let minted = 0;
 beforeEach(() => {
   // jsdom lacks object-URL APIs.
   revoked = [];
   sourcesCalls.length = 0;
+  minted = 0;
+  // Unique per mint, so "the FIRST preview's URL was released" is a real claim
+  // rather than one satisfied by any revoke at all.
   vi.stubGlobal("URL", {
     ...RealURL,
-    createObjectURL: () => "blob:picked",
+    createObjectURL: () => `blob:${++minted}`,
     revokeObjectURL: (url: string) => revoked.push(url),
   });
 });
@@ -99,11 +103,12 @@ afterEach(() => {
   artSettings.enabled = false;
 });
 
-/** A fetch that answers with a portrait whose object URL names its source. */
-function fetchReturnsPortrait(blob: Blob) {
+/** A fetch that answers with a portrait. The hook hands back BYTES only — the
+ * panel mints the object URL — so the fixture carries no `objectUrl`. */
+function fetchReturnsPortrait(blob: Blob, source: string | null = "Deezer") {
   fetchMutate.mockImplementation(
-    (source: string, opts: { onSuccess: (r: unknown) => void }) =>
-      opts.onSuccess({ found: true, blob, objectUrl: `blob:${source}`, source: "Deezer" }),
+    (_source: string, opts: { onSuccess: (r: unknown) => void }) =>
+      opts.onSuccess({ found: true, blob, source }),
   );
 }
 
@@ -194,13 +199,17 @@ describe("ArtistImageEditPanel", () => {
     fetchReturnsPortrait(blob);
     render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /^fetch$/i }));
-    expect(screen.getByText(/from deezer/i)).toBeInTheDocument();
+    // Anchored: the live region announces "Found a portrait from Deezer." at the
+    // same moment, and an unanchored /from deezer/ matches both.
+    expect(screen.getByText(/^from deezer$/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /use this image/i }));
     // The very blob that was previewed — never a re-fetch that could differ.
-    // `toBe`, NOT `toHaveBeenCalledWith(blob)`: size and type live on Blob's
-    // prototype, so a Blob has no own enumerable properties and vitest's deep
-    // equality happily matches `new Blob([])` against these three bytes —
-    // measured, and it let a "install different bytes" mutant survive.
+    // `toBe`, NOT `toHaveBeenCalledWith(blob)`: jsdom hides all Blob state
+    // behind one non-enumerated `Symbol(impl)`, so two jsdom Blobs deep-equal
+    // each other and vitest matches `new Blob([])` against these three bytes —
+    // measured, and it let an "install different bytes" mutant survive. Plain
+    // Node Blobs carry own symbols (`kHandle`/`kLength`/`kType`) and do NOT
+    // deep-equal, so a probe run outside jsdom wrongly reassures.
     expect(uploadMutate.mock.calls[0]?.[0]).toBe(blob);
     expect(uploadMutate.mock.calls).toHaveLength(1);
   });
@@ -220,10 +229,10 @@ describe("ArtistImageEditPanel", () => {
     fetchReturnsPortrait(new Blob([new Uint8Array([1])], { type: "image/jpeg" }));
     render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /^fetch$/i }));
-    expect(revoked).not.toContain("blob:spotify");
+    expect(revoked).not.toContain("blob:1");
     // Discarding the preview is the common path — it must not strand the URL.
     fireEvent.click(screen.getByRole("button", { name: /discard/i }));
-    expect(revoked).toContain("blob:spotify");
+    expect(revoked).toContain("blob:1");
   });
 
   it("releases the live preview's object URL when the panel unmounts", () => {
@@ -233,7 +242,67 @@ describe("ArtistImageEditPanel", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /^fetch$/i }));
     view.unmount();
-    expect(revoked).toContain("blob:spotify");
+    expect(revoked).toContain("blob:1");
+  });
+
+  it("keeps its live region mounted before there is anything to announce", () => {
+    // A region inserted in the same commit as its text is not reliably
+    // announced, so "the element exists after the event" is not the invariant —
+    // "the element existed BEFORE the event" is.
+    render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
+    const region = screen.getByRole("status");
+    expect(region).toHaveTextContent("");
+
+    fetchReturnsPortrait(new Blob([new Uint8Array([1])], { type: "image/jpeg" }));
+    fireEvent.click(screen.getByRole("button", { name: /^fetch$/i }));
+    // The very same node now carries the text — not a replacement node.
+    expect(screen.getByRole("status")).toBe(region);
+    expect(region).toHaveTextContent(/from deezer/i);
+  });
+
+  it("moves focus onto the arrived portrait, and back when it is discarded", () => {
+    fetchReturnsPortrait(new Blob([new Uint8Array([1])], { type: "image/jpeg" }));
+    render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
+    const fetchButton = screen.getByRole("button", { name: /^fetch$/i });
+    fetchButton.focus();
+    fireEvent.click(fetchButton);
+    // Fetch unmounts the button that was just pressed; focus must not fall to
+    // <body>, where the next Tab restarts from the top of the document.
+    expect(document.body).not.toHaveFocus();
+    expect(screen.getByAltText(/artist image preview/i).closest("[tabindex]")).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: /discard/i }));
+    expect(screen.getByRole("button", { name: /^fetch$/i })).toHaveFocus();
+  });
+
+  it("names the source it asked when the server cannot expose the header", () => {
+    // X-Art-Source is unreadable cross-origin, so `source` arrives null on any
+    // deployment that does not proxy /api. The panel chose the source, so it
+    // can always say which one.
+    fetchReturnsPortrait(new Blob([new Uint8Array([1])], { type: "image/jpeg" }), null);
+    render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Deezer" }));
+    fireEvent.click(screen.getByRole("button", { name: /^fetch$/i }));
+    expect(screen.getByText(/^from deezer$/i)).toBeInTheDocument();
+  });
+
+  it("does not carry one artist's preview onto another", () => {
+    // The route is `/artists/:artistName` with no key, so navigating between
+    // two artists (or pressing Back) re-renders this SAME instance with a new
+    // name. A preview that survives that would be installed against the artist
+    // now on screen — bytes the user never saw for that artist.
+    const blob = new Blob([new Uint8Array([1])], { type: "image/jpeg" });
+    fetchReturnsPortrait(blob);
+    const view = render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: /^fetch$/i }));
+    expect(screen.getByAltText(/artist image preview/i)).toBeInTheDocument();
+
+    view.rerender(<ArtistImageEditPanel name="Blondie" onSaved={() => {}} onClose={() => {}} />);
+    expect(screen.getByText(/choose the portrait for blondie/i)).toBeInTheDocument();
+    expect(screen.queryByAltText(/artist image preview/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /use this image/i })).toBeNull();
+    // ...and the abandoned candidate's URL goes with it.
+    expect(revoked).toContain("blob:1");
   });
 
   it("reports what the reset actually cleared", () => {
@@ -246,6 +315,25 @@ describe("ArtistImageEditPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /reset to auto/i }));
     expect(onSaved).toHaveBeenCalled();
     expect(screen.getByRole("status")).toHaveTextContent(/looked up again/i);
+    // Nothing is left to abandon, so the closing button stops saying "Cancel".
+    expect(screen.getByRole("button", { name: /^done$/i })).toBeInTheDocument();
+  });
+
+  it("clears a stale outcome when another action starts", () => {
+    resetMutate.mockImplementation(
+      (_v: undefined, opts: { onSuccess: (r: unknown) => void }) =>
+        opts.onSuccess({ ok: true, cleared_override: true, cleared_auto: true }),
+    );
+    render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: /reset to auto/i }));
+    expect(screen.getByRole("status")).toHaveTextContent(/looked up again/i);
+    // Submitting the pasted link must not leave the reset's outcome standing
+    // over it as if it described what just happened.
+    fireEvent.change(screen.getByLabelText(/image url/i), {
+      target: { value: "https://example.test/a.jpg" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^set$/i }));
+    expect(screen.getByRole("status")).toHaveTextContent("");
   });
 
   it("does not call a both-false reset a no-op", () => {

@@ -24,11 +24,29 @@ const MAX_BYTES = 10 * 1024 * 1024;
 type Pending = { objectUrl: string; blob: Blob; source: string | null };
 
 /** Artist-header image editor: fetch a portrait from ONE named source, upload
- * your own, paste a link, or reset to automatic. Modeled on CoverEditPanel —
- * same fetch → preview → approve shape, same object-URL leak guard — because
- * the approved bytes are the bytes installed: "Use this image" posts the very
- * blob the preview holds, so nothing can substitute a different image in
- * between.
+ * your own, paste a link, or reset to automatic.
+ *
+ * Keyed on `name`, and that is load-bearing rather than tidy. Every piece of
+ * state below is ABOUT one artist — a pending candidate above all — while the
+ * route (`/artists/:artistName`, unkeyed) reconciles the same element when only
+ * the param changes. Without this key, viewing artist A, fetching a preview and
+ * pressing Back leaves A's photograph on screen under B's heading, and "Use
+ * this image" POSTs A's bytes to `override?name=B`. The key lives here, not at
+ * the call site, so the guard travels with the component instead of depending
+ * on every future caller remembering it; the unmount cleanup releases the
+ * abandoned candidate's object URL on the way out. */
+export function ArtistImageEditPanel(props: {
+  name: string;
+  onSaved: () => void;
+  onClose: () => void;
+}) {
+  return <ArtistImageEditPanelForArtist key={props.name} {...props} />;
+}
+
+/** Modeled on CoverEditPanel — same fetch → preview → approve shape, same
+ * object-URL leak guard — because the approved bytes are the bytes installed:
+ * "Use this image" posts the very blob the preview holds, so nothing can
+ * substitute a different image in between.
  *
  * Why the source is named rather than a bare "try again": every source picks
  * deterministically (fanart.tv takes the most-liked portrait, Spotify and
@@ -36,7 +54,7 @@ type Pending = { objectUrl: string; blob: Blob; source: string | null };
  * returns the identical image. Addressing a source by name is the only thing
  * that changes the answer, and the copy has to say so or the control reads as
  * a refresh that does nothing. */
-export function ArtistImageEditPanel({
+function ArtistImageEditPanelForArtist({
   name,
   onSaved,
   onClose,
@@ -47,8 +65,12 @@ export function ArtistImageEditPanel({
 }) {
   const [pending, setPending] = useState<Pending | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
-  const [notFound, setNotFound] = useState<string | null>(null);
-  const [resetNote, setResetNote] = useState<string | null>(null);
+  // ONE outcome channel for every non-error result — a source answering
+  // "nothing", a reset reporting what it cleared, a portrait arriving. It is
+  // announced from a region that is always mounted (below), so collapsing them
+  // also means there is exactly one such region to keep alive.
+  const [note, setNote] = useState<string | null>(null);
+  const [didReset, setDidReset] = useState(false);
   const [picked, setPicked] = useState<ArtistImageSourceId | null>(null);
   const [url, setUrl] = useState("");
   const upload = useUploadArtistImageOverride(name);
@@ -56,6 +78,10 @@ export function ArtistImageEditPanel({
   const fromUrl = useSetArtistImageFromUrl(name);
   const fetchImage = useFetchArtistImage(name);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+  const fetchButtonRef = useRef<HTMLButtonElement>(null);
+  const uploadButtonRef = useRef<HTMLButtonElement>(null);
+  const returningFromPreview = useRef(false);
 
   // "Artist images are on" is not one question: the fetch route accepts when
   // EITHER the image toggle or the write-to-library toggle is on (main.py
@@ -81,7 +107,7 @@ export function ArtistImageEditPanel({
   const blocked = useMemo(() => all.filter((s) => !s.available), [all]);
   // Self-correcting: a picked source that drops out of the list on a refetch
   // falls back to the chain's first available one rather than going stale.
-  const active = available.find((s) => s.id === picked)?.id ?? available[0]?.id ?? null;
+  const activeSource = available.find((s) => s.id === picked) ?? available[0] ?? null;
 
   // Revoke the live preview URL whenever it is replaced or the panel unmounts,
   // so a rejected candidate never leaks. Exactly one live object URL per panel.
@@ -90,15 +116,29 @@ export function ArtistImageEditPanel({
     return () => URL.revokeObjectURL(pending.objectUrl);
   }, [pending]);
 
+  // Fetching swaps the whole form out for the preview (and Discard swaps it
+  // back), so the button that was just activated is unmounted under the user's
+  // focus. Move focus to whatever replaced it instead of dropping to <body>.
+  useEffect(() => {
+    if (pending) {
+      previewRef.current?.focus();
+      return;
+    }
+    if (returningFromPreview.current) {
+      returningFromPreview.current = false;
+      (fetchButtonRef.current ?? uploadButtonRef.current)?.focus();
+    }
+  }, [pending]);
+
   const setPreview = (next: Pending) => {
     if (pending) URL.revokeObjectURL(pending.objectUrl);
     setPending(next);
   };
 
   const clearNotices = () => {
-    setNotFound(null);
+    setNote(null);
+    setDidReset(false);
     setPickError(null);
-    setResetNote(null);
   };
 
   const onPickFile = (file: File) => {
@@ -117,18 +157,28 @@ export function ArtistImageEditPanel({
   };
 
   const onFetch = () => {
-    if (!active) return;
+    if (!activeSource) return;
     clearNotices();
-    fetchImage.mutate(active, {
+    // Captured at call time: the list can refetch while this is in flight, and
+    // the caption must name the source the bytes actually came from.
+    const asked = activeSource;
+    fetchImage.mutate(asked.id, {
       onSuccess: (result: FetchedArtistImage) => {
         // A source that genuinely has nothing is an ANSWER, not a failure — the
         // hook already separates it from the 502 an outage produces, which
         // surfaces below as an error saying "try again".
         if (!result.found) {
-          setNotFound(result.reason);
+          setNote(result.reason);
           return;
         }
-        setPreview({ objectUrl: result.objectUrl, blob: result.blob, source: result.source });
+        // The hook hands back bytes only; the URL is minted here so a fetch the
+        // user navigated away from never creates one. See useArtistImage.ts.
+        // `X-Art-Source` is unreadable cross-origin, and this caption is the
+        // only thing on the preview saying WHERE the image came from — so fall
+        // back to the label of the source we asked, which cannot be wrong.
+        const from = result.source ?? asked.label;
+        setPreview({ objectUrl: URL.createObjectURL(result.blob), blob: result.blob, source: from });
+        setNote(`Found a portrait from ${from}.`);
       },
     });
   };
@@ -150,6 +200,8 @@ export function ArtistImageEditPanel({
   const onDiscardPreview = () => {
     // Only the candidate goes; the panel stays open so another source can be
     // tried without reopening it.
+    returningFromPreview.current = true;
+    setNote("Preview discarded.");
     setPending(null);
   };
 
@@ -157,7 +209,7 @@ export function ArtistImageEditPanel({
     clearNotices();
     reset.mutate(undefined, {
       onSuccess: (result) => {
-        setResetNote(
+        setNote(
           result.cleared_override || result.cleared_auto
             ? "Cleared. This artist’s portrait will be looked up again."
             : // Both false is NOT "nothing to do": an unwritable cache dir
@@ -166,12 +218,14 @@ export function ArtistImageEditPanel({
               // that is true either way.
               "This artist’s portrait will be looked up again.",
         );
+        setDidReset(true);
         onSaved();
       },
     });
   };
 
   const onSetFromUrl = () => {
+    clearNotices();
     fromUrl.mutate(url.trim(), {
       onSuccess: () => {
         onSaved();
@@ -183,6 +237,14 @@ export function ArtistImageEditPanel({
   return (
     <section aria-label="Edit artist image" className="flex flex-col gap-4 rounded-lg border p-4">
       <p className="text-muted-foreground text-sm">Choose the portrait for {name}.</p>
+
+      {/* ALWAYS mounted, empty or not: a live region inserted in the same commit
+          as its text is not reliably announced — assistive tech monitors regions
+          that already exist. `min-h-5` keeps the swap from shifting layout.
+          Same idiom as the host page's album count (ArtistAlbumsPage.tsx). */}
+      <p role="status" className="text-muted-foreground min-h-5 text-sm">
+        {note}
+      </p>
 
       {!pending && (
         <div className="flex flex-col gap-4">
@@ -200,22 +262,23 @@ export function ArtistImageEditPanel({
                   <div className="flex flex-wrap items-center gap-2">
                     <SegmentedControl
                       aria-label="Image source"
-                      value={active ?? ""}
+                      value={activeSource?.id ?? ""}
                       onChange={(value) => {
                         const hit = available.find((s) => s.id === value);
                         if (!hit) return;
                         setPicked(hit.id);
-                        // Drop the previous source's error/answer — it says
-                        // nothing about the one now selected.
-                        setNotFound(null);
+                        // Drop the previous source's answer — it says nothing
+                        // about the one now selected.
+                        setNote(null);
                         fetchImage.reset();
                       }}
                       options={available.map((s) => ({ value: s.id, label: s.label }))}
                     />
                     <Button
+                      ref={fetchButtonRef}
                       variant="secondary"
                       onClick={onFetch}
-                      disabled={!active || fetchImage.isPending}
+                      disabled={!activeSource || fetchImage.isPending}
                     >
                       <Search className="size-4" aria-hidden="true" />
                       {fetchImage.isPending ? "Fetching…" : "Fetch"}
@@ -234,11 +297,6 @@ export function ArtistImageEditPanel({
                   </span>
                 </p>
               ))}
-              {notFound && (
-                <p role="status" className="text-muted-foreground text-sm">
-                  {notFound}
-                </p>
-              )}
               {/* The hook keeps 404 out of here, so anything that lands is a
                   real failure — a 502 reads "try again", never "nothing
                   found" — and the sentence is the server's own. */}
@@ -250,7 +308,11 @@ export function ArtistImageEditPanel({
           <div className="flex flex-col gap-2">
             <p className="text-sm font-medium">Use your own image</p>
             <div className="flex flex-wrap items-center gap-2">
-              <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
+              <Button
+                ref={uploadButtonRef}
+                variant="outline"
+                onClick={() => fileInputRef.current?.click()}
+              >
                 <Upload className="size-4" aria-hidden="true" /> Upload an image…
               </Button>
               <input
@@ -301,11 +363,6 @@ export function ArtistImageEditPanel({
 
           {pickError && <Notice>{pickError}</Notice>}
           {reset.isError && <Notice>{reset.error.message}</Notice>}
-          {resetNote && (
-            <p role="status" className="text-muted-foreground text-sm">
-              {resetNote}
-            </p>
-          )}
 
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="secondary" onClick={onReset} disabled={reset.isPending}>
@@ -315,14 +372,14 @@ export function ArtistImageEditPanel({
             {/* After a reset there is nothing left to abandon, so the closing
                 button stops offering to "cancel" work already done. */}
             <Button variant="ghost" onClick={onClose}>
-              {resetNote ? "Done" : "Cancel"}
+              {didReset ? "Done" : "Cancel"}
             </Button>
           </div>
         </div>
       )}
 
       {pending && (
-        <div className="flex flex-col gap-3">
+        <div ref={previewRef} tabIndex={-1} className="flex flex-col gap-3 outline-none">
           <img
             src={pending.objectUrl}
             alt="Artist image preview"
