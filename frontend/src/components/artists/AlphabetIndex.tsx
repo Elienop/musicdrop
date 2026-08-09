@@ -66,6 +66,23 @@ function bucketOf(name: string): string {
  * ArrowLeft/Right step between FILLED buckets (empty ones are `disabled`,
  * hence unfocusable) without wrapping around; Home/End go to the first/last
  * filled bucket; Up/Down are left alone so the page still scrolls.
+ *
+ * WHY TWO NESTED ELEMENTS. Roving costs discoverability, and paying that
+ * silently would be a regression only screen-reader users could see: before
+ * it, all 27 buckets were reachable with the most obvious key on the
+ * keyboard; after it, one button is tabbable and nothing says the arrows do
+ * anything, so the strip can read as offering a single letter. Both of these
+ * must hold at once:
+ *
+ *   1. the NAVIGATION LANDMARK survives — that is how assistive tech reaches
+ *      a jump strip in the first place;
+ *   2. the COMPOSITE is announced — `role="toolbar"` is the platform's way of
+ *      saying "one tab stop, arrows move within".
+ *
+ * A role REPLACES an element's semantics rather than adding to it, so
+ * `role="toolbar"` on the <nav> would buy (2) by destroying (1). They only
+ * coexist on separate elements: landmark outside, toolbar inside. Collapsing
+ * them back into one element silently drops whichever you didn't keep.
  */
 export function AlphabetIndex({
   artists,
@@ -123,42 +140,54 @@ export function AlphabetIndex({
   };
 
   return (
-    <nav
-      aria-label="Jump to artists by letter"
-      className="mr-auto flex flex-wrap gap-0.5"
-    >
-      {LETTERS.map((letter) => {
-        const index = firstIndex.get(letter);
-        const isEmpty = index === undefined;
-        const isPressed = pressedLetters.has(letter);
-        return (
-          <Button
-            key={letter}
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            disabled={isEmpty}
-            aria-label={`Jump to artists starting with ${letter}`}
-            aria-pressed={isPressed}
-            tabIndex={letter === tabStop ? 0 : -1}
-            ref={(node) => {
-              if (node) buttons.current.set(letter, node);
-              else buttons.current.delete(letter);
-            }}
-            onFocus={() => setFocused(letter)}
-            onKeyDown={(e) => onArrowKey(e, letter)}
-            className={cn(
-              isPressed && "bg-primary/15 text-primary-light",
-            )}
-            onClick={() => {
-              if (index === undefined) return;
-              onJump(Math.floor(index / pageSize) * pageSize);
-            }}
-          >
-            {letter}
-          </Button>
-        );
-      })}
+    // TWO elements because there are two things to say and one element can
+    // only say one of them: the landmark on the <nav>, the composite widget
+    // on the container inside it. `role="toolbar"` here would REPLACE
+    // navigation, not add to it. Don't collapse these.
+    <nav aria-label="Jump to artists by letter" className="mr-auto">
+      {/* Unnamed on purpose: the landmark immediately outside already carries
+          this name, so labelling the toolbar too makes assistive tech read
+          "jump to artists by letter, navigation, jump to artists by letter,
+          toolbar" on the way in. (The house rule that a grouped control names
+          itself — segmented-control.tsx — is for groups that stand alone.) */}
+      <div
+        role="toolbar"
+        aria-orientation="horizontal"
+        className="flex flex-wrap gap-0.5"
+      >
+        {LETTERS.map((letter) => {
+          const index = firstIndex.get(letter);
+          const isEmpty = index === undefined;
+          const isPressed = pressedLetters.has(letter);
+          return (
+            <Button
+              key={letter}
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              disabled={isEmpty}
+              aria-label={`Jump to artists starting with ${letter}`}
+              aria-pressed={isPressed}
+              tabIndex={letter === tabStop ? 0 : -1}
+              ref={(node) => {
+                if (node) buttons.current.set(letter, node);
+                else buttons.current.delete(letter);
+              }}
+              onFocus={() => setFocused(letter)}
+              onKeyDown={(e) => onArrowKey(e, letter)}
+              className={cn(
+                isPressed && "bg-primary/15 text-primary-light",
+              )}
+              onClick={() => {
+                if (index === undefined) return;
+                onJump(Math.floor(index / pageSize) * pageSize);
+              }}
+            >
+              {letter}
+            </Button>
+          );
+        })}
+      </div>
     </nav>
   );
 }

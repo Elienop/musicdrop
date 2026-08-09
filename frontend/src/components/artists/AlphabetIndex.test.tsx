@@ -1,4 +1,4 @@
-import { act, screen } from "@testing-library/react";
+import { act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -111,17 +111,50 @@ describe("AlphabetIndex", () => {
     const nav = screen.getByRole("navigation", {
       name: "Jump to artists by letter",
     });
+    const toolbar = within(nav).getByRole("toolbar");
     // This is a TARGETING control: you aim at a remembered position, and the
     // pressed tint is the only "where am I" signal — on the last page that
     // signal is V-Z, i.e. exactly what a scroll box would hide. So it grows
-    // taller instead of hiding its tail, and never scrolls or clips.
-    expect(nav.classList.contains("flex-wrap")).toBe(true);
+    // taller instead of hiding its tail, and never scrolls or clips. The
+    // buttons wrap inside the toolbar; the landmark is just the band's item.
+    expect(toolbar.classList.contains("flex-wrap")).toBe(true);
+    expect(toolbar.classList.contains("overflow-x-auto")).toBe(false);
     expect(nav.classList.contains("overflow-x-auto")).toBe(false);
     // `mr-auto` is what keeps the letters on the left of the band (and the
     // pager on the right) without the strip stretching its buttons.
     expect(nav.classList.contains("mr-auto")).toBe(true);
     // "#" plus A-Z, none of them dropped at any width.
     expect(screen.getAllByRole("button")).toHaveLength(27);
+  });
+
+  it("announces itself as a composite toolbar INSIDE the landmark", () => {
+    // Two properties, and they need two elements. The landmark is how an AT
+    // user reaches a jump strip at all, so it stays on the <nav>. But a
+    // roving tabindex with nothing announcing it leaves that same user on one
+    // tabbable button with no signal that ArrowRight reaches the other 26 —
+    // they can reasonably conclude the strip offers a single letter. The
+    // composite role is what carries "arrows move within", so it goes on an
+    // inner container: put it on the <nav> and it would REPLACE the landmark.
+    renderWithProviders(
+      <AlphabetIndex
+        artists={roster(["ABBA", "Cher"])}
+        pageSize={48}
+        offset={0}
+        onJump={vi.fn()}
+      />,
+    );
+    const nav = screen.getByRole("navigation", {
+      name: "Jump to artists by letter",
+    });
+    const toolbar = within(nav).getByRole("toolbar");
+    expect(toolbar).toHaveAttribute("aria-orientation", "horizontal");
+    // Every bucket lives inside the composite, not beside it.
+    expect(within(toolbar).getAllByRole("button")).toHaveLength(27);
+    // Deliberately unnamed: the landmark right outside it already carries
+    // that name, and repeating it makes AT read "jump to artists by letter,
+    // navigation, jump to artists by letter, toolbar" on the way in.
+    expect(toolbar).not.toHaveAttribute("aria-label");
+    expect(toolbar).not.toHaveAttribute("aria-labelledby");
   });
 
   it("is ONE tab stop, anchored on the page you are looking at", () => {
