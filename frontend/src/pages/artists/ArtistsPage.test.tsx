@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, test } from "vitest";
@@ -226,6 +226,95 @@ describe("ArtistsPage", () => {
     expect(
       screen.getByRole("combobox", { name: "Results per page" }),
     ).toBeInTheDocument();
+  });
+
+  test("the page-size select sits in the page header, not the toolbar row", async () => {
+    localStorage.clear();
+    const big: Artist[] = Array.from({ length: 60 }, (_, i) => ({
+      name: `Artist ${String(i).padStart(2, "0")}`,
+      album_count: 1,
+    }));
+    server.use(http.get(ARTISTS_URL, () => HttpResponse.json(big)));
+
+    renderWithProviders(<ArtistsPage />);
+    await screen.findByText("Artist 00");
+
+    // A per-page choice belongs with the page's own controls, beside the h1 —
+    // consistent with Browse, and it keeps the toolbar row to the two
+    // controls that move you WITHIN the roster.
+    const sizeSelect = screen.getByRole("combobox", {
+      name: "Results per page",
+    });
+    const header = sizeSelect.closest("header");
+    expect(header).not.toBeNull();
+    expect(
+      within(header as HTMLElement).getByRole("heading", { level: 1 }),
+    ).toHaveTextContent("Artists");
+    // ...and no longer beside the pager.
+    const topPager = screen.getByRole("navigation", {
+      name: "Pagination (top)",
+    });
+    expect(topPager.parentElement).not.toBe(sizeSelect.parentElement);
+    expect(header).not.toContainElement(topPager);
+  });
+
+  test("the letter index sits in the toolbar row, not on a row of its own", async () => {
+    localStorage.clear();
+    const big: Artist[] = Array.from({ length: 60 }, (_, i) => ({
+      name: `Artist ${String(i).padStart(2, "0")}`,
+      album_count: 1,
+    }));
+    server.use(http.get(ARTISTS_URL, () => HttpResponse.json(big)));
+
+    renderWithProviders(<ArtistsPage />);
+    await screen.findByText("Artist 00");
+
+    const index = screen.getByRole("navigation", {
+      name: "Jump to artists by letter",
+    });
+    const topPager = screen.getByRole("navigation", {
+      name: "Pagination (top)",
+    });
+    // ONE horizontal band: the letters and the pager are siblings in a single
+    // flex row. A second row for the index is exactly the vertical space this
+    // reclaims.
+    const band = index.parentElement;
+    expect(topPager.parentElement).toBe(band);
+    expect(band?.classList.contains("flex")).toBe(true);
+    expect(band?.classList.contains("flex-col")).toBe(false);
+    // ORDER IS THE POINT: letters FIRST, so they occupy the empty left half
+    // and the pager stays right. Swap them and the band still reads as one
+    // row while doing the opposite of what it exists for.
+    expect(band?.firstElementChild).toBe(index);
+    expect(band?.lastElementChild).toBe(topPager);
+  });
+
+  test("one Tab crosses the whole letter strip to reach the pager", async () => {
+    localStorage.clear();
+    // Spread across the alphabet on purpose: a roster that all buckets to one
+    // letter leaves 26 DISABLED buttons, which Tab skips anyway — the test
+    // would then pass with no roving tabindex at all.
+    const big: Artist[] = Array.from({ length: 60 }, (_, i) => ({
+      name: `${String.fromCharCode(65 + (i % 26))} artist ${String(i).padStart(2, "0")}`,
+      album_count: 1,
+    }));
+    server.use(http.get(ARTISTS_URL, () => HttpResponse.json(big)));
+
+    renderWithProviders(<ArtistsPage />);
+    await screen.findByText("A artist 00");
+
+    // The letters precede the pager in the DOM (that ordering is the layout),
+    // so without a roving tabindex a keyboard user pays 27 stops to reach the
+    // pager. The strip is one stop. Which pager control catches the focus
+    // depends on which are in-bounds, so assert the crossing, not the target.
+    await act(async () => {
+      screen
+        .getByRole("button", { name: "Jump to artists starting with A" })
+        .focus();
+    });
+    await userEvent.tab();
+    const pager = screen.getByRole("navigation", { name: "Pagination (top)" });
+    expect(pager).toContainElement(document.activeElement as HTMLElement);
   });
 
   test("a small roster gets no toolbar at all", async () => {

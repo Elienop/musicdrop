@@ -52,6 +52,14 @@ export function ArtistsPage() {
               }`
             : undefined
         }
+        // How much of the page you see is a property OF THE PAGE, so it sits
+        // with the page's own controls rather than in the row that moves you
+        // through the roster. Same placement on Browse.
+        actions={
+          artists.length > PAGE_SIZE_OPTIONS[0] ? (
+            <PageSizeSelect value={pageSize} onChange={setPageSize} />
+          ) : undefined
+        }
       />
       {isPending ? (
         <PageSkeleton announce="Loading artists…">
@@ -94,28 +102,28 @@ export function ArtistsPage() {
         />
       ) : (
         <>
-          {artists.length > PAGE_SIZE_OPTIONS[0] && (
-            <div className="flex items-center justify-end gap-2">
-              <PageSizeSelect value={pageSize} onChange={setPageSize} />
-              {artists.length > pageSize && (
-                <Pagination
-                  compact
-                  label="Pagination (top)"
-                  total={artists.length}
-                  offset={offset}
-                  limit={pageSize}
-                  onOffsetChange={goToOffset}
-                />
-              )}
-            </div>
-          )}
+          {/* ONE band, not a toolbar row plus a letter row: the letters take
+              the empty space to the left, the pager stays right. Both appear
+              on the same condition — you can only need either once the roster
+              outgrows the current page — so this is one gate, not two.
+              LETTER ORDER IS LOAD-BEARING: letters first, pager last. */}
           {artists.length > pageSize && (
-            <AlphabetIndex
-              artists={artists}
-              pageSize={pageSize}
-              offset={offset}
-              onJump={goToOffset}
-            />
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <AlphabetIndex
+                artists={artists}
+                pageSize={pageSize}
+                offset={offset}
+                onJump={goToOffset}
+              />
+              <Pagination
+                compact
+                label="Pagination (top)"
+                total={artists.length}
+                offset={offset}
+                limit={pageSize}
+                onOffsetChange={goToOffset}
+              />
+            </div>
           )}
           <ul className={GRID_CLASS}>
             {pageArtists.map((artist) => (

@@ -32,6 +32,13 @@
  * ramp; green/amber/red stay reserved for status semantics (success/warning/
  * destructive). */
 :root {
+  /* Tell the UA the theme is dark, since our tokens only paint what WE draw.
+   * Everything the browser draws itself reads this: native <select> popups
+   * (the page-size and sort selects), scrollbars, form-control internals,
+   * spellcheck underlines, and the canvas behind an overscroll. Without it
+   * they render light on our dark surfaces. */
+  color-scheme: dark;
+
   --radius: 0.625rem;
 
   --background: oklch(14.5% 0 0deg);
