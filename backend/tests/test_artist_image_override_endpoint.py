@@ -181,6 +181,29 @@ def test_cross_origin_reset_is_rejected(client: TestClient) -> None:
     assert resp.status_code == 403
 
 
+def test_the_reset_declares_the_403_its_own_guard_returns() -> None:
+    """A status the route really returns must be in the spec with its body.
+
+    The test above proves the 403 is real; this proves the generated client is
+    told about it. An `Origin` guard is a `dependencies=[...]` entry, which
+    emits no security scheme, so nothing but this declaration puts the status in
+    the schema - and `openapi-typescript` would otherwise type the branch as
+    impossible while the route takes it. 422 stays undeclared: declaring it
+    would replace `HTTPValidationError`, whose `detail` is a list, not a
+    sentence.
+    """
+    from app.main import app
+
+    responses = app.openapi()["paths"]["/api/artists/image/reset"]["post"]["responses"]
+    assert sorted(responses) == ["200", "403", "422"]
+    forbidden = responses["403"]["content"]
+    assert set(forbidden) == {"application/json"}
+    assert forbidden["application/json"]["schema"]["$ref"] == "#/components/schemas/ErrorDetail"
+    assert responses["422"]["content"]["application/json"]["schema"]["$ref"] == (
+        "#/components/schemas/HTTPValidationError"
+    )
+
+
 def test_reset_requires_a_name(client: TestClient) -> None:
     assert client.post("/api/artists/image/reset").status_code == 422
 

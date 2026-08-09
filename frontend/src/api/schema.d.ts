@@ -5184,7 +5184,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description That source is not configured on this install. */
+            /** @description That source is not configured on this install, or its image is in a format that cannot be stored. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -5301,6 +5301,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ArtistImageResetResult"];
+                };
+            };
+            /** @description The request is cross-origin. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
             /** @description Validation Error */

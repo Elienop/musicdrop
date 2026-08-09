@@ -863,7 +863,7 @@
             }
           },
           "409": {
-            "description": "That source is not configured on this install.",
+            "description": "That source is not configured on this install, or its image is in a format that cannot be stored.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1028,6 +1028,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ArtistImageResetResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request is cross-origin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }

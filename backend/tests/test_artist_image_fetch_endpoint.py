@@ -21,6 +21,7 @@ Three things here are worth more than the happy path:
 import asyncio
 from collections.abc import Iterator
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import httpx
 import pytest
@@ -41,6 +42,11 @@ from app.beets import library as library_mod
 from app.main import app
 
 _URL = "/api/artists/image/fetch"
+
+#: A payload the INSTALL endpoint would accept. Fixtures must carry real magic
+#: bytes now that the fetch refuses anything ``sniff_image_mime`` cannot name -
+#: b"X" would 409 and every test below would pass or fail for the wrong reason.
+_PNG = b"\x89PNG\r\n\x1a\n"
 
 #: A source id that would be an HTTP response-splitting payload if it ever
 #: reached ``X-Art-Source``. It is REGISTERED below so the Literal is the only
@@ -119,10 +125,10 @@ def _client(source: _RecordingSource, *, enabled: bool = True) -> TestClient:
 
 
 def test_hit_returns_the_bytes_with_provenance_and_no_store() -> None:
-    source = _RecordingSource(ResolvedImage(data=b"PORTRAIT", content_type="image/jpeg"))
+    source = _RecordingSource(ResolvedImage(data=_PNG + b"PORTRAIT", content_type="image/jpeg"))
     resp = _client(source).post(_URL, params={"name": "ABBA", "source": "deezer"})
     assert resp.status_code == 200
-    assert resp.content == b"PORTRAIT"
+    assert resp.content == _PNG + b"PORTRAIT"
     assert resp.headers["content-type"] == "image/jpeg"
     assert resp.headers["x-art-source"] == "Deezer"
     assert resp.headers["cache-control"] == "no-store"
@@ -140,7 +146,7 @@ def test_a_cross_origin_fetch_is_rejected_before_any_outbound_call() -> None:
     credentials. The route bypasses the cache by design, so N posts are N
     outbound resolves.
     """
-    source = _RecordingSource(ResolvedImage(data=b"X", content_type="image/png"))
+    source = _RecordingSource(ResolvedImage(data=_PNG, content_type="image/png"))
     resp = _client(source).post(
         _URL,
         params={"name": "ABBA", "source": "deezer"},
@@ -154,7 +160,7 @@ def test_a_same_origin_fetch_is_allowed() -> None:
     # Control arm for the test above: without it, a 403 from the ORIGIN guard is
     # indistinguishable from the feature-disabled 403, and "calls == []" would
     # hold for a route that rejects everything.
-    source = _RecordingSource(ResolvedImage(data=b"X", content_type="image/png"))
+    source = _RecordingSource(ResolvedImage(data=_PNG, content_type="image/png"))
     client = _client(source)
     resp = client.post(
         _URL,
@@ -167,7 +173,7 @@ def test_a_same_origin_fetch_is_allowed() -> None:
 
 def test_a_client_that_sends_no_origin_is_allowed() -> None:
     # curl and LAN tooling send no Origin; the guard must not lock them out.
-    source = _RecordingSource(ResolvedImage(data=b"X", content_type="image/png"))
+    source = _RecordingSource(ResolvedImage(data=_PNG, content_type="image/png"))
     resp = _client(source).post(_URL, params={"name": "ABBA", "source": "deezer"})
     assert resp.status_code == 200
     assert source.calls == [("ABBA", "the-mbid")]
@@ -183,7 +189,7 @@ def test_the_fetch_writes_nothing_to_the_cache(tmp_path: Path) -> None:
     the un-asserted version of this test passed against an empty router.
     """
     cache = ArtistImageCache(tmp_path)
-    source = _RecordingSource(ResolvedImage(data=b"PORTRAIT", content_type="image/jpeg"))
+    source = _RecordingSource(ResolvedImage(data=_PNG + b"PORTRAIT", content_type="image/jpeg"))
     client = _client(source)
     app.dependency_overrides[get_artist_image_cache] = lambda: cache
     app.state.artist_image_cache = cache
@@ -192,13 +198,13 @@ def test_the_fetch_writes_nothing_to_the_cache(tmp_path: Path) -> None:
     finally:
         del app.state.artist_image_cache
     assert resp.status_code == 200  # the bytes WERE fetched; nothing was stored
-    assert resp.content == b"PORTRAIT"
+    assert resp.content == _PNG + b"PORTRAIT"
     assert list(tmp_path.iterdir()) == []
     assert cache.get("ABBA") is None
 
 
 def test_the_mbid_is_passed_to_the_source() -> None:
-    source = _RecordingSource(ResolvedImage(data=b"X", content_type="image/png"))
+    source = _RecordingSource(ResolvedImage(data=_PNG, content_type="image/png"))
     resp = _client(source).post(_URL, params={"name": "ABBA", "source": "deezer"})
     assert resp.status_code == 200
     assert source.calls == [("ABBA", "the-mbid")]
@@ -220,7 +226,7 @@ def test_the_mbid_lookup_runs_off_the_event_loop(monkeypatch: pytest.MonkeyPatch
         return "the-mbid"
 
     monkeypatch.setattr(library_mod, "get_artist_mbid", probing)
-    source = _RecordingSource(ResolvedImage(data=b"X", content_type="image/png"))
+    source = _RecordingSource(ResolvedImage(data=_PNG, content_type="image/png"))
     resp = _client(source).post(_URL, params={"name": "ABBA", "source": "deezer"})
     assert resp.status_code == 200
     assert on_loop == [False]
@@ -262,6 +268,63 @@ def test_unconfigured_source_is_409_not_422() -> None:
     assert source.calls == []
 
 
+def test_a_format_the_install_would_reject_never_reaches_the_preview() -> None:
+    """The preview and the install must answer the same question.
+
+    Both halves are asserted with the SAME bytes, because the invariant is a
+    relationship between two endpoints, not a property of either: if the fetch
+    ever accepts what the override refuses, the user finds out only after
+    choosing the image. A real BMP - a genuine image, correctly labelled, that
+    ``sniff_image_mime`` does not know.
+    """
+    bmp = b"BM" + bytes(60)
+    source = _RecordingSource(ResolvedImage(data=bmp, content_type="image/bmp"))
+    client = _client(source)
+    # The install half needs a real cache dir; the preview half writes nothing.
+    with TemporaryDirectory() as cache_dir:
+        app.dependency_overrides[get_artist_image_cache] = lambda: ArtistImageCache(Path(cache_dir))
+
+        preview = client.post(_URL, params={"name": "ABBA", "source": "deezer"})
+        assert preview.status_code == 409
+        detail = preview.json()["detail"]
+        assert isinstance(detail, str)
+        assert "image/bmp" in detail  # names the format rather than shrugging
+        assert "PNG, JPEG, GIF or WebP" in detail
+        assert detail.isascii()
+
+        # ...and this is what the refusal is FOR: the same bytes on the install.
+        install = client.post(
+            "/api/artists/image/override",
+            params={"name": "ABBA"},
+            files={"file": ("p.bmp", bmp, "image/bmp")},
+        )
+        assert install.status_code == 422
+
+
+def test_a_source_lying_about_the_format_is_refused_too() -> None:
+    """Sniffed, not label-checked.
+
+    A content-type check would pass this through to an install that sniffs, so
+    the pair would still disagree - the mismatch just moves one step later.
+    """
+    source = _RecordingSource(ResolvedImage(data=b"BM" + bytes(60), content_type="image/png"))
+    resp = _client(source).post(_URL, params={"name": "ABBA", "source": "deezer"})
+    assert resp.status_code == 409
+
+
+def test_a_header_hostile_type_on_a_refused_format_is_not_echoed() -> None:
+    """The refusal sentence is a second sink for the source's own content-type."""
+    source = _RecordingSource(
+        ResolvedImage(data=b"BM" + bytes(60), content_type="image/png\r\nX-Injected: yes")
+    )
+    resp = _client(source).post(_URL, params={"name": "ABBA", "source": "deezer"})
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "X-Injected" not in detail
+    assert "\r" not in detail and "\n" not in detail
+    assert detail.isascii()
+
+
 def test_an_id_outside_the_literal_never_reaches_the_handler() -> None:
     """The gate in front of ``label_for`` -> ``X-Art-Source``.
 
@@ -270,7 +333,7 @@ def test_an_id_outside_the_literal_never_reaches_the_handler() -> None:
     an UNREGISTERED id instead (say "lastfm") would pass either way - the
     handler's own "not configured" branch answers 422 too.
     """
-    source = _RecordingSource(ResolvedImage(data=b"X", content_type="image/png"))
+    source = _RecordingSource(ResolvedImage(data=_PNG, content_type="image/png"))
     resp = _client(source).post(_URL, params={"name": "ABBA", "source": _HOSTILE_ID})
     assert resp.status_code == 422
     # A VALIDATION error (a list of loc/msg objects), not the handler's sentence.
@@ -283,21 +346,21 @@ def test_an_id_outside_the_literal_never_reaches_the_handler() -> None:
 
 
 def test_disabled_feature_is_403_and_never_calls_the_source() -> None:
-    source = _RecordingSource(ResolvedImage(data=b"X", content_type="image/png"))
+    source = _RecordingSource(ResolvedImage(data=_PNG, content_type="image/png"))
     resp = _client(source, enabled=False).post(_URL, params={"name": "ABBA", "source": "deezer"})
     assert resp.status_code == 403
     assert source.calls == []
 
 
 def test_slash_in_name_works_as_a_query_param() -> None:
-    source = _RecordingSource(ResolvedImage(data=b"X", content_type="image/png"))
+    source = _RecordingSource(ResolvedImage(data=_PNG, content_type="image/png"))
     resp = _client(source).post(_URL, params={"name": "AC/DC", "source": "deezer"})
     assert resp.status_code == 200
     assert source.calls == [("AC/DC", "the-mbid")]
 
 
 def test_blank_name_is_422() -> None:
-    source = _RecordingSource(ResolvedImage(data=b"X", content_type="image/png"))
+    source = _RecordingSource(ResolvedImage(data=_PNG, content_type="image/png"))
     resp = _client(source).post(_URL, params={"name": "", "source": "deezer"})
     assert resp.status_code == 422
     assert source.calls == []
@@ -325,11 +388,11 @@ def test_a_header_hostile_content_type_from_a_source_is_never_sent_verbatim(
     already guards this - but ``ArtistImageSource`` is a Protocol, so the
     guarantee is a convention, not a type.
     """
-    source = _RecordingSource(ResolvedImage(data=b"X", content_type=declared))
+    source = _RecordingSource(ResolvedImage(data=_PNG, content_type=declared))
     resp = _client(source).post(_URL, params={"name": "ABBA", "source": "deezer"})
     assert resp.status_code == 200
     assert resp.headers["content-type"] == served
-    assert resp.content == b"X"
+    assert resp.content == _PNG
 
 
 def test_every_declared_status_carries_the_body_it_actually_returns() -> None:
@@ -376,11 +439,19 @@ def test_every_declared_status_carries_the_body_it_actually_returns() -> None:
     assert "origin" in description
     assert description.isascii()
 
+    # The 409 gained a second cause the same way, and for the same reason: each
+    # raise sends its own one-cause sentence, so this prose is the only place a
+    # client author learns the status covers both.
+    conflict = responses["409"]["description"]
+    assert "not configured" in conflict
+    assert "format" in conflict
+    assert conflict.isascii()
+
 
 def test_both_causes_of_the_403_really_are_reachable() -> None:
     # The description above claims two causes; this is what stops it becoming a
     # documented-but-false statement. Distinct bodies, same status.
-    source = _RecordingSource(ResolvedImage(data=b"X", content_type="image/png"))
+    source = _RecordingSource(ResolvedImage(data=_PNG, content_type="image/png"))
     disabled = _client(source, enabled=False).post(
         _URL, params={"name": "ABBA", "source": "deezer"}
     )
@@ -419,7 +490,7 @@ async def test_the_fetch_waits_on_the_automatic_chains_limiter(
         async def resolve(self, name: str, *, mbid: str | None = None) -> ResolvedImage:
             auto_started.set()
             await release.wait()
-            return ResolvedImage(data=b"AUTO", content_type="image/png")
+            return ResolvedImage(data=_PNG + b"AUTO", content_type="image/png")
 
     limiter = TokenBucketLimiter(rate_per_sec=1000.0, max_concurrency=1)
     service = ArtistImageService(
@@ -430,7 +501,7 @@ async def test_the_fetch_waits_on_the_automatic_chains_limiter(
         negative_ttl_seconds=1.0,
         transient_ttl_seconds=1.0,
     )
-    manual = _RecordingSource(ResolvedImage(data=b"MANUAL", content_type="image/png"))
+    manual = _RecordingSource(ResolvedImage(data=_PNG + b"MANUAL", content_type="image/png"))
     registry = ArtistImageSources(ordered=((DEEZER, manual),))
     app.dependency_overrides[get_artist_image_sources] = lambda: registry
     app.dependency_overrides[get_artist_image_service] = lambda: service
@@ -464,7 +535,7 @@ async def test_the_fetch_waits_on_the_automatic_chains_limiter(
                 # Positive control: once the slot frees, the same call goes through.
                 resp = await asyncio.wait_for(request, timeout=5.0)
                 assert resp.status_code == 200
-                assert resp.content == b"MANUAL"
+                assert resp.content == _PNG + b"MANUAL"
                 assert manual.calls == [("ABBA", "the-mbid")]
             finally:
                 if not request.done():

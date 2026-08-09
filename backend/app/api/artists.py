@@ -318,9 +318,16 @@ async def list_artist_image_sources_endpoint(
             "description": "Artist images are turned off, or the request is cross-origin.",
         },
         404: {"model": ErrorDetail, "description": "That source has no portrait for this artist."},
+        # TWO causes, like the 403 above: not configured here, or configured and
+        # answering with an image this install cannot store. Both are "the
+        # request is fine, this install cannot serve it"; each raises its own
+        # one-cause sentence, so the description is the only place both appear.
         409: {
             "model": ErrorDetail,
-            "description": "That source is not configured on this install.",
+            "description": (
+                "That source is not configured on this install, or its image is in a"
+                " format that cannot be stored."
+            ),
         },
         502: {
             "model": ErrorDetail,
@@ -400,6 +407,27 @@ async def fetch_artist_image_endpoint(
     if resolved is None:
         raise HTTPException(
             status_code=404, detail=f"{label_for(source)} has no portrait for {name}"
+        )
+    if sniff_image_mime(resolved.data) is None:
+        # ONE validation rule for the preview/install pair. The override upload
+        # accepts exactly the four families sniff_image_mime knows, so without
+        # this a source answering with a real BMP previews 200 and then 422s on
+        # approve - the user only discovers it AFTER choosing. Sniffed, not
+        # label-checked, because the install sniffs: a source declaring
+        # image/png and sending something else would otherwise walk straight
+        # through the preview into that same 422.
+        #
+        # 409 joins the unconfigured-source case: the request is well formed and
+        # the source answered, it is THIS install that cannot store the answer.
+        # Not 502 - that one promises "try again in a moment", and a source that
+        # picks deterministically returns the same unusable image forever.
+        declared = header_safe_content_type(resolved.content_type) or FALLBACK_CONTENT_TYPE
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{label_for(source)} returned {declared}, which cannot be stored"
+                " (needs PNG, JPEG, GIF or WebP)"
+            ),
         )
     # The third content-type sink header_safe_content_type's docstring counts,
     # and the only one where the value is a source's OWN answer rather than a
@@ -504,6 +532,12 @@ def _reset_slots(cache: ArtistImageCache, name: str) -> tuple[bool, bool]:
     "/artists/image/reset",
     response_model=ArtistImageResetResult,
     dependencies=[Depends(verify_upload_origin)],
+    # The Origin guard below is invisible in OpenAPI - a `dependencies=[...]`
+    # entry emits no security scheme - so a status this route really returns
+    # would otherwise be undeclared, and the generated client would be typed as
+    # if it could not happen. 422 stays undeclared on purpose: declaring it
+    # would replace FastAPI's HTTPValidationError, whose `detail` is a list.
+    responses={403: {"model": ErrorDetail, "description": "The request is cross-origin."}},
 )
 async def reset_artist_image_endpoint(
     request: Request,
