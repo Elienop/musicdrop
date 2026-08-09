@@ -99,6 +99,31 @@ describe("AlphabetIndex", () => {
     ).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("keeps all 27 buckets on one scrollable line instead of wrapping", () => {
+    renderWithProviders(
+      <AlphabetIndex
+        artists={roster(["ABBA"])}
+        pageSize={48}
+        offset={0}
+        onJump={vi.fn()}
+      />,
+    );
+    const nav = screen.getByRole("navigation", {
+      name: "Jump to artists by letter",
+    });
+    // The strip shares the toolbar row with the pager now, so wrapping onto a
+    // second line would give back the row the band exists to reclaim. It
+    // scrolls sideways instead — every bucket stays reachable at any width.
+    expect(nav.classList.contains("overflow-x-auto")).toBe(true);
+    expect(nav.classList.contains("flex-wrap")).toBe(false);
+    // And it GROWS into the band's empty left half — without this the strip
+    // sizes to its content and the right-aligned row leaves the gap on the
+    // left, which is the space the whole change exists to use.
+    expect(nav.classList.contains("flex-1")).toBe(true);
+    // "#" plus A-Z, none of them dropped at any width.
+    expect(screen.getAllByRole("button")).toHaveLength(27);
+  });
+
   it("jumps to a diacritic artist's true run once the roster is diacritic-sorted", async () => {
     // Mirrors the FIXED backend sort (normalize_artist_name primary key):
     // "Édith Piaf" now sits between the "D" and "F" artists, not after "Z".

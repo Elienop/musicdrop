@@ -94,9 +94,28 @@ export function ArtistsPage() {
         />
       ) : (
         <>
-          {artists.length > PAGE_SIZE_OPTIONS[0] && (
+          {/* ONE toolbar band, not a toolbar row plus a letter row: the
+              letters take the empty space left of the controls (they grow to
+              fill it and scroll when they can't), the size select and pager
+              stay right-aligned. The two conditions differ — the selector
+              appears once the roster passes the smallest page size, the
+              letters and pager once it passes the CURRENT one — so the band
+              renders for either and `justify-end` keeps the survivors right
+              where they were when it holds only some of its children. */}
+          {(artists.length > PAGE_SIZE_OPTIONS[0] ||
+            artists.length > pageSize) && (
             <div className="flex items-center justify-end gap-2">
-              <PageSizeSelect value={pageSize} onChange={setPageSize} />
+              {artists.length > pageSize && (
+                <AlphabetIndex
+                  artists={artists}
+                  pageSize={pageSize}
+                  offset={offset}
+                  onJump={goToOffset}
+                />
+              )}
+              {artists.length > PAGE_SIZE_OPTIONS[0] && (
+                <PageSizeSelect value={pageSize} onChange={setPageSize} />
+              )}
               {artists.length > pageSize && (
                 <Pagination
                   compact
@@ -108,14 +127,6 @@ export function ArtistsPage() {
                 />
               )}
             </div>
-          )}
-          {artists.length > pageSize && (
-            <AlphabetIndex
-              artists={artists}
-              pageSize={pageSize}
-              offset={offset}
-              onJump={goToOffset}
-            />
           )}
           <ul className={GRID_CLASS}>
             {pageArtists.map((artist) => (

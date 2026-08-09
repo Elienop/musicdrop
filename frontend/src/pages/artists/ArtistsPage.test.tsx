@@ -228,6 +228,38 @@ describe("ArtistsPage", () => {
     ).toBeInTheDocument();
   });
 
+  test("the letter index sits in the toolbar row, not on a row of its own", async () => {
+    localStorage.clear();
+    const big: Artist[] = Array.from({ length: 60 }, (_, i) => ({
+      name: `Artist ${String(i).padStart(2, "0")}`,
+      album_count: 1,
+    }));
+    server.use(http.get(ARTISTS_URL, () => HttpResponse.json(big)));
+
+    renderWithProviders(<ArtistsPage />);
+    await screen.findByText("Artist 00");
+
+    const index = screen.getByRole("navigation", {
+      name: "Jump to artists by letter",
+    });
+    const topPager = screen.getByRole("navigation", {
+      name: "Pagination (top)",
+    });
+    const sizeSelect = screen.getByRole("combobox", {
+      name: "Results per page",
+    });
+    // ONE horizontal band: the letters, the size select and the pager are
+    // siblings in a single flex row, with the letters taking the empty space
+    // to the left of the controls. A second row for the index is exactly the
+    // vertical space this reclaims.
+    const band = index.parentElement;
+    expect(topPager.parentElement).toBe(band);
+    // PageSizeSelect wraps its <select> in a positioning span.
+    expect(sizeSelect.parentElement?.parentElement).toBe(band);
+    expect(band?.classList.contains("flex")).toBe(true);
+    expect(band?.classList.contains("flex-col")).toBe(false);
+  });
+
   test("a small roster gets no toolbar at all", async () => {
     localStorage.clear();
     server.use(http.get(ARTISTS_URL, () => HttpResponse.json(ROSTER)));

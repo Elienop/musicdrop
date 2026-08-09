@@ -38,6 +38,19 @@ function bucketOf(name: string): string {
  * derived by bucketing the page slice itself, not just each bucket's first
  * occurrence, so a bucket spanning more than one page (e.g. 50+ artists all
  * starting with the same letter) reads pressed on every page it touches.
+ *
+ * Built to sit INSIDE the Artists toolbar band (flex row), taking the empty
+ * space left of the size select and pager: hence `flex-1 min-w-0` here
+ * rather than at the call site. 27 buttons never fit beside those controls
+ * below a wide desktop, and it must not wrap — a second line is the row the
+ * band exists to reclaim — so it degrades by scrolling sideways, keeping
+ * every bucket reachable at every width (drag, shift-wheel, or Tab, which
+ * scrolls the next button into view). `py-1 -my-1` gives the focus ring room
+ * inside the scroll box without the strip standing taller than the h-8
+ * controls beside it; `-ml-1` cancels the leading padding so "#" still lines
+ * up with the grid's left edge, while the trailing `px-1` stays as breathing
+ * room before the size select. `scroll-px-1` keeps a Tab-scrolled button's
+ * ring off the clipped edge.
  */
 export function AlphabetIndex({
   artists,
@@ -67,7 +80,7 @@ export function AlphabetIndex({
   return (
     <nav
       aria-label="Jump to artists by letter"
-      className="flex flex-wrap gap-0.5"
+      className="-my-1 -ml-1 flex min-w-0 flex-1 scroll-px-1 gap-0.5 overflow-x-auto px-1 py-1 [scrollbar-width:thin]"
     >
       {LETTERS.map((letter) => {
         const index = firstIndex.get(letter);
