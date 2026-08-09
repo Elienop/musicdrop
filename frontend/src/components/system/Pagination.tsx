@@ -11,6 +11,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { pageWindow } from "@/lib/pageWindow";
+import { cn } from "@/lib/utils";
 
 /** The default library page size — surfaces without a size selector use it. */
 export const PAGE_SIZE = 48;
@@ -129,51 +130,68 @@ export function Pagination({
         >
           <Back aria-hidden="true" />
         </Button>
-        {editing ? (
-          <PageJumpInput
-            page={page}
-            totalPages={totalPages}
-            onCommit={(target) => {
-              setEditing(false);
-              if (target !== null) go((target - 1) * limit);
-            }}
-            onCancel={() => setEditing(false)}
-          />
-        ) : (
-          // Mounted in BOTH busy and idle states — only its CONTENT swaps.
-          // A caller's onOffsetChange can flip `busy` true synchronously in
-          // the same render that closes `editing` (e.g. BrowsePage's
-          // isFetching, set inside the same state update as the new
-          // offset), so this can never be the thing that disappears on
-          // commit: goToPageRef needs a live node across that transition
-          // for the deferred refocus effect above to land on.
+        {/* The readout is the SIZER: it's wider than a bare field (it grows
+            with "48 / 48"), so a field that replaced it would shift the Next
+            and Last buttons left the instant you clicked it. The field lies
+            on top of it instead, and the readout only turns invisible —
+            which also keeps it out of the tab order and the a11y tree. */}
+        <span className="relative inline-flex">
+          {/* Mounted in BOTH busy and idle states, and now while editing too
+              — only its CONTENT swaps. A caller's onOffsetChange can flip
+              `busy` true synchronously in the same render that closes
+              `editing` (e.g. BrowsePage's isFetching, set inside the same
+              state update as the new offset), so this can never be the thing
+              that disappears on commit: goToPageRef needs a live node across
+              that transition for the deferred refocus effect above to land
+              on. */}
           <Button
             ref={goToPageRef}
             type="button"
             variant="ghost"
             size="sm"
-            className="min-w-12 tabular-nums"
-            aria-label={`Go to page (1–${totalPages})`}
+            className={cn("min-w-12 tabular-nums", editing && "invisible")}
             onClick={() => {
               if (!busy) setEditing(true); // no-op re-click while in flight
             }}
           >
+            {/* Named by its CONTENTS, like the full variant's readout: an
+                aria-label here would take precedence over them and leave
+                assistive tech hearing the page range but never the page you
+                are on (nor the busy state). One sr-only node per state, not
+                a shared prefix plus a suffix — accessible-name computation
+                concatenates sibling nodes with no separator, so the sentence
+                would run together as "Go to page.Page 2 of 67". */}
             {busy ? (
               <>
                 <Spinner
                   className="size-4 animate-spin"
                   aria-hidden="true"
                 />
-                <span className="sr-only">Loading page&hellip;</span>
+                <span className="sr-only">Go to page. Loading page&hellip;</span>
               </>
             ) : (
               <>
-                <span className="sr-only">Page </span>
-                {page} / {totalPages}
+                <span className="sr-only">
+                  Go to page. Page {page} of {totalPages}
+                </span>
+                <span aria-hidden="true">
+                  {page} / {totalPages}
+                </span>
               </>
             )}
           </Button>
-        )}
+          {editing && (
+            <PageJumpInput
+              page={page}
+              totalPages={totalPages}
+              onCommit={(target) => {
+                setEditing(false);
+                if (target !== null) go((target - 1) * limit);
+              }}
+              onCancel={() => setEditing(false)}
+            />
+          )}
+        </span>
         <Button
           type="button"
           variant="outline"
@@ -317,20 +335,37 @@ function PageJumpInput({
     <Input
       type="text"
       inputMode="numeric"
+      enterKeyHint="go"
       autoComplete="off"
       value={draft}
       autoFocus
-      aria-label={`Go to page (1–${totalPages})`}
-      className="bg-background h-8 w-14 px-1 text-center text-sm tabular-nums"
+      // ASCII "to", not an en dash: this is read aloud, and screen readers
+      // handle the dash inconsistently (silence, "dash", or a pause).
+      aria-label={`Go to page (1 to ${totalPages})`}
+      // No text-size utility here on purpose — Input's own `text-base
+      // md:text-sm` pair is what stops iOS Safari zooming in on focus, and
+      // pinning `text-sm` would strip the 16px half of it.
+      className="bg-background absolute inset-0 h-8 px-1 text-center tabular-nums"
       onFocus={(e) => e.currentTarget.select()}
       onChange={(e) => setDraft(e.target.value.replace(/\D/g, ""))}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
-          // Digits-only, so Number() can't be NaN — an empty field is the
-          // only non-commit, and anything past the end clamps to the last
-          // page rather than being rejected.
-          const n = Number(draft);
-          onCommit(n >= 1 ? Math.min(totalPages, n) : null);
+          // Read the LIVE value, not `draft`: React's value tracker
+          // suppresses onChange when something sets `el.value` and dispatches
+          // an input event (password managers, autofill, extensions), so
+          // state can lag what the field is visibly showing — and committing
+          // the stale one would send you somewhere the UI never offered.
+          // Re-strip here for the same reason: that path skipped onChange.
+          const digits = e.currentTarget.value.replace(/\D/g, "");
+          // Clamp BOTH ways. "0" is as out-of-range as "999"; letting it fall
+          // through to a silent close would be indistinguishable from Escape,
+          // so the user never learns the number was refused. An empty field
+          // is the one real non-commit.
+          onCommit(
+            digits === ""
+              ? null
+              : Math.min(totalPages, Math.max(1, Number(digits))),
+          );
         } else if (e.key === "Escape") {
           onCancel();
         }

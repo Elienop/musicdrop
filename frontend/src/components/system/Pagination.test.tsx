@@ -1,4 +1,11 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -297,13 +304,102 @@ describe("Pagination compact variant", () => {
     expect(input).toHaveAttribute("type", "text");
     expect(input).toHaveAttribute("inputmode", "numeric");
     expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
-    // The name still announces the range the field accepts.
-    expect(input).toHaveAccessibleName("Go to page (1–48)");
+    expect(input).toHaveAttribute("enterkeyhint", "go"); // labels the phone's Enter
+    // The name still announces the range the field accepts — in ASCII, since
+    // an en dash speaks unreliably across screen readers.
+    expect(input).toHaveAccessibleName("Go to page (1 to 48)");
     // It's the shadcn Input, so it arrives with that component's h-9 default
     // — the toolbar override has to actually win, or the field stands a
     // pixel taller than every button and select in the same band.
     expect(input.classList.contains("h-8")).toBe(true);
     expect(input.classList.contains("h-9")).toBe(false);
+    // But NOT the text size: Input ships `text-base md:text-sm` on purpose —
+    // 16px on small screens is what stops iOS Safari zooming in on focus.
+    // Pinning `text-sm` here would strip `text-base` and re-break that.
+    expect(input.classList.contains("text-base")).toBe(true);
+    expect(input.classList.contains("md:text-sm")).toBe(true);
+  });
+
+  it("compact: the readout announces WHERE you are, not just the range", () => {
+    // An aria-label on this button takes precedence over its contents, so a
+    // label carrying the range left assistive tech hearing "go to page 1 to
+    // 67" and never the page it is on — and the focus contract deliberately
+    // returns focus here after a commit, so this is the thing that has to say
+    // where you landed. The full variant names itself by contents; so does
+    // this one now.
+    const { rerender } = render(
+      <Pagination
+        compact
+        total={48 * 67}
+        offset={48}
+        limit={48}
+        onOffsetChange={() => {}}
+      />,
+    );
+    const readout = () => screen.getByRole("button", { name: /go to page/i });
+    expect(readout()).toHaveAccessibleName("Go to page. Page 2 of 67");
+    // The visible glyphs stay terse and are hidden from AT, so nobody hears
+    // "2 slash 67" after the spoken sentence.
+    expect(screen.getByText(/2\s*\/\s*67/)).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
+
+    rerender(
+      <Pagination
+        compact
+        total={48 * 67}
+        offset={48}
+        limit={48}
+        onOffsetChange={() => {}}
+        busy
+      />,
+    );
+    // Busy: the name must still contain "go to page" (the focus contract
+    // finds this button by that name) AND report the loading state.
+    expect(readout()).toHaveAccessibleName("Go to page. Loading page…");
+  });
+
+  it("compact: the jump field opens showing the page you are on", async () => {
+    render(
+      <Pagination
+        compact
+        total={48 * 48}
+        offset={48 * 4}
+        limit={48}
+        onOffsetChange={() => {}}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
+    // Seeded from the current page, so Enter alone is a no-op rather than a
+    // jump to somewhere arbitrary, and you can edit one digit of it.
+    expect(screen.getByRole("textbox", { name: /go to page/i })).toHaveValue(
+      "5",
+    );
+  });
+
+  it("compact: opening the jump field does not resize the pager", async () => {
+    render(
+      <Pagination
+        compact
+        total={48 * 48}
+        offset={48}
+        limit={48}
+        onOffsetChange={() => {}}
+      />,
+    );
+    const readout = screen.getByRole("button", { name: /go to page/i });
+    await userEvent.click(readout);
+    const input = screen.getByRole("textbox", { name: /go to page/i });
+    // The readout is wider than a bare field (it grows with "48 / 48"), so a
+    // field that REPLACED it would shift Next/Last left under the pointer
+    // mid-click. Instead the readout stays mounted as the sizer and the field
+    // lies on top of it. jsdom has no layout, so this pins the mechanism.
+    expect(readout).toBeInTheDocument();
+    expect(readout.classList.contains("invisible")).toBe(true);
+    expect(input.parentElement).toBe(readout.parentElement);
+    expect(input.classList.contains("absolute")).toBe(true);
+    expect(input.classList.contains("inset-0")).toBe(true);
   });
 
   it("compact: the jump field takes digits only", async () => {
@@ -326,6 +422,126 @@ describe("Pagination compact variant", () => {
     expect(input).toHaveValue("30");
     await userEvent.type(input, "{Enter}");
     expect(onOffsetChange).toHaveBeenCalledWith(48 * 29);
+  });
+
+  it("compact: commits what the field SHOWS, not what React last saw", async () => {
+    // React's value tracker suppresses onChange when a value is set the
+    // programmatic way (`el.value = x` then an input event) — which is how
+    // password managers, autofill and extensions write into fields. A commit
+    // that reads component state would then send you to the page you were
+    // already on while the field plainly displays another number.
+    const onOffsetChange = vi.fn();
+    render(
+      <Pagination
+        compact
+        total={48 * 48}
+        offset={48}
+        limit={48}
+        onOffsetChange={onOffsetChange}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
+    const input = screen.getByRole<HTMLInputElement>("textbox", {
+      name: /go to page/i,
+    });
+    input.value = "40";
+    fireEvent.input(input);
+    expect(input).toHaveValue("40"); // what the user is looking at
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onOffsetChange).toHaveBeenCalledWith(48 * 39);
+  });
+
+  it("compact: clamps at BOTH ends, and only an empty field cancels", async () => {
+    const onOffsetChange = vi.fn();
+    render(
+      <Pagination
+        compact
+        total={48 * 48}
+        offset={48}
+        limit={48}
+        onOffsetChange={onOffsetChange}
+      />,
+    );
+    const open = async () =>
+      await userEvent.click(
+        screen.getByRole("button", { name: /go to page/i }),
+      );
+    const field = () => screen.getByRole("textbox", { name: /go to page/i });
+
+    // "0" is as out-of-range as "999" and must behave the same way: clamp.
+    // Falling through to a silent close makes it indistinguishable from
+    // Escape, so the user gets no feedback that the page number was refused.
+    await open();
+    await userEvent.clear(field());
+    await userEvent.type(field(), "0{Enter}");
+    expect(onOffsetChange).toHaveBeenLastCalledWith(0); // page 1
+
+    await open();
+    await userEvent.clear(field());
+    await userEvent.type(field(), "999{Enter}");
+    expect(onOffsetChange).toHaveBeenLastCalledWith(48 * 47); // last page
+
+    // Empty is the ONE non-commit: you cleared it and changed your mind.
+    await open();
+    await userEvent.clear(field());
+    await userEvent.type(field(), "{Enter}");
+    expect(onOffsetChange).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("compact: blurring out closes the field without committing", async () => {
+    // The third exit path (Enter and Escape have their own tests). It must
+    // not commit, and it must hand focus back like the other two.
+    const onOffsetChange = vi.fn();
+    render(
+      <Pagination
+        compact
+        total={48 * 48}
+        offset={48}
+        limit={48}
+        onOffsetChange={onOffsetChange}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
+    const input = screen.getByRole("textbox", { name: /go to page/i });
+    await userEvent.clear(input);
+    await userEvent.type(input, "30");
+    fireEvent.blur(input);
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(onOffsetChange).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /go to page/i }),
+      ).toHaveFocus(),
+    );
+  });
+
+  it("compact: clicking straight onto another control leaves focus there", async () => {
+    // The activeElement === body guard. The deferred refocus exists for the
+    // case where the closing field left focus on <body>; when the blur
+    // happened because the user moved to a DIFFERENT control, that control
+    // already owns focus and yanking it back a tick later is a bug.
+    render(
+      <>
+        <Pagination
+          compact
+          total={48 * 48}
+          offset={48}
+          limit={48}
+          onOffsetChange={() => {}}
+        />
+        <button type="button">Elsewhere</button>
+      </>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
+    const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+    await userEvent.click(elsewhere);
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    // Let the deferred refocus fire — it must decline to move focus.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(elsewhere).toHaveFocus();
   });
 
   it("compact: readout edits into a page jump", async () => {
