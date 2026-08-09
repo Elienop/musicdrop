@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement, type ReactNode } from "react";
@@ -29,7 +29,12 @@ function emptyResponse(status: number): Response {
 }
 
 describe("useFetchAlbumCover", () => {
+  // Put the real URL back by hand rather than with `vi.unstubAllGlobals()`,
+  // which would also drop the `scrollTo`/`matchMedia`/`EventSource` stubs
+  // `test/setup.ts` installs.
+  const RealURL = globalThis.URL;
   beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.stubGlobal("URL", RealURL));
 
   it("returns found=false on 404", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(emptyResponse(404));
@@ -39,12 +44,28 @@ describe("useFetchAlbumCover", () => {
     expect(result.current.data).toEqual({ found: false });
   });
 
-  it("returns the blob + source on 200", async () => {
+  it("returns the blob + source on 200, minting no object URL", async () => {
     const body = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
+    const createObjectURL = vi.fn(() => "blob:x");
+    vi.stubGlobal("URL", { ...RealURL, createObjectURL, revokeObjectURL: () => {} });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(imageResponse(body, "Cover Art Archive"));
     const { result } = renderHook(() => useFetchAlbumCover(7), { wrapper });
     result.current.mutate();
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(result.current.data).toMatchObject({ found: true, source: "Cover Art Archive" });
+    // Exact key set: an `objectUrl` creeping back in fails here.
+    expect(result.current.data).toEqual({
+      found: true,
+      blob: expect.anything(),
+      source: "Cover Art Archive",
+    });
+    const data = result.current.data;
+    // Identity, not deep equality — two jsdom Blobs deep-equal each other
+    // (all their state hides behind one non-enumerated `Symbol(impl)`), so
+    // `toEqual({blob: body})` above would hold for ANY blob.
+    expect(data?.found === true ? data.blob : null).toBe(body);
+    // The URL is the CALLER's to mint. TanStack drops a per-call `onSuccess`
+    // once the observer unmounts, so a URL created here would be handed to
+    // nobody and leak on every fetch the user navigated away from.
+    expect(createObjectURL).not.toHaveBeenCalled();
   });
 });

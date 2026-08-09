@@ -98,9 +98,10 @@ export type FetchedArtistImage =
  * nothing, and installing re-posts THESE bytes through the upload hook, so the
  * image the user approved is the image that lands.
  *
- * Hands back the BLOB, never an object URL — deliberately unlike
- * `useFetchAlbumCover`, which still mints one here and carries the leak this
- * avoids. TanStack skips a per-call `onSuccess` once the observer has unmounted
+ * Hands back the BLOB, never an object URL — the same contract as
+ * `useFetchAlbumCover`, and for the same reason: two sibling hooks that differ
+ * here are how the next person copies the wrong one. TanStack skips a per-call
+ * `onSuccess` once the observer has unmounted
  * (`mutationObserver.js` gates `#mutateOptions` on `hasListeners()`), so a URL
  * created in `mutationFn` would be handed to nobody when the caller unmounts
  * mid-fetch: created, unrevokable, leaked. Minting it in the caller's own

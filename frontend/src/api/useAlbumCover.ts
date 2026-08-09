@@ -6,8 +6,21 @@ type CoverInstallResult = components["schemas"]["CoverInstallResult"];
 
 export type FetchedCover =
   | { found: false }
-  | { found: true; blob: Blob; objectUrl: string; source: string | null };
+  | { found: true; blob: Blob; source: string | null };
 
+/** Fetch a candidate cover for one album. Preview only — the server stores
+ * nothing, and installing re-posts THESE bytes through `useInstallAlbumCover`.
+ *
+ * Hands back the BLOB, never an object URL — the same contract as
+ * `useFetchArtistImage`, and for the same reason: two sibling hooks that differ
+ * here are how the next person copies the wrong one. TanStack skips a per-call
+ * `onSuccess` once the observer has unmounted (`mutationObserver.js` gates
+ * `#mutateOptions` on `hasListeners()`), so a URL minted here would be handed
+ * to nobody when the caller unmounts mid-fetch: created, unrevokable, leaked.
+ * Minting it in the caller's own `onSuccess` means an abandoned fetch creates
+ * nothing at all. Revoking from a hook-level `onSuccess` is NOT the fix —
+ * `mutation.js` awaits `this.options` callbacks unconditionally, before
+ * notifying observers, so that would destroy every preview on the normal path. */
 export function useFetchAlbumCover(albumId: number) {
   return useMutation<FetchedCover, Error, void>({
     mutationFn: async () => {
@@ -18,7 +31,6 @@ export function useFetchAlbumCover(albumId: number) {
       return {
         found: true,
         blob,
-        objectUrl: URL.createObjectURL(blob),
         source: res.headers.get("X-Art-Source"),
       };
     },

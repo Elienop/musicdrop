@@ -198,6 +198,35 @@ describe("CoverEditPanel", () => {
     expect(createSpy).toHaveBeenCalled();
   });
 
+  it("does not carry one album's pending cover onto another", async () => {
+    // `/albums/:albumId` is an unkeyed route element, so moving between two
+    // albums re-renders this SAME instance with a new id. A candidate that
+    // survived that would be installed against whichever album is now on
+    // screen — bytes fetched for a different record.
+    const png = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(imageResponse(png, "Cover Art Archive"));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={qc}>
+        <CoverEditPanel albumId={7} onInstalled={vi.fn()} onClose={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
+    await screen.findByAltText(/cover preview/i);
+    revokeSpy.mockClear();
+
+    // The provider has to be re-rendered too, or the panel loses its client.
+    view.rerender(
+      <QueryClientProvider client={qc}>
+        <CoverEditPanel albumId={8} onInstalled={vi.fn()} onClose={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByAltText(/cover preview/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /use this cover/i })).toBeNull();
+    // ...and the abandoned candidate's URL goes with it.
+    expect(revokeSpy).toHaveBeenCalledWith("blob:preview");
+  });
+
   it("revokes the pending preview URL on unmount", async () => {
     const { unmount } = renderPanel();
     const input = screen.getByLabelText(/upload cover image/i);
