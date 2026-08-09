@@ -30,6 +30,8 @@ const sourcesResult = {
   isError: false,
 };
 const noSourcesResult = { data: undefined, isPending: false, isError: false };
+/** Every (name, enabled) pair the panel asked the sources query for. */
+const sourcesCalls: Array<{ name: string; enabled: boolean }> = [];
 
 // A factory REPLACES the module, so it must list every export the component
 // imports — a missing one fails this whole file, not one test.
@@ -62,8 +64,10 @@ vi.mock("@/api/useArtistImage", () => ({
   }),
   // Honours `enabled` like the real hook does, so "no source row when the
   // feature is off" cannot pass just because the list was handed over anyway.
-  useArtistImageSources: (_name: string, enabled = true) =>
-    enabled ? sourcesResult : noSourcesResult,
+  useArtistImageSources: (name: string, enabled = true) => {
+    sourcesCalls.push({ name, enabled });
+    return enabled ? sourcesResult : noSourcesResult;
+  },
 }));
 
 // The panel composes the SAME pair the fetch route gates on (image toggle OR
@@ -77,6 +81,7 @@ let revoked: string[] = [];
 beforeEach(() => {
   // jsdom lacks object-URL APIs.
   revoked = [];
+  sourcesCalls.length = 0;
   vi.stubGlobal("URL", {
     ...RealURL,
     createObjectURL: () => "blob:picked",
@@ -151,9 +156,37 @@ describe("ArtistImageEditPanel", () => {
 
   it("fetches from the picked source", () => {
     render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Spotify" }));
+    // Deezer, NOT Spotify: Spotify is already the default, so picking it would
+    // prove nothing about the pick actually being read.
+    fireEvent.click(screen.getByRole("button", { name: "Deezer" }));
+    expect(screen.getByRole("button", { name: "Deezer" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^fetch$/i }));
+    expect(fetchMutate).toHaveBeenCalledWith("deezer", expect.anything());
+  });
+
+  it("defaults to the first source the chain would try", () => {
+    render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
+    expect(screen.getByRole("button", { name: "Spotify" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     fireEvent.click(screen.getByRole("button", { name: /^fetch$/i }));
     expect(fetchMutate).toHaveBeenCalledWith("spotify", expect.anything());
+  });
+
+  it("drops one source's answer when another is picked", () => {
+    fetchMutate.mockImplementation(
+      (_source: string, opts: { onSuccess: (r: unknown) => void }) =>
+        opts.onSuccess({ found: false, reason: "Spotify has no portrait for ABBA" }),
+    );
+    render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: /^fetch$/i }));
+    expect(screen.getByText(/spotify has no portrait/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Deezer" }));
+    expect(screen.queryByText(/spotify has no portrait/i)).toBeNull();
   });
 
   it("previews a fetched portrait and installs THOSE bytes", () => {
@@ -235,6 +268,14 @@ describe("ArtistImageEditPanel", () => {
     expect(screen.queryByRole("button", { name: /^fetch$/i })).toBeNull();
     // ...and the upload/reset half still works.
     expect(screen.getByRole("button", { name: /reset to auto/i })).toBeInTheDocument();
+  });
+
+  it("asks the sources endpoint nothing about an empty artist name", () => {
+    // The server declares `min_length=1` and the hook has no guard, so an empty
+    // name must not become a request at all.
+    render(<ArtistImageEditPanel name="" onSaved={() => {}} onClose={() => {}} />);
+    expect(sourcesCalls.at(-1)).toEqual({ name: "", enabled: false });
+    expect(screen.queryByRole("group", { name: /image source/i })).toBeNull();
   });
 
   it("still offers fetch when only the write-to-library toggle is on", () => {
