@@ -97,6 +97,44 @@ def test_cover_streams_embedded_art(monkeypatch: pytest.MonkeyPatch) -> None:
     assert r.content == b"PNGDATA"
 
 
+@pytest.mark.parametrize(
+    ("declared", "served"),
+    [
+        ("image/日本語", "application/octet-stream"),
+        ("image/png\nX-Injected: yes", "application/octet-stream"),
+        ("image/png\n", "application/octet-stream"),
+        ("", "application/octet-stream"),
+        ("  image/png  ", "image/png"),
+    ],
+    ids=["non-ascii", "response-splitting", "trailing-newline", "empty", "padded"],
+)
+def test_cover_never_serves_an_unsendable_content_type(
+    monkeypatch: pytest.MonkeyPatch, declared: str, served: str
+) -> None:
+    """The candidate-cover endpoint is the SECOND media-file content-type sink.
+
+    Same provenance as the album-cover one — ``MediaFile.images[0].mime_type``,
+    which mediafile re-derives from magic bytes — so this is defence in depth.
+    It is guarded anyway because ``header_safe_content_type``'s docstring
+    enumerates the sinks, and a comment claiming completeness is how the next
+    reviewer stops looking. The padded case is trimmed rather than discarded:
+    the type is good, only the framing is not.
+    """
+    monkeypatch.setattr(
+        "app.import_jobs.registry.embedded_art",
+        lambda p: (b"PNGDATA", declared),
+    )
+    client = _client_with_fake(parked=[_parked(0)], art_sources={0: "/fake/album0/track.flac"})
+    job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
+    _poll(client, job_id, lambda s: len(s["albums"]) == 1)
+
+    r = client.get(f"/api/import/{job_id}/albums/0/cover")
+
+    assert r.status_code == 200
+    assert r.headers["content-type"] == served
+    assert r.content == b"PNGDATA"
+
+
 def test_cover_offloads_the_tag_read_to_the_threadpool(monkeypatch: pytest.MonkeyPatch) -> None:
     # candidate_cover parses the parked album's first audio file for embedded art
     # (HDD/NAS source) — it must be offloaded, not run on the event loop.

@@ -367,6 +367,20 @@
               "type": "integer",
               "title": "Album Id"
             }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "full",
+                "thumb"
+              ],
+              "type": "string",
+              "default": "full",
+              "title": "Size"
+            }
           }
         ],
         "responses": {
@@ -609,6 +623,20 @@
               "type": "string",
               "minLength": 1,
               "title": "Name"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "full",
+                "thumb"
+              ],
+              "type": "string",
+              "default": "full",
+              "title": "Size"
             }
           }
         ],
@@ -4839,7 +4867,7 @@
         },
         "type": "object",
         "title": "AlbumFieldEdits",
-        "description": "Album-header fields to change; only set (non-None) keys are applied.\n\nThese propagate to every track (beets ``inherit``). Clearing a field (set\nto null) is out of scope, so None means \"leave unchanged\"."
+        "description": "Album-header fields to change; only set (non-None) keys are applied.\n\nThese propagate to every track (beets ``inherit``). ``None`` means \"leave\nunchanged\" \u2014 it is not a clear. An EMPTY STRING is a clear: no field here\nsets ``min_length``, so ``\"\"`` is submitted and stored, which for the\nlist-valued ``genre`` means storing no genres at all."
       },
       "AlbumMissingReport": {
         "properties": {

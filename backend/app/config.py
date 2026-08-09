@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     # Artist images (app/artwork/) — opt-in, conservative defaults.
     artist_images_enabled: bool = False
     artist_image_cache_dir: str = "data/cache/artist-images"
+    # Derived album-cover thumbnails (320px WebP) live here — rebuildable cache,
+    # safe to delete. (env MUSICDROP_COVER_THUMB_CACHE_DIR)
+    cover_thumb_cache_dir: str = "data/cache/cover-thumbs"
     # Deezer allows ~50 req / 5s; stay well under it.
     artist_image_rate_per_sec: float = 5.0
     artist_image_max_concurrency: int = 2
@@ -130,6 +133,14 @@ settings = Settings()
 def resolve_artist_image_cache_dir() -> Path:
     """Resolve the artist-image cache dir, anchoring relatives to the repo root."""
     configured = Path(settings.artist_image_cache_dir)
+    if configured.is_absolute():
+        return configured
+    return _REPO_ROOT / configured
+
+
+def resolve_cover_thumb_cache_dir() -> Path:
+    """Resolve the cover-thumb cache dir, anchoring relatives to the repo root."""
+    configured = Path(settings.cover_thumb_cache_dir)
     if configured.is_absolute():
         return configured
     return _REPO_ROOT / configured

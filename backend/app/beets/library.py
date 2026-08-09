@@ -15,10 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from beets.dbcore.query import MatchQuery, ParsingError
+from beets.dbcore.types import DelimitedString
 from beets.library import Album as BeetsAlbum
+from beets.library import Item as BeetsItem
 from beets.library import Library
 from mediafile import MediaFile
 
+from app.artwork.normalize import normalize_artist_name
 from app.beets.release_identity import release_identity
 from app.models.album import Album, AlbumDetail, Track
 from app.models.artist import Artist
@@ -113,20 +116,87 @@ def _coerce_year(value: object) -> int | None:
     return year or None
 
 
-def _album_genre(album: BeetsAlbum, items: list[Any]) -> str | None:
-    """Read album-level genre, falling back to the album's tracks.
+def _play_order(item: Any) -> tuple[int, int, int]:
+    """Sort key putting an album's tracks in play order: ``(disc, track, id)``.
 
-    Heuristic: the first track with a non-empty genre wins (not a mode/majority
-    vote). Items are passed in so we don't re-fetch them from the database.
+    The order every genre fallback resolves in — see :func:`_album_genre`.
     """
-    genre = _coerce_optional_str(album.get("genre"))
-    if genre is not None:
-        return genre
-    for item in items:
-        item_genre = _coerce_optional_str(item.get("genre"))
-        if item_genre is not None:
-            return item_genre
-    return None
+    return (
+        _coerce_int(item.get("disc")),
+        _coerce_int(item.get("track")),
+        _coerce_int(item.get("id")),
+    )
+
+
+# beets 2.13 dropped the single-valued ``genre`` field from BOTH ``Item`` and
+# ``Album`` in favour of multi-valued ``genres``: a real column holding a
+# ``DelimitedString`` — a ``list[str]`` in Python, joined by ``"\␀"`` in the DB
+# and by ``"; "`` for display. Reading ``genre`` still "works" (it falls through
+# to the flex path) but answers ``None`` for every row in a real library, so
+# every genre read in this app goes through the helpers below.
+#
+# The delimiter and the split rule are taken from beets' OWN field type rather
+# than restated here: the browse cache reads the column as raw SQL, bypassing
+# beets' type layer, and a second hand-rolled convention is exactly how the two
+# paths would drift apart on a beets change.
+_GENRES_TYPE = BeetsItem._fields["genres"]
+assert isinstance(_GENRES_TYPE, DelimitedString)  # beets 2.13 contract, asserted once
+_GENRE_DISPLAY_DELIMITER = _GENRES_TYPE.fmt_delimiter
+
+
+def _genre_values(value: object) -> list[str]:
+    """Every genre in a beets ``genres`` value, whatever shape it arrives in.
+
+    ONE reader, because three layers hand this over differently: beets returns
+    the field's ``model_type`` (a ``list``), ``browse.py``'s aggregate SQL pass
+    returns the raw delimiter-joined column string, and a row written before the
+    multi-genre migration can still hold a single bare genre. Strings are split
+    by beets' own ``DelimitedString.parse`` (DB delimiter when present, else
+    ``"; "``); blanks are dropped so a trailing delimiter can't invent a genre.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts: list[str] = _GENRES_TYPE.parse(value)
+    elif isinstance(value, list | tuple):
+        parts = [str(part) for part in value]
+    else:
+        parts = [str(value)]
+    return [text for text in (str(part).strip() for part in parts) if text]
+
+
+def _genre_join(values: list[str]) -> str | None:
+    """Genres as ONE display string — beets' own ``"; "`` join.
+
+    ``None`` when there are none, so ``Album.genre`` stays nullable on the wire
+    (a genre-less album must not read as an empty-string genre).
+    """
+    return _GENRE_DISPLAY_DELIMITER.join(values) or None
+
+
+def _album_genre(album: BeetsAlbum, items: list[Any]) -> str | None:
+    """Read album-level genres, falling back to the album's tracks.
+
+    Heuristic: the first track with any genre wins (not a mode/majority vote),
+    and its genres are taken WHOLE. Items are passed in so we don't re-fetch
+    them from the database.
+
+    The fallback resolves in PLAY order, not the order ``items`` happens to
+    arrive in. Callers pass ``list(album.items())``, which beets returns in the
+    user-configurable ``sort_item`` DISPLAY order (``artist+ album+ disc+
+    track+`` by default) — so on an album whose tracks carry different artists
+    the alphabetically-first artist's genre used to win, and the answer moved
+    with a display preference. ``app/beets/browse.py``'s cache reads the same
+    fallback straight from SQL in play order; sorting here is what keeps every
+    endpoint (Browse rows, album detail, duplicates) on ONE answer per album.
+    """
+    genres = _genre_values(album.get("genres"))
+    if not genres:
+        for item in sorted(items, key=_play_order):
+            genres = _genre_values(item.get("genres"))
+            if genres:
+                break
+    return _genre_join(genres)
 
 
 def _coerce_int(value: object) -> int:
@@ -152,24 +222,32 @@ def _coerce_duration(value: object) -> float | None:
     return seconds or None
 
 
-def _is_instrumental(item: Any) -> bool:
-    """Whether beets' ``lyrics_instrumental`` flag is set on this track.
+def _instrumental_value(value: object) -> bool:
+    """The truth of a ``lyrics_instrumental`` value, however it arrives.
 
-    The flex value reads back as a real bool when beets' LyricsPlugin is loaded
-    (it registers the field as BOOLEAN) and as the raw string ``"1"``/``"0"``
-    when it isn't — and ``"0"`` is a truthy Python string, so a plain truth test
-    would read a track beets explicitly marked NOT instrumental as instrumental.
-
-    Lives in this module rather than beside the rest of the lyrics adapter
-    because ``lyrics.py`` imports THIS file (a top-level import back would
-    cycle). ``lyrics.py`` and ``browse.py`` both consume it from here — one
-    implementation, the way every other shared helper here is used. A second
-    copy is how the "0"-is-truthy bug comes back on one path only.
+    beets' LyricsPlugin registers the field as BOOLEAN, so a loaded plugin hands
+    back a real ``bool``; without it the flex value is the raw string ``"1"`` /
+    ``"0"`` — and ``"0"`` is a TRUTHY Python string, so a plain truth test would
+    read a track beets explicitly marked NOT instrumental as instrumental. The
+    same two shapes come out of a raw ``item_attributes`` SELECT, which is why
+    this takes a value rather than an item: ``browse.py``'s aggregate cache
+    build reads the flag straight from SQL and must bucket it identically.
     """
-    value = item.get("lyrics_instrumental")
     if isinstance(value, str):
         return value.strip().lower() not in {"", "0", "false"}
     return bool(value)
+
+
+def _is_instrumental(item: Any) -> bool:
+    """Whether beets' ``lyrics_instrumental`` flag is set on this track.
+
+    Lives in this module rather than beside the rest of the lyrics adapter
+    because ``lyrics.py`` imports THIS file (a top-level import back would
+    cycle). ``lyrics.py`` and ``browse.py`` both consume the flag's truth from
+    here — one implementation, the way every other shared helper here is used.
+    A second copy is how the "0"-is-truthy bug comes back on one path only.
+    """
+    return _instrumental_value(item.get("lyrics_instrumental"))
 
 
 def _album_fields(album: BeetsAlbum, *, track_count: int, genre: str | None) -> dict[str, Any]:
@@ -255,7 +333,13 @@ def list_artists(lib: Library) -> list[Artist]:
     shared ``BrowseRow`` cache (ONE scan, invalidated on every
     ``emit_library_changed``) rather than a fresh ``lib.albums()`` materialization
     — the roster is rebuilt on every debounced search keystroke, and the cache
-    already holds ``albumartist`` per album. Sorted by name (case-insensitive).
+    already holds ``albumartist`` per album. Sorted diacritic-insensitively
+    (``normalize_artist_name``: NFKD accent-fold + casefold), so e.g. "Édith
+    Piaf" lands in the "E" run rather than after "Z" — plain ``casefold()``
+    breaks ties for determinism when two names normalize identically. The
+    frontend A-Z jump strip (``AlphabetIndex``) buckets on this same
+    diacritic-folded first letter, so its buckets stay contiguous runs of
+    this order.
     """
     # Lazy import: browse.py imports helpers from this module at import time, so a
     # top-level import back would cycle (mirrors list_albums).
@@ -270,7 +354,7 @@ def list_artists(lib: Library) -> list[Artist]:
             continue
         counts[name] = counts.get(name, 0) + 1
     artists = [Artist(name=name, album_count=count) for name, count in counts.items()]
-    artists.sort(key=lambda a: a.name.casefold())
+    artists.sort(key=lambda a: (normalize_artist_name(a.name), a.name.casefold()))
     return artists
 
 

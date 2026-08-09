@@ -68,6 +68,22 @@ def test_list_artists_offloads_scan_to_threadpool(
     assert list_artists in [call.args[0] for call in spy.call_args_list]
 
 
+def test_artists_roster_sorts_diacritics_with_their_base_letter(tmp_path: Path) -> None:
+    # Plain casefold() sorts "É" (U+00C9) after "z" by raw codepoint, which
+    # would land Édith Piaf after every ASCII artist and split her out of the
+    # frontend A-Z index's "E" bucket. normalize_artist_name (NFKD accent-fold)
+    # as the primary sort key keeps her in the true "E" run, between "D"- and
+    # "F"-named artists.
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path))
+    _add_album(lib, tmp_path, album="Talk Talk Talk", albumartist="Duran Duran")
+    _add_album(lib, tmp_path, album="La Vie en Rose", albumartist="Édith Piaf")
+    _add_album(lib, tmp_path, album="Innuendo", albumartist="Fleetwood Mac")
+
+    artists = list_artists(lib)
+
+    assert [a.name for a in artists] == ["Duran Duran", "Édith Piaf", "Fleetwood Mac"]
+
+
 def test_artists_roster_excludes_empty_album_artist(tmp_path: Path) -> None:
     # A whitespace-only albumartist must be dropped: _coerce_str does not strip,
     # so only the skip's own .strip() keeps this blank card out of the roster.

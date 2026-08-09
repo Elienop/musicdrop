@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+import pytest
 from beets.library import Item, Library
 
 from app.beets.library import list_artists
@@ -122,3 +123,57 @@ def test_artist_count_skips_blank_and_matches_roster(tmp_path: Path) -> None:
     assert stats.album_count == 2  # both albums counted
     assert stats.artist_count == 1  # blank albumartist excluded
     assert stats.artist_count == len(list_artists(lib))  # matches the roster
+
+
+def test_stats_never_touches_the_browse_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Overview must render even when the browse cache is unusable.
+
+    Any library mutation drops ``browse._rows``' cache and its rebuild is a
+    multi-second full scan — stats answering from it means the first Overview
+    load after any change pays that cost. Prove the decoupling by making the
+    cache explode: stats must not call it at all.
+    """
+    import app.beets.browse as browse
+
+    def explode(lib: object) -> list[object]:
+        raise AssertionError("stats must not depend on the browse cache")
+
+    monkeypatch.setattr(browse, "_rows", explode)
+    response = build_stats_response(_lib(tmp_path))
+    assert response.stats.album_count > 0
+    assert len(response.recently_added) > 0
+
+
+def test_artist_count_skips_blank_albumartists_and_counts_exact_strings(
+    tmp_path: Path,
+) -> None:
+    """Distinct exact ``albumartist`` strings, blanks skipped — matching
+    ``list_artists``' grouping (casing is NOT folded there, only sorted
+    diacritic-insensitively; "ABBA" and "abba" remain two distinct artists)."""
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+
+    def add(folder: str, fname: str, **fields: object) -> Item:
+        base = music / folder
+        base.mkdir(parents=True, exist_ok=True)
+        f = base / fname
+        f.write_bytes(b"\x00")
+        it = Item(**fields)  # type: ignore[arg-type]  # beets Item kwargs are untyped
+        it.path = os.fsencode(str(f))
+        return it
+
+    upper = add(
+        "ABBA/One", "01.flac", album="One", albumartist="ABBA", artist="ABBA", title="t", track=1
+    )
+    lib.add_album([upper]).store()
+    lower = add(
+        "abba/Two", "01.flac", album="Two", albumartist="abba", artist="abba", title="t", track=1
+    )
+    lib.add_album([lower]).store()
+    blank = add("blank", "01.flac", album="Y", albumartist="  ", artist="", title="t", track=1)
+    lib.add_album([blank]).store()
+
+    assert compute_stats(lib).artist_count == 2
+    assert compute_stats(lib).artist_count == len(list_artists(lib))

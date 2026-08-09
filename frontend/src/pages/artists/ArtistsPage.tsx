@@ -2,6 +2,7 @@ import { Link, useSearchParams } from "react-router";
 
 import { useArtists } from "@/api/useArtists";
 import { GRID_CLASS } from "@/components/albums/album-grid";
+import { AlphabetIndex } from "@/components/artists/AlphabetIndex";
 import { ArtistCard } from "@/components/artists/ArtistCard";
 import { Artists } from "@/components/icons";
 import { EmptyState } from "@/components/system/EmptyState";
@@ -107,6 +108,14 @@ export function ArtistsPage() {
                 />
               )}
             </div>
+          )}
+          {artists.length > pageSize && (
+            <AlphabetIndex
+              artists={artists}
+              pageSize={pageSize}
+              offset={offset}
+              onJump={goToOffset}
+            />
           )}
           <ul className={GRID_CLASS}>
             {pageArtists.map((artist) => (

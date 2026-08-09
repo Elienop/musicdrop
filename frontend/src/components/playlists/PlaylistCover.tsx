@@ -75,7 +75,7 @@ export function PlaylistCover({
         {ids.map((albumId, index) => (
           <img
             key={albumId}
-            src={`/api/albums/${albumId}/cover`}
+            src={`/api/albums/${albumId}/cover?size=thumb`}
             alt=""
             loading="lazy"
             className={cn(

@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
@@ -6,13 +6,19 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.api.albums import get_library
 from app.api.csrf import verify_upload_origin
-from app.api.http_cache import revalidating_image_response
+from app.api.http_cache import (
+    if_none_match_hit,
+    image_response,
+    not_modified,
+    revalidating_image_response,
+)
 from app.artist_art_jobs.registry import (
     ArtistArtBackfillRegistry,
     get_artist_art_backfill,
 )
 from app.artist_art_jobs.runner import start_backfill as start_art_backfill
 from app.artwork.cache import ArtistImageCache
+from app.artwork.degrade import derive_thumb_or_degrade
 from app.artwork.download import fetch_image_bytes
 from app.artwork.images import MAX_IMAGE_BYTES, sniff_image_mime
 from app.artwork.service import ArtistImageService
@@ -90,9 +96,58 @@ async def get_artist_image_endpoint(
     name: Annotated[str, Query(min_length=1)],
     service: Annotated[ArtistImageService, Depends(get_artist_image_service)],
     handle: Annotated[LibraryHandle, Depends(get_library)],
+    cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
+    size: Annotated[Literal["full", "thumb"], Query()] = "full",
 ) -> Response:
-    # Query param (not path) so "AC/DC" works. The MBID is resolved lazily — the
-    # service only invokes get_mbid on a cache miss (fanart.tv is MBID-keyed).
+    # Validate off a CHEAP stat-based ETag first: the roster revalidates every
+    # portrait on every paint (no ?v= buster, no max-age), and the old path
+    # re-read the cached bytes and re-hashed them just to answer a 304.
+    # cache.validator stats the winning slot (override > positive) instead, so
+    # an unchanged portrait answers 304 without touching the bytes at all.
+    validator = await run_in_threadpool(cache.validator, name)
+    # The thumb is a DIFFERENT entity than the full image (distinct bytes), so
+    # it needs its own ETag under the same URL family — splice a "-t" marker
+    # inside the closing quote so the tag stays one opaque quoted string. A
+    # shared tag would let a cache/proxy serve a thumb response for a full
+    # request (or vice versa) on a matching If-None-Match.
+    etag = validator if size == "full" else (f'{validator[:-1]}-t"' if validator else None)
+    if etag is not None and if_none_match_hit(request, etag):
+        return not_modified(etag)
+
+    if size == "thumb":
+        thumb = await run_in_threadpool(cache.get_thumb, name)
+        if thumb is None:
+            # Nothing cached yet — resolve (network) once, then derive from it.
+            resolved = await service.get_artist_image(
+                name, get_mbid=lambda: beets_library.get_artist_mbid(handle.lib, name)
+            )
+            if resolved is None:
+                raise HTTPException(status_code=404, detail="Artist image not found")
+            thumb = await run_in_threadpool(cache.get_thumb, name)
+            if thumb is None:
+                # The cache could not produce a thumb even after a successful
+                # resolve: an unwritable cache dir (nothing to stat, so
+                # get_thumb bails before it can help), or an override that raced
+                # away. Derive from the bytes in hand instead of serving the
+                # 1000px+ original under a ?size=thumb URL — losing the cache
+                # must cost cache HITS, not the feature. Off-loop: this is a
+                # decode+resize of up to 10 MB.
+                data, mime = await run_in_threadpool(
+                    derive_thumb_or_degrade, *resolved, subject=f"artist {name!r}"
+                )
+                return await run_in_threadpool(revalidating_image_response, request, data, mime)
+            validator = await run_in_threadpool(cache.validator, name)
+            etag = f'{validator[:-1]}-t"' if validator else None
+        if etag is not None:
+            return image_response(thumb.data, thumb.content_type, etag)
+        # No file to stat — fall back to the content-hash ETag, off-loop.
+        return await run_in_threadpool(
+            revalidating_image_response, request, thumb.data, thumb.content_type
+        )
+
+    # size == "full": query param (not path) so "AC/DC" works. The MBID is
+    # resolved lazily — the service only invokes get_mbid on a cache miss
+    # (fanart.tv is MBID-keyed).
     result = await service.get_artist_image(
         name, get_mbid=lambda: beets_library.get_artist_mbid(handle.lib, name)
     )
@@ -102,10 +157,19 @@ async def get_artist_image_endpoint(
         raise HTTPException(status_code=404, detail="Artist image not found")
 
     image_bytes, mime = result
-    # Revalidate every time (no max-age) so a freshly-set override shows up
-    # immediately — no hard refresh, and correct even for consumers that don't
-    # pass the ?v= buster (the roster cards). See app.api.http_cache.
-    return revalidating_image_response(request, image_bytes, mime)
+    if validator is None:
+        # First serve after a fresh network resolve — IF the positive slot was
+        # written, a re-stat yields the tag the NEXT request will validate on.
+        # It may not have been (unwritable cache dir): the store is best-effort
+        # by design, so this can still come back None.
+        validator = await run_in_threadpool(cache.validator, name)
+    if validator is not None:
+        return image_response(image_bytes, mime, validator)
+    # Nothing to stat — an override that raced away, or a cache dir that took
+    # no write. Fall back to the content-hash ETag, computed OFF the event loop
+    # (sha256 of up to 10 MB). While a cache dir stays broken that hash is paid
+    # per request; the in-memory fallback bounds the network cost, not this one.
+    return await run_in_threadpool(revalidating_image_response, request, image_bytes, mime)
 
 
 @router.get("/artists/image/settings", response_model=ArtistImageSettings)

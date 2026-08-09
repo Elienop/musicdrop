@@ -11,10 +11,14 @@ async function fetchArtists(): Promise<Artist[]> {
   return unwrap(await client.GET("/api/artists"), "Failed to load artists");
 }
 
-/** Fetch the full artist roster (`GET /api/artists`). */
+/**
+ * Fetch the full artist roster (`GET /api/artists`).
+ * staleTime: 5m — SSE-invalidated family; rationale in useStats.
+ */
 export function useArtists() {
   return useQuery({
     queryKey: ["artists"],
     queryFn: fetchArtists,
+    staleTime: 5 * 60_000,
   });
 }

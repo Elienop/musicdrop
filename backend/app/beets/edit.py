@@ -37,7 +37,7 @@ from beets.library import Library
 from beets.util import MoveOperation, syspath
 from fastapi import Request
 
-from app.beets.library import _require_id
+from app.beets.library import _album_genre, _genre_values, _require_id
 
 # An edit that renames a file performs the SAME move reorganize does, under a
 # different trigger — so it reuses reorganize's divert prediction and its sidecar
@@ -54,12 +54,14 @@ from app.models.edit import (
     TrackPathChange,
 )
 
-# Request field name -> beets field name.
+# Request field name -> beets field name. ``genre`` maps to beets 2.13's
+# multi-valued ``genres``: the single-valued ``genre`` field was dropped, so
+# edits written under that name landed in a flex key nothing reads.
 _ALBUM_FIELD_MAP: dict[str, str] = {
     "album_artist": "albumartist",
     "title": "album",
     "year": "year",
-    "genre": "genre",
+    "genre": "genres",
 }
 _TRACK_FIELD_MAP: dict[str, str] = {
     "title": "title",
@@ -77,13 +79,20 @@ class ForeignTrackError(Exception):
 
 
 def _album_edits(request: AlbumEditRequest) -> dict[str, Any]:
-    """Beets-named album fields to set (only the non-None request keys)."""
+    """Beets-named album fields to set (only the non-None request keys).
+
+    ``genres`` is list-typed in beets 2.13, so the submitted display string
+    ("Rock; Pop") is split HERE — by the same reader the whole app's genre reads
+    go through, which is what makes read -> edit -> save -> read give back what
+    the user typed.
+    """
     out: dict[str, Any] = {}
     if request.album is not None:
         for ours, beets_name in _ALBUM_FIELD_MAP.items():
             value = getattr(request.album, ours)
-            if value is not None:
-                out[beets_name] = value
+            if value is None:
+                continue
+            out[beets_name] = _genre_values(value) if beets_name == "genres" else value
     return out
 
 
@@ -117,6 +126,20 @@ def _abs(item: Any) -> str:
     return os.fsdecode(item.path)
 
 
+def _set_field(obj: Any, field: str, value: Any) -> None:
+    """Set one beets field on an album or item from an edit value.
+
+    ``set_parse`` is beets' own string -> field-type coercion, but it takes a
+    STRING — and beets 2.13's ``genres`` holds a ``list``. A list is therefore
+    assigned directly, letting the field's ``normalize`` take it as-is;
+    ``str(["Rock", "Pop"])`` would have stored the Python repr as one genre.
+    """
+    if isinstance(value, list):
+        obj[field] = value
+    else:
+        obj.set_parse(field, str(value))
+
+
 def _apply_in_memory(
     album: Any,
     items: list[Any],
@@ -127,20 +150,31 @@ def _apply_in_memory(
 
     Album fields are fanned to every item (mirrors beets ``inherit``: the four
     editable album fields are all item keys). Per-track fields then override on
-    the specific items. Uses beets' own ``set_parse`` for type coercion.
+    the specific items.
     """
     by_id = {int(it.id): it for it in items}
     for field, value in album_edits.items():
-        album.set_parse(field, str(value))
+        _set_field(album, field, value)
         for item in items:
-            item.set_parse(field, str(value))
+            _set_field(item, field, value)
     for item_id, fields in track_edits.items():
         item = by_id[item_id]
         for field, value in fields.items():
-            item.set_parse(field, str(value))
+            _set_field(item, field, value)
 
 
-def _album_side(album: Any) -> AlbumDiffSide:
+def _album_side(album: Any, items: list[Any]) -> AlbumDiffSide:
+    """One side of the album-header diff, read exactly as the app reads albums.
+
+    Genre goes through ``_album_genre`` — the single resolver every other
+    surface uses (Browse rows, album detail, duplicates), fallback to the first
+    track included — so the panel can never show an empty Genre for an album
+    whose detail page shows one. Consequence worth knowing: an album whose genre
+    comes from its tracks and is saved back UNCHANGED materialises that genre at
+    album level while ``changed_fields`` reports no change. That is the honest
+    answer for the user, who is looking at a value that did not move.
+    """
+
     def _s(value: Any) -> str | None:
         text = str(value).strip() if value is not None else ""
         return text or None
@@ -150,7 +184,7 @@ def _album_side(album: Any) -> AlbumDiffSide:
         album_artist=_s(album.albumartist),
         title=_s(album.album),
         year=year,
-        genre=_s(album.get("genre")),
+        genre=_album_genre(album, items),
     )
 
 
@@ -168,7 +202,7 @@ def _shadow_album(lib: Library, album_id: int, album_edits: dict[str, Any]) -> A
     if shadow is None:
         return None
     for field, value in album_edits.items():
-        shadow.set_parse(field, str(value))
+        _set_field(shadow, field, value)
     shadow.clear_dirty()
     shadow._revision = lib.revision
     return shadow
@@ -199,7 +233,7 @@ def preview_album_edit(
         track_edits = _track_edits(request)
         _validate_track_ids(request, by_id)
 
-        before_album = _album_side(album)
+        before_album = _album_side(album, items)
         before_titles = {_require_id(it.id): str(it.title) for it in items}
         before_tracknums = {_require_id(it.id): int(it.track or 0) for it in items}
         before_artists = {_require_id(it.id): str(it.artist) for it in items}
@@ -207,7 +241,7 @@ def preview_album_edit(
 
         _apply_in_memory(album, items, album_edits, track_edits)
 
-        after_album = _album_side(album)
+        after_album = _album_side(album, items)
         changed_fields = [
             name
             for name in ("album_artist", "title", "year", "genre")

@@ -52,6 +52,8 @@ export {
   Pause,
   CaretLeft as Back,
   CaretRight as Forward,
+  CaretDoubleLeft as SkipBack,
+  CaretDoubleRight as SkipForward,
   CircleNotch as Spinner,
   Check as Confirm,
   Checks as Merge,

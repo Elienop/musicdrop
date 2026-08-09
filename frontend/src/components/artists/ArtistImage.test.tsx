@@ -47,6 +47,21 @@ describe("ArtistImage", () => {
     expect(container.querySelector("img")?.getAttribute("src")).toContain("&v=3");
   });
 
+  it("requests the thumb variant when size='thumb'", () => {
+    const { container } = renderImage(<ArtistImage name="ABBA" size="thumb" />, {
+      enabled: true,
+    });
+    const img = container.querySelector("img");
+    expect(img?.getAttribute("src")).toContain(
+      "/api/artists/image?name=ABBA&size=thumb",
+    );
+  });
+
+  it("defaults to the full variant when size is omitted", () => {
+    const { container } = renderImage(<ArtistImage name="ABBA" />, { enabled: true });
+    expect(container.querySelector("img")?.getAttribute("src")).not.toContain("size=thumb");
+  });
+
   it("ignores an ALBUM-scoped art event", () => {
     const { container } = renderImage(<ArtistImage name="ABBA" />, { enabled: true });
     fireEvent.error(container.querySelector("img") as HTMLImageElement);

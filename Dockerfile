@@ -33,6 +33,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
     MUSICDROP_STATIC_DIR=/app/static \
     MUSICDROP_BEETS_DIR=/data/beets \
     MUSICDROP_ARTIST_IMAGE_CACHE_DIR=/data/cache/artist-images \
+    MUSICDROP_COVER_THUMB_CACHE_DIR=/data/cache/cover-thumbs \
     MUSICDROP_VERSION=${APP_VERSION}
 
 VOLUME /data

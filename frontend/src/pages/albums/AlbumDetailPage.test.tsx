@@ -114,12 +114,27 @@ describe("AlbumDetailPage", () => {
     expect(screen.getByText("3 tracks")).toBeInTheDocument();
     expect(screen.getByText("Alternative Rock")).toBeInTheDocument();
 
-    // Header cover image points at the album's /cover endpoint. It's
+    // Header cover image points at the album's /cover endpoint, FULL-size (no
+    // ?size=thumb — this hero renders up to 384 CSS px, past what a 320px
+    // thumb covers; see the coverSrc comment in AlbumDetailPage.tsx). It's
     // decorative (alt="") since the <h2> already names the album, so it's
     // queried by src rather than alt text.
     const cover = document.querySelector('img[src="/api/albums/1/cover"]');
     expect(cover).not.toBeNull();
     expect(cover).toHaveAttribute("alt", "");
+  });
+
+  test("hero cover requests the FULL-size image, not the thumb", async () => {
+    // Regression: a 320px thumb blown up to the 384px rail is a visible
+    // quality regression — this single per-page hero keeps the original.
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+
+    renderDetail(1);
+    await screen.findByRole("heading", { name: "OK Computer" });
+
+    expect(
+      document.querySelector('img[src*="/api/albums/1/cover"]'),
+    ).not.toHaveAttribute("src", expect.stringContaining("size=thumb"));
   });
 
   test("renders the tracklist in order", async () => {

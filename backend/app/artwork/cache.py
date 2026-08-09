@@ -7,6 +7,9 @@ Layout (under the configured cache dir), keyed by ``sha1(normalized_name)``::
     <key>.bin           auto-fetched image bytes   — positive slot
     <key>.mime          content-type of the positive image
     <key>.miss          negative marker; body is an absolute expiry timestamp
+    <key>.thumb.bin      derived 320px WebP of the winning slot (or, degraded,
+                         a verbatim copy of the source bytes — see get_thumb)
+    <key>.thumb.src      "<source validator> <content-type of .thumb.bin>"
 
 Pure filesystem; no network. The mime is stored in a sidecar text file so the
 binary slot stays a plain image (cheap to ``sendfile`` later).
@@ -16,17 +19,33 @@ Negative caching stores an **absolute expiry** (``now + ttl_seconds``) in the
 marker. Callers pass a short TTL for transient failures and a long one for a
 confirmed no-match (see :class:`ArtistImageService`). An unparseable body is
 treated as already-stale so a corrupt marker self-heals on the next lookup.
+
+**When the directory itself is broken** (a container recreate that re-chowned
+the volume, a read-only or full disk) nothing here may raise — the caller is
+serving an image it already holds. But swallowing a failed write is not free:
+the ``.miss`` marker is the ONLY thing bounding re-fetches, so a silently
+dropped one turns a 7-day confirmed-no-match into an upstream call on every
+request, forever, invisible. :class:`_MemoryFallback` is what keeps that bounded:
+a write that could not reach disk is remembered in a bounded map instead, so a
+broken cache dir degrades to a smaller cache rather than to no cache at all. The
+map lives on the INSTANCE and for its lifetime — the backfill daemon builds its
+own cache object, so each carries its own budget.
 """
 
 import hashlib
 import os
 import secrets
+import threading
 import time
-from contextlib import suppress
+from collections import OrderedDict
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from app.artwork.degrade import derive_thumb_or_degrade, warn_throttled
+from app.artwork.images import FALLBACK_CONTENT_TYPE, header_safe_content_type
 from app.artwork.normalize import normalize_artist_name
 
 
@@ -78,9 +97,89 @@ class _Negative:
 NEGATIVE: Final[_Negative] = _Negative()
 
 
+@dataclass(frozen=True)
+class _NegativeUntil:
+    """An in-memory stand-in for a ``.miss`` marker that could not be written."""
+
+    expiry: float
+
+
+# Bounds for the fallback below. 64 images at the 10 MB upload cap would be
+# 640 MB, so the BYTE budget is the real limit and the entry count only keeps
+# the bookkeeping small; negatives cost nothing and are not charged against it.
+_FALLBACK_MAX_ENTRIES: Final = 512
+_FALLBACK_MAX_BYTES: Final = 32 * 1024 * 1024
+
+
+class _MemoryFallback:
+    """Bounded, process-lifetime stand-in for entries disk refused to take.
+
+    Populated ONLY when a write failed, so on a healthy install it stays empty
+    and costs nothing. Insertion-ordered eviction (oldest first) under both a
+    byte budget and an entry cap: this exists to stop a broken cache dir from
+    multiplying upstream traffic, not to become an unbounded second cache that
+    turns a disk problem into an OOM.
+
+    Thread-safe because concurrent image GETs run in the threadpool and can
+    hit one instance at once. NOT shared with the artist-art backfill daemon:
+    that builds its own ArtistImageCache (artist_art_jobs/runner.py), so it
+    has a separate fallback and its own budget.
+    """
+
+    def __init__(self, *, max_entries: int, max_bytes: int) -> None:
+        self._max_entries = max_entries
+        self._max_bytes = max_bytes
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[str, CachedImage | _NegativeUntil] = OrderedDict()
+        self._bytes = 0
+
+    def put(self, key: str, value: CachedImage | _NegativeUntil) -> None:
+        with self._lock:
+            self._discard_locked(key)
+            size = len(value.data) if isinstance(value, CachedImage) else 0
+            if size > self._max_bytes:
+                return  # one image larger than the whole budget: keep nothing
+            self._entries[key] = value
+            self._bytes += size
+            while self._entries and (
+                len(self._entries) > self._max_entries or self._bytes > self._max_bytes
+            ):
+                _, evicted = self._entries.popitem(last=False)
+                if isinstance(evicted, CachedImage):
+                    self._bytes -= len(evicted.data)
+
+    def get(self, key: str) -> CachedImage | _NegativeUntil | None:
+        with self._lock:
+            return self._entries.get(key)
+
+    def discard(self, key: str) -> None:
+        """Forget ``key`` — disk took it (or its marker expired), so disk wins."""
+        with self._lock:
+            self._discard_locked(key)
+
+    def _discard_locked(self, key: str) -> None:
+        existing = self._entries.pop(key, None)
+        if isinstance(existing, CachedImage):
+            self._bytes -= len(existing.data)
+
+
+def _stat_tag(path: Path) -> str | None:
+    """A strong ETag from mtime_ns+size — no read. None if the file vanished
+    (stat races the backfill daemon's atomic replace; the caller just serves
+    the full body with a content-hash fallback)."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return f'"{st.st_mtime_ns}-{st.st_size}"'
+
+
 class ArtistImageCache:
     def __init__(self, cache_dir: Path | str) -> None:
         self._dir = Path(cache_dir)
+        self._memory = _MemoryFallback(
+            max_entries=_FALLBACK_MAX_ENTRIES, max_bytes=_FALLBACK_MAX_BYTES
+        )
 
     def _key(self, name: str) -> str:
         normalized = normalize_artist_name(name)
@@ -108,33 +207,79 @@ class ArtistImageCache:
         if positive is not None:
             return positive
 
+        # Guarded like the slot reads above: Path.exists() re-raises everything
+        # outside ENOENT/ENOTDIR/EBADF/ELOOP, so an unreadable cache dir would
+        # otherwise 500 the endpoint from here even though both slot reads
+        # already survived it.
         miss = self._dir / f"{key}.miss"
-        if miss.exists():
-            if time.time() < self._read_expiry(miss):
-                return NEGATIVE
-            # Expired (or unparseable): drop the marker so the caller re-resolves.
-            miss.unlink(missing_ok=True)
+        try:
+            if miss.exists():
+                if time.time() < self._read_expiry(miss):
+                    return NEGATIVE
+                # Expired (or unparseable): drop the marker so the caller re-resolves.
+                miss.unlink(missing_ok=True)
+        except OSError as exc:
+            warn_throttled("cache-read", "artist-image cache dir is unreadable: %s", exc)
 
+        # Disk had nothing usable. Consult the fallback LAST so a healthy disk
+        # always wins: this only ever holds what a failed write could not store.
+        remembered = self._memory.get(key)
+        if isinstance(remembered, CachedImage):
+            return remembered
+        if isinstance(remembered, _NegativeUntil):
+            if time.time() < remembered.expiry:
+                return NEGATIVE
+            self._memory.discard(key)
         return None
 
     def store_positive(self, name: str, data: bytes, content_type: str) -> None:
-        self._ensure_dir()
         key = self._key(name)
-        # A positive result supersedes any prior negative marker.
-        (self._dir / f"{key}.miss").unlink(missing_ok=True)
-        # Write the mime sidecar BEFORE the bytes so a concurrent get() never
-        # reads image bytes paired with a missing/stale content-type. Both writes
-        # are atomic (tmp + os.replace) so a reader never catches a truncated
-        # file and a crash can't leave a corrupt image cached (see _read_image).
-        _atomic_write_bytes(self._dir / f"{key}.mime", content_type.encode("utf-8"))
-        _atomic_write_bytes(self._dir / f"{key}.bin", data)
+        # A cache write may never fail the request that triggered it: the caller
+        # already HAS the image and is about to serve it, so an unwritable cache
+        # dir (volume re-chowned on recreate, read-only mount, disk full) must
+        # cost the caching, not the response.
+        with self._or_remember(key, CachedImage(data=data, content_type=content_type)):
+            self._ensure_dir()
+            # A positive result supersedes any prior negative marker.
+            (self._dir / f"{key}.miss").unlink(missing_ok=True)
+            # Write the mime sidecar BEFORE the bytes so a concurrent get() never
+            # reads image bytes paired with a missing/stale content-type. Both writes
+            # are atomic (tmp + os.replace) so a reader never catches a truncated
+            # file and a crash can't leave a corrupt image cached (see _read_image).
+            _atomic_write_bytes(self._dir / f"{key}.mime", content_type.encode("utf-8"))
+            _atomic_write_bytes(self._dir / f"{key}.bin", data)
 
     def store_negative(self, name: str, *, ttl_seconds: float) -> None:
-        self._ensure_dir()
         key = self._key(name)
-        # Store an absolute expiry; the TTL travels with the marker.
+        # The marker is the ONLY brake on re-fetching a confirmed no-match, so
+        # losing it is the expensive failure here, not the cheap one.
         expiry = time.time() + ttl_seconds
-        (self._dir / f"{key}.miss").write_text(repr(expiry), encoding="utf-8")
+        with self._or_remember(key, _NegativeUntil(expiry=expiry)):
+            self._ensure_dir()
+            # Store an absolute expiry; the TTL travels with the marker.
+            (self._dir / f"{key}.miss").write_text(repr(expiry), encoding="utf-8")
+
+    @contextmanager
+    def _or_remember(self, key: str, value: CachedImage | _NegativeUntil) -> Iterator[None]:
+        """Run a cache write; on OSError keep ``value`` in memory instead.
+
+        Never raises — see the module docstring for why the fallback exists
+        rather than a bare swallow. On SUCCESS any earlier in-memory stand-in for
+        this key is dropped, so a cache dir that gets fixed hands authority back
+        to disk without a restart.
+        """
+        try:
+            yield
+        except OSError as exc:
+            self._memory.put(key, value)
+            warn_throttled(
+                "cache-write",
+                "artist-image cache dir is unwritable (%s); "
+                "serving from a bounded in-memory fallback until it recovers",
+                exc,
+            )
+        else:
+            self._memory.discard(key)
 
     def write_override(self, name: str, data: bytes, content_type: str) -> None:
         """Plant a manual override (always wins). No auto-writer in this chunk."""
@@ -165,12 +310,149 @@ class ArtistImageCache:
 
     @staticmethod
     def _read_image(data_path: Path, mime_path: Path) -> CachedImage | None:
-        if not data_path.exists():
+        """One slot's bytes + content-type, or None when the slot is unusable.
+
+        Nothing in here may raise, and nothing it returns may be unsendable.
+        Both image endpoints call this through ``get()`` with no guard of their
+        own, and ``get_thumb`` reaches its SOURCE through it too — so its
+        "degrades to the original, never a 500" promise is only as airtight as
+        this read, and a corrupt sidecar could abort the very self-heal that
+        promise exists for.
+
+        Three failure modes, answered differently on purpose:
+
+        * unreadable BYTES read as "nothing cached", so the caller re-resolves
+          and the entry rebuilds;
+        * an unreadable SIDECAR must not cost the image — it takes the generic
+          content-type a missing one does. ``UnicodeDecodeError`` is a
+          ``ValueError``, so one guard covers a non-UTF-8 body and a vanished
+          file;
+        * a sidecar that decodes but holds something that cannot BE a header —
+          non-ASCII, or a newline — takes the same fallback. That value comes
+          straight off a CDN (see ``header_safe_content_type``), so it is a
+          poisoned-slot case, not a corrupted-disk one.
+
+        The ``exists()`` calls are guarded rather than trusted: ``Path.exists()``
+        only swallows ENOENT/ENOTDIR/EBADF/ELOOP, so EACCES (a container
+        recreate that re-chowned the cache volume) or ESTALE (a dropped network
+        mount) would otherwise raise from inside a function that promises not
+        to — same shape as :func:`_stat_tag`.
+        """
+        try:
+            if not data_path.exists():
+                return None
+            data = data_path.read_bytes()
+        except OSError as exc:
+            # exists()-then-read is also a window the backfill daemon's atomic
+            # replace — and clear_override's unlink — can move under us.
+            warn_throttled("cache-read", "artist-image cache slot is unreadable: %s", exc)
             return None
-        data = data_path.read_bytes()
-        content_type = (
-            mime_path.read_text(encoding="utf-8").strip()
-            if mime_path.exists()
-            else "application/octet-stream"
+        content_type = FALLBACK_CONTENT_TYPE
+        try:
+            if mime_path.exists():
+                content_type = mime_path.read_text(encoding="utf-8").strip()
+        except (OSError, ValueError) as exc:
+            warn_throttled(
+                "mime-sidecar-unreadable",
+                "artist-image mime sidecar %s is unreadable, serving the image as %s: %s",
+                mime_path.name,
+                FALLBACK_CONTENT_TYPE,
+                exc,
+            )
+            content_type = FALLBACK_CONTENT_TYPE
+        sendable = header_safe_content_type(content_type)
+        if sendable is None:
+            # Logged like every other degrade now that the throttle exists: this
+            # is a READ of stored state that nothing rewrites, so an unthrottled
+            # line here repeats on every request for as long as the slot stays
+            # poisoned. Keyed by condition, it reports once and stays reported.
+            warn_throttled(
+                "mime-sidecar-unsendable",
+                "artist-image mime sidecar %s holds a content-type that cannot be "
+                "sent (%r); serving %s",
+                mime_path.name,
+                content_type,
+                FALLBACK_CONTENT_TYPE,
+            )
+        # The RETURN value: a sidecar that only needed trimming is served
+        # trimmed. The .strip() above already handles the sidecar's own body,
+        # but this is the value that reaches the header, so it takes the rule.
+        return CachedImage(data=data, content_type=sendable or FALLBACK_CONTENT_TYPE)
+
+    def validator(self, name: str) -> str | None:
+        """Cheap revalidation tag for the image get() would serve: the override
+        slot when present, else the positive slot. None when neither exists (miss
+        or negative — the caller falls through to the resolve path). Same
+        stat-based scheme as the album cover's cover_validator: any writer
+        replaces the file (atomic rename bumps mtime), so a stale tag can never
+        yield a false 304.
+
+        The probe is guarded for the same reason :func:`_stat_tag` is: this runs
+        FIRST on every image request, so an unreadable cache dir (EACCES after a
+        volume re-chown, ESTALE on a dropped mount) raising out of ``exists()``
+        here would 500 both endpoints before any other guard could catch it.
+        Unreadable reads as "nothing to validate" — the caller falls through to
+        its resolve path exactly as it does on a cache miss."""
+        key = self._key(name)
+        try:
+            for slot in (f"{key}.override", f"{key}.bin"):
+                path = self._dir / slot
+                if path.exists():
+                    return _stat_tag(path)
+        except OSError as exc:
+            warn_throttled(
+                "cache-read", "artist-image cache dir is unreadable (%s); serving unvalidated", exc
+            )
+        return None
+
+    def get_thumb(self, name: str) -> CachedImage | None:
+        """The 320px WebP derivation of what get() would serve, deriving (and
+        caching) it if the stored one is missing or was built from different
+        source bytes. None when no source image is cached (the caller resolves
+        first, then retries). An undecodable source degrades to the original
+        bytes — a grid that shows SOME image beats a 500."""
+        src_tag = self.validator(name)
+        if src_tag is None:
+            return None
+        key = self._key(name)
+        thumb_path = self._dir / f"{key}.thumb.bin"
+        src_path = self._dir / f"{key}.thumb.src"
+        try:
+            stored = src_path.read_text(encoding="utf-8")
+            stored_tag, _, stored_mime = stored.partition(" ")
+            # A stored mime that cannot BE a header (non-ASCII, a control
+            # character) misses on purpose rather than falling back: re-deriving
+            # replaces it with this cache's own THUMB_MIME, which is strictly
+            # better than serving a WebP labelled application/octet-stream. One
+            # that merely needs trimming HITS, and is served trimmed — the
+            # sendable value, never the stored one.
+            sendable = header_safe_content_type(stored_mime)
+            if stored_tag == src_tag and sendable is not None and thumb_path.exists():
+                return CachedImage(data=thumb_path.read_bytes(), content_type=sendable)
+        except (OSError, ValueError):
+            # Missing/unreadable sidecar — rederive below. ValueError covers
+            # UnicodeDecodeError (a non-UTF-8 body); OSError covers an
+            # unreadable cache dir, which reaches this through exists() too.
+            # This cache self-heals, and the image endpoint has no guard that
+            # would keep either off the wire.
+            pass
+        source = self.get(name)
+        if not isinstance(source, CachedImage):
+            return None
+        # Shared with CoverThumbCache and with the endpoint's uncached path, so
+        # the serve-or-degrade decision — and the record it leaves — is made in
+        # exactly one place. It also re-checks the mime: _read_image already
+        # guarantees a header-safe, non-empty type, but get_thumb does not own
+        # that invariant and this value goes on the wire.
+        data, mime = derive_thumb_or_degrade(
+            source.data, source.content_type, subject=f"artist {name!r}"
         )
-        return CachedImage(data=data, content_type=content_type)
+        # Caching is best-effort: the thumb is already derived, so an unwritable
+        # cache dir must cost the caching, not the image.
+        try:
+            self._ensure_dir()
+            _atomic_write_bytes(thumb_path, data)
+            _atomic_write_bytes(src_path, f"{src_tag} {mime}".encode())
+        except OSError as exc:
+            warn_throttled("cache-write", "artist-image thumb cache is unwritable: %s", exc)
+        return CachedImage(data=data, content_type=mime)

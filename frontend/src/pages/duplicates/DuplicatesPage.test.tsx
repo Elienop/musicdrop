@@ -323,7 +323,9 @@ describe("DuplicatesPage", () => {
     // One cover per member, served from the album cover endpoint.
     const covers = document.querySelectorAll('img[data-slot="cover-art"]');
     expect(covers).toHaveLength(2);
-    expect(covers[0].getAttribute("src")).toBe("/api/albums/1/cover");
+    // ?size=thumb: AlbumRow renders these at size-10 (40 CSS px), so the
+    // 320px WebP derivation is already 4x what the box needs at 2x DPI.
+    expect(covers[0].getAttribute("src")).toBe("/api/albums/1/cover?size=thumb");
     // The quality/meta line folded into the row.
     expect(screen.getByText(/2007 · 10 tracks · FLAC · 900k/)).toBeInTheDocument();
   });

@@ -39,10 +39,10 @@ describe("PlaylistCover", () => {
     const imgs = container.querySelectorAll("img");
     expect(imgs).toHaveLength(4);
     expect([...imgs].map((i) => i.getAttribute("src"))).toEqual([
-      "/api/albums/1/cover",
-      "/api/albums/2/cover",
-      "/api/albums/3/cover",
-      "/api/albums/4/cover",
+      "/api/albums/1/cover?size=thumb",
+      "/api/albums/2/cover?size=thumb",
+      "/api/albums/3/cover?size=thumb",
+      "/api/albums/4/cover?size=thumb",
     ]);
   });
 
@@ -70,7 +70,7 @@ describe("PlaylistCover", () => {
     );
     const imgs = container.querySelectorAll("img");
     expect(imgs).toHaveLength(1);
-    expect(imgs[0]).toHaveAttribute("src", "/api/albums/42/cover");
+    expect(imgs[0]).toHaveAttribute("src", "/api/albums/42/cover?size=thumb");
     expect(imgs[0].className).toContain("col-span-2");
     expect(imgs[0].className).toContain("row-span-2");
   });

@@ -1,6 +1,7 @@
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
@@ -43,7 +44,8 @@ def _make_item(
         album=album,
         albumartist=albumartist,
         year=year,
-        genre=genre,
+        # beets 2.13 field: multi-valued ``genres`` (``genre`` was dropped).
+        genres=genre,
         title=title,
         track=track,
     )
@@ -79,7 +81,7 @@ def temp_library(tmp_path: Path) -> Library:
         ),
     ]
     album_a = lib.add_album(arrival)
-    album_a["genre"] = "Pop"
+    album_a["genres"] = "Pop"
     album_a.store()
 
     # Album B: a-ha / Hunting High and Low (1985, Synthpop) — one track
@@ -95,7 +97,7 @@ def temp_library(tmp_path: Path) -> Library:
         ),
     ]
     album_b = lib.add_album(hunting)
-    album_b["genre"] = "Synthpop"
+    album_b["genres"] = "Synthpop"
     album_b.store()
 
     return lib
@@ -308,7 +310,7 @@ def test_album_detail_returns_album_with_sorted_tracklist(
         _track_item(title="No Length", track=3, disc=1, length=0.0, artist="Daft Punk"),
     ]
     album = temp_library.add_album(out_of_order)
-    album["genre"] = "House"
+    album["genres"] = "House"
     album.store()
 
     resp = client.get(f"/api/albums/{album.id}")
@@ -375,7 +377,7 @@ def test_albums_filter_paginates_over_filtered_set(
             )
         ]
     )
-    second["genre"] = "Pop"
+    second["genres"] = "Pop"
     second.store()
 
     page1 = client.get("/api/albums?artist=ABBA&limit=1&offset=0").json()
@@ -610,13 +612,25 @@ def test_album_detail_real_lyrics_beat_a_stale_instrumental_flag(temp_library: "
 def test_instrumental_predicate_has_exactly_one_implementation() -> None:
     """The lyrics adapter, the album mapper and the browse facet MUST test the flag
     the same way. A second copy is how the "0"-is-truthy bug comes back on one path
-    only, so pin that all three name the SAME function object (``vars`` rather than
-    attribute access: the name is private, so mypy forbids reading it off a module
-    that only re-exports it)."""
+    only, so pin that every consumer names the SAME function object (``vars`` rather
+    than attribute access: the name is private, so mypy forbids reading it off a
+    module that only re-exports it).
+
+    ``_instrumental_value`` is the one implementation of the flag's truth.
+    ``_is_instrumental`` is the item-shaped wrapper the beets-object paths use;
+    ``browse`` reads the flag straight out of ``item_attributes`` in its aggregate
+    cache build, so it consumes the value predicate directly."""
     from app.beets import browse as browse_mod
     from app.beets import library as library_mod
     from app.beets import lyrics as lyrics_mod
 
-    predicate = vars(library_mod)["_is_instrumental"]
-    assert vars(lyrics_mod)["_is_instrumental"] is predicate
-    assert vars(browse_mod)["_is_instrumental"] is predicate
+    predicate = vars(library_mod)["_instrumental_value"]
+    assert vars(browse_mod)["_instrumental_value"] is predicate
+
+    on_item = vars(library_mod)["_is_instrumental"]
+    assert vars(lyrics_mod)["_is_instrumental"] is on_item
+    # The item wrapper must not re-derive the truth: the "0"-is-truthy trap and
+    # its opposite have to read identically through both entry points.
+    for raw, expected in (("0", False), ("", False), ("false", False), ("1", True)):
+        assert predicate(raw) is expected
+        assert on_item(SimpleNamespace(get=lambda _key, v=raw: v)) is expected

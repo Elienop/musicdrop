@@ -36,6 +36,16 @@ describe("ArtistCard (borderless)", () => {
     );
   });
 
+  test("portrait requests the thumb variant", () => {
+    renderWithProviders(<ArtistCard artist={ARTIST} />);
+
+    const img = screen.getByAltText("Sigur Rós portrait");
+    expect(img).toHaveAttribute(
+      "src",
+      expect.stringContaining("&size=thumb"),
+    );
+  });
+
   test("name + album count render below the art", () => {
     renderWithProviders(<ArtistCard artist={ARTIST} />);
 

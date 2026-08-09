@@ -78,7 +78,7 @@ export function AlbumCard({
       className="focus-ring hover:bg-surface-hover flex items-center gap-3 rounded-lg p-2 transition-colors"
     >
       <CoverArt
-        src={`/api/albums/${album.id}/cover`}
+        src={`/api/albums/${album.id}/cover?size=thumb`}
         assetKey={`album:${album.id}`}
         alt={`${album.title} cover`}
         className="border-border size-32 shrink-0 rounded-lg border"

@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -10,6 +10,8 @@ from app.api.http_cache import (
     not_modified,
     revalidating_image_response,
 )
+from app.artwork.cover_thumbs import CoverThumbCache
+from app.artwork.images import FALLBACK_CONTENT_TYPE, header_safe_content_type
 from app.beets.completeness import missing_report_op
 from app.beets.cover import fetch_cover_op, install_cover_op
 from app.beets.delete import delete_album_op
@@ -22,6 +24,7 @@ from app.beets.library import (
     list_albums,
 )
 from app.beets.lyrics import start_album_lyrics_op
+from app.config import resolve_cover_thumb_cache_dir
 from app.events.emit import emit_art_changed, emit_library_changed
 from app.models.album import Album, AlbumDetail, AlbumPage
 from app.models.completeness import AlbumMissingReport
@@ -46,6 +49,23 @@ def get_library(request: Request) -> LibraryHandle:
     """
     handle: LibraryHandle = request.app.state.beets_library
     return handle
+
+
+def get_cover_thumb_cache(request: Request) -> CoverThumbCache:
+    """The process-wide cover-thumb disk cache, built in the app lifespan.
+
+    Falls back to a fresh instance over the configured dir when unset (mirrors
+    the ``getattr(..., None)`` idiom other state getters use for the same
+    reason — see e.g. ``app.api.acquisition``/``app.api.events``). This
+    dependency runs on EVERY cover GET, not just ``size=thumb`` ones, so a
+    plain ``request.app.state.cover_thumb_cache`` would make even a full-size
+    request hard-depend on lifespan-built state; ``TestClient(app)`` skips the
+    lifespan, and tests that never touch thumbs never wire this attribute.
+    """
+    cache: CoverThumbCache | None = getattr(request.app.state, "cover_thumb_cache", None)
+    if cache is None:
+        cache = CoverThumbCache(resolve_cover_thumb_cache_dir())
+    return cache
 
 
 @router.get("/albums", response_model=AlbumPage)
@@ -111,6 +131,8 @@ async def get_album_cover_endpoint(
     album_id: int,
     request: Request,
     handle: Annotated[LibraryHandle, Depends(get_library)],
+    thumb_cache: Annotated[CoverThumbCache, Depends(get_cover_thumb_cache)],
+    size: Annotated[Literal["full", "thumb"], Query()] = "full",
 ) -> Response:
     lib = handle.lib
     # Validate off a CHEAP stat-based ETag first: the album grid revalidates every
@@ -119,13 +141,41 @@ async def get_album_cover_endpoint(
     # cover_validator stats the source instead, so an unchanged cover answers 304
     # without touching the bytes. Only a validator miss falls through to the read.
     validator = await run_in_threadpool(cover_validator, lib, album_id)
-    if validator is not None and if_none_match_hit(request, validator):
-        return not_modified(validator)
+    # The thumb is a DIFFERENT entity than the full image (distinct bytes), so it
+    # needs its own ETag under the same URL family — splice a "-t" marker inside
+    # the closing quote so the tag stays one opaque quoted string (same scheme as
+    # get_artist_image_endpoint). Compute the SIZE-SCOPED tag and run exactly ONE
+    # If-None-Match check against it: checking the full tag unconditionally would
+    # let a `size=thumb` request 304 off a client's cached FULL etag, serving no
+    # body while claiming the (different, larger) thumb is current.
+    etag = validator if size == "full" else (f'{validator[:-1]}-t"' if validator else None)
+    if etag is not None and if_none_match_hit(request, etag):
+        return not_modified(etag)
 
+    if size == "thumb" and validator is not None:
+        assert etag is not None  # size != "full" and validator set => etag was built above
+        thumb = await run_in_threadpool(
+            thumb_cache.get, album_id, validator, lambda: get_album_cover(lib, album_id)
+        )
+        if thumb is None:
+            raise HTTPException(status_code=404, detail="Cover not found")
+        return image_response(thumb.data, thumb.content_type, etag)
+
+    # size == "full" OR no stat validator (odd source / a race): existing flow.
     cover = await run_in_threadpool(get_album_cover, lib, album_id)
     if cover is None:
         raise HTTPException(status_code=404, detail="Cover not found")
     image_bytes, mime = cover
+    # One of two MEDIA-FILE content-type sinks (the other is the import
+    # candidate-cover endpoint, guarded the same way). This mime comes from an
+    # artpath extension or an embedded picture's declared MIME rather than a
+    # cache sidecar, and today neither can produce an unsendable value — the
+    # extension map is fixed, and mediafile re-derives an embedded picture's
+    # type from its magic bytes. Defence in depth, then: a value that cannot be
+    # a header 500s this endpoint (non-ASCII) or drops the connection with no
+    # response at all (a control character), and header_safe_content_type's
+    # docstring enumerates the sinks — which is only true if this one is in.
+    mime = header_safe_content_type(mime) or FALLBACK_CONTENT_TYPE
     if validator is not None:
         return image_response(image_bytes, mime, validator)
     # No stat validator (odd source / a race): fall back to the content-hash ETag.

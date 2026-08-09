@@ -120,6 +120,12 @@ export function ArtistAlbumsPage() {
               color), so the melt survives inside the frame. */}
           <div className="border-border overflow-hidden rounded-xl border pb-3">
           <div className="relative">
+            {/* Full-size on purpose (no size="thumb"): this hero renders up
+                to 384 CSS px (the w-96 rail above), well past what a 320px
+                thumb covers even at 1x DPI — a thumb here is a visible
+                quality regression for zero byte-count benefit at a
+                one-image-per-page scale. Thumbs are for the grid cards
+                (ArtistCard etc.), not this rail. */}
             <ArtistImage
               name={displayName}
               decorative

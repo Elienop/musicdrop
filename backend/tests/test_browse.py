@@ -19,7 +19,7 @@ from beets.library import Item, Library
 from fastapi.testclient import TestClient
 
 from app.api.albums import get_library
-from app.beets.browse import browse_albums, browse_facets
+from app.beets.browse import _PYTHON_WHITESPACE, BrowseRow, browse_albums, browse_facets
 from app.events.broker import EventBroker
 from app.events.emit import emit_library_changed
 from app.main import app
@@ -42,6 +42,7 @@ def _add(
     country: str | None = None,
     original_year: int | None = None,
     lyrics_on: int = 0,
+    lyrics_text: str = "la la la",
     instrumental_tracks: set[int] | None = None,
     not_instrumental_tracks: set[int] | None = None,
     added: float | None = None,
@@ -53,11 +54,13 @@ def _add(
         it = Item(album=album, albumartist=artist, artist=artist, title=f"T{i}", track=i)
         it.path = os.fsencode(str(directory / f"{artist} - {album} - {i}.x"))
         if genre is not None:
-            it.genre = genre
+            # beets 2.13 field: multi-valued ``genres``. A "; "-joined string is
+            # split by the field's own normalize, so "Rock; Pop" seeds two.
+            it.genres = genre
         if fmt is not None:
             it.format = fmt
         if i <= lyrics_on:
-            it.lyrics = "la la la"
+            it.lyrics = lyrics_text
         if instrumental_tracks and i in instrumental_tracks:
             it["lyrics_instrumental"] = 1
         if not_instrumental_tracks and i in not_instrumental_tracks:
@@ -73,7 +76,7 @@ def _add(
         items.append(it)
     al = lib.add_album(items)
     if genre is not None:
-        al["genre"] = genre
+        al["genres"] = genre
     al.year = year or 0
     if albumtype is not None:
         al.albumtype = albumtype
@@ -280,11 +283,11 @@ def test_invalidate_never_blocks_on_an_in_flight_scan(
     build_calls = {"n": 0}
     real_build = browse_mod._build_row
 
-    def parked_build(album: Any) -> Any:
+    def parked_build(album: Any, facts: Any) -> Any:
         build_calls["n"] += 1
         in_build.set()
         assert release_build.wait(timeout=5.0)
-        return real_build(album)
+        return real_build(album, facts)
 
     monkeypatch.setattr(browse_mod, "_build_row", parked_build)
     built: list[list[Any]] = []
@@ -339,9 +342,9 @@ def test_concurrent_cold_cache_calls_scan_once(
     calls = {"n": 0}
     real_build = browse_mod._build_row
 
-    def counting_build(album: Any) -> Any:
+    def counting_build(album: Any, facts: Any) -> Any:
         calls["n"] += 1
-        return real_build(album)
+        return real_build(album, facts)
 
     monkeypatch.setattr(browse_mod, "_build_row", counting_build)
     results: list[list[Any]] = []
@@ -640,6 +643,76 @@ def test_lyrics_facet_still_partial_when_only_some_tracks_are_answered(tmp_path:
     assert _lyrics_counts(lib) == {"Partial": 1}
 
 
+def test_lyrics_facet_treats_whitespace_only_lyrics_as_missing(tmp_path: Path) -> None:
+    """Whitespace-only lyrics are no lyrics — the emptiness answer moved into SQL
+    and has to keep matching Python's ``str.strip()``.
+
+    Neither value contains a space, deliberately: SQLite's one-argument ``TRIM``
+    strips spaces ONLY, so a spaces-only value passes under the wrong
+    implementation too and would leave the trap unpinned. The second album
+    carries NBSP + ideographic space, which pins the bound character set beyond
+    the ASCII three.
+    """
+    lib = Library(str(tmp_path / "l.db"), directory=str(tmp_path / "m"))
+    _add(lib, tmp_path, artist="A", album="Blank", tracks=1, lyrics_on=1, lyrics_text="\n\t")
+    _add(lib, tmp_path, artist="B", album="Exotic", tracks=1, lyrics_on=1, lyrics_text="\xa0\u3000")
+
+    assert _lyrics_counts(lib) == {"Missing": 2}
+
+
+def test_lyrics_facet_counts_a_null_lyrics_column_as_missing(tmp_path: Path) -> None:
+    """NULL is a live state, not a theoretical one.
+
+    beets adds a newly-introduced fixed field with ``ALTER TABLE items ADD
+    COLUMN <name> TEXT`` and no DEFAULT (``dbcore/db.py`` ``_make_table``), so
+    every row predating the column reads NULL — beets' own migration guards on
+    ``WHERE lyrics IS NOT NULL AND lyrics != ''`` for exactly that reason. A
+    track beets writes TODAY stores ``''``, which is why no other test in this
+    file reaches this arm, and why the value is planted by raw SQL here.
+
+    Without ``WHEN lyrics IS NULL THEN 0`` the row falls to ELSE 1 (``typeof``
+    of NULL is 'null', not 'text'), and a whole migrated library flips Missing
+    -> Complete with nothing left to fetch.
+    """
+    lib = Library(str(tmp_path / "l.db"), directory=str(tmp_path / "m"))
+    _add(lib, tmp_path, artist="A", album="Migrated", tracks=1)
+    with lib.transaction() as tx:
+        tx.mutate("UPDATE items SET lyrics = NULL")
+
+    assert _lyrics_counts(lib) == {"Missing": 1}
+
+
+def test_lyrics_facet_keeps_a_non_text_lyrics_value_answered(tmp_path: Path) -> None:
+    """Parity with the Python test the SQL replaced, not a verdict on BLOBs:
+    ``_coerce_str`` is ``str(value)``, so a non-TEXT value stringifies to
+    something TRUTHY (``b""`` -> ``"b''"``) and counted as answered.
+
+    The ``typeof(lyrics) = 'text'`` arm is what keeps that true — drop it and
+    SQLite coerces the BLOB to text, trims it to empty, and the album silently
+    moves to Missing.
+    """
+    lib = Library(str(tmp_path / "l.db"), directory=str(tmp_path / "m"))
+    _add(lib, tmp_path, artist="A", album="Blob", tracks=1)
+    with lib.transaction() as tx:
+        tx.mutate("UPDATE items SET lyrics = ?", (b"",))
+
+    assert _lyrics_counts(lib) == {"Complete": 1}
+
+
+def test_stored_whitespace_constant_matches_python() -> None:
+    """The hardcoded ``TRIM`` argument must stay exactly what ``str.strip()``
+    removes.
+
+    Derived here by scanning every codepoint rather than at import time (that
+    scan costs ~1.1M iterations), so a future Python that adds a whitespace
+    character fails loudly here instead of silently moving one album between
+    lyrics buckets. ``str.isspace()`` yields the identical set.
+    """
+    assert _PYTHON_WHITESPACE == "".join(
+        chr(code) for code in range(0x110000) if chr(code).strip() == ""
+    )
+
+
 def test_backfill_instrumental_write_invalidates_the_browse_cache(tmp_path: Path) -> None:
     """A backfill that resolves a track as INSTRUMENTAL writes only a flex flag —
     no lyrics text — and that must refresh Browse exactly like a text write does.
@@ -796,3 +869,454 @@ def test_browse_albums_endpoint_tracks_param(client: TestClient) -> None:
     assert complete.json()["total"] == 0
     facets = client.get("/api/browse/facets").json()
     assert "tracks" in facets
+
+
+# ----- characterization: the exact BrowseRow values -----
+#
+# THE REFEREE for the SQL-aggregate rewrite of the cache build. Every other test
+# in this file checks one facet in isolation; this one pins all sixteen
+# BrowseRow fields of four albums at once, so a rewrite that quietly shifts a
+# bucket edge (format tie-break, genre fallback order, the "0"-truthy
+# instrumental trap, per-disc expected-track math) fails here rather than
+# shipping. It passed against the per-album ``album.items()`` build and must
+# keep passing, UNCHANGED, against the aggregate one.
+
+
+def _char_item(
+    directory: Path,
+    *,
+    artist: str,
+    album: str,
+    n: int,
+    fmt: str | None = None,
+    genre: str | None = None,
+    lyrics: str | None = None,
+    instrumental: object | None = None,
+    tracktotal: int | None = None,
+    disc: int | None = None,
+) -> Item:
+    """One item with per-track control the shared ``_add`` helper doesn't offer."""
+    it = Item(album=album, albumartist=artist, artist=artist, title=f"T{n}", track=n)
+    it.path = os.fsencode(str(directory / f"{artist} - {album} - {n}.x"))
+    if fmt is not None:
+        it.format = fmt
+    if genre is not None:
+        it.genres = genre
+    if lyrics is not None:
+        it.lyrics = lyrics
+    if instrumental is not None:
+        it["lyrics_instrumental"] = instrumental
+    if tracktotal is not None:
+        it.tracktotal = tracktotal
+    if disc is not None:
+        it.disc = disc
+    return it
+
+
+def _characterization_lib(tmp_path: Path) -> Library:
+    """The four-album fixture the characterization test pins. See its docstring."""
+    lib = Library(str(tmp_path / "char.db"), directory=str(tmp_path / "music"))
+
+    # A - every field populated, everything Complete.
+    a = lib.add_album(
+        [
+            _char_item(
+                tmp_path, artist="Alpha", album="Anthem", n=n, fmt="FLAC", lyrics="la", tracktotal=2
+            )
+            for n in (1, 2)
+        ]
+    )
+    a["genres"] = "Rock"
+    a.year = 1994
+    a.original_year = 1989
+    a.albumtype = "album"
+    a["data_source"] = "MusicBrainz"
+    a["media"] = "CD"
+    a.country = "SE"
+    a.added = 100.0
+    a.store()
+
+    # B - format majority vote, genre fallback to the FIRST non-empty item genre,
+    # lyrics Partial (one real lyric + one instrumental + one neither).
+    b = lib.add_album(
+        [
+            _char_item(tmp_path, artist="Bravo", album="Beacon", n=1, fmt="MP3", tracktotal=5),
+            _char_item(
+                tmp_path,
+                artist="Bravo",
+                album="Beacon",
+                n=2,
+                fmt="MP3",
+                genre="Pop",
+                lyrics="la",
+                tracktotal=5,
+            ),
+            _char_item(
+                tmp_path,
+                artist="Bravo",
+                album="Beacon",
+                n=3,
+                fmt="FLAC",
+                genre="Jazz",
+                instrumental=1,
+                tracktotal=5,
+            ),
+        ]
+    )
+    # No album-level genre on purpose: `genres` is one of Album.item_keys, so
+    # assigning it here would propagate DOWN to every item on store() and erase
+    # the per-item fallback this pins. (Leaving it untouched is safe: add_album
+    # seeds the album's genres from item 1 but leaves the field CLEAN, and
+    # store(inherit=True) only fans out DIRTY keys.)
+    b.added = 200.0
+    b.store()
+
+    # C - the "0"-is-truthy trap: beets writes lyrics_instrumental=False on every
+    # track it searched and found nothing for, and that reads back as "0".
+    c = lib.add_album(
+        [_char_item(tmp_path, artist="Charlie", album="Cipher", n=1, instrumental=False)]
+    )
+    c.year = 2003
+    c.added = 300.0
+    c.store()
+
+    # D - per_disc_numbering: expected = ONE tracktotal per distinct disc
+    # (2 + 3 = 5), not the first item's alone (2). 4 present -> Incomplete.
+    d = lib.add_album(
+        [
+            _char_item(
+                tmp_path,
+                artist="Delta",
+                album="Delta Box",
+                n=n,
+                fmt="FLAC",
+                disc=disc,
+                tracktotal=tracktotal,
+            )
+            for n, disc, tracktotal in ((1, 1, 2), (2, 2, 3), (3, 1, 2), (4, 2, 3))
+        ]
+    )
+    d["genres"] = "Metal"
+    d.year = 2011
+    d.disctotal = 2
+    d.added = 400.0
+    d.store()
+    return lib
+
+
+# The expected rows, written from the fixture's INTENT rather than copied off a
+# run. Album ids are the insertion order of a fresh temp DB (1..4).
+_EXPECTED_ROWS = [
+    BrowseRow(
+        album_id=1,
+        artist_key="alpha",
+        album_key="anthem",
+        albumartist="Alpha",
+        added=100.0,
+        genre="Rock",
+        decade="1980s",  # original_year 1989 wins over year 1994
+        format="FLAC",
+        album_type="album",
+        source="MusicBrainz",
+        media="CD",
+        country="SE",
+        lyrics="Complete",  # 2 of 2 tracks carry lyrics
+        tracks="Complete",  # 2 present vs tracktotal 2
+        track_count=2,
+        genre_raw="Rock",
+    ),
+    BrowseRow(
+        album_id=2,
+        artist_key="bravo",
+        album_key="beacon",
+        albumartist="Bravo",
+        added=200.0,
+        genre="Pop",  # first non-empty ITEM genre in (disc, track) order
+        decade="Unknown",  # no year at all
+        format="MP3",  # 2x MP3 beats 1x FLAC
+        album_type="Unknown",
+        source="Unknown",
+        media="Unknown",
+        country="Unknown",
+        lyrics="Partial",  # 1 real lyric + 1 instrumental answered, 1 not
+        tracks="Incomplete",  # 3 present vs tracktotal 5
+        track_count=3,
+        genre_raw="Pop",
+    ),
+    BrowseRow(
+        album_id=3,
+        artist_key="charlie",
+        album_key="cipher",
+        albumartist="Charlie",
+        added=300.0,
+        genre="Unknown",
+        decade="2000s",
+        format="Unknown",  # no item carries a format
+        album_type="Unknown",
+        source="Unknown",
+        media="Unknown",
+        country="Unknown",
+        lyrics="Missing",  # the "0" flag must NOT read as instrumental
+        tracks="Unknown",  # no tracktotal
+        track_count=1,
+        genre_raw=None,  # NULL, not "Unknown" - the Album model keeps it nullable
+    ),
+    BrowseRow(
+        album_id=4,
+        artist_key="delta",
+        album_key="delta box",
+        albumartist="Delta",
+        added=400.0,
+        genre="Metal",
+        decade="2010s",
+        format="FLAC",
+        album_type="Unknown",
+        source="Unknown",
+        media="Unknown",
+        country="Unknown",
+        lyrics="Missing",
+        tracks="Incomplete",  # per-disc expected 2+3=5 vs 4 present
+        track_count=4,
+        genre_raw="Metal",
+    ),
+]
+
+
+def test_rows_characterization(tmp_path: Path) -> None:
+    """Pins _build_row's output field-by-field across the SQL-aggregate rewrite.
+
+    A: 2 FLAC tracks, album genre 'Rock', year 1994 + original_year 1989,
+       tracktotal 2, both tracks have lyrics -> everything Complete, decade 1980s.
+    B: 3 tracks (2 MP3 + 1 FLAC -> MP3 by majority), NO album genre, item genres
+       ['', 'Pop', 'Jazz'] -> fallback 'Pop' (first non-empty in disc/track
+       order), no year -> decade Unknown, tracktotal 5 -> Incomplete, one track
+       with lyrics + one flagged instrumental + one neither -> lyrics Partial.
+    C: 1 track, no format, no tracktotal -> Unknown, no lyrics and
+       lyrics_instrumental='0' (the truthy-string trap) -> lyrics Missing.
+    D: 4 tracks across 2 discs under per_disc_numbering, per-disc tracktotals
+       2 and 3 -> expected 5, present 4 -> Incomplete (using only the FIRST
+       item's tracktotal would wrongly read Complete).
+    """
+    from beets import config as beets_config
+
+    from app.beets import browse as browse_mod
+
+    lib = _characterization_lib(tmp_path)
+    beets_config["per_disc_numbering"] = True
+    try:
+        browse_mod.invalidate_browse_cache()
+        rows = sorted(browse_mod._rows(lib), key=lambda r: r.album_id)
+    finally:
+        beets_config["per_disc_numbering"] = False
+
+    assert rows == _EXPECTED_ROWS
+
+
+def test_rebuild_issues_no_per_album_items_queries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cold rebuild must not run one ``album.items()`` query per album.
+
+    That N+1 is the whole cost of the cache: ~4.5k queries and 18k beets Item
+    materializations on a real library, repaid after EVERY mutation because
+    ``emit_library_changed`` drops the cache. The aggregate build reads the item
+    facts in a handful of whole-table queries instead, so this spy stays at zero.
+    """
+    from beets.library import Album as _BeetsAlbum
+
+    from app.beets import browse as browse_mod
+
+    lib = _characterization_lib(tmp_path)
+    browse_mod.invalidate_browse_cache()
+
+    calls: list[int] = []
+    real_items = _BeetsAlbum.items
+
+    def counting_items(self: _BeetsAlbum, *a: Any, **k: Any) -> Any:
+        calls.append(1)
+        return real_items(self, *a, **k)
+
+    monkeypatch.setattr(_BeetsAlbum, "items", counting_items)
+    facets = browse_facets(lib)  # forces the full rebuild
+
+    assert calls == []  # the aggregate build never calls album.items()
+    assert sum(v.count for v in facets.genres) == 4  # and it really built all four rows
+
+
+def test_item_order_is_play_order_not_the_display_sort(tmp_path: Path) -> None:
+    """DELIBERATE CHANGE from the per-album ``album.items()`` build.
+
+    ``album.items()`` returns tracks in beets' ``sort_item`` DISPLAY order
+    (``artist+ album+ disc+ track+`` by default), so on a compilation — tracks
+    with different artists — the alphabetically-first artist came first, not
+    track 1. The order-sensitive facts (genre fallback, a tied format vote,
+    which disc's ``tracktotal`` is "first") therefore moved with a user's
+    display-sort preference. The aggregate build reads ``(disc, track, id)``
+    instead, so a compilation's facets are stable play order.
+
+    Here artist 'Zed' holds track 1 and 'Abe' holds track 2: the old build read
+    genre 'Pop' (Abe's, sorted first), this one reads 'Jazz' (track 1's).
+    """
+    from app.beets import browse as browse_mod
+
+    lib = Library(str(tmp_path / "comp.db"), directory=str(tmp_path / "music"))
+    lib.add_album(
+        [
+            _char_item(tmp_path, artist=artist, album="Comp", n=n, genre=genre)
+            for n, artist, genre in ((1, "Zed", "Jazz"), (2, "Abe", "Pop"))
+        ]
+    ).store()
+
+    browse_mod.invalidate_browse_cache()
+    (row,) = browse_mod._rows(lib)
+    assert row.genre_raw == "Jazz"  # track 1's genre, NOT the display sort's first
+
+
+def test_genre_fallback_agrees_across_every_endpoint(tmp_path: Path) -> None:
+    """ONE genre answer per album, whichever endpoint asks.
+
+    The Browse cache resolves the item-genre fallback from SQL in play order,
+    while ``get_album_detail`` / ``_to_album`` / the duplicates report resolve it
+    through ``_album_genre`` over ``list(album.items())`` — which beets returns
+    in ``sort_item`` DISPLAY order. On a compilation (tracks with different
+    artists) those two orders disagree, so the same album reported one genre on
+    the Browse grid and a different one on its own detail page. Pinned here
+    because the bug is invisible from inside either endpoint alone.
+    """
+    from app.beets import browse as browse_mod
+    from app.beets.library import _to_album, get_album_detail
+
+    lib = Library(str(tmp_path / "comp.db"), directory=str(tmp_path / "music"))
+    # Track 1 is 'Zed'/Jazz, track 2 is 'Abe'/Pop: the display sort puts Abe
+    # first, play order puts track 1 first.
+    lib.add_album(
+        [
+            _char_item(tmp_path, artist=artist, album="Comp", n=n, genre=genre)
+            for n, artist, genre in ((1, "Zed", "Jazz"), (2, "Abe", "Pop"))
+        ]
+    ).store()
+
+    browse_mod.invalidate_browse_cache()
+    (row,) = browse_mod._rows(lib)
+    detail = get_album_detail(lib, row.album_id)
+    assert detail is not None
+    album = lib.get_album(row.album_id)
+    assert album is not None
+
+    assert row.genre_raw == detail.genre == _to_album(album).genre == "Jazz"
+
+
+def _genre_pipeline_lib(tmp_path: Path) -> Library:
+    """Five albums, one per genre case. See the test's docstring."""
+    lib = Library(str(tmp_path / "genres.db"), directory=str(tmp_path / "music"))
+
+    single = lib.add_album([_char_item(tmp_path, artist="Single", album="One", n=1)])
+    single["genres"] = ["Rock"]
+    single.store()
+
+    multi = lib.add_album([_char_item(tmp_path, artist="Multi", album="Two", n=1)])
+    multi["genres"] = ["Rock", "Pop"]
+    multi.store()
+
+    # No album-level genres: track 1 has none, track 2 does. The FIRST track
+    # with any wins, in play order (see _characterization_lib's album B on why
+    # the album's own genres must stay untouched here).
+    fallback = lib.add_album(
+        [
+            _char_item(tmp_path, artist="Fallback", album="Three", n=1),
+            _char_item(tmp_path, artist="Fallback", album="Three", n=2, genre="Jazz; Funk"),
+        ]
+    )
+    fallback.store()
+
+    bare = lib.add_album([_char_item(tmp_path, artist="Bare", album="Four", n=1)])
+    bare.store()
+
+    # The album's OWN genres disagree with its track's. Without this album the
+    # precedence half of the contract is untestable: every other fixture here
+    # stores the album genres and lets store() fan them to the tracks, so the
+    # album read and the track fallback answer identically and a mutation that
+    # drops the album read is invisible.
+    #
+    # ``store(inherit=False)`` is what keeps them apart — a plain store() would
+    # fan 'Rock' down and erase the track's 'Jazz', which is the trap
+    # _characterization_lib's album B documents. Reachable in a real library:
+    # disk sync rewrites per-track genres from the files without touching the
+    # album row (tests/test_disk_sync_adapter.py).
+    precedence = lib.add_album(
+        [_char_item(tmp_path, artist="Precedence", album="Five", n=1, genre="Jazz")]
+    )
+    precedence["genres"] = ["Rock"]
+    precedence.store(inherit=False)
+    return lib
+
+
+def test_genre_pipeline_reads_beets_genres(tmp_path: Path) -> None:
+    """Genre is read from beets 2.13's ``genres``, end to end.
+
+    beets 2.13 dropped the single-valued ``genre`` field from both ``Item`` and
+    ``Album`` in favour of multi-valued ``genres`` (a real column). Reading
+    ``genre`` still "works" — it resolves through the FLEX path and answers
+    ``None`` for every album in a real library — so the Browse genre facet read
+    "Unknown" library-wide, every ``Album.genre`` on the wire was null, and the
+    edit panel showed the field empty. Five albums, one per case:
+
+    * Single     — album ``genres`` ``['Rock']``.
+    * Multi      — album ``genres`` ``['Rock', 'Pop']``: the FACET is the
+      primary genre alone (one value per album, so counts still sum to the
+      album total) while the ``Album`` model carries beets' ``"; "`` join.
+    * Fallback   — no album genres; track 1 has none, track 2 has two.
+    * Bare       — nothing anywhere: facet "Unknown", model ``None``.
+    * Precedence — album ``['Rock']`` vs track ``['Jazz']``: the ALBUM wins.
+      This is the only fixture where the album read and the track fallback give
+      different answers, so it is the only one that can catch a regression that
+      drops the album read and silently rides the fallback.
+    """
+    from app.beets import browse as browse_mod
+    from app.beets.edit import preview_album_edit
+    from app.beets.library import _to_album, get_album_detail
+    from app.models.edit import AlbumEditRequest
+
+    lib = _genre_pipeline_lib(tmp_path)
+    browse_mod.invalidate_browse_cache()
+
+    # The facet buckets each album under ONE value: the primary genre.
+    counts = {f.value: f.count for f in browse_facets(lib).genres}
+    assert counts == {"Rock": 3, "Jazz": 1, "Unknown": 1}
+    assert sum(counts.values()) == 5
+
+    # The Album model carries the display join, and stays nullable.
+    albums, _ = browse_albums(lib, genres=[], decades=[], formats=[], limit=50, offset=0)
+    assert {a.title: a.genre for a in albums} == {
+        "One": "Rock",
+        "Two": "Rock; Pop",
+        "Three": "Jazz; Funk",
+        "Four": None,
+        "Five": "Rock",  # the ALBUM's genres, NOT its track's 'Jazz'
+    }
+
+    # Filtering by the facet value finds the multi-genre album by its primary.
+    filtered, _ = browse_albums(lib, genres=["Rock"], decades=[], formats=[], limit=50, offset=0)
+    assert {a.title for a in filtered} == {"One", "Two", "Five"}
+
+    # Detail, the uncached mapper and the edit panel's read side all agree.
+    by_title = {a.title: a.id for a in albums}
+    for title, expected in (
+        ("One", "Rock"),
+        ("Two", "Rock; Pop"),
+        ("Three", "Jazz; Funk"),
+        ("Four", None),
+        # Album beats track everywhere, not just on the Browse row.
+        ("Five", "Rock"),
+    ):
+        album_id = by_title[title]
+        detail = get_album_detail(lib, album_id)
+        assert detail is not None
+        beets_album = lib.get_album(album_id)
+        assert beets_album is not None
+        preview = preview_album_edit(
+            lib, album_id=album_id, request=AlbumEditRequest(), move_enabled=False
+        )
+        assert detail.genre == expected, title
+        assert _to_album(beets_album).genre == expected, title
+        assert preview.album_before.genre == expected, title
