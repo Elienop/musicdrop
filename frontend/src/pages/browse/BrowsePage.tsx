@@ -150,6 +150,15 @@ export function BrowsePage() {
             </span>
           )
         }
+        // How much of the page you see is a property OF THE PAGE, so it sits
+        // with the page's own controls rather than in the filter toolbar.
+        // Same placement on Artists. SORT stays in the toolbar: it reorders
+        // the results the filters produced, so it belongs with them.
+        actions={
+          total > PAGE_SIZE_OPTIONS[0] ? (
+            <PageSizeSelect value={pageSize} onChange={setPageSize} />
+          ) : undefined
+        }
       />
 
       <div className="flex flex-col gap-6 md:flex-row">
@@ -307,9 +316,6 @@ export function BrowsePage() {
                   aria-hidden="true"
                 />
               </span>
-              {total > PAGE_SIZE_OPTIONS[0] && (
-                <PageSizeSelect value={pageSize} onChange={setPageSize} />
-              )}
               {total > pageSize && (
                 <Pagination
                   compact

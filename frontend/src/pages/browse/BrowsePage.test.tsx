@@ -326,6 +326,19 @@ describe("BrowsePage", () => {
     expect(
       screen.getByRole("combobox", { name: "Results per page" }),
     ).toBeInTheDocument();
+    // The per-page choice lives in the page header beside the h1 (same place
+    // as Artists); the toolbar keeps only the sort select and the pager.
+    const sizeSelect = screen.getByRole("combobox", {
+      name: "Results per page",
+    });
+    const header = sizeSelect.closest("header");
+    expect(header).not.toBeNull();
+    expect(
+      within(header as HTMLElement).getByRole("heading", { level: 1 }),
+    ).toHaveTextContent("Browse");
+    expect(header).not.toContainElement(
+      screen.getByRole("combobox", { name: "Sort albums" }),
+    );
   });
 
   test("choosing a page size drives the albums query and the URL", async () => {

@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, test } from "vitest";
@@ -228,6 +228,36 @@ describe("ArtistsPage", () => {
     ).toBeInTheDocument();
   });
 
+  test("the page-size select sits in the page header, not the toolbar row", async () => {
+    localStorage.clear();
+    const big: Artist[] = Array.from({ length: 60 }, (_, i) => ({
+      name: `Artist ${String(i).padStart(2, "0")}`,
+      album_count: 1,
+    }));
+    server.use(http.get(ARTISTS_URL, () => HttpResponse.json(big)));
+
+    renderWithProviders(<ArtistsPage />);
+    await screen.findByText("Artist 00");
+
+    // A per-page choice belongs with the page's own controls, beside the h1 —
+    // consistent with Browse, and it keeps the toolbar row to the two
+    // controls that move you WITHIN the roster.
+    const sizeSelect = screen.getByRole("combobox", {
+      name: "Results per page",
+    });
+    const header = sizeSelect.closest("header");
+    expect(header).not.toBeNull();
+    expect(
+      within(header as HTMLElement).getByRole("heading", { level: 1 }),
+    ).toHaveTextContent("Artists");
+    // ...and no longer beside the pager.
+    const topPager = screen.getByRole("navigation", {
+      name: "Pagination (top)",
+    });
+    expect(topPager.parentElement).not.toBe(sizeSelect.parentElement);
+    expect(header).not.toContainElement(topPager);
+  });
+
   test("the letter index sits in the toolbar row, not on a row of its own", async () => {
     localStorage.clear();
     const big: Artist[] = Array.from({ length: 60 }, (_, i) => ({
@@ -245,19 +275,18 @@ describe("ArtistsPage", () => {
     const topPager = screen.getByRole("navigation", {
       name: "Pagination (top)",
     });
-    const sizeSelect = screen.getByRole("combobox", {
-      name: "Results per page",
-    });
-    // ONE horizontal band: the letters, the size select and the pager are
-    // siblings in a single flex row, with the letters taking the empty space
-    // to the left of the controls. A second row for the index is exactly the
-    // vertical space this reclaims.
+    // ONE horizontal band: the letters and the pager are siblings in a single
+    // flex row. A second row for the index is exactly the vertical space this
+    // reclaims.
     const band = index.parentElement;
     expect(topPager.parentElement).toBe(band);
-    // PageSizeSelect wraps its <select> in a positioning span.
-    expect(sizeSelect.parentElement?.parentElement).toBe(band);
     expect(band?.classList.contains("flex")).toBe(true);
     expect(band?.classList.contains("flex-col")).toBe(false);
+    // ORDER IS THE POINT: letters FIRST, so they occupy the empty left half
+    // and the pager stays right. Swap them and the band still reads as one
+    // row while doing the opposite of what it exists for.
+    expect(band?.firstElementChild).toBe(index);
+    expect(band?.lastElementChild).toBe(topPager);
   });
 
   test("a small roster gets no toolbar at all", async () => {
