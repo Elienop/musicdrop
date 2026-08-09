@@ -9,6 +9,7 @@ import {
   Spinner,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { pageWindow } from "@/lib/pageWindow";
 
 /** The default library page size — surfaces without a size selector use it. */
@@ -129,29 +130,14 @@ export function Pagination({
           <Back aria-hidden="true" />
         </Button>
         {editing ? (
-          <input
-            type="number"
-            min={1}
-            max={totalPages}
-            defaultValue={page}
-            autoFocus
-            aria-label={`Go to page (1–${totalPages})`}
-            className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-14 rounded-md border px-1 text-center text-sm tabular-nums shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
-            onFocus={(e) => e.currentTarget.select()}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                const n = Number((e.target as HTMLInputElement).value);
-                setEditing(false);
-                if (Number.isFinite(n) && n >= 1)
-                  go(
-                    (Math.min(totalPages, Math.max(1, Math.round(n))) - 1) *
-                      limit,
-                  );
-              } else if (e.key === "Escape") {
-                setEditing(false);
-              }
+          <PageJumpInput
+            page={page}
+            totalPages={totalPages}
+            onCommit={(target) => {
+              setEditing(false);
+              if (target !== null) go((target - 1) * limit);
             }}
-            onBlur={() => setEditing(false)}
+            onCancel={() => setEditing(false)}
           />
         ) : (
           // Mounted in BOTH busy and idle states — only its CONTENT swaps.
@@ -292,6 +278,65 @@ export function Pagination({
         <Forward aria-hidden="true" />
       </Button>
     </nav>
+  );
+}
+
+/**
+ * The field the compact readout opens on click — the shadcn Input at toolbar
+ * scale (h-8, matching the icon buttons and PageSizeSelect beside it).
+ *
+ * Deliberately `type="text"` + inputMode="numeric", NOT `type="number"`: a
+ * number input draws the UA spinner buttons — clutter on a 56px control
+ * nobody is going to step one page at a time — and steps its value on a
+ * mouse wheel. That second one is the real bug: this sits in the toolbar
+ * directly above a scrolling grid, so a scroll that happens to start over
+ * the field would silently retarget the page. Text inputs ignore the wheel
+ * entirely. The trade is that digits are no longer policed by the UA, so
+ * onChange strips anything else.
+ *
+ * Mounted only while editing, so the draft seeds from the current page on
+ * mount and dies with it; all three exits (Enter, Escape, blur) just report
+ * up, and Pagination — which owns the deferred focus-return contract for
+ * that true -> false flip — decides what happens next.
+ */
+function PageJumpInput({
+  page,
+  totalPages,
+  onCommit,
+  onCancel,
+}: {
+  page: number;
+  totalPages: number;
+  /** The clamped 1-based page to go to, or null for "nothing to commit". */
+  onCommit: (target: number | null) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(String(page));
+
+  return (
+    <Input
+      type="text"
+      inputMode="numeric"
+      autoComplete="off"
+      value={draft}
+      autoFocus
+      aria-label={`Go to page (1–${totalPages})`}
+      className="bg-background h-8 w-14 px-1 text-center text-sm tabular-nums"
+      onFocus={(e) => e.currentTarget.select()}
+      onChange={(e) => setDraft(e.target.value.replace(/\D/g, ""))}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          // Digits-only, so Number() can't be NaN — an empty field is the
+          // only non-commit, and anything past the end clamps to the last
+          // page rather than being rejected.
+          const n = Number(draft);
+          onCommit(n >= 1 ? Math.min(totalPages, n) : null);
+        } else if (e.key === "Escape") {
+          onCancel();
+        }
+      }}
+      onBlur={onCancel}
+    />
   );
 }
 

@@ -278,6 +278,56 @@ describe("Pagination compact variant", () => {
     expect(onOffsetChange).toHaveBeenCalledWith(432);
   });
 
+  it("compact: the jump field is a plain typed field, not a number spinner", async () => {
+    render(
+      <Pagination
+        compact
+        total={48 * 48}
+        offset={48}
+        limit={48}
+        onOffsetChange={() => {}}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
+    const input = screen.getByRole("textbox", { name: /go to page/i });
+    // `type="number"` draws the UA spinner buttons — noise at toolbar size —
+    // and, worse, steps its value on a mouse wheel: this field sits directly
+    // above a scrolling grid, so a stray scroll would silently retarget the
+    // page. A text field with a numeric keypad hint does neither.
+    expect(input).toHaveAttribute("type", "text");
+    expect(input).toHaveAttribute("inputmode", "numeric");
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+    // The name still announces the range the field accepts.
+    expect(input).toHaveAccessibleName("Go to page (1–48)");
+    // It's the shadcn Input, so it arrives with that component's h-9 default
+    // — the toolbar override has to actually win, or the field stands a
+    // pixel taller than every button and select in the same band.
+    expect(input.classList.contains("h-8")).toBe(true);
+    expect(input.classList.contains("h-9")).toBe(false);
+  });
+
+  it("compact: the jump field takes digits only", async () => {
+    // With the UA no longer policing the value (see above), the field itself
+    // has to: typed letters are dropped rather than poisoning the commit.
+    const onOffsetChange = vi.fn();
+    render(
+      <Pagination
+        compact
+        total={48 * 48}
+        offset={48}
+        limit={48}
+        onOffsetChange={onOffsetChange}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
+    const input = screen.getByRole("textbox", { name: /go to page/i });
+    await userEvent.clear(input);
+    await userEvent.type(input, "3o0");
+    expect(input).toHaveValue("30");
+    await userEvent.type(input, "{Enter}");
+    expect(onOffsetChange).toHaveBeenCalledWith(48 * 29);
+  });
+
   it("compact: readout edits into a page jump", async () => {
     const onOffsetChange = vi.fn();
     render(
@@ -290,7 +340,7 @@ describe("Pagination compact variant", () => {
       />,
     );
     await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
-    const input = screen.getByRole("spinbutton", { name: /go to page/i });
+    const input = screen.getByRole("textbox", { name: /go to page/i });
     await userEvent.clear(input);
     await userEvent.type(input, "30{Enter}");
     expect(onOffsetChange).toHaveBeenCalledWith(48 * 29);
@@ -310,20 +360,20 @@ describe("Pagination compact variant", () => {
       />,
     );
     await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
-    const input = screen.getByRole("spinbutton", { name: /go to page/i });
+    const input = screen.getByRole("textbox", { name: /go to page/i });
     await userEvent.clear(input);
     await userEvent.type(input, "999{Enter}");
     expect(onOffsetChange).toHaveBeenCalledWith(48 * 47); // clamped to last page
     await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
     await userEvent.keyboard("{Escape}");
-    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /go to page/i })).toHaveFocus();
   });
 
   it("compact: Enter-commit that flips busy synchronously (like isFetching) still refocuses the readout", async () => {
     render(<BusyOnCommitHarness />);
     await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
-    const input = screen.getByRole("spinbutton", { name: /go to page/i });
+    const input = screen.getByRole("textbox", { name: /go to page/i });
     await userEvent.clear(input);
     await userEvent.type(input, "30{Enter}");
     // The readout stays mounted (as the busy spinner) rather than being
@@ -337,7 +387,7 @@ describe("Pagination compact variant", () => {
   it("compact: clicking the readout while busy does not open the input", async () => {
     render(<BusyOnCommitHarness />);
     await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
-    const input = screen.getByRole("spinbutton", { name: /go to page/i });
+    const input = screen.getByRole("textbox", { name: /go to page/i });
     await userEvent.clear(input);
     await userEvent.type(input, "30{Enter}");
     await waitFor(() =>
@@ -346,7 +396,34 @@ describe("Pagination compact variant", () => {
       ).toHaveFocus(),
     );
     await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
-    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("compact: opening the jump field selects its value so typing replaces it", async () => {
+    // Guard, not a regression: focus-select already held. The field is being
+    // rebuilt, so pin that a single keystroke still overwrites the seeded
+    // page number instead of appending to it.
+    const onOffsetChange = vi.fn();
+    render(
+      <Pagination
+        compact
+        total={48 * 48}
+        offset={48}
+        limit={48}
+        onOffsetChange={onOffsetChange}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /go to page/i }));
+    // The field seeds with "2" (offset 48 / limit 48 + 1), autofocuses and
+    // selects it. Type straight at it — a userEvent.type() would click the
+    // input first and collapse that selection, which a real user (already
+    // focused by the open) never does.
+    const input = screen.getByRole("textbox", { name: /go to page/i });
+    expect(input).toHaveFocus();
+    await userEvent.keyboard("7");
+    expect(input).toHaveValue("7"); // replaced the "2", not appended to it
+    await userEvent.keyboard("{Enter}");
+    expect(onOffsetChange).toHaveBeenCalledWith(48 * 6); // page 7, not 27
   });
 });
 
