@@ -318,3 +318,103 @@ async def test_get_mbid_called_only_on_cache_miss(
     # Cache hit -> short-circuit -> get_mbid NOT invoked again.
     assert await service.get_artist_image("ABBA", get_mbid=get_mbid) == (b"IMG", "image/jpeg")
     assert calls["n"] == 1
+
+
+@pytest.mark.anyio
+async def test_is_enabled_reflects_the_injected_predicate(
+    cache: ArtistImageCache, client: httpx.AsyncClient
+) -> None:
+    flag = {"on": False}
+    service = ArtistImageService(
+        source=DeezerArtistImageSource(client=client, search_limit=5),
+        cache=cache,
+        limiter=TokenBucketLimiter(rate_per_sec=1000.0, max_concurrency=2),
+        is_enabled=lambda: flag["on"],
+        negative_ttl_seconds=3600,
+        transient_ttl_seconds=600,
+    )
+    assert service.is_enabled() is False
+    flag["on"] = True
+    assert service.is_enabled() is True
+
+
+@pytest.mark.anyio
+async def test_limiter_slot_caps_concurrent_manual_fetches(
+    cache: ArtistImageCache, client: httpx.AsyncClient
+) -> None:
+    # A manual fetch must pace against a bucket at all -- six at once may not
+    # all go out together. (That it is the SAME bucket the chain uses is a
+    # different claim, pinned by the test below.)
+    import asyncio
+
+    active = 0
+    peak = 0
+    service = _make_service(cache=cache, client=client)
+
+    async def borrow() -> None:
+        nonlocal active, peak
+        async with service.limiter_slot():
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.02)
+            active -= 1
+
+    await asyncio.gather(*(borrow() for _ in range(6)))
+    assert peak <= 2
+
+
+@pytest.mark.anyio
+async def test_limiter_slot_shares_the_bucket_the_resolve_chain_uses(
+    cache: ArtistImageCache, client: httpx.AsyncClient
+) -> None:
+    """The manual slot has to contend with the CHAIN, not merely with itself.
+
+    Peak-concurrency alone cannot see the failure this guards: a service that
+    handed out slots from a second private ``TokenBucketLimiter`` would still
+    cap manual fetches at 2 and pass that assertion, while doubling the real
+    outbound rate against fanart.tv / Spotify / Deezer. Cross-path contention is
+    the only observable difference -- with ONE bucket at ``max_concurrency=1``,
+    a resolve holding the slot leaves ``limiter_slot()`` waiting.
+
+    No wall clock is load-bearing here: the manual path does no I/O and no
+    threadpool hop, so a second bucket would be acquired within one loop
+    iteration and the sleep is pure headroom.
+    """
+    import asyncio
+
+    chain_holding = asyncio.Event()
+    let_chain_finish = asyncio.Event()
+    manual_entered = asyncio.Event()
+
+    class _HoldingSource:
+        async def resolve(self, name: str, *, mbid: str | None = None) -> ResolvedImage | None:
+            chain_holding.set()
+            await let_chain_finish.wait()
+            return None
+
+    service = ArtistImageService(
+        source=_HoldingSource(),
+        cache=cache,
+        limiter=TokenBucketLimiter(rate_per_sec=1000.0, max_concurrency=1),
+        is_enabled=lambda: True,
+        negative_ttl_seconds=3600,
+        transient_ttl_seconds=600,
+    )
+
+    chain = asyncio.ensure_future(service.get_artist_image("ABBA"))
+    await chain_holding.wait()  # the chain now owns the only slot
+
+    async def manual() -> None:
+        async with service.limiter_slot():
+            manual_entered.set()
+
+    manual_task = asyncio.ensure_future(manual())
+    await asyncio.sleep(0.05)
+    blocked = not manual_entered.is_set()
+
+    let_chain_finish.set()
+    assert await chain is None
+    await manual_task
+
+    assert blocked, "limiter_slot() acquired while the resolve chain held the only slot"
+    assert manual_entered.is_set()  # and it is released, not deadlocked

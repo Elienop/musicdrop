@@ -289,16 +289,82 @@ class ArtistImageCache:
         _atomic_write_bytes(self._dir / f"{key}.override.mime", content_type.encode("utf-8"))
         _atomic_write_bytes(self._dir / f"{key}.override", data)
 
-    def clear_override(self, name: str) -> None:
+    def _unlink(self, path: Path) -> bool:
+        """Remove one slot file. True when it was there and is now gone.
+
+        Never raises: ``unlink(missing_ok=True)`` still propagates EACCES (a
+        container recreate that re-chowned the cache volume) and EROFS, and the
+        reset endpoints' whole contract is to REPORT what they did rather than
+        500. A refusal reads as "nothing cleared", which is the truth.
+
+        Throttled by CONDITION, not by path: a broken cache dir refuses all five
+        of ``clear_auto``'s slots, so an unthrottled record would turn one fact
+        into five identical lines per reset.
+        """
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            warn_throttled(
+                "cache-write",
+                "artist-image cache slot %s could not be removed: %s",
+                path.name,
+                exc,
+            )
+            return False
+        return True
+
+    def clear_override(self, name: str) -> bool:
         """Remove a manual override -> next get() falls back to auto/cache.
 
         Unlink the BYTES before the MIME (mirror-image of write_override's
         mime-before-bytes order) so a concurrent get() never reads override
-        bytes paired with a missing mime sidecar.
+        bytes paired with a missing mime sidecar. Returns whether an override
+        was actually removed.
+
+        Scoped to the override slot ONLY, which is why it cannot be the whole
+        of a "reset to automatic": the ``.bin`` it falls back to is the image
+        the user just rejected. See :meth:`clear_auto`.
+
+        No in-memory drop here on purpose: ``write_override`` does not go
+        through ``_or_remember``, so an override never reaches
+        :class:`_MemoryFallback` and there is nothing of its own to forget.
         """
         key = self._key(name)
-        (self._dir / f"{key}.override").unlink(missing_ok=True)
-        (self._dir / f"{key}.override.mime").unlink(missing_ok=True)
+        removed = self._unlink(self._dir / f"{key}.override")
+        self._unlink(self._dir / f"{key}.override.mime")
+        return removed
+
+    def clear_auto(self, name: str) -> bool:
+        """Forget the AUTOMATIC image for ``name`` so the next lookup re-resolves.
+
+        Removes the positive slot, its mime sidecar, the negative marker and the
+        derived thumb, and drops any in-memory fallback entry for the key.
+        Returns whether a positive slot was actually removed (the marker and the
+        thumb are housekeeping, not the answer the caller reports).
+
+        Nothing else in this module unlinks ``.bin``: ``store_positive`` only
+        runs on a cache MISS, and a present ``.bin`` means there is never a
+        miss, so without this the automatic image could never change once
+        written. The in-memory drop is not optional -- on a cache dir that
+        refused the write, the image (or the negative marker) lives in
+        :class:`_MemoryFallback`, and unlinking files alone would keep serving
+        it for the life of the process.
+
+        Bytes before mime (mirroring :meth:`clear_override`) so a concurrent
+        ``get()`` never pairs image bytes with a vanished sidecar. The thumb
+        pair needs no ordering: either file missing is a thumb-cache miss, which
+        re-derives.
+        """
+        key = self._key(name)
+        removed = self._unlink(self._dir / f"{key}.bin")
+        self._unlink(self._dir / f"{key}.mime")
+        self._unlink(self._dir / f"{key}.miss")
+        self._unlink(self._dir / f"{key}.thumb.bin")
+        self._unlink(self._dir / f"{key}.thumb.src")
+        self._memory.discard(key)
+        return removed
 
     @staticmethod
     def _read_expiry(miss_path: Path) -> float:
@@ -344,7 +410,8 @@ class ArtistImageCache:
             data = data_path.read_bytes()
         except OSError as exc:
             # exists()-then-read is also a window the backfill daemon's atomic
-            # replace — and clear_override's unlink — can move under us.
+            # replace — and the clear_auto / clear_override unlinks — can move
+            # under us.
             warn_throttled("cache-read", "artist-image cache slot is unreadable: %s", exc)
             return None
         content_type = FALLBACK_CONTENT_TYPE

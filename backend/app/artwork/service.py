@@ -16,6 +16,7 @@ Each artist costs at most one network resolution until its marker expires.
 """
 
 from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 
 from fastapi.concurrency import run_in_threadpool
 
@@ -41,6 +42,27 @@ class ArtistImageService:
         self._is_enabled = is_enabled
         self._negative_ttl_seconds = negative_ttl_seconds
         self._transient_ttl_seconds = transient_ttl_seconds
+
+    def is_enabled(self) -> bool:
+        """Whether artist-image fetching is on right now (the image toggle OR
+        the write-to-library toggle -- see main.py's composition).
+
+        Read live, never cached: the predicate is injected and both toggles flip
+        at runtime.
+        """
+        return self._is_enabled()
+
+    def limiter_slot(self) -> AbstractAsyncContextManager[None]:
+        """This service's OWN outbound rate/concurrency slot, for callers that
+        resolve a source directly (the manual per-source fetch).
+
+        Handing back ``self._limiter``'s slot -- rather than building a second
+        limiter -- is what keeps the ceiling a ceiling: a private bucket would
+        cap manual fetches on their own while doubling the real outbound rate
+        against fanart.tv / Spotify / Deezer, the way the artist-art backfill
+        daemon's separate instance already does.
+        """
+        return self._limiter.slot()
 
     async def get_artist_image(
         self, name: str, *, get_mbid: Callable[[], str | None] | None = None
