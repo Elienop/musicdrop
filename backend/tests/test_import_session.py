@@ -1,8 +1,10 @@
+import contextlib
 import logging
 import os
 import shutil
 import threading
 from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
@@ -144,6 +146,21 @@ def _patch_tag_album(monkeypatch: pytest.MonkeyPatch, match: AlbumMatch, rec: Be
     monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
 
 
+class _BindOnlyLib:
+    """The bare slice of ``Library`` that ``run_import_worker`` needs to bind.
+
+    The worker wraps its whole body in ``session.lib.music_dir_context()`` so
+    beets stores item paths music-dir-relative. The stand-in sessions below
+    assert on beets *config* flags and never write a row, so a nullcontext is
+    the honest fake: it satisfies the call without pretending to bind beets'
+    ContextVar. The write representation itself is pinned against a REAL
+    library in ``tests/test_import_path_representation.py``.
+    """
+
+    def music_dir_context(self) -> AbstractContextManager[None]:
+        return contextlib.nullcontext()
+
+
 def _make_session(bridge: ImportBridge) -> WebImportSession:
     """Construct a session without a real Library (we never call run()).
 
@@ -170,6 +187,9 @@ def _make_session(bridge: ImportBridge) -> WebImportSession:
     # __init__ is skipped, so the in-library guard's session.paths read has a
     # value; empty means the guard no-ops (these tests drive run() directly).
     session.paths = []
+    # __init__ is skipped, so give run_import_worker something to bind its
+    # music-dir context on (see _BindOnlyLib).
+    session.lib = _BindOnlyLib()  # type: ignore[assignment]  # bind-only stand-in, not a Library
     return session
 
 
@@ -498,7 +518,7 @@ def test_run_import_worker_forces_single_threaded_and_runs(
     class FakeSession:
         # The post-run trash pass reads these off the session; trash_dir=None
         # makes it return early before touching lib/get_album.
-        lib = None
+        lib = _BindOnlyLib()
         # The in-library guard reads session.paths; empty -> guard no-ops.
         paths: ClassVar[list[bytes]] = []
         _replace_album_ids: ClassVar[set[int]] = set()
@@ -1074,7 +1094,7 @@ def test_run_import_worker_forces_duplicate_action_ask() -> None:
     seen: dict[str, Any] = {}
 
     class FakeSession:
-        lib = None
+        lib = _BindOnlyLib()
         paths: ClassVar[list[bytes]] = []
         _replace_album_ids: ClassVar[set[int]] = set()
         _trash_dir = None
@@ -1101,7 +1121,7 @@ def test_run_import_worker_forces_autotag_on_and_restores_it() -> None:
     seen: dict[str, Any] = {}
 
     class FakeSession:
-        lib = None
+        lib = _BindOnlyLib()
         paths: ClassVar[list[bytes]] = []
         _replace_album_ids: ClassVar[set[int]] = set()
         _trash_dir = None
@@ -1134,20 +1154,11 @@ def test_run_import_worker_trashes_replace_ids_after_run(monkeypatch: pytest.Mon
         def __init__(self, album_id: int) -> None:
             self.id = album_id
 
-    class _Lib:
+    class _Lib(_BindOnlyLib):
         def get_album(self, album_id: int) -> Any:
             return _Album(album_id)
 
         def transaction(self) -> Any:
-            import contextlib
-
-            return contextlib.nullcontext()
-
-        def music_dir_context(self) -> Any:
-            # Real Library binds beets' music-dir ContextVar here; a no-op is fine
-            # since this fake never expands paths off the main thread.
-            import contextlib
-
             return contextlib.nullcontext()
 
     class FakeSession:
@@ -1167,7 +1178,7 @@ def test_run_import_worker_trashes_replace_ids_after_run(monkeypatch: pytest.Mon
 class _ScopedMoveSession:
     """Minimal session that records config['import']['move'] seen during run()."""
 
-    lib = None
+    lib = _BindOnlyLib()
     paths: ClassVar[list[bytes]] = []
     _replace_album_ids: ClassVar[set[int]] = set()
     _trash_dir = None
@@ -1548,7 +1559,7 @@ def test_already_imported_counts_known_skips() -> None:
 class _SweepConfigSession:
     """Minimal session recording the sweep-relevant config seen during run()."""
 
-    lib = None
+    lib = _BindOnlyLib()
     paths: ClassVar[list[bytes]] = []
     _replace_album_ids: ClassVar[set[int]] = set()
     _trash_dir = None

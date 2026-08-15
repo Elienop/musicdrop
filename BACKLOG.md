@@ -13,9 +13,22 @@ _Last groomed: 2026-08-02, after the reorganize collision wave._
 
 ## Next up
 
-_(empty — pick the next slice from Open bugs / hardening or Open questions below. The
-phantom-album-row origin question is the one with a deadline of sorts: it matters before the
-next bulk import.)_
+- **Repair the production `library.db`'s absolute item paths — both halves in one maintenance
+  window.** 22,100 of 25,576 item rows store absolute paths instead of music-dir-relative ones,
+  and 123 albums hold both forms: the import worker never bound `lib.music_dir_context()`, so
+  every row MusicDrop imported since v0.1.0 was written the way beets does not write them. Nothing
+  is damaged and no audio is at risk today — but those rows stop resolving the moment the music
+  share moves to a new mount, dataset or box, and `beet update` (or disk sync) then deletes them
+  without a prompt, taking added dates, play counts, lyrics, flexible fields and album grouping
+  with them. The code half is fixed on branch `fix/import-music-dir-binding` (not merged yet); the
+  DB half is a one-time beets migration the owner runs by hand against the TrueNAS library.
+  **Order is the dangerous part: deploying the code fix without the DB repair took the importer's
+  replacement lookup from 57/83 rows to 28/83 in the rehearsal lab — measurably worse than
+  deploying neither** — so both land together with no imports in between. Census, procedure,
+  verification and the recovery path: `docs/import-path-repair.md`.
+
+_(After that, pick from Open bugs / hardening or Open questions below. The phantom-album-row
+origin question is the one with a deadline of sorts: it matters before the next bulk import.)_
 
 ## Open bugs / hardening
 
@@ -44,13 +57,6 @@ next bulk import.)_
   `store.py` `model_dump_json` raises `PydanticSerializationError` (different sink from the
   wire; the response-class net does not cover files on disk). Pre-existing; surfaces only
   when an undecodable folder enters the bank.
-
-- **MusicDrop-driven imports store ABSOLUTE item paths.** The import worker never binds
-  `lib.music_dir_context()` around `session.run()` (only `_trash_replaced_albums` does), so
-  imported rows store absolute paths while beets' `relative_path` migration expects
-  music-dir-relative ones — likely defeats library portability for every album imported
-  through MusicDrop. Flagged by the 2026-08-02 restore debugging; consequences not yet
-  chased.
 
 - **Config editor accepts `import.autotag` that MusicDrop now ignores.** `run_import_worker`
   force-enables autotag (with snapshot/restore) because beets swaps out the `user_query`
@@ -194,6 +200,14 @@ next bulk import.)_
   to the real corpus and would back it up on the next beets schema bump. Fix is one line:
   `monkeypatch.setattr(settings, "beets_dir", str(tmp_path))` plus a tmp `config.yaml` +
   `music/` dir, per the `test_slskd_webhook.py` pattern.
+- **`tests/test_import_session.py::test_attended_astracks_lands_the_singletons_full_pipeline`
+  writes to the developer's PERSONAL beets config dir** (`~/.config/beets/state.pickle`) on every
+  full-suite run — bisected as the only offender, and present at least as far back as `643783f`,
+  so it predates the path-binding branch. Bounded: only beets' importer scratch state is written,
+  the personal `library.db` md5 is unchanged and no `.bak` appears. Same class as the sibling entry
+  above and as the 2026-08-15 incident where an agent's unguarded `beet --version` ran two pending
+  migrations against that same personal library. The durable fix is an autouse fixture pointing
+  `BEETSDIR` at `tmp_path` for the whole suite, which would close both entries at once.
 - `_stat_tag` (artwork) duplicates `library.py`'s `_stat_etag` (Path vs str param) — polish
   only, same behavior.
 - Stat-then-read ETag race on the artwork cache (self-healing, mirrors the covers precedent);
