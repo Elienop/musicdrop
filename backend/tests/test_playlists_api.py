@@ -11,6 +11,8 @@ from app.beets.library import LibraryHandle, _require_id
 from app.models.playlist import PendingTrack
 from app.playlists import store
 from app.playlists.store import StoredEntry
+from app.plex import sync as plex_sync
+from tests.plex_fakes import FakeServer, FakeTrack
 
 
 def _dir() -> Path:
@@ -359,72 +361,34 @@ def test_export_removed_on_delete(client: TestClient, beets_library: LibraryHand
     assert not os.path.exists(m3u)
 
 
-class _SyncTrack:
-    def __init__(self, rating_key: int, locations: list[str]) -> None:
-        self.ratingKey = rating_key
-        self.locations = locations
+def _plex_path(handle: LibraryHandle, title: str) -> str:
+    """Where ``_add_track`` put that title's file, as Plex sees it.
+
+    No ``library_path`` is configured in these tests, so ``translate_path``
+    leaves the beets path alone and the two views coincide.
+    """
+    return os.path.join(os.fsdecode(handle.lib.directory), "Seed", f"{title}.flac")
 
 
-class _SyncSection:
-    TYPE = "artist"
+def _fake_plex(monkeypatch: pytest.MonkeyPatch, tracks: list[FakeTrack]) -> FakeServer:
+    """Patch the sync seam (``plex_sync.client.connect``) at ONE fake server.
 
-    def __init__(self, tracks: list[_SyncTrack]) -> None:
-        self._tracks = tracks
-
-    def searchTracks(self) -> list[_SyncTrack]:
-        return self._tracks
-
-
-class _SyncPlaylist:
-    def __init__(self, title: str, items: list[_SyncTrack]) -> None:
-        self.title = title
-        self.ratingKey = 777
-        self.summary = ""
-        self._items = list(items)
-
-    def items(self) -> list[_SyncTrack]:
-        return list(self._items)
-
-    def addItems(self, tracks: list[_SyncTrack]) -> None:
-        self._items.extend(tracks)
-
-    def removeItems(self, tracks: list[_SyncTrack]) -> None:
-        self._items = []
-
-    def editSummary(self, summary: str) -> None:
-        self.summary = summary
-
-    def delete(self) -> None:
-        self._items = []
-
-
-class _SyncServer:
-    def __init__(self, tracks: list[_SyncTrack]) -> None:
-        section = _SyncSection(tracks)
-        self.library = type("L", (), {"sections": lambda _s: [section]})()
-        self._created: list[_SyncPlaylist] = []
-
-    def playlists(self) -> list[_SyncPlaylist]:
-        return []
-
-    def createPlaylist(self, title: str, items: list[_SyncTrack]) -> _SyncPlaylist:
-        pl = _SyncPlaylist(title, items)
-        self._created.append(pl)
-        return pl
+    One server for the whole test on purpose: it KEEPS what it created, so a
+    second sync sees the first one's playlist and exercises the in-place
+    reconcile rather than a fresh create. The double comes from
+    ``tests.plex_fakes`` — see its module docstring for why a local one-off fake
+    (whose ``removeItems`` cleared everything) let wrong diffs pass.
+    """
+    server = FakeServer(tracks)
+    monkeypatch.setattr(plex_sync.client, "connect", lambda base_url, token: server)
+    return server
 
 
 def test_sync_pushes_to_plex(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     t1 = _add_track(beets_library, "Alpha")
-    plex_path = os.path.join(os.fsdecode(beets_library.lib.directory), "Seed", "Alpha.flac")
-    from app.plex import sync as plex_sync
-
-    monkeypatch.setattr(
-        plex_sync.client,
-        "connect",
-        lambda base_url, token: _SyncServer([_SyncTrack(10, [plex_path])]),
-    )
+    server = _fake_plex(monkeypatch, [FakeTrack(10, [_plex_path(beets_library, "Alpha")])])
     client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
 
     pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
@@ -434,8 +398,41 @@ def test_sync_pushes_to_plex(
     assert r.status_code == 200
     state = r.json()["plex"]["admin"]
     assert state["status"] == "ok"
-    assert state["rating_key"] == "777"
+    assert state["rating_key"] == str(server.created[0].ratingKey)
+    assert server.created[0].live_keys() == [10]
     assert state["synced_at"]
+
+
+def test_sync_updates_existing_plex_copy_in_place_and_reports_missing(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A re-sync UPDATES the same Plex playlist, and each miss is named.
+
+    The second sync must not mint a second copy: the ratingKey is the identity
+    Plex clients hold, and a delete-then-recreate would break every one of them.
+    """
+    t1 = _add_track(beets_library, "Alpha")
+    t2 = _add_track(beets_library, "Beta")  # deliberately NOT in Plex
+    server = _fake_plex(monkeypatch, [FakeTrack(10, [_plex_path(beets_library, "Alpha")])])
+    client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
+
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1, t2]})
+
+    r1 = client.post(f"/api/playlists/{pid}/sync")
+    assert r1.status_code == 200
+    first = r1.json()["plex"]["admin"]
+    assert first["status"] == "partial"
+    assert first["missing"] == 1
+    assert [m["item_id"] for m in first["missing_tracks"]] == [t2]
+    assert first["missing_tracks"][0]["reason"] == "not_found"
+    assert first["missing_tracks"][0]["title"] == "Beta"
+
+    r2 = client.post(f"/api/playlists/{pid}/sync")
+    assert r2.status_code == 200
+    assert r2.json()["plex"]["admin"]["rating_key"] == first["rating_key"]
+    assert len(server.created) == 1  # updated in place, not recreated
+    assert server.created[0].live_keys() == [10]
 
 
 def test_sync_unconfigured_409(client: TestClient) -> None:
@@ -453,8 +450,6 @@ def test_sync_missing_playlist_404(client: TestClient) -> None:
 def test_sync_connection_error_502(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     from requests.exceptions import ConnectionError as ReqConnErr
 
-    from app.plex import sync as plex_sync
-
     def boom(base_url: str, token: str) -> object:
         raise ReqConnErr("no route")
 
@@ -468,15 +463,8 @@ def test_sync_connection_error_502(client: TestClient, monkeypatch: pytest.Monke
 def test_delete_cascades_to_plex(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from app.plex import sync as plex_sync
-
     t1 = _add_track(beets_library, "Alpha")
-    plex_path = os.path.join(os.fsdecode(beets_library.lib.directory), "Seed", "Alpha.flac")
-    monkeypatch.setattr(
-        plex_sync.client,
-        "connect",
-        lambda base_url, token: _SyncServer([_SyncTrack(10, [plex_path])]),
-    )
+    server = _fake_plex(monkeypatch, [FakeTrack(10, [_plex_path(beets_library, "Alpha")])])
     client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
     pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
     client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
@@ -493,21 +481,16 @@ def test_delete_cascades_to_plex(
     monkeypatch.setattr(plex_sync, "delete_playlist_on_targets", _record)
     r = client.delete(f"/api/playlists/{pid}")
     assert r.status_code == 204
-    assert captured == [{"admin": "777"}]  # deletes by the recorded ratingKey
+    # Deleting the MusicDrop playlist cascades by the ratingKey the sync recorded
+    # — the key of the copy it created and would have updated in place.
+    assert captured == [{"admin": str(server.created[0].ratingKey)}]
 
 
 def test_delete_best_effort_when_plex_errors(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from app.plex import sync as plex_sync
-
     t1 = _add_track(beets_library, "Alpha")
-    plex_path = os.path.join(os.fsdecode(beets_library.lib.directory), "Seed", "Alpha.flac")
-    monkeypatch.setattr(
-        plex_sync.client,
-        "connect",
-        lambda base_url, token: _SyncServer([_SyncTrack(10, [plex_path])]),
-    )
+    _fake_plex(monkeypatch, [FakeTrack(10, [_plex_path(beets_library, "Alpha")])])
     client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
     pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
     client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
@@ -527,8 +510,6 @@ def test_delete_best_effort_when_plex_errors(
 def test_delete_unconfigured_skips_plex(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from app.plex import sync as plex_sync
-
     called = False
 
     def _mark(
@@ -556,53 +537,7 @@ def test_sync_fans_out_to_targets(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     t1 = _add_track(beets_library, "Alpha")
-    plex_path = os.path.join(os.fsdecode(beets_library.lib.directory), "Seed", "Alpha.flac")
-
-    from app.plex import sync as plex_sync
-
-    class _FakePL:
-        def __init__(self) -> None:
-            self.title = "Mix"
-            self.ratingKey = 1
-            self.summary = ""
-            self._i: list[object] = []
-
-        def items(self) -> list[object]:
-            return self._i
-
-        def addItems(self, t: list[object]) -> None:
-            self._i.extend(t)
-
-        def removeItems(self, t: list[object]) -> None:
-            self._i = []
-
-        def editSummary(self, summary: str) -> None:
-            self.summary = summary
-
-        def delete(self) -> None:
-            self._i = []
-
-    class _Sec:
-        TYPE = "artist"
-
-        def searchTracks(self) -> list[object]:
-            tr = type("T", (), {"ratingKey": 9, "locations": [plex_path]})()
-            return [tr]
-
-    class _Srv:
-        def __init__(self) -> None:
-            self.library = type("L", (), {"sections": lambda _s: [_Sec()]})()
-
-        def playlists(self) -> list[object]:
-            return []
-
-        def createPlaylist(self, title: str, items: list[object]) -> _FakePL:
-            return _FakePL()
-
-        def switchUser(self, uid: str) -> "_Srv":
-            return _Srv()
-
-    monkeypatch.setattr(plex_sync.client, "connect", lambda base_url, token: _Srv())
+    server = _fake_plex(monkeypatch, [FakeTrack(9, [_plex_path(beets_library, "Alpha")])])
     client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
 
     pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
@@ -615,52 +550,25 @@ def test_sync_fans_out_to_targets(
     assert set(plex) == {"admin", "7"}
     assert plex["admin"]["status"] == "ok"
     assert plex["7"]["synced_at"]
+    # Each account gets its OWN copy: playlist ratingKeys come from one
+    # server-global space, so two copies can never share a key.
+    assert plex["admin"]["rating_key"] != plex["7"]["rating_key"]
+    assert [pl.live_keys() for pl in server.created] == [[9]]
+    assert [pl.live_keys() for pl in server.users["7"].created] == [[9]]
 
 
 def test_sync_cleans_up_detargeted_user(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from app.plex import sync as plex_sync
-
     t1 = _add_track(beets_library, "Alpha")
-    plex_path = os.path.join(os.fsdecode(beets_library.lib.directory), "Seed", "Alpha.flac")
-
-    class _Sec:
-        TYPE = "artist"
-
-        def searchTracks(self) -> list[object]:
-            return [type("T", (), {"ratingKey": 9, "locations": [plex_path]})()]
-
-    class _Srv:
-        def __init__(self) -> None:
-            self.library = type("L", (), {"sections": lambda _s: [_Sec()]})()
-
-        def playlists(self) -> list[object]:
-            return []
-
-        def createPlaylist(self, title: str, items: list[object]) -> object:
-            return type(
-                "PL",
-                (),
-                {
-                    "title": title,
-                    "ratingKey": 1,
-                    "summary": "",
-                    "items": lambda _s: items,
-                    "editSummary": lambda _s, summary: None,
-                },
-            )()
-
-        def switchUser(self, uid: str) -> "_Srv":
-            return _Srv()
-
-    monkeypatch.setattr(plex_sync.client, "connect", lambda base_url, token: _Srv())
+    server = _fake_plex(monkeypatch, [FakeTrack(9, [_plex_path(beets_library, "Alpha")])])
     client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
 
     pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
     client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
     client.patch(f"/api/playlists/{pid}", json={"target_plex_users": ["7"]})
     client.post(f"/api/playlists/{pid}/sync")  # plex == {"admin", "7"}
+    user_key = str(server.users["7"].created[0].ratingKey)
 
     # Untick user 7, then re-sync: user 7's copy must be cleaned up.
     client.patch(f"/api/playlists/{pid}", json={"target_plex_users": []})
@@ -675,7 +583,7 @@ def test_sync_cleans_up_detargeted_user(
     monkeypatch.setattr(plex_sync, "delete_playlist_on_targets", _record)
     r = client.post(f"/api/playlists/{pid}/sync")
     assert r.status_code == 200
-    assert captured == [{"7": "1"}]  # the de-targeted user's recorded ratingKey
+    assert captured == [{"7": user_key}]  # the de-targeted user's recorded ratingKey
     assert set(r.json()["plex"]) == {"admin"}  # confirmed-deleted -> dropped from the map
 
 
@@ -686,47 +594,15 @@ def test_sync_retains_detargeted_user_when_delete_unconfirmed(
     # transient admin.switchUser failure), the user's entry + recorded ratingKey
     # must be RETAINED so a later sync can retry — dropping it (the whole-map
     # replace) would orphan the still-existing Plex copy forever.
-    from app.plex import sync as plex_sync
-
     t1 = _add_track(beets_library, "Alpha")
-    plex_path = os.path.join(os.fsdecode(beets_library.lib.directory), "Seed", "Alpha.flac")
-
-    class _Sec:
-        TYPE = "artist"
-
-        def searchTracks(self) -> list[object]:
-            return [type("T", (), {"ratingKey": 9, "locations": [plex_path]})()]
-
-    class _Srv:
-        def __init__(self) -> None:
-            self.library = type("L", (), {"sections": lambda _s: [_Sec()]})()
-
-        def playlists(self) -> list[object]:
-            return []
-
-        def createPlaylist(self, title: str, items: list[object]) -> object:
-            return type(
-                "PL",
-                (),
-                {
-                    "title": title,
-                    "ratingKey": 1,
-                    "summary": "",
-                    "items": lambda _s: items,
-                    "editSummary": lambda _s, summary: None,
-                },
-            )()
-
-        def switchUser(self, uid: str) -> "_Srv":
-            return _Srv()
-
-    monkeypatch.setattr(plex_sync.client, "connect", lambda base_url, token: _Srv())
+    server = _fake_plex(monkeypatch, [FakeTrack(9, [_plex_path(beets_library, "Alpha")])])
     client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
 
     pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
     client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
     client.patch(f"/api/playlists/{pid}", json={"target_plex_users": ["7"]})
-    client.post(f"/api/playlists/{pid}/sync")  # plex == {"admin", "7": ratingKey 1}
+    client.post(f"/api/playlists/{pid}/sync")  # plex == {"admin", "7": user_key}
+    user_key = str(server.users["7"].created[0].ratingKey)
 
     client.patch(f"/api/playlists/{pid}", json={"target_plex_users": []})  # untick 7
 
@@ -740,7 +616,7 @@ def test_sync_retains_detargeted_user_when_delete_unconfirmed(
     assert r.status_code == 200
     plex = r.json()["plex"]
     assert set(plex) == {"admin", "7"}  # 7 retained (delete unconfirmed) -> retry path
-    assert plex["7"]["rating_key"] == "1"  # its recorded ratingKey survives for the retry
+    assert plex["7"]["rating_key"] == user_key  # its ratingKey survives for the retry
 
 
 # --- Playlist artwork (cover) endpoints -------------------------------------
@@ -827,6 +703,64 @@ def test_detail_cover_album_ids_from_resolved_album_tracks(
     client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [item_id]})
     detail = client.get(f"/api/playlists/{pid}").json()
     assert detail["cover_album_ids"] == [album_id]
+
+
+def test_sync_uploads_the_poster_once_across_repeat_syncs(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pushed artwork hash round-trips: recorded state -> next sync's prior.
+
+    The reconcile skips the poster upload when the art hash matches the one on
+    that target's PRIOR state, so the router has to hand the WHOLE prior state
+    back (``priors=dict(record.plex)``) and persist what comes out. Break either
+    half and every sync re-uploads the same cover, piling duplicates into Plex's
+    poster gallery — which is exactly what a green "it synced" would hide.
+    """
+    t1 = _add_track(beets_library, "Alpha")
+    server = _fake_plex(monkeypatch, [FakeTrack(10, [_plex_path(beets_library, "Alpha")])])
+    client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
+
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
+    art = client.put(f"/api/playlists/{pid}/artwork", content=_PNG)
+    assert art.status_code == 200
+    art_hash = art.json()["artwork_hash"]
+
+    r1 = client.post(f"/api/playlists/{pid}/sync")
+    assert r1.status_code == 200
+    assert r1.json()["plex"]["admin"]["artwork_hash"] == art_hash
+    poster = str(store.artwork_path(_dir(), pid, "png"))
+    assert server.created[0].poster_uploads == [poster]
+
+    r2 = client.post(f"/api/playlists/{pid}/sync")
+    assert r2.status_code == 200
+    assert r2.json()["plex"]["admin"]["artwork_hash"] == art_hash  # still recorded
+    assert server.created[0].poster_uploads == [poster]  # unchanged art -> no re-upload
+
+
+def test_sync_reuploads_the_poster_when_the_artwork_changes(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The control arm for the test above: skipping is keyed on the HASH, not on
+    # "a poster was already pushed" — replacing the cover must reach Plex.
+    t1 = _add_track(beets_library, "Alpha")
+    server = _fake_plex(monkeypatch, [FakeTrack(10, [_plex_path(beets_library, "Alpha")])])
+    client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
+
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
+    client.put(f"/api/playlists/{pid}/artwork", content=_PNG)
+    client.post(f"/api/playlists/{pid}/sync")
+
+    replaced = client.put(f"/api/playlists/{pid}/artwork", content=_JPG)
+    assert replaced.status_code == 200
+    r = client.post(f"/api/playlists/{pid}/sync")
+    assert r.status_code == 200
+    assert r.json()["plex"]["admin"]["artwork_hash"] == replaced.json()["artwork_hash"]
+    assert server.created[0].poster_uploads == [
+        str(store.artwork_path(_dir(), pid, "png")),
+        str(store.artwork_path(_dir(), pid, "jpg")),
+    ]
 
 
 def test_cover_album_ids_empty_when_playlist_has_artwork(

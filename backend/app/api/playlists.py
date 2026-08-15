@@ -59,6 +59,7 @@ from app.plex.config import PlexConfig, PlexConfigStore
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
 from app.plex.mapping import PlexTrackSpec
 from app.plex.paths import translate_path
+from app.plex.sync import PlexArtwork
 
 router = APIRouter(tags=["playlists"])
 logger = logging.getLogger(__name__)
@@ -312,13 +313,15 @@ async def sync_playlist_endpoint(
     if not (config.base_url and config.token):
         raise HTTPException(status_code=409, detail="Connect Plex first")
 
-    # The cover-art file to push as the Plex poster: only when the record marks
-    # art AND the file is actually on disk (else None -> no poster upload).
-    artwork_file: Path | None = None
+    # The cover to push as the Plex poster: only when the record marks art AND
+    # the file is actually on disk (else None -> no poster upload). The hash
+    # rides along so the reconcile can skip the upload when the art has not
+    # changed since it was last pushed to that copy.
+    artwork: PlexArtwork | None = None
     if record.artwork is not None:
         candidate = store.artwork_path(playlists_dir, record.id, record.artwork.format)
         if candidate.is_file():
-            artwork_file = candidate
+            artwork = PlexArtwork(file=candidate, hash=record.artwork.hash)
 
     try:
         specs = await run_in_threadpool(_plex_specs_for, record, handle, config)
@@ -329,8 +332,12 @@ async def sync_playlist_endpoint(
             specs,
             record.target_plex_users,
             playlist_id=record.id,
-            rating_keys={target: state.rating_key for target, state in record.plex.items()},
-            artwork_file=artwork_file,
+            # The WHOLE prior state per target, not just its ratingKey: the
+            # reconcile also reads the poster hash off it, and what it returns is
+            # persisted below — that round trip is what stops a re-upload every
+            # sync. `record` still holds the PRE-sync map.
+            priors=dict(record.plex),
+            artwork=artwork,
         )
     except PlexNotConfigured as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -381,6 +388,7 @@ def _plex_specs_for(
     refs: list[TrackRef] = track_match_refs(handle.lib, record.resolved_item_ids)
     return [
         PlexTrackSpec(
+            item_id=r.item_id,
             path=translate_path(r.abs_path, beets_root, config.library_path),
             albumartist=r.albumartist,
             album=r.album,
