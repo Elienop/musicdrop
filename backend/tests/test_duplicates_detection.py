@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from beets.library import Library
 
-from app.beets.duplicates import find_duplicate_albums, normalize
+from app.beets.duplicates import _grouping_signals, find_duplicate_albums, normalize
 from app.models.duplicates import (
     DuplicateAlbum,
     DuplicateGroup,
@@ -209,3 +209,80 @@ def test_strict_leaves_mixed_shapes_as_singletons(tmp_path: Path) -> None:
     lib = _mixed_dup_lib(tmp_path)
     report = find_duplicate_albums(lib, mode=DuplicateMode.strict)
     assert report.group_count == 0
+
+
+# U+2212 MINUS SIGN, as a named escape: the glyph is visually identical to an
+# ASCII hyphen, which is exactly the confusion this test exists to pin down.
+_MINUS = "\N{MINUS SIGN}"
+
+
+def _symbol_title_lib(tmp_path: Path) -> Library:
+    """One artist, three DIFFERENT symbol-titled albums, plus a genuine second
+    copy of one of them. Every title normalizes to "" (all punctuation), so the
+    fuzzy signal has to carry the raw glyph to tell them apart:
+
+      - "Ed Sheeran / =" (15 tracks)  + a real second copy (9 tracks)
+      - "Ed Sheeran / U+2212" (18 tracks) -- a DIFFERENT album, not a duplicate
+      - "Ed Sheeran / +" (12 tracks)     -- a DIFFERENT album, not a duplicate
+
+    Mirrors albums 260/261 in the owner's real library.
+    """
+    import os
+
+    from beets.library import Item
+
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+
+    def add_album(*, artist: str, album: str, n: int, folder: str) -> None:
+        items = []
+        root = music / folder
+        root.mkdir(parents=True, exist_ok=True)
+        for i in range(1, n + 1):
+            f = root / f"{i:02d} Track {i}.mp3"
+            f.write_bytes(b"\x00")
+            it = Item(album=album, albumartist=artist, artist=artist, title=f"Track {i}", track=i)
+            it.path = os.fsencode(str(f))
+            items.append(it)
+        lib.add_album(items).store()
+
+    add_album(artist="Ed Sheeran", album="=", n=15, folder="Ed Sheeran/Equals")
+    add_album(artist="Ed Sheeran", album="=", n=9, folder="Ed Sheeran/Equals (rip)")
+    add_album(artist="Ed Sheeran", album=_MINUS, n=18, folder="Ed Sheeran/Subtract")
+    add_album(artist="Ed Sheeran", album="+", n=12, folder="Ed Sheeran/Plus")
+    return lib
+
+
+def test_fuzzy_signal_keeps_a_title_normalization_empties(tmp_path: Path) -> None:
+    """The signal VALUE, not its truthiness: three symbol-titled albums by one
+    artist must emit three DISTINCT fuzzy signals. Before the fix every one of
+    them normalized to "" and emitted the identical ``fuzzy:ed sheeran\\x00``.
+    """
+    lib = _symbol_title_lib(tmp_path)
+    by_title = {str(a.album): _grouping_signals(a, DuplicateMode.fuzzy) for a in lib.albums()}
+    assert by_title["="] == ["fuzzy:ed sheeran\x00="]
+    assert by_title[_MINUS] == [f"fuzzy:ed sheeran\x00{_MINUS}"]
+    assert by_title["+"] == ["fuzzy:ed sheeran\x00+"]
+    # And no album lost its signal — dropping them from detection is not the fix.
+    assert all(len(sigs) == 1 for sigs in by_title.values())
+
+
+def test_fuzzy_does_not_group_different_symbol_titled_albums(tmp_path: Path) -> None:
+    """``=``, ``+`` and U+2212 all normalize to the empty string. They must not
+    group as one duplicate set, while a genuine second copy of ``=`` still must.
+
+    Asserts the exact MEMBERSHIP, so it fails both ways: if the guard regresses
+    all four albums land in one group, and if the fix had instead dropped
+    empty-normalizing titles the ``=`` pair would stop being detected at all.
+    """
+    lib = _symbol_title_lib(tmp_path)
+    report = find_duplicate_albums(lib, mode=DuplicateMode.fuzzy)
+
+    assert report.group_count == 1
+    group = report.groups[0]
+    assert {m.title for m in group.members} == {"="}
+    assert sorted(m.track_count for m in group.members) == [9, 15]
+    # The two unrelated symbol-titled albums are not in any group.
+    assert report.album_count == 2

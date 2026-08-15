@@ -73,6 +73,26 @@ def normalize(text: str) -> str:
     return _WS_RE.sub(" ", text).strip()
 
 
+def _fuzzy_part(text: str) -> str:
+    """One half of the fuzzy signal: normalized, falling back to the raw text
+    when normalization empties it.
+
+    :func:`normalize` strips ALL punctuation, so a symbol-only value collapses to
+    "" — it maps ``=``, ``+`` and U+2212 MINUS SIGN all to the empty string.
+    Without this fallback every such value compares EQUAL, so Ed Sheeran's three
+    symbol-titled albums emit one identical ``fuzzy:ed sheeran\\x00`` signal and
+    group as a single duplicate set. Keeping the raw glyph tells them apart while
+    two real copies of ``=`` still share a signal, so detection is preserved
+    rather than traded away.
+
+    A genuinely empty value stays empty: the fallback distinguishes "there was no
+    text" (absent — contributes no signal) from "there was text and normalization
+    ate it" (present — keep it). ``playlist_match._title_key`` applies the same
+    fallback for the same reason, to an all-parenthetical track title.
+    """
+    return normalize(text) or text.casefold().strip()
+
+
 def _grouping_signals(album: Any, mode: DuplicateMode) -> list[str]:
     """The grouping signals for an album — albums sharing ANY signal are one dup
     group. Empty list = no usable key, so the album is dropped from detection
@@ -84,14 +104,19 @@ def _grouping_signals(album: Any, mode: DuplicateMode) -> list[str]:
     alone missed: an MB-tagged copy paired with an untagged/as-is copy (only the
     tagged one has an ``mb:`` signal, but both share the ``fuzzy:`` one), and two
     distinct releases of the same album (different MBIDs, same normalized title).
+
+    Both halves go through :func:`_fuzzy_part`, so a title (or artist) that
+    normalizes to "" keeps its raw glyph instead of comparing equal to every
+    other one — see that docstring. The ``artist or title`` guard therefore still
+    means "no usable key", never "normalization ate the only key I had".
     """
     signals: list[str] = []
     mb = _coerce_optional_str(album.get("mb_albumid"))
     if mb is not None:
         signals.append(f"mb:{mb}")
     if mode is DuplicateMode.fuzzy:
-        artist = normalize(_coerce_optional_str(album.albumartist) or "")
-        title = normalize(_coerce_optional_str(album.album) or "")
+        artist = _fuzzy_part(_coerce_optional_str(album.albumartist) or "")
+        title = _fuzzy_part(_coerce_optional_str(album.album) or "")
         if artist or title:
             signals.append(f"fuzzy:{artist}\x00{title}")
     return signals
