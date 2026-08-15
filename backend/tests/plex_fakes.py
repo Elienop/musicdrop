@@ -40,6 +40,7 @@ here — a fake whose ``removeItems`` clears everything lets a wrong diff pass.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 
@@ -54,11 +55,13 @@ class FakeBadRequest(Exception):
 class _PlexIdentity:
     """Identity as plexapi does it: equal and hash-equal by ``key``.
 
-    ``PlexPartialObject.__eq__`` compares ``self.key`` and ``__hash__`` is
-    ``hash(repr(self))`` over ratingKey + title (``base.py:639-645, 122-126``),
-    so two objects standing for one track are interchangeable in ``in``, ``==``,
+    ``PlexPartialObject.__eq__`` compares ``self.key`` (``base.py:639-645``), so
+    two objects standing for one track are interchangeable in ``in``, ``==``,
     ``set()`` and dict keys. Comparing by object identity instead would hide
-    every reconcile bug that leans on those.
+    every reconcile bug that leans on those. (Real ``__hash__`` is
+    ``hash(repr(self))`` — ratingKey + title, ``base.py:122-126`` — which we
+    simplify to the key alone; the two differ only when two objects for one
+    track disagree on title, which nothing here does.)
     """
 
     ratingKey: int
@@ -100,7 +103,15 @@ class FakePlaylistItem(_PlexIdentity):
     ``playlistItemID``. Fetching snapshots the track's fields, as building the
     object from that response's XML does."""
 
-    def __init__(self, track: FakeTrack, playlist_item_id: int) -> None:
+    playlistItemID: int
+    ratingKey: int
+    locations: list[str]
+    grandparentTitle: str
+    parentTitle: str
+    title: str
+    index: int | None
+
+    def __init__(self, track: FakeItem, playlist_item_id: int) -> None:
         self.playlistItemID = playlist_item_id
         self.ratingKey = track.ratingKey
         self.locations = track.locations
@@ -110,11 +121,16 @@ class FakePlaylistItem(_PlexIdentity):
         self.index = track.index
 
 
+# What plexapi accepts wherever it wants "an item": a Track fetched from the
+# library OR a row fetched from the playlist — both resolve by ratingKey.
+FakeItem = FakeTrack | FakePlaylistItem
+
+
 @dataclass
 class _Row:
     """One server-side playlist row: a track plus its per-row playlistItemID."""
 
-    track: FakeTrack
+    track: FakeItem
     row_id: int
 
 
@@ -160,7 +176,7 @@ class FakePlaylist:
     def live_summary(self) -> str:
         return self._live_summary
 
-    def _append(self, track: FakeTrack) -> None:
+    def _append(self, track: FakeItem) -> None:
         self._rows.append(_Row(track, self._next_row_id))
         self._next_row_id += 1
 
@@ -183,7 +199,7 @@ class FakePlaylist:
         self.summary = self._live_summary
         return self
 
-    def _first_cached_row_id(self, item: FakeTrack | FakePlaylistItem) -> int:
+    def _first_cached_row_id(self, item: FakeItem) -> int:
         # plexapi's _getPlaylistItemID walks self.items() (fetching if cold) and
         # takes the FIRST ratingKey match.
         for row in self.items():
@@ -203,14 +219,15 @@ class FakePlaylist:
 
     @staticmethod
     def _as_list(
-        items: list[FakeTrack] | tuple[FakeTrack, ...] | FakeTrack,
-    ) -> list[FakeTrack]:
-        # plexapi coerces only what is neither list nor tuple (playlist.py:249-250).
-        if isinstance(items, (list, tuple)):
-            return list(items)
-        return [items]
+        items: Sequence[FakeItem] | FakeItem,
+    ) -> list[FakeItem]:
+        # plexapi coerces only what is neither list nor tuple (playlist.py:249-250);
+        # a single item (the only other thing the hint admits) gets wrapped.
+        if isinstance(items, (FakeTrack, FakePlaylistItem)):
+            return [items]
+        return list(items)
 
-    def addItems(self, items: list[FakeTrack] | tuple[FakeTrack, ...] | FakeTrack) -> FakePlaylist:
+    def addItems(self, items: Sequence[FakeItem] | FakeItem) -> FakePlaylist:
         self._guard_smart()
         self._guard_deleted()
         self.calls.append("addItems")
@@ -218,9 +235,7 @@ class FakePlaylist:
             self._append(track)
         return self
 
-    def removeItems(
-        self, items: list[FakeTrack] | tuple[FakeTrack, ...] | FakeTrack
-    ) -> FakePlaylist:
+    def removeItems(self, items: Sequence[FakeItem] | FakeItem) -> FakePlaylist:
         self._guard_smart()
         self._guard_deleted()
         self.calls.append("removeItems")
@@ -232,9 +247,7 @@ class FakePlaylist:
             del self._rows[position]
         return self
 
-    def moveItem(
-        self, item: FakeTrack | FakePlaylistItem, after: FakeTrack | FakePlaylistItem | None = None
-    ) -> FakePlaylist:
+    def moveItem(self, item: FakeItem, after: FakeItem | None = None) -> FakePlaylist:
         self._guard_smart()
         self._guard_deleted()
         self.calls.append("moveItem")

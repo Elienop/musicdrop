@@ -138,9 +138,9 @@ def test_items_returns_the_cached_list_object_itself() -> None:
 
 
 def test_tracks_and_rows_compare_and_hash_by_rating_key() -> None:
-    # plexapi: __eq__ compares `key` and __hash__ is hash(repr) over ratingKey+title
-    # (base.py:639-645, 122-126), so two objects for one track are equal AND hash
-    # equal. A fake comparing by identity hides every `in` / `==` / set() bug.
+    # plexapi: __eq__ compares `key` (base.py:639-645), so two objects for one
+    # track are equal AND hash equal (the fake hashes by key; real hashes repr).
+    # A fake comparing by identity hides every `in` / `==` / set() bug.
     assert _t(1).key == "/library/metadata/1"
     assert _t(1) == _t(1)
     assert _t(1) != _t(2)
@@ -245,3 +245,18 @@ def test_playlist_keys_come_from_one_server_wide_space() -> None:
     admin_playlist = server.createPlaylist("Mix", items=[_t(1)])
     user_playlist = server.switchUser("u1").createPlaylist("Mix", items=[_t(1)])
     assert (admin_playlist.ratingKey, user_playlist.ratingKey) == (500, 501)
+
+
+def test_rows_from_items_are_accepted_back_by_the_mutators() -> None:
+    # plexapi passes fetched rows straight back into addItems (Playlist.copyToUser
+    # does `create(..., items=self.items())`) and resolves them by ratingKey like
+    # any Track — so the fake must take rows wherever it takes tracks.
+    a, b = _t(1), _t(2)
+    pl = FakePlaylist("Mix", [a, b], 500)
+    rows = pl.items()
+    pl.addItems(rows)
+    assert pl.live_keys() == [1, 2, 1, 2]
+    pl.reload()
+    assert [r.playlistItemID for r in pl.items()] == [1, 2, 3, 4]  # appended rows are NEW rows
+    pl.removeItems([pl.items()[0]])
+    assert pl.live_keys() == [2, 1, 2]
