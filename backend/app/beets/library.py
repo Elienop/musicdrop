@@ -79,12 +79,22 @@ def close_library(lib: Library) -> None:
 
 
 def library_paths_context(handle: LibraryHandle) -> AbstractContextManager[Any]:
-    """Bind beets' path expansion to this library for the calling thread.
+    """Bind beets' path conversion to this library for the calling thread.
 
-    beets 2.11 stores DB paths relative to the library directory and re-expands
-    them through a ContextVar worker threads do not inherit; job runners bind
-    this around their whole sweep so reads AND file writes resolve real paths
-    off the main thread. The version quirk stays behind the adapter (rule 3).
+    beets stores DB paths relative to the library directory (2.11 through 2.13.1
+    alike) and converts in BOTH directions through a ``ContextVar``
+    (``beets.context``) that ``Library.__init__`` arms only in the context that
+    opened the library. A worker thread inherits nothing, so job runners bind
+    this around their whole sweep. Unbound, reads get a relative path they cannot
+    resolve AND writes store an absolute one — the write side is the dangerous
+    half, because the row still points at the right file until the music
+    directory moves.
+
+    ``Library._fetch`` binds the same var itself, but only around query PARSING
+    — the binding closes before ``_get_results`` builds the models — so it does
+    not cover model reads or writes. Do not drop a bind here believing it does.
+
+    The quirk stays behind the adapter (rule 3).
     """
     ctx: AbstractContextManager[Any] = handle.lib.music_dir_context()
     return ctx

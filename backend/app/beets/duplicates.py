@@ -261,7 +261,7 @@ def resolve_duplicate_group(
     ``Album.remove(delete=False)`` (DB rows dropped, files remain in Trash) —
     exactly ``beet dup --move <trash> --remove`` for albums.
 
-    Binds ``lib.music_dir_context()`` for the whole operation: beets 2.11 stores
+    Binds ``lib.music_dir_context()`` for the whole operation: beets stores
     item paths relative to the library dir and re-expands them to absolute on load
     via a ``ContextVar`` (``beets.context``) set when the ``Library`` is opened.
     The API runs this in a FastAPI threadpool thread that does NOT inherit that

@@ -23,8 +23,8 @@ the same reason. One predicate, two surfaces — they cannot drift apart, and th
 user does not learn about a refusal only after pressing Apply.
 
 Off-main-thread safety: every op binds ``lib.music_dir_context()`` because beets
-2.11 stores DB paths relative to the library dir and re-expands them via a
-``ContextVar`` that a FastAPI threadpool thread does not inherit (memory
+stores DB paths relative to the library dir and converts them in both directions
+via a ``ContextVar`` that a FastAPI threadpool thread does not inherit (memory
 ``beets-read-write-concurrency-gap``).
 """
 

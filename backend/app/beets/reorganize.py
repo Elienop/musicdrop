@@ -5,8 +5,8 @@ All beets access for the feature lives here (rule 3). A preview is read-only
 (``item.destination`` compared to ``item.path``, exactly as ``beet move`` filters);
 the move (Task 4) is ``Album.move``/``Item.move`` with ``MoveOperation.MOVE``, which
 relocates files + art and prunes the vacated dirs. Every op binds
-``lib.music_dir_context()`` because beets 2.11 stores DB paths relative to the
-library dir and re-expands them via a ContextVar a worker thread does not inherit.
+``lib.music_dir_context()`` because beets stores DB paths relative to the library
+dir and converts them both ways via a ContextVar a worker thread does not inherit.
 
 Two of the helpers here are the move-hygiene contract for the WHOLE app, not just
 this feature: ``collisions_by_dest`` (would beets divert this move to a ``.N``
