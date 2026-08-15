@@ -203,59 +203,74 @@ def _stable_rows(positions: list[int]) -> set[int]:
     return keep
 
 
-def _reconcile_items(playlist: Any, tracks: list[Any]) -> None:
-    """Make ``playlist``'s rows equal ``tracks`` (multiset AND order), in place.
+def _repeats_a_key(keys: list[Any]) -> bool:
+    """Whether any ratingKey occurs more than once in ``keys`` — the choice
+    between ``_reconcile_items``' two strategies."""
+    return len(set(keys)) != len(keys)
 
-    Two strategies, chosen by whether any ratingKey repeats:
 
-    * Unique keys (the common case): a diff. ``addItems`` the new ones (one
-      call), ``removeItems`` the stale ones (one call — with unique keys the
-      first-match row IS the only row, so the stale cache is harmless), then
-      ``reload()`` ONCE so ``moveItem`` can see the added rows, and move only the
-      rows that actually moved: the longest increasing subsequence of the current
-      positions is already in the right relative order and stays put, and each
-      remaining row costs one ``moveItem`` after its predecessor (``after=None``
-      = front). Dragging one track of a 500-row playlist is 1 PUT, not 499.
+def _append_then_strip_old(playlist: Any, current_rows: list[Any], tracks: list[Any]) -> None:
+    """Rebuild ``playlist`` as old-rows-then-desired-rows, then drop every old row.
 
-    * Any duplicate key: append-then-remove-old. The desired rows are appended in
-      order AFTER the old ones (in unique-key chunks, see ``_unique_key_chunks``);
-      one ``reload()`` then confirms Plex really holds old + desired before a
-      single row is removed; then each OLD row is removed with a ``reload()``
-      before every further ``removeItems`` — the first-match row for a key is
-      then always the earliest surviving OLD row, never one of the freshly
-      appended ones. Costs 2 calls per old row; only paid when a playlist
-      actually holds a track twice.
-
-    Either way additions land before removals, so the playlist never empties.
+    The duplicate-key strategy: with a key on two rows, plexapi's first-match
+    removal cannot be aimed by key alone, so the desired rows are parked AFTER
+    the old ones and the old ones are peeled off the front one at a time — the
+    earliest surviving row for a key is then always an OLD row, never a freshly
+    appended one.
     """
-    current_rows = list(playlist.items())
     current = [row.ratingKey for row in current_rows]
     desired = [track.ratingKey for track in tracks]
-    if current == desired:
-        return
-    if len(set(current)) != len(current) or len(set(desired)) != len(desired):
-        for chunk in _unique_key_chunks(tracks):
-            playlist.addItems(chunk)
-        # This path removes EVERY old row, so the appends have to be confirmed
-        # before the first removal: a PUT Plex answered but ignored would
-        # otherwise leave the playlist EMPTY and the sync would report "ok". The
-        # reload is the one the removal loop needed anyway (moved out of it), so
-        # the check is free.
-        # Compared as a LIST, not a multiset: the removals below take the FIRST
-        # cached row per key, which is only the old row if Plex appended the new
-        # rows AFTER the old ones in the order we sent — placement matters here
-        # as much as completeness (a complete-but-reordered result would strip
-        # the wrong rows).
-        playlist.reload()
-        if [row.ratingKey for row in playlist.items()] != current + desired:
-            raise PlexConnectionError(_NOT_APPLIED_ERROR)
-        for position, row in enumerate(current_rows):
-            if position:  # the verification reload above already refreshed the cache
-                playlist.reload()
-            playlist.removeItems([row])
-        return
+    for chunk in _unique_key_chunks(tracks):
+        playlist.addItems(chunk)
+    # This path removes EVERY old row, so the appends have to be confirmed
+    # before the first removal: a PUT Plex answered but ignored would
+    # otherwise leave the playlist EMPTY and the sync would report "ok". The
+    # reload is the one the removal loop needed anyway (moved out of it), so
+    # the check is free.
+    # Compared as a LIST, not a multiset: the removals below take the FIRST
+    # cached row per key, which is only the old row if Plex appended the new
+    # rows AFTER the old ones in the order we sent — placement matters here
+    # as much as completeness (a complete-but-reordered result would strip
+    # the wrong rows).
+    playlist.reload()
+    if [row.ratingKey for row in playlist.items()] != current + desired:
+        raise PlexConnectionError(_NOT_APPLIED_ERROR)
+    for position, row in enumerate(current_rows):
+        if position:  # the verification reload above already refreshed the cache
+            playlist.reload()
+        playlist.removeItems([row])
+
+
+def _move_into_order(playlist: Any, tracks: list[Any], order: list[Any]) -> None:
+    """Issue one ``moveItem`` per row that is genuinely out of place — the minimum.
+
+    ``order`` is the playlist's current key order; the rows of one longest
+    increasing subsequence of the desired rows' positions in it are already
+    correct relative to each other and stay put.
+    """
     by_key = {track.ratingKey: track for track in tracks}
-    current_set, desired_set = set(current), set(desired)
+    desired = [track.ratingKey for track in tracks]
+    at = {key: i for i, key in enumerate(order)}
+    keep = _stable_rows([at[key] for key in desired])
+    for i, key in enumerate(desired):
+        # After step i, desired[:i+1] are in the right relative order and still
+        # precede every yet-unplaced kept row, so placing each mover directly
+        # after its predecessor lands the whole list in order (induction on i).
+        if i in keep:
+            continue
+        playlist.moveItem(by_key[key], after=by_key[desired[i - 1]] if i > 0 else None)
+
+
+def _diff_then_reorder(playlist: Any, current_rows: list[Any], tracks: list[Any]) -> None:
+    """Add the new rows, remove the stale ones, then move what is out of place.
+
+    The unique-key strategy: every key names exactly one row, so plexapi's
+    first-match removal is unambiguous and the whole diff fits in one
+    ``addItems`` plus one ``removeItems``.
+    """
+    current_set = {row.ratingKey for row in current_rows}
+    desired = [track.ratingKey for track in tracks]
+    desired_set = set(desired)
     to_add = [track for track in tracks if track.ratingKey not in current_set]
     to_remove = [row for row in current_rows if row.ratingKey not in desired_set]
     if to_add:
@@ -269,15 +284,44 @@ def _reconcile_items(playlist: Any, tracks: list[Any]) -> None:
         # the desired order against this list would index past its end and surface
         # as the generic "Plex sync failed."; say what actually happened instead.
         raise PlexConnectionError(_NOT_APPLIED_ERROR)
-    at = {key: i for i, key in enumerate(order)}
-    keep = _stable_rows([at[key] for key in desired])
-    for i, key in enumerate(desired):
-        # After step i, desired[:i+1] are in the right relative order and still
-        # precede every yet-unplaced kept row, so placing each mover directly
-        # after its predecessor lands the whole list in order (induction on i).
-        if i in keep:
-            continue
-        playlist.moveItem(by_key[key], after=by_key[desired[i - 1]] if i > 0 else None)
+    _move_into_order(playlist, tracks, order)
+
+
+def _reconcile_items(playlist: Any, tracks: list[Any]) -> None:
+    """Make ``playlist``'s rows equal ``tracks`` (multiset AND order), in place.
+
+    Two strategies, chosen by whether any ratingKey repeats:
+
+    * Unique keys (the common case): a diff — ``_diff_then_reorder``.
+      ``addItems`` the new ones (one call), ``removeItems`` the stale ones (one
+      call — with unique keys the first-match row IS the only row, so the stale
+      cache is harmless), then ``reload()`` ONCE so ``moveItem`` can see the
+      added rows, and move only the rows that actually moved (``_move_into_order``):
+      the longest increasing subsequence of the current positions is already in
+      the right relative order and stays put, and each remaining row costs one
+      ``moveItem`` after its predecessor (``after=None`` = front). Dragging one
+      track of a 500-row playlist is 1 PUT, not 499.
+
+    * Any duplicate key: append-then-remove-old — ``_append_then_strip_old``. The
+      desired rows are appended in order AFTER the old ones (in unique-key
+      chunks, see ``_unique_key_chunks``); one ``reload()`` then confirms Plex
+      really holds old + desired before a single row is removed; then each OLD
+      row is removed with a ``reload()`` before every further ``removeItems`` —
+      the first-match row for a key is then always the earliest surviving OLD
+      row, never one of the freshly appended ones. Costs 2 calls per old row;
+      only paid when a playlist actually holds a track twice.
+
+    Either way additions land before removals, so the playlist never empties.
+    """
+    current_rows = list(playlist.items())
+    current = [row.ratingKey for row in current_rows]
+    desired = [track.ratingKey for track in tracks]
+    if current == desired:
+        return
+    if _repeats_a_key(current) or _repeats_a_key(desired):
+        _append_then_strip_old(playlist, current_rows, tracks)
+        return
+    _diff_then_reorder(playlist, current_rows, tracks)
 
 
 def _best_effort_stamp(playlist: Any, marker: str) -> None:
@@ -306,60 +350,77 @@ def _best_effort_poster(playlist: Any, artwork: PlexArtwork) -> bool:
     return True
 
 
-def _reconcile_on(
+def _poster_hash_after_update(
+    playlist: Any, artwork: PlexArtwork | None, prior_hash: str | None
+) -> str | None:
+    """The artwork hash to RECORD for an existing copy: the new one only once
+    Plex has actually taken a changed poster, else the one already recorded.
+
+    Keeping the prior hash on a failed upload is what makes the next sync retry
+    instead of skipping the upload forever on an unchanged hash.
+    """
+    if artwork is None or artwork.hash == prior_hash:
+        return prior_hash
+    return artwork.hash if _best_effort_poster(playlist, artwork) else prior_hash
+
+
+def _create_our_playlist(
     server: Any,
     title: str,
     tracks: list[Any],
     missing: list[PlexMissingTrack],
     *,
-    playlist_id: str,
-    prior: PlexTargetState | None,
-    artwork: PlexArtwork | None = None,
+    marker: str,
+    artwork: PlexArtwork | None,
 ) -> PlexTargetState:
-    """Bring this MusicDrop playlist's copy on ``server`` up to date IN PLACE.
+    """The state after creating a FRESH Plex copy — identity matched nothing.
 
-    Find the copy by IDENTITY (the ``playlist_id`` summary marker first, else the
-    recorded ``rating_key`` — see ``_find_our_playlist``). Found -> update its
-    rows, title, marker, and (only if the art changed) poster; the ratingKey is
-    preserved. Not found -> create it (Plex refuses an empty create, so an empty
-    resolve with no copy yields ``empty`` and no key). Found but nothing resolved
-    -> touch NOTHING and keep the key (``empty``). Found but smart -> ``failed``
-    (Plex won't let us edit its rows), key preserved.
-
-    Never matches by title — same-named playlists must not clobber each other.
+    Plex refuses an empty create, so an empty resolve yields ``empty`` and no
+    key rather than a playlist.
     """
-    prior_key = prior.rating_key if prior is not None else None
-    prior_hash = prior.artwork_hash if prior is not None else None
-    marker = _summary_marker(playlist_id)
     shown = missing[:MISSING_TRACKS_CAP]
-
-    existing = _find_our_playlist(server, playlist_id, prior_key)
-
-    if existing is None:
-        if not tracks:
-            return PlexTargetState(
-                rating_key=None, status="empty", missing=len(missing), missing_tracks=shown
-            )
-        # Create from the distinct keys, then let the reconcile append the
-        # repeats — one create uri must not carry a key twice either. The marker
-        # is stamped BEFORE that second step, so a reconcile failure leaves a
-        # findable playlist rather than an orphan we would duplicate next sync.
-        distinct = _first_occurrences(tracks)
-        playlist = server.createPlaylist(title, items=distinct)
-        _best_effort_stamp(playlist, marker)
-        if len(distinct) != len(tracks):
-            _reconcile_items(playlist, tracks)
-        pushed_hash: str | None = None
-        if artwork is not None and _best_effort_poster(playlist, artwork):
-            pushed_hash = artwork.hash
+    if not tracks:
         return PlexTargetState(
-            rating_key=str(playlist.ratingKey),
-            status="ok" if not missing else "partial",
-            missing=len(missing),
-            missing_tracks=shown,
-            artwork_hash=pushed_hash,
+            rating_key=None, status="empty", missing=len(missing), missing_tracks=shown
         )
+    # Create from the distinct keys, then let the reconcile append the
+    # repeats — one create uri must not carry a key twice either. The marker
+    # is stamped BEFORE that second step, so a reconcile failure leaves a
+    # findable playlist rather than an orphan we would duplicate next sync.
+    distinct = _first_occurrences(tracks)
+    playlist = server.createPlaylist(title, items=distinct)
+    _best_effort_stamp(playlist, marker)
+    if len(distinct) != len(tracks):
+        _reconcile_items(playlist, tracks)
+    pushed_hash: str | None = None
+    if artwork is not None and _best_effort_poster(playlist, artwork):
+        pushed_hash = artwork.hash
+    return PlexTargetState(
+        rating_key=str(playlist.ratingKey),
+        status="ok" if not missing else "partial",
+        missing=len(missing),
+        missing_tracks=shown,
+        artwork_hash=pushed_hash,
+    )
 
+
+def _update_our_playlist(
+    existing: Any,
+    title: str,
+    tracks: list[Any],
+    missing: list[PlexMissingTrack],
+    *,
+    marker: str,
+    prior_hash: str | None,
+    artwork: PlexArtwork | None,
+) -> PlexTargetState:
+    """The state after updating the copy we already own, IN PLACE.
+
+    The ratingKey survives every outcome, including the two that deliberately
+    touch nothing: a smart playlist (``failed`` — Plex won't let us edit its
+    rows) and an empty resolve (``empty``).
+    """
+    shown = missing[:MISSING_TRACKS_CAP]
     key = str(existing.ratingKey)
     # Deliberately a PLAIN attribute read: on a partial listing object plexapi
     # auto-reloads when it sees None here (the same trap _summary_of avoids) —
@@ -391,16 +452,52 @@ def _reconcile_on(
         existing.editTitle(title)
     if marker not in _summary_of(existing):
         _best_effort_stamp(existing, marker)
-    pushed = prior_hash
-    if artwork is not None and artwork.hash != prior_hash:
-        if _best_effort_poster(existing, artwork):
-            pushed = artwork.hash
     return PlexTargetState(
         rating_key=key,
         status="ok" if not missing else "partial",
         missing=len(missing),
         missing_tracks=shown,
-        artwork_hash=pushed,
+        artwork_hash=_poster_hash_after_update(existing, artwork, prior_hash),
+    )
+
+
+def _reconcile_on(
+    server: Any,
+    title: str,
+    tracks: list[Any],
+    missing: list[PlexMissingTrack],
+    *,
+    playlist_id: str,
+    prior: PlexTargetState | None,
+    artwork: PlexArtwork | None = None,
+) -> PlexTargetState:
+    """Bring this MusicDrop playlist's copy on ``server`` up to date IN PLACE.
+
+    Find the copy by IDENTITY (the ``playlist_id`` summary marker first, else the
+    recorded ``rating_key`` — see ``_find_our_playlist``). Found -> update its
+    rows, title, marker, and (only if the art changed) poster; the ratingKey is
+    preserved. Not found -> create it (Plex refuses an empty create, so an empty
+    resolve with no copy yields ``empty`` and no key). Found but nothing resolved
+    -> touch NOTHING and keep the key (``empty``). Found but smart -> ``failed``
+    (Plex won't let us edit its rows), key preserved.
+
+    Never matches by title — same-named playlists must not clobber each other.
+    """
+    prior_key = prior.rating_key if prior is not None else None
+    prior_hash = prior.artwork_hash if prior is not None else None
+    marker = _summary_marker(playlist_id)
+
+    existing = _find_our_playlist(server, playlist_id, prior_key)
+    if existing is None:
+        return _create_our_playlist(server, title, tracks, missing, marker=marker, artwork=artwork)
+    return _update_our_playlist(
+        existing,
+        title,
+        tracks,
+        missing,
+        marker=marker,
+        prior_hash=prior_hash,
+        artwork=artwork,
     )
 
 
