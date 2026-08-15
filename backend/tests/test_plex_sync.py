@@ -422,8 +422,9 @@ def test_empty_when_no_tracks(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_not_configured() -> None:
+    config, specs = PlexConfig(), [_p("/m/a.flac")]
     with pytest.raises(PlexNotConfigured):
-        sync.sync_playlist(PlexConfig(), "Mix", [_p("/m/a.flac")], playlist_id="p1")
+        sync.sync_playlist(config, "Mix", specs, playlist_id="p1")
 
 
 def test_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -433,8 +434,9 @@ def test_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
         raise ReqConnErr("no route")
 
     monkeypatch.setattr(sync.client, "connect", boom)
+    specs = [_p("/m/a.flac")]
     with pytest.raises(PlexConnectionError):
-        sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1")
+        sync.sync_playlist(CONFIG, "Mix", specs, playlist_id="p1")
 
 
 def test_unexpected_error_translated(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -443,8 +445,9 @@ def test_unexpected_error_translated(monkeypatch: pytest.MonkeyPatch) -> None:
         raise RuntimeError("kaboom")
 
     monkeypatch.setattr(sync.client, "connect", boom)
+    specs = [_p("/m/a.flac")]
     with pytest.raises(PlexConnectionError):
-        sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1")
+        sync.sync_playlist(CONFIG, "Mix", specs, playlist_id="p1")
 
 
 def test_fan_out_to_admin_and_users(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -616,10 +619,9 @@ def test_carried_forward_key_lets_a_later_delete_remove_the_copy(
 
 
 def test_fan_out_not_configured() -> None:
+    config, specs = PlexConfig(), [_p("/m/a.flac")]
     with pytest.raises(PlexNotConfigured):
-        sync.sync_playlist_to_targets(
-            PlexConfig(), "Mix", [_p("/m/a.flac")], ["7"], playlist_id="p1", priors={}
-        )
+        sync.sync_playlist_to_targets(config, "Mix", specs, ["7"], playlist_id="p1", priors={})
 
 
 def test_sync_metadata_fallback_populates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -719,8 +721,9 @@ def test_delete_on_targets_isolates_a_failing_account(monkeypatch: pytest.Monkey
 
 
 def test_delete_on_targets_not_configured() -> None:
+    config = PlexConfig()
     with pytest.raises(PlexNotConfigured):
-        sync.delete_playlist_on_targets(PlexConfig(), {"admin": "500"}, playlist_id="p1")
+        sync.delete_playlist_on_targets(config, {"admin": "500"}, playlist_id="p1")
 
 
 def test_delete_prefers_our_marked_copy_over_a_stale_key(monkeypatch: pytest.MonkeyPatch) -> None:

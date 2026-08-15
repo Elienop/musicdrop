@@ -51,6 +51,8 @@ from app.plex.mapping import PlexTrackSpec, resolve_ordered_tracks
 _SMART_ERROR = "This Plex playlist is a smart playlist; MusicDrop can't update it in place."
 _NOT_APPLIED_ERROR = "Plex did not apply the playlist changes."
 _ACCOUNT_ERROR = "Couldn't sync to this Plex account."
+_NOT_CONFIGURED_ERROR = "Plex is not configured."
+_SYNC_FAILED_ERROR = "Plex sync failed."
 _MARKER_PREFIX = "MusicDrop-id:"
 
 
@@ -522,7 +524,7 @@ def sync_playlist(
 ) -> PlexTargetState:
     """Create/reconcile the playlist on the admin account only, by identity."""
     if not (config.base_url and config.token):
-        raise PlexNotConfigured("Plex is not configured.")
+        raise PlexNotConfigured(_NOT_CONFIGURED_ERROR)
     try:
         server = client.connect(config.base_url, config.token)
         section = client.music_section(server, config.library_section)
@@ -544,7 +546,7 @@ def sync_playlist(
         # Translate EVERYTHING else (plexapi errors, requests network errors, or
         # any unexpected library failure) into our connection error, so the
         # caller only ever sees PlexNotConfigured / PlexConnectionError.
-        raise PlexConnectionError("Plex sync failed.") from exc
+        raise PlexConnectionError(_SYNC_FAILED_ERROR) from exc
 
 
 def sync_playlist_to_targets(
@@ -570,7 +572,7 @@ def sync_playlist_to_targets(
     ``playlist_id`` summary marker still guards against title collisions).
     """
     if not (config.base_url and config.token):
-        raise PlexNotConfigured("Plex is not configured.")
+        raise PlexNotConfigured(_NOT_CONFIGURED_ERROR)
     try:
         admin = client.connect(config.base_url, config.token)
         section = client.music_section(admin, config.library_section)
@@ -580,7 +582,7 @@ def sync_playlist_to_targets(
     except PlexConnectionError:
         raise
     except Exception as exc:
-        raise PlexConnectionError("Plex sync failed.") from exc
+        raise PlexConnectionError(_SYNC_FAILED_ERROR) from exc
 
     def _reconcile_for(server: Any, key: str) -> PlexTargetState:
         return _reconcile_on(
@@ -655,11 +657,11 @@ def delete_playlist_on_targets(
     ``PlexNotConfigured`` (no URL/token); a connect failure raises
     ``PlexConnectionError`` (callers wrap this best-effort)."""
     if not (config.base_url and config.token):
-        raise PlexNotConfigured("Plex is not configured.")
+        raise PlexNotConfigured(_NOT_CONFIGURED_ERROR)
     try:
         admin = client.connect(config.base_url, config.token)
     except Exception as exc:
-        raise PlexConnectionError("Plex sync failed.") from exc
+        raise PlexConnectionError(_SYNC_FAILED_ERROR) from exc
     return {
         target: _safe_delete(admin, target, rk, playlist_id=playlist_id)
         for target, rk in rating_keys.items()
