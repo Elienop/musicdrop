@@ -75,7 +75,22 @@ def _summary_marker(playlist_id: str) -> str:
 
 
 def _summary_of(playlist: Any) -> str:
-    return str(getattr(playlist, "summary", "") or "")
+    """``playlist``'s summary, read WITHOUT a hidden Plex round trip.
+
+    ``Playlist._loadData`` stores ``data.attrib.get('summary')`` — ``None`` when
+    the listing carries no summary (``playlist.py:71``) — and a playlist built
+    from ``/playlists`` is PARTIAL (its ``key`` is ``/playlists/<id>``, its
+    ``_initpath`` ``/playlists``, so ``isFullObject`` is False:
+    ``base.py:692-702``). ``PlexPartialObject.__getattribute__`` turns a ``None``
+    read on a partial object into ``self._reload()`` — a full HTTP GET —
+    whenever ``_autoReload`` is on (default True, ``base.py:115``) and the name
+    is not one of ``_DONT_RELOAD_FOR_KEYS`` = {centroid, key, sourceURI}, which
+    ``summary`` is not (``base.py:650-668``). Identity lookup reads EVERY
+    playlist's summary on EVERY sync for EVERY target, so a plain attribute read
+    costs one GET per summary-less playlist each time. ``__dict__`` starts with
+    an underscore and so returns at ``base.py:656`` before any of that.
+    """
+    return str(playlist.__dict__.get("summary") or "")
 
 
 def _find_our_playlist(server: Any, playlist_id: str, rating_key: str | None) -> Any | None:
@@ -100,9 +115,17 @@ def _find_our_playlist(server: Any, playlist_id: str, rating_key: str | None) ->
     """
     marker = _summary_marker(playlist_id)
     playlists = list(server.playlists())
-    for playlist in playlists:
-        if marker in _summary_of(playlist):
-            return playlist
+    marked = [playlist for playlist in playlists if marker in _summary_of(playlist)]
+    if marked:
+        # Two copies can both wear our marker — a listing call that failed
+        # mid-sync leaves a stamped playlist behind and the next sync creates
+        # another. The recorded key then decides, so the copy a sync UPDATES is
+        # the copy a delete REMOVES; without it the two can pick different ones
+        # and the delete destroys the copy Plex clients are not holding.
+        for playlist in marked:
+            if rating_key is not None and str(playlist.ratingKey) == str(rating_key):
+                return playlist
+        return marked[0]
     if rating_key is None:
         return None
     for playlist in playlists:
@@ -195,10 +218,12 @@ def _reconcile_items(playlist: Any, tracks: list[Any]) -> None:
 
     * Any duplicate key: append-then-remove-old. The desired rows are appended in
       order AFTER the old ones (in unique-key chunks, see ``_unique_key_chunks``);
-      then each OLD row is removed with a ``reload()`` before every single
-      ``removeItems`` — the first-match row for a key is then always the earliest
-      surviving OLD row, never one of the freshly appended ones. Costs 2 calls per
-      old row; only paid when a playlist actually holds a track twice.
+      one ``reload()`` then confirms Plex really holds old + desired before a
+      single row is removed; then each OLD row is removed with a ``reload()``
+      before every further ``removeItems`` — the first-match row for a key is
+      then always the earliest surviving OLD row, never one of the freshly
+      appended ones. Costs 2 calls per old row; only paid when a playlist
+      actually holds a track twice.
 
     Either way additions land before removals, so the playlist never empties.
     """
@@ -210,8 +235,19 @@ def _reconcile_items(playlist: Any, tracks: list[Any]) -> None:
     if len(set(current)) != len(current) or len(set(desired)) != len(desired):
         for chunk in _unique_key_chunks(tracks):
             playlist.addItems(chunk)
-        for row in current_rows:
-            playlist.reload()
+        # This path removes EVERY old row, so the appends have to be confirmed
+        # before the first removal: a PUT Plex answered but ignored would
+        # otherwise leave the playlist EMPTY and the sync would report "ok". The
+        # reload is the one the removal loop needed anyway (moved out of it), so
+        # the check is free.
+        playlist.reload()
+        if Counter(row.ratingKey for row in playlist.items()) != Counter(current) + Counter(
+            desired
+        ):
+            raise PlexConnectionError(_NOT_APPLIED_ERROR)
+        for position, row in enumerate(current_rows):
+            if position:  # the verification reload above already refreshed the cache
+                playlist.reload()
             playlist.removeItems([row])
         return
     by_key = {track.ratingKey: track for track in tracks}
@@ -343,7 +379,7 @@ def _reconcile_on(
     _reconcile_items(existing, tracks)
     if getattr(existing, "title", None) != title:
         existing.editTitle(title)
-    if marker not in (getattr(existing, "summary", "") or ""):
+    if marker not in _summary_of(existing):
         _best_effort_stamp(existing, marker)
     pushed = prior_hash
     if artwork is not None and artwork.hash != prior_hash:

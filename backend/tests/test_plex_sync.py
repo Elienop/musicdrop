@@ -1,5 +1,6 @@
 import random
 import zlib
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ from app.plex.config import PlexConfig
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
 from app.plex.mapping import PlexTrackSpec
 from app.plex.sync import PlexArtwork
-from tests.plex_fakes import FakePlaylist, FakeSection, FakeServer, FakeTrack
+from tests.plex_fakes import FakeItem, FakePlaylist, FakeSection, FakeServer, FakeTrack
 
 CONFIG = PlexConfig(base_url="http://plex:32400", token="t")
 
@@ -700,6 +701,33 @@ def test_delete_still_adopts_an_unmarked_playlist_by_key(monkeypatch: pytest.Mon
     assert unmarked.deleted is True
 
 
+def test_two_copies_wearing_our_marker_tie_break_on_the_recorded_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Two copies can BOTH carry our marker (a listing that failed mid-sync leaves
+    # a stamped playlist behind and the next sync creates another). Taking the
+    # listing-first one splits the identity: the sync updates 800 while the
+    # delete — reading the same rule with the same recorded key — removes 800 and
+    # leaves the copy the user's Plex clients actually hold. The recorded key
+    # breaks the tie, so both sides land on the same playlist.
+    first = _marked(FakePlaylist("Mix", [FakeTrack(1, ["/m/a.flac"])], 800), "p1")
+    recorded = _marked(FakePlaylist("Mix", [FakeTrack(2, ["/m/b.flac"])], 900), "p1")
+    server = FakeServer([FakeTrack(1, ["/m/a.flac"])])
+    server._playlists.extend([first, recorded])
+    _patch(monkeypatch, server)
+
+    state = sync.sync_playlist(
+        CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1", prior=PlexTargetState(rating_key="900")
+    )
+    assert state.rating_key == "900"  # the recorded copy, not the listing-first one
+    assert first.calls == []
+
+    results = sync.delete_playlist_on_targets(CONFIG, {"admin": "900"}, playlist_id="p1")
+    assert results == {"admin": "deleted"}
+    assert recorded.deleted is True
+    assert first.deleted is False
+
+
 def test_sync_uses_the_configured_section(monkeypatch: pytest.MonkeyPatch) -> None:
     wanted = FakeTrack(1, ["/music/a/b/01 x.mp3"], title="x")
     first = FakeSection([], title="Music")
@@ -941,17 +969,30 @@ def test_rotating_one_track_costs_one_move(monkeypatch: pytest.MonkeyPatch) -> N
     assert existing.calls.count("moveItem") == 1
 
 
-def test_reversing_five_tracks_costs_at_most_four_moves(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The worst case is still bounded by N-1 (one row can always stay put).
+@pytest.mark.parametrize(
+    ("order", "moves"),
+    [
+        # A full reversal: no two rows are in the right relative order, so the LIS
+        # is one row and the cost is the N-1 worst case — a bound, never exceeded.
+        ([5, 4, 3, 2, 1], 4),
+        # Only rows 3 and 4 broke rank (1,2,5 already ascend), so the minimum is 2.
+        # An EXACT count is what separates "moves only what moved" from any walk
+        # that reshuffles rows already in place: a walk that moves every row not
+        # sitting at its final index costs 5 here and 4 on the reversal, so the
+        # reversal alone cannot tell the two apart.
+        ([3, 1, 2, 5, 4], 2),
+    ],
+)
+def test_reordering_costs_exactly_the_rows_that_moved(
+    monkeypatch: pytest.MonkeyPatch, order: list[int], moves: int
+) -> None:
     tracks = [FakeTrack(key, [f"/m/{key}"]) for key in range(1, 6)]
     server = FakeServer(tracks)
     existing = _marked(server.createPlaylist("Mix", items=tracks))
     _patch(monkeypatch, server)
-    sync.sync_playlist(
-        CONFIG, "Mix", [_p(f"/m/{key}") for key in range(5, 0, -1)], playlist_id="p1"
-    )
-    assert existing.live_keys() == [5, 4, 3, 2, 1]
-    assert existing.calls.count("moveItem") <= 4
+    sync.sync_playlist(CONFIG, "Mix", [_p(f"/m/{key}") for key in order], playlist_id="p1")
+    assert existing.live_keys() == order
+    assert existing.calls.count("moveItem") == moves
 
 
 def test_reconcile_lands_on_the_desired_rows_for_arbitrary_shapes() -> None:
@@ -1019,3 +1060,68 @@ def test_a_server_that_silently_drops_an_add_fails_loudly(
         sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac"), _p("/m/b.flac")], playlist_id="p1")
     assert "Plex did not apply the playlist changes." in str(err.value)
     assert existing.live_keys() == [10]
+
+
+class _SwallowsAdds(FakePlaylist):
+    """A PMS that answers the ``addItems`` PUT with 200 and changes nothing.
+
+    The one failure the duplicate path cannot survive: it appends the desired
+    rows and then removes ALL the old ones, so an add that quietly did nothing
+    leaves the playlist empty.
+    """
+
+    def addItems(self, items: Sequence[FakeItem] | FakeItem) -> FakePlaylist:
+        self.calls.append("addItems")
+        return self
+
+
+def test_a_dropped_add_on_the_duplicate_path_removes_nothing_and_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The duplicate path deletes every old row, so it must confirm the appends
+    # landed BEFORE it removes anything: otherwise a silently ignored add empties
+    # the playlist and the sync still reports "ok".
+    a, b = FakeTrack(1, ["/m/a"]), FakeTrack(2, ["/m/b"])
+    server = FakeServer([a, b])
+    existing = _marked(_SwallowsAdds("Mix", [a, a, b], 500))  # 1,1,2
+    server._playlists.append(existing)
+    _patch(monkeypatch, server)
+    with pytest.raises(PlexConnectionError) as err:
+        sync.sync_playlist(CONFIG, "Mix", [_p("/m/b"), _p("/m/a"), _p("/m/b")], playlist_id="p1")
+    assert "Plex did not apply the playlist changes." in str(err.value)
+    assert existing.live_keys() == [1, 1, 2]  # untouched — nothing was removed
+    assert "removeItems" not in existing.calls
+
+
+class _AutoReloadTrap:
+    """A stand-in for a PARTIAL plexapi playlist object.
+
+    Reading a plain (non-underscore) attribute is exactly what fires
+    ``PlexPartialObject.__getattribute__``'s auto-``_reload()`` — an HTTP GET —
+    when the value is ``None``; reading it out of ``__dict__`` never can, because
+    that name hits the ``attr.startswith('_')`` early return. This records which
+    of the two the production code did.
+    """
+
+    def __init__(self, summary: str | None, reads: list[str]) -> None:
+        self.__dict__["summary"] = summary
+        self.__dict__["_reads"] = reads
+
+    def __getattribute__(self, attr: str) -> object:
+        if not attr.startswith("_"):
+            object.__getattribute__(self, "__dict__")["_reads"].append(attr)
+        return object.__getattribute__(self, attr)
+
+
+def test_a_summary_is_read_without_a_plex_round_trip() -> None:
+    # Identity lookup reads EVERY playlist's summary, on every sync, for every
+    # target. plexapi turns a None summary on a partial object into a full
+    # reload, so an attribute read here costs one hidden GET per summary-less
+    # playlist. See _summary_of for the cited plexapi lines.
+    reads: list[str] = []
+    assert sync._summary_of(_AutoReloadTrap("MusicDrop-id:p1", reads)) == "MusicDrop-id:p1"
+    assert reads == []
+
+    missing: list[str] = []
+    assert sync._summary_of(_AutoReloadTrap(None, missing)) == ""  # absent reads as empty
+    assert missing == []
