@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.api.playlists import get_playlists_dir
 from app.beets.library import LibraryHandle, _require_id
-from app.models.playlist import PendingTrack
+from app.models.playlist import PendingTrack, Playlist, PlaylistDetail
 from app.playlists import store
 from app.playlists.store import StoredEntry
 from app.plex import sync as plex_sync
@@ -433,6 +433,19 @@ def test_sync_updates_existing_plex_copy_in_place_and_reports_missing(
     assert r2.json()["plex"]["admin"]["rating_key"] == first["rating_key"]
     assert len(server.created) == 1  # updated in place, not recreated
     assert server.created[0].live_keys() == [10]
+
+
+def test_detail_plex_field_redeclares_the_summary_type_exactly() -> None:
+    # PlaylistDetail redeclares `plex` ONLY to carry its own description (the
+    # detail view holds miss identities; list rows don't). mypy --strict does not
+    # notice if the two annotations drift apart (verified: widening the parent
+    # to `| None` while the child stays narrow typechecks clean), so pin it here.
+    assert (
+        PlaylistDetail.model_fields["plex"].annotation == Playlist.model_fields["plex"].annotation
+    )
+    assert (
+        PlaylistDetail.model_fields["plex"].description != Playlist.model_fields["plex"].description
+    )  # the redeclaration exists for this difference
 
 
 def test_miss_identities_are_detail_only_but_the_count_is_everywhere(
