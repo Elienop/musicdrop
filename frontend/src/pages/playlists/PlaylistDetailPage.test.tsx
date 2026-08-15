@@ -861,6 +861,11 @@ describe("PlaylistDetailPage", () => {
               rating_key: "2",
               status: "partial",
               missing: 1,
+              // The wire always carries this (Pydantic default), so the fixture
+              // does too — the status label reads its length.
+              missing_tracks: [
+                { item_id: 1, title: "Alpha", albumartist: "A", album: "B", reason: "not_found" },
+              ],
               synced_at: "2026-06-07T01:00:00+00:00",
               error: null,
             },
@@ -934,6 +939,72 @@ describe("PlaylistDetailPage", () => {
     expect(
       within(screen.getByRole("row", { name: /Found/ })).queryByText("Not in Plex"),
     ).toBeNull();
+  });
+
+  /** A `partial` admin state carrying `marked` miss identities out of `missing`
+   * total — the shape the cap (MISSING_TRACKS_CAP = 200) produces on a very
+   * lossy sync. */
+  function partialAdmin(missing: number, marked: number) {
+    return {
+      admin: {
+        rating_key: "500",
+        status: "partial",
+        missing,
+        missing_tracks: Array.from({ length: marked }, (_, i) => ({
+          item_id: 1000 + i,
+          title: `T${i}`,
+          albumartist: "A",
+          album: "B",
+          reason: "not_found",
+        })),
+        synced_at: "2026-08-15T10:00:00+00:00",
+        error: null,
+      },
+    };
+  }
+
+  test("says how many misses are marked when the identity list is capped", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: partialAdmin(350, 200) }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    // Only 200 rows can wear a badge, so the count alone would let the other
+    // 150 unbadged rows read as fine.
+    expect(await screen.findByText("350 not in Plex; first 200 marked")).toBeInTheDocument();
+  });
+
+  test("keeps the plain count when every miss is marked", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: partialAdmin(2, 2) }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    // The common case: every miss has a badge, so there is nothing to qualify.
+    expect(await screen.findByText("2 not in Plex")).toBeInTheDocument();
+  });
+
+  test("says none are marked when the state carries no miss identities", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: partialAdmin(3, 0) }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    // A target last synced before the identities existed carries none — "first
+    // 0 marked" would be nonsense, so that case reads "none marked".
+    expect(await screen.findByText("3 not in Plex; none marked")).toBeInTheDocument();
   });
 
   test("says the Plex copy was left alone when nothing resolved but a copy exists", async () => {

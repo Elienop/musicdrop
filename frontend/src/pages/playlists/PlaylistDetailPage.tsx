@@ -134,8 +134,20 @@ function syncStatus(
   switch (state.status) {
     case "ok":
       return { label: "Synced", tone: "success" };
-    case "partial":
-      return { label: `${state.missing} not in Plex`, tone: "warning" };
+    case "partial": {
+      const marked = state.missing_tracks.length;
+      if (marked >= state.missing) {
+        return { label: `${state.missing} not in Plex`, tone: "warning" };
+      }
+      // Fewer carried identities than misses — the server caps the list
+      // (MISSING_TRACKS_CAP), and a state recorded before that list existed
+      // carries none at all. Only those rows can wear a badge, so say which
+      // ones the badges cover; otherwise the unmarked remainder reads as fine.
+      return {
+        label: `${state.missing} not in Plex; ${marked === 0 ? "none" : `first ${marked}`} marked`,
+        tone: "warning",
+      };
+    }
     case "empty":
       // Nothing resolved, so the sync touched nothing. Which is reassuring only
       // if there IS a copy to leave alone — say which case this is.
