@@ -158,8 +158,14 @@ function syncStatus(
       // Nothing resolved, so the sync touched nothing. Say which case this is —
       // and both are a warning: the user asked for a push and got none, so the
       // no-copy-at-all outcome must not read quieter than the milder one.
-      return state.rating_key
-        ? { label: "No matching tracks; Plex copy left as is", tone: "warning" }
+      // The exception is a playlist with nothing to send in the first place
+      // (empty, or only pending rows): missing === 0, nothing went wrong, so no
+      // alarm is earned.
+      if (state.rating_key) {
+        return { label: "No matching tracks; Plex copy left as is", tone: "warning" };
+      }
+      return state.missing === 0
+        ? { label: "Nothing to sync", tone: "muted" }
         : { label: "No matching tracks; nothing sent to Plex", tone: "warning" };
     case "failed":
       return { label: state.error ?? "Failed", tone: "destructive" };
@@ -1046,7 +1052,7 @@ const PlaylistTrackRow = memo(function PlaylistTrackRow({
               the Title column past a phone and the table's own overflow-x-auto
               scroller (ui/table.tsx) hides the row's actions off the right
               edge. Wrapping drops the badge under the title only when it must. */}
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span
               className={`min-w-0 truncate font-medium ${track.available ? "" : "text-muted-foreground italic"}`}
             >

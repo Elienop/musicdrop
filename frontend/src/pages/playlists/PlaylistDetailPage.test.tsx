@@ -1173,6 +1173,35 @@ describe("PlaylistDetailPage", () => {
     expect(line).toHaveClass("text-warning");
   });
 
+  test("an empty playlist that synced nothing is not an alarm", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([]),
+          plex: {
+            admin: {
+              rating_key: null,
+              status: "empty",
+              missing: 0,
+              missing_tracks: [],
+              synced_at: "2026-08-15T10:00:00+00:00",
+              error: null,
+            },
+          },
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    // No tracks resolved because there were none to resolve — nothing went
+    // wrong, so no warning tone; "nothing sent to Plex" is for a real miss.
+    const line = await screen.findByText("Nothing to sync");
+    expect(line).not.toHaveClass("text-warning");
+    expect(screen.queryByText("No matching tracks; nothing sent to Plex")).toBeNull();
+  });
+
   test("delete dialog notes Plex removal when the playlist has Plex copies", async () => {
     server.use(
       http.get(BASE, () =>
