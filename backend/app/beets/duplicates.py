@@ -59,6 +59,18 @@ _WS_RE = re.compile(r"\s+")
 _MATCH_REASON = {"mb": "MusicBrainz album id", "fuzzy": "artist + album title"}
 
 
+def _soft_normalize(text: str) -> str:
+    """Everything :func:`normalize` does EXCEPT removing punctuation.
+
+    Split out so :func:`normalize` is literally "this, then drop punctuation" —
+    the two share one pipeline and cannot drift apart. Used on its own only as
+    :func:`_fuzzy_part`'s second rung.
+    """
+    text = _PAREN_RE.sub(" ", text.casefold())
+    text = _FEAT_RE.sub(" ", text)
+    return _WS_RE.sub(" ", text).strip()
+
+
 def normalize(text: str) -> str:
     """Normalize an artist/album string for fuzzy duplicate grouping.
 
@@ -66,31 +78,44 @@ def normalize(text: str) -> str:
     ``feat.`` clauses, removes punctuation, and collapses whitespace. NOT a
     beets behavior — see module docstring.
     """
-    text = text.casefold()
-    text = _PAREN_RE.sub(" ", text)
-    text = _FEAT_RE.sub(" ", text)
-    text = _PUNCT_RE.sub(" ", text)
-    return _WS_RE.sub(" ", text).strip()
+    return _WS_RE.sub(" ", _PUNCT_RE.sub(" ", _soft_normalize(text))).strip()
 
 
 def _fuzzy_part(text: str) -> str:
-    """One half of the fuzzy signal: normalized, falling back to the raw text
-    when normalization empties it.
+    """One half of the fuzzy signal: the strongest normalization that still says
+    something. Three rungs, each used only when the one above empties the value.
 
     :func:`normalize` strips ALL punctuation, so a symbol-only value collapses to
     "" — it maps ``=``, ``+`` and U+2212 MINUS SIGN all to the empty string.
-    Without this fallback every such value compares EQUAL, so Ed Sheeran's three
+    Without a fallback every such value compares EQUAL, so Ed Sheeran's three
     symbol-titled albums emit one identical ``fuzzy:ed sheeran\\x00`` signal and
-    group as a single duplicate set. Keeping the raw glyph tells them apart while
-    two real copies of ``=`` still share a signal, so detection is preserved
-    rather than traded away.
+    group as a single duplicate set.
 
-    A genuinely empty value stays empty: the fallback distinguishes "there was no
-    text" (absent — contributes no signal) from "there was text and normalization
-    ate it" (present — keep it). ``playlist_match._title_key`` applies the same
-    fallback for the same reason, to an all-parenthetical track title.
+    Rung 2 (:func:`_soft_normalize`) keeps the punctuation but still folds
+    parentheticals, ``feat.`` clauses and whitespace, so ``=`` and
+    ``= (Deluxe Edition)`` — the commonest real duplicate shape — still group,
+    which a raw ``casefold()`` fallback would have missed. Rung 3 is that raw
+    ``casefold()``, reached only when rung 2 is ALSO empty: a title that is
+    nothing but a parenthetical (Sigur Rós' ``( )``) folds to "" under rung 2,
+    and without rung 3 it would compare equal to every other such title by the
+    same artist — the original bug in a narrower shape.
+
+    What this trades away, stated exactly: two copies whose titles both empty
+    :func:`normalize` group only when their folded forms agree — and when those
+    are empty too, only when the raw text agrees. That covers byte-identical
+    titles and the deluxe/standard pair; it misses a pair that is
+    parenthetical-only on BOTH sides with differing raw text (``( )`` vs
+    ``( ) (Remastered)``). Deliberate — a missed duplicate is recoverable, an
+    unrelated album filed away by *Resolve all* is not.
+
+    A genuinely empty value stays empty through all three rungs: the ladder
+    distinguishes "there was no text" (absent — contributes no signal) from
+    "there was text and normalization ate it" (present — keep it).
+    ``playlist_match._title_key`` falls back for the same reason but stops at the
+    raw form, because there the value being rescued IS an all-parenthetical track
+    title ("(Intro)"), which rung 2 would empty.
     """
-    return normalize(text) or text.casefold().strip()
+    return normalize(text) or _soft_normalize(text) or text.casefold().strip()
 
 
 def _grouping_signals(album: Any, mode: DuplicateMode) -> list[str]:
@@ -103,12 +128,16 @@ def _grouping_signals(album: Any, mode: DuplicateMode) -> list[str]:
     proper superset of strict AND catches the two real dup shapes MB-precedence
     alone missed: an MB-tagged copy paired with an untagged/as-is copy (only the
     tagged one has an ``mb:`` signal, but both share the ``fuzzy:`` one), and two
-    distinct releases of the same album (different MBIDs, same normalized title).
+    distinct releases of the same album (different MBIDs, same fuzzy key).
 
-    Both halves go through :func:`_fuzzy_part`, so a title (or artist) that
-    normalizes to "" keeps its raw glyph instead of comparing equal to every
-    other one — see that docstring. The ``artist or title`` guard therefore still
-    means "no usable key", never "normalization ate the only key I had".
+    "Same fuzzy key" is NOT always "same normalized title": both halves go
+    through :func:`_fuzzy_part`, so a value that :func:`normalize` empties is
+    keyed on its folded or raw form instead of comparing equal to every other
+    such value. For a symbol-only title (``=``) that means two releases group
+    only if the glyph agrees after parenthetical folding — see that docstring for
+    exactly what the ladder catches and what it gives up. The ``artist or title``
+    guard therefore still means "no usable key", never "normalization ate the
+    only key I had".
     """
     signals: list[str] = []
     mb = _coerce_optional_str(album.get("mb_albumid"))
@@ -226,6 +255,13 @@ def find_import_duplicates(
     ``import.duplicate_keys.album`` (default ``albumartist album``), and drops
     any existing album whose files all live under ``exclude_under`` (a re-import
     of the same folder is not a collision; tasks.py:410-420). Read-only.
+
+    It shares NO machinery with the fuzzy detection above — it matches exact
+    field values through beets' own query and never calls :func:`normalize`,
+    :func:`_fuzzy_part` or :func:`_grouping_signals` (instrumented, 0 calls), so
+    changes to fuzzy grouping cannot reach the pre-import collision warning in
+    ``api/import_.py`` / ``api/bank.py``. Verified so the next reader need not
+    re-derive it.
     """
     if not albumartist:
         return []  # mirrors beets' as-is/no-artist guard

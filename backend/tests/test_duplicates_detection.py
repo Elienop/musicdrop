@@ -216,6 +216,32 @@ def test_strict_leaves_mixed_shapes_as_singletons(tmp_path: Path) -> None:
 _MINUS = "\N{MINUS SIGN}"
 
 
+def _empty_lib(tmp_path: Path) -> tuple[Library, Path]:
+    """A hermetic library plus its music dir."""
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    return build_library(str(tmp_path / "library.db"), str(music)), music
+
+
+def _add_album(lib: Library, music: Path, *, artist: str, album: str, n: int, folder: str) -> None:
+    """Add an n-track album with real files under ``music/folder``."""
+    import os
+
+    from beets.library import Item
+
+    items = []
+    root = music / folder
+    root.mkdir(parents=True, exist_ok=True)
+    for i in range(1, n + 1):
+        f = root / f"{i:02d} Track {i}.mp3"
+        f.write_bytes(b"\x00")
+        it = Item(album=album, albumartist=artist, artist=artist, title=f"Track {i}", track=i)
+        it.path = os.fsencode(str(f))
+        items.append(it)
+    lib.add_album(items).store()
+
+
 def _symbol_title_lib(tmp_path: Path) -> Library:
     """One artist, three DIFFERENT symbol-titled albums, plus a genuine second
     copy of one of them. Every title normalizes to "" (all punctuation), so the
@@ -227,31 +253,11 @@ def _symbol_title_lib(tmp_path: Path) -> Library:
 
     Mirrors albums 260/261 in the owner's real library.
     """
-    import os
-
-    from beets.library import Item
-
-    from tests.conftest import build_library
-
-    music = tmp_path / "music"
-    lib = build_library(str(tmp_path / "library.db"), str(music))
-
-    def add_album(*, artist: str, album: str, n: int, folder: str) -> None:
-        items = []
-        root = music / folder
-        root.mkdir(parents=True, exist_ok=True)
-        for i in range(1, n + 1):
-            f = root / f"{i:02d} Track {i}.mp3"
-            f.write_bytes(b"\x00")
-            it = Item(album=album, albumartist=artist, artist=artist, title=f"Track {i}", track=i)
-            it.path = os.fsencode(str(f))
-            items.append(it)
-        lib.add_album(items).store()
-
-    add_album(artist="Ed Sheeran", album="=", n=15, folder="Ed Sheeran/Equals")
-    add_album(artist="Ed Sheeran", album="=", n=9, folder="Ed Sheeran/Equals (rip)")
-    add_album(artist="Ed Sheeran", album=_MINUS, n=18, folder="Ed Sheeran/Subtract")
-    add_album(artist="Ed Sheeran", album="+", n=12, folder="Ed Sheeran/Plus")
+    lib, music = _empty_lib(tmp_path)
+    _add_album(lib, music, artist="Ed Sheeran", album="=", n=15, folder="Ed Sheeran/Equals")
+    _add_album(lib, music, artist="Ed Sheeran", album="=", n=9, folder="Ed Sheeran/Equals (rip)")
+    _add_album(lib, music, artist="Ed Sheeran", album=_MINUS, n=18, folder="Ed Sheeran/Subtract")
+    _add_album(lib, music, artist="Ed Sheeran", album="+", n=12, folder="Ed Sheeran/Plus")
     return lib
 
 
@@ -286,3 +292,80 @@ def test_fuzzy_does_not_group_different_symbol_titled_albums(tmp_path: Path) -> 
     assert sorted(m.track_count for m in group.members) == [9, 15]
     # The two unrelated symbol-titled albums are not in any group.
     assert report.album_count == 2
+
+
+def _deluxe_symbol_lib(tmp_path: Path) -> Library:
+    """One artist; a symbol-titled album next to its deluxe edition, plus an
+    unrelated symbol-titled album:
+
+      - "Ed Sheeran / =" (15 tracks)
+      - "Ed Sheeran / = (Deluxe Edition)" (18 tracks) -- the SAME album
+      - "Ed Sheeran / +" (12 tracks)                  -- a DIFFERENT album
+    """
+    lib, music = _empty_lib(tmp_path)
+    _add_album(lib, music, artist="Ed Sheeran", album="=", n=15, folder="Ed Sheeran/Equals")
+    _add_album(
+        lib,
+        music,
+        artist="Ed Sheeran",
+        album="= (Deluxe Edition)",
+        n=18,
+        folder="Ed Sheeran/Equals Deluxe",
+    )
+    _add_album(lib, music, artist="Ed Sheeran", album="+", n=12, folder="Ed Sheeran/Plus")
+    return lib
+
+
+def test_fuzzy_groups_a_symbol_title_with_its_deluxe_edition(tmp_path: Path) -> None:
+    """Standard-vs-deluxe is the commonest real duplicate shape, and folding the
+    parenthetical away is the whole reason ``normalize`` exists. A symbol-only
+    title must not lose it: ``=`` and ``= (Deluxe Edition)`` still share ONE
+    signal, because ``_fuzzy_part`` falls back to the parenthetical-folded form
+    before it falls back to the raw text.
+
+    A raw ``casefold()`` fallback emits ``fuzzy:ed sheeran\\x00=`` against
+    ``fuzzy:ed sheeran\\x00= (deluxe edition)`` and this pair stops being
+    detected at all.
+    """
+    lib = _deluxe_symbol_lib(tmp_path)
+    by_title = {str(a.album): _grouping_signals(a, DuplicateMode.fuzzy) for a in lib.albums()}
+    assert by_title["="] == ["fuzzy:ed sheeran\x00="]
+    assert by_title["= (Deluxe Edition)"] == ["fuzzy:ed sheeran\x00="]
+    # ...and the fold does not drag the unrelated symbol-titled album in with it.
+    assert by_title["+"] == ["fuzzy:ed sheeran\x00+"]
+
+    report = find_duplicate_albums(lib, mode=DuplicateMode.fuzzy)
+    assert report.group_count == 1
+    assert {m.title for m in report.groups[0].members} == {"=", "= (Deluxe Edition)"}
+    assert report.album_count == 2  # "+" is in no group
+
+
+def _parenthetical_title_lib(tmp_path: Path) -> Library:
+    """One artist, two albums whose titles are NOTHING BUT a parenthetical, so
+    they empty ``normalize`` (all punctuation) *and* the parenthetical-folding
+    fallback (which deletes the whole title):
+
+      - "Sigur Ros / ( )" (11 tracks)      -- the real album title
+      - "Sigur Ros / (Untitled)" (8 tracks) -- a DIFFERENT release
+    """
+    lib, music = _empty_lib(tmp_path)
+    _add_album(lib, music, artist="Sigur Ros", album="( )", n=11, folder="Sigur Ros/Untitled")
+    _add_album(lib, music, artist="Sigur Ros", album="(Untitled)", n=8, folder="Sigur Ros/Other")
+    return lib
+
+
+def test_fuzzy_keeps_parenthetical_only_titles_distinct(tmp_path: Path) -> None:
+    """The symbol-title bug in its other shape. Folding parentheticals empties
+    ``( )`` and ``(Untitled)`` alike, so a fallback that stops at the folded form
+    hands both albums the identical ``fuzzy:sigur ros\\x00`` signal and files two
+    unrelated releases into one duplicate group — exactly what ``=``/``+``/U+2212
+    did. The last rung, the raw casefolded title, is what keeps them apart.
+    """
+    lib = _parenthetical_title_lib(tmp_path)
+    by_title = {str(a.album): _grouping_signals(a, DuplicateMode.fuzzy) for a in lib.albums()}
+    assert by_title["( )"] == ["fuzzy:sigur ros\x00( )"]
+    assert by_title["(Untitled)"] == ["fuzzy:sigur ros\x00(untitled)"]
+
+    report = find_duplicate_albums(lib, mode=DuplicateMode.fuzzy)
+    assert report.group_count == 0
+    assert report.album_count == 0
