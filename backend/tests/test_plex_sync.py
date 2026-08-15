@@ -639,6 +639,47 @@ def test_delete_on_targets_not_configured() -> None:
         sync.delete_playlist_on_targets(PlexConfig(), {"admin": "500"}, playlist_id="p1")
 
 
+def test_delete_prefers_our_marked_copy_over_a_stale_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The recorded key now resolves to a playlist belonging to a DIFFERENT
+    # MusicDrop playlist (a Plex DB rebuild reassigned ratingKeys). Deleting what
+    # the key points at would destroy a stranger's playlist AND leave ours behind.
+    stranger = _marked(FakePlaylist("Mix", [FakeTrack(1, ["/m/a.flac"])], 500), "OTHER")
+    ours = _marked(FakePlaylist("Mix", [FakeTrack(2, ["/m/b.flac"])], 777), "p1")
+    server = FakeServer([])
+    server._playlists.extend([stranger, ours])
+    _patch(monkeypatch, server)
+    results = sync.delete_playlist_on_targets(CONFIG, {"admin": "500"}, playlist_id="p1")
+    assert results == {"admin": "deleted"}
+    assert ours.deleted is True
+    assert stranger.deleted is False
+    assert stranger.calls == []
+
+
+def test_delete_leaves_a_foreign_marked_playlist_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Same stale key, but we have no copy left to delete: report "absent" rather
+    # than remove somebody else's playlist.
+    stranger = _marked(FakePlaylist("Mix", [FakeTrack(1, ["/m/a.flac"])], 500), "OTHER")
+    server = FakeServer([])
+    server._playlists.append(stranger)
+    _patch(monkeypatch, server)
+    results = sync.delete_playlist_on_targets(CONFIG, {"admin": "500"}, playlist_id="p1")
+    assert results == {"admin": "absent"}
+    assert stranger.deleted is False
+    assert stranger.calls == []
+
+
+def test_delete_still_adopts_an_unmarked_playlist_by_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An UNMARKED playlist at the recorded key is our own copy whose stamp PUT
+    # failed transiently — still ours to delete. Only a FOREIGN marker disqualifies.
+    unmarked = FakePlaylist("Mix", [FakeTrack(1, ["/m/a.flac"])], 500)  # summary ""
+    server = FakeServer([])
+    server._playlists.append(unmarked)
+    _patch(monkeypatch, server)
+    results = sync.delete_playlist_on_targets(CONFIG, {"admin": "500"}, playlist_id="p1")
+    assert results == {"admin": "deleted"}
+    assert unmarked.deleted is True
+
+
 def test_sync_uses_the_configured_section(monkeypatch: pytest.MonkeyPatch) -> None:
     wanted = FakeTrack(1, ["/music/a/b/01 x.mp3"], title="x")
     first = FakeSection([], title="Music")

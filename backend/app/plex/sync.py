@@ -78,23 +78,13 @@ def _summary_of(playlist: Any) -> str:
     return str(getattr(playlist, "summary", "") or "")
 
 
-def _find_by_summary_marker(server: Any, playlist_id: str) -> Any | None:
-    marker = _summary_marker(playlist_id)
-    for playlist in server.playlists():
-        if marker in _summary_of(playlist):
-            return playlist
-    return None
-
-
-def _find_by_rating_key(server: Any, rating_key: str) -> Any | None:
-    for playlist in server.playlists():
-        if str(playlist.ratingKey) == str(rating_key):
-            return playlist
-    return None
-
-
 def _find_our_playlist(server: Any, playlist_id: str, rating_key: str | None) -> Any | None:
     """Our copy on ``server``, by the most durable identity FIRST.
+
+    The ONE identity rule, shared by the reconcile and the delete: whatever a
+    sync would UPDATE in place is exactly what a delete may REMOVE. Two copies of
+    this rule would drift, and the failure mode of a drifted delete is a
+    destroyed playlist.
 
     The ``MusicDrop-id`` marker outranks the recorded ``rating_key``: a Plex DB
     rebuild reassigns ratingKeys, so a recorded key can come to resolve to a
@@ -483,18 +473,20 @@ def _safe_reconcile(
 def delete_playlist_on_targets(
     config: PlexConfig, rating_keys: dict[str, str | None], *, playlist_id: str
 ) -> dict[str, str]:
-    """Best-effort delete of a playlist from each target account, by ratingKey.
+    """Best-effort delete of a playlist from each target account, by IDENTITY.
 
     ``rating_keys`` maps a state-map key -> the playlist's Plex ratingKey on that
     account (``"admin"`` is the owner's server; a uid is reached via
-    ``admin.switchUser(uid)``). Deleting by the *recorded ratingKey* (not by
-    title) keeps it precise — it can never remove a same-titled playlist that
-    belongs to a different MusicDrop playlist or was made by hand in Plex, and it
-    survives renames. If the recorded ratingKey no longer resolves (a Plex DB
-    rebuild reassigns ratingKeys), OR is ``None`` (never recorded, or erased by a
-    transient sync failure), we fall back to the ``playlist_id`` summary marker so
-    a missing key doesn't orphan an existing copy; only a marker miss is "absent".
-    Each target is ISOLATED — one
+    ``admin.switchUser(uid)``). The copy to remove is found by the SAME rule the
+    reconcile uses — ``_find_our_playlist``: the ``playlist_id`` marker first, the
+    recorded ratingKey only as a fallback, and never a keyed playlist wearing
+    another MusicDrop playlist's marker. Never by title. That is what keeps a
+    delete precise across the two ways identity goes wrong: a rename (the key and
+    marker both survive it) and a Plex DB rebuild (which reassigns ratingKeys, so
+    the recorded key can come to point at somebody else's playlist — deleting
+    that would destroy a stranger's copy and orphan ours). A ``None`` key, or one
+    that no longer resolves, still finds our copy by marker; only when neither
+    identity matches is the answer "absent". Each target is ISOLATED — one
     failure never aborts the others. Returns
     ``{target: "deleted" | "absent" | "failed"}``. Raises only
     ``PlexNotConfigured`` (no URL/token); a connect failure raises
@@ -514,13 +506,10 @@ def delete_playlist_on_targets(
 def _safe_delete(admin: Any, target: str, rating_key: str | None, *, playlist_id: str) -> str:
     try:
         server = admin if target == "admin" else admin.switchUser(target)
-        existing = _find_by_rating_key(server, rating_key) if rating_key is not None else None
-        if existing is None:
-            # No usable ratingKey — either it went stale (a Plex DB rebuild), or it
-            # was erased by a transient reconcile failure before it could be carried
-            # forward. Re-find our copy by the id marker so we still delete it rather
-            # than short-circuiting to "absent" and orphaning it on Plex forever.
-            existing = _find_by_summary_marker(server, playlist_id)
+        # One rule, one implementation: whatever the reconcile would UPDATE is
+        # exactly what a delete may REMOVE. A key with no marker is still ours
+        # (a stamp PUT that failed); a key wearing someone else's marker is not.
+        existing = _find_our_playlist(server, playlist_id, rating_key)
         if existing is None:
             return "absent"
         existing.delete()
