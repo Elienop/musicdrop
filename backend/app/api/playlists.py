@@ -49,6 +49,7 @@ from app.models.playlist_import import (
     PlaylistImportRequest,
     PlaylistImportResponse,
 )
+from app.models.plex import PlexTargetState
 from app.playlists import store
 from app.playlists.m3u import delete_m3u, write_m3u
 from app.playlists.m3u_parse import parse_m3u
@@ -89,6 +90,25 @@ def get_playlists_dir() -> Path:
     return Path(settings.beets_dir) / "playlists"
 
 
+def _plex_without_miss_identities(
+    states: dict[str, PlexTargetState],
+) -> dict[str, PlexTargetState]:
+    """``states`` with the per-target miss IDENTITIES dropped, counts kept.
+
+    ``PlexTargetState.missing_tracks`` carries up to ``MISSING_TRACKS_CAP`` (200)
+    track identities PER TARGET — ~73 KB on one row with three targets at the
+    cap, and a single wrong ``library_path`` puts every playlist at the cap at
+    once. Nothing that renders a summary row shows them; only the detail view
+    points at the rows that missed. So a summary keeps ``missing`` (the count
+    that drives the badge) and the detail response is where the identities live.
+    One model either way — the empty list means "not carried here", never "no
+    misses"; ``missing`` is the authority on that.
+    """
+    return {
+        target: state.model_copy(update={"missing_tracks": []}) for target, state in states.items()
+    }
+
+
 def _to_playlist(record: StoredPlaylist, cover_ids: list[int]) -> Playlist:
     resolved = len(record.resolved_item_ids)
     return Playlist(
@@ -98,7 +118,7 @@ def _to_playlist(record: StoredPlaylist, cover_ids: list[int]) -> Playlist:
         track_count=resolved,
         pending_count=len(record.entries) - resolved,
         target_plex_users=record.target_plex_users,
-        plex=record.plex,
+        plex=_plex_without_miss_identities(record.plex),
         created_at=record.created_at,
         updated_at=record.updated_at,
         artwork_hash=record.artwork.hash if record.artwork else None,
@@ -122,7 +142,11 @@ async def _summary(record: StoredPlaylist, handle: LibraryHandle) -> Playlist:
 async def _detail_response(record: StoredPlaylist, handle: LibraryHandle) -> PlaylistDetail:
     tracks = await run_in_threadpool(resolve_entries, handle.lib, record.entries)
     summary = await _summary(record, handle)
-    return PlaylistDetail(**summary.model_dump(), tracks=tracks)
+    # The detail view is the one place the miss identities belong, so the full
+    # per-target state goes back on — see _plex_without_miss_identities for what
+    # the summary drops and why. PlaylistDetail extends Playlist, so it is the
+    # same field: without this the identities would reach no caller at all.
+    return PlaylistDetail(**summary.model_dump(exclude={"plex"}), plex=record.plex, tracks=tracks)
 
 
 def _export_dir(handle: LibraryHandle) -> Path:
@@ -333,9 +357,9 @@ async def sync_playlist_endpoint(
             record.target_plex_users,
             playlist_id=record.id,
             # The WHOLE prior state per target, not just its ratingKey: the
-            # reconcile also reads the poster hash off it, and what it returns is
-            # persisted below — that round trip is what stops a re-upload every
-            # sync. `record` still holds the PRE-sync map.
+            # reconcile also reads the poster hash off it, and `replace_plex_states`
+            # at the end of this handler stores what comes back. That round trip
+            # is what stops the poster re-uploading on every single sync.
             priors=dict(record.plex),
             artwork=artwork,
         )
@@ -366,10 +390,14 @@ async def sync_playlist_endpoint(
     # copy forever — no later op references a non-target user. Keeping the entry
     # leaves a retry path: the next sync re-lists it in `removed` and tries again;
     # a confirmed deleted/absent target is correctly dropped. The retained state
-    # is also truthful — a copy really does still exist on that account.
+    # is also truthful — a copy really does still exist on that account. Its miss
+    # IDENTITIES are dropped though: the entry survives only as a delete handle
+    # for an account we no longer sync, so pinning up to 200 track identities to
+    # the record for it (indefinitely — nothing refreshes them) buys nothing. The
+    # `missing` count stays, so the entry still reads honestly.
     for uid in removed:
         if delete_results.get(uid) not in ("deleted", "absent"):
-            states[uid] = record.plex[uid]
+            states[uid] = record.plex[uid].model_copy(update={"missing_tracks": []})
     try:
         record = await run_in_threadpool(
             store.replace_plex_states, playlists_dir, playlist_id, states

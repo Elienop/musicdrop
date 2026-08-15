@@ -435,6 +435,35 @@ def test_sync_updates_existing_plex_copy_in_place_and_reports_missing(
     assert server.created[0].live_keys() == [10]
 
 
+def test_miss_identities_are_detail_only_but_the_count_is_everywhere(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """List rows carry the miss COUNT; only the detail view names the tracks.
+
+    A target state holds up to 200 identities, and one wrong `library_path` puts
+    every playlist at that cap at once — which would land on `GET /api/playlists`,
+    the endpoint the playlists page hits on every navigation and the one place
+    nothing renders them.
+    """
+    t1 = _add_track(beets_library, "Alpha")
+    t2 = _add_track(beets_library, "Beta")  # deliberately NOT in Plex
+    _fake_plex(monkeypatch, [FakeTrack(10, [_plex_path(beets_library, "Alpha")])])
+    client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
+
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1, t2]})
+    synced = client.post(f"/api/playlists/{pid}/sync")
+    assert [m["item_id"] for m in synced.json()["plex"]["admin"]["missing_tracks"]] == [t2]
+
+    row = client.get("/api/playlists").json()[0]
+    assert row["plex"]["admin"]["missing"] == 1  # the badge still knows
+    assert row["plex"]["admin"]["missing_tracks"] == []  # but not who
+
+    detail = client.get(f"/api/playlists/{pid}").json()
+    assert detail["plex"]["admin"]["missing"] == 1
+    assert [m["item_id"] for m in detail["plex"]["admin"]["missing_tracks"]] == [t2]
+
+
 def test_sync_unconfigured_409(client: TestClient) -> None:
     pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
     r = client.post(f"/api/playlists/{pid}/sync")
@@ -595,14 +624,16 @@ def test_sync_retains_detargeted_user_when_delete_unconfirmed(
     # must be RETAINED so a later sync can retry — dropping it (the whole-map
     # replace) would orphan the still-existing Plex copy forever.
     t1 = _add_track(beets_library, "Alpha")
+    t2 = _add_track(beets_library, "Beta")  # deliberately NOT in Plex -> a real miss
     server = _fake_plex(monkeypatch, [FakeTrack(9, [_plex_path(beets_library, "Alpha")])])
     client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
 
     pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
-    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1, t2]})
     client.patch(f"/api/playlists/{pid}", json={"target_plex_users": ["7"]})
-    client.post(f"/api/playlists/{pid}/sync")  # plex == {"admin", "7": user_key}
+    first = client.post(f"/api/playlists/{pid}/sync")  # plex == {"admin", "7": user_key}
     user_key = str(server.users["7"].created[0].ratingKey)
+    assert [m["item_id"] for m in first.json()["plex"]["7"]["missing_tracks"]] == [t2]
 
     client.patch(f"/api/playlists/{pid}", json={"target_plex_users": []})  # untick 7
 
@@ -617,6 +648,11 @@ def test_sync_retains_detargeted_user_when_delete_unconfirmed(
     plex = r.json()["plex"]
     assert set(plex) == {"admin", "7"}  # 7 retained (delete unconfirmed) -> retry path
     assert plex["7"]["rating_key"] == user_key  # its ratingKey survives for the retry
+    # The entry is kept as a DELETE HANDLE, not as a sync result: the count stays
+    # honest, but the identities behind it are not pinned to the record forever
+    # for an account nothing syncs any more.
+    assert plex["7"]["missing"] == 1
+    assert plex["7"]["missing_tracks"] == []
 
 
 # --- Playlist artwork (cover) endpoints -------------------------------------
@@ -735,6 +771,10 @@ def test_sync_uploads_the_poster_once_across_repeat_syncs(
     r2 = client.post(f"/api/playlists/{pid}/sync")
     assert r2.status_code == 200
     assert r2.json()["plex"]["admin"]["artwork_hash"] == art_hash  # still recorded
+    # Pinned together on purpose: a second COPY would take its own poster upload
+    # and leave created[0]'s list at one, so the count is what makes this an
+    # "uploaded once" assertion rather than an "uploaded once per playlist" one.
+    assert len(server.created) == 1
     assert server.created[0].poster_uploads == [poster]  # unchanged art -> no re-upload
 
 
@@ -757,6 +797,7 @@ def test_sync_reuploads_the_poster_when_the_artwork_changes(
     r = client.post(f"/api/playlists/{pid}/sync")
     assert r.status_code == 200
     assert r.json()["plex"]["admin"]["artwork_hash"] == replaced.json()["artwork_hash"]
+    assert len(server.created) == 1  # both uploads land on the ONE copy
     assert server.created[0].poster_uploads == [
         str(store.artwork_path(_dir(), pid, "png")),
         str(store.artwork_path(_dir(), pid, "jpg")),
