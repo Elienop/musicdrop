@@ -164,7 +164,8 @@ def test_reorders_in_place_with_moves(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert state.status == "ok"
     assert existing.live_keys() == [3, 1, 2]
-    assert "addItems" not in existing.calls and "removeItems" not in existing.calls
+    assert "addItems" not in existing.calls
+    assert "removeItems" not in existing.calls
     assert existing.deleted is False
 
 
@@ -421,8 +422,9 @@ def test_empty_when_no_tracks(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_not_configured() -> None:
+    config, specs = PlexConfig(), [_p("/m/a.flac")]
     with pytest.raises(PlexNotConfigured):
-        sync.sync_playlist(PlexConfig(), "Mix", [_p("/m/a.flac")], playlist_id="p1")
+        sync.sync_playlist(config, "Mix", specs, playlist_id="p1")
 
 
 def test_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -432,8 +434,9 @@ def test_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
         raise ReqConnErr("no route")
 
     monkeypatch.setattr(sync.client, "connect", boom)
+    specs = [_p("/m/a.flac")]
     with pytest.raises(PlexConnectionError):
-        sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1")
+        sync.sync_playlist(CONFIG, "Mix", specs, playlist_id="p1")
 
 
 def test_unexpected_error_translated(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -442,8 +445,9 @@ def test_unexpected_error_translated(monkeypatch: pytest.MonkeyPatch) -> None:
         raise RuntimeError("kaboom")
 
     monkeypatch.setattr(sync.client, "connect", boom)
+    specs = [_p("/m/a.flac")]
     with pytest.raises(PlexConnectionError):
-        sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1")
+        sync.sync_playlist(CONFIG, "Mix", specs, playlist_id="p1")
 
 
 def test_fan_out_to_admin_and_users(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -615,10 +619,9 @@ def test_carried_forward_key_lets_a_later_delete_remove_the_copy(
 
 
 def test_fan_out_not_configured() -> None:
+    config, specs = PlexConfig(), [_p("/m/a.flac")]
     with pytest.raises(PlexNotConfigured):
-        sync.sync_playlist_to_targets(
-            PlexConfig(), "Mix", [_p("/m/a.flac")], ["7"], playlist_id="p1", priors={}
-        )
+        sync.sync_playlist_to_targets(config, "Mix", specs, ["7"], playlist_id="p1", priors={})
 
 
 def test_sync_metadata_fallback_populates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -718,8 +721,9 @@ def test_delete_on_targets_isolates_a_failing_account(monkeypatch: pytest.Monkey
 
 
 def test_delete_on_targets_not_configured() -> None:
+    config = PlexConfig()
     with pytest.raises(PlexNotConfigured):
-        sync.delete_playlist_on_targets(PlexConfig(), {"admin": "500"}, playlist_id="p1")
+        sync.delete_playlist_on_targets(config, {"admin": "500"}, playlist_id="p1")
 
 
 def test_delete_prefers_our_marked_copy_over_a_stale_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1179,8 +1183,9 @@ def test_a_server_that_silently_drops_an_add_fails_loudly(
     existing = _marked(server.createPlaylist("Mix", items=[FakeTrack(10, ["/m/a.flac"])]))
     monkeypatch.setattr(FakePlaylist, "addItems", _swallow)
     _patch(monkeypatch, server)
+    specs = [_p("/m/a.flac"), _p("/m/b.flac")]
     with pytest.raises(PlexConnectionError) as err:
-        sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac"), _p("/m/b.flac")], playlist_id="p1")
+        sync.sync_playlist(CONFIG, "Mix", specs, playlist_id="p1")
     assert "Plex did not apply the playlist changes." in str(err.value)
     assert existing.live_keys() == [10]
 
@@ -1209,8 +1214,9 @@ def test_a_dropped_add_on_the_duplicate_path_removes_nothing_and_fails_loudly(
     existing = _marked(_SwallowsAdds("Mix", [a, a, b], 500))  # 1,1,2
     server._playlists.append(existing)
     _patch(monkeypatch, server)
+    specs = [_p("/m/b"), _p("/m/a"), _p("/m/b")]
     with pytest.raises(PlexConnectionError) as err:
-        sync.sync_playlist(CONFIG, "Mix", [_p("/m/b"), _p("/m/a"), _p("/m/b")], playlist_id="p1")
+        sync.sync_playlist(CONFIG, "Mix", specs, playlist_id="p1")
     assert "Plex did not apply the playlist changes." in str(err.value)
     assert existing.live_keys() == [1, 1, 2]  # untouched — nothing was removed
     assert "removeItems" not in existing.calls
@@ -1241,8 +1247,9 @@ def test_complete_but_misplaced_adds_on_the_duplicate_path_fail_loudly(
     existing = _marked(_PrependsAdds("Mix", [a, a, b], 500))  # 1,1,2
     server._playlists.append(existing)
     _patch(monkeypatch, server)
+    specs = [_p("/m/b"), _p("/m/a"), _p("/m/b")]
     with pytest.raises(PlexConnectionError) as err:
-        sync.sync_playlist(CONFIG, "Mix", [_p("/m/b"), _p("/m/a"), _p("/m/b")], playlist_id="p1")
+        sync.sync_playlist(CONFIG, "Mix", specs, playlist_id="p1")
     assert "Plex did not apply the playlist changes." in str(err.value)
     assert "removeItems" not in existing.calls  # refused before stripping the wrong rows
 
