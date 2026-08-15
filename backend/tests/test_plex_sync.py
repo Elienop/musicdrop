@@ -164,7 +164,8 @@ def test_reorders_in_place_with_moves(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert state.status == "ok"
     assert existing.live_keys() == [3, 1, 2]
-    assert "addItems" not in existing.calls and "removeItems" not in existing.calls
+    assert "addItems" not in existing.calls
+    assert "removeItems" not in existing.calls
     assert existing.deleted is False
 
 
@@ -1179,8 +1180,9 @@ def test_a_server_that_silently_drops_an_add_fails_loudly(
     existing = _marked(server.createPlaylist("Mix", items=[FakeTrack(10, ["/m/a.flac"])]))
     monkeypatch.setattr(FakePlaylist, "addItems", _swallow)
     _patch(monkeypatch, server)
+    specs = [_p("/m/a.flac"), _p("/m/b.flac")]
     with pytest.raises(PlexConnectionError) as err:
-        sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac"), _p("/m/b.flac")], playlist_id="p1")
+        sync.sync_playlist(CONFIG, "Mix", specs, playlist_id="p1")
     assert "Plex did not apply the playlist changes." in str(err.value)
     assert existing.live_keys() == [10]
 
@@ -1209,8 +1211,9 @@ def test_a_dropped_add_on_the_duplicate_path_removes_nothing_and_fails_loudly(
     existing = _marked(_SwallowsAdds("Mix", [a, a, b], 500))  # 1,1,2
     server._playlists.append(existing)
     _patch(monkeypatch, server)
+    specs = [_p("/m/b"), _p("/m/a"), _p("/m/b")]
     with pytest.raises(PlexConnectionError) as err:
-        sync.sync_playlist(CONFIG, "Mix", [_p("/m/b"), _p("/m/a"), _p("/m/b")], playlist_id="p1")
+        sync.sync_playlist(CONFIG, "Mix", specs, playlist_id="p1")
     assert "Plex did not apply the playlist changes." in str(err.value)
     assert existing.live_keys() == [1, 1, 2]  # untouched — nothing was removed
     assert "removeItems" not in existing.calls
@@ -1241,8 +1244,9 @@ def test_complete_but_misplaced_adds_on_the_duplicate_path_fail_loudly(
     existing = _marked(_PrependsAdds("Mix", [a, a, b], 500))  # 1,1,2
     server._playlists.append(existing)
     _patch(monkeypatch, server)
+    specs = [_p("/m/b"), _p("/m/a"), _p("/m/b")]
     with pytest.raises(PlexConnectionError) as err:
-        sync.sync_playlist(CONFIG, "Mix", [_p("/m/b"), _p("/m/a"), _p("/m/b")], playlist_id="p1")
+        sync.sync_playlist(CONFIG, "Mix", specs, playlist_id="p1")
     assert "Plex did not apply the playlist changes." in str(err.value)
     assert "removeItems" not in existing.calls  # refused before stripping the wrong rows
 
