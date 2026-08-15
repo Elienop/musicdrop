@@ -240,10 +240,13 @@ def _reconcile_items(playlist: Any, tracks: list[Any]) -> None:
         # otherwise leave the playlist EMPTY and the sync would report "ok". The
         # reload is the one the removal loop needed anyway (moved out of it), so
         # the check is free.
+        # Compared as a LIST, not a multiset: the removals below take the FIRST
+        # cached row per key, which is only the old row if Plex appended the new
+        # rows AFTER the old ones in the order we sent — placement matters here
+        # as much as completeness (a complete-but-reordered result would strip
+        # the wrong rows).
         playlist.reload()
-        if Counter(row.ratingKey for row in playlist.items()) != Counter(current) + Counter(
-            desired
-        ):
+        if [row.ratingKey for row in playlist.items()] != current + desired:
             raise PlexConnectionError(_NOT_APPLIED_ERROR)
         for position, row in enumerate(current_rows):
             if position:  # the verification reload above already refreshed the cache
@@ -357,6 +360,12 @@ def _reconcile_on(
         )
 
     key = str(existing.ratingKey)
+    # Deliberately a PLAIN attribute read: on a partial listing object plexapi
+    # auto-reloads when it sees None here (the same trap _summary_of avoids) —
+    # but for `smart` that refetch makes the value CORRECT, and it is one GET on
+    # one playlist per sync. Reading it via __dict__ would treat a smart
+    # playlist as normal, and the precise error below would degrade to the
+    # generic one when addItems raised.
     if getattr(existing, "smart", False):
         return PlexTargetState(
             rating_key=key,

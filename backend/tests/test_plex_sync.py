@@ -1093,6 +1093,37 @@ def test_a_dropped_add_on_the_duplicate_path_removes_nothing_and_fails_loudly(
     assert "removeItems" not in existing.calls
 
 
+class _PrependsAdds(FakePlaylist):
+    """A PMS that honours every add but puts the new rows at the FRONT.
+
+    Complete, so a multiset check would pass — but the duplicate path then
+    removes the FIRST row per key, which is now a NEW row, and the old rows
+    survive. Placement has to be verified, not just membership.
+    """
+
+    def addItems(self, items: Sequence[FakeItem] | FakeItem) -> FakePlaylist:
+        self.calls.append("addItems")
+        tracks = list(items) if isinstance(items, Sequence) else [items]
+        for track in reversed(tracks):
+            self._append(track)  # mint a real row id...
+            self._rows.insert(0, self._rows.pop())  # ...but land it at the FRONT
+        return self
+
+
+def test_complete_but_misplaced_adds_on_the_duplicate_path_fail_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    a, b = FakeTrack(1, ["/m/a"]), FakeTrack(2, ["/m/b"])
+    server = FakeServer([a, b])
+    existing = _marked(_PrependsAdds("Mix", [a, a, b], 500))  # 1,1,2
+    server._playlists.append(existing)
+    _patch(monkeypatch, server)
+    with pytest.raises(PlexConnectionError) as err:
+        sync.sync_playlist(CONFIG, "Mix", [_p("/m/b"), _p("/m/a"), _p("/m/b")], playlist_id="p1")
+    assert "Plex did not apply the playlist changes." in str(err.value)
+    assert "removeItems" not in existing.calls  # refused before stripping the wrong rows
+
+
 class _AutoReloadTrap:
     """A stand-in for a PARTIAL plexapi playlist object.
 
@@ -1125,3 +1156,54 @@ def test_a_summary_is_read_without_a_plex_round_trip() -> None:
     missing: list[str] = []
     assert sync._summary_of(_AutoReloadTrap(None, missing)) == ""  # absent reads as empty
     assert missing == []
+
+
+def test_summary_of_reads_a_real_plexapi_listing_object_without_a_query() -> None:
+    # Pins the assumption _summary_of rests on: plexapi 4.18.x keeps `summary`
+    # in the instance __dict__ (a plain attribute set in Playlist._loadData), so
+    # a dunder read sees it and never trips PlexPartialObject.__getattribute__'s
+    # auto-reload. If a future plexapi turned it into a cached property, this
+    # test — not a green suite — is what would say so (the marker would silently
+    # never match, and every no-key sync would create a duplicate playlist).
+    from xml.etree import ElementTree as ET
+
+    from plexapi.playlist import Playlist
+
+    class _CountingServer:
+        _baseurl = "http://plex:32400"
+
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def query(self, key: str, *args: object, **kwargs: object) -> ET.Element:
+            self.queries.append(key)
+            return ET.fromstring(
+                '<MediaContainer><Playlist ratingKey="500" key="/playlists/500/items" '
+                'title="Mix" summary="" playlistType="audio"/></MediaContainer>'
+            )
+
+    server = _CountingServer()
+    listed_no_summary = Playlist(
+        server,
+        ET.fromstring(
+            '<Playlist ratingKey="500" key="/playlists/500/items" title="Mix" '
+            'playlistType="audio"/>'
+        ),
+        initpath="/playlists",
+    )
+    listed_marked = Playlist(
+        server,
+        ET.fromstring(
+            '<Playlist ratingKey="501" key="/playlists/501/items" title="Mix" '
+            'summary="MusicDrop-id:p1" playlistType="audio"/>'
+        ),
+        initpath="/playlists",
+    )
+    assert listed_no_summary.isFullObject() is False  # the trap's precondition holds
+    assert "summary" in vars(listed_no_summary)  # the read path we rely on
+    assert sync._summary_of(listed_no_summary) == ""
+    assert sync._summary_of(listed_marked) == "MusicDrop-id:p1"
+    assert server.queries == []  # zero round trips
+    # Control arm: the plain read on the same object DOES fetch (the trap is real).
+    _ = listed_no_summary.summary
+    assert len(server.queries) == 1
