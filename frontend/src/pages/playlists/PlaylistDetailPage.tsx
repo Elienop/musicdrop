@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 
@@ -76,6 +76,29 @@ function displayTitle(track: PlaylistTrack): string {
 
 type PlexTargetState = PlaylistDetail["plex"][string];
 
+/** Why Plex couldn't place one track on the last sync. */
+type PlexMissReason = PlexTargetState["missing_tracks"][number]["reason"];
+
+/** The tooltip for each miss reason — they're different remedies (nothing
+ * matched at all vs. several matched and we refuse to guess), so each row says
+ * which one it hit rather than a generic "not found". */
+const MISS_TITLES: Record<PlexMissReason, string> = {
+  not_found: "No Plex track has this file path, and none matched by artist and title",
+  ambiguous: "Several Plex tracks match this artist and title; MusicDrop won't guess which one",
+};
+
+/** item id -> why Plex couldn't place it on the last sync. Keyed by item id (not
+ * row uid) because the resolve is per library track: two rows for one item are
+ * both missing or both found. The admin target's list is THE list — one resolve
+ * against the (server-global) ratingKeys serves every fan-out target. */
+function plexMissesByItem(playlist: PlaylistDetail): Map<number, PlexMissReason> {
+  const out = new Map<number, PlexMissReason>();
+  for (const miss of playlist.plex?.admin?.missing_tracks ?? []) {
+    out.set(miss.item_id, miss.reason);
+  }
+  return out;
+}
+
 /** Visual tone for a sync status, mapped to a leading icon + a semantic text
  * color so the state reads at a glance (the text label stays the non-color
  * carrier for screen readers / color-blind users). */
@@ -114,7 +137,11 @@ function syncStatus(
     case "partial":
       return { label: `${state.missing} not in Plex`, tone: "warning" };
     case "empty":
-      return { label: "No matching tracks", tone: "muted" };
+      // Nothing resolved, so the sync touched nothing. Which is reassuring only
+      // if there IS a copy to leave alone — say which case this is.
+      return state.rating_key
+        ? { label: "No matching tracks; Plex copy left as is", tone: "warning" }
+        : { label: "No matching tracks", tone: "muted" };
     case "failed":
       return { label: state.error ?? "Failed", tone: "destructive" };
     default:
@@ -497,6 +524,11 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
   // in step with optimistic add/remove/resolve edits, not the last server body.
   const unmatchedCount = tracks.filter((t) => t.pending).length;
 
+  // Which library items the last sync couldn't place on Plex. Memoized on the
+  // server body so a header-only re-render hands every row the SAME primitive
+  // (usually undefined) and the row memo keeps holding.
+  const plexMisses = useMemo(() => plexMissesByItem(playlist), [playlist]);
+
   // How many Plex copies actually exist for this playlist — targets whose sync
   // recorded a rating_key. Drives the delete-dialog's honest "…N synced Plex
   // copies…" line (a failed/empty target has a slot but no copy on Plex).
@@ -821,6 +853,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
                 onRemove={onRemove}
                 onMatch={onMatch}
                 registerRef={register}
+                plexMiss={track.id != null ? plexMisses.get(track.id) : undefined}
               />
             ))}
           </TableBody>
@@ -957,6 +990,7 @@ const PlaylistTrackRow = memo(function PlaylistTrackRow({
   onRemove,
   onMatch,
   registerRef,
+  plexMiss,
 }: {
   track: PlaylistTrack;
   position: number;
@@ -966,6 +1000,9 @@ const PlaylistTrackRow = memo(function PlaylistTrackRow({
   onRemove: (uid: string) => void;
   onMatch: (uid: string) => void;
   registerRef: (key: string, el: HTMLButtonElement | null) => void;
+  /** Set when the last Plex sync couldn't place this row's library item — a
+   * primitive so the memo above still short-circuits an unrelated re-render. */
+  plexMiss?: PlexMissReason;
 }) {
   // A pending row (an import that didn't match a library track) keeps its slot
   // with remembered metadata and offers a "Match…" action. A resolved row whose
@@ -1001,6 +1038,18 @@ const PlaylistTrackRow = memo(function PlaylistTrackRow({
                   unavailable
                 </Badge>
               )
+            )}
+            {/* The row is in the library but the last sync couldn't put it on
+                Plex — the reason rides as a tooltip (the "N not in Plex" count
+                on the status line says how many, this says WHICH and why). */}
+            {plexMiss && (
+              <Badge
+                variant="outline"
+                className="border-warning text-warning shrink-0 text-xs font-normal"
+                title={MISS_TITLES[plexMiss]}
+              >
+                Not in Plex
+              </Badge>
             )}
           </div>
           {showMeta && (

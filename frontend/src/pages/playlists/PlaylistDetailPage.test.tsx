@@ -876,6 +876,118 @@ describe("PlaylistDetailPage", () => {
     expect(await screen.findByText(/partner/i)).toBeInTheDocument();
   });
 
+  test("marks the rows Plex could not find, with the reason", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(11, "Found"), track(12, "Lost"), track(13, "Twins")]),
+          plex: {
+            admin: {
+              rating_key: "500",
+              status: "partial",
+              missing: 2,
+              missing_tracks: [
+                {
+                  item_id: 12,
+                  title: "Lost",
+                  albumartist: "A",
+                  album: "B",
+                  reason: "not_found",
+                },
+                {
+                  item_id: 13,
+                  title: "Twins",
+                  albumartist: "A",
+                  album: "B",
+                  reason: "ambiguous",
+                },
+              ],
+              synced_at: "2026-08-15T10:00:00+00:00",
+              error: null,
+            },
+          },
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    const badges = await screen.findAllByText("Not in Plex");
+    expect(badges).toHaveLength(2);
+    // Each flagged row carries ITS OWN reason as the tooltip — the two reasons
+    // are different remedies (nothing matched vs. several matched), so a shared
+    // generic tooltip would be a lie on one of them.
+    expect(
+      within(screen.getByRole("row", { name: /Lost/ })).getByText("Not in Plex"),
+    ).toHaveAttribute(
+      "title",
+      "No Plex track has this file path, and none matched by artist and title",
+    );
+    expect(
+      within(screen.getByRole("row", { name: /Twins/ })).getByText("Not in Plex"),
+    ).toHaveAttribute(
+      "title",
+      "Several Plex tracks match this artist and title; MusicDrop won't guess which one",
+    );
+    // …and the row Plex DID place stays unmarked.
+    expect(
+      within(screen.getByRole("row", { name: /Found/ })).queryByText("Not in Plex"),
+    ).toBeNull();
+  });
+
+  test("says the Plex copy was left alone when nothing resolved but a copy exists", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: {
+            admin: {
+              rating_key: "500",
+              status: "empty",
+              missing: 3,
+              missing_tracks: [],
+              synced_at: "2026-08-15T10:00:00+00:00",
+              error: null,
+            },
+          },
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    expect(
+      await screen.findByText("No matching tracks; Plex copy left as is"),
+    ).toBeInTheDocument();
+  });
+
+  test("says no matching tracks when nothing resolved and no copy exists", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: {
+            admin: {
+              rating_key: null,
+              status: "empty",
+              missing: 3,
+              missing_tracks: [],
+              synced_at: "2026-08-15T10:00:00+00:00",
+              error: null,
+            },
+          },
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    expect(await screen.findByText("No matching tracks")).toBeInTheDocument();
+  });
+
   test("delete dialog notes Plex removal when the playlist has Plex copies", async () => {
     server.use(
       http.get(BASE, () =>
