@@ -1,18 +1,35 @@
 """One faithful test double for the plexapi playlist surface MusicDrop touches.
 
-Semantics are copied from the INSTALLED plexapi 4.18.2 (playlist.py, base.py):
+Semantics are copied from the INSTALLED plexapi 4.18.2 (playlist.py, base.py,
+server.py, mixins/edit.py). Where the two could differ, the fake takes the
+STRICTER branch: a fake that forgives more than Plex does is worse than no fake.
 
-- ``items()`` is a cached property: it fetches once and stays STALE until
-  ``reload()`` — no mutator refreshes it.
+- ``items()`` is a cached property that returns the cached LIST OBJECT itself
+  (``playlist.py:220-230`` returns ``self._items``). It stays STALE until
+  ``reload()`` — no mutator refreshes it — and mutating the returned list
+  corrupts the very list ``_getPlaylistItemID`` walks.
+- Each fetched row is its OWN object carrying that row's ``playlistItemID``
+  (``base.py:857-865``); two rows of one track are distinct objects that compare
+  EQUAL, because plexapi compares by ``key`` and hashes by ``repr``
+  (``base.py:639-645, 122-126``).
 - ``removeItems``/``moveItem`` resolve the row to act on via the FIRST cached
-  row whose ``ratingKey`` matches (``_getPlaylistItemID``); the argument's own
-  row identity is ignored. A key absent from the cache -> NotFound. A DELETE of
-  a row the server no longer has -> NotFound (HTTP 404).
+  row whose ``ratingKey`` matches (``_getPlaylistItemID``, ``playlist.py:131-136``);
+  the argument's own row identity is ignored. A key absent from the cache ->
+  NotFound. A DELETE of a row the server no longer has -> NotFound (HTTP 404,
+  ``server.py:749-756``).
 - ``moveItem(item)`` with no ``after`` moves to the front; ``after=x`` places it
-  right after the FIRST cached row of x (plexapi tests/test_playlist.py:70-80).
-- Smart playlists raise BadRequest on all three mutators.
-- ``createPlaylist`` with no items raises BadRequest; every created playlist
-  gets a distinct ratingKey.
+  right after the FIRST cached row of x. Moving a row after ITSELF (what a
+  duplicate ratingKey resolves to) is refused: plexapi sends the request and PMS
+  behaviour is undefined, so production must not rely on it.
+- ``editTitle``/``editSummary`` only PUT (``mixins/edit.py:8-30`` ->
+  ``base.py:716-726``): the in-memory attribute stays STALE until ``reload()``.
+- Smart playlists raise BadRequest on all three item mutators; a DELETED
+  playlist's key 404s, so every mutator raises NotFound.
+- ``createPlaylist`` matches ``PlexServer.createPlaylist(title, section=None,
+  items=None, ...)`` (``server.py:488``), so a second POSITIONAL argument binds
+  to ``section`` and creates nothing, exactly as it would against a real server.
+  ratingKeys come from ONE server-global space shared with every ``switchUser``
+  server, because a playlist ratingKey is unique across accounts on a PMS.
 
 Method and attribute names are camelCase because they mirror plexapi's own
 surface — production code calls them by those names.
@@ -34,7 +51,32 @@ class FakeBadRequest(Exception):
     """Stands in for ``plexapi.exceptions.BadRequest``."""
 
 
-class FakeTrack:
+class _PlexIdentity:
+    """Identity as plexapi does it: equal and hash-equal by ``key``.
+
+    ``PlexPartialObject.__eq__`` compares ``self.key`` and ``__hash__`` is
+    ``hash(repr(self))`` over ratingKey + title (``base.py:639-645, 122-126``),
+    so two objects standing for one track are interchangeable in ``in``, ``==``,
+    ``set()`` and dict keys. Comparing by object identity instead would hide
+    every reconcile bug that leans on those.
+    """
+
+    ratingKey: int
+
+    @property
+    def key(self) -> str:
+        return f"/library/metadata/{self.ratingKey}"
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _PlexIdentity):
+            return self.key == other.key
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self.key)
+
+
+class FakeTrack(_PlexIdentity):
     def __init__(
         self,
         rating_key: int,
@@ -53,12 +95,39 @@ class FakeTrack:
         self.index = index
 
 
+class FakePlaylistItem(_PlexIdentity):
+    """One row as ``items()`` hands it back: a track object carrying this row's
+    ``playlistItemID``. Fetching snapshots the track's fields, as building the
+    object from that response's XML does."""
+
+    def __init__(self, track: FakeTrack, playlist_item_id: int) -> None:
+        self.playlistItemID = playlist_item_id
+        self.ratingKey = track.ratingKey
+        self.locations = track.locations
+        self.grandparentTitle = track.grandparentTitle
+        self.parentTitle = track.parentTitle
+        self.title = track.title
+        self.index = track.index
+
+
 @dataclass
 class _Row:
     """One server-side playlist row: a track plus its per-row playlistItemID."""
 
     track: FakeTrack
     row_id: int
+
+
+@dataclass
+class _KeyAllocator:
+    """The server's metadata id space, shared by every account's view of it."""
+
+    next_key: int = 500
+
+    def take(self) -> int:
+        key = self.next_key
+        self.next_key += 1
+        return key
 
 
 class FakePlaylist:
@@ -72,93 +141,138 @@ class FakePlaylist:
         self.deleted = False
         self.poster_uploads: list[str | None] = []
         self.calls: list[str] = []
+        self._live_title = title
+        self._live_summary = ""
         self._next_row_id = 1
         self._rows: list[_Row] = []
         for track in items:
             self._append(track)
         # What items() returns until reload(): None = not fetched yet.
-        self._cache: list[_Row] | None = None
+        self._cache: list[FakePlaylistItem] | None = None
 
     # -- server truth (test-only helpers) ------------------------------------
     def live_keys(self) -> list[int]:
         return [row.track.ratingKey for row in self._rows]
 
+    def live_title(self) -> str:
+        return self._live_title
+
+    def live_summary(self) -> str:
+        return self._live_summary
+
     def _append(self, track: FakeTrack) -> None:
         self._rows.append(_Row(track, self._next_row_id))
         self._next_row_id += 1
 
+    def _live_index(self, row_id: int) -> int | None:
+        for position, row in enumerate(self._rows):
+            if row.row_id == row_id:
+                return position
+        return None
+
     # -- plexapi surface ------------------------------------------------------
-    def items(self) -> list[FakeTrack]:
+    def items(self) -> list[FakePlaylistItem]:
         if self._cache is None:
-            self._cache = list(self._rows)
-        return [row.track for row in self._cache]
+            self._cache = [FakePlaylistItem(row.track, row.row_id) for row in self._rows]
+        return self._cache
 
     def reload(self) -> FakePlaylist:
         self.calls.append("reload")
         self._cache = None
+        self.title = self._live_title
+        self.summary = self._live_summary
         return self
 
-    def _first_cached_row_id(self, item: FakeTrack) -> int:
-        self.items()  # plexapi's _getPlaylistItemID walks self.items() (fetching if cold)
-        assert self._cache is not None
-        for row in self._cache:
-            if row.track.ratingKey == item.ratingKey:
-                return row.row_id
+    def _first_cached_row_id(self, item: FakeTrack | FakePlaylistItem) -> int:
+        # plexapi's _getPlaylistItemID walks self.items() (fetching if cold) and
+        # takes the FIRST ratingKey match.
+        for row in self.items():
+            if row.ratingKey == item.ratingKey:
+                return row.playlistItemID
         raise FakeNotFound(f"Item with ratingKey {item.ratingKey} not found in the playlist")
 
     def _guard_smart(self) -> None:
         if self.smart:
             raise FakeBadRequest("Cannot add or remove items from a smart playlist.")
 
-    def addItems(self, items: list[FakeTrack] | FakeTrack) -> FakePlaylist:
+    def _guard_deleted(self) -> None:
+        # The smart check is client-side and fires first in plexapi; this one
+        # stands in for the server's 404 on a key that no longer exists.
+        if self.deleted:
+            raise FakeNotFound(f"(404) not_found; playlist {self.ratingKey} no longer exists")
+
+    @staticmethod
+    def _as_list(
+        items: list[FakeTrack] | tuple[FakeTrack, ...] | FakeTrack,
+    ) -> list[FakeTrack]:
+        # plexapi coerces only what is neither list nor tuple (playlist.py:249-250).
+        if isinstance(items, (list, tuple)):
+            return list(items)
+        return [items]
+
+    def addItems(self, items: list[FakeTrack] | tuple[FakeTrack, ...] | FakeTrack) -> FakePlaylist:
         self._guard_smart()
+        self._guard_deleted()
         self.calls.append("addItems")
-        tracks = items if isinstance(items, list) else [items]
-        for track in tracks:
+        for track in self._as_list(items):
             self._append(track)
         return self
 
-    def removeItems(self, items: list[FakeTrack] | FakeTrack) -> FakePlaylist:
+    def removeItems(
+        self, items: list[FakeTrack] | tuple[FakeTrack, ...] | FakeTrack
+    ) -> FakePlaylist:
         self._guard_smart()
+        self._guard_deleted()
         self.calls.append("removeItems")
-        tracks = items if isinstance(items, list) else [items]
-        for track in tracks:
+        for track in self._as_list(items):
             row_id = self._first_cached_row_id(track)
-            live = [row for row in self._rows if row.row_id == row_id]
-            if not live:
-                raise FakeNotFound(f"playlist item {row_id} already gone (HTTP 404)")
-            self._rows.remove(live[0])
+            position = self._live_index(row_id)
+            if position is None:
+                raise FakeNotFound(f"(404) not_found; playlist item {row_id} is already gone")
+            del self._rows[position]
         return self
 
-    def moveItem(self, item: FakeTrack, after: FakeTrack | None = None) -> FakePlaylist:
+    def moveItem(
+        self, item: FakeTrack | FakePlaylistItem, after: FakeTrack | FakePlaylistItem | None = None
+    ) -> FakePlaylist:
         self._guard_smart()
+        self._guard_deleted()
         self.calls.append("moveItem")
+        # plexapi resolves BOTH ids before it sends anything (playlist.py:310-317).
         row_id = self._first_cached_row_id(item)
         after_id = self._first_cached_row_id(after) if after is not None else None
-        moving = [row for row in self._rows if row.row_id == row_id]
-        if not moving:
-            raise FakeNotFound(f"playlist item {row_id} already gone (HTTP 404)")
-        self._rows.remove(moving[0])
+        if after_id == row_id:
+            raise FakeBadRequest(
+                "moveItem after itself: PMS behaviour is undefined; the fake refuses it"
+            )
+        position = self._live_index(row_id)
+        if position is None:
+            raise FakeNotFound(f"(404) not_found; playlist item {row_id} is already gone")
+        if after_id is not None and self._live_index(after_id) is None:
+            raise FakeNotFound(f"(404) not_found; playlist item {after_id} is already gone")
+        row = self._rows.pop(position)
         if after_id is None:
-            self._rows.insert(0, moving[0])
+            self._rows.insert(0, row)
             return self
-        anchor = [i for i, row in enumerate(self._rows) if row.row_id == after_id]
-        if not anchor:
-            raise FakeNotFound(f"playlist item {after_id} already gone (HTTP 404)")
-        self._rows.insert(anchor[0] + 1, moving[0])
+        anchor = self._live_index(after_id)
+        assert anchor is not None  # checked above, and the pop cannot have removed it
+        self._rows.insert(anchor + 1, row)
         return self
 
     def editTitle(self, title: str, locked: bool = True) -> FakePlaylist:
+        self._guard_deleted()
         self.calls.append("editTitle")
-        self.title = title
+        self._live_title = title  # the attribute stays stale until reload()
         return self
 
     def editSummary(self, summary: str, locked: bool = True) -> FakePlaylist:
+        self._guard_deleted()
         self.calls.append("editSummary")
-        self.summary = summary
+        self._live_summary = summary  # the attribute stays stale until reload()
         return self
 
     def uploadPoster(self, url: str | None = None, filepath: str | None = None) -> FakePlaylist:
+        self._guard_deleted()
         self.calls.append("uploadPoster")
         self.poster_uploads.append(filepath)
         return self
@@ -195,27 +309,38 @@ class FakeServer:
         *,
         section_title: str = "Music",
         _library: _Library | None = None,
+        _keys: _KeyAllocator | None = None,
     ) -> None:
         self.library = _library or _Library([FakeSection(tracks, title=section_title)])
         self._tracks = tracks
+        self._keys = _keys or _KeyAllocator()
         self.created: list[FakePlaylist] = []
         self._playlists: list[FakePlaylist] = []
-        self._next_key = 500
         self.users: dict[str, FakeServer] = {}
 
     def playlists(self) -> list[FakePlaylist]:
         return [pl for pl in self._playlists if not pl.deleted]
 
-    def createPlaylist(self, title: str, items: list[FakeTrack]) -> FakePlaylist:
+    def createPlaylist(
+        self,
+        title: str,
+        section: object = None,
+        items: list[FakeTrack] | tuple[FakeTrack, ...] | None = None,
+        **kwargs: object,
+    ) -> FakePlaylist:
+        if kwargs:
+            raise NotImplementedError(f"the fake models regular playlists only: {sorted(kwargs)}")
         if not items:
             raise FakeBadRequest("Must include items to add when creating new playlist.")
-        pl = FakePlaylist(title, items, self._next_key)
-        self._next_key += 1  # every created playlist gets a distinct ratingKey
+        pl = FakePlaylist(title, list(items), self._keys.take())
         self.created.append(pl)
         self._playlists.append(pl)
         return pl
 
     def switchUser(self, uid: str) -> FakeServer:
+        # Real plexapi returns a NEW PlexServer per call (server.py:269); the fake
+        # keeps one per uid so a test can reach the playlists it created. The
+        # library and the ratingKey space are the SERVER's, so both are shared.
         if uid not in self.users:
-            self.users[uid] = FakeServer(self._tracks, _library=self.library)
+            self.users[uid] = FakeServer(self._tracks, _library=self.library, _keys=self._keys)
         return self.users[uid]

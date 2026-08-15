@@ -150,8 +150,6 @@ module = [
     "tests.test_plex_mapping",
     "tests.test_plex_api",
     "tests.test_plex_sync",
-    "tests.plex_fakes",
-    "tests.test_plex_fakes",
 ]
 disallow_untyped_calls = false
 

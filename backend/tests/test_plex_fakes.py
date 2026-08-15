@@ -1,11 +1,15 @@
 """Fidelity tests for tests/plex_fakes.py.
 
 These pin the fake to plexapi 4.18.2's REAL semantics (read from the installed
-playlist.py): items() is cached until reload(); removeItems/moveItem act on the
-FIRST cached row per ratingKey; a DELETE of a gone row is NotFound; createPlaylist
-rejects an empty list; smart playlists reject every mutator. If a future edit
-"simplifies" the fake, these fail before a production bug can hide behind it.
+playlist.py): items() is cached until reload() and hands back the cached LIST
+OBJECT; removeItems/moveItem act on the FIRST cached row per ratingKey; a DELETE
+of a gone row is NotFound; tracks compare by key; edits stay stale until reload();
+createPlaylist rejects an empty list; smart playlists reject every mutator. If a
+future edit "simplifies" the fake, these fail before a production bug can hide
+behind it.
 """
+
+from collections.abc import Callable
 
 import pytest
 
@@ -109,8 +113,135 @@ def test_server_rejects_empty_create_and_mints_distinct_keys() -> None:
 def test_switch_user_isolates_playlists_but_shares_library() -> None:
     server = FakeServer([_t(1)])
     user = server.switchUser("u1")
-    assert user is server.switchUser("u1")  # stable per uid
+    # The fake hands back one server per uid so the state is shared; real plexapi
+    # builds a NEW PlexServer on every call (server.py:269). The sharing is the
+    # modelled part, not the identity.
+    assert user is server.switchUser("u1")
     user.createPlaylist("Mix", items=[_t(1)])
     assert server.playlists() == []
     assert len(user.playlists()) == 1
     assert user.library.sections()[0] is server.library.sections()[0]
+
+
+def test_items_returns_the_cached_list_object_itself() -> None:
+    # plexapi's items() returns `self._items` (playlist.py:230) — the cached list
+    # OBJECT, not a copy. Production that mutates it corrupts the very list
+    # _getPlaylistItemID walks, so the fake must let that corruption happen.
+    a, b = _t(1), _t(2)
+    pl = FakePlaylist("Mix", [a, b], 500)
+    assert pl.items() is pl.items()
+    pl.items().pop(0)  # production drops a row from the list it was handed
+    pl.removeItems([b])
+    with pytest.raises(FakeNotFound):  # a is no longer in the list the fake walks
+        pl.removeItems([a])
+    assert pl.live_keys() == [1]
+
+
+def test_tracks_and_rows_compare_and_hash_by_rating_key() -> None:
+    # plexapi: __eq__ compares `key` and __hash__ is hash(repr) over ratingKey+title
+    # (base.py:639-645, 122-126), so two objects for one track are equal AND hash
+    # equal. A fake comparing by identity hides every `in` / `==` / set() bug.
+    assert _t(1).key == "/library/metadata/1"
+    assert _t(1) == _t(1)
+    assert _t(1) != _t(2)
+    assert _t(1) in [_t(1)]
+    assert len({_t(1), _t(1), _t(2)}) == 2
+    assert (_t(1) == "not a plex object") is False
+    pl = FakePlaylist("Mix", [_t(1), _t(1)], 500)
+    first, second = pl.items()
+    assert first is not second  # distinct rows, as real playlist rows are...
+    assert first == second  # ...that compare equal, because the key is the same
+    assert first.playlistItemID != second.playlistItemID
+    assert first == _t(1)
+
+
+def test_edit_title_and_summary_stay_stale_until_reload() -> None:
+    # plexapi's editField only PUTs (mixins/edit.py:8-30 -> base.py:716-726); it
+    # never writes the in-memory attribute, so a re-read still sees the OLD value.
+    pl = FakePlaylist("Mix", [_t(1)], 500)
+    pl.editTitle("Renamed")
+    pl.editSummary("marker")
+    assert (pl.title, pl.summary) == ("Mix", "")
+    assert (pl.live_title(), pl.live_summary()) == ("Renamed", "marker")
+    pl.reload()
+    assert (pl.title, pl.summary) == ("Renamed", "marker")
+
+
+def test_move_after_itself_is_refused_as_undefined() -> None:
+    # On [1, 2, 1] both arguments resolve to the SAME first cached row, so the real
+    # request is "move row 1 after row 1" — PMS behaviour is undefined. Refuse it
+    # loudly rather than invent a NotFound, and leave the playlist untouched.
+    a = _t(1)
+    pl = FakePlaylist("Mix", [a, _t(2), a], 500)
+    with pytest.raises(FakeBadRequest):
+        pl.moveItem(a, after=a)
+    assert pl.live_keys() == [1, 2, 1]
+
+
+def test_move_a_row_the_server_already_dropped_raises_not_found() -> None:
+    a, b = _t(1), _t(2)
+    pl = FakePlaylist("Mix", [a, b], 500)
+    pl.items()
+    pl.removeItems([a])  # the server drops row #1; the stale cache still lists it
+    with pytest.raises(FakeNotFound):
+        pl.moveItem(a)
+    assert pl.live_keys() == [2]
+
+
+def test_move_after_a_dropped_row_leaves_the_order_untouched() -> None:
+    a, b, c = _t(1), _t(2), _t(3)
+    pl = FakePlaylist("Mix", [a, b, c], 500)
+    pl.items()
+    pl.removeItems([c])
+    with pytest.raises(FakeNotFound):
+        pl.moveItem(a, after=c)
+    assert pl.live_keys() == [1, 2]  # a failed move moves nothing
+
+
+def test_mutators_on_a_deleted_playlist_raise_not_found() -> None:
+    # Once the playlist is gone its key 404s, and plexapi maps 404 -> NotFound
+    # (server.py:755-756).
+    pl = FakePlaylist("Mix", [_t(1)], 500)
+    pl.delete()
+    mutators: list[Callable[[], object]] = [
+        lambda: pl.addItems([_t(2)]),
+        lambda: pl.removeItems([_t(1)]),
+        lambda: pl.moveItem(_t(1)),
+        lambda: pl.editTitle("Renamed"),
+        lambda: pl.editSummary("marker"),
+        lambda: pl.uploadPoster(filepath="/tmp/cover.jpg"),
+    ]
+    for mutate in mutators:
+        with pytest.raises(FakeNotFound):
+            mutate()
+    assert pl.live_keys() == []
+
+
+def test_add_and_remove_accept_a_tuple_like_plexapi() -> None:
+    # plexapi coerces only when the argument is neither list nor tuple
+    # (playlist.py:249-250, 285-286).
+    a, b = _t(1), _t(2)
+    pl = FakePlaylist("Mix", [a], 500)
+    pl.addItems((b,))
+    assert pl.live_keys() == [1, 2]
+    pl.reload()
+    pl.removeItems((a,))
+    assert pl.live_keys() == [2]
+
+
+def test_create_playlist_binds_a_second_positional_to_section() -> None:
+    # Real is createPlaylist(title, section=None, items=None, ...) (server.py:488),
+    # so passing items positionally silently creates nothing.
+    server = FakeServer([_t(1)])
+    with pytest.raises(FakeBadRequest):
+        server.createPlaylist("Mix", [_t(1)])
+
+
+def test_playlist_keys_come_from_one_server_wide_space() -> None:
+    # A playlist ratingKey is a server-global metadata id: an admin playlist and a
+    # managed user's playlist can never share one, or a cross-account ratingKey
+    # mixup would look like a hit.
+    server = FakeServer([_t(1)])
+    admin_playlist = server.createPlaylist("Mix", items=[_t(1)])
+    user_playlist = server.switchUser("u1").createPlaylist("Mix", items=[_t(1)])
+    assert (admin_playlist.ratingKey, user_playlist.ratingKey) == (500, 501)
