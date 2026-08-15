@@ -200,6 +200,14 @@ origin question is the one with a deadline of sorts: it matters before the next 
   to the real corpus and would back it up on the next beets schema bump. Fix is one line:
   `monkeypatch.setattr(settings, "beets_dir", str(tmp_path))` plus a tmp `config.yaml` +
   `music/` dir, per the `test_slskd_webhook.py` pattern.
+- **`tests/test_import_session.py::test_attended_astracks_lands_the_singletons_full_pipeline`
+  writes to the developer's PERSONAL beets config dir** (`~/.config/beets/state.pickle`) on every
+  full-suite run — bisected as the only offender, and present at least as far back as `643783f`,
+  so it predates the path-binding branch. Bounded: only beets' importer scratch state is written,
+  the personal `library.db` md5 is unchanged and no `.bak` appears. Same class as the sibling entry
+  above and as the 2026-08-15 incident where an agent's unguarded `beet --version` ran two pending
+  migrations against that same personal library. The durable fix is an autouse fixture pointing
+  `BEETSDIR` at `tmp_path` for the whole suite, which would close both entries at once.
 - `_stat_tag` (artwork) duplicates `library.py`'s `_stat_etag` (Path vs str param) — polish
   only, same behavior.
 - Stat-then-read ETag race on the artwork cache (self-healing, mirrors the covers precedent);
