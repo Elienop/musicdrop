@@ -509,7 +509,10 @@ def _safe_reconcile(
         # every target's only exit, and flattening it would tell the user their
         # account was unreachable when the connection was fine and Plex just
         # refused the change. Anything else is a raw plexapi/requests failure
-        # whose message is not ours to show.
+        # whose message is not ours to show. INVARIANT this relies on: every
+        # PlexConnectionError raised on the reconcile path carries a STATIC
+        # message — never interpolate an exception, URL, or token into one, or
+        # it ships verbatim to the UI through this line.
         error = str(exc) if isinstance(exc, PlexConnectionError) else _ACCOUNT_ERROR
         # Carry the prior ratingKey (and poster hash) into the failed state: the
         # caller replaces the WHOLE state map with what we return, so recording
