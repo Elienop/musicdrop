@@ -3512,7 +3512,10 @@ export interface components {
             pending_count: number;
             /** Target Plex Users */
             target_plex_users: string[];
-            /** Plex */
+            /**
+             * Plex
+             * @description Per-target Plex sync state, keyed by target ('admin' or a Plex user id). On this summary view every target's `missing_tracks` is ALWAYS empty — an empty list here means 'not carried', never 'nothing missed'; `missing` is the true count either way. One target can hold up to 200 miss identities and a listing multiplies that by every playlist, so the identities are carried only on the playlist detail response (GET /api/playlists/{playlist_id}).
+             */
             plex: {
                 [key: string]: components["schemas"]["PlexTargetState"];
             };
@@ -3562,7 +3565,10 @@ export interface components {
             pending_count: number;
             /** Target Plex Users */
             target_plex_users: string[];
-            /** Plex */
+            /**
+             * Plex
+             * @description Per-target Plex sync state, keyed by target ('admin' or a Plex user id). Unlike the summary views, this one CARRIES `missing_tracks`: the identity of each playlist track the last sync could not find in Plex, in playlist order, capped at 200 per target (`missing` stays the true total, so `missing > len(missing_tracks)` means the rest were not listed).
+             */
             plex: {
                 [key: string]: components["schemas"]["PlexTargetState"];
             };

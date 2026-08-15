@@ -96,13 +96,15 @@ def _plex_without_miss_identities(
     """``states`` with the per-target miss IDENTITIES dropped, counts kept.
 
     ``PlexTargetState.missing_tracks`` carries up to ``MISSING_TRACKS_CAP`` (200)
-    track identities PER TARGET — ~73 KB on one row with three targets at the
-    cap, and a single wrong ``library_path`` puts every playlist at the cap at
-    once. Nothing that renders a summary row shows them; only the detail view
-    points at the rows that missed. So a summary keeps ``missing`` (the count
-    that drives the badge) and the detail response is where the identities live.
-    One model either way — the empty list means "not carried here", never "no
-    misses"; ``missing`` is the authority on that.
+    track identities PER TARGET — ~80 KB of JSON for one row's ``plex`` map with
+    three targets at the cap, and a single wrong ``library_path`` puts every
+    playlist at the cap at once. Nothing that renders a summary row shows them;
+    only the detail view points at the rows that missed, so a summary keeps
+    ``missing`` (the count that drives the badge) and nothing else.
+
+    ``Playlist.plex``'s field description states this rule FOR CALLERS — it ships
+    in the OpenAPI contract. This function is what makes it true; keep the two in
+    step.
     """
     return {
         target: state.model_copy(update={"missing_tracks": []}) for target, state in states.items()
