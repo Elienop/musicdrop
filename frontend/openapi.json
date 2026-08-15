@@ -8698,7 +8698,8 @@
               "$ref": "#/components/schemas/PlexTargetState"
             },
             "type": "object",
-            "title": "Plex"
+            "title": "Plex",
+            "description": "Per-target Plex sync state, keyed by target ('admin' or a Plex user id). On this summary view every target's `missing_tracks` is ALWAYS empty \u2014 an empty list here means 'not carried', never 'nothing missed'; `missing` is the true count either way. One target can hold up to 200 miss identities and a listing multiplies that by every playlist, so the identities are carried only on the playlist detail response (GET /api/playlists/{playlist_id})."
           },
           "created_at": {
             "type": "string",
@@ -8822,7 +8823,8 @@
               "$ref": "#/components/schemas/PlexTargetState"
             },
             "type": "object",
-            "title": "Plex"
+            "title": "Plex",
+            "description": "Per-target Plex sync state, keyed by target ('admin' or a Plex user id). Unlike the summary views, this one CARRIES `missing_tracks`: the identity of each playlist track the last sync could not find in Plex, in playlist order, capped at 200 per target (`missing` stays the true total, so `missing > len(missing_tracks)` means the rest were not listed)."
           },
           "created_at": {
             "type": "string",
@@ -9268,6 +9270,44 @@
         ],
         "title": "PlexConnection"
       },
+      "PlexMissingTrack": {
+        "properties": {
+          "item_id": {
+            "type": "integer",
+            "title": "Item Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "albumartist": {
+            "type": "string",
+            "title": "Albumartist"
+          },
+          "album": {
+            "type": "string",
+            "title": "Album"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "not_found",
+              "ambiguous"
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "title",
+          "albumartist",
+          "album",
+          "reason"
+        ],
+        "title": "PlexMissingTrack",
+        "description": "One playlist track that did not resolve to a Plex track on the last sync.\n\n``reason``: ``not_found`` \u2014 no Plex track at that path and no metadata\ncandidate; ``ambiguous`` \u2014 several Plex tracks matched the metadata and\nalbum/track-number could not single one out (never guessed)."
+      },
       "PlexPlaylistInfo": {
         "properties": {
           "name": {
@@ -9420,6 +9460,13 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "ok",
+              "partial",
+              "empty",
+              "failed",
+              "pending"
+            ],
             "title": "Status",
             "default": "pending"
           },
@@ -9427,6 +9474,25 @@
             "type": "integer",
             "title": "Missing",
             "default": 0
+          },
+          "missing_tracks": {
+            "items": {
+              "$ref": "#/components/schemas/PlexMissingTrack"
+            },
+            "type": "array",
+            "title": "Missing Tracks",
+            "default": []
+          },
+          "artwork_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artwork Hash"
           },
           "synced_at": {
             "anyOf": [
@@ -9453,7 +9519,7 @@
         },
         "type": "object",
         "title": "PlexTargetState",
-        "description": "Per-target Plex sync bookkeeping recorded on a playlist.\n\nKeyed by target in ``StoredPlaylist.plex`` \u2014 ``\"admin\"`` for the owner's\naccount (Chunk 6); per-user account ids in Chunk 7."
+        "description": "Per-target Plex sync bookkeeping recorded on a playlist.\n\nKeyed by target in ``StoredPlaylist.plex`` \u2014 ``\"admin\"`` for the owner's\naccount, per-user account ids for fan-out targets. ``rating_key`` is the\nPlex playlist this target's copy IS \u2014 a sync updates that playlist in place\nand never mints a new key while it exists. ``artwork_hash`` is the poster\nlast pushed to that copy (so a sync re-uploads only when the art changed)."
       },
       "PlexUserInfo": {
         "properties": {

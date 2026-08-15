@@ -8,25 +8,41 @@ tracks once and build two indexes from that single pass:
   beets library and Plex hold separately-organized copies of the same music.
 
 A track is resolved path-first, then by metadata (album then track-number
-tiebreak; ambiguous -> left missing, never guessed).
+tiebreak; ambiguous -> left missing, never guessed). Every miss is reported
+with its identity and WHY it missed, so the UI can point at the row.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
+
+from app.models.plex import PlexMissingTrack
+
+MissReason = Literal["not_found", "ambiguous"]
 
 
 @dataclass(frozen=True)
 class PlexTrackSpec:
-    """One ordered playlist track: its path as Plex sees it (already
-    translated) plus the metadata used to fall back when the path isn't found."""
+    """One ordered playlist track: the beets item id (so a miss can be pointed
+    at), its path as Plex sees it (already translated), plus the metadata used
+    to fall back when the path isn't found."""
 
+    item_id: int
     path: str
     albumartist: str
     album: str
     title: str
     track: int | None
+
+
+@dataclass(frozen=True)
+class PlexResolution:
+    """``tracks`` are the resolved Plex Track objects in playlist order (misses
+    dropped); ``missing`` is every spec that resolved to nothing, in order."""
+
+    tracks: list[Any]
+    missing: list[PlexMissingTrack]
 
 
 def _norm(value: str) -> str:
@@ -62,46 +78,55 @@ def _build_indexes(
     return by_path, by_meta
 
 
-def _meta_match(by_meta: dict[tuple[str, str], list[Any]], spec: PlexTrackSpec) -> Any | None:
-    """Resolve a path-missed spec by metadata, or None when ambiguous/absent.
+def _meta_match(
+    by_meta: dict[tuple[str, str], list[Any]], spec: PlexTrackSpec
+) -> tuple[Any | None, MissReason | None]:
+    """Resolve a path-missed spec by metadata.
 
-    Unique album-artist+title -> that track. Otherwise narrow by album, then by
-    track number; a single survivor wins, anything still tied is left missing
-    (never guessed)."""
+    Returns ``(track, None)`` on a match; ``(None, "not_found")`` when the key is
+    incomplete (a title-only match is a guess) or no candidate exists; and
+    ``(None, "ambiguous")`` when candidates exist but album, then track number,
+    cannot single one out."""
     key = (_norm(spec.albumartist), _norm(spec.title))
-    if not all(key):  # need BOTH album-artist and title — a title-only match is a guess
-        return None
+    if not all(key):
+        return None, "not_found"
     cands = by_meta.get(key)
     if not cands:
-        return None
+        return None, "not_found"
     if len(cands) == 1:
-        return cands[0]
+        return cands[0], None
     album_pool = [c for c in cands if _norm(_attr(c, "parentTitle")) == _norm(spec.album)]
     pool = album_pool or cands
     if len(pool) == 1:
-        return pool[0]
+        return pool[0], None
     if spec.track is not None:
         track_pool = [c for c in pool if _track_no(c) == spec.track]
         if len(track_pool) == 1:
-            return track_pool[0]
-    return None
+            return track_pool[0], None
+    return None, "ambiguous"
 
 
-def resolve_ordered_tracks(section: Any, specs: list[PlexTrackSpec]) -> tuple[list[Any], int]:
-    """Resolve ordered specs to Track objects (one library scan).
-
-    Each spec is matched by exact path first, then by metadata. Returns
-    ``(tracks_in_order, missing_count)`` — ``missing_count`` is the number of
-    specs that matched neither (dropped from the result)."""
+def resolve_ordered_tracks(section: Any, specs: list[PlexTrackSpec]) -> PlexResolution:
+    """Resolve ordered specs to Track objects (one library scan), reporting
+    every miss with its identity and reason."""
     by_path, by_meta = _build_indexes(section)
     tracks: list[Any] = []
-    missing = 0
+    missing: list[PlexMissingTrack] = []
     for spec in specs:
         track = by_path.get(spec.path)
+        reason: MissReason | None = None
         if track is None:
-            track = _meta_match(by_meta, spec)
+            track, reason = _meta_match(by_meta, spec)
         if track is None:
-            missing += 1
+            missing.append(
+                PlexMissingTrack(
+                    item_id=spec.item_id,
+                    title=spec.title,
+                    albumartist=spec.albumartist,
+                    album=spec.album,
+                    reason=reason or "not_found",
+                )
+            )
         else:
             tracks.append(track)
-    return tracks, missing
+    return PlexResolution(tracks=tracks, missing=missing)

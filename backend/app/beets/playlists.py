@@ -25,12 +25,14 @@ from app.playlists.store import StoredEntry  # store never imports beets - no cy
 
 @dataclass(frozen=True)
 class TrackRef:
-    """A resolvable track's absolute path plus the metadata Plex matches on.
+    """A resolvable track's beets id and absolute path plus the metadata Plex
+    matches on.
 
     Plex-unaware on purpose (CLAUDE.md rule 3): the API translates ``abs_path``
     into a Plex view and pairs it with this metadata as a ``PlexTrackSpec``.
     """
 
+    item_id: int
     abs_path: str
     albumartist: str
     album: str
@@ -196,6 +198,7 @@ def track_match_refs(lib: Library, ids: list[int]) -> list[TrackRef]:
                 continue
             refs.append(
                 TrackRef(
+                    item_id=item_id,
                     abs_path=_abs_path(lib, item.path),
                     albumartist=_coerce_str(item.albumartist),
                     album=_coerce_str(item.album),

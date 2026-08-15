@@ -3512,7 +3512,10 @@ export interface components {
             pending_count: number;
             /** Target Plex Users */
             target_plex_users: string[];
-            /** Plex */
+            /**
+             * Plex
+             * @description Per-target Plex sync state, keyed by target ('admin' or a Plex user id). On this summary view every target's `missing_tracks` is ALWAYS empty — an empty list here means 'not carried', never 'nothing missed'; `missing` is the true count either way. One target can hold up to 200 miss identities and a listing multiplies that by every playlist, so the identities are carried only on the playlist detail response (GET /api/playlists/{playlist_id}).
+             */
             plex: {
                 [key: string]: components["schemas"]["PlexTargetState"];
             };
@@ -3562,7 +3565,10 @@ export interface components {
             pending_count: number;
             /** Target Plex Users */
             target_plex_users: string[];
-            /** Plex */
+            /**
+             * Plex
+             * @description Per-target Plex sync state, keyed by target ('admin' or a Plex user id). Unlike the summary views, this one CARRIES `missing_tracks`: the identity of each playlist track the last sync could not find in Plex, in playlist order, capped at 200 per target (`missing` stays the true total, so `missing > len(missing_tracks)` means the rest were not listed).
+             */
             plex: {
                 [key: string]: components["schemas"]["PlexTargetState"];
             };
@@ -3728,6 +3734,29 @@ export interface components {
             error?: string | null;
         };
         /**
+         * PlexMissingTrack
+         * @description One playlist track that did not resolve to a Plex track on the last sync.
+         *
+         *     ``reason``: ``not_found`` — no Plex track at that path and no metadata
+         *     candidate; ``ambiguous`` — several Plex tracks matched the metadata and
+         *     album/track-number could not single one out (never guessed).
+         */
+        PlexMissingTrack: {
+            /** Item Id */
+            item_id: number;
+            /** Title */
+            title: string;
+            /** Albumartist */
+            albumartist: string;
+            /** Album */
+            album: string;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "not_found" | "ambiguous";
+        };
+        /**
          * PlexPlaylistInfo
          * @description One audio playlist on the Plex server (import source listing).
          *
@@ -3789,7 +3818,10 @@ export interface components {
          * @description Per-target Plex sync bookkeeping recorded on a playlist.
          *
          *     Keyed by target in ``StoredPlaylist.plex`` — ``"admin"`` for the owner's
-         *     account (Chunk 6); per-user account ids in Chunk 7.
+         *     account, per-user account ids for fan-out targets. ``rating_key`` is the
+         *     Plex playlist this target's copy IS — a sync updates that playlist in place
+         *     and never mints a new key while it exists. ``artwork_hash`` is the poster
+         *     last pushed to that copy (so a sync re-uploads only when the art changed).
          */
         PlexTargetState: {
             /** Rating Key */
@@ -3797,13 +3829,21 @@ export interface components {
             /**
              * Status
              * @default pending
+             * @enum {string}
              */
-            status: string;
+            status: "ok" | "partial" | "empty" | "failed" | "pending";
             /**
              * Missing
              * @default 0
              */
             missing: number;
+            /**
+             * Missing Tracks
+             * @default []
+             */
+            missing_tracks: components["schemas"]["PlexMissingTrack"][];
+            /** Artwork Hash */
+            artwork_hash?: string | null;
             /** Synced At */
             synced_at?: string | null;
             /** Error */

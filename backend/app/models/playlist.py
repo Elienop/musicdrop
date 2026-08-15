@@ -10,9 +10,9 @@ does not churn between chunks.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
-from app.models.plex import PlexTargetState
+from app.models.plex import MISSING_TRACKS_CAP, PlexTargetState
 
 
 class PendingTrack(BaseModel):
@@ -36,7 +36,17 @@ class Playlist(BaseModel):
     track_count: int
     pending_count: int
     target_plex_users: list[str]
-    plex: dict[str, PlexTargetState]
+    plex: dict[str, PlexTargetState] = Field(
+        description=(
+            "Per-target Plex sync state, keyed by target ('admin' or a Plex user id). "
+            "On this summary view every target's `missing_tracks` is ALWAYS empty — an "
+            "empty list here means 'not carried', never 'nothing missed'; `missing` is "
+            "the true count either way. One target can hold up to "
+            f"{MISSING_TRACKS_CAP} miss identities and a listing multiplies that by every "
+            "playlist, so the identities are carried only on the playlist detail response "
+            "(GET /api/playlists/{playlist_id})."
+        )
+    )
     created_at: str
     updated_at: str
     # Cover art: the stored artwork's content hash (None when the playlist has
@@ -72,6 +82,17 @@ class PlaylistTrack(BaseModel):
 class PlaylistDetail(Playlist):
     """Single-playlist view with the ordered, resolved tracklist."""
 
+    # Redeclared only to carry its own description: this is the ONE view that
+    # ships the miss identities, and the summary's field says the opposite.
+    plex: dict[str, PlexTargetState] = Field(
+        description=(
+            "Per-target Plex sync state, keyed by target ('admin' or a Plex user id). "
+            "Unlike the summary views, this one CARRIES `missing_tracks`: the identity of "
+            "each playlist track the last sync could not find in Plex, in playlist order, "
+            f"capped at {MISSING_TRACKS_CAP} per target (`missing` stays the true total, so "
+            "`missing > len(missing_tracks)` means the rest were not listed)."
+        )
+    )
     tracks: list[PlaylistTrack]
 
 

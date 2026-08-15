@@ -264,6 +264,9 @@ def test_m3u_entries_empty(tmp_path: Path) -> None:
 def test_track_match_refs_ordered_with_metadata(tmp_path: Path) -> None:
     lib, ids = _lib_with_items(tmp_path)
     refs = track_match_refs(lib, [ids[1], ids[0]])  # reversed
+    # Each ref carries ITS OWN beets id: a Plex miss is reported against a row,
+    # so an id paired with the wrong track would point the UI at the wrong one.
+    assert [r.item_id for r in refs] == [ids[1], ids[0]]
     assert [r.title for r in refs] == ["Beta", "Alpha"]
     assert [r.track for r in refs] == [2, 1]
     assert refs[0].albumartist == "A"
@@ -280,6 +283,7 @@ def test_track_match_refs_skips_missing(tmp_path: Path) -> None:
     refs = track_match_refs(lib, [ids[0], 999_999])
     assert len(refs) == 1
     assert refs[0].title == "Alpha"
+    assert refs[0].item_id == ids[0]  # a dropped id must not shift the pairing
 
 
 def test_track_match_refs_track_zero_becomes_none(tmp_path: Path) -> None:

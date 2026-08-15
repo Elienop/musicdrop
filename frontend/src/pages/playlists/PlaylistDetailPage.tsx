@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 
@@ -76,6 +76,31 @@ function displayTitle(track: PlaylistTrack): string {
 
 type PlexTargetState = PlaylistDetail["plex"][string];
 
+/** Why Plex couldn't place one track on the last sync. */
+type PlexMissReason = PlexTargetState["missing_tracks"][number]["reason"];
+
+/** The tooltip for each miss reason — they're different remedies (nothing
+ * matched at all vs. several matched and we refuse to guess), so each row says
+ * which one it hit rather than a generic "not found". */
+const MISS_TITLES: Record<PlexMissReason, string> = {
+  not_found:
+    "Plex has no track with this file, and nothing matched by artist and title. Check the file is in your Plex library, then sync again.",
+  ambiguous:
+    "Several Plex tracks share this artist and title, and none has this file, so MusicDrop won't guess which one. Sort out the copies in Plex, then sync again.",
+};
+
+/** item id -> why Plex couldn't place it on the last sync. Keyed by item id (not
+ * row uid) because the resolve is per library track: two rows for one item are
+ * both missing or both found. The admin target's list is THE list — one resolve
+ * against the (server-global) ratingKeys serves every fan-out target. */
+function plexMissesByItem(playlist: PlaylistDetail): Map<number, PlexMissReason> {
+  const out = new Map<number, PlexMissReason>();
+  for (const miss of playlist.plex?.admin?.missing_tracks ?? []) {
+    out.set(miss.item_id, miss.reason);
+  }
+  return out;
+}
+
 /** Visual tone for a sync status, mapped to a leading icon + a semantic text
  * color so the state reads at a glance (the text label stays the non-color
  * carrier for screen readers / color-blind users). */
@@ -111,10 +136,37 @@ function syncStatus(
   switch (state.status) {
     case "ok":
       return { label: "Synced", tone: "success" };
-    case "partial":
-      return { label: `${state.missing} not in Plex`, tone: "warning" };
+    case "partial": {
+      const marked = state.missing_tracks.length;
+      if (marked >= state.missing) {
+        return { label: `${state.missing} not in Plex`, tone: "warning" };
+      }
+      // Fewer carried identities than misses — the server caps the list
+      // (MISSING_TRACKS_CAP). Only those rows can wear a badge, so say which
+      // ones the badges cover; otherwise the unmarked remainder reads as fine.
+      // `marked === 0` can't come from the cap (it truncates to 200, never 0):
+      // it means the state predates the identities, which one re-sync fixes.
+      return {
+        label:
+          marked === 0
+            ? `${state.missing} not in Plex; re-sync to see which`
+            : `${state.missing} not in Plex; first ${marked} marked`,
+        tone: "warning",
+      };
+    }
     case "empty":
-      return { label: "No matching tracks", tone: "muted" };
+      // Nothing resolved, so the sync touched nothing. Say which case this is —
+      // and both are a warning: the user asked for a push and got none, so the
+      // no-copy-at-all outcome must not read quieter than the milder one.
+      // The exception is a playlist with nothing to send in the first place
+      // (empty, or only pending rows): missing === 0, nothing went wrong, so no
+      // alarm is earned.
+      if (state.rating_key) {
+        return { label: "No matching tracks; Plex copy left as is", tone: "warning" };
+      }
+      return state.missing === 0
+        ? { label: "Nothing to sync", tone: "muted" }
+        : { label: "No matching tracks; nothing sent to Plex", tone: "warning" };
     case "failed":
       return { label: state.error ?? "Failed", tone: "destructive" };
     default:
@@ -497,6 +549,11 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
   // in step with optimistic add/remove/resolve edits, not the last server body.
   const unmatchedCount = tracks.filter((t) => t.pending).length;
 
+  // Which library items the last sync couldn't place on Plex. Memoized on the
+  // server body so a header-only re-render hands every row the SAME primitive
+  // (usually undefined) and the row memo keeps holding.
+  const plexMisses = useMemo(() => plexMissesByItem(playlist), [playlist]);
+
   // How many Plex copies actually exist for this playlist — targets whose sync
   // recorded a rating_key. Drives the delete-dialog's honest "…N synced Plex
   // copies…" line (a failed/empty target has a slot but no copy on Plex).
@@ -821,6 +878,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
                 onRemove={onRemove}
                 onMatch={onMatch}
                 registerRef={register}
+                plexMiss={track.id != null ? plexMisses.get(track.id) : undefined}
               />
             ))}
           </TableBody>
@@ -957,6 +1015,7 @@ const PlaylistTrackRow = memo(function PlaylistTrackRow({
   onRemove,
   onMatch,
   registerRef,
+  plexMiss,
 }: {
   track: PlaylistTrack;
   position: number;
@@ -966,6 +1025,9 @@ const PlaylistTrackRow = memo(function PlaylistTrackRow({
   onRemove: (uid: string) => void;
   onMatch: (uid: string) => void;
   registerRef: (key: string, el: HTMLButtonElement | null) => void;
+  /** Set when the last Plex sync couldn't place this row's library item — a
+   * primitive so the memo above still short-circuits an unrelated re-render. */
+  plexMiss?: PlexMissReason;
 }) {
   // A pending row (an import that didn't match a library track) keeps its slot
   // with remembered metadata and offers a "Match…" action. A resolved row whose
@@ -985,9 +1047,14 @@ const PlaylistTrackRow = memo(function PlaylistTrackRow({
             / "plex:<name>") as a tooltip — for a bare-path entry it's the only
             "it was this" identity. Resolved rows have no source (title omitted). */}
         <div className="flex min-w-0 flex-col" title={track.source ?? undefined}>
-          <div className="flex items-center gap-2">
+          {/* flex-wrap + a shrinkable title keep this cell's min-content width
+              small: the badges are shrink-0, so without it a flagged row widens
+              the Title column past a phone and the table's own overflow-x-auto
+              scroller (ui/table.tsx) hides the row's actions off the right
+              edge. Wrapping drops the badge under the title only when it must. */}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span
-              className={`truncate font-medium ${track.available ? "" : "text-muted-foreground italic"}`}
+              className={`min-w-0 truncate font-medium ${track.available ? "" : "text-muted-foreground italic"}`}
             >
               {title}
             </span>
@@ -1001,6 +1068,27 @@ const PlaylistTrackRow = memo(function PlaylistTrackRow({
                   unavailable
                 </Badge>
               )
+            )}
+            {/* The row is in the library but the last sync couldn't put it on
+                Plex (the "N not in Plex" count says how many, this says WHICH
+                and why). The sr-only phrase is the announced carrier — a Badge
+                renders a generic <span>, where `title`/`aria-label` are not
+                reliably announced, so the badge is hidden from the tree and
+                keeps `title` for sighted hover (the album page's idiom).
+                Skipped when the beets item is gone: "not in Plex" is noise on
+                top of "unavailable". */}
+            {plexMiss && track.available && (
+              <>
+                <span className="sr-only">Not in Plex: {MISS_TITLES[plexMiss]}</span>
+                <Badge
+                  variant="outline"
+                  aria-hidden="true"
+                  className="border-warning text-warning shrink-0 text-xs font-normal"
+                  title={MISS_TITLES[plexMiss]}
+                >
+                  Not in Plex
+                </Badge>
+              </>
             )}
           </div>
           {showMeta && (
