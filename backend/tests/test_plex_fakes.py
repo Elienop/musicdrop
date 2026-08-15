@@ -17,6 +17,7 @@ from tests.plex_fakes import (
     FakeBadRequest,
     FakeNotFound,
     FakePlaylist,
+    FakeSection,
     FakeServer,
     FakeTrack,
 )
@@ -108,6 +109,52 @@ def test_server_rejects_empty_create_and_mints_distinct_keys() -> None:
     assert server.playlists() == [p1, p2]
     p1.delete()
     assert server.playlists() == [p2]  # deleted playlists disappear from the listing
+
+
+def test_a_listing_hands_back_freshly_fetched_attributes() -> None:
+    # PlexServer.playlists() BUILDS its objects from a fresh fetch (server.py:772),
+    # so a playlist read out of a new listing carries Plex's current title and
+    # summary — unlike the caller's own object, which stays stale until reload().
+    # Without this, a second sync sees a stale summary and re-stamps a marker that
+    # is already there, and no test could ever catch the redundant PUT.
+    server = FakeServer([_t(1)])
+    pl = server.createPlaylist("Mix", items=[_t(1)])
+    pl.editTitle("Renamed")
+    pl.editSummary("MusicDrop-id:p1")
+    assert (pl.title, pl.summary) == ("Mix", "")  # the caller's object is still stale
+    fetched = server.playlists()[0]
+    assert (fetched.title, fetched.summary) == ("Renamed", "MusicDrop-id:p1")
+    assert "reload" not in fetched.calls  # a fetch is not a client-side reload
+
+
+def test_a_listing_drops_the_stale_item_cache() -> None:
+    a, b = _t(1), _t(2)
+    server = FakeServer([a, b])
+    pl = server.createPlaylist("Mix", items=[a])
+    assert [t.ratingKey for t in pl.items()] == [1]
+    pl.addItems([b])
+    assert [t.ratingKey for t in pl.items()] == [1]  # stale: no reload, no re-fetch
+    assert [t.ratingKey for t in server.playlists()[0].items()] == [1, 2]
+
+
+def test_per_call_item_keys_are_recorded_for_the_one_uri_hazard() -> None:
+    # addItems/createPlaylist comma-join their items into ONE uri, and whether PMS
+    # honours a repeated ratingKey there is unknowable from the client. The fake
+    # cannot decide it either — it records what each call carried so a test can
+    # assert production never sends a repeat inside one call.
+    a, b = _t(1), _t(2)
+    server = FakeServer([a, b])
+    pl = server.createPlaylist("Mix", items=[a, b])
+    assert server.create_calls == [[1, 2]]
+    pl.addItems([b])
+    pl.addItems([a, b])
+    assert pl.add_calls == [[2], [1, 2]]
+
+
+def test_server_takes_explicit_sections() -> None:
+    first, second = FakeSection([], title="Music"), FakeSection([_t(1)], title="MusicDrop")
+    server = FakeServer([_t(1)], sections=[first, second])
+    assert server.library.sections() == [first, second]
 
 
 def test_switch_user_isolates_playlists_but_shares_library() -> None:

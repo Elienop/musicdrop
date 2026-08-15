@@ -23,6 +23,16 @@ STRICTER branch: a fake that forgives more than Plex does is worse than no fake.
   behaviour is undefined, so production must not rely on it.
 - ``editTitle``/``editSummary`` only PUT (``mixins/edit.py:8-30`` ->
   ``base.py:716-726``): the in-memory attribute stays STALE until ``reload()``.
+  ``PlexServer.playlists()`` however BUILDS ITS OBJECTS FROM A FRESH FETCH
+  (``server.py:772`` -> ``fetchItems``), so a playlist read out of a new listing
+  already carries Plex's current title/summary and an unfetched item list. The
+  fake refreshes what it hands back for that reason — and does NOT record a
+  ``reload`` call, because no client-side reload happened.
+- ``addItems``/``createPlaylist`` comma-join their items into ONE uri
+  (``playlist.py:255-262``, ``server.py:511``). Whether PMS honours the same
+  ratingKey twice in one such uri is unknowable from the client, so the fake
+  records the per-call key lists (``add_calls``, ``FakeServer.create_calls``)
+  and production is expected never to send a repeat inside one call.
 - Smart playlists raise BadRequest on all three item mutators; a DELETED
   playlist's key 404s, so every mutator raises NotFound.
 - ``createPlaylist`` matches ``PlexServer.createPlaylist(title, section=None,
@@ -157,6 +167,10 @@ class FakePlaylist:
         self.deleted = False
         self.poster_uploads: list[str | None] = []
         self.calls: list[str] = []
+        # ratingKeys per addItems call. A key repeated inside ONE call rides in a
+        # single comma-joined uri, where PMS's behaviour is unknown — tests assert
+        # production never does it.
+        self.add_calls: list[list[int]] = []
         self._live_title = title
         self._live_summary = ""
         self._next_row_id = 1
@@ -192,11 +206,19 @@ class FakePlaylist:
             self._cache = [FakePlaylistItem(row.track, row.row_id) for row in self._rows]
         return self._cache
 
-    def reload(self) -> FakePlaylist:
-        self.calls.append("reload")
+    def _refresh_from_server(self) -> None:
+        """Point the fetched attributes and the item cache back at server truth.
+
+        What both an explicit ``reload()`` and a fresh ``playlists()`` fetch do;
+        only ``reload()`` is a client-side call worth recording.
+        """
         self._cache = None
         self.title = self._live_title
         self.summary = self._live_summary
+
+    def reload(self) -> FakePlaylist:
+        self.calls.append("reload")
+        self._refresh_from_server()
         return self
 
     def _first_cached_row_id(self, item: FakeItem) -> int:
@@ -231,7 +253,9 @@ class FakePlaylist:
         self._guard_smart()
         self._guard_deleted()
         self.calls.append("addItems")
-        for track in self._as_list(items):
+        added = self._as_list(items)
+        self.add_calls.append([track.ratingKey for track in added])
+        for track in added:
             self._append(track)
         return self
 
@@ -321,18 +345,31 @@ class FakeServer:
         tracks: list[FakeTrack],
         *,
         section_title: str = "Music",
+        sections: list[FakeSection] | None = None,
         _library: _Library | None = None,
         _keys: _KeyAllocator | None = None,
     ) -> None:
-        self.library = _library or _Library([FakeSection(tracks, title=section_title)])
+        # ``sections`` is for the multi-library case; the default is the one
+        # artist section holding ``tracks``.
+        self.library = _library or _Library(
+            list(sections) if sections is not None else [FakeSection(tracks, title=section_title)]
+        )
         self._tracks = tracks
         self._keys = _keys or _KeyAllocator()
         self.created: list[FakePlaylist] = []
+        # ratingKeys per createPlaylist call — same one-uri hazard as add_calls.
+        self.create_calls: list[list[int]] = []
         self._playlists: list[FakePlaylist] = []
         self.users: dict[str, FakeServer] = {}
 
     def playlists(self) -> list[FakePlaylist]:
-        return [pl for pl in self._playlists if not pl.deleted]
+        # A listing is a FETCH: every object is built from the server's current
+        # state, so titles/summaries are fresh and no item list is carried over.
+        # It is not a reload() of anyone's object, so nothing lands in `calls`.
+        alive = [pl for pl in self._playlists if not pl.deleted]
+        for playlist in alive:
+            playlist._refresh_from_server()
+        return alive
 
     def createPlaylist(
         self,
@@ -345,6 +382,7 @@ class FakeServer:
             raise NotImplementedError(f"the fake models regular playlists only: {sorted(kwargs)}")
         if not items:
             raise FakeBadRequest("Must include items to add when creating new playlist.")
+        self.create_calls.append([track.ratingKey for track in items])
         pl = FakePlaylist(title, list(items), self._keys.take())
         self.created.append(pl)
         self._playlists.append(pl)

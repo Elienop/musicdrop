@@ -3,9 +3,11 @@
 Identifies the target Plex playlist by IDENTITY — never by bare title — and
 updates it to the resolved, ordered tracks. MusicDrop playlist names are not
 unique, so title matching would let two same-named playlists clobber each
-other. The existing Plex playlist is found by (in order) the recorded
-``rating_key``, else a ``MusicDrop-id:{playlist_id}`` marker stamped into the
-Plex playlist's ``summary``; if neither matches we create a fresh one.
+other. The existing Plex playlist is found by (in order) the
+``MusicDrop-id:{playlist_id}`` marker stamped into the Plex playlist's
+``summary``, else the recorded ``rating_key`` — but never a keyed playlist
+wearing SOMEONE ELSE'S marker, which is what a rebuilt Plex DB's reassigned
+ratingKeys produce. If neither matches we create a fresh one.
 
 An existing playlist is UPDATED, never deleted-and-recreated: its ratingKey,
 poster, and anything Plex hangs off the playlist object survive every sync,
@@ -33,6 +35,8 @@ Time is stamped by the caller (this module has no clock): the returned
 
 from __future__ import annotations
 
+import bisect
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +49,8 @@ from app.plex.errors import PlexConnectionError, PlexNotConfigured
 from app.plex.mapping import PlexTrackSpec, resolve_ordered_tracks
 
 _SMART_ERROR = "This Plex playlist is a smart playlist; MusicDrop can't update it in place."
+_NOT_APPLIED_ERROR = "Plex did not apply the playlist changes."
+_MARKER_PREFIX = "MusicDrop-id:"
 
 
 @dataclass(frozen=True)
@@ -65,13 +71,17 @@ def _no_section_error(title: str) -> PlexConnectionError:
 
 def _summary_marker(playlist_id: str) -> str:
     """The MusicDrop identity stamp embedded in a synced Plex playlist's summary."""
-    return f"MusicDrop-id:{playlist_id}"
+    return f"{_MARKER_PREFIX}{playlist_id}"
+
+
+def _summary_of(playlist: Any) -> str:
+    return str(getattr(playlist, "summary", "") or "")
 
 
 def _find_by_summary_marker(server: Any, playlist_id: str) -> Any | None:
     marker = _summary_marker(playlist_id)
     for playlist in server.playlists():
-        if marker in (getattr(playlist, "summary", "") or ""):
+        if marker in _summary_of(playlist):
             return playlist
     return None
 
@@ -83,6 +93,102 @@ def _find_by_rating_key(server: Any, rating_key: str) -> Any | None:
     return None
 
 
+def _find_our_playlist(server: Any, playlist_id: str, rating_key: str | None) -> Any | None:
+    """Our copy on ``server``, by the most durable identity FIRST.
+
+    The ``MusicDrop-id`` marker outranks the recorded ``rating_key``: a Plex DB
+    rebuild reassigns ratingKeys, so a recorded key can come to resolve to a
+    playlist that is not ours. Adopting it would rewrite that playlist in place
+    and then RE-RECORD its key, so every later sync keeps rewriting a stranger's
+    playlist while our own copy is orphaned — a permanent mis-binding, not a
+    one-off. Marker-first also costs nothing: both lookups read the same
+    ``server.playlists()`` listing.
+
+    A key match with NO marker at all is still ours to adopt — that is the copy
+    whose stamp PUT failed transiently, and re-stamping it is the recovery path.
+    Only a marker naming a DIFFERENT playlist is disqualifying.
+    """
+    marker = _summary_marker(playlist_id)
+    playlists = list(server.playlists())
+    for playlist in playlists:
+        if marker in _summary_of(playlist):
+            return playlist
+    if rating_key is None:
+        return None
+    for playlist in playlists:
+        if str(playlist.ratingKey) != str(rating_key):
+            continue
+        # Our own marker was ruled out above, so any marker here is someone else's.
+        return None if _MARKER_PREFIX in _summary_of(playlist) else playlist
+    return None
+
+
+def _unique_key_chunks(tracks: list[Any]) -> list[list[Any]]:
+    """Split ``tracks`` into the fewest ORDER-PRESERVING runs that each carry a
+    ratingKey at most once.
+
+    plexapi comma-joins one ``addItems`` into a single ``/library/metadata/2,1,2``
+    uri (``playlist.py:255-262``), and whether PMS honours a repeated id inside
+    one uri cannot be known from the client — if it de-dups we would silently
+    build the wrong playlist and still report ``ok``. So we never ask. Splitting
+    at each repeat keeps every call unique while the concatenation stays in
+    desired order, and costs one call per repeat DEPTH (2 for a playlist holding
+    a track twice) rather than one per track.
+    """
+    chunks: list[list[Any]] = []
+    current: list[Any] = []
+    seen: set[Any] = set()
+    for track in tracks:
+        if track.ratingKey in seen:
+            chunks.append(current)
+            current, seen = [], set()
+        current.append(track)
+        seen.add(track.ratingKey)
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _first_occurrences(tracks: list[Any]) -> list[Any]:
+    """``tracks`` with repeats dropped, first occurrence kept, order preserved."""
+    seen: set[Any] = set()
+    unique: list[Any] = []
+    for track in tracks:
+        if track.ratingKey in seen:
+            continue
+        seen.add(track.ratingKey)
+        unique.append(track)
+    return unique
+
+
+def _stable_rows(positions: list[int]) -> set[int]:
+    """Indices of one longest strictly increasing subsequence of ``positions``.
+
+    Those rows are already in the right order relative to each other, so they
+    never have to move — every other row costs exactly one ``moveItem``, which
+    is the minimum.
+    """
+    tail_values: list[int] = []
+    tail_index: list[int] = []
+    parent: list[int] = [-1] * len(positions)
+    for i, position in enumerate(positions):
+        slot = bisect.bisect_left(tail_values, position)
+        if slot > 0:
+            parent[i] = tail_index[slot - 1]
+        if slot == len(tail_values):
+            tail_values.append(position)
+            tail_index.append(i)
+        else:
+            tail_values[slot] = position
+            tail_index[slot] = i
+    keep: set[int] = set()
+    i = tail_index[-1] if tail_index else -1
+    while i >= 0:
+        keep.add(i)
+        i = parent[i]
+    return keep
+
+
 def _reconcile_items(playlist: Any, tracks: list[Any]) -> None:
     """Make ``playlist``'s rows equal ``tracks`` (multiset AND order), in place.
 
@@ -91,16 +197,18 @@ def _reconcile_items(playlist: Any, tracks: list[Any]) -> None:
     * Unique keys (the common case): a diff. ``addItems`` the new ones (one
       call), ``removeItems`` the stale ones (one call — with unique keys the
       first-match row IS the only row, so the stale cache is harmless), then
-      ``reload()`` ONCE so ``moveItem`` can see the added rows, and walk the
-      desired order fixing each out-of-place position with one ``moveItem``
-      (``after=None`` = front). At most one move per row.
+      ``reload()`` ONCE so ``moveItem`` can see the added rows, and move only the
+      rows that actually moved: the longest increasing subsequence of the current
+      positions is already in the right relative order and stays put, and each
+      remaining row costs one ``moveItem`` after its predecessor (``after=None``
+      = front). Dragging one track of a 500-row playlist is 1 PUT, not 499.
 
-    * Any duplicate key: append-then-remove-old. ``addItems(tracks)`` appends
-      the desired rows in the desired order AFTER the old rows; then remove each
-      OLD row with a ``reload()`` before every single ``removeItems`` — the
-      first-match row for a key is then always the earliest surviving OLD row,
-      never one of the freshly appended ones. Costs 2 calls per old row; only
-      paid when a playlist actually holds a track twice.
+    * Any duplicate key: append-then-remove-old. The desired rows are appended in
+      order AFTER the old ones (in unique-key chunks, see ``_unique_key_chunks``);
+      then each OLD row is removed with a ``reload()`` before every single
+      ``removeItems`` — the first-match row for a key is then always the earliest
+      surviving OLD row, never one of the freshly appended ones. Costs 2 calls per
+      old row; only paid when a playlist actually holds a track twice.
 
     Either way additions land before removals, so the playlist never empties.
     """
@@ -110,7 +218,8 @@ def _reconcile_items(playlist: Any, tracks: list[Any]) -> None:
     if current == desired:
         return
     if len(set(current)) != len(current) or len(set(desired)) != len(desired):
-        playlist.addItems(tracks)
+        for chunk in _unique_key_chunks(tracks):
+            playlist.addItems(chunk)
         for row in current_rows:
             playlist.reload()
             playlist.removeItems([row])
@@ -125,12 +234,20 @@ def _reconcile_items(playlist: Any, tracks: list[Any]) -> None:
         playlist.removeItems(to_remove)
     playlist.reload()
     order = [row.ratingKey for row in playlist.items()]
+    if Counter(order) != Counter(desired):
+        # Plex took the PUTs and the rows still are not what we asked for. Walking
+        # the desired order against this list would index past its end and surface
+        # as the generic "Plex sync failed."; say what actually happened instead.
+        raise PlexConnectionError(_NOT_APPLIED_ERROR)
+    at = {key: i for i, key in enumerate(order)}
+    keep = _stable_rows([at[key] for key in desired])
     for i, key in enumerate(desired):
-        if order[i] == key:
+        # After step i, desired[:i+1] are in the right relative order and still
+        # precede every yet-unplaced kept row, so placing each mover directly
+        # after its predecessor lands the whole list in order (induction on i).
+        if i in keep:
             continue
         playlist.moveItem(by_key[key], after=by_key[desired[i - 1]] if i > 0 else None)
-        order.remove(key)
-        order.insert(i, key)
 
 
 def _best_effort_stamp(playlist: Any, marker: str) -> None:
@@ -171,13 +288,13 @@ def _reconcile_on(
 ) -> PlexTargetState:
     """Bring this MusicDrop playlist's copy on ``server`` up to date IN PLACE.
 
-    Find the copy by IDENTITY (recorded ``rating_key`` first, else the
-    ``playlist_id`` summary marker). Found -> update its rows, title, marker,
-    and (only if the art changed) poster; the ratingKey is preserved. Not found
-    -> create it (Plex refuses an empty create, so an empty resolve with no
-    copy yields ``empty`` and no key). Found but nothing resolved -> touch
-    NOTHING and keep the key (``empty``). Found but smart -> ``failed`` (Plex
-    won't let us edit its rows), key preserved.
+    Find the copy by IDENTITY (the ``playlist_id`` summary marker first, else the
+    recorded ``rating_key`` — see ``_find_our_playlist``). Found -> update its
+    rows, title, marker, and (only if the art changed) poster; the ratingKey is
+    preserved. Not found -> create it (Plex refuses an empty create, so an empty
+    resolve with no copy yields ``empty`` and no key). Found but nothing resolved
+    -> touch NOTHING and keep the key (``empty``). Found but smart -> ``failed``
+    (Plex won't let us edit its rows), key preserved.
 
     Never matches by title — same-named playlists must not clobber each other.
     """
@@ -186,17 +303,22 @@ def _reconcile_on(
     marker = _summary_marker(playlist_id)
     shown = missing[:MISSING_TRACKS_CAP]
 
-    existing = _find_by_rating_key(server, prior_key) if prior_key is not None else None
-    if existing is None:
-        existing = _find_by_summary_marker(server, playlist_id)
+    existing = _find_our_playlist(server, playlist_id, prior_key)
 
     if existing is None:
         if not tracks:
             return PlexTargetState(
                 rating_key=None, status="empty", missing=len(missing), missing_tracks=shown
             )
-        playlist = server.createPlaylist(title, items=tracks)
+        # Create from the distinct keys, then let the reconcile append the
+        # repeats — one create uri must not carry a key twice either. The marker
+        # is stamped BEFORE that second step, so a reconcile failure leaves a
+        # findable playlist rather than an orphan we would duplicate next sync.
+        distinct = _first_occurrences(tracks)
+        playlist = server.createPlaylist(title, items=distinct)
         _best_effort_stamp(playlist, marker)
+        if len(distinct) != len(tracks):
+            _reconcile_items(playlist, tracks)
         pushed_hash: str | None = None
         if artwork is not None and _best_effort_poster(playlist, artwork):
             pushed_hash = artwork.hash

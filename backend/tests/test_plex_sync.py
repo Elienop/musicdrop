@@ -1,3 +1,5 @@
+import random
+import zlib
 from pathlib import Path
 
 import pytest
@@ -8,7 +10,7 @@ from app.plex.config import PlexConfig
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
 from app.plex.mapping import PlexTrackSpec
 from app.plex.sync import PlexArtwork
-from tests.plex_fakes import FakePlaylist, FakeSection, FakeServer, FakeTrack, _Library
+from tests.plex_fakes import FakePlaylist, FakeSection, FakeServer, FakeTrack
 
 CONFIG = PlexConfig(base_url="http://plex:32400", token="t")
 
@@ -18,9 +20,19 @@ def _patch(monkeypatch: pytest.MonkeyPatch, server: object) -> None:
 
 
 def _p(path: str) -> PlexTrackSpec:
-    """A path-only spec (no metadata) — exercises the exact-path branch."""
+    """A path-only spec (no metadata) — exercises the exact-path branch.
+
+    ``item_id`` is a crc32, not ``hash()``: the builtin is salted per process
+    (``PYTHONHASHSEED``), so an assertion on a reported miss would pass or fail
+    by run.
+    """
     return PlexTrackSpec(
-        item_id=hash(path) % 10_000, path=path, albumartist="", album="", title="", track=None
+        item_id=zlib.crc32(path.encode()) % 10_000,
+        path=path,
+        albumartist="",
+        album="",
+        title="",
+        track=None,
     )
 
 
@@ -158,12 +170,47 @@ def test_added_track_can_be_moved_to_front(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_no_op_when_plex_already_matches(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A settled playlist costs NOTHING — not even the reload a diff would need.
+    # Filtering `calls` down to the three mutators would let the whole diff path
+    # run (it issues none of them for an already-equal unique playlist) and still
+    # pass, so the early return would be unpinned.
     a, b = FakeTrack(1, ["/m/a"]), FakeTrack(2, ["/m/b"])
     server = FakeServer([a, b])
     existing = _marked(server.createPlaylist("Mix", items=[a, b]))
     _patch(monkeypatch, server)
     sync.sync_playlist(CONFIG, "Mix", [_p("/m/a"), _p("/m/b")], playlist_id="p1")
-    assert [c for c in existing.calls if c in ("addItems", "removeItems", "moveItem")] == []
+    assert existing.calls == []
+
+
+def test_unchanged_duplicate_playlist_is_not_churned(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Without the equality short-circuit a duplicate-holding playlist is torn down
+    # and rebuilt on EVERY sync (add + a reload/remove pair per existing row), so
+    # the no-op case has to be pinned on the duplicate path too.
+    a, b = FakeTrack(1, ["/m/a"]), FakeTrack(2, ["/m/b"])
+    server = FakeServer([a, b])
+    existing = _marked(server.createPlaylist("Mix", items=[a, a, b]))
+    _patch(monkeypatch, server)
+    sync.sync_playlist(CONFIG, "Mix", [_p("/m/a"), _p("/m/a"), _p("/m/b")], playlist_id="p1")
+    assert existing.calls == []
+    assert existing.live_keys() == [1, 1, 2]
+
+
+def test_a_track_added_twice_reconciles_through_the_duplicate_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A user re-adds a track already in the playlist: current is UNIQUE, desired
+    # holds a duplicate. Only the desired-side duplicate check routes this away
+    # from the diff path, which would ask Plex to move a row after ITSELF.
+    a, b = FakeTrack(1, ["/m/a"]), FakeTrack(2, ["/m/b"])
+    server = FakeServer([a, b])
+    existing = _marked(server.createPlaylist("Mix", items=[a, b]))
+    _patch(monkeypatch, server)
+    state = sync.sync_playlist(
+        CONFIG, "Mix", [_p("/m/a"), _p("/m/a"), _p("/m/b")], playlist_id="p1"
+    )
+    assert state.status == "ok"
+    assert existing.live_keys() == [1, 1, 2]
+    assert existing.calls.index("addItems") < existing.calls.index("removeItems")
 
 
 def test_duplicate_tracks_reconcile_to_the_desired_multiset_and_order(
@@ -596,7 +643,7 @@ def test_sync_uses_the_configured_section(monkeypatch: pytest.MonkeyPatch) -> No
     wanted = FakeTrack(1, ["/music/a/b/01 x.mp3"], title="x")
     first = FakeSection([], title="Music")
     second = FakeSection([wanted], title="MusicDrop")
-    server = FakeServer([wanted], _library=_Library([first, second]))
+    server = FakeServer([wanted], sections=[first, second])
     _patch(monkeypatch, server)
     config = PlexConfig(base_url="http://plex:32400", token="t", library_section="musicdrop")
     state = sync.sync_playlist(
@@ -720,20 +767,173 @@ def test_poster_upload_failure_leaves_status_ok_and_is_retried(
     ) -> FakePlaylist:
         raise RuntimeError("transient poster failure")
 
-    monkeypatch.setattr(FakePlaylist, "uploadPoster", _boom)
     server = FakeServer([FakeTrack(10, ["/m/a.flac"])])
     _patch(monkeypatch, server)
     art = Path("/data/playlists/artwork/p1.jpg")
     artwork = PlexArtwork(file=art, hash="h1")
-    state = sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1", artwork=artwork)
+    # Scoped so ONLY the poster recovers below — a bare monkeypatch.undo() would
+    # also drop the connect patch this test still depends on.
+    with pytest.MonkeyPatch.context() as broken_poster:
+        broken_poster.setattr(FakePlaylist, "uploadPoster", _boom)
+        state = sync.sync_playlist(
+            CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1", artwork=artwork
+        )
     assert state.status == "ok"
     assert state.rating_key == "500"
     assert state.artwork_hash is None  # not recorded, so the next sync tries again
 
-    monkeypatch.undo()  # Plex recovers (this also drops the connect patch)
-    _patch(monkeypatch, server)
     retry = sync.sync_playlist(
         CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1", prior=state, artwork=artwork
     )
     assert server.created[0].poster_uploads == [str(art)]  # retried and landed
     assert retry.artwork_hash == "h1"
+
+
+def test_a_settled_playlist_is_not_restamped_or_renamed(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A fetched playlist carries Plex's CURRENT title and summary, so once a copy
+    # is stamped a repeat sync must cost no PUT at all — not the marker, not the
+    # title. (Only visible because the fake's playlists() re-fetches like the real
+    # server's does; against stale objects every sync re-stamps unnoticed.)
+    server = FakeServer([FakeTrack(10, ["/m/a.flac"])])
+    _patch(monkeypatch, server)
+    first = sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1")
+    created = server.created[0]
+    created.calls.clear()
+    sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1", prior=first)
+    assert created.calls == []
+
+
+def test_a_stale_key_never_hijacks_a_stranger_carrying_a_foreign_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A Plex DB rebuild reassigns ratingKeys, so a recorded key can resolve to a
+    # playlist belonging to a DIFFERENT MusicDrop playlist. Adopting it would
+    # rewrite that playlist in place AND re-record its key, so every later sync
+    # keeps rewriting it while our own copy is orphaned forever.
+    server = FakeServer([FakeTrack(10, ["/m/a.flac"]), FakeTrack(20, ["/m/b.flac"])])
+    stranger = _marked(FakePlaylist("Mix", [FakeTrack(20, ["/m/b.flac"])], 900), "OTHER")
+    ours = _marked(FakePlaylist("Mix", [], 777), "p1")
+    server._playlists.extend([stranger, ours])
+    _patch(monkeypatch, server)
+    state = sync.sync_playlist(
+        CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1", prior=PlexTargetState(rating_key="900")
+    )
+    assert state.rating_key == "777"  # OUR copy, found by its marker
+    assert ours.live_keys() == [10]
+    assert stranger.live_keys() == [20]  # untouched
+    assert stranger.calls == []
+    assert server.created == []
+
+
+def test_a_stale_key_pointing_at_a_foreign_marker_creates_a_fresh_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Same hijack, but we have no copy left to find: create a fresh one rather
+    # than adopt somebody else's.
+    server = FakeServer([FakeTrack(10, ["/m/a.flac"])])
+    stranger = _marked(FakePlaylist("Mix", [FakeTrack(20, ["/m/b.flac"])], 900), "OTHER")
+    server._playlists.append(stranger)
+    _patch(monkeypatch, server)
+    state = sync.sync_playlist(
+        CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1", prior=PlexTargetState(rating_key="900")
+    )
+    assert len(server.created) == 1
+    assert state.rating_key == str(server.created[0].ratingKey)
+    assert server.created[0].live_keys() == [10]
+    assert stranger.live_keys() == [20]
+    assert stranger.calls == []
+    assert stranger.deleted is False
+
+
+def test_rotating_one_track_costs_one_move(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Only what actually MOVED may be moved: dragging one row of a 10-row playlist
+    # to the end is one PUT, not nine. On a 500-track playlist the naive walk is
+    # 499 sequential PUTs, and a failure part-way leaves Plex half-reordered.
+    tracks = [FakeTrack(key, [f"/m/{key}"]) for key in range(1, 11)]
+    server = FakeServer(tracks)
+    existing = _marked(server.createPlaylist("Mix", items=tracks))
+    _patch(monkeypatch, server)
+    order = [*range(2, 11), 1]
+    sync.sync_playlist(CONFIG, "Mix", [_p(f"/m/{key}") for key in order], playlist_id="p1")
+    assert existing.live_keys() == order
+    assert existing.calls.count("moveItem") == 1
+
+
+def test_reversing_five_tracks_costs_at_most_four_moves(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The worst case is still bounded by N-1 (one row can always stay put).
+    tracks = [FakeTrack(key, [f"/m/{key}"]) for key in range(1, 6)]
+    server = FakeServer(tracks)
+    existing = _marked(server.createPlaylist("Mix", items=tracks))
+    _patch(monkeypatch, server)
+    sync.sync_playlist(
+        CONFIG, "Mix", [_p(f"/m/{key}") for key in range(5, 0, -1)], playlist_id="p1"
+    )
+    assert existing.live_keys() == [5, 4, 3, 2, 1]
+    assert existing.calls.count("moveItem") <= 4
+
+
+def test_reconcile_lands_on_the_desired_rows_for_arbitrary_shapes() -> None:
+    # Property sweep over add/remove/reorder/duplicate shapes at once: whatever
+    # the playlist holds and whatever is wanted, the rows end up EXACTLY the
+    # desired multiset in the desired order. Seeded, so a failure is replayable.
+    rng = random.Random(1234)
+    pool = [FakeTrack(key, [f"/m/{key}"]) for key in range(1, 9)]
+    for _ in range(300):
+        current = [rng.choice(pool) for _ in range(rng.randrange(0, 7))]
+        desired = [rng.choice(pool) for _ in range(rng.randrange(1, 7))]
+        playlist = FakePlaylist("Mix", current, 500)
+        sync._reconcile_items(playlist, desired)
+        expected = [track.ratingKey for track in desired]
+        assert playlist.live_keys() == expected, f"{[t.ratingKey for t in current]} -> {expected}"
+        assert all(len(set(keys)) == len(keys) for keys in playlist.add_calls)
+
+
+def test_no_plex_call_ever_carries_the_same_key_twice(monkeypatch: pytest.MonkeyPatch) -> None:
+    # plexapi comma-joins one addItems/createPlaylist into a single
+    # /library/metadata/2,1,2 uri. Whether PMS honours the repeat is unknowable
+    # from here, so we never ask: each call carries a key at most once.
+    a, b = FakeTrack(1, ["/m/a"]), FakeTrack(2, ["/m/b"])
+    server = FakeServer([a, b])
+    existing = _marked(server.createPlaylist("Mix", items=[a, a, b]))
+    _patch(monkeypatch, server)
+    sync.sync_playlist(CONFIG, "Mix", [_p("/m/b"), _p("/m/a"), _p("/m/b")], playlist_id="p1")
+    assert existing.live_keys() == [2, 1, 2]
+    assert existing.add_calls  # it really went through the add path
+    assert all(len(set(keys)) == len(keys) for keys in existing.add_calls)
+
+
+def test_creating_a_playlist_with_a_repeat_splits_the_create(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Same hazard on the create path: createPlaylist takes the first occurrence of
+    # each key, and the repeats are appended afterwards.
+    a, b = FakeTrack(1, ["/m/a"]), FakeTrack(2, ["/m/b"])
+    server = FakeServer([a, b])
+    _patch(monkeypatch, server)
+    state = sync.sync_playlist(
+        CONFIG, "Mix", [_p("/m/a"), _p("/m/a"), _p("/m/b")], playlist_id="p1"
+    )
+    assert state.status == "ok"
+    assert server.create_calls == [[1, 2]]
+    assert server.created[0].live_keys() == [1, 1, 2]
+    assert all(len(set(keys)) == len(keys) for keys in server.created[0].add_calls)
+
+
+def test_a_server_that_silently_drops_an_add_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # If the rows after the reload are not what we asked for, say so. Walking the
+    # desired order against a short list would IndexError into the generic
+    # "Plex sync failed." and hide which step went wrong.
+    def _swallow(self: FakePlaylist, items: object) -> FakePlaylist:
+        self.calls.append("addItems")
+        return self  # the PUT "succeeded" and changed nothing
+
+    server = FakeServer([FakeTrack(10, ["/m/a.flac"]), FakeTrack(20, ["/m/b.flac"])])
+    existing = _marked(server.createPlaylist("Mix", items=[FakeTrack(10, ["/m/a.flac"])]))
+    monkeypatch.setattr(FakePlaylist, "addItems", _swallow)
+    _patch(monkeypatch, server)
+    with pytest.raises(PlexConnectionError) as err:
+        sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac"), _p("/m/b.flac")], playlist_id="p1")
+    assert "Plex did not apply the playlist changes." in str(err.value)
+    assert existing.live_keys() == [10]
