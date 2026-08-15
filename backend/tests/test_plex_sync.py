@@ -668,6 +668,26 @@ def test_delete_leaves_a_foreign_marked_playlist_alone(monkeypatch: pytest.Monke
     assert stranger.calls == []
 
 
+def test_delete_prefers_our_marker_over_an_unmarked_playlist_at_the_recorded_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Our copy kept its marker but was given a NEW ratingKey (a Plex DB rebuild),
+    # and the key we recorded now belongs to a playlist made by hand in Plex.
+    # That one is UNMARKED, so the foreign-marker refusal cannot see it — only
+    # searching the marker FIRST saves it. Key-first deletes the bystander and
+    # orphans ours, with both playlists still on the server afterwards.
+    bystander = FakePlaylist("Mix", [FakeTrack(1, ["/m/a.flac"])], 500)  # no marker
+    ours = _marked(FakePlaylist("Mix", [FakeTrack(2, ["/m/b.flac"])], 777), "p1")
+    server = FakeServer([])
+    server._playlists.extend([bystander, ours])
+    _patch(monkeypatch, server)
+    results = sync.delete_playlist_on_targets(CONFIG, {"admin": "500"}, playlist_id="p1")
+    assert results == {"admin": "deleted"}
+    assert ours.deleted is True
+    assert bystander.deleted is False
+    assert bystander.calls == []
+
+
 def test_delete_still_adopts_an_unmarked_playlist_by_key(monkeypatch: pytest.MonkeyPatch) -> None:
     # An UNMARKED playlist at the recorded key is our own copy whose stamp PUT
     # failed transiently — still ours to delete. Only a FOREIGN marker disqualifies.
@@ -864,6 +884,27 @@ def test_a_stale_key_never_hijacks_a_stranger_carrying_a_foreign_marker(
     assert stranger.live_keys() == [20]  # untouched
     assert stranger.calls == []
     assert server.created == []
+
+
+def test_sync_prefers_our_marker_over_an_unmarked_playlist_at_the_recorded_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The same rebuild, seen from the sync side: our marked copy moved to a new
+    # key and an UNMARKED hand-made playlist inherited the recorded one. No
+    # foreign marker to refuse here, so only the marker-FIRST order stops us
+    # rewriting a stranger's rows and re-recording their key.
+    server = FakeServer([FakeTrack(10, ["/m/a.flac"])])
+    bystander = FakePlaylist("Mix", [FakeTrack(20, ["/m/b.flac"])], 500)  # no marker
+    ours = _marked(FakePlaylist("Mix", [], 777), "p1")
+    server._playlists.extend([bystander, ours])
+    _patch(monkeypatch, server)
+    state = sync.sync_playlist(
+        CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1", prior=PlexTargetState(rating_key="500")
+    )
+    assert state.rating_key == "777"
+    assert ours.live_keys() == [10]
+    assert bystander.live_keys() == [20]
+    assert bystander.calls == []
 
 
 def test_a_stale_key_pointing_at_a_foreign_marker_creates_a_fresh_copy(
