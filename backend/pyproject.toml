@@ -22,6 +22,7 @@ dev = [
     "mypy>=2.3.0",
     "ruff>=0.16.2",
     "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
     "respx>=0.23.1",
 ]
 
@@ -38,7 +39,7 @@ select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["app", "tests"]
+files = ["app", "tests", "scripts"]
 
 [[tool.mypy.overrides]]
 module = ["beets.*", "beetsplug.*", "mediafile", "yaml", "requests.*", "plexapi.*"]
@@ -152,6 +153,20 @@ module = [
     "tests.test_plex_sync",
 ]
 disallow_untyped_calls = false
+
+# Coverage is opt-in: nothing here runs unless pytest is given --cov (see the
+# `coverage` target in the repo-root Makefile, which the `sonar-scan` wrapper
+# runs before every upload). `relative_files` keeps the report free of this
+# machine's absolute paths; scripts/rebase_coverage_source.py then moves its one
+# <source> element from `app` to `backend/app`, because the SonarQube scanner
+# resolves every path against the REPO root while pytest must run from here.
+# `branch` matters for comparability: the frontend's v8 provider reports branch
+# coverage, so without it the blended project figure would average a
+# lines-and-branches number against a lines-only one and flatter Python.
+[tool.coverage.run]
+source = ["app"]
+relative_files = true
+branch = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

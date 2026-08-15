@@ -31,6 +31,11 @@ venv/
 /bin/
 *.exe
 
+# Coverage / test-execution reports (`make coverage` build output, read by SonarQube).
+# .coverage* also catches the per-process data files coverage.py writes in parallel mode.
+coverage/
+.coverage*
+
 # OS / editors
 .DS_Store
 Thumbs.db
