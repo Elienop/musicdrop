@@ -1003,6 +1003,12 @@ def run_import_worker(
 ) -> None:
     """Run one import session serially on the calling (worker) thread.
 
+    Binds ``lib.music_dir_context()`` around the whole body so the rows this
+    import writes are stored music-dir-relative, exactly as ``beet import``
+    stores them. This is the shared chokepoint of both callers — the job runner's
+    thread target AND ``trash_manage.restore_album``, which calls this directly —
+    so it is the one place that can cover them together; see the inline comment.
+
     Forces single-threaded execution, ``import.duplicate_action: ask`` (so the
     duplicate hook always fires, regardless of the user's config — the web review
     IS the "ask") and ``import.autotag: yes``, then runs beets. After run()
@@ -1061,58 +1067,67 @@ def run_import_worker(
     leaks into the next manual import. ``sweep`` and ``directive`` are never
     both set (the runner builds one or the other).
     """
-    config["threaded"] = False
-    config["import"]["duplicate_action"] = "ask"
-    # In-library sources MUST move (same-dataset rename; samefile no-op):
-    # with a fresh DB, copy-mode would duplicate any file whose computed
-    # destination differs from its current path. Explicit copy is refused;
-    # default/None and move pass through forced to move.
-    sources = [os.fsdecode(p) for p in session.paths]
-    if any(is_in_library_source(session.lib.directory, src) for src in sources):
-        if move is False:
-            raise InLibraryCopyError(
-                "Refusing to copy-import a folder inside the music library: "
-                "copy-mode would duplicate the files. Use move instead."
-            )
-        move = True
-    orig_move = config["import"]["move"].get(bool)
-    orig_copy = config["import"]["copy"].get(bool)
-    orig_incremental = config["import"]["incremental"].get(bool)
-    orig_resume = config["import"]["resume"].get()  # bool OR "ask" - restore verbatim
-    orig_singletons = config["import"]["singletons"].get(bool)
-    orig_search_ids = config["import"]["search_ids"].get()  # restore verbatim
-    orig_autotag = config["import"]["autotag"].get(bool)
-    config["import"]["autotag"] = True
-    if move is not None:
-        config["import"]["move"] = move
-        config["import"]["copy"] = not move
-    if sweep:
-        config["import"]["incremental"] = True
-        config["import"]["resume"] = False
-        config["import"]["singletons"] = False
-    if directive is not None:
-        config["import"]["incremental"] = False
-        config["import"]["resume"] = False
-        config["import"]["singletons"] = False
-        config["import"]["search_ids"] = [directive.search_id] if directive.search_id else []
-    try:
-        session.run()
-    finally:
-        config["import"]["move"] = orig_move
-        config["import"]["copy"] = orig_copy
-        config["import"]["incremental"] = orig_incremental
-        config["import"]["resume"] = orig_resume
-        config["import"]["singletons"] = orig_singletons
-        config["import"]["search_ids"] = orig_search_ids
-        config["import"]["autotag"] = orig_autotag
-    # The album is in the library the moment session.run() returns; a failure
-    # moving a Replace-superseded copy to Trash must annotate, not invalidate.
-    # Reporting a committed import as failed would re-trigger duplicate
-    # detection against the just-imported album on retry.
-    try:
-        _trash_replaced_albums(session)
-    except Exception:
-        logger.exception("post-import Trash cleanup failed; the old copy stayed in place")
+    # Bind the music dir for the WHOLE body: beets relativises an item's path
+    # on write only when its ``music_dir`` ContextVar is set, and ``Library``
+    # arms that var solely in the context that OPENED the library (the FastAPI
+    # lifespan). Every caller reaches this on a worker thread, which inherits
+    # nothing -- so without this bind beets stores absolute paths and the
+    # library stops resolving the day the music dir moves. Both callers are
+    # covered here: the job runner AND trash_manage.restore_album, which calls
+    # this directly. Nesting is safe (beets binds via a ContextVar token).
+    with session.lib.music_dir_context():
+        config["threaded"] = False
+        config["import"]["duplicate_action"] = "ask"
+        # In-library sources MUST move (same-dataset rename; samefile no-op):
+        # with a fresh DB, copy-mode would duplicate any file whose computed
+        # destination differs from its current path. Explicit copy is refused;
+        # default/None and move pass through forced to move.
+        sources = [os.fsdecode(p) for p in session.paths]
+        if any(is_in_library_source(session.lib.directory, src) for src in sources):
+            if move is False:
+                raise InLibraryCopyError(
+                    "Refusing to copy-import a folder inside the music library: "
+                    "copy-mode would duplicate the files. Use move instead."
+                )
+            move = True
+        orig_move = config["import"]["move"].get(bool)
+        orig_copy = config["import"]["copy"].get(bool)
+        orig_incremental = config["import"]["incremental"].get(bool)
+        orig_resume = config["import"]["resume"].get()  # bool OR "ask" - restore verbatim
+        orig_singletons = config["import"]["singletons"].get(bool)
+        orig_search_ids = config["import"]["search_ids"].get()  # restore verbatim
+        orig_autotag = config["import"]["autotag"].get(bool)
+        config["import"]["autotag"] = True
+        if move is not None:
+            config["import"]["move"] = move
+            config["import"]["copy"] = not move
+        if sweep:
+            config["import"]["incremental"] = True
+            config["import"]["resume"] = False
+            config["import"]["singletons"] = False
+        if directive is not None:
+            config["import"]["incremental"] = False
+            config["import"]["resume"] = False
+            config["import"]["singletons"] = False
+            config["import"]["search_ids"] = [directive.search_id] if directive.search_id else []
+        try:
+            session.run()
+        finally:
+            config["import"]["move"] = orig_move
+            config["import"]["copy"] = orig_copy
+            config["import"]["incremental"] = orig_incremental
+            config["import"]["resume"] = orig_resume
+            config["import"]["singletons"] = orig_singletons
+            config["import"]["search_ids"] = orig_search_ids
+            config["import"]["autotag"] = orig_autotag
+        # The album is in the library the moment session.run() returns; a failure
+        # moving a Replace-superseded copy to Trash must annotate, not invalidate.
+        # Reporting a committed import as failed would re-trigger duplicate
+        # detection against the just-imported album on retry.
+        try:
+            _trash_replaced_albums(session)
+        except Exception:
+            logger.exception("post-import Trash cleanup failed; the old copy stayed in place")
 
 
 def _trash_replaced_albums(session: WebImportSession) -> None:
@@ -1123,12 +1138,19 @@ def _trash_replaced_albums(session: WebImportSession) -> None:
     deadlock/409 against this in-flight import). A missing album (already gone) is
     skipped, not an error.
 
-    Binds ``lib.music_dir_context()`` for the loads + moves: beets 2.11 expands
+    Binds ``lib.music_dir_context()`` for the loads + moves: beets expands
     DB-relative item paths via a ``ContextVar`` set when the ``Library`` is opened
     (the main thread). This runs on the import worker thread, which does not
     inherit that ``ContextVar``, so without the bind ``Album.move`` gets a relative
     source path and raises ``FileNotFoundError`` (same root cause as the /duplicates
     resolve path).
+
+    Its sole caller (``run_import_worker``) now binds the same context around its
+    whole body, so this bind is nested and redundant *today*. It is kept, not
+    removed: nesting costs nothing (beets binds via a ContextVar token, so the
+    inner ``with`` restores rather than clears), and keeping it means this
+    library primitive stays correct on its own terms instead of silently
+    depending on a caller that a future refactor could change.
     """
     trash_dir = session._trash_dir
     if trash_dir is None or not session._replace_album_ids:
