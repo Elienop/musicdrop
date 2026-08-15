@@ -191,6 +191,14 @@ Keep the backend on port **3030** — that's the target of the Vite dev proxy.
 npm run gen:api   # frontend/openapi.json -> src/api/schema.d.ts
 ```
 
+**Coverage** (from the repo root):
+
+```bash
+make coverage     # both suites with coverage on -> backend/coverage/, frontend/coverage/
+```
+
+It writes four gitignored reports for SonarQube: Cobertura XML and JUnit XML for the backend, `lcov.info` and Sonar's generic test-execution XML for the frontend. Coverage is opt-in and off every default path — plain `uv run pytest` and `npm run test` behave exactly as they always have and write nothing; run `npm run test:coverage` for the frontend on its own. (`sonar-scan`, which runs `make coverage` before each upload, is a local wrapper of the maintainer's and is not part of this repo.)
+
 ## Decisions
 
 - **Backend: Python-native** (FastAPI + Pydantic, beets driven in-process behind a typed adapter in `app/beets/`). Locked — one runtime, since deemix is Python and slskd is just an HTTP API.
