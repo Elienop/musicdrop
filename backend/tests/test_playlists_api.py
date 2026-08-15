@@ -12,7 +12,7 @@ from app.models.playlist import PendingTrack, Playlist, PlaylistDetail
 from app.playlists import store
 from app.playlists.store import StoredEntry
 from app.plex import sync as plex_sync
-from tests.plex_fakes import FakeServer, FakeTrack
+from tests.plex_fakes import FakePlaylist, FakeServer, FakeTrack
 
 
 def _dir() -> Path:
@@ -789,6 +789,81 @@ def test_sync_uploads_the_poster_once_across_repeat_syncs(
     # "uploaded once" assertion rather than an "uploaded once per playlist" one.
     assert len(server.created) == 1
     assert server.created[0].poster_uploads == [poster]  # unchanged art -> no re-upload
+
+
+def test_sync_uploads_the_poster_once_to_a_targeted_user_too(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The prior round trip reaches the FAN-OUT targets, not just admin.
+
+    ``priors`` is keyed by target, so a router that hands back only admin's prior
+    leaves every targeted user's reconcile with no recorded hash — and re-uploads
+    the same cover into that account's poster gallery on EVERY sync, forever.
+    Admin's arm of this (``…once_across_repeat_syncs``) cannot see it: the whole
+    suite stays green with the user entries filtered out of ``priors``.
+    """
+    t1 = _add_track(beets_library, "Alpha")
+    server = _fake_plex(monkeypatch, [FakeTrack(10, [_plex_path(beets_library, "Alpha")])])
+    client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
+
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
+    client.patch(f"/api/playlists/{pid}", json={"target_plex_users": ["7"]})
+    art = client.put(f"/api/playlists/{pid}/artwork", content=_PNG)
+    assert art.status_code == 200
+    art_hash = art.json()["artwork_hash"]
+
+    r1 = client.post(f"/api/playlists/{pid}/sync")
+    assert r1.status_code == 200
+    assert r1.json()["plex"]["7"]["artwork_hash"] == art_hash
+    user_server = server.users["7"]
+    poster = str(store.artwork_path(_dir(), pid, "png"))
+    assert user_server.created[0].poster_uploads == [poster]
+
+    r2 = client.post(f"/api/playlists/{pid}/sync")
+    assert r2.status_code == 200
+    assert r2.json()["plex"]["7"]["artwork_hash"] == art_hash  # still recorded
+    # Same pairing as the admin test: the count is what makes this "uploaded
+    # once" rather than "once per copy" — a second copy would take its own.
+    assert len(user_server.created) == 1
+    assert user_server.created[0].poster_uploads == [poster]  # unchanged art -> no re-upload
+
+
+def test_a_copy_whose_marker_never_landed_is_re_found_by_its_recorded_key(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recorded ``rating_key`` has to round-trip too, or an UNSTAMPED copy is
+    duplicated on every sync.
+
+    ``editSummary`` is a separate PUT that can keep failing; the reconcile
+    deliberately does not fail over it (``test_stamp_failure_does_not_orphan_the_playlist``),
+    which leaves a Plex copy carrying no marker at all. The recorded key is then
+    the ONLY identity that finds it — so a router that strips ``rating_key`` out
+    of ``priors`` mints a fresh playlist every single sync, and no fake-marker
+    test can see it because the fakes always end up stamped.
+    """
+
+    def _boom(self: FakePlaylist, summary: str, locked: bool = True) -> FakePlaylist:
+        raise RuntimeError("transient stamp failure")
+
+    monkeypatch.setattr(FakePlaylist, "editSummary", _boom)
+    t1 = _add_track(beets_library, "Alpha")
+    server = _fake_plex(monkeypatch, [FakeTrack(10, [_plex_path(beets_library, "Alpha")])])
+    client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
+
+    pid = client.post("/api/playlists", json={"name": "Mix"}).json()["id"]
+    client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [t1]})
+
+    r1 = client.post(f"/api/playlists/{pid}/sync")
+    assert r1.status_code == 200
+    key = r1.json()["plex"]["admin"]["rating_key"]
+    assert server.created[0].live_summary() == ""  # the marker never landed
+
+    r2 = client.post(f"/api/playlists/{pid}/sync")
+    assert r2.status_code == 200
+    assert len(server.created) == 1, "a duplicate Plex playlist was created"
+    assert r2.json()["plex"]["admin"]["rating_key"] == key  # the same copy, updated in place
+    assert server.created[0].live_keys() == [10]
 
 
 def test_sync_reuploads_the_poster_when_the_artwork_changes(

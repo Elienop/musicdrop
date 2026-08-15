@@ -98,9 +98,10 @@ def _plex_without_miss_identities(
     ``PlexTargetState.missing_tracks`` carries up to ``MISSING_TRACKS_CAP`` (200)
     track identities PER TARGET — ~80 KB of JSON for one row's ``plex`` map with
     three targets at the cap, and a single wrong ``library_path`` puts every
-    playlist at the cap at once. Nothing that renders a summary row shows them;
-    only the detail view points at the rows that missed, so a summary keeps
-    ``missing`` (the count that drives the badge) and nothing else.
+    playlist at the cap at once. Nothing that renders a summary row shows them —
+    the playlists page reads no ``plex`` field at all today, and the per-track
+    miss markers live on the detail view — so a summary keeps the ``missing``
+    COUNT (one int a row could honestly show) and nothing else.
 
     ``Playlist.plex``'s field description states this rule FOR CALLERS — it ships
     in the OpenAPI contract. This function is what makes it true; keep the two in

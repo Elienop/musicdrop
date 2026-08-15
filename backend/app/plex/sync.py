@@ -50,6 +50,7 @@ from app.plex.mapping import PlexTrackSpec, resolve_ordered_tracks
 
 _SMART_ERROR = "This Plex playlist is a smart playlist; MusicDrop can't update it in place."
 _NOT_APPLIED_ERROR = "Plex did not apply the playlist changes."
+_ACCOUNT_ERROR = "Couldn't sync to this Plex account."
 _MARKER_PREFIX = "MusicDrop-id:"
 
 
@@ -502,7 +503,14 @@ def _safe_reconcile(
 ) -> PlexTargetState:
     try:
         return run()
-    except Exception:
+    except Exception as exc:
+        # PlexConnectionError is OUR type, raised with text already written for
+        # the user (``_NOT_APPLIED_ERROR``), so it rides through: this catch is
+        # every target's only exit, and flattening it would tell the user their
+        # account was unreachable when the connection was fine and Plex just
+        # refused the change. Anything else is a raw plexapi/requests failure
+        # whose message is not ours to show.
+        error = str(exc) if isinstance(exc, PlexConnectionError) else _ACCOUNT_ERROR
         # Carry the prior ratingKey (and poster hash) into the failed state: the
         # caller replaces the WHOLE state map with what we return, so recording
         # None here would ERASE a known key and orphan the still-existing Plex
@@ -511,7 +519,7 @@ def _safe_reconcile(
             rating_key=prior.rating_key if prior is not None else None,
             status="failed",
             artwork_hash=prior.artwork_hash if prior is not None else None,
-            error="Couldn't sync to this Plex account.",
+            error=error,
         )
 
 

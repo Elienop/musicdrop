@@ -74,11 +74,14 @@ def test_partial_when_some_paths_missing(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_stamp_failure_does_not_orphan_the_playlist(monkeypatch: pytest.MonkeyPatch) -> None:
     # editSummary is a SEPARATE Plex PUT after createPlaylist; a transient failure
-    # there must NOT fail the whole reconcile. The playlist exists and its
-    # ratingKey is returned, so the next sync re-finds it by ratingKey. Failing
-    # here (status "failed", rating_key None) would orphan the just-created
-    # playlist and duplicate it on every subsequent sync — the very thing the
-    # identity marker is meant to prevent.
+    # there must NOT fail the whole reconcile. What this test checks is that one
+    # sync: the playlist is created exactly once and its real ratingKey comes
+    # back. Failing here (status "failed", rating_key None) would orphan the
+    # just-created playlist and duplicate it on every subsequent sync — the very
+    # thing the identity marker is meant to prevent. That the NEXT sync really
+    # does re-find this unmarked copy by its recorded key is a round trip through
+    # the router, pinned by
+    # test_playlists_api.py::test_a_copy_whose_marker_never_landed_is_re_found_by_its_recorded_key.
     def _boom(self: FakePlaylist, summary: str, locked: bool = True) -> FakePlaylist:
         raise RuntimeError("transient stamp failure")
 
@@ -246,6 +249,41 @@ def test_smart_playlist_is_reported_failed_not_deleted(monkeypatch: pytest.Monke
     )
     assert existing.deleted is False
     assert server.created == []
+
+
+def test_a_smart_playlist_found_in_a_listing_still_names_the_smart_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ``smart`` read is the PLAIN one, on the object a listing hands back.
+
+    Identity lookup only ever sees listing rows, and a ``/playlists`` row need
+    not carry ``smart`` — plexapi casts the missing attrib to None, so reading it
+    out of ``__dict__`` calls a smart playlist normal: ``addItems`` then raises
+    ``BadRequest`` and this precise message degrades to the generic sync failure.
+    The plain read costs one GET on one playlist per sync and is what keeps the
+    message (and the untouched playlist) right.
+    """
+    server = FakeServer([FakeTrack(10, ["/m/a.flac"])])
+    existing = _marked(FakePlaylist("Mix", [], 999, smart=True))
+    server._playlists.append(existing)
+    _patch(monkeypatch, server)
+    assert vars(server.playlists()[0])["smart"] is None  # the trap's precondition
+
+    states = sync.sync_playlist_to_targets(
+        CONFIG,
+        "Mix",
+        [_p("/m/a.flac")],
+        [],
+        playlist_id="p1",
+        priors={"admin": PlexTargetState(rating_key="999")},
+    )
+    assert states["admin"].status == "failed"
+    assert states["admin"].error == (
+        "This Plex playlist is a smart playlist; MusicDrop can't update it in place."
+    )
+    assert states["admin"].rating_key == "999"
+    assert existing.reads == ["smart"]  # the plain read, paid exactly once
+    assert existing.calls == []  # and not one mutator was attempted
 
 
 def test_rename_propagates_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -459,6 +497,45 @@ def test_fan_out_isolates_a_failing_user(monkeypatch: pytest.MonkeyPatch) -> Non
     assert states["bad"].status == "failed"
     assert states["bad"].error
     assert states["ok"].status == "ok"
+
+
+def test_our_own_plex_error_reaches_the_caller_but_a_raw_failure_stays_generic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``PlexConnectionError`` raised inside one target's reconcile is its message.
+
+    Every target's reconcile exits through the same per-account catch, so a
+    blanket "Couldn't sync to this Plex account." there tells the user the
+    account was unreachable when the connection was fine and Plex simply refused
+    the change — and the precise message this module raises would never reach a
+    caller at all. Ours are written for the user and ride through; a raw
+    plexapi/requests failure does not (its text is not ours to show).
+    """
+
+    def _swallow(self: FakePlaylist, items: object) -> FakePlaylist:
+        self.calls.append("addItems")
+        return self  # the PUT "succeeded" and changed nothing
+
+    a, b = FakeTrack(1, ["/m/a"]), FakeTrack(2, ["/m/b"])
+    server = _NoAccessServer([a, b])  # switchUser("bad") raises a RuntimeError
+    existing = _marked(server.createPlaylist("Mix", items=[a]))
+    monkeypatch.setattr(FakePlaylist, "addItems", _swallow)
+    _patch(monkeypatch, server)
+
+    states = sync.sync_playlist_to_targets(
+        CONFIG,
+        "Mix",
+        [_p("/m/a"), _p("/m/b")],
+        ["bad"],
+        playlist_id="p1",
+        priors={"admin": PlexTargetState(rating_key=str(existing.ratingKey))},
+    )
+    assert states["admin"].status == "failed"
+    assert states["admin"].error == "Plex did not apply the playlist changes."
+    assert states["admin"].rating_key == str(existing.ratingKey)  # still ours to retry
+    # Control arm: a plain RuntimeError out of switchUser keeps the generic text.
+    assert states["bad"].status == "failed"
+    assert states["bad"].error == "Couldn't sync to this Plex account."
 
 
 def test_failed_reconcile_carries_forward_prior_rating_key(
@@ -878,6 +955,44 @@ def test_poster_upload_failure_leaves_status_ok_and_is_retried(
     assert retry.artwork_hash == "h1"
 
 
+def test_a_failed_poster_on_the_update_path_keeps_the_prior_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The UPDATE arm of the rule the test above pins for CREATE, and the one with
+    # the silent failure: recording the NEW hash after an upload that did not
+    # land makes every later sync see "art unchanged" and skip it, so a REPLACED
+    # cover never reaches Plex again — with the sync still reporting ok and
+    # nothing in the UI saying so. Keep the prior hash and the next sync retries.
+    server = FakeServer([FakeTrack(10, ["/m/a.flac"])])
+    existing = _marked(server.createPlaylist("Mix", items=[FakeTrack(10, ["/m/a.flac"])]))
+    _patch(monkeypatch, server)
+    art = Path("/data/playlists/artwork/p1.jpg")
+    replaced = PlexArtwork(file=art, hash="h2")
+    prior = PlexTargetState(rating_key=str(existing.ratingKey), artwork_hash="h1")
+
+    def _boom(
+        self: FakePlaylist, url: str | None = None, filepath: str | None = None
+    ) -> FakePlaylist:
+        raise RuntimeError("transient poster failure")
+
+    with pytest.MonkeyPatch.context() as broken_poster:
+        broken_poster.setattr(FakePlaylist, "uploadPoster", _boom)
+        state = sync.sync_playlist(
+            CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1", prior=prior, artwork=replaced
+        )
+    assert state.status == "ok"  # a poster hiccup never fails the reconcile
+    assert state.rating_key == str(existing.ratingKey)
+    assert state.artwork_hash == "h1"  # the OLD hash: h2 is NOT on Plex
+    assert existing.poster_uploads == []
+
+    retry = sync.sync_playlist(
+        CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1", prior=state, artwork=replaced
+    )
+    assert existing.poster_uploads == [str(art)]  # the next sync tries again...
+    assert retry.artwork_hash == "h2"  # ...and only now is it recorded
+    assert len(server.created) == 1  # all in place, no second copy
+
+
 def test_a_settled_playlist_is_not_restamped_or_renamed(monkeypatch: pytest.MonkeyPatch) -> None:
     # A fetched playlist carries Plex's CURRENT title and summary, so once a copy
     # is stamped a repeat sync must cost no PUT at all — not the marker, not the
@@ -890,6 +1005,9 @@ def test_a_settled_playlist_is_not_restamped_or_renamed(monkeypatch: pytest.Monk
     created.calls.clear()
     sync.sync_playlist(CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1", prior=first)
     assert created.calls == []
+    # What a settled sync DOES cost on that copy: the one `smart` refetch a plain
+    # attribute read on a partial listing object triggers, and nothing else.
+    assert created.reads == ["smart"]
 
 
 def test_a_stale_key_never_hijacks_a_stranger_carrying_a_foreign_marker(
@@ -1206,4 +1324,47 @@ def test_summary_of_reads_a_real_plexapi_listing_object_without_a_query() -> Non
     assert server.queries == []  # zero round trips
     # Control arm: the plain read on the same object DOES fetch (the trap is real).
     _ = listed_no_summary.summary
+    assert len(server.queries) == 1
+
+
+def test_a_real_plexapi_listing_row_hides_smart_from_a_dict_read() -> None:
+    # The other half of the same trap, and the reason sync.py reads `smart`
+    # PLAINLY where it reads `summary` out of __dict__: a /playlists row that
+    # omits `smart` leaves None in the instance dict, so the cheap read calls a
+    # SMART playlist normal — while the attribute read pays one GET and answers
+    # truthfully. tests/plex_fakes.py models this; here it is checked against the
+    # installed plexapi rather than asserted by fiat.
+    from xml.etree import ElementTree as ET
+
+    from plexapi.playlist import Playlist
+
+    class _CountingServer:
+        _baseurl = "http://plex:32400"
+
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def query(self, key: str, *args: object, **kwargs: object) -> ET.Element:
+            self.queries.append(key)
+            return ET.fromstring(  # the FULL object: this one really is smart
+                '<MediaContainer><Playlist ratingKey="500" key="/playlists/500/items" '
+                'title="Smart" summary="" smart="1" playlistType="audio"/></MediaContainer>'
+            )
+
+    server = _CountingServer()
+    listed = Playlist(
+        server,
+        ET.fromstring(
+            '<Playlist ratingKey="500" key="/playlists/500/items" title="Smart" '
+            'summary="" playlistType="audio"/>'
+        ),
+        initpath="/playlists",
+    )
+    assert listed.isFullObject() is False  # the auto-reload's precondition
+    assert vars(listed)["smart"] is None  # a __dict__ read would say "not smart"
+    assert server.queries == []
+    assert listed.smart is True  # the plain read refetches and tells the truth
+    assert len(server.queries) == 1
+    assert vars(listed)["smart"] is True  # resolved now, so a re-read is free
+    assert listed.smart is True
     assert len(server.queries) == 1

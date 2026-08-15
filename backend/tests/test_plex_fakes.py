@@ -4,7 +4,8 @@ These pin the fake to plexapi 4.18.2's REAL semantics (read from the installed
 playlist.py): items() is cached until reload() and hands back the cached LIST
 OBJECT; removeItems/moveItem act on the FIRST cached row per ratingKey; a DELETE
 of a gone row is NotFound; tracks compare by key; edits stay stale until reload();
-createPlaylist rejects an empty list; smart playlists reject every mutator. If a
+createPlaylist rejects an empty list; smart playlists reject every mutator; a
+listing row carries no `smart` until an attribute read pays for the refetch. If a
 future edit "simplifies" the fake, these fail before a production bug can hide
 behind it.
 """
@@ -125,6 +126,46 @@ def test_a_listing_hands_back_freshly_fetched_attributes() -> None:
     fetched = server.playlists()[0]
     assert (fetched.title, fetched.summary) == ("Renamed", "MusicDrop-id:p1")
     assert "reload" not in fetched.calls  # a fetch is not a client-side reload
+
+
+def test_a_listing_row_reads_smart_only_by_paying_for_the_refetch() -> None:
+    # plexapi casts a `smart` attrib the row did not carry to None
+    # (playlist.py:70), so on a PARTIAL listing object the __dict__ says "not
+    # smart" for a playlist that IS smart, and only a plain attribute read — the
+    # auto-reload at base.py:650-668, a full GET — answers truthfully. A fake
+    # that set `smart` eagerly makes the two reads indistinguishable, and the
+    # reconcile could be "optimised" to the __dict__ read with nothing failing.
+    server = FakeServer([_t(1)])
+    smart_pl = FakePlaylist("Smart", [_t(1)], 500, smart=True)
+    plain_pl = FakePlaylist("Mix", [_t(1)], 501)
+    server._playlists.extend([smart_pl, plain_pl])
+
+    listed_smart, listed_plain = server.playlists()
+    assert vars(listed_smart)["smart"] is None  # the cheap read would say "normal"...
+    assert listed_smart.smart is True  # ...the attribute read refetches the truth
+    assert listed_smart.reads == ["smart"]  # and it cost exactly one hidden GET
+    assert vars(listed_smart)["smart"] is True  # now resolved, so a re-read is free
+    assert listed_smart.smart is True
+    assert listed_smart.reads == ["smart"]
+    assert "reload" not in listed_smart.calls  # production called nothing
+
+    # Control arm: a normal playlist answers False through the same refetch, so
+    # the trap is about WHEN the value arrives, not about smart playlists only.
+    assert vars(listed_plain)["smart"] is None
+    assert listed_plain.smart is False
+    assert listed_plain.reads == ["smart"]
+
+
+def test_a_listing_makes_a_reloaded_playlist_partial_again() -> None:
+    # Every listing builds fresh objects from the /playlists response, so a copy
+    # that was reloaded (full) goes back to partial when it is re-listed — the
+    # shape a second sync sees.
+    server = FakeServer([_t(1)])
+    pl = FakePlaylist("Smart", [_t(1)], 500, smart=True)
+    server._playlists.append(pl)
+    assert pl.reload().smart is True
+    assert vars(pl)["smart"] is True
+    assert vars(server.playlists()[0])["smart"] is None
 
 
 def test_a_listing_drops_the_stale_item_cache() -> None:

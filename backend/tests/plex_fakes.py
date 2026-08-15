@@ -21,6 +21,13 @@ STRICTER branch: a fake that forgives more than Plex does is worse than no fake.
   right after the FIRST cached row of x. Moving a row after ITSELF (what a
   duplicate ratingKey resolves to) is refused: plexapi sends the request and PMS
   behaviour is undefined, so production must not rely on it.
+- A playlist read out of a listing is PARTIAL, and plexapi casts a ``smart``
+  attrib the row did not carry to ``None`` (``playlist.py:70``). Reading such an
+  attribute PLAINLY fires ``PlexPartialObject.__getattribute__``'s auto-reload —
+  a full HTTP GET that returns the TRUE value (``base.py:650-668``) — while a
+  ``__dict__`` read sees the ``None`` and reads a smart playlist as normal. The
+  fake models both halves (``reads`` records the hidden GET); setting ``smart``
+  eagerly would make the two reads indistinguishable.
 - ``editTitle``/``editSummary`` only PUT (``mixins/edit.py:8-30`` ->
   ``base.py:716-726``): the in-memory attribute stays STALE until ``reload()``.
   ``PlexServer.playlists()`` however BUILDS ITS OBJECTS FROM A FRESH FETCH
@@ -52,6 +59,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 
 class FakeNotFound(Exception):
@@ -163,16 +171,23 @@ class FakePlaylist:
         self.title = title
         self.ratingKey = rating_key
         self.summary = ""
-        self.smart = smart
+        # PARTIAL until a (auto)reload: a listing row need not carry `smart`, and
+        # plexapi casts the missing attrib to None. Server truth lives in
+        # `_live_smart`; see __getattribute__ for what a plain read costs.
+        self.smart: bool | None = None
         self.deleted = False
         self.poster_uploads: list[str | None] = []
         self.calls: list[str] = []
+        # Attribute reads that cost a hidden GET (plexapi's auto-reload). Kept
+        # apart from `calls`, which is what production CALLED on this object.
+        self.reads: list[str] = []
         # ratingKeys per addItems call. A key repeated inside ONE call rides in a
         # single comma-joined uri, where PMS's behaviour is unknown — tests assert
         # production never does it.
         self.add_calls: list[list[int]] = []
         self._live_title = title
         self._live_summary = ""
+        self._live_smart = smart
         self._next_row_id = 1
         self._rows: list[_Row] = []
         for track in items:
@@ -190,6 +205,9 @@ class FakePlaylist:
     def live_summary(self) -> str:
         return self._live_summary
 
+    def live_smart(self) -> bool:
+        return self._live_smart
+
     def _append(self, track: FakeItem) -> None:
         self._rows.append(_Row(track, self._next_row_id))
         self._next_row_id += 1
@@ -201,24 +219,42 @@ class FakePlaylist:
         return None
 
     # -- plexapi surface ------------------------------------------------------
+    def __getattribute__(self, attr: str) -> Any:
+        value = object.__getattribute__(self, attr)
+        if attr != "smart" or value is not None:
+            return value
+        # The trap production is written around: on a PARTIAL object a plain read
+        # of a None attribute fires _reload(_overwriteNone=False) — a full GET
+        # that returns the TRUE value (base.py:650-668). Reading `smart` out of
+        # __dict__ instead sees the None and calls a smart playlist normal.
+        # Recorded in `reads`, not `calls`: production asked for an attribute,
+        # not for a reload.
+        object.__getattribute__(self, "reads").append(attr)
+        object.__getattribute__(self, "_refresh_from_server")(full=True)
+        return object.__getattribute__(self, attr)
+
     def items(self) -> list[FakePlaylistItem]:
         if self._cache is None:
             self._cache = [FakePlaylistItem(row.track, row.row_id) for row in self._rows]
         return self._cache
 
-    def _refresh_from_server(self) -> None:
+    def _refresh_from_server(self, *, full: bool) -> None:
         """Point the fetched attributes and the item cache back at server truth.
 
         What both an explicit ``reload()`` and a fresh ``playlists()`` fetch do;
-        only ``reload()`` is a client-side call worth recording.
+        only ``reload()`` is a client-side call worth recording. ``full`` marks a
+        whole-object GET (``reload()``, or the auto-reload a plain attribute read
+        triggers): a ``/playlists`` LISTING row need not carry ``smart``, so it
+        goes back to the partial ``None`` there and only a full fetch resolves it.
         """
         self._cache = None
         self.title = self._live_title
         self.summary = self._live_summary
+        self.smart = self._live_smart if full else None
 
     def reload(self) -> FakePlaylist:
         self.calls.append("reload")
-        self._refresh_from_server()
+        self._refresh_from_server(full=True)
         return self
 
     def _first_cached_row_id(self, item: FakeItem) -> int:
@@ -230,7 +266,9 @@ class FakePlaylist:
         raise FakeNotFound(f"Item with ratingKey {item.ratingKey} not found in the playlist")
 
     def _guard_smart(self) -> None:
-        if self.smart:
+        # Server truth, not the fetched attribute: the guard stands in for what
+        # PMS answers, so it must not depend on (or trigger) a client-side read.
+        if self._live_smart:
             raise FakeBadRequest("Cannot add or remove items from a smart playlist.")
 
     def _guard_deleted(self) -> None:
@@ -368,7 +406,7 @@ class FakeServer:
         # It is not a reload() of anyone's object, so nothing lands in `calls`.
         alive = [pl for pl in self._playlists if not pl.deleted]
         for playlist in alive:
-            playlist._refresh_from_server()
+            playlist._refresh_from_server(full=False)  # a listing row is PARTIAL
         return alive
 
     def createPlaylist(
