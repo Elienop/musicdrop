@@ -88,6 +88,8 @@ services:
 
 Releases are automatic: every merged PR publishes a new image tag (`vX.Y.Z`, plus `latest`) with generated notes on the [Releases page](https://github.com/Elienop/musicdrop/releases).
 
+**One-time repair, for libraries built before the path fix.** Every release up to and including v0.34.0 stored MusicDrop-imported track paths in `library.db` *absolutely* (`/music/Artist/…`) instead of relative to the music directory, the way beets does. Nothing is damaged, but such rows do not follow the music share if it ever moves to a new mount, dataset, or machine. The release containing `fix(import): store item paths relative to the music dir` stops it recurring; the existing rows need a separate one-time database repair, and **the two have to land in the same maintenance window** — deploying either half on its own leaves the importer's duplicate lookup worse off than doing neither. The procedure, starting with the census that tells you whether you are affected, is [`docs/import-path-repair.md`](docs/import-path-repair.md).
+
 ## Backup & restore
 
 MusicDrop has no built-in backup, deliberately: its state is plain files under the paths you already mount, so a **filesystem snapshot** (ZFS/btrfs on the NAS) is the supported mechanism — nothing to export, and restoring is putting the files back.
@@ -147,6 +149,8 @@ If that prints `/var/lib/docker/volumes/<hash>/_data -> /data`, your library is 
 **Restoring**
 
 Restore through your NAS's snapshot tooling; a few principles are all this needs. Stop MusicDrop first — it holds the library DB open while it runs. Put back **only** the tree you actually lost: a snapshot laid over a tree you still have reverts everything changed in it since — on the music share every tag write and every cover, portrait and lyric file, and under `./data` every import, edit and decision. Restore files rather than `zfs rollback`, which discards all data changed since the snapshot across the whole dataset ([`zfs-rollback(8)`](https://openzfs.github.io/openzfs-docs/man/master/8/zfs-rollback.8.html)). Pin the image to the tag in the snapshot's name: beets migrates `library.db` on open, one-way, and an old snapshot booted once under a newer image cannot go back without the `library.db-before-*.bak` beets writes before migrating. Start the app only once everything is back in place.
+
+**Restoring the music share onto a different path** — a renamed dataset, a new bind mount, a new box — needs [`docs/import-path-repair.md`](docs/import-path-repair.md) done first, on libraries that predate the path fix. Rows holding absolute paths do not follow the move, and the next `beet update` or disk sync removes them from the library: the audio files stay on disk, but their added dates, play counts, lyrics, flexible fields and album grouping do not. The repair is one migration and takes one maintenance window.
 
 **Test the restore once**
 

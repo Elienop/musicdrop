@@ -25,7 +25,9 @@ v0.1.0 through v0.34.0 behaved this way; it was never a regression, it was the o
 will keep working for exactly as long as the music directory stays at the path it is at today.
 This is a loaded gun, not a wound. Section 8 says what pulls the trigger.
 
-Measured on the production library during the 2026-08-15 investigation:
+Measured on the production library on 2026-08-15, by running the section 2 census on the
+TrueNAS box itself. Not by the investigation that ran the same day — that one never had access
+to this library and says so in its own report:
 
 ```
 items.path      ABSOLUTE 22,100 | relative 3,476
@@ -36,14 +38,25 @@ albums holding BOTH forms:  123
 
 ## 2. Measure your own box first — the census
 
-Read-only, safe to run at any time, on a live library. Set the two variables to the
-**container-side** paths if you run this inside the container, or to the host paths if you run it
-on the host — the two forms are compared in section 4, and getting them mixed up is the one way
-to waste the repair.
+Read-only, safe to run at any time, on a live library.
+
+**Where the SQL runs: on the host.** The published image has **no `sqlite3` command** — it is
+built on `python:3.11-slim`, which ships the SQLite *library* but not the CLI. So every SQL step
+in this document (this census, your own backup in section 5 step 2, the ledger `DELETE`, and every
+verification query) runs on the TrueNAS host, against `./data/beets/library.db`. Only the `beet`
+commands run in the container. **If the host has no `sqlite3` either, stop and read the Python
+fallback at the end of this section before you start** — finding that out with the server already
+down and the ledger already cleared is the one avoidable way to stall the maintenance window.
+
+The two variables come from different namespaces, and mixing them up is the one way to waste the
+repair. `DB` follows wherever you are running the command. `MUSIC_DIR` follows the **rows**: it
+must be the prefix they actually carry, and they were written inside the container, so it stays
+`/music` even when you run the query on the host. Section 4 step A reads that prefix off your own
+rows — do that first if you are unsure.
 
 ```sh
-DB=/data/beets/library.db
-MUSIC_DIR=/music
+DB=./data/beets/library.db     # host path (the ./data:/data volume)
+MUSIC_DIR=/music               # the CONTAINER-side prefix the rows carry — not the host path
 
 sqlite3 -readonly "file:${DB}?mode=ro" "
 SELECT CASE WHEN substr(hex(path),1,2)='2F' THEN 'ABSOLUTE' ELSE 'relative' END AS form,
@@ -85,6 +98,54 @@ wildcard, so a music directory containing an underscore silently under-counts.
 
 `mixed_albums` is the number that tells you this is not academic. An album holding both forms is
 one whose rows disagree with each other, and 123 of yours do.
+
+**Fallback if the host has no `sqlite3`.** The container has no CLI either, but it does have
+Python, whose `sqlite3` module is the same library. Write this file next to your compose file as
+`data/repair-census.py` — it lands at `/data/repair-census.py` inside the container — and run it
+there. It answers all four census queries above *and* section 4's step A and step C, so it is also
+the one command to re-run after the repair:
+
+```python
+import sqlite3
+
+DB = "/data/beets/library.db"    # container-side; this script runs in the container
+MUSIC_DIR = b"/music"            # the prefix the rows carry
+
+db = sqlite3.connect("file:" + DB + "?mode=ro", uri=True)
+db.text_factory = bytes
+items = db.execute("SELECT album_id, path FROM items").fetchall()
+albums = db.execute("SELECT artpath FROM albums").fetchall()
+db.close()
+
+prefix = MUSIC_DIR + b"/"
+absolute = [p for _, p in items if p and p[:1] == b"/"]
+outside = [p for p in absolute if not p.startswith(prefix)]
+art = [a for (a,) in albums]
+by_album = {}
+for album_id, p in items:
+    if album_id is not None and p:
+        by_album.setdefault(album_id, set()).add(p[:1] == b"/")
+
+print("items.path   ABSOLUTE", len(absolute), "| relative", len(items) - len(absolute))
+print("albums.artpath ABSOLUTE", len([a for a in art if a and a[:1] == b"/"]),
+      "| relative", len([a for a in art if a and a[:1] != b"/"]),
+      "| NULL", len([a for a in art if not a]))
+print("mixed_albums", len([1 for forms in by_album.values() if len(forms) > 1]))
+print("outside_rows", len(outside), "(correctly absolute, stay as they are)")
+print("items_that_will_change", len(absolute) - len(outside))
+print("albums_that_will_change",
+      len([a for a in art if a and a.startswith(prefix)]))
+for p in absolute[:3]:
+    print("sample absolute path:", p)
+```
+
+```sh
+docker compose run --rm musicdrop python /data/repair-census.py
+```
+
+It opens the database read-only and imports no beets code, so it cannot trip the migration. Delete
+the file from `data/` when you are done. Section 5 gives the same fallback for the two steps that
+*write*.
 
 ---
 
@@ -198,17 +259,20 @@ next to it, plus room for your own backup.
 
 ## 5. The repair, step by step
 
-Run everything **from inside the container**, so that `directory` and the stored paths are in the
-same namespace, and so that the beets doing the work is the same version MusicDrop itself uses —
-that matters, because a different beets on the host may not carry this migration at all. The image
-puts `/app/.venv/bin` on `PATH`, which is where beets' `beet` script lives; if it turns out not to
-be found, call it by that full path.
+Run every **beets** command from inside the container, so that `directory` and the stored paths are
+in the same namespace, and so that the beets doing the work is the same version MusicDrop itself
+uses — that matters, because a different beets on the host may not carry this migration at all.
+`beet` is on `PATH` there (`/app/.venv/bin/beet`, verified in the published image). It needs
+`BEETSDIR` set on every invocation, as below: without it `beet` tries to create `/app/.config`,
+cannot, and dies with a `PermissionError` before reading anything.
 
 Two path namespaces are in play and the commands below mix them deliberately. `docker compose`
 lines and plain `sqlite3` lines run on the **host**, where the database is `./data/beets/library.db`
 (from the `./data:/data` volume). Anything inside `sh -c` runs in the **container**, where the same
 file is `/data/beets/library.db` and the music is `/music`. Adjust the host side to wherever your
-compose file lives.
+compose file lives. The `sqlite3` lines are host-only by necessity, not by preference — the image
+has no `sqlite3` CLI (section 2); if your host has none either, use the Python fallbacks below,
+which do exactly the same three writes from inside the container.
 
 ```sh
 # 1. Stop MusicDrop. No imports, no UI, from here until step 7 passes.
@@ -247,6 +311,13 @@ own startup, so simply starting the server runs the migration itself — silentl
 container log, with no chance to read the banner and no chance to stop if the dry run was wrong.
 A one-off container keeps the migration in the foreground where you can see it.
 
+**Between step 4 and step 6, run no `beet` command at all.** *Opening* the library is what fires
+the migration, and every `beet` subcommand opens it — measured: a bare `beet --version` repaired a
+lab library outright, banner and backups and all. This is also why section 4's checks belong before
+step 4 and not after: step B's `beet ls` is safe only while the ledger row is still in place. The
+`sqlite3` and `python` commands in steps 2, 4 and 5 never import beets, so none of them can trip
+it.
+
 Steps 1, 3, 6 and 8 are `docker compose` wrappers around the operation that was rehearsed; the
 rehearsal ran `beet ls` directly with `BEETSDIR` set. See section 10 for exactly which parts were
 executed and which were not.
@@ -255,21 +326,52 @@ Step 4 deletes two rows — `relative_path|items` and `relative_path|albums`. Th
 `path` on items **and** `artpath` on albums, so one run fixes cover-art paths too. That is why
 this is better than a hand-written `UPDATE items`.
 
-Expected output from step 6, in this order (the two backup lines really do print last — they go
-through a different, buffered stream):
+**Python fallbacks for steps 2, 4 and 5,** if the host has no `sqlite3`. These run in the
+container and touch no beets code, so they cannot trip the migration early:
+
+```sh
+# 2. Your own backup (the SQLite backup API — the same one beets uses for its own .bak files).
+docker compose run --rm musicdrop python -c 'import datetime, sqlite3; src = sqlite3.connect("/data/beets/library.db"); dest = "/data/beets/library.db.pre-path-repair-" + datetime.date.today().isoformat(); dst = sqlite3.connect(dest); src.backup(dst); dst.close(); src.close(); print("backup written to", dest)'
+
+# 4 + 5. Clear the ledger and report what is left, in one command (expect: deleted 2 ... remaining: 0).
+docker compose run --rm musicdrop python -c 'import sqlite3; db = sqlite3.connect("/data/beets/library.db"); n = db.execute("DELETE FROM migrations WHERE name = ?", ("relative_path",)).rowcount; db.commit(); left = db.execute("SELECT count(*) FROM migrations WHERE name = ?", ("relative_path",)).fetchone()[0]; db.close(); print("deleted", n, "ledger rows; remaining:", left)'
+```
+
+`deleted 0` means step 4 changed nothing: either the ledger row was never there, or you are
+pointed at a different database. Do not go on to step 6 until it says `deleted 2`.
+
+Expected output from step 6, in this order:
 
 ```
+Created database backup at: '/data/beets/library.db-before-items-relative_path.bak'.
 Migrating path for 25576 items...
 Migration complete: 22100 of 25576 items updated
+Created database backup at: '/data/beets/library.db-before-albums-relative_path.bak'.
 Migrating artpath for N albums...
 Migration complete: M of N albums updated
-Created database backup at: '/data/beets/library.db-before-items-relative_path.bak'.
-Created database backup at: '/data/beets/library.db-before-albums-relative_path.bak'.
 ```
 
-Both backups are written **before** the corresponding table is touched, despite printing last —
-verified by checking that `library.db-before-items-relative_path.bak` still held the pre-repair
-census. If you see no `Migrating` lines at all, the ledger was not cleared and nothing ran.
+That is code order — each backup is written **before** its own table is touched, and prints there
+too. You get this order because the image sets `PYTHONUNBUFFERED=1`. The backup line comes from a
+plain `print()` while the `Migrating` lines are written straight to `sys.stdout.buffer` and flushed
+on the spot, so with buffering on and stdout piped — a bare `beet` run on the host, which is how
+the earlier rehearsal was done — the two backup lines land at the *end* instead. Both orderings
+were measured. Same work, same guarantee, different flush order: if you see the backup lines last,
+nothing is wrong.
+
+If you see **no `Migrating` lines**, read the backup lines to tell the two very different causes
+apart:
+
+- **No `Migrating` lines and no backup lines either** — the migration was skipped entirely, because
+  the ledger row is still there. Step 4 did not take effect (wrong database file is the usual
+  reason). Nothing ran and nothing is burned: fix the path, redo steps 4 and 5, and run step 6
+  again.
+- **No `Migrating` lines but both backup lines present** — the migration *did* run, found no
+  absolute row to fix, and re-recorded itself. **The one shot is burned** (recover per section 7).
+  Either you are pointed at the wrong `library.db`, or that database was already repaired.
+  `beets/library/migrations.py` `_migrate_field` returns before printing anything when no row is
+  absolute, while `migrate_model` still takes both backups and still calls `record_migration` —
+  which is exactly why the backup lines are the tell and the missing banner is not.
 
 ---
 
@@ -307,6 +409,12 @@ items.path relative    3,476          everything else
 mixed_albums             123          0
 outside_rows               k          k   (unchanged — these are correctly absolute)
 ```
+
+`mixed_albums` reaches 0 only if none of those `k` outside rows shares an album with rows inside
+the music directory; such an album stays "mixed" for the rest of its life and that is correct, not
+a failed repair. Measured in a lab built that way on purpose: one outside row in a four-track
+album left `mixed_albums 1` after a repair that was otherwise complete. If `outside_rows` is 0,
+`mixed_albums` must be 0.
 
 Rehearsal, same queries, on the 83-item lab:
 
@@ -353,7 +461,12 @@ sqlite3 -readonly "file:./data/beets/library.db?mode=ro" \
   "SELECT quote(path) FROM items ORDER BY id DESC LIMIT 3;"
 ```
 
-The values must **not** start with `X'2F`.
+The values must **not** start with `X'2F`. Without `sqlite3` on the host, the same check reads
+better anyway — these must **not** start with a slash:
+
+```sh
+docker compose run --rm musicdrop python -c 'import sqlite3; db = sqlite3.connect("file:/data/beets/library.db?mode=ro", uri=True); db.text_factory = bytes; print(*[r[0] for r in db.execute("SELECT path FROM items ORDER BY id DESC LIMIT 3")], sep="\n")'
+```
 
 ---
 
@@ -367,6 +480,9 @@ by clearing the ledger and retrying with the right `directory`:
 sqlite3 ./data/beets/library.db "DELETE FROM migrations WHERE name = 'relative_path';"
 # fix `directory` so it resolves to the prefix from section 4 step A, then reopen the library
 ```
+
+(Same command, same caveat as step 4: this one needs `sqlite3` on the host. Without it, use the
+combined clear-and-confirm fallback from section 5.)
 
 Rehearsed: after **two** consecutive wrong-directory runs, a third attempt with the directory that
 matched the stored prefix repaired the library completely (57 absolute → 2). The shot is not
@@ -463,14 +579,39 @@ legitimately outside the music directory, 26 relative rows, 8 absolute `artpath`
 - reopening with the ledger intact leaving the database byte-identical
 - the missing-file loop, including its `sh -c` quoting, run without the `docker compose` prefix
 
-**Not executable here, so untested:** everything wrapped in `docker compose` — `stop`, `pull`,
-`run --rm`, `up -d`. The rehearsal ran `beet` directly with `BEETSDIR` set, which is what the
-command inside `docker compose run` does. Also inferred rather than observed: that `beet` is on
-`PATH` inside the image. The Dockerfile puts `/app/.venv/bin` on `PATH` and beets ships that
-console script, but nobody has run it in the published image. If `docker compose run … beet`
-reports "not found", call it as `/app/.venv/bin/beet`.
+Then re-run in the **published image** (`ghcr.io/elienop/musicdrop:latest`) through real
+`docker compose run --rm`, against smaller throwaway libraries whose rows carry the container-side
+`/music` prefix:
+
+- step 6 verbatim, including the `grep` pipe — and its output ordering three ways: in the image as
+  shipped, in the image with `PYTHONUNBUFFERED` unset, and as a bare host `beet` with stdout piped.
+  The first gives code order; the other two put the backup lines last
+- all three step-6 outcomes: ledger cleared with absolute rows (full banner), ledger cleared with
+  no absolute row (backup lines only, ledger re-recorded — the burned shot), ledger intact
+  (silence, no `.bak` written)
+- `beet` **is** on `PATH` in the image — `/app/.venv/bin/beet`, beets 2.13.1 on Python 3.11.15;
+  the earlier "inferred, not observed" caveat is retired. It does need `BEETSDIR` set: without it
+  `beet` cannot write `/app/.config` and dies with a `PermissionError` before doing anything
+- the image has **no `sqlite3` CLI**, and every Python fallback in sections 2, 5 and 6, whose
+  numbers were cross-checked against the host `sqlite3` CLI on the same database and matched
+  exactly (including `outside_rows` and the two dry-run counts)
+- the missing-file loop with the `docker compose run` prefix
+- `docker compose run --rm` works despite `container_name:` being set — Compose names the one-off
+  container separately
+- section 4 steps A, B and C verbatim against a lab in the production state (absolute rows, ledger
+  already recorded): step B's `beet ls` fires nothing there, and writes no `.bak`
+- and the reverse, which is why the warning above exists: with the ledger cleared, `beet --version`
+  and step B's `beet ls` each ran the whole migration on their own
+- section 7's throwaway-config escape hatch in the exact shape printed there (`directory: /music`,
+  a host `library:` path, `plugins: []`), run as a bare host `beet`: it repaired a library whose
+  rows carried `/music/…` on a machine with no `/music` at all
+
+**Still not executed:** `docker compose stop`, `pull`, and `up -d` against a real deployment.
+They are ordinary wrappers, but nobody has run this sequence end to end on the production host.
 
 Check the `beet` invocation prints the `Migrating path for …` lines before trusting any wrapper.
 
-The production numbers (22,100 / 3,476 / 123) come from the 2026-08-15 investigation's read-only
-measurement of the TrueNAS library, not from this rehearsal.
+The production numbers (22,100 / 3,476 / 123) were measured on 2026-08-15 by running the section 2
+census on the TrueNAS box itself. Not by the rehearsal, and not by the investigation of the same
+day — that one never had access to the production library. Treat them as a snapshot of that day
+and re-run the census before trusting any of them.
