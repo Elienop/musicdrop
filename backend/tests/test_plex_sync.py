@@ -130,10 +130,15 @@ def test_empty_resolve_never_deletes_the_existing_copy(monkeypatch: pytest.Monke
     server._playlists.append(existing)
     _patch(monkeypatch, server)
     state = sync.sync_playlist(
-        CONFIG, "Mix", [_p("/m/a.flac")], playlist_id="p1", prior=PlexTargetState(rating_key="999")
+        CONFIG,
+        "Mix",
+        [_p("/m/a.flac")],
+        playlist_id="p1",
+        prior=PlexTargetState(rating_key="999", artwork_hash="h1"),
     )
     assert state.status == "empty"
     assert state.rating_key == "999"  # preserved, so a later delete/retry can still find it
+    assert state.artwork_hash == "h1"  # preserved too, else the next sync re-uploads the poster
     assert state.missing == 1
     assert existing.deleted is False
     assert existing.live_keys() == [10]  # untouched
