@@ -204,8 +204,12 @@ def _stable_rows(positions: list[int]) -> set[int]:
 
 
 def _repeats_a_key(keys: list[Any]) -> bool:
-    """Whether any ratingKey occurs more than once in ``keys`` — the choice
-    between ``_reconcile_items``' two strategies."""
+    """True when ``keys`` holds a ratingKey twice.
+
+    ``_reconcile_items`` takes the duplicate strategy when EITHER the current
+    rows or the desired rows repeat a key — plexapi resolves a key to its first
+    row, so a repeated key on either side rules out the diff-and-move path.
+    """
     return len(set(keys)) != len(keys)
 
 
@@ -247,6 +251,9 @@ def _move_into_order(playlist: Any, tracks: list[Any], order: list[Any]) -> None
     ``order`` is the playlist's current key order; the rows of one longest
     increasing subsequence of the desired rows' positions in it are already
     correct relative to each other and stay put.
+
+    Precondition: ``order`` already holds exactly the desired keys — the
+    caller's ``Counter`` check is what guarantees ``at[key]`` resolves.
     """
     by_key = {track.ratingKey: track for track in tracks}
     desired = [track.ratingKey for track in tracks]
@@ -452,12 +459,15 @@ def _update_our_playlist(
         existing.editTitle(title)
     if marker not in _summary_of(existing):
         _best_effort_stamp(existing, marker)
+    # Pushes the poster to Plex when the art changed; a statement, not an
+    # argument, so the outbound call is visible in the body.
+    artwork_hash = _poster_hash_after_update(existing, artwork, prior_hash)
     return PlexTargetState(
         rating_key=key,
         status="ok" if not missing else "partial",
         missing=len(missing),
         missing_tracks=shown,
-        artwork_hash=_poster_hash_after_update(existing, artwork, prior_hash),
+        artwork_hash=artwork_hash,
     )
 
 
