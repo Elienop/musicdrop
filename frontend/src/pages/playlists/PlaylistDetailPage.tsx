@@ -83,8 +83,10 @@ type PlexMissReason = PlexTargetState["missing_tracks"][number]["reason"];
  * matched at all vs. several matched and we refuse to guess), so each row says
  * which one it hit rather than a generic "not found". */
 const MISS_TITLES: Record<PlexMissReason, string> = {
-  not_found: "No Plex track has this file path, and none matched by artist and title",
-  ambiguous: "Several Plex tracks match this artist and title; MusicDrop won't guess which one",
+  not_found:
+    "Plex has no track with this file, and nothing matched by artist and title. Check the file is in your Plex library, then sync again.",
+  ambiguous:
+    "Several Plex tracks share this artist and title, and none has this file, so MusicDrop won't guess which one. Sort out the copies in Plex, then sync again.",
 };
 
 /** item id -> why Plex couldn't place it on the last sync. Keyed by item id (not
@@ -140,20 +142,25 @@ function syncStatus(
         return { label: `${state.missing} not in Plex`, tone: "warning" };
       }
       // Fewer carried identities than misses — the server caps the list
-      // (MISSING_TRACKS_CAP), and a state recorded before that list existed
-      // carries none at all. Only those rows can wear a badge, so say which
+      // (MISSING_TRACKS_CAP). Only those rows can wear a badge, so say which
       // ones the badges cover; otherwise the unmarked remainder reads as fine.
+      // `marked === 0` can't come from the cap (it truncates to 200, never 0):
+      // it means the state predates the identities, which one re-sync fixes.
       return {
-        label: `${state.missing} not in Plex; ${marked === 0 ? "none" : `first ${marked}`} marked`,
+        label:
+          marked === 0
+            ? `${state.missing} not in Plex; re-sync to see which`
+            : `${state.missing} not in Plex; first ${marked} marked`,
         tone: "warning",
       };
     }
     case "empty":
-      // Nothing resolved, so the sync touched nothing. Which is reassuring only
-      // if there IS a copy to leave alone — say which case this is.
+      // Nothing resolved, so the sync touched nothing. Say which case this is —
+      // and both are a warning: the user asked for a push and got none, so the
+      // no-copy-at-all outcome must not read quieter than the milder one.
       return state.rating_key
         ? { label: "No matching tracks; Plex copy left as is", tone: "warning" }
-        : { label: "No matching tracks", tone: "muted" };
+        : { label: "No matching tracks; nothing sent to Plex", tone: "warning" };
     case "failed":
       return { label: state.error ?? "Failed", tone: "destructive" };
     default:
@@ -1034,9 +1041,14 @@ const PlaylistTrackRow = memo(function PlaylistTrackRow({
             / "plex:<name>") as a tooltip — for a bare-path entry it's the only
             "it was this" identity. Resolved rows have no source (title omitted). */}
         <div className="flex min-w-0 flex-col" title={track.source ?? undefined}>
-          <div className="flex items-center gap-2">
+          {/* flex-wrap + a shrinkable title keep this cell's min-content width
+              small: the badges are shrink-0, so without it a flagged row widens
+              the Title column past a phone and the table's own overflow-x-auto
+              scroller (ui/table.tsx) hides the row's actions off the right
+              edge. Wrapping drops the badge under the title only when it must. */}
+          <div className="flex flex-wrap items-center gap-2">
             <span
-              className={`truncate font-medium ${track.available ? "" : "text-muted-foreground italic"}`}
+              className={`min-w-0 truncate font-medium ${track.available ? "" : "text-muted-foreground italic"}`}
             >
               {title}
             </span>
@@ -1052,16 +1064,25 @@ const PlaylistTrackRow = memo(function PlaylistTrackRow({
               )
             )}
             {/* The row is in the library but the last sync couldn't put it on
-                Plex — the reason rides as a tooltip (the "N not in Plex" count
-                on the status line says how many, this says WHICH and why). */}
-            {plexMiss && (
-              <Badge
-                variant="outline"
-                className="border-warning text-warning shrink-0 text-xs font-normal"
-                title={MISS_TITLES[plexMiss]}
-              >
-                Not in Plex
-              </Badge>
+                Plex (the "N not in Plex" count says how many, this says WHICH
+                and why). The sr-only phrase is the announced carrier — a Badge
+                renders a generic <span>, where `title`/`aria-label` are not
+                reliably announced, so the badge is hidden from the tree and
+                keeps `title` for sighted hover (the album page's idiom).
+                Skipped when the beets item is gone: "not in Plex" is noise on
+                top of "unavailable". */}
+            {plexMiss && track.available && (
+              <>
+                <span className="sr-only">Not in Plex: {MISS_TITLES[plexMiss]}</span>
+                <Badge
+                  variant="outline"
+                  aria-hidden="true"
+                  className="border-warning text-warning shrink-0 text-xs font-normal"
+                  title={MISS_TITLES[plexMiss]}
+                >
+                  Not in Plex
+                </Badge>
+              </>
             )}
           </div>
           {showMeta && (

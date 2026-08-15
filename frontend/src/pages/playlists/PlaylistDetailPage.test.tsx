@@ -920,25 +920,135 @@ describe("PlaylistDetailPage", () => {
     });
     const badges = await screen.findAllByText("Not in Plex");
     expect(badges).toHaveLength(2);
-    // Each flagged row carries ITS OWN reason as the tooltip — the two reasons
-    // are different remedies (nothing matched vs. several matched), so a shared
-    // generic tooltip would be a lie on one of them.
-    expect(
-      within(screen.getByRole("row", { name: /Lost/ })).getByText("Not in Plex"),
-    ).toHaveAttribute(
+    // Each flagged row carries ITS OWN reason — the two reasons are different
+    // remedies (nothing matched vs. several matched), so a shared generic
+    // wording would be a lie on one of them. Sighted hover reads the `title`…
+    const lost = within(screen.getByRole("row", { name: /Lost/ }));
+    const twins = within(screen.getByRole("row", { name: /Twins/ }));
+    expect(lost.getByText("Not in Plex")).toHaveAttribute(
       "title",
-      "No Plex track has this file path, and none matched by artist and title",
+      "Plex has no track with this file, and nothing matched by artist and title. Check the file is in your Plex library, then sync again.",
     );
-    expect(
-      within(screen.getByRole("row", { name: /Twins/ })).getByText("Not in Plex"),
-    ).toHaveAttribute(
+    expect(twins.getByText("Not in Plex")).toHaveAttribute(
       "title",
-      "Several Plex tracks match this artist and title; MusicDrop won't guess which one",
+      "Several Plex tracks share this artist and title, and none has this file, so MusicDrop won't guess which one. Sort out the copies in Plex, then sync again.",
     );
+    // …and assistive tech gets the same reason as real text, because `title` on
+    // a Badge's generic <span> is not reliably announced.
+    expect(
+      lost.getByText(
+        "Not in Plex: Plex has no track with this file, and nothing matched by artist and title. Check the file is in your Plex library, then sync again.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      twins.getByText(
+        "Not in Plex: Several Plex tracks share this artist and title, and none has this file, so MusicDrop won't guess which one. Sort out the copies in Plex, then sync again.",
+      ),
+    ).toBeInTheDocument();
     // …and the row Plex DID place stays unmarked.
     expect(
       within(screen.getByRole("row", { name: /Found/ })).queryByText("Not in Plex"),
     ).toBeNull();
+  });
+
+  test("the title cell wraps, so a badge can't widen the row past a phone", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(12, "Lost")]),
+          plex: {
+            admin: {
+              rating_key: "500",
+              status: "partial",
+              missing: 1,
+              missing_tracks: [
+                { item_id: 12, title: "Lost", albumartist: "A", album: "B", reason: "not_found" },
+              ],
+              synced_at: "2026-08-15T10:00:00+00:00",
+              error: null,
+            },
+          },
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    // A TRIPWIRE, not a measurement: the real invariant is "at 375px no row
+    // action sits outside the table container's visible box", and jsdom has no
+    // layout engine to check it. It was verified in a browser (with badges the
+    // container measures scrollWidth === clientWidth === 327, identical to the
+    // no-badge control; without the wrap it was 357 vs 327 and every Remove
+    // button sat outside). The badges are shrink-0, so this class is what keeps
+    // the Title column's min-content small — pinned so a refactor can't drop it
+    // silently.
+    const badge = await screen.findByText("Not in Plex");
+    expect(badge.parentElement).toHaveClass("flex-wrap");
+  });
+
+  test("marks both rows when one library item sits in the playlist twice", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([
+            track(11, "Found"),
+            { ...track(12, "Lost"), uid: "u12a" },
+            { ...track(12, "Lost"), uid: "u12b" },
+          ]),
+          plex: {
+            admin: {
+              rating_key: "500",
+              status: "partial",
+              missing: 1,
+              missing_tracks: [
+                { item_id: 12, title: "Lost", albumartist: "A", album: "B", reason: "not_found" },
+              ],
+              synced_at: "2026-08-15T10:00:00+00:00",
+              error: null,
+            },
+          },
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    // The resolve is per LIBRARY ITEM, so both rows for item 12 are missing —
+    // which is why the miss map is keyed by item id and not by row uid (one
+    // entry, two badges).
+    expect(await screen.findAllByText("Not in Plex")).toHaveLength(2);
+  });
+
+  test("does not stack the Plex badge on a row whose library item is gone", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(12, "Lost", false)]),
+          plex: {
+            admin: {
+              rating_key: "500",
+              status: "partial",
+              missing: 1,
+              missing_tracks: [
+                { item_id: 12, title: "Lost", albumartist: "A", album: "B", reason: "not_found" },
+              ],
+              synced_at: "2026-08-15T10:00:00+00:00",
+              error: null,
+            },
+          },
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    // Once the beets item is gone the row already says so; a Plex miss on top
+    // is noise about the smaller of the two problems.
+    expect(await screen.findByText(/unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByText("Not in Plex")).toBeNull();
   });
 
   /** A `partial` admin state carrying `marked` miss identities out of `missing`
@@ -1002,9 +1112,9 @@ describe("PlaylistDetailPage", () => {
       route: `/playlists/${ID}`,
       path: "/playlists/:playlistId",
     });
-    // A target last synced before the identities existed carries none — "first
-    // 0 marked" would be nonsense, so that case reads "none marked".
-    expect(await screen.findByText("3 not in Plex; none marked")).toBeInTheDocument();
+    // A target last synced before the identities existed carries none (the cap
+    // truncates to 200, never to 0), and one re-sync is what fixes it.
+    expect(await screen.findByText("3 not in Plex; re-sync to see which")).toBeInTheDocument();
   });
 
   test("says the Plex copy was left alone when nothing resolved but a copy exists", async () => {
@@ -1056,7 +1166,11 @@ describe("PlaylistDetailPage", () => {
       route: `/playlists/${ID}`,
       path: "/playlists/:playlistId",
     });
-    expect(await screen.findByText("No matching tracks")).toBeInTheDocument();
+    // The worse of the two empty outcomes — the user pressed Sync and Plex got
+    // nothing — so it must not read quieter than "copy left as is": same
+    // warning tone, and the label says what actually happened.
+    const line = await screen.findByText("No matching tracks; nothing sent to Plex");
+    expect(line).toHaveClass("text-warning");
   });
 
   test("delete dialog notes Plex removal when the playlist has Plex copies", async () => {
