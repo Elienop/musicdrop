@@ -232,6 +232,30 @@ class ArtistImageCache:
             self._memory.discard(key)
         return None
 
+    def has_fresh_negative(self, name: str) -> bool:
+        """Whether an unexpired no-match marker bars a re-fetch of ``name``.
+
+        The BYTE-FREE half of ``get()``: the caller has already learned from
+        ``validator()`` that no image slot exists, and only needs to know
+        whether the negative marker is still inside its TTL. Reading the ~20
+        byte ``.miss`` body instead of re-running ``get()`` keeps a cold-page
+        miss from re-reading (and discarding) up to 10 MB per request.
+
+        Unlike ``get()`` this does NOT unlink a stale marker — it is a probe,
+        and the resolve that follows supersedes the marker anyway. Guarded like
+        every other read here: an unreadable cache dir reads as "no marker", so
+        the caller falls through to its resolve path rather than 500ing.
+        """
+        key = self._key(name)
+        miss = self._dir / f"{key}.miss"
+        try:
+            if miss.exists() and time.time() < self._read_expiry(miss):
+                return True
+        except OSError as exc:
+            warn_throttled("cache-read", "artist-image cache dir is unreadable: %s", exc)
+        remembered = self._memory.get(key)
+        return isinstance(remembered, _NegativeUntil) and time.time() < remembered.expiry
+
     def store_positive(self, name: str, data: bytes, content_type: str) -> None:
         key = self._key(name)
         # A cache write may never fail the request that triggered it: the caller
