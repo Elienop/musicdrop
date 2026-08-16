@@ -140,9 +140,20 @@ origin question is the one with a deadline of sorts: it matters before the next 
   id-IN load or widen `BrowseRow` instead.
 - No next-page prefetch on Browse/Artists — a page flip waits a round trip
   (`placeholderData` already prevents blanking, so this is latency, not breakage).
-- Cold artist-image pages resolve inside the request under the 5/s source limiter — first-ever
-  view of an uncached page takes ~10s to fill. Consider respond-fast + background fill; pairs
-  with the planned per-artist re-fetch feature.
+- Background portrait fills are unbounded in count: a very large roster page schedules one
+  task per uncached artist, and they queue behind the 5/s limiter rather than a work queue.
+  Bounded in practice by the page size; revisit if a whole-library warm-up is ever added.
+- The manual per-source fetch bypasses the negative-cache marker by design (the user asked
+  for it), so repeatedly clicking Fetch on a dead source repeats the upstream call. The
+  shared limiter paces it; nothing else bounds it.
+- `ArtistImageFiller` holds no cap on the in-flight map. A pathological client requesting
+  thousands of distinct artist names could grow it; single-user LAN deployment, so noted
+  rather than fixed.
+- Reset now clears the automatic slot, so the artist shows a monogram until the background
+  fill lands. Reset kicks that fill itself (zero grace, so the POST still answers at once)
+  and the coalesced `art:changed` drops the portrait in with no reload — ~4s against live
+  sources in the wave's browser check — but it IS a visible flash. Expected, and the only
+  honest behaviour.
 - `ArtistImage` remounts every card on any `art:changed` (global assetVersion key) — near-free
   now that 304s are stat-cheap, but a scoped identity would need the normalized-name mapping.
 - Browse-side A-Z index would need a per-filter letter-to-offset endpoint (Artists-only
@@ -166,15 +177,6 @@ origin question is the one with a deadline of sorts: it matters before the next 
   `follow_redirects=False` and `assert_public_url` on every hop. So the hardened path is the one
   handling untrusted input and the CDN path is the loose one. Low severity given the CDNs
   involved; the fix is to give `download_image` the same manual hop loop.
-- **`tests/test_artist_image_override_endpoint.py::test_uploaded_override_is_served_by_image_get`
-  passes in the full suite and FAILS alone** (`AttributeError: 'State' object has no attribute
-  'beets_library'`). The image GET depends on `get_library` → `request.app.state.beets_library`,
-  which a bare `TestClient(app)` never populates; it only passes because another file leaks that
-  state onto the module-global `app`. This is the INVERSE of the usual tree-pollution shape and
-  the more dangerous direction: the coverage evaporates under `-k`, a file-scoped run, or xdist
-  sharding, while looking green. Two-line fix: `app.dependency_overrides[get_library]`.
-  Confirmed by two independent reviewers running all 158 backend files individually — it is the
-  ONLY isolated failure in the suite.
 - `ArtistImageEditPanel.onPickFile` no longer clears notices and nothing pins it — deleting the
   call passes all 1034 FE tests. Pick a file after a failed fetch or a reset and a stale note
   rides onto the preview screen. Not a regression (the pre-fix inline `fetchImage.reset()` was
@@ -190,16 +192,18 @@ origin question is the one with a deadline of sorts: it matters before the next 
   its visible label (WCAG 2.5.3, pre-existing — fixing it breaks `getByLabelText` in two files);
   generic `alt="Artist image preview"`; comparing two sources costs a Discard; and a possible
   live-region/focus contention that needs a real screen reader to settle.
-- **`tests/test_artist_image_endpoint.py` opens the REAL dev library on every suite run.** It
-  uses `with TestClient(app)` at lines 257 and 298 and contains zero `beets_dir` references, so
-  the lifespan runs `setup_beets` against `MUSICDROP_BEETS_DIR` from `backend/.env` — the live
-  `data/beets`. Nothing autouse guards this: the hermetic `beets_library` fixture
-  (`tests/conftest.py:254`) is opt-in, and 14 other test files do patch `settings.beets_dir`
-  while this one does not. No debris today (beets 2.13 writes `library.db-before-*.bak` only
-  when a migration actually runs, and the dev DB is current), but it holds a SQLite connection
-  to the real corpus and would back it up on the next beets schema bump. Fix is one line:
-  `monkeypatch.setattr(settings, "beets_dir", str(tmp_path))` plus a tmp `config.yaml` +
-  `music/` dir, per the `test_slskd_webhook.py` pattern.
+- **`tests/test_artist_image_endpoint.py` opens the REAL dev library twice on every suite run.**
+  Two of its four `with TestClient(app)` tests — `test_default_settings_disabled_endpoint_404s`
+  and `test_integration_real_service_resolves_through_deezer` — never point
+  `settings.beets_dir` anywhere, so the lifespan runs `setup_beets` against
+  `MUSICDROP_BEETS_DIR` from `backend/.env` — the live `data/beets`. Measured by wrapping
+  `app.main.setup_beets` for one file run: four opens, two of them the real dir. Nothing
+  autouse guards this: the hermetic `beets_library` fixture (`tests/conftest.py:255`) is
+  opt-in. No debris today (beets 2.13 writes `library.db-before-*.bak` only when a migration
+  actually runs, and the dev DB is current), but it holds a SQLite connection to the real
+  corpus and would back it up on the next beets schema bump. The background-fill wave added a
+  `_pin_settings_at(tmp_path, monkeypatch)` helper to this very file and its own lifespan
+  tests use it, so the fix is now one call in each of the two, not a new helper.
 - **`tests/test_import_session.py::test_attended_astracks_lands_the_singletons_full_pipeline`
   writes to the developer's PERSONAL beets config dir** (`~/.config/beets/state.pickle`) on every
   full-suite run — bisected as the only offender, and present at least as far back as `643783f`,
