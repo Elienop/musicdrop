@@ -235,7 +235,22 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Artist Image Endpoint */
+        /**
+         * Get Artist Image Endpoint
+         * @description The artist portrait, served from cache or resolved without blocking.
+         *
+         *     A cache hit answers from a cheap stat-based ETag (the roster revalidates
+         *     every portrait on every paint). A MISS no longer resolves inside the request
+         *     for as long as the sources take: it waits a short grace window and then
+         *     404s, leaving one single-flight background task to finish and announce
+         *     itself with a coalesced ``art:changed``. So a 404 here means "no portrait
+         *     right now", not necessarily "never" - the frontend already renders the
+         *     monogram on 404 and re-requests when the global asset version moves.
+         *
+         *     ``name`` is a query param (not a path segment) so "AC/DC" works. The MBID is
+         *     resolved lazily - the service only invokes ``get_mbid`` on a cache miss,
+         *     because fanart.tv is the only MBID-keyed source.
+         */
         get: operations["get_artist_image_endpoint_api_artists_image_get"];
         put?: never;
         post?: never;
@@ -393,6 +408,9 @@ export interface paths {
          *     The result reports each slot separately: neither may have existed, and on an
          *     unwritable cache dir a removal can be refused. The caller shows what
          *     actually happened instead of implying a re-fetch that did not occur.
+         *
+         *     A background refill is then kicked off (see the body) so the artist does not
+         *     sit on a monogram until something asks for the image again.
          *
          *     Origin-guarded: a body-less POST is a CORS-simple request, so without this
          *     dependency a foreign page could reset portraits (the DELETE this replaced
@@ -5080,7 +5098,7 @@ export interface operations {
                     "image/*": unknown;
                 };
             };
-            /** @description Feature disabled, no verified match, or transient error. */
+            /** @description Feature disabled, no verified match, a transient error, or not resolved YET - an uncached portrait fills in the background and announces itself. */
             404: {
                 headers: {
                     [name: string]: unknown;

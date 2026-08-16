@@ -10,7 +10,7 @@ from beets.library import Library
 from fastapi.testclient import TestClient
 
 from app.api.albums import get_library
-from app.api.artists import get_artist_image_cache
+from app.api.artists import get_artist_image_cache, get_artist_image_service
 from app.artwork.cache import ArtistImageCache
 from app.main import app
 from tests.conftest import make_test_handle
@@ -73,6 +73,18 @@ def art_client(
     broker = _RecordingBroker()
     app.state.event_broker = broker
     app.dependency_overrides[get_artist_image_cache] = lambda: cache
+
+    class _OffService:
+        """Reset kicks a background refill when the feature is on, and that
+        fill emits its OWN coalesced art:changed. These tests count emits, so
+        they pin the reset's emit with the refill deliberately off - the refill
+        is covered in test_artist_image_override_endpoint.py."""
+
+        def is_enabled(self) -> bool:
+            return False
+
+    app.dependency_overrides[get_artist_image_service] = lambda: _OffService()
+    app.dependency_overrides[get_library] = lambda: SimpleNamespace(lib=object())
     yield TestClient(app), broker, cache
     app.dependency_overrides.clear()
     if hasattr(app.state, "event_broker"):

@@ -18,7 +18,7 @@ from app.artist_art_jobs.registry import (
     get_artist_art_backfill,
 )
 from app.artist_art_jobs.runner import start_backfill as start_art_backfill
-from app.artwork.cache import ArtistImageCache
+from app.artwork.cache import ArtistImageCache, CachedImage
 from app.artwork.degrade import derive_thumb_or_degrade
 from app.artwork.download import fetch_image_bytes
 from app.artwork.factory import (
@@ -59,6 +59,10 @@ from app.models.delete import DeleteResult
 from app.models.errors import ErrorDetail
 
 router = APIRouter(tags=["artists"])
+
+#: The one thing every "no portrait" exit of the image GET says. Named because
+#: the endpoint has four such exits and they must not drift apart.
+_IMAGE_NOT_FOUND = "Artist image not found"
 
 
 def get_artist_image_service(request: Request) -> ArtistImageService:
@@ -142,6 +146,87 @@ async def list_artists_endpoint(
     return await run_in_threadpool(list_artists, handle.lib)
 
 
+def _image_etag(validator: str, size: Literal["full", "thumb"]) -> str:
+    """The revalidation tag for ONE size of one artist's portrait.
+
+    The thumb is a DIFFERENT entity than the full image (distinct bytes), so it
+    needs its own ETag under the same URL family - splice a "-t" marker inside
+    the closing quote so the tag stays one opaque quoted string. A shared tag
+    would let a cache/proxy serve a thumb response for a full request (or vice
+    versa) on a matching If-None-Match.
+    """
+    return validator if size == "full" else f'{validator[:-1]}-t"'
+
+
+async def _serve_cached(
+    cache: ArtistImageCache, name: str, *, size: Literal["full", "thumb"], etag: str
+) -> Response | None:
+    """The response for an artist whose cache slot exists. Never the network.
+
+    ``None`` means the slot could not be turned into bytes after all - it
+    vanished between the stat and the read (the backfill daemon's atomic
+    replace, a reset), or the read itself failed. The caller falls THROUGH to
+    the resolve path rather than 404ing: ``validator`` would keep stat-ing that
+    same file, so a 404 here would be permanent instead of self-healing, and a
+    re-resolve overwrites the unusable slot.
+
+    Precondition: ``etag`` is the tag ``_image_etag`` built from the validator
+    that proved this slot exists, for THIS size.
+    """
+    if size == "thumb":
+        thumb = await run_in_threadpool(cache.get_thumb, name)
+        return None if thumb is None else image_response(thumb.data, thumb.content_type, etag)
+    cached = await run_in_threadpool(cache.get, name)
+    if not isinstance(cached, CachedImage):
+        return None
+    return image_response(cached.data, cached.content_type, etag)
+
+
+async def _serve_full(
+    request: Request, cache: ArtistImageCache, name: str, image_bytes: bytes, mime: str
+) -> Response:
+    """Serve freshly-resolved full-size bytes with the cheapest validator
+    available: the stat tag IF the positive slot was written, else the
+    content-hash ETag computed OFF the loop.
+
+    The store is best-effort by design (an unwritable cache dir must cost the
+    caching, not the response), so the re-stat can still come back None. While
+    a cache dir stays broken that sha256 of up to 10 MB is paid per request;
+    the in-memory fallback bounds the NETWORK cost, not this one.
+    """
+    validator = await run_in_threadpool(cache.validator, name)
+    if validator is not None:
+        return image_response(image_bytes, mime, validator)
+    return await run_in_threadpool(revalidating_image_response, request, image_bytes, mime)
+
+
+async def _serve_thumb(
+    request: Request, cache: ArtistImageCache, name: str, source: tuple[bytes, str]
+) -> Response:
+    """Serve the 320px derivation of a freshly-resolved image, preferring the
+    cache's own (which it wrote during the resolve) and deriving from the bytes
+    in hand when the cache could not store one.
+
+    That second branch is an unwritable cache dir (nothing to stat, so
+    ``get_thumb`` bails before it can help) or an override that raced away.
+    Deriving beats serving a 1000px+ original under a ``?size=thumb`` URL:
+    losing the cache must cost cache HITS, not the feature. Off-loop, because
+    it is a decode+resize of up to 10 MB.
+    """
+    thumb = await run_in_threadpool(cache.get_thumb, name)
+    if thumb is not None:
+        validator = await run_in_threadpool(cache.validator, name)
+        if validator is not None:
+            return image_response(thumb.data, thumb.content_type, _image_etag(validator, "thumb"))
+        return await run_in_threadpool(
+            revalidating_image_response, request, thumb.data, thumb.content_type
+        )
+    data, mime = await run_in_threadpool(
+        derive_thumb_or_degrade, *source, subject=f"artist {name!r}"
+    )
+    return await run_in_threadpool(revalidating_image_response, request, data, mime)
+
+
 @router.get(
     "/artists/image",
     responses={
@@ -152,7 +237,10 @@ async def list_artists_endpoint(
         # body the client can read.
         404: {
             "model": ErrorDetail,
-            "description": "Feature disabled, no verified match, or transient error.",
+            "description": (
+                "Feature disabled, no verified match, a transient error, or not resolved "
+                "YET - an uncached portrait fills in the background and announces itself."
+            ),
         },
     },
 )
@@ -162,79 +250,65 @@ async def get_artist_image_endpoint(
     service: Annotated[ArtistImageService, Depends(get_artist_image_service)],
     handle: Annotated[LibraryHandle, Depends(get_library)],
     cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
+    filler: Annotated[ArtistImageFiller, Depends(get_artist_image_filler)],
     size: Annotated[Literal["full", "thumb"], Query()] = "full",
 ) -> Response:
+    """The artist portrait, served from cache or resolved without blocking.
+
+    A cache hit answers from a cheap stat-based ETag (the roster revalidates
+    every portrait on every paint). A MISS no longer resolves inside the request
+    for as long as the sources take: it waits a short grace window and then
+    404s, leaving one single-flight background task to finish and announce
+    itself with a coalesced ``art:changed``. So a 404 here means "no portrait
+    right now", not necessarily "never" - the frontend already renders the
+    monogram on 404 and re-requests when the global asset version moves.
+
+    ``name`` is a query param (not a path segment) so "AC/DC" works. The MBID is
+    resolved lazily - the service only invokes ``get_mbid`` on a cache miss,
+    because fanart.tv is the only MBID-keyed source.
+    """
     # Validate off a CHEAP stat-based ETag first: the roster revalidates every
     # portrait on every paint (no ?v= buster, no max-age), and the old path
     # re-read the cached bytes and re-hashed them just to answer a 304.
     # cache.validator stats the winning slot (override > positive) instead, so
     # an unchanged portrait answers 304 without touching the bytes at all.
     validator = await run_in_threadpool(cache.validator, name)
-    # The thumb is a DIFFERENT entity than the full image (distinct bytes), so
-    # it needs its own ETag under the same URL family — splice a "-t" marker
-    # inside the closing quote so the tag stays one opaque quoted string. A
-    # shared tag would let a cache/proxy serve a thumb response for a full
-    # request (or vice versa) on a matching If-None-Match.
-    etag = validator if size == "full" else (f'{validator[:-1]}-t"' if validator else None)
+    etag = _image_etag(validator, size) if validator is not None else None
     if etag is not None and if_none_match_hit(request, etag):
         return not_modified(etag)
 
-    if size == "thumb":
-        thumb = await run_in_threadpool(cache.get_thumb, name)
-        if thumb is None:
-            # Nothing cached yet — resolve (network) once, then derive from it.
-            resolved = await service.get_artist_image(
-                name, get_mbid=lambda: beets_library.get_artist_mbid(handle.lib, name)
-            )
-            if resolved is None:
-                raise HTTPException(status_code=404, detail="Artist image not found")
-            thumb = await run_in_threadpool(cache.get_thumb, name)
-            if thumb is None:
-                # The cache could not produce a thumb even after a successful
-                # resolve: an unwritable cache dir (nothing to stat, so
-                # get_thumb bails before it can help), or an override that raced
-                # away. Derive from the bytes in hand instead of serving the
-                # 1000px+ original under a ?size=thumb URL — losing the cache
-                # must cost cache HITS, not the feature. Off-loop: this is a
-                # decode+resize of up to 10 MB.
-                data, mime = await run_in_threadpool(
-                    derive_thumb_or_degrade, *resolved, subject=f"artist {name!r}"
-                )
-                return await run_in_threadpool(revalidating_image_response, request, data, mime)
-            validator = await run_in_threadpool(cache.validator, name)
-            etag = f'{validator[:-1]}-t"' if validator else None
-        if etag is not None:
-            return image_response(thumb.data, thumb.content_type, etag)
-        # No file to stat — fall back to the content-hash ETag, off-loop.
-        return await run_in_threadpool(
-            revalidating_image_response, request, thumb.data, thumb.content_type
-        )
+    # Checked AFTER the conditional GET so a client holding a cached copy still
+    # gets its cheap 304 when the feature is toggled off mid-session - the
+    # ordering this endpoint has always had. Checked HERE at all because the
+    # cache branch below never reaches the service, and because a disabled
+    # feature must leave no background task running.
+    if not service.is_enabled():
+        raise HTTPException(status_code=404, detail=_IMAGE_NOT_FOUND)
 
-    # size == "full": query param (not path) so "AC/DC" works. The MBID is
-    # resolved lazily — the service only invokes get_mbid on a cache miss
-    # (fanart.tv is MBID-keyed).
-    result = await service.get_artist_image(
-        name, get_mbid=lambda: beets_library.get_artist_mbid(handle.lib, name)
+    if etag is not None:
+        served = await _serve_cached(cache, name, size=size, etag=etag)
+        if served is not None:
+            return served
+
+    # Nothing usable cached. Honour an unexpired no-match marker WITHOUT reading
+    # bytes, then hand the resolve to the single-flight filler.
+    if await run_in_threadpool(cache.has_fresh_negative, name):
+        raise HTTPException(status_code=404, detail=_IMAGE_NOT_FOUND)
+    resolved = await filler.fill(
+        service,
+        name,
+        get_mbid=lambda: beets_library.get_artist_mbid(handle.lib, name),
+        grace_seconds=_inline_grace_seconds(request.app),
     )
-    if result is None:
-        # Covers disabled / no verified match / transient error; the frontend
-        # falls back to the person glyph on 404.
-        raise HTTPException(status_code=404, detail="Artist image not found")
-
-    image_bytes, mime = result
-    if validator is None:
-        # First serve after a fresh network resolve — IF the positive slot was
-        # written, a re-stat yields the tag the NEXT request will validate on.
-        # It may not have been (unwritable cache dir): the store is best-effort
-        # by design, so this can still come back None.
-        validator = await run_in_threadpool(cache.validator, name)
-    if validator is not None:
-        return image_response(image_bytes, mime, validator)
-    # Nothing to stat — an override that raced away, or a cache dir that took
-    # no write. Fall back to the content-hash ETag, computed OFF the event loop
-    # (sha256 of up to 10 MB). While a cache dir stays broken that hash is paid
-    # per request; the in-memory fallback bounds the network cost, not this one.
-    return await run_in_threadpool(revalidating_image_response, request, image_bytes, mime)
+    if resolved is None:
+        # Either a confirmed no-match / transient failure, or still running.
+        # Both are "no bytes for you right now"; a running fill announces
+        # itself when it lands.
+        raise HTTPException(status_code=404, detail=_IMAGE_NOT_FOUND)
+    if size == "thumb":
+        return await _serve_thumb(request, cache, name, resolved)
+    image_bytes, mime = resolved
+    return await _serve_full(request, cache, name, image_bytes, mime)
 
 
 @router.get("/artists/image/settings", response_model=ArtistImageSettings)
@@ -567,6 +641,9 @@ async def reset_artist_image_endpoint(
     request: Request,
     name: Annotated[str, Query(min_length=1)],
     cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
+    service: Annotated[ArtistImageService, Depends(get_artist_image_service)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+    filler: Annotated[ArtistImageFiller, Depends(get_artist_image_filler)],
 ) -> ArtistImageResetResult:
     """Forget every stored portrait for ``name`` so it is looked up again.
 
@@ -580,11 +657,28 @@ async def reset_artist_image_endpoint(
     unwritable cache dir a removal can be refused. The caller shows what
     actually happened instead of implying a re-fetch that did not occur.
 
+    A background refill is then kicked off (see the body) so the artist does not
+    sit on a monogram until something asks for the image again.
+
     Origin-guarded: a body-less POST is a CORS-simple request, so without this
     dependency a foreign page could reset portraits (the DELETE this replaced
     was preflight-protected by its method alone).
     """
     cleared_override, cleared_auto = await run_in_threadpool(_reset_slots, cache, name)
+    if service.is_enabled():
+        # Clearing the automatic slot is the point of this route, which means
+        # that without a kick the artist shows a monogram until the NEXT image
+        # request resolves one - the user pressed a button and the app appears
+        # to have lost the picture. A zero grace starts the resolve without
+        # waiting for it, so the reset still answers immediately; the filler's
+        # single-flight map makes a redundant kick free, and its coalesced
+        # art:changed announces the portrait when it lands.
+        await filler.fill(
+            service,
+            name,
+            get_mbid=lambda: beets_library.get_artist_mbid(handle.lib, name),
+            grace_seconds=0.0,
+        )
     # UNSCOPED on purpose: the artist image is served under a NORMALIZED name
     # (NFKD accent-fold + casefold + whitespace-collapse — see
     # artwork/normalize.py), so a raw display name is not a reliable identity

@@ -634,6 +634,7 @@
           "artists"
         ],
         "summary": "Get Artist Image Endpoint",
+        "description": "The artist portrait, served from cache or resolved without blocking.\n\nA cache hit answers from a cheap stat-based ETag (the roster revalidates\nevery portrait on every paint). A MISS no longer resolves inside the request\nfor as long as the sources take: it waits a short grace window and then\n404s, leaving one single-flight background task to finish and announce\nitself with a coalesced ``art:changed``. So a 404 here means \"no portrait\nright now\", not necessarily \"never\" - the frontend already renders the\nmonogram on 404 and re-requests when the global asset version moves.\n\n``name`` is a query param (not a path segment) so \"AC/DC\" works. The MBID is\nresolved lazily - the service only invokes ``get_mbid`` on a cache miss,\nbecause fanart.tv is the only MBID-keyed source.",
         "operationId": "get_artist_image_endpoint_api_artists_image_get",
         "parameters": [
           {
@@ -672,7 +673,7 @@
             }
           },
           "404": {
-            "description": "Feature disabled, no verified match, or transient error.",
+            "description": "Feature disabled, no verified match, a transient error, or not resolved YET - an uncached portrait fills in the background and announces itself.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1007,7 +1008,7 @@
           "artists"
         ],
         "summary": "Reset Artist Image Endpoint",
-        "description": "Forget every stored portrait for ``name`` so it is looked up again.\n\nClears the manual override AND the cached automatic image (plus its\nnegative marker and derived thumb). Clearing only the override - which is\nall this used to do - drops the user straight back onto the automatic image\nthey just rejected, because a present ``.bin`` means the resolve path never\nruns again.\n\nThe result reports each slot separately: neither may have existed, and on an\nunwritable cache dir a removal can be refused. The caller shows what\nactually happened instead of implying a re-fetch that did not occur.\n\nOrigin-guarded: a body-less POST is a CORS-simple request, so without this\ndependency a foreign page could reset portraits (the DELETE this replaced\nwas preflight-protected by its method alone).",
+        "description": "Forget every stored portrait for ``name`` so it is looked up again.\n\nClears the manual override AND the cached automatic image (plus its\nnegative marker and derived thumb). Clearing only the override - which is\nall this used to do - drops the user straight back onto the automatic image\nthey just rejected, because a present ``.bin`` means the resolve path never\nruns again.\n\nThe result reports each slot separately: neither may have existed, and on an\nunwritable cache dir a removal can be refused. The caller shows what\nactually happened instead of implying a re-fetch that did not occur.\n\nA background refill is then kicked off (see the body) so the artist does not\nsit on a monogram until something asks for the image again.\n\nOrigin-guarded: a body-less POST is a CORS-simple request, so without this\ndependency a foreign page could reset portraits (the DELETE this replaced\nwas preflight-protected by its method alone).",
         "operationId": "reset_artist_image_endpoint_api_artists_image_reset_post",
         "parameters": [
           {
