@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from app.models.playlist import PendingTrack
+from app.models.plex import PlexTargetState
 from app.playlists import store
 from app.playlists.store import StoredEntry, StoredPlaylist
 
@@ -473,3 +474,217 @@ def test_legacy_record_without_artwork_key_loads_as_none(tmp_path: Path) -> None
     loaded = store.get_playlist(tmp_path, record.id)
     assert loaded is not None
     assert loaded.artwork is None
+
+
+def test_merge_appends_source_rows_after_the_target_rows_in_source_order(tmp_path: Path) -> None:
+    target = store.create_playlist(tmp_path, name="Keep")
+    store.add_tracks(tmp_path, target.id, track_ids=[1, 2], position=None)
+    source = store.create_playlist(tmp_path, name="Fold in")
+    store.add_tracks(tmp_path, source.id, track_ids=[7, 8], position=None)
+
+    outcome = store.merge_playlists(tmp_path, target.id, source.id, delete_source=False)
+
+    assert outcome is not None
+    assert outcome.added == 2
+    assert outcome.skipped_duplicates == 0
+    assert [e.item_id for e in outcome.playlist.entries] == [1, 2, 7, 8]
+    reread = store.get_playlist(tmp_path, target.id)
+    assert reread is not None
+    assert [e.item_id for e in reread.entries] == [1, 2, 7, 8]
+
+
+def test_merge_skips_a_source_row_whose_item_is_already_in_the_target(tmp_path: Path) -> None:
+    target = store.create_playlist(tmp_path, name="Keep")
+    store.add_tracks(tmp_path, target.id, track_ids=[1, 2], position=None)
+    source = store.create_playlist(tmp_path, name="Fold in")
+    store.add_tracks(tmp_path, source.id, track_ids=[2, 3], position=None)
+
+    outcome = store.merge_playlists(tmp_path, target.id, source.id, delete_source=False)
+
+    assert outcome is not None
+    assert outcome.added == 1
+    assert outcome.skipped_duplicates == 1
+    assert [e.item_id for e in outcome.playlist.entries] == [1, 2, 3]
+
+
+def test_merge_copies_a_pending_row_even_when_the_target_holds_the_same_text(
+    tmp_path: Path,
+) -> None:
+    """THE ANTI-GUESSING GUARD (store half).
+
+    Both playlists hold a pending row remembering the SAME artist and title.
+    Neither has a library track behind it, so any dedupe here would be guessing
+    on text - "Last Christmas" by Wham! and by Ariana Grande are different
+    recordings a strict text match would happily collapse. Both rows must
+    survive. If this test ever fails because the titles matched, merge has
+    started dropping songs, which is the one thing it must never do.
+    """
+    target = store.create_playlist(
+        tmp_path,
+        name="Keep",
+        entries=[
+            StoredEntry(uid="t1", item_id=41),
+            StoredEntry(
+                uid="t2",
+                pending=PendingTrack(artist="Wham!", title="Last Christmas", source="target line"),
+            ),
+        ],
+    )
+    source = store.create_playlist(
+        tmp_path,
+        name="Fold in",
+        entries=[
+            StoredEntry(
+                uid="s1",
+                pending=PendingTrack(artist="Wham!", title="Last Christmas", source="source line"),
+            )
+        ],
+    )
+
+    outcome = store.merge_playlists(tmp_path, target.id, source.id, delete_source=False)
+
+    assert outcome is not None
+    assert outcome.added == 1
+    assert outcome.skipped_duplicates == 0
+    sources = [e.pending.source for e in outcome.playlist.entries if e.pending is not None]
+    assert sources == ["target line", "source line"]
+
+
+def test_merge_copies_an_entry_with_an_id_the_target_lacks_keeping_that_id(
+    tmp_path: Path,
+) -> None:
+    """An "unavailable" row is, at this layer, just an entry with an item id
+    whose library track is gone. It must come across with that id intact so it
+    can be re-pointed later."""
+    target = store.create_playlist(tmp_path, name="Keep")
+    source = store.create_playlist(
+        tmp_path, name="Fold in", entries=[StoredEntry(uid="s1", item_id=999_001)]
+    )
+
+    outcome = store.merge_playlists(tmp_path, target.id, source.id, delete_source=False)
+
+    assert outcome is not None
+    assert outcome.added == 1
+    assert [e.item_id for e in outcome.playlist.entries] == [999_001]
+
+
+def test_merge_mints_fresh_uids_and_keeps_a_duplicated_source_row_addressable(
+    tmp_path: Path,
+) -> None:
+    """Fresh uids for every copied row, and the dedupe snapshot never grows.
+
+    The source lists ONE track twice. The set of ids already in the target is
+    taken before copying and is not extended as rows land, so both rows come
+    across - and each gets its own uuid4 uid, keeping "duplicate tracks are
+    individually addressable" true and staying clear of legacy-<i>-<id> uids.
+    """
+    target = store.create_playlist(tmp_path, name="Keep")
+    source = store.create_playlist(tmp_path, name="Fold in")
+    seeded = store.add_tracks(tmp_path, source.id, track_ids=[5, 5], position=None)
+    assert seeded is not None
+    source_uids = {e.uid for e in seeded.entries}
+
+    outcome = store.merge_playlists(tmp_path, target.id, source.id, delete_source=False)
+
+    assert outcome is not None
+    assert outcome.added == 2
+    assert outcome.skipped_duplicates == 0
+    assert [e.item_id for e in outcome.playlist.entries] == [5, 5]
+    new_uids = [e.uid for e in outcome.playlist.entries]
+    assert len(set(new_uids)) == 2
+    assert not (set(new_uids) & source_uids)
+    survivor = store.get_playlist(tmp_path, source.id)
+    assert survivor is not None
+    assert {e.uid for e in survivor.entries} == source_uids
+
+
+def test_merge_does_not_inherit_artwork_or_plex_targets(tmp_path: Path) -> None:
+    target = store.create_playlist(tmp_path, name="Keep")
+    store.update_playlist(tmp_path, target.id, target_plex_users=["u-keep"])
+    source = store.create_playlist(tmp_path, name="Fold in")
+    store.update_playlist(tmp_path, source.id, target_plex_users=["u-source"])
+    store.set_artwork(tmp_path, source.id, b"\x89PNG\r\n\x1a\n", "png")
+
+    outcome = store.merge_playlists(tmp_path, target.id, source.id, delete_source=False)
+
+    assert outcome is not None
+    # Both belong to the playlist you are KEEPING, not to its contents -
+    # inheriting either would push a merged playlist to accounts nobody chose.
+    assert outcome.playlist.artwork is None
+    assert outcome.playlist.target_plex_users == ["u-keep"]
+
+
+def test_merge_bumps_updated_at_and_leaves_plex_state_alone(tmp_path: Path) -> None:
+    target = store.create_playlist(tmp_path, name="Keep")
+    store.set_plex_state(
+        tmp_path,
+        target.id,
+        "admin",
+        PlexTargetState(
+            rating_key="7", status="ok", missing=0, synced_at="2020-01-01T00:00:00+00:00"
+        ),
+    )
+    before = store.get_playlist(tmp_path, target.id)
+    assert before is not None
+    source = store.create_playlist(tmp_path, name="Fold in")
+    store.add_tracks(tmp_path, source.id, track_ids=[9], position=None)
+
+    outcome = store.merge_playlists(tmp_path, target.id, source.id, delete_source=False)
+
+    assert outcome is not None
+    assert outcome.playlist.updated_at > before.updated_at
+    # Plex bookkeeping is untouched: a stale state correctly reads out of date.
+    assert outcome.playlist.plex["admin"].rating_key == "7"
+    assert outcome.playlist.plex["admin"].synced_at == "2020-01-01T00:00:00+00:00"
+    # The editor's rule (updated_at > synced_at => out of date) now fires.
+    assert outcome.playlist.updated_at > "2020-01-01T00:00:00+00:00"
+
+
+def test_merge_delete_source_removes_the_source_record_and_keeps_the_target(
+    tmp_path: Path,
+) -> None:
+    target = store.create_playlist(tmp_path, name="Keep")
+    source = store.create_playlist(tmp_path, name="Fold in")
+    store.add_tracks(tmp_path, source.id, track_ids=[3], position=None)
+    store.set_artwork(tmp_path, source.id, b"\x89PNG\r\n\x1a\n", "png")
+
+    outcome = store.merge_playlists(tmp_path, target.id, source.id, delete_source=True)
+
+    assert outcome is not None
+    assert outcome.source_deleted is True
+    assert store.get_playlist(tmp_path, source.id) is None
+    assert not store.artwork_path(tmp_path, source.id, "png").exists()
+    kept = store.get_playlist(tmp_path, target.id)
+    assert kept is not None
+    assert [e.item_id for e in kept.entries] == [3]
+
+
+def test_merge_without_delete_source_leaves_both_records(tmp_path: Path) -> None:
+    target = store.create_playlist(tmp_path, name="Keep")
+    source = store.create_playlist(tmp_path, name="Fold in")
+    store.add_tracks(tmp_path, source.id, track_ids=[3], position=None)
+
+    outcome = store.merge_playlists(tmp_path, target.id, source.id, delete_source=False)
+
+    assert outcome is not None
+    assert outcome.source_deleted is False
+    survivor = store.get_playlist(tmp_path, source.id)
+    assert survivor is not None
+    assert [e.item_id for e in survivor.entries] == [3]
+
+
+def test_merge_with_a_missing_record_returns_none_and_writes_nothing(tmp_path: Path) -> None:
+    real = store.create_playlist(tmp_path, name="Keep")
+    store.add_tracks(tmp_path, real.id, track_ids=[1], position=None)
+    before = store.get_playlist(tmp_path, real.id)
+    assert before is not None
+
+    assert store.merge_playlists(tmp_path, real.id, "0" * 32, delete_source=True) is None
+    assert store.merge_playlists(tmp_path, "0" * 32, real.id, delete_source=True) is None
+    # A non-hex id never reaches the filesystem (the _VALID_ID guard).
+    assert store.merge_playlists(tmp_path, real.id, "../../etc/passwd", delete_source=True) is None
+
+    after = store.get_playlist(tmp_path, real.id)
+    assert after is not None
+    assert [e.item_id for e in after.entries] == [1]
+    assert after.updated_at == before.updated_at
