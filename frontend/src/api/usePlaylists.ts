@@ -271,9 +271,16 @@ export function useMergePlaylist(id: string) {
       ),
     onSuccess: (result, vars) => {
       queryClient.setQueryData(["playlist", id], result.playlist);
-      // The source is either gone or unchanged; either way its cached detail
-      // and the list's counts are now wrong.
-      void queryClient.invalidateQueries({ queryKey: ["playlist", vars.sourceId] });
+      // The source's cached detail is wrong either way, but the two cases need
+      // different treatment. Invalidating a DELETED source schedules a refetch
+      // of a record that no longer exists — a guaranteed 404 in the console and
+      // one wasted request (seen in the browser; msw would only 404 if a handler
+      // said so, so no unit test catches it). Drop it from the cache instead.
+      if (result.source_deleted) {
+        queryClient.removeQueries({ queryKey: ["playlist", vars.sourceId] });
+      } else {
+        void queryClient.invalidateQueries({ queryKey: ["playlist", vars.sourceId] });
+      }
       void queryClient.invalidateQueries({ queryKey: ["playlists"] });
     },
   });
