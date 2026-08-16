@@ -17,15 +17,20 @@ from app.artwork.cache import ArtistImageCache
 from app.artwork.deezer import DeezerArtistImageSource
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
+from app.config import settings as app_settings
 from app.main import app
 
 
 class _StubService:
     """Stub standing in for ArtistImageService (no real Deezer/HTTP)."""
 
-    def __init__(self, result: tuple[bytes, str] | None) -> None:
+    def __init__(self, result: tuple[bytes, str] | None, *, enabled: bool = True) -> None:
         self._result = result
+        self._enabled = enabled
         self.calls: list[str] = []
+
+    def is_enabled(self) -> bool:
+        return self._enabled
 
     async def get_artist_image(
         self, name: str, *, get_mbid: object = None
@@ -48,6 +53,9 @@ class _EmptyCache:
 
     def validator(self, name: str) -> str | None:
         return None
+
+    def has_fresh_negative(self, name: str) -> bool:
+        return False
 
 
 def _png(width: int, height: int, color: str = "red") -> bytes:
@@ -204,6 +212,9 @@ def test_hash_fallback_runs_off_loop(monkeypatch: pytest.MonkeyPatch) -> None:
         def validator(self, name: str) -> str | None:
             return None
 
+        def has_fresh_negative(self, name: str) -> bool:
+            return False
+
     real = _real_run_in_threadpool
     spy = Mock(side_effect=lambda fn, *a, **k: real(fn, *a, **k))
     monkeypatch.setattr(artists_mod, "run_in_threadpool", spy)
@@ -251,8 +262,6 @@ def test_default_settings_disabled_endpoint_404s(
     # flip the feature on — the env default (artist_images_enabled=False) then
     # governs. No dependency override: the real wired service is constructed from
     # default settings, so it returns None -> 404 (no outbound call when off).
-    from app.config import settings as app_settings
-
     monkeypatch.setattr(app_settings, "artist_image_cache_dir", str(tmp_path))
     with TestClient(app) as client:
         resp = client.get("/api/artists/image", params={"name": "ABBA"})
@@ -284,9 +293,10 @@ def test_integration_real_service_resolves_through_deezer(tmp_path: Path) -> Non
     )
 
     client = httpx.AsyncClient()
+    cache = ArtistImageCache(tmp_path)
     service = ArtistImageService(
         source=DeezerArtistImageSource(client=client, search_limit=5),
-        cache=ArtistImageCache(tmp_path),
+        cache=cache,
         limiter=TokenBucketLimiter(rate_per_sec=1000.0, max_concurrency=2),
         is_enabled=lambda: True,
         negative_ttl_seconds=3600,
@@ -294,6 +304,11 @@ def test_integration_real_service_resolves_through_deezer(tmp_path: Path) -> Non
     )
 
     app.dependency_overrides[get_artist_image_service] = lambda: service
+    # The endpoint reads the cache DIRECTLY now (a slot that exists is served
+    # from disk, never through the service), so leaving this dependency on the
+    # lifespan-built cache would let a developer's real cached ABBA answer this
+    # request and the respx mock would never be reached.
+    app.dependency_overrides[get_artist_image_cache] = lambda: cache
     try:
         with TestClient(app) as test_client:
             resp = test_client.get("/api/artists/image", params={"name": "ABBA"})
@@ -659,6 +674,9 @@ def test_endpoint_passes_artist_mbid_to_service() -> None:
     seen: dict[str, str | None] = {}
 
     class _RecordingService:
+        def is_enabled(self) -> bool:
+            return True
+
         async def get_artist_image(
             self, name: str, *, get_mbid: Callable[[], str | None] | None = None
         ) -> tuple[bytes, str] | None:
@@ -685,4 +703,177 @@ def test_endpoint_passes_artist_mbid_to_service() -> None:
         assert seen["mbid"] == "the-mbid"
     finally:
         mp.undo()
+        app.dependency_overrides.clear()
+
+
+def _pin_settings_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the lifespan at a throwaway beets dir and artist-image cache dir.
+
+    ``backend/.env`` aims MUSICDROP_BEETS_DIR at the REAL dev library and the
+    lifespan opens it for real, so a ``with TestClient(app)`` test that skips
+    this pin runs against the developer's music library. Pinning the cache dir
+    keeps a persisted enabled toggle out too.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    (tmp_path / "config.yaml").write_text(f"directory: {music}\nlibrary: library.db\nplugins: []\n")
+    monkeypatch.setattr(app_settings, "beets_dir", str(tmp_path))
+    monkeypatch.setattr(app_settings, "artist_image_cache_dir", str(tmp_path / "cache"))
+
+
+def test_a_slow_uncached_resolve_404s_instead_of_holding_the_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The wave's whole point: a cold page must not spend ~10s resolving inside
+    # its HTTP requests. The fill continues; the portrait arrives via SSE.
+    #
+    # `with TestClient(app)` is load-bearing: outside the context manager each
+    # request gets its OWN event loop, so the background task would be orphaned
+    # on a loop that is immediately torn down.
+    import asyncio
+    import time
+
+    class _SlowService:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def is_enabled(self) -> bool:
+            return True
+
+        async def get_artist_image(
+            self, name: str, *, get_mbid: object = None
+        ) -> tuple[bytes, str] | None:
+            self.calls += 1
+            await asyncio.sleep(0.30)
+            return (b"LATE", "image/jpeg")
+
+    service = _SlowService()
+    _pin_settings_at(tmp_path, monkeypatch)
+    monkeypatch.setattr(app_settings, "artist_image_inline_grace_seconds", 0.02)
+    app.dependency_overrides[get_artist_image_service] = lambda: service
+    app.dependency_overrides[get_artist_image_cache] = lambda: _EmptyCache()
+    app.dependency_overrides[get_library] = lambda: _StubHandle()
+    try:
+        with TestClient(app) as client:
+            started = time.monotonic()
+            resp = client.get("/api/artists/image", params={"name": "Slowpoke"})
+            elapsed = time.monotonic() - started
+            assert resp.status_code == 404
+            assert elapsed < 0.25  # returned on the grace, not on the resolve
+            assert service.calls == 1  # ...and the resolve really was started
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_a_quick_uncached_resolve_is_still_served_inline(hit_client: TestClient) -> None:
+    # A single artist page must not regress into a monogram flash: a source
+    # that answers inside the grace window is served in the SAME request.
+    resp = hit_client.get("/api/artists/image", params={"name": "ABBA"})
+    assert resp.status_code == 200
+    assert resp.content == b"JPEGBYTES"
+
+
+def test_a_fresh_negative_marker_starts_no_resolve(tmp_path: Path) -> None:
+    # A confirmed no-match inside its TTL must not be re-fetched, in the
+    # foreground OR the background.
+    cache = ArtistImageCache(tmp_path)
+    cache.store_negative("Nobody", ttl_seconds=3600)
+    service = _StubService((b"SHOULD-NOT-BE-USED", "image/jpeg"))
+    app.dependency_overrides[get_artist_image_service] = lambda: service
+    app.dependency_overrides[get_artist_image_cache] = lambda: cache
+    app.dependency_overrides[get_library] = lambda: _StubHandle()
+    try:
+        resp = TestClient(app).get("/api/artists/image", params={"name": "Nobody"})
+        assert resp.status_code == 404
+        assert service.calls == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_a_cached_image_is_served_without_touching_the_service(tmp_path: Path) -> None:
+    cache = ArtistImageCache(tmp_path)
+    cache.store_positive("ABBA", b"CACHED", "image/png")
+    service = _StubService(None)
+    app.dependency_overrides[get_artist_image_service] = lambda: service
+    app.dependency_overrides[get_artist_image_cache] = lambda: cache
+    app.dependency_overrides[get_library] = lambda: _StubHandle()
+    try:
+        resp = TestClient(app).get("/api/artists/image", params={"name": "ABBA"})
+        assert resp.status_code == 200
+        assert resp.content == b"CACHED"
+        assert service.calls == []  # no resolve path on a hit
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_a_disabled_feature_starts_no_background_fill() -> None:
+    # The toggle has to be checked HERE, not only inside the service: the
+    # endpoint now hands misses to a background task, and an off feature must
+    # not leave one running (nor answer 200 from a slot it may no longer own).
+    service = _StubService((b"JPEGBYTES", "image/jpeg"), enabled=False)
+    app.dependency_overrides[get_artist_image_service] = lambda: service
+    app.dependency_overrides[get_artist_image_cache] = lambda: _EmptyCache()
+    app.dependency_overrides[get_library] = lambda: _StubHandle()
+    try:
+        resp = TestClient(app).get("/api/artists/image", params={"name": "ABBA"})
+        assert resp.status_code == 404
+        assert service.calls == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_two_concurrent_cold_requests_resolve_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No single-flight existed anywhere before this wave; a background filler
+    # without one would multiply the traffic it is meant to reduce.
+    #
+    # `with TestClient(app)` is what makes this test MEAN anything: outside the
+    # context manager every request runs on its own event loop, so the four
+    # requests could not share an in-flight entry even if the code were correct
+    # (starlette/testclient.py:414-418). Inside it they share one portal loop,
+    # and the threads below are real concurrency against it.
+    import asyncio
+    import threading
+
+    class _CountingService:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.lock = threading.Lock()
+
+        def is_enabled(self) -> bool:
+            return True
+
+        async def get_artist_image(
+            self, name: str, *, get_mbid: object = None
+        ) -> tuple[bytes, str] | None:
+            with self.lock:
+                self.calls += 1
+            await asyncio.sleep(0.30)
+            return (b"IMG", "image/jpeg")
+
+    service = _CountingService()
+    _pin_settings_at(tmp_path, monkeypatch)
+    app.dependency_overrides[get_artist_image_service] = lambda: service
+    app.dependency_overrides[get_artist_image_cache] = lambda: _EmptyCache()
+    app.dependency_overrides[get_library] = lambda: _StubHandle()
+    statuses: list[int] = []
+    status_lock = threading.Lock()
+    try:
+        with TestClient(app) as client:
+
+            def one_request() -> None:
+                resp = client.get("/api/artists/image", params={"name": "ABBA"})
+                with status_lock:
+                    statuses.append(resp.status_code)
+
+            threads = [threading.Thread(target=one_request) for _ in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            assert service.calls == 1
+            # Non-vacuity: one call could also mean three requests failed early.
+            assert statuses == [200, 200, 200, 200]
+    finally:
         app.dependency_overrides.clear()

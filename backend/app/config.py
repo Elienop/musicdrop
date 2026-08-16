@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     # A TRANSIENT failure (429 / timeout / malformed body / bad download) is
     # honored only briefly so a Deezer blip doesn't bench a real artist.
     artist_image_transient_ttl_seconds: int = 600
+    # How long an uncached artist-image request waits for its resolve before
+    # answering 404 and letting the fill finish in the background. A single
+    # artist page therefore still paints inline (~a few hundred ms), while a
+    # cold roster page returns immediately instead of holding ~48 requests open
+    # for ~10 s behind the 5/s limiter. 0 disables inline serving entirely.
+    # (env MUSICDROP_ARTIST_IMAGE_INLINE_GRACE_SECONDS)
+    artist_image_inline_grace_seconds: float = 1.5
 
     # Optional artist-image source credentials (env-only). A source joins the
     # resolution chain only when its credentials are present; with none set the

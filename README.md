@@ -38,7 +38,8 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 
 - **Browse** — artist → albums → tracklist, with cover art, lyrics, and a release's missing tracks.
 - **Search** across the library.
-- **Cover art** — fetch + replace. **Artist images** — multi-source (fanart.tv / Spotify / Deezer) with per-artist override (upload or paste a URL), written into the library for Plex.
+- **Cover art** — fetch + replace.
+- **Artist images** — portraits resolve automatically from the configured sources (fanart.tv → Spotify → Deezer, first verified match wins; Deezer needs no key) and are written into the library for Plex. To change one, open an artist and use the image action: pick a source, **Fetch**, and **Use this image** to keep it — or upload a file / paste a URL. **Reset to auto** forgets both your pick and the cached automatic image, so the artist is looked up again from scratch. An artist whose portrait isn't cached yet shows their initials while it resolves in the background; it appears without a reload when it lands.
 - **Lyrics** — presence, per-album fetch, and a library-wide backfill.
 - **Edit tags** — album & track, from the UI.
 - **Import** — interactive candidate picker, resume, an import-time duplicate guard, and search-by-release-ID when the right match isn't offered. Unattended runs **bank** undecidable albums for later review instead of stalling, and the summary verifies each album actually **landed** in the library.

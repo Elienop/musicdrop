@@ -4,6 +4,7 @@ import contextlib
 import io
 import logging
 import os
+import time
 import unittest.mock
 from pathlib import Path
 
@@ -67,8 +68,6 @@ def test_negative_expires_after_ttl(cache: ArtistImageCache) -> None:
 
 
 def test_negative_marker_stores_explicit_expiry(cache: ArtistImageCache, tmp_path: Path) -> None:
-    import time
-
     cache.store_negative("Nobody", ttl_seconds=600)
     key = cache._key("Nobody")
     expiry = float((tmp_path / f"{key}.miss").read_text(encoding="utf-8").strip())
@@ -858,3 +857,53 @@ def test_a_refused_unlink_is_reported_once_not_per_slot(
         assert cache.clear_auto("ABBA") is False
 
     assert len(_artwork_records(caplog)) == 1
+
+
+def test_has_fresh_negative_is_false_when_nothing_is_cached(tmp_path: Path) -> None:
+    assert ArtistImageCache(tmp_path).has_fresh_negative("ABBA") is False
+
+
+def test_has_fresh_negative_is_true_inside_the_ttl(tmp_path: Path) -> None:
+    cache = ArtistImageCache(tmp_path)
+    cache.store_negative("Nobody", ttl_seconds=3600)
+    assert cache.has_fresh_negative("Nobody") is True
+
+
+def test_has_fresh_negative_is_false_once_the_ttl_lapses(tmp_path: Path) -> None:
+    cache = ArtistImageCache(tmp_path)
+    cache.store_negative("Nobody", ttl_seconds=0)
+    assert cache.has_fresh_negative("Nobody") is False
+
+
+def test_has_fresh_negative_honours_an_in_memory_marker(tmp_path: Path) -> None:
+    # A cache dir that refused the write keeps the marker in memory; ignoring it
+    # would re-fetch a confirmed no-match on every single request, forever.
+    from app.artwork.cache import _NegativeUntil
+
+    cache = ArtistImageCache(tmp_path / "unwritable")
+    cache._memory.put(cache._key("Nobody"), _NegativeUntil(expiry=time.time() + 3600))
+    assert cache.has_fresh_negative("Nobody") is True
+
+
+def test_has_fresh_negative_lets_an_expired_in_memory_marker_go(tmp_path: Path) -> None:
+    """The stand-in carries the TTL, not just the fact, so an expired one must
+    read as "no marker" exactly as an expired ``.miss`` body does — otherwise a
+    cache dir that refused ONE write bars that artist from ever re-resolving
+    again for the life of the process."""
+    from app.artwork.cache import _NegativeUntil
+
+    cache = ArtistImageCache(tmp_path / "unwritable")
+    cache._memory.put(cache._key("Nobody"), _NegativeUntil(expiry=time.time() - 1))
+    assert cache.has_fresh_negative("Nobody") is False
+
+
+def test_has_fresh_negative_never_raises_on_an_unreadable_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = ArtistImageCache(tmp_path)
+
+    def boom(self: Path) -> bool:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "exists", boom)
+    assert cache.has_fresh_negative("ABBA") is False
