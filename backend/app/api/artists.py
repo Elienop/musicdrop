@@ -27,6 +27,7 @@ from app.artwork.factory import (
     build_artist_image_sources,
     label_for,
 )
+from app.artwork.filler import ArtistImageFiller
 from app.artwork.images import (
     FALLBACK_CONTENT_TYPE,
     MAX_IMAGE_BYTES,
@@ -109,6 +110,29 @@ def get_artist_art_write_toggle(request: Request) -> ArtistArtWriteToggle:
     """The process-wide persisted write-to-library toggle, built in the lifespan."""
     toggle: ArtistArtWriteToggle = request.app.state.artist_art_write_toggle
     return toggle
+
+
+def get_artist_image_filler(request: Request) -> ArtistImageFiller:
+    """The process-wide background filler, built in the app lifespan.
+
+    Built lazily and CACHED on ``app.state`` when absent: ``TestClient(app)``
+    skips the lifespan, and a fresh instance per request would silently lose the
+    single-flight the whole design rests on.
+    """
+    filler: ArtistImageFiller | None = getattr(request.app.state, "artist_image_filler", None)
+    if filler is None:
+        app = request.app
+        filler = ArtistImageFiller(on_filled=lambda: emit_art_changed(app))
+        app.state.artist_image_filler = filler
+    return filler
+
+
+def _inline_grace_seconds(app: object) -> float:
+    """The inline-wait budget, read from the app's settings (tests monkeypatch
+    a stub onto ``app.state``) with the module settings as the fallback - the
+    same idiom ``_start`` uses for the backfill delay."""
+    app_settings = getattr(app.state, "settings", None) or _module_settings  # type: ignore[attr-defined]  # app is duck-typed (object) so tests can pass a stub
+    return float(getattr(app_settings, "artist_image_inline_grace_seconds", 1.5))
 
 
 @router.get("/artists", response_model=list[Artist])

@@ -30,6 +30,7 @@ from app.api.trash import router as trash_router
 from app.artwork.cache import ArtistImageCache
 from app.artwork.cover_thumbs import CoverThumbCache
 from app.artwork.factory import ArtistImageSources, build_artist_image_sources
+from app.artwork.filler import ArtistImageFiller
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
@@ -38,6 +39,7 @@ from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
 from app.body_limit import BodySizeLimitMiddleware
 from app.config import resolve_artist_image_cache_dir, resolve_cover_thumb_cache_dir, settings
+from app.events.emit import emit_art_changed
 from app.static_files import mount_static
 from app.wire import SurrogateSafeJSONResponse, install_wire_safety
 
@@ -211,6 +213,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         lambda: toggle.is_enabled() or art_write_toggle.is_enabled(),
         artist_image_sources,
     )
+    # Uncached portraits resolve OFF the request path from here on: the filler
+    # single-flights one resolve per artist and announces a drained burst with
+    # one coalesced repaint. UNSCOPED for the same reason every artist-image
+    # mutation is: the asset is served under a NORMALIZED name, so a display
+    # name is not a reliable identity. Built before the ``try`` so it is in
+    # scope for the ``finally`` teardown.
+    artist_image_filler = ArtistImageFiller(on_filled=lambda: emit_art_changed(app))
+    app.state.artist_image_filler = artist_image_filler
     from app.artwork.factory import build_fanart_background_source
 
     app.state.artist_background_source = build_fanart_background_source(http_client, settings)
@@ -232,6 +242,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             if not import_registry.has_active_job():
                 break
             await asyncio.sleep(_SHUTDOWN_IMPORT_DRAIN_INTERVAL)
+        # Cancel outstanding background fills BEFORE the client they fetch
+        # through is closed, so a shutdown mid-resolve raises CancelledError
+        # (which the filler expects) rather than "client has been closed".
+        await artist_image_filler.close()
         await http_client.aclose()
         close_library(handle.lib)
         # Remove the broker before the event loop is torn down so that any
