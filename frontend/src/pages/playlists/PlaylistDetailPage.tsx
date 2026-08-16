@@ -481,18 +481,31 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     );
   }, []);
 
-  /** Resolve the armed pending entry to the picked library track, keeping its
-   * position. On success the mutation swaps the detail cache (which reseeds the
-   * local tracklist); the picker disarms either way. */
+  // The row the picker is armed for, and whether picking will REPLACE a live
+  // track rather than fill an empty slot. An unavailable row has an item id but
+  // nothing behind it, so it is not a replacement either - only a row that is
+  // resolved AND present is.
+  const armed = matchUid === null ? null : (tracks.find((t) => t.uid === matchUid) ?? null);
+  const armedReplaces = armed !== null && !armed.pending && armed.available;
+
+  /** Point the armed entry at the picked library track, keeping its position.
+   * On success the mutation swaps the detail cache (which reseeds the local
+   * tracklist); the picker disarms either way. */
   function handlePick(itemId: number) {
     const entryUid = matchUid;
     if (entryUid === null) {
       return;
     }
+    const replaces = armedReplaces;
     resolve.mutate(
       { entryUid, itemId },
       {
-        onSuccess: () => setStatusMsg("Matched the track to your library"),
+        onSuccess: () =>
+          setStatusMsg(
+            replaces
+              ? "Replaced the track; the row kept its position"
+              : "Matched the track to your library",
+          ),
       },
     );
     setMatchUid(null);
@@ -885,16 +898,23 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
         </Table>
       )}
 
-      {/* One shared picker for whichever pending row is armed (matchUid). It is
+      {/* One shared picker for whichever row is armed (matchUid). It is
           playlist-agnostic — it just hands back a library item id, which
-          handlePick resolves onto the armed entry. */}
+          handlePick resolves onto the armed entry. The title and description
+          say which of the two things the pick will do, because re-pointing a
+          row that already has a track REPLACES it rather than adding one. */}
       <TrackMatchPicker
         open={matchUid !== null}
         onOpenChange={(next) => {
           if (!next) setMatchUid(null);
         }}
         onPick={(picked) => handlePick(picked.item_id)}
-        title="Match to a library track"
+        title={armedReplaces ? "Point this row at another track" : "Match to a library track"}
+        description={
+          armedReplaces
+            ? "Search your library and pick the track this row should point to instead. It replaces the current track and keeps its position."
+            : "Search your library and pick the track this entry should point to."
+        }
       />
     </section>
   );
@@ -1037,6 +1057,14 @@ const PlaylistTrackRow = memo(function PlaylistTrackRow({
   // vanished resolved track (there's nothing left to show).
   const title = displayTitle(track);
   const showMeta = track.available || track.pending;
+
+  // Offer the re-point action on any row that is not cleanly playable AND
+  // placed: a pending import, a row whose beets item is gone, or a resolved row
+  // the last Plex sync could not put on the server. A healthy row keeps no
+  // action - one identical button per row down a 61-track playlist is noise.
+  // (`!track.available` already covers pending today; the explicit term keeps
+  // the three states legible if `_pending_row` ever changes.)
+  const canMatch = track.pending || !track.available || plexMiss !== undefined;
   return (
     <TableRow className={track.available ? undefined : "bg-muted/40"}>
       <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
@@ -1109,7 +1137,7 @@ const PlaylistTrackRow = memo(function PlaylistTrackRow({
       </TableCell>
       <TableCell>
         <div className="flex items-center justify-end gap-1">
-          {track.pending && (
+          {canMatch && (
             <Button
               size="sm"
               variant="outline"
