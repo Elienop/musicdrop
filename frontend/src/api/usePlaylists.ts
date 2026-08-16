@@ -7,6 +7,7 @@ import type { components } from "@/api/schema";
 export type Playlist = components["schemas"]["Playlist"];
 export type PlaylistDetail = components["schemas"]["PlaylistDetail"];
 export type PlaylistTrack = components["schemas"]["PlaylistTrack"];
+export type PlaylistMergeResult = components["schemas"]["PlaylistMergeResponse"];
 
 async function fetchPlaylists(): Promise<Playlist[]> {
   return unwrap(await client.GET("/api/playlists"), "Failed to load playlists");
@@ -237,6 +238,36 @@ export function useReorderTracks(id: string) {
       ),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["playlist", id] });
+    },
+  });
+}
+
+/** Fold another playlist into `id`. The response carries the rewritten detail
+ * plus the server's own `added` / `skipped_duplicates` counts, so the caller
+ * states the outcome without recounting. Merge rewrites the whole list in one
+ * round trip, so there is no optimistic path: the response IS the new state.
+ *
+ * The cache seed lives in the HOOK-level onSuccess on purpose - TanStack skips
+ * a per-call onSuccess when its observer has unmounted but always runs this
+ * one, so the detail cache cannot be left stale by a dialog that closed early.
+ */
+export function useMergePlaylist(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation<PlaylistMergeResult, Error, { sourceId: string; deleteSource: boolean }>({
+    mutationFn: async ({ sourceId, deleteSource }) =>
+      unwrap(
+        await client.POST("/api/playlists/{playlist_id}/merge", {
+          params: { path: { playlist_id: id } },
+          body: { source_id: sourceId, delete_source: deleteSource },
+        }),
+        "Merge failed",
+      ),
+    onSuccess: (result, vars) => {
+      queryClient.setQueryData(["playlist", id], result.playlist);
+      // The source is either gone or unchanged; either way its cached detail
+      // and the list's counts are now wrong.
+      void queryClient.invalidateQueries({ queryKey: ["playlist", vars.sourceId] });
+      void queryClient.invalidateQueries({ queryKey: ["playlists"] });
     },
   });
 }
