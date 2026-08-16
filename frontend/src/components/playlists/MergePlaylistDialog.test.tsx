@@ -92,9 +92,13 @@ describe("MergePlaylistDialog", () => {
       http.get(`${LIST}/${SOURCE}`, () =>
         HttpResponse.json({
           ...summary(SOURCE, "Road trip", 3),
-          // id 1 is already in the target; id 9 is not; the pending row has no
-          // id at all and so always comes across.
-          tracks: [track(1, "s1", "Alpha"), track(9, "s2", "Nine"), track(null, "s3", "Ghost")],
+          // id 1 is already in the target; id 9 is not. The pending row has no
+          // id at all, and its remembered title deliberately COLLIDES with the
+          // target's resolved "Alpha": grey rows are copied verbatim and never
+          // text-matched, so it still comes across as its own row. A preview
+          // that matched pending rows on title would report "1 track will come
+          // across; 2 already here" and fail here.
+          tracks: [track(1, "s1", "Alpha"), track(9, "s2", "Nine"), track(null, "s3", "Alpha")],
         }),
       ),
     );
