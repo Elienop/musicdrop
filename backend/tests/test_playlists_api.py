@@ -942,3 +942,268 @@ def test_cover_album_ids_empty_when_playlist_has_artwork(
     detail = client.get(f"/api/playlists/{pid}").json()
     assert detail["artwork_hash"] is not None
     assert detail["cover_album_ids"] == []
+
+
+def test_merge_appends_source_tracks_and_reports_the_counts(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    alpha = _add_track(beets_library, "Alpha")
+    beta = _add_track(beets_library, "Beta")
+    gamma = _add_track(beets_library, "Gamma")
+    target = store.create_playlist(
+        _dir(),
+        name="Keep",
+        entries=[StoredEntry(uid="t1", item_id=alpha), StoredEntry(uid="t2", item_id=beta)],
+    )
+    source = store.create_playlist(
+        _dir(),
+        name="Fold in",
+        entries=[StoredEntry(uid="s1", item_id=beta), StoredEntry(uid="s2", item_id=gamma)],
+    )
+
+    r = client.post(f"/api/playlists/{target.id}/merge", json={"source_id": source.id})
+
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["added"] == 1
+    assert payload["skipped_duplicates"] == 1
+    assert payload["source_deleted"] is False
+    # Appended in source order; the target's own order is untouched.
+    assert [t["id"] for t in payload["playlist"]["tracks"]] == [alpha, beta, gamma]
+
+
+def test_merge_keeps_a_pending_row_that_matches_a_resolved_target_track_by_text(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """THE ANTI-GUESSING GUARD (API half), at the layer where guessing is possible.
+
+    The target holds a RESOLVED library track really titled "Last Christmas";
+    the source holds a PENDING row remembering the same artist and title. They
+    need not be the same recording - Wham! and Ariana Grande both have one - and
+    the pending row has no library track behind it, so any dedupe here would be
+    guessing on text. Both rows must survive. If this ever fails because the
+    titles matched, merge has started dropping songs.
+    """
+    resolved = _add_track(beets_library, "Last Christmas")
+    target = store.create_playlist(
+        _dir(), name="Keep", entries=[StoredEntry(uid="t1", item_id=resolved)]
+    )
+    source = store.create_playlist(
+        _dir(),
+        name="Fold in",
+        entries=[
+            StoredEntry(
+                uid="s1",
+                pending=PendingTrack(artist="Art", title="Last Christmas", source="m3u line"),
+            )
+        ],
+    )
+
+    r = client.post(f"/api/playlists/{target.id}/merge", json={"source_id": source.id})
+
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["added"] == 1
+    assert payload["skipped_duplicates"] == 0
+    tracks = payload["playlist"]["tracks"]
+    assert len(tracks) == 2
+    assert tracks[0]["pending"] is False
+    assert tracks[0]["title"] == "Last Christmas"
+    assert tracks[1]["pending"] is True
+    assert tracks[1]["title"] == "Last Christmas"
+    assert tracks[1]["source"] == "m3u line"
+
+
+def test_merge_into_itself_is_409_and_writes_nothing(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    alpha = _add_track(beets_library, "Alpha")
+    record = store.create_playlist(
+        _dir(), name="Keep", entries=[StoredEntry(uid="t1", item_id=alpha)]
+    )
+    before = store.get_playlist(_dir(), record.id)
+    assert before is not None
+
+    r = client.post(f"/api/playlists/{record.id}/merge", json={"source_id": record.id})
+
+    assert r.status_code == 409
+    after = store.get_playlist(_dir(), record.id)
+    assert after is not None
+    assert [e.uid for e in after.entries] == ["t1"]  # nothing appended
+    assert after.updated_at == before.updated_at  # nothing written at all
+
+
+def test_merge_unknown_target_or_source_is_404_from_the_route_itself(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """404 carrying THIS route's body, not Starlette's "no such path" 404.
+
+    A status-only assertion here would be vacuous: with no /merge route
+    registered, Starlette finds no matching path shape at all and answers 404
+    (never 405 - it never reaches method negotiation), so `== 404` passes
+    against no implementation. The detail sentence is what only the real
+    handler produces; Starlette's is the bare "Not Found".
+    """
+    real = store.create_playlist(_dir(), name="Keep")
+    missing = "0" * 32
+
+    unknown_target = client.post(f"/api/playlists/{missing}/merge", json={"source_id": real.id})
+    unknown_source = client.post(f"/api/playlists/{real.id}/merge", json={"source_id": missing})
+    # A hostile id is rejected by the store's 32-char-hex guard before any
+    # filesystem access (the chunk-1 path-traversal finding). One line: it fits
+    # inside ruff's 100 columns, so a wrapped call would be reformatted.
+    hostile = client.post(f"/api/playlists/{real.id}/merge", json={"source_id": "../../etc/passwd"})
+
+    assert unknown_target.status_code == 404
+    assert unknown_target.json()["detail"] == "Playlist not found"
+    assert unknown_source.status_code == 404
+    assert unknown_source.json()["detail"] == "Playlist not found"
+    assert hostile.status_code == 404
+    assert hostile.json()["detail"] == "Playlist not found"
+
+
+def test_merge_with_a_corrupt_source_record_is_404_and_leaves_the_target_alone(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """An unparseable record reads as MISSING, and is never a 500.
+
+    ``store.get_playlist`` catches the ``ValueError`` from
+    ``model_validate_json`` and returns ``None``
+    (``backend/app/playlists/store.py:192-195``), so a corrupt file is
+    indistinguishable from an absent one: ``merge_playlists`` returns ``None``
+    and the router's existing 404 path covers it. The target must come through
+    untouched - ``merge_playlists`` reads BOTH records under the lock and
+    returns before it writes anything. This is load-bearing and an earlier
+    draft of the spec mis-stated it (it claimed the read raises), which is
+    exactly why it is pinned here.
+    """
+    alpha = _add_track(beets_library, "Alpha")
+    target = store.create_playlist(
+        _dir(), name="Keep", entries=[StoredEntry(uid="t1", item_id=alpha)]
+    )
+    source = store.create_playlist(_dir(), name="Fold in")
+    (_dir() / f"{source.id}.json").write_text("{ not json", encoding="utf-8")
+    before = store.get_playlist(_dir(), target.id)
+    assert before is not None
+
+    r = client.post(f"/api/playlists/{target.id}/merge", json={"source_id": source.id})
+
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Playlist not found"
+    after = store.get_playlist(_dir(), target.id)
+    assert after is not None
+    assert [e.uid for e in after.entries] == ["t1"]
+    assert after.updated_at == before.updated_at
+
+
+def test_merge_rewrites_the_target_export(client: TestClient, beets_library: LibraryHandle) -> None:
+    alpha = _add_track(beets_library, "Alpha")
+    target = client.post("/api/playlists", json={"name": "Keep"}).json()["id"]
+    source = client.post("/api/playlists", json={"name": "Fold in"}).json()["id"]
+    client.post(f"/api/playlists/{source}/tracks", json={"track_ids": [alpha]})
+
+    r = client.post(f"/api/playlists/{target}/merge", json={"source_id": source})
+
+    assert r.status_code == 200
+    target_m3u = os.path.join(_export_dir(beets_library), f"{target}.m3u8")
+    with open(target_m3u, encoding="utf-8") as fh:
+        body = fh.read()
+    assert "Alpha" in body
+
+
+def test_merge_with_delete_source_removes_the_source_and_its_export(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    alpha = _add_track(beets_library, "Alpha")
+    target = client.post("/api/playlists", json={"name": "Keep"}).json()["id"]
+    source = client.post("/api/playlists", json={"name": "Fold in"}).json()["id"]
+    client.post(f"/api/playlists/{source}/tracks", json={"track_ids": [alpha]})
+    source_m3u = os.path.join(_export_dir(beets_library), f"{source}.m3u8")
+    assert os.path.isfile(source_m3u)
+
+    r = client.post(
+        f"/api/playlists/{target}/merge", json={"source_id": source, "delete_source": True}
+    )
+
+    assert r.status_code == 200
+    assert r.json()["source_deleted"] is True
+    assert client.get(f"/api/playlists/{source}").status_code == 404
+    assert not os.path.exists(source_m3u)
+    detail = client.get(f"/api/playlists/{target}").json()
+    assert [t["id"] for t in detail["tracks"]] == [alpha]
+
+
+def test_merge_without_delete_source_leaves_the_source_alone(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    alpha = _add_track(beets_library, "Alpha")
+    target = client.post("/api/playlists", json={"name": "Keep"}).json()["id"]
+    source = client.post("/api/playlists", json={"name": "Fold in"}).json()["id"]
+    client.post(f"/api/playlists/{source}/tracks", json={"track_ids": [alpha]})
+
+    r = client.post(f"/api/playlists/{target}/merge", json={"source_id": source})
+
+    assert r.status_code == 200
+    assert r.json()["source_deleted"] is False
+    detail = client.get(f"/api/playlists/{source}")
+    assert detail.status_code == 200
+    assert [t["id"] for t in detail.json()["tracks"]] == [alpha]
+
+
+def test_merge_delete_source_cascades_to_plex(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ticked "delete afterwards" removes the source's Plex copies too, by the
+    ratingKey its own sync recorded.
+
+    The cascade HELPER is the one the DELETE route uses
+    (``_best_effort_plex_delete``) and its behaviour is unchanged; the call site
+    is new, because a lock-holding merge cannot reach the DELETE path.
+    """
+    alpha = _add_track(beets_library, "Alpha")
+    server = _fake_plex(monkeypatch, [FakeTrack(10, [_plex_path(beets_library, "Alpha")])])
+    client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
+    target = client.post("/api/playlists", json={"name": "Keep"}).json()["id"]
+    source = client.post("/api/playlists", json={"name": "Fold in"}).json()["id"]
+    client.post(f"/api/playlists/{source}/tracks", json={"track_ids": [alpha]})
+    client.post(f"/api/playlists/{source}/sync")  # source record now has plex["admin"]
+
+    captured: list[dict[str, str | None]] = []
+
+    def _record(
+        config: object, rating_keys: dict[str, str | None], *, playlist_id: str
+    ) -> dict[str, str]:
+        captured.append(dict(rating_keys))
+        return {}
+
+    monkeypatch.setattr(plex_sync, "delete_playlist_on_targets", _record)
+
+    r = client.post(
+        f"/api/playlists/{target}/merge", json={"source_id": source, "delete_source": True}
+    )
+
+    assert r.status_code == 200
+    assert captured == [{"admin": str(server.created[0].ratingKey)}]
+
+
+def test_merge_reads_out_of_date_against_the_targets_last_sync(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Merge does not sync; it bumps updated_at so the editor asks for one."""
+    alpha = _add_track(beets_library, "Alpha")
+    beta = _add_track(beets_library, "Beta")
+    _fake_plex(monkeypatch, [FakeTrack(10, [_plex_path(beets_library, "Alpha")])])
+    client.put("/api/plex/settings", json={"base_url": "http://plex:32400", "token": "t"})
+    target = client.post("/api/playlists", json={"name": "Keep"}).json()["id"]
+    client.post(f"/api/playlists/{target}/tracks", json={"track_ids": [alpha]})
+    synced = client.post(f"/api/playlists/{target}/sync").json()
+    synced_at = synced["plex"]["admin"]["synced_at"]
+    assert synced_at is not None
+    source = client.post("/api/playlists", json={"name": "Fold in"}).json()["id"]
+    client.post(f"/api/playlists/{source}/tracks", json={"track_ids": [beta]})
+
+    merged = client.post(f"/api/playlists/{target}/merge", json={"source_id": source}).json()
+
+    # updated_at > synced_at is exactly the editor's "Out of date; re-sync" rule.
+    assert merged["playlist"]["updated_at"] > synced_at
+    assert merged["playlist"]["plex"]["admin"]["synced_at"] == synced_at
