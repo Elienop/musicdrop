@@ -184,13 +184,6 @@ origin question is the one with a deadline of sorts: it matters before the next 
 - `aside.w-96` on `ArtistAlbumsPage` overflows a 390px viewport by 18px, reproduced with the
   panel closed (`App.tsx:53` gives main `px-6`, leaving ~342px for a 384px rail). Fix is
   `w-full max-w-96 lg:w-96`, not a design change.
-- **A merge with "delete afterwards" fires a doomed refetch of the deleted source.** The merge
-  hook invalidates `["playlist", sourceId]` (correctly — a merge changes the source), but when
-  `source_deleted` is true that invalidation triggers a GET against a record that no longer
-  exists: a 404 in the console, one wasted request, no user impact. Found by browser-verifying
-  the merge flow, not by the suite — jsdom + msw would only 404 if a handler said so. Fix is to
-  `removeQueries` that key instead of invalidating it when `source_deleted`, which also means
-  updating the test that currently pins the invalidation.
 - **`ImportPlaylistsPage.tsx:403-412` has a dead checkbox label.** The visible text sits beside
   a Radix `Checkbox` that carries the accessible name as an `aria-label`, and the text itself is
   inert — clicking the words does nothing, so only the small box is a target. Found while fixing
