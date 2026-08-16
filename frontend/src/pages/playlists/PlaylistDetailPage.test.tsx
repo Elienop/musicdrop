@@ -1693,4 +1693,76 @@ describe("PlaylistDetailPage", () => {
       screen.queryByText("Replaced the track; the row kept its position"),
     ).not.toBeInTheDocument();
   });
+
+  test("merging another playlist announces the counts the server returned", async () => {
+    const LIST = `${window.location.origin}/api/playlists`;
+    const SOURCE = "b".repeat(32);
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha")]))),
+      http.get(LIST, () =>
+        HttpResponse.json([
+          {
+            id: ID,
+            name: "Late night",
+            description: "",
+            track_count: 1,
+            pending_count: 0,
+            target_plex_users: [],
+            plex: {},
+            created_at: "2026-08-16T00:00:00+00:00",
+            updated_at: "2026-08-16T00:00:00+00:00",
+            artwork_hash: null,
+            cover_album_ids: [],
+          },
+          {
+            id: SOURCE,
+            name: "Road trip",
+            description: "",
+            track_count: 2,
+            pending_count: 0,
+            target_plex_users: [],
+            plex: {},
+            created_at: "2026-08-16T00:00:00+00:00",
+            updated_at: "2026-08-16T00:00:00+00:00",
+            artwork_hash: null,
+            cover_album_ids: [],
+          },
+        ]),
+      ),
+      http.get(`${LIST}/${SOURCE}`, () =>
+        HttpResponse.json({
+          ...detail([track(9, "Nine")], "Road trip"),
+          id: SOURCE,
+        }),
+      ),
+      http.post(`${BASE}/merge`, () =>
+        HttpResponse.json({
+          playlist: detail([track(1, "Alpha"), track(9, "Nine")]),
+          // Deliberately NOT what a client recount would produce from the
+          // fixtures above - the announcement must quote the server.
+          added: 4,
+          skipped_duplicates: 2,
+          source_deleted: false,
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+
+    await userEvent.click(screen.getByRole("button", { name: /merge another playlist/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /road trip/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^merge$/i }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "Merged Road trip: added 4 tracks, skipped 2 already here. Sync to Plex to push the change.",
+        ),
+      ).toBeInTheDocument(),
+    );
+    expect(await screen.findByText("Nine")).toBeInTheDocument();
+  });
 });
