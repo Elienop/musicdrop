@@ -506,10 +506,16 @@ async def merge_playlist_endpoint(
     """
     if body.source_id == playlist_id:
         raise HTTPException(status_code=409, detail="A playlist cannot be merged into itself.")
-    # Read the source BEFORE the merge: once delete_source removes the record,
-    # nothing knows which Plex accounts held a copy. Same shape (and reason) as
-    # the DELETE handler reading the record before store.delete_playlist.
-    source = await run_in_threadpool(store.get_playlist, playlists_dir, body.source_id)
+    # Only a delete needs the source record, and it has to be read BEFORE the
+    # merge: once delete_source removes it, nothing knows which Plex accounts
+    # held a copy. Same shape (and reason) as the DELETE handler reading the
+    # record before store.delete_playlist. Keeping the source is the common
+    # case, so that read is skipped entirely there.
+    source = (
+        await run_in_threadpool(store.get_playlist, playlists_dir, body.source_id)
+        if body.delete_source
+        else None
+    )
     outcome = await run_in_threadpool(
         store.merge_playlists,
         playlists_dir,

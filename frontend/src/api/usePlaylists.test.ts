@@ -61,4 +61,33 @@ describe("useMergePlaylist", () => {
     // detail - seed it rather than round-tripping a refetch.
     expect(queryClient.getQueryData(["playlist", TARGET])).toEqual(detail("Keep"));
   });
+
+  test("invalidates the source's cached detail and the playlist list", async () => {
+    server.use(
+      http.post(`${window.location.origin}/api/playlists/${TARGET}/merge`, () =>
+        HttpResponse.json({
+          playlist: detail("Keep"),
+          added: 3,
+          skipped_duplicates: 1,
+          source_deleted: true,
+        }),
+      ),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // Both caches are stale the moment the merge lands: the source is either
+    // gone or emptied of the rows that moved, and every summary in the list
+    // carries a track_count. Seeded so there is something real to invalidate -
+    // invalidateQueries on a key the cache has never seen marks nothing.
+    queryClient.setQueryData(["playlist", SOURCE], detail("Road trip"));
+    queryClient.setQueryData(["playlists"], []);
+    const { result } = renderHook(() => useMergePlaylist(TARGET), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    result.current.mutate({ sourceId: SOURCE, deleteSource: true });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(queryClient.getQueryState(["playlist", SOURCE])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(["playlists"])?.isInvalidated).toBe(true);
+  });
 });

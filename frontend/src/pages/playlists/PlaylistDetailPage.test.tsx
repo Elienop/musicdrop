@@ -1694,40 +1694,33 @@ describe("PlaylistDetailPage", () => {
     ).not.toBeInTheDocument();
   });
 
-  test("merging another playlist announces the counts the server returned", async () => {
+  /** This page + a "Road trip" source to merge from, with the merge itself
+   * answering `result`. The counts in `result` are deliberately free of the
+   * fixtures: the announcement must quote the SERVER, never recount. */
+  function serveMerge(result: {
+    added: number;
+    skipped_duplicates: number;
+    source_deleted: boolean;
+  }) {
     const LIST = `${window.location.origin}/api/playlists`;
     const SOURCE = "b".repeat(32);
+    const listed = (id: string, name: string, trackCount: number) => ({
+      id,
+      name,
+      description: "",
+      track_count: trackCount,
+      pending_count: 0,
+      target_plex_users: [],
+      plex: {},
+      created_at: "2026-08-16T00:00:00+00:00",
+      updated_at: "2026-08-16T00:00:00+00:00",
+      artwork_hash: null,
+      cover_album_ids: [],
+    });
     server.use(
       http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha")]))),
       http.get(LIST, () =>
-        HttpResponse.json([
-          {
-            id: ID,
-            name: "Late night",
-            description: "",
-            track_count: 1,
-            pending_count: 0,
-            target_plex_users: [],
-            plex: {},
-            created_at: "2026-08-16T00:00:00+00:00",
-            updated_at: "2026-08-16T00:00:00+00:00",
-            artwork_hash: null,
-            cover_album_ids: [],
-          },
-          {
-            id: SOURCE,
-            name: "Road trip",
-            description: "",
-            track_count: 2,
-            pending_count: 0,
-            target_plex_users: [],
-            plex: {},
-            created_at: "2026-08-16T00:00:00+00:00",
-            updated_at: "2026-08-16T00:00:00+00:00",
-            artwork_hash: null,
-            cover_album_ids: [],
-          },
-        ]),
+        HttpResponse.json([listed(ID, "Late night", 1), listed(SOURCE, "Road trip", 2)]),
       ),
       http.get(`${LIST}/${SOURCE}`, () =>
         HttpResponse.json({
@@ -1738,14 +1731,14 @@ describe("PlaylistDetailPage", () => {
       http.post(`${BASE}/merge`, () =>
         HttpResponse.json({
           playlist: detail([track(1, "Alpha"), track(9, "Nine")]),
-          // Deliberately NOT what a client recount would produce from the
-          // fixtures above - the announcement must quote the server.
-          added: 4,
-          skipped_duplicates: 2,
-          source_deleted: false,
+          ...result,
         }),
       ),
     );
+  }
+
+  /** Open the merge dialog, pick "Road trip", commit. */
+  async function mergeRoadTrip() {
     renderWithProviders(<PlaylistDetailPage />, {
       route: `/playlists/${ID}`,
       path: "/playlists/:playlistId",
@@ -1755,6 +1748,12 @@ describe("PlaylistDetailPage", () => {
     await userEvent.click(screen.getByRole("button", { name: /merge another playlist/i }));
     await userEvent.click(await screen.findByRole("button", { name: /road trip/i }));
     await userEvent.click(screen.getByRole("button", { name: /^merge$/i }));
+  }
+
+  test("merging another playlist announces the counts the server returned", async () => {
+    serveMerge({ added: 4, skipped_duplicates: 2, source_deleted: false });
+
+    await mergeRoadTrip();
 
     await waitFor(() =>
       expect(
@@ -1764,5 +1763,22 @@ describe("PlaylistDetailPage", () => {
       ).toBeInTheDocument(),
     );
     expect(await screen.findByText("Nine")).toBeInTheDocument();
+  });
+
+  test("a merge that deleted the source says so, and counts one track in the singular", async () => {
+    // The two clauses the counts-quoting test above never reaches: the ticked
+    // "delete afterwards" outcome, and the singular "track" for added === 1.
+    // Skipping stays at 0, so the middle clause is correctly absent.
+    serveMerge({ added: 1, skipped_duplicates: 0, source_deleted: true });
+
+    await mergeRoadTrip();
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "Merged Road trip: added 1 track, and deleted Road trip. Sync to Plex to push the change.",
+        ),
+      ).toBeInTheDocument(),
+    );
   });
 });

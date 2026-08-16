@@ -323,9 +323,9 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
   // pick resolves that uid and disarms.
   const [matchUid, setMatchUid] = useState<string | null>(null);
 
-  // The merge dialog. Mounted only while open: it calls usePlaylists(), and a
-  // page that always fired GET /api/playlists would change what every caller
-  // (and every existing test) has to serve.
+  // The merge dialog. Mounted only while open - nothing here needs it before
+  // then. Its own usePlaylists() is disabled while closed as well, so neither
+  // path can fire GET /api/playlists off a page that merely CAN merge.
   const [mergeOpen, setMergeOpen] = useState(false);
 
   // Local copy of the tracklist so reorder/remove update the UI immediately

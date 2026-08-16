@@ -1,8 +1,10 @@
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
+import { useState } from "react";
 import { describe, expect, test, vi } from "vitest";
 
+import type { PlaylistDetail } from "@/api/usePlaylists";
 import { MergePlaylistDialog } from "@/components/playlists/MergePlaylistDialog";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
@@ -44,6 +46,25 @@ function targetDetail(tracks: ReturnType<typeof track>[]) {
   return { ...summary(TARGET, "Keep", tracks.length), tracks };
 }
 
+/** Mounts the dialog CLOSED behind a button, so a test can watch what the
+ * component does before anyone opens it. */
+function Harness({ target }: { target: PlaylistDetail }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        open it
+      </button>
+      <MergePlaylistDialog
+        target={target}
+        open={open}
+        onOpenChange={setOpen}
+        onMerged={vi.fn()}
+      />
+    </>
+  );
+}
+
 function renderDialog(
   target = targetDetail([track(1, "t1", "Alpha")]),
   onMerged = vi.fn(),
@@ -82,6 +103,41 @@ describe("MergePlaylistDialog", () => {
     await userEvent.click(await screen.findByRole("button", { name: /road trip/i }));
     const box = await screen.findByRole("checkbox", { name: /delete road trip afterwards/i });
     expect(box).toHaveAttribute("aria-checked", "false");
+  });
+
+  test("the visible delete label is clickable, named once, and keyboard-toggleable", async () => {
+    server.use(
+      http.get(LIST, () =>
+        HttpResponse.json([summary(TARGET, "Keep", 1), summary(SOURCE, "Road trip", 2)]),
+      ),
+      http.get(`${LIST}/${SOURCE}`, () =>
+        HttpResponse.json({ ...summary(SOURCE, "Road trip", 2), tracks: [track(9, "s1", "Nine")] }),
+      ),
+    );
+    renderDialog();
+    await userEvent.click(await screen.findByRole("button", { name: /road trip/i }));
+    const box = await screen.findByRole("checkbox", { name: /delete road trip afterwards/i });
+    const label = screen.getByText("Delete Road trip afterwards");
+
+    // People click the words, not the 16px square.
+    await userEvent.click(label);
+    expect(box).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(label);
+    expect(box).toHaveAttribute("aria-checked", "false");
+
+    // Exactly ONE accessible name: the words ride on the control's aria-label
+    // (a <label for> does not associate with Radix's role="checkbox" button),
+    // so the visible copy must stay out of the accessibility tree or a screen
+    // reader announces the same sentence twice.
+    expect(box).toHaveAccessibleName("Delete Road trip afterwards");
+    expect(label).toHaveAttribute("aria-hidden", "true");
+
+    // The control itself is still the focusable, operable one - the clickable
+    // words add no second tab stop.
+    (box as HTMLElement).focus();
+    expect(box).toHaveFocus();
+    await userEvent.keyboard(" ");
+    expect(box).toHaveAttribute("aria-checked", "true");
   });
 
   test("previews what will come across and what is already here", async () => {
@@ -140,6 +196,33 @@ describe("MergePlaylistDialog", () => {
         "Road trip",
       ),
     );
+  });
+
+  test("requests nothing until it is opened", async () => {
+    let listCalls = 0;
+    server.use(
+      http.get(LIST, () => {
+        listCalls += 1;
+        return HttpResponse.json([summary(TARGET, "Keep", 1), summary(SOURCE, "Road trip", 2)]);
+      }),
+    );
+    // Mounted CLOSED, the way a page that keeps the dialog around would do it:
+    // the playlist list is only needed once there is a picker to fill, and
+    // several pages' tests serve no /api/playlists handler at all (msw runs
+    // onUnhandledRequest: "error"), so an eager fetch is a live hazard.
+    renderWithProviders(<Harness target={targetDetail([track(1, "t1", "Alpha")])} />);
+    // Let a mount-time query start and let msw run its handler.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(listCalls).toBe(0);
+
+    await userEvent.click(screen.getByRole("button", { name: /open it/i }));
+
+    // The counter is live - opening does fetch - so the 0 above is a real
+    // absence, not a probe that never worked.
+    expect(await screen.findByRole("button", { name: /road trip/i })).toBeInTheDocument();
+    expect(listCalls).toBe(1);
   });
 
   test("says the merged playlist needs a sync to reach Plex", async () => {

@@ -2,6 +2,7 @@ import hashlib
 import json
 import threading
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -330,21 +331,23 @@ def test_resolve_entry_sets_item_and_clears_pending(tmp_path: Path) -> None:
     assert updated.entries[0].uid == entry.uid  # identity survives resolution
 
 
-def test_concurrent_mutations_do_not_lose_an_update(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Two overlapping add_tracks must BOTH persist — no lost update.
+def _force_lost_update_interleave(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deterministically stage the classic read-modify-write lost update.
 
-    Deterministically forces the classic read-modify-write interleave: the first
-    thread to reach the write is paused (after it has read) until the second
-    thread's whole mutation lands, then it writes its own copy. Without the
-    store lock, that stale copy overwrites the second thread's entry (the bug).
-    With the lock, the second thread can't even start until the first releases,
-    so the paused write times out harmlessly and both entries survive.
+    Patches ``store._write_atomic`` so the FIRST mutator to reach the write is
+    paused — after it has read — until the other mutator's whole mutation has
+    landed, and only then writes its own (by now stale) copy.
+
+    Under the store's process-wide ``_LOCK`` the second mutator cannot even
+    start while the first holds it, so the pause times out harmlessly and the
+    two mutations serialize: both survive. If the two mutators do NOT share one
+    lock, they interleave exactly as staged and the stale copy silently drops
+    the other's change. Every caller therefore asserts BOTH mutations survived,
+    which passes only while both take the SAME lock.
+
+    Assumes exactly two writes reach ``_write_atomic`` — do all seeding before
+    calling this.
     """
-    record = store.create_playlist(tmp_path, name="Mix")
-    pid = record.id
-
     real_write = store._write_atomic
     other_landed = threading.Event()
     arrival = threading.Lock()
@@ -366,13 +369,28 @@ def test_concurrent_mutations_do_not_lose_an_update(
 
     monkeypatch.setattr(store, "_write_atomic", coordinated_write)
 
-    def add(track_id: int) -> None:
-        store.add_tracks(tmp_path, pid, track_ids=[track_id])
 
+def _run_both(first: Callable[[], object], second: Callable[[], object]) -> None:
+    """Run two mutators on parallel threads and re-raise whatever either hit."""
     with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(add, 101), pool.submit(add, 202)]
+        futures = [pool.submit(first), pool.submit(second)]
         for future in futures:
             future.result()
+
+
+def test_concurrent_mutations_do_not_lose_an_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two overlapping add_tracks must BOTH persist — no lost update."""
+    record = store.create_playlist(tmp_path, name="Mix")
+    pid = record.id
+
+    _force_lost_update_interleave(monkeypatch)
+
+    def add(track_id: int) -> Callable[[], object]:
+        return lambda: store.add_tracks(tmp_path, pid, track_ids=[track_id])
+
+    _run_both(add(101), add(202))
 
     final = store.get_playlist(tmp_path, pid)
     assert final is not None
@@ -688,3 +706,71 @@ def test_merge_with_a_missing_record_returns_none_and_writes_nothing(tmp_path: P
     assert after is not None
     assert [e.item_id for e in after.entries] == [1]
     assert after.updated_at == before.updated_at
+
+
+def test_merge_and_a_concurrent_target_mutation_both_survive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Merge must take the SAME process-wide lock as every other mutator.
+
+    Merge's whole atomicity claim is that both reads, the target write and the
+    optional source removal happen inside ONE ``_LOCK`` acquisition, so nothing
+    can interleave against either record mid-merge. A merge holding a lock only
+    IT can see would satisfy every other test in this file while leaving that
+    claim false, so this pins the lock's identity rather than its presence: a
+    merge and an ``add_tracks`` on the SAME target are forced into the classic
+    read-modify-write interleave (see ``_force_lost_update_interleave``), and
+    the merged row and the added row must both be on disk afterwards. Give
+    ``merge_playlists`` a private ``threading.Lock()`` and one of them is
+    silently dropped.
+    """
+    target = store.create_playlist(tmp_path, name="Keep")
+    source = store.create_playlist(tmp_path, name="Fold in")
+    store.add_tracks(tmp_path, source.id, track_ids=[7], position=None)
+
+    _force_lost_update_interleave(monkeypatch)
+
+    _run_both(
+        lambda: store.merge_playlists(tmp_path, target.id, source.id, delete_source=False),
+        lambda: store.add_tracks(tmp_path, target.id, track_ids=[99]),
+    )
+
+    final = store.get_playlist(tmp_path, target.id)
+    assert final is not None
+    ids = final.resolved_item_ids
+    assert 7 in ids, f"the merged row was dropped by a concurrent mutation: {ids}"
+    assert 99 in ids, f"the concurrent mutation was dropped by the merge: {ids}"
+
+
+def test_merge_with_an_unparseable_source_returns_none_and_leaves_the_target_alone(
+    tmp_path: Path,
+) -> None:
+    """A source record that exists but does not parse is NOT an error.
+
+    ``get_playlist`` swallows the validation ``ValueError`` and returns
+    ``None``, so a corrupt source is indistinguishable from an absent one:
+    ``merge_playlists`` returns ``None`` (the caller owns the 404) instead of
+    raising, and the target is left completely untouched — no appended rows and
+    no ``updated_at`` bump, because both records are read before anything is
+    written. Pinned because the behaviour is load-bearing and an early draft of
+    the design stated it backwards.
+    """
+    target = store.create_playlist(tmp_path, name="Keep")
+    store.add_tracks(tmp_path, target.id, track_ids=[1], position=None)
+    before = store.get_playlist(tmp_path, target.id)
+    assert before is not None
+    source = store.create_playlist(tmp_path, name="Fold in")
+    # Valid JSON, wrong shape - "entries" is a string and the required
+    # timestamps are absent - so model_validate_json raises the pydantic
+    # ValidationError (a ValueError) that get_playlist turns into None.
+    (tmp_path / f"{source.id}.json").write_text('{"entries": "not a list"}', encoding="utf-8")
+
+    outcome = store.merge_playlists(tmp_path, target.id, source.id, delete_source=True)
+
+    assert outcome is None
+    after = store.get_playlist(tmp_path, target.id)
+    assert after is not None
+    assert [e.item_id for e in after.entries] == [1]
+    assert after.updated_at == before.updated_at
+    # A failed merge must not delete the source either, corrupt or not.
+    assert (tmp_path / f"{source.id}.json").is_file()

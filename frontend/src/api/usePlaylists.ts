@@ -13,12 +13,19 @@ async function fetchPlaylists(): Promise<Playlist[]> {
   return unwrap(await client.GET("/api/playlists"), "Failed to load playlists");
 }
 
-/** All playlists (summaries). */
-export function usePlaylists() {
+/** All playlists (summaries).
+ *
+ * `enabled` lets a caller that is mounted before it is visible - the merge
+ * dialog, which exists while closed - hold the request back. Several pages'
+ * tests serve no `/api/playlists` handler, so an unwanted list fetch is a
+ * failure there, not just waste.
+ */
+export function usePlaylists({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ["playlists"],
     queryFn: fetchPlaylists,
     staleTime: 30_000,
+    enabled,
   });
 }
 

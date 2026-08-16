@@ -61,7 +61,10 @@ export function MergePlaylistDialog({
   onOpenChange: (open: boolean) => void;
   onMerged: (result: PlaylistMergeResult, sourceName: string) => void;
 }) {
-  const list = usePlaylists();
+  // Disabled while closed: the dialog can be mounted ahead of being shown, and
+  // the candidate list is only needed once there is a picker to fill. Same
+  // shape as the `usePlaylist` call below, which is disabled on an empty id.
+  const list = usePlaylists({ enabled: open });
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [deleteSource, setDeleteSource] = useState(false);
   const merge = useMergePlaylist(target.id);
@@ -147,7 +150,21 @@ export function MergePlaylistDialog({
                 onCheckedChange={(next) => setDeleteSource(next === true)}
                 aria-label={`Delete ${source.name} afterwards`}
               />
-              <span aria-hidden="true">Delete {source.name} afterwards</span>
+              {/* The words are a click target, because people click labels and
+                  a dead one is worse than none. They stay aria-hidden so the
+                  control keeps exactly ONE accessible name (the aria-label
+                  above) instead of a screen reader hearing the same sentence
+                  twice, and they are deliberately not focusable: the checkbox
+                  is the single tab stop, reached with Tab and toggled with
+                  Space. The handler is on the text alone, not the row, so a
+                  click on the box itself doesn't toggle twice and cancel out. */}
+              <span
+                aria-hidden="true"
+                className="cursor-pointer select-none"
+                onClick={() => setDeleteSource((on) => !on)}
+              >
+                Delete {source.name} afterwards
+              </span>
             </div>
           )}
 
