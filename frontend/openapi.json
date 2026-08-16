@@ -936,6 +936,16 @@
               }
             }
           },
+          "409": {
+            "description": "An artist-art job is running, so image changes are refused until it finishes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -989,6 +999,16 @@
               }
             }
           },
+          "409": {
+            "description": "An artist-art job is running, so image changes are refused until it finishes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -1008,7 +1028,7 @@
           "artists"
         ],
         "summary": "Reset Artist Image Endpoint",
-        "description": "Forget every stored portrait for ``name`` so it is looked up again.\n\nClears the manual override AND the cached automatic image (plus its\nnegative marker and derived thumb). Clearing only the override - which is\nall this used to do - drops the user straight back onto the automatic image\nthey just rejected, because a present ``.bin`` means the resolve path never\nruns again.\n\nThe result reports each slot separately: neither may have existed, and on an\nunwritable cache dir a removal can be refused. The caller shows what\nactually happened instead of implying a re-fetch that did not occur.\n\nA background refill is then kicked off (see the body) so the artist does not\nsit on a monogram until something asks for the image again.\n\nOrigin-guarded: a body-less POST is a CORS-simple request, so without this\ndependency a foreign page could reset portraits (the DELETE this replaced\nwas preflight-protected by its method alone).",
+        "description": "Forget every stored portrait for ``name`` so it is looked up again.\n\nClears the manual override AND the cached automatic image (plus its\nnegative marker and derived thumb). Clearing only the override - which is\nall this used to do - drops the user straight back onto the automatic image\nthey just rejected, because a present ``.bin`` means the resolve path never\nruns again.\n\nThe result reports each slot separately: neither may have existed, and on an\nunwritable cache dir a removal can be refused. The caller shows what\nactually happened instead of implying a re-fetch that did not occur.\n\nA background refill is then kicked off (see the body) so the artist does not\nsit on a monogram until something asks for the image again.\n\nOrigin-guarded: a body-less POST is a CORS-simple request, so without this\ndependency a foreign page could reset portraits (the DELETE this replaced\nwas preflight-protected by its method alone).\n\n409 while the artist-art sweep runs: clearing the automatic slot under a\nsweep that is mid-resolve for the same artist is undone by the sweep's own\nstore, so the user would press Reset and watch nothing change.",
         "operationId": "reset_artist_image_endpoint_api_artists_image_reset_post",
         "parameters": [
           {
@@ -1035,6 +1055,16 @@
           },
           "403": {
             "description": "The request is cross-origin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An artist-art job is running, so image changes are refused until it finishes.",
             "content": {
               "application/json": {
                 "schema": {

@@ -205,7 +205,7 @@ def test_cross_origin_reset_is_rejected(client: TestClient) -> None:
     assert resp.status_code == 403
 
 
-def test_the_reset_declares_the_403_its_own_guard_returns() -> None:
+def test_the_reset_declares_the_403_and_409_its_own_guards_return() -> None:
     """A status the route really returns must be in the spec with its body.
 
     The test above proves the 403 is real; this proves the generated client is
@@ -215,14 +215,19 @@ def test_the_reset_declares_the_403_its_own_guard_returns() -> None:
     impossible while the route takes it. 422 stays undeclared: declaring it
     would replace `HTTPValidationError`, whose `detail` is a list, not a
     sentence.
+
+    The 409 is invisible for a second reason: `_gate_artist_art_busy` is a plain
+    call in the handler body, so nothing but this entry announces it.
+    `tests/test_artist_image_busy_gate.py` proves the route really returns it.
     """
     from app.main import app
 
     responses = app.openapi()["paths"]["/api/artists/image/reset"]["post"]["responses"]
-    assert sorted(responses) == ["200", "403", "422"]
-    forbidden = responses["403"]["content"]
-    assert set(forbidden) == {"application/json"}
-    assert forbidden["application/json"]["schema"]["$ref"] == "#/components/schemas/ErrorDetail"
+    assert sorted(responses) == ["200", "403", "409", "422"]
+    for sentence_status in ("403", "409"):
+        content = responses[sentence_status]["content"]
+        assert set(content) == {"application/json"}
+        assert content["application/json"]["schema"]["$ref"] == "#/components/schemas/ErrorDetail"
     assert responses["422"]["content"]["application/json"]["schema"]["$ref"] == (
         "#/components/schemas/HTTPValidationError"
     )

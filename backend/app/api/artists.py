@@ -1,4 +1,4 @@
-from typing import Annotated, Literal, cast
+from typing import Annotated, Final, Literal, cast
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
@@ -15,6 +15,7 @@ from app.api.http_cache import (
 )
 from app.artist_art_jobs.registry import (
     ArtistArtBackfillRegistry,
+    artist_art_backfill_active,
     get_artist_art_backfill,
 )
 from app.artist_art_jobs.runner import start_backfill as start_art_backfill
@@ -63,6 +64,16 @@ router = APIRouter(tags=["artists"])
 #: The one thing every "no portrait" exit of the image GET says. Named because
 #: the endpoint has four such exits and they must not drift apart.
 _IMAGE_NOT_FOUND = "Artist image not found"
+
+#: The OpenAPI entry for the 409 that ``_gate_artist_art_busy`` raises. Declared
+#: rather than left implicit for the same reason the reset route declares its
+#: 403: a status the route really returns but the spec omits renders in
+#: ``openapi-typescript`` as ``content?: never`` - a body the client receives,
+#: typed as impossible. Named because all THREE mutation routes carry it.
+_ART_BUSY_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "An artist-art job is running, so image changes are refused until it finishes.",
+}
 
 
 def get_artist_image_service(request: Request) -> ArtistImageService:
@@ -551,6 +562,7 @@ async def fetch_artist_image_endpoint(
     "/artists/image/override",
     response_model=ArtistImageOverrideResult,
     dependencies=[Depends(verify_upload_origin)],
+    responses={409: _ART_BUSY_RESPONSE},
 )
 async def upload_artist_image_override_endpoint(
     request: Request,
@@ -558,6 +570,7 @@ async def upload_artist_image_override_endpoint(
     name: Annotated[str, Query(min_length=1)],
     cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
 ) -> ArtistImageOverrideResult:
+    _gate_artist_art_busy()
     # Reject an oversize body before materializing it when the client declares
     # its size; the post-read length check below is the authoritative guard.
     declared = request.headers.get("content-length")
@@ -585,7 +598,11 @@ async def upload_artist_image_override_endpoint(
     return ArtistImageOverrideResult(ok=True, content_type=mime)
 
 
-@router.post("/artists/image/override/from-url", response_model=ArtistImageOverrideResult)
+@router.post(
+    "/artists/image/override/from-url",
+    response_model=ArtistImageOverrideResult,
+    responses={409: _ART_BUSY_RESPONSE},
+)
 async def set_artist_image_override_from_url_endpoint(
     request: Request,
     body: ArtistImageUrlOverride,
@@ -593,6 +610,9 @@ async def set_artist_image_override_from_url_endpoint(
     cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
     http_client: Annotated[httpx.AsyncClient, Depends(get_artist_image_http_client)],
 ) -> ArtistImageOverrideResult:
+    # Before the outbound fetch, not just before the write: a refused request
+    # must not spend an upstream call it is going to throw away.
+    _gate_artist_art_busy()
     try:
         data = await fetch_image_bytes(http_client, str(body.url))
     except ValueError as exc:
@@ -635,7 +655,10 @@ def _reset_slots(cache: ArtistImageCache, name: str) -> tuple[bool, bool]:
     # would otherwise be undeclared, and the generated client would be typed as
     # if it could not happen. 422 stays undeclared on purpose: declaring it
     # would replace FastAPI's HTTPValidationError, whose `detail` is a list.
-    responses={403: {"model": ErrorDetail, "description": "The request is cross-origin."}},
+    responses={
+        403: {"model": ErrorDetail, "description": "The request is cross-origin."},
+        409: _ART_BUSY_RESPONSE,
+    },
 )
 async def reset_artist_image_endpoint(
     request: Request,
@@ -663,7 +686,12 @@ async def reset_artist_image_endpoint(
     Origin-guarded: a body-less POST is a CORS-simple request, so without this
     dependency a foreign page could reset portraits (the DELETE this replaced
     was preflight-protected by its method alone).
+
+    409 while the artist-art sweep runs: clearing the automatic slot under a
+    sweep that is mid-resolve for the same artist is undone by the sweep's own
+    store, so the user would press Reset and watch nothing change.
     """
+    _gate_artist_art_busy()
     cleared_override, cleared_auto = await run_in_threadpool(_reset_slots, cache, name)
     if service.is_enabled():
         # Clearing the automatic slot is the point of this route, which means
@@ -695,6 +723,36 @@ async def reset_artist_image_endpoint(
 def _gate_library_busy(app: object) -> None:
     # Full union + swap lock; the default message matches the trash gate's.
     raise_if_library_busy(app)
+
+
+def _gate_artist_art_busy() -> None:
+    """Refuse an artist-IMAGE mutation while the artist-art sweep is running.
+
+    Narrower than ``_gate_library_busy`` on purpose. These endpoints write only
+    the artist-image cache directory, and exactly ONE background job touches
+    those files: the artist-art sweep, which builds its own ArtistImageCache
+    over the same dir. Using the full library-busy union would 409 a portrait
+    upload for the whole length of an unrelated import, to prevent a collision
+    that import cannot cause. ``artist_art_backfill_active`` is called directly
+    rather than through ``library_job_active(exclude=...)`` so a sixth job type
+    added later cannot silently join this gate.
+
+    This is a COHERENCE guard, not a corruption guard: cache writes are atomic
+    (tmp + os.replace) and the override slot always beats the positive one. What
+    it prevents is a nonsense OUTCOME - a reset that clears the automatic slot
+    while the sweep is mid-resolve for that same artist can be undone by the
+    sweep's own store, and ``POST /artists/art/apply`` copies whatever the cache
+    holds into the music folder, so an image changing under it makes the file it
+    writes nondeterministic.
+
+    The FETCH route is deliberately NOT gated: it writes nothing. It shares the
+    service's limiter with the sweep, which paces it rather than conflicting.
+    """
+    if artist_art_backfill_active():
+        raise HTTPException(
+            status_code=409,
+            detail="An artist art job is running; image changes available when it finishes",
+        )
 
 
 @router.get("/artists/art/settings", response_model=ArtistArtWriteSettings)

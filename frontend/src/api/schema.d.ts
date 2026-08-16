@@ -415,6 +415,10 @@ export interface paths {
          *     Origin-guarded: a body-less POST is a CORS-simple request, so without this
          *     dependency a foreign page could reset portraits (the DELETE this replaced
          *     was preflight-protected by its method alone).
+         *
+         *     409 while the artist-art sweep runs: clearing the automatic slot under a
+         *     sweep that is mid-resolve for the same artist is undone by the sweep's own
+         *     store, so the user would press Reset and watch nothing change.
          */
         post: operations["reset_artist_image_endpoint_api_artists_image_reset_post"];
         delete?: never;
@@ -5295,6 +5299,15 @@ export interface operations {
                     "application/json": components["schemas"]["ArtistImageOverrideResult"];
                 };
             };
+            /** @description An artist-art job is running, so image changes are refused until it finishes. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -5330,6 +5343,15 @@ export interface operations {
                     "application/json": components["schemas"]["ArtistImageOverrideResult"];
                 };
             };
+            /** @description An artist-art job is running, so image changes are refused until it finishes. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -5363,6 +5385,15 @@ export interface operations {
             };
             /** @description The request is cross-origin. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description An artist-art job is running, so image changes are refused until it finishes. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
