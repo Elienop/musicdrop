@@ -23,4 +23,35 @@ describe("TrackMatchPicker", () => {
     expect(scroller).not.toBeNull();
     expect(scroller!.className).toContain("pr-2");
   });
+
+  test("a caller can replace the description, and the default is unchanged", async () => {
+    const { unmount } = renderWithProviders(
+      <TrackMatchPicker open onOpenChange={() => {}} onPick={() => {}} />,
+    );
+    expect(
+      await screen.findByText(
+        "Search your library and pick the track this entry should point to.",
+      ),
+    ).toBeInTheDocument();
+    unmount();
+
+    renderWithProviders(
+      <TrackMatchPicker
+        open
+        onOpenChange={() => {}}
+        onPick={() => {}}
+        description="It replaces the current track and keeps its position."
+      />,
+    );
+    expect(
+      await screen.findByText(
+        "It replaces the current track and keeps its position.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "Search your library and pick the track this entry should point to.",
+      ),
+    ).toBeNull();
+  });
 });

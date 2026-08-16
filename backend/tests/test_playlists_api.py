@@ -267,6 +267,42 @@ def test_resolve_entry_endpoint_validates_item(
     assert track["available"] is True
 
 
+def test_resolve_entry_repoints_an_already_resolved_row_in_place(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """A RESOLVED row can be re-pointed: same slot, new library track.
+
+    This is what lets the UI offer "Match" on a row that is unavailable, or
+    resolved but missing from Plex - the endpoint has no pending-only guard and
+    store.resolve_entry re-points in place ("replace track, keep position").
+    Nothing about that is new; this test pins it so the UI change in this PR
+    cannot be undone by a backend tightening.
+    """
+    first = _add_track(beets_library, "First")
+    second = _add_track(beets_library, "Second")
+    third = _add_track(beets_library, "Third")
+    record = store.create_playlist(
+        _dir(),
+        name="P",
+        entries=[
+            StoredEntry(uid="u1", item_id=first),
+            StoredEntry(uid="u2", item_id=second),
+        ],
+    )
+
+    r = client.patch(f"/api/playlists/{record.id}/entries/u2", json={"item_id": third})
+
+    assert r.status_code == 200
+    tracks = r.json()["tracks"]
+    # The slot kept its position (still second) and its uid...
+    assert [t["uid"] for t in tracks] == ["u1", "u2"]
+    # ...and now points at a different library track - replaced, not appended.
+    assert [t["id"] for t in tracks] == [first, third]
+    assert tracks[1]["title"] == "Third"
+    assert tracks[1]["pending"] is False
+    assert tracks[1]["available"] is True
+
+
 def test_legacy_record_entry_delete_by_uid(client: TestClient) -> None:
     """End-to-end proof: a legacy on-disk record's detail uids are addressable.
 
