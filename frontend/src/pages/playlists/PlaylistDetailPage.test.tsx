@@ -1637,4 +1637,60 @@ describe("PlaylistDetailPage", () => {
       expect(screen.getByText("Replaced the track; the row kept its position")).toBeInTheDocument(),
     );
   });
+
+  // The mirror of the test above, and the one that pins `armedReplaces`'s OTHER
+  // branch. Without it, widening the flag to `armed !== null` — i.e. "any armed
+  // row replaces" — passes the whole suite, and every pending row starts
+  // claiming it replaced a track it never had.
+  test("a pending row is told it is being matched, not that a track is being replaced", async () => {
+    let patchBody: unknown = null;
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([pendingTrack("u1", "Lost", { artist: "X" })]))),
+      http.get(SEARCH, () =>
+        HttpResponse.json(
+          trackSearchPage([
+            {
+              id: 55,
+              title: "Found",
+              artist: "Real",
+              album: "Disc",
+              album_id: 3,
+              duration_seconds: 180,
+            },
+          ]),
+        ),
+      ),
+      http.patch(`${BASE}/entries/u1`, async ({ request }) => {
+        patchBody = await request.json();
+        return HttpResponse.json(detail([track(55, "Found")]));
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Lost");
+    await userEvent.click(screen.getByRole("button", { name: /match lost/i }));
+
+    // A pending row has no track behind it, so the picker must use the MATCH
+    // wording: this slot gains a track, it does not swap one out.
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Match to a library track")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("Search your library and pick the track this entry should point to."),
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByText(/replaces the current track/i)).not.toBeInTheDocument();
+
+    await userEvent.type(within(dialog).getByRole("textbox"), "Found");
+    await userEvent.click(await within(dialog).findByRole("button", { name: /select found/i }));
+
+    await waitFor(() => expect(patchBody).toEqual({ item_id: 55 }));
+    // …and the live region announces a MATCH, not a replacement.
+    await waitFor(() =>
+      expect(screen.getByText("Matched the track to your library")).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText("Replaced the track; the row kept its position"),
+    ).not.toBeInTheDocument();
+  });
 });

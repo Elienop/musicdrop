@@ -511,8 +511,10 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     setMatchUid(null);
   }
 
-  /** Arm the shared match picker for the pending row `uid`. Stable identity so
-   * it doesn't defeat the row memo. */
+  /** Arm the shared match picker for row `uid` — any row that needs attention,
+   * not just a pending one: a pending import, a row whose beets item is gone,
+   * or a resolved row the last Plex sync could not place. Stable identity so it
+   * doesn't defeat the row memo. */
   const onMatch = useCallback((uid: string) => setMatchUid(uid), []);
 
   /** Remove the row identified by `uid`. On success announce + toast it and
@@ -910,10 +912,12 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
         }}
         onPick={(picked) => handlePick(picked.item_id)}
         title={armedReplaces ? "Point this row at another track" : "Match to a library track"}
+        // Only the replacement wording is passed; the other case is the
+        // picker's own default, so the sentence lives in exactly one place.
         description={
           armedReplaces
             ? "Search your library and pick the track this row should point to instead. It replaces the current track and keeps its position."
-            : "Search your library and pick the track this entry should point to."
+            : undefined
         }
       />
     </section>
@@ -1050,11 +1054,13 @@ const PlaylistTrackRow = memo(function PlaylistTrackRow({
   plexMiss?: PlexMissReason;
 }) {
   // A pending row (an import that didn't match a library track) keeps its slot
-  // with remembered metadata and offers a "Match…" action. A resolved row whose
-  // beets item no longer resolves keeps its slot too, greyed and labelled. Both
-  // read as "not a live library track", so both are dimmed; the metadata line is
-  // shown for the live row and the pending one (it's all we know), but not for a
-  // vanished resolved track (there's nothing left to show).
+  // with remembered metadata. A resolved row whose beets item no longer resolves
+  // keeps its slot too, greyed and labelled. Both read as "not a live library
+  // track", so both are dimmed; the metadata line is shown for the live row and
+  // the pending one (it's all we know), but not for a vanished resolved track
+  // (there's nothing left to show). Which rows offer "Match…" is a wider
+  // question than dimming and is decided by `canMatch` below — a resolved row
+  // can be perfectly live and still need the action.
   const title = displayTitle(track);
   const showMeta = track.available || track.pending;
 
