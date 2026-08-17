@@ -20,6 +20,9 @@ function settings(overrides: Record<string, unknown> = {}) {
 const SECTION_MUSIC = { title: "Music", locations: ["/data/music"] };
 const SECTION_DROP = { title: "MusicDrop", locations: ["/musicdrop"] };
 const SECTION_SPLIT = { title: "Split", locations: ["/musicdrop", "/mnt/spill"] };
+// A library whose folder is an ANCESTOR of the path MusicDrop's own root maps
+// onto — Plex indexes "/data" and the music actually lives in "/data/music".
+const SECTION_SHARED = { title: "Shared", locations: ["/data"] };
 
 describe("PlexSettingsPanel", () => {
   // The editor probes Plex library sections on mount for the section dropdown.
@@ -101,7 +104,7 @@ describe("PlexSettingsPanel", () => {
 
     const select = await screen.findByLabelText(/library section/i);
     // The server's music sections are offered as options (alongside the
-    // always-present "Auto — first music library" empty option).
+    // always-present "Auto" empty option).
     expect(
       await within(select).findByRole("option", { name: /musicdrop/i }),
     ).toBeInTheDocument();
@@ -153,21 +156,31 @@ describe("PlexSettingsPanel", () => {
     expect(screen.queryByText(/doesn.t list this path/i)).not.toBeInTheDocument();
   });
 
-  test("fills the library path in from the section you pick", async () => {
+  test("leaves a blank path blank when you pick a section, and explains why", async () => {
     server.use(
       http.get(SETTINGS, () => HttpResponse.json(settings())),
-      http.get(SECTIONS, () => HttpResponse.json({ sections: [SECTION_MUSIC, SECTION_DROP] })),
+      http.get(SECTIONS, () => HttpResponse.json({ sections: [SECTION_SHARED] })),
     );
     renderWithProviders(<PlexSettingsPanel />);
 
     const path = await screen.findByLabelText(/library path/i);
     expect(path).toHaveValue("");
     const select = await screen.findByLabelText(/library section/i);
-    await within(select).findByRole("option", { name: /musicdrop/i });
-    await userEvent.selectOptions(select, "MusicDrop");
+    await within(select).findByRole("option", { name: /shared/i });
+    await userEvent.selectOptions(select, "Shared");
 
-    // The whole point: the user never retypes a path the app just read off Plex.
-    expect(path).toHaveValue("/musicdrop");
+    // Blank is not an empty slot to fill helpfully — it is the setting that
+    // means "Plex sees the same paths I do", and it is CORRECT when the two
+    // share a mount. Filling "/data" over a shared root of "/data/music" would
+    // make translate_path rebase every track one level too high and every
+    // lookup would miss. The panel cannot see MusicDrop's own root, so it must
+    // not decide.
+    expect(path).toHaveValue("");
+    // Silently doing nothing where the user expects help is its own failure:
+    // the hint has to own the choice and say what to type instead.
+    const blankHint = await screen.findByText(/passes paths through unchanged/i);
+    expect(blankHint).toHaveTextContent(/nothing is filled in for you/i);
+    expect(screen.queryByText(/doesn.t list this path/i)).not.toBeInTheDocument();
   });
 
   test("replaces a path inherited from the previously picked section", async () => {
@@ -239,10 +252,42 @@ describe("PlexSettingsPanel", () => {
     expect(screen.queryByText(/doesn.t list this path/i)).not.toBeInTheDocument();
   });
 
+  test("accepts a path inside a folder Plex reports rather than demanding it exactly", async () => {
+    server.use(
+      // Plex indexes "/data" recursively, and MusicDrop's root maps onto
+      // "/data/music" inside it — a legitimate setup that exact equality
+      // slandered as broken.
+      http.get(SETTINGS, () =>
+        HttpResponse.json(settings({ library_section: "Shared", library_path: "/data/music" })),
+      ),
+      http.get(SECTIONS, () => HttpResponse.json({ sections: [SECTION_SHARED] })),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    expect(await screen.findByText("/data")).toBeInTheDocument();
+    expect(screen.queryByText(/doesn.t list this path/i)).not.toBeInTheDocument();
+  });
+
+  test("still warns for a sibling folder that merely shares a string prefix", async () => {
+    server.use(
+      http.get(SETTINGS, () =>
+        HttpResponse.json(settings({ library_section: "Music", library_path: "/data/musicians" })),
+      ),
+      http.get(SECTIONS, () => HttpResponse.json({ sections: [SECTION_MUSIC] })),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    // "/data/musicians" starts with the string "/data/music" but is nowhere
+    // inside it, so the comparison must be by path SEGMENT.
+    expect(await screen.findByText(/doesn.t list this path/i)).toBeInTheDocument();
+  });
+
   test("offers every folder and fills nothing when a library spans several", async () => {
     server.use(
-      http.get(SETTINGS, () => HttpResponse.json(settings())),
-      http.get(SECTIONS, () => HttpResponse.json({ sections: [SECTION_SPLIT] })),
+      http.get(SETTINGS, () =>
+        HttpResponse.json(settings({ library_section: "Music", library_path: "/data/music" })),
+      ),
+      http.get(SECTIONS, () => HttpResponse.json({ sections: [SECTION_MUSIC, SECTION_SPLIT] })),
     );
     renderWithProviders(<PlexSettingsPanel />);
 
@@ -251,11 +296,12 @@ describe("PlexSettingsPanel", () => {
     await within(select).findByRole("option", { name: /split/i });
     await userEvent.selectOptions(select, "Split");
 
-    // Both folders are shown; neither is guessed at, because only the user
-    // knows which one their beets root maps onto.
+    // "/data/music" is a leftover of the previous pick, so a single-folder
+    // library would replace it — but Split spans two, and only the user knows
+    // which one their beets root maps onto. Both are shown, neither is guessed.
     expect(await screen.findByText("/musicdrop")).toBeInTheDocument();
     expect(screen.getByText("/mnt/spill")).toBeInTheDocument();
-    expect(path).toHaveValue("");
+    expect(path).toHaveValue("/data/music");
   });
 
   test("explains what a blank path claims instead of calling it a mismatch", async () => {
@@ -283,9 +329,28 @@ describe("PlexSettingsPanel", () => {
 
     expect(await screen.findByText("/musicdrop")).toBeInTheDocument();
     expect(screen.getByText(/doesn.t list this path/i)).toBeInTheDocument();
+    // Auto is honest on this server, so it must not be warned about.
+    expect(screen.queryByText(/multiple plex music libraries found/i)).not.toBeInTheDocument();
   });
 
-  test("claims nothing about Auto when the server has several music libraries", async () => {
+  test("describes Auto as the ONLY music library, never the first of several", async () => {
+    server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
+    renderWithProviders(<PlexSettingsPanel />);
+
+    // app/plex/client.py, music_section: with a blank title it raises
+    // "Multiple Plex music libraries found." when more than one artist section
+    // exists — it never takes the first. Copy that promises otherwise sends the
+    // user off to meet an unexplained sync failure.
+    const select = await screen.findByLabelText(/library section/i);
+    const auto = within(select).getByRole("option", { name: /auto/i });
+    expect(auto).toHaveTextContent(/only music library/i);
+    expect(auto).not.toHaveTextContent(/first/i);
+    const hint = screen.getByText(/which plex music library playlists sync into/i);
+    expect(hint).toHaveTextContent(/exactly one/i);
+    expect(hint).not.toHaveTextContent(/first/i);
+  });
+
+  test("claims nothing about Auto's folders when the server has several music libraries", async () => {
     server.use(
       http.get(SETTINGS, () => HttpResponse.json(settings({ library_path: "/music" }))),
       http.get(SECTIONS, () => HttpResponse.json({ sections: [SECTION_MUSIC, SECTION_DROP] })),
@@ -301,6 +366,22 @@ describe("PlexSettingsPanel", () => {
     // must not name one either.
     await expect(screen.findByText(/plex reports/i)).rejects.toThrow();
     await expect(screen.findByText(/doesn.t list this path/i)).rejects.toThrow();
+  });
+
+  test("says Auto can't work when the server has several music libraries", async () => {
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings({ library_path: "/music" }))),
+      http.get(SECTIONS, () => HttpResponse.json({ sections: [SECTION_MUSIC, SECTION_DROP] })),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    // Going silent about the folders (above) without saying why leaves the user
+    // with a dropdown promising Auto works and a green "Test connection" —
+    // test_connection never looks at a section — and a sync that raises. Name
+    // the failure, in the words the backend will use.
+    const warning = await screen.findByText(/multiple plex music libraries found/i);
+    expect(warning).toHaveTextContent(/2 music libraries/i);
+    expect(warning).toHaveTextContent(/every sync fails/i);
   });
 
   test("tests the connection and shows the server name", async () => {
