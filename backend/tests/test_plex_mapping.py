@@ -1,5 +1,8 @@
+from typing import get_args
+
 import pytest
 
+from app.models.plex import PlexMatchCounts, PlexMatchMethod
 from app.plex.client import music_section
 from app.plex.errors import PlexConnectionError
 from app.plex.mapping import (
@@ -425,6 +428,12 @@ def test_album_fallback_tolerates_a_small_encoder_disagreement() -> None:
 def test_two_candidates_agreeing_on_album_title_and_duration_stay_ambiguous() -> None:
     # Album, title AND length all agree twice over -- the guard has nothing left
     # to separate them with, so the row stays missing. Never pick one.
+    #
+    # BOTH rivals wear a Plex-rewritten name (the second is "Nancy Ajram" in
+    # Arabic), so the artist veto has nothing to read either: neither shares an
+    # alphabet with the "Wael Kfoury" we asked for. Give one of them a readable
+    # contradicting name and this stops being a tie -- see
+    # test_a_contradicting_plex_artist_is_vetoed_not_tied.
     section = _section(
         [
             _track(
@@ -438,7 +447,7 @@ def test_two_candidates_agreeing_on_album_title_and_duration_stay_ambiguous() ->
             _track(
                 93,
                 "/musicdrop/b.flac",
-                artist="Another Singer",
+                artist="نانسي عجرم",
                 album="Habibi",
                 title="Habibi",
                 duration=254_500,
@@ -647,3 +656,258 @@ def test_an_ambiguous_artist_match_is_never_re_answered_by_the_album_fallback() 
     res = resolve_ordered_tracks(section, [spec])
     assert res.tracks == []
     assert [(m.item_id, m.reason) for m in res.missing] == [(1, "ambiguous")]
+
+
+# --- how TIGHT the duration window is ----------------------------------------
+#
+# The safety of the whole (album, title) rung is the window being NARROW: it is
+# what separates "the same recording, encoded twice" from "two different songs
+# that share an album and a title". Both edges are asserted against LITERAL
+# seconds -- a test that imported `_LENGTH_TOLERANCE_SECONDS` would move with the
+# value it is supposed to pin and every widening would sail through it.
+
+
+def _habibi_in_plex(
+    rating_key: int, duration_millis: int | float | None, artist: str = _ARABIC_WAEL
+) -> FakeTrack:
+    """Plex's copy of the "Habibi" single, under the name PLEX holds it by
+    (rewritten into Arabic unless a test says otherwise) and in Plex's unit,
+    MILLISECONDS."""
+    return _track(
+        rating_key,
+        f"/musicdrop/{rating_key}.flac",
+        artist=artist,
+        album="Habibi",
+        title="Habibi",
+        duration=duration_millis,
+    )
+
+
+def _habibi_spec(item_id: int = 1, length_seconds: float = 254.0) -> PlexTrackSpec:
+    """The playlist row for it: beets' Latin spelling, a length in SECONDS, and
+    a path Plex does not have (so only a fallback can resolve it)."""
+    return _spec(
+        f"/music/{item_id}.flac",
+        item_id=item_id,
+        albumartist="Wael Kfoury",
+        album="Habibi",
+        title="Habibi",
+        length_seconds=length_seconds,
+    )
+
+
+def test_the_duration_window_reaches_exactly_two_seconds_either_side() -> None:
+    # The INCLUSIVE edge, in both directions: 2.0s is the widest disagreement a
+    # candidate may carry and still be accepted. Fails if the tolerance is ever
+    # tightened below two seconds, or if the comparison stops being `<=`.
+    for millis in (256_000, 252_000):  # the spec says 254.0s: +2.0s and -2.0s
+        res = resolve_ordered_tracks(_section([_habibi_in_plex(80, millis)]), [_habibi_spec()])
+        assert [t.ratingKey for t in res.tracks] == [80], millis
+
+
+def test_the_duration_window_stops_before_two_and_a_half_seconds() -> None:
+    # The other edge, in both directions. Together with the test above this pins
+    # the window to [2.0, 2.5) seconds: a widening to 5s, 15s or 30s -- each of
+    # which the suite used to accept in silence -- fails right here.
+    for millis in (256_500, 251_500):  # the spec says 254.0s: +2.5s and -2.5s
+        res = resolve_ordered_tracks(_section([_habibi_in_plex(81, millis)]), [_habibi_spec()])
+        assert res.tracks == [], millis
+        assert [(m.item_id, m.reason) for m in res.missing] == [(1, "not_found")]
+
+
+# --- what Plex's OWN artist name is allowed to veto ---------------------------
+
+
+def test_a_plex_artist_naming_someone_else_vetoes_the_duration_coincidence() -> None:
+    # REPRODUCED against this module before the veto existed: Plex's "Habibi" is
+    # credited to Nancy Ajram, 1.4s from the length we asked for, and that was
+    # enough to hand it back and report the sync "ok". Both names are Latin, so
+    # this is not the transliteration case the rung exists for -- it is Plex
+    # telling us, in a name we can read, that this is a different recording.
+    section = _section([_habibi_in_plex(3, 213_400, artist="Nancy Ajram")])
+    res = resolve_ordered_tracks(section, [_habibi_spec(length_seconds=212.0)])
+    assert res.tracks == []
+    assert [(m.item_id, m.reason) for m in res.missing] == [(1, "not_found")]
+
+
+def test_the_artist_veto_needs_nothing_exotic_to_fire() -> None:
+    # The same hole with entirely ordinary names: two "Greatest Hits" albums
+    # carrying a "Somebody to Love", a second apart. Album, title and length all
+    # agree, so the artist is the only thing that knows better.
+    section = _section(
+        [
+            _track(
+                4,
+                "/plex/boston.flac",
+                artist="Boston",
+                album="Greatest Hits",
+                title="Somebody To Love",
+                duration=285_000,
+            )
+        ]
+    )
+    spec = _spec(
+        "/music/queen.flac",
+        albumartist="Queen",
+        album="Greatest Hits",
+        title="Somebody to Love",
+        length_seconds=284.0,
+    )
+    res = resolve_ordered_tracks(section, [spec])
+    assert res.tracks == []
+    assert [(m.item_id, m.reason) for m in res.missing] == [(1, "not_found")]
+
+
+def test_a_contradicting_plex_artist_is_vetoed_not_tied() -> None:
+    # The veto runs BEFORE the candidates are counted, so a rival Plex itself
+    # rules out cannot make the row ambiguous. 92 wears the Arabic rewrite (no
+    # shared alphabet, nothing to read), 93 says plainly it is somebody else, so
+    # exactly one candidate survives and the row resolves to it.
+    section = _section(
+        [_habibi_in_plex(92, 254_000), _habibi_in_plex(93, 254_500, "Another Singer")]
+    )
+    res = resolve_ordered_tracks(section, [_habibi_spec()])
+    assert [t.ratingKey for t in res.tracks] == [92]
+    assert res.missing == []
+
+
+def test_the_veto_still_allows_the_rewrites_plexs_agent_actually_makes() -> None:
+    # What the veto must NOT do: refuse a name Plex merely re-spelled. Each pair
+    # is (what beets holds, what Plex holds) and every one of them must still
+    # resolve -- a strict same-alphabet equality check would refuse all three.
+    for beets_name, plex_name in [
+        ("Beyonce", "Beyoncé"),  # a diacritic beets never had
+        ("The Beatles", "Beatles, The"),  # the article moved to the back
+        ("Ella Fitzgerald", "Fitzgerald, Ella"),  # the same inversion, no article to hide it
+        ("Wael Kfoury", f"{_ARABIC_WAEL} (Wael Kfoury)"),  # bilingual: the Latin halves agree
+    ]:
+        section = _section(
+            [
+                _track(
+                    70,
+                    "/plex/x.flac",
+                    artist=plex_name,
+                    album="Album",
+                    title="Song",
+                    duration=200_000,
+                )
+            ]
+        )
+        spec = _spec(
+            "/music/gone.flac",
+            albumartist=beets_name,
+            album="Album",
+            title="Song",
+            length_seconds=200.0,
+        )
+        res = resolve_ordered_tracks(section, [spec])
+        assert [t.ratingKey for t in res.tracks] == [70], plex_name
+
+
+# --- one Plex track answers at most one playlist row --------------------------
+
+
+def test_two_playlist_rows_never_resolve_to_the_same_plex_track() -> None:
+    # Two DIFFERENT library items, both a "Habibi" of about the same length,
+    # against ONE Plex copy: both fit the window, so before the claim rule both
+    # rows resolved to ratingKey 3. The user got the same song twice and at
+    # least one of those two rows was showing a recording that isn't theirs.
+    section = _section([_habibi_in_plex(3, 212_000)])
+    res = resolve_ordered_tracks(
+        section,
+        [
+            _habibi_spec(item_id=9, length_seconds=212.0),
+            _habibi_spec(item_id=10, length_seconds=212.5),
+        ],
+    )
+    assert [t.ratingKey for t in res.tracks] == [3]
+    assert [(m.item_id, m.reason) for m in res.missing] == [(10, "not_found")]
+
+
+def test_one_library_item_listed_twice_still_resolves_twice() -> None:
+    # The control arm: a playlist may hold the same track twice on purpose, and
+    # the sync goes out of its way to support it (sync._unique_key_chunks). Only
+    # a DIFFERENT item is locked out of a track someone else took.
+    section = _section([_habibi_in_plex(3, 212_000)])
+    spec = _habibi_spec(item_id=9, length_seconds=212.0)
+    res = resolve_ordered_tracks(section, [spec, spec])
+    assert [t.ratingKey for t in res.tracks] == [3, 3]
+    assert res.missing == []
+
+
+def test_an_exact_path_owns_its_track_even_from_a_later_row() -> None:
+    # Row one can only fall back; row two holds the FILE. Claiming as we went
+    # would let the fallback take the very track row two is the file for, and
+    # the playlist would carry it twice with row two looking perfectly fine.
+    section = _section([_habibi_in_plex(3, 212_000)])
+    holds_the_file = _spec(
+        "/musicdrop/3.flac",
+        item_id=10,
+        albumartist="Wael Kfoury",
+        album="Habibi",
+        title="Habibi",
+        length_seconds=212.0,
+    )
+    res = resolve_ordered_tracks(
+        section, [_habibi_spec(item_id=9, length_seconds=212.0), holds_the_file]
+    )
+    assert [t.ratingKey for t in res.tracks] == [3]
+    assert [(m.item_id, m.reason) for m in res.missing] == [(9, "not_found")]
+
+
+def test_the_album_artist_rung_locks_its_track_too() -> None:
+    # The same collision one rung up -- two library items sharing an album-artist
+    # and a title (a studio copy and a compilation copy) against one Plex track.
+    # Fixed in BOTH fallbacks: the doubled row is the same bug for the user
+    # wherever the inexact match came from.
+    section = _section([_track(12, "/plex/x.flac", artist="Adele", title="Hello")])
+    res = resolve_ordered_tracks(
+        section,
+        [
+            _spec("/music/a.flac", item_id=1, albumartist="Adele", title="Hello"),
+            _spec("/music/b.flac", item_id=2, albumartist="Adele", title="Hello"),
+        ],
+    )
+    assert [t.ratingKey for t in res.tracks] == [12]
+    assert [(m.item_id, m.reason) for m in res.missing] == [(2, "not_found")]
+
+
+# --- which rung did the work --------------------------------------------------
+
+
+def test_every_match_records_the_rung_that_resolved_it() -> None:
+    # Why this is worth carrying: this app's path matching was broken for its
+    # ENTIRE life and nobody noticed, because every sync reported a flat "ok"
+    # while the metadata fallback quietly carried 100% of the traffic. A tally
+    # is what makes that visible, so each rung has to be counted as itself.
+    section = _section(
+        [
+            _track(1, "/plex/exact.flac"),
+            _track(2, "/plex/meta.flac", artist="Adele", title="Hello"),
+            _habibi_in_plex(3, 212_000),
+        ]
+    )
+    res = resolve_ordered_tracks(
+        section,
+        [
+            _spec("/plex/exact.flac", item_id=1),
+            _spec("/music/b.flac", item_id=2, albumartist="Adele", title="Hello"),
+            _habibi_spec(item_id=3, length_seconds=212.0),
+            _spec("/music/nowhere.flac", item_id=4, albumartist="Nobody", title="Nothing"),
+        ],
+    )
+    assert [(m.track.ratingKey, m.method) for m in res.matches] == [
+        (1, "path"),
+        (2, "artist_title"),
+        (3, "album_length"),
+    ]
+    assert res.matched_by.model_dump() == {"path": 1, "artist_title": 1, "album_length": 1}
+    assert res.tracks == [m.track for m in res.matches]  # the plain view stays in step
+    assert [m.item_id for m in res.missing] == [4]
+
+
+def test_every_match_method_has_a_field_to_be_counted_in() -> None:
+    # The tally is built BY NAME, so a rung added to PlexMatchMethod without a
+    # field on PlexMatchCounts would be dropped in silence: the sync would report
+    # fewer matches than it made and no test would notice.
+    assert set(get_args(PlexMatchMethod)) == set(PlexMatchCounts.model_fields)

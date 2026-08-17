@@ -3815,6 +3815,39 @@ export interface components {
             error?: string | null;
         };
         /**
+         * PlexMatchCounts
+         * @description How many of a sync's tracks each matching rung accounted for.
+         *
+         *     A flat "ok" hides which rung did the work, and that blind spot has already
+         *     cost this app once: path matching was broken for the app's whole life while
+         *     the metadata fallback silently carried 100% of every sync, and every sync
+         *     still reported "ok". These counts are what makes that visible — a library
+         *     whose ``path`` count is suddenly zero is misconfigured, not fine.
+         *
+         *     Every field DEFAULTS to zero, which is also how a new rung is added without
+         *     breaking the wire: a reader that predates the new field ignores it, and a
+         *     reader that postdates a record written without it sees zero. A rung missing
+         *     from here would be counted nowhere, so ``PlexMatchMethod`` and these field
+         *     names are pinned equal by a test.
+         */
+        PlexMatchCounts: {
+            /**
+             * Path
+             * @default 0
+             */
+            path: number;
+            /**
+             * Artist Title
+             * @default 0
+             */
+            artist_title: number;
+            /**
+             * Album Length
+             * @default 0
+             */
+            album_length: number;
+        };
+        /**
          * PlexMissingTrack
          * @description One playlist track that did not resolve to a Plex track on the last sync.
          *
@@ -3918,6 +3951,7 @@ export interface components {
          *     Plex playlist this target's copy IS — a sync updates that playlist in place
          *     and never mints a new key while it exists. ``artwork_hash`` is the poster
          *     last pushed to that copy (so a sync re-uploads only when the art changed).
+         *     ``matched_by`` breaks the resolved tracks down by which rung found them.
          */
         PlexTargetState: {
             /** Rating Key */
@@ -3938,6 +3972,7 @@ export interface components {
              * @default []
              */
             missing_tracks: components["schemas"]["PlexMissingTrack"][];
+            matched_by?: components["schemas"]["PlexMatchCounts"];
             /** Artwork Hash */
             artwork_hash?: string | null;
             /** Synced At */

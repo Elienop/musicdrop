@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PlexSettings(BaseModel):
@@ -99,6 +99,32 @@ class PlexMissingTrack(BaseModel):
     reason: Literal["not_found", "ambiguous"]
 
 
+# Which rung of the matcher resolved a track — see ``app/plex/mapping.py``, whose
+# docstring explains why there are three and why their ORDER is contract.
+PlexMatchMethod = Literal["path", "artist_title", "album_length"]
+
+
+class PlexMatchCounts(BaseModel):
+    """How many of a sync's tracks each matching rung accounted for.
+
+    A flat "ok" hides which rung did the work, and that blind spot has already
+    cost this app once: path matching was broken for the app's whole life while
+    the metadata fallback silently carried 100% of every sync, and every sync
+    still reported "ok". These counts are what makes that visible — a library
+    whose ``path`` count is suddenly zero is misconfigured, not fine.
+
+    Every field DEFAULTS to zero, which is also how a new rung is added without
+    breaking the wire: a reader that predates the new field ignores it, and a
+    reader that postdates a record written without it sees zero. A rung missing
+    from here would be counted nowhere, so ``PlexMatchMethod`` and these field
+    names are pinned equal by a test.
+    """
+
+    path: int = 0  # exact file path — the strongest evidence
+    artist_title: int = 0  # (album-artist, title) — separate copies of one library
+    album_length: int = 0  # (album, title) + duration — a Plex-rewritten artist
+
+
 class PlexTargetState(BaseModel):
     """Per-target Plex sync bookkeeping recorded on a playlist.
 
@@ -107,12 +133,17 @@ class PlexTargetState(BaseModel):
     Plex playlist this target's copy IS — a sync updates that playlist in place
     and never mints a new key while it exists. ``artwork_hash`` is the poster
     last pushed to that copy (so a sync re-uploads only when the art changed).
+    ``matched_by`` breaks the resolved tracks down by which rung found them.
     """
 
     rating_key: str | None = None
     status: SyncStatus = "pending"
     missing: int = 0  # TRUE count of tracks not found in Plex
     missing_tracks: list[PlexMissingTrack] = []  # first MISSING_TRACKS_CAP of them
+    # All-zero on a target that never got as far as applying a resolution (a
+    # per-target failure), which is why the counts sit beside `status` rather
+    # than standing in for it.
+    matched_by: PlexMatchCounts = Field(default_factory=PlexMatchCounts)
     artwork_hash: str | None = None
     synced_at: str | None = None
     error: str | None = None

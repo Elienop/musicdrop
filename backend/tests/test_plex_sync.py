@@ -73,6 +73,37 @@ def test_partial_when_some_paths_missing(monkeypatch: pytest.MonkeyPatch) -> Non
     assert state.missing == 1
 
 
+def test_the_recorded_state_says_which_rung_matched_each_track(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # "ok" and "ok, but nothing matched by path any more" are the same status and
+    # very different news — this app ran for its whole life on a fallback while
+    # every sync reported "ok". The tally is what a UI can show instead, so it
+    # has to survive the trip out of the matcher and into the recorded state.
+    server = FakeServer(
+        [
+            FakeTrack(10, ["/m/a.flac"]),
+            FakeTrack(20, ["/plex/renamed.flac"], grandparentTitle="Adele", title="Hello"),
+        ]
+    )
+    _patch(monkeypatch, server)
+    by_metadata = PlexTrackSpec(
+        item_id=2,
+        path="/m/b.flac",  # Plex holds this file under another name
+        albumartist="Adele",
+        album="19",
+        title="Hello",
+        track=None,
+        length_seconds=None,
+    )
+    state = sync.sync_playlist(
+        CONFIG, "Mix", [_p("/m/a.flac"), by_metadata, _p("/m/gone.flac")], playlist_id="p1"
+    )
+    assert state.status == "partial"
+    assert state.missing == 1
+    assert state.matched_by.model_dump() == {"path": 1, "artist_title": 1, "album_length": 0}
+
+
 def test_stamp_failure_does_not_orphan_the_playlist(monkeypatch: pytest.MonkeyPatch) -> None:
     # editSummary is a SEPARATE Plex PUT after createPlaylist; a transient failure
     # there must NOT fail the whole reconcile. What this test checks is that one
