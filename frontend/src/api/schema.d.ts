@@ -1320,6 +1320,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/playlists/{playlist_id}/merge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Merge Playlist Endpoint
+         * @description Fold ``source_id``'s rows into THIS playlist (the target), appending them
+         *     in source order and skipping any whose library item is already here.
+         *
+         *     Does NOT sync. It bumps the target's ``updated_at``, so the editor's
+         *     existing out-of-date rule asks for a re-sync - syncing here would fan out to
+         *     every target account off a single merge click.
+         */
+        post: operations["merge_playlist_endpoint_api_playlists__playlist_id__merge_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/playlists/{playlist_id}/artwork": {
         parameters: {
             query?: never;
@@ -3687,6 +3712,40 @@ export interface components {
              * @default []
              */
             failed: components["schemas"]["PlaylistImportFailure"][];
+        };
+        /**
+         * PlaylistMergeRequest
+         * @description Fold ``source_id`` into the playlist named by the path (the TARGET).
+         *
+         *     ``delete_source`` is an explicit, separate choice - the source survives by
+         *     default. Ticking it removes the source record, its ``.m3u8``, and its Plex
+         *     copies from admin and from every account it was synced to.
+         */
+        PlaylistMergeRequest: {
+            /** Source Id */
+            source_id: string;
+            /**
+             * Delete Source
+             * @default false
+             */
+            delete_source: boolean;
+        };
+        /**
+         * PlaylistMergeResponse
+         * @description The merged target, plus what the merge actually did.
+         *
+         *     ``added`` and ``skipped_duplicates`` come back from the server rather than
+         *     being inferred client-side, so the confirmation can state the outcome
+         *     without recounting a list it would have to fetch twice to get right.
+         */
+        PlaylistMergeResponse: {
+            playlist: components["schemas"]["PlaylistDetail"];
+            /** Added */
+            added: number;
+            /** Skipped Duplicates */
+            skipped_duplicates: number;
+            /** Source Deleted */
+            source_deleted: boolean;
         };
         /**
          * PlaylistReorderRequest
@@ -6931,6 +6990,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlaylistDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    merge_playlist_endpoint_api_playlists__playlist_id__merge_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaylistMergeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaylistMergeResponse"];
+                };
+            };
+            /** @description The target or the source playlist is gone. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A playlist cannot be merged into itself. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
             /** @description Validation Error */

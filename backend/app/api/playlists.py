@@ -32,11 +32,14 @@ from app.beets.playlists import (
     track_match_refs,
 )
 from app.config import settings
+from app.models.errors import ErrorDetail
 from app.models.playlist import (
     Playlist,
     PlaylistAddTracksRequest,
     PlaylistCreateRequest,
     PlaylistDetail,
+    PlaylistMergeRequest,
+    PlaylistMergeResponse,
     PlaylistReorderRequest,
     PlaylistResolveEntryRequest,
     PlaylistUpdateRequest,
@@ -473,6 +476,73 @@ async def delete_playlist_endpoint(
             plex_store.get(), rating_keys, f"delete {playlist_id}", playlist_id=record.id
         )
     return Response(status_code=204)
+
+
+@router.post(
+    "/playlists/{playlist_id}/merge",
+    response_model=PlaylistMergeResponse,
+    responses={
+        # Named models, not bare descriptions: a description-only entry REPLACES
+        # the generated response and leaves the status with no body schema, which
+        # openapi-typescript renders as `content?: never` for a body the client
+        # must read (see app/models/errors.py).
+        404: {"model": ErrorDetail, "description": "The target or the source playlist is gone."},
+        409: {"model": ErrorDetail, "description": "A playlist cannot be merged into itself."},
+    },
+)
+async def merge_playlist_endpoint(
+    playlist_id: str,
+    body: PlaylistMergeRequest,
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+    plex_store: Annotated[PlexConfigStore, Depends(get_plex_store)],
+) -> PlaylistMergeResponse:
+    """Fold ``source_id``'s rows into THIS playlist (the target), appending them
+    in source order and skipping any whose library item is already here.
+
+    Does NOT sync. It bumps the target's ``updated_at``, so the editor's
+    existing out-of-date rule asks for a re-sync - syncing here would fan out to
+    every target account off a single merge click.
+    """
+    if body.source_id == playlist_id:
+        raise HTTPException(status_code=409, detail="A playlist cannot be merged into itself.")
+    # Only a delete needs the source record, and it has to be read BEFORE the
+    # merge: once delete_source removes it, nothing knows which Plex accounts
+    # held a copy. Same shape (and reason) as the DELETE handler reading the
+    # record before store.delete_playlist. Keeping the source is the common
+    # case, so that read is skipped entirely there.
+    source = (
+        await run_in_threadpool(store.get_playlist, playlists_dir, body.source_id)
+        if body.delete_source
+        else None
+    )
+    outcome = await run_in_threadpool(
+        store.merge_playlists,
+        playlists_dir,
+        playlist_id,
+        body.source_id,
+        delete_source=body.delete_source,
+    )
+    if outcome is None:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    await _export_playlist(outcome.playlist, handle)
+    if outcome.source_deleted:
+        await _remove_export(body.source_id, handle)
+        if source is not None:
+            rating_keys = {target: state.rating_key for target, state in source.plex.items()}
+            await _best_effort_plex_delete(
+                plex_store.get(),
+                rating_keys,
+                f"merge-delete {body.source_id}",
+                playlist_id=source.id,
+            )
+    detail = await _detail_response(outcome.playlist, handle)
+    return PlaylistMergeResponse(
+        playlist=detail,
+        added=outcome.added,
+        skipped_duplicates=outcome.skipped_duplicates,
+        source_deleted=outcome.source_deleted,
+    )
 
 
 @router.get("/playlists/{playlist_id}/artwork")

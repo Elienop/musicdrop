@@ -7,17 +7,25 @@ import type { components } from "@/api/schema";
 export type Playlist = components["schemas"]["Playlist"];
 export type PlaylistDetail = components["schemas"]["PlaylistDetail"];
 export type PlaylistTrack = components["schemas"]["PlaylistTrack"];
+export type PlaylistMergeResult = components["schemas"]["PlaylistMergeResponse"];
 
 async function fetchPlaylists(): Promise<Playlist[]> {
   return unwrap(await client.GET("/api/playlists"), "Failed to load playlists");
 }
 
-/** All playlists (summaries). */
-export function usePlaylists() {
+/** All playlists (summaries).
+ *
+ * `enabled` lets a caller that is mounted before it is visible - the merge
+ * dialog, which exists while closed - hold the request back. Several pages'
+ * tests serve no `/api/playlists` handler, so an unwanted list fetch is a
+ * failure there, not just waste.
+ */
+export function usePlaylists({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ["playlists"],
     queryFn: fetchPlaylists,
     staleTime: 30_000,
+    enabled,
   });
 }
 
@@ -237,6 +245,43 @@ export function useReorderTracks(id: string) {
       ),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["playlist", id] });
+    },
+  });
+}
+
+/** Fold another playlist into `id`. The response carries the rewritten detail
+ * plus the server's own `added` / `skipped_duplicates` counts, so the caller
+ * states the outcome without recounting. Merge rewrites the whole list in one
+ * round trip, so there is no optimistic path: the response IS the new state.
+ *
+ * The cache seed lives in the HOOK-level onSuccess on purpose - TanStack skips
+ * a per-call onSuccess when its observer has unmounted but always runs this
+ * one, so the detail cache cannot be left stale by a dialog that closed early.
+ */
+export function useMergePlaylist(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation<PlaylistMergeResult, Error, { sourceId: string; deleteSource: boolean }>({
+    mutationFn: async ({ sourceId, deleteSource }) =>
+      unwrap(
+        await client.POST("/api/playlists/{playlist_id}/merge", {
+          params: { path: { playlist_id: id } },
+          body: { source_id: sourceId, delete_source: deleteSource },
+        }),
+        "Merge failed",
+      ),
+    onSuccess: (result, vars) => {
+      queryClient.setQueryData(["playlist", id], result.playlist);
+      // The source's cached detail is wrong either way, but the two cases need
+      // different treatment. Invalidating a DELETED source schedules a refetch
+      // of a record that no longer exists — a guaranteed 404 in the console and
+      // one wasted request (seen in the browser; msw would only 404 if a handler
+      // said so, so no unit test catches it). Drop it from the cache instead.
+      if (result.source_deleted) {
+        queryClient.removeQueries({ queryKey: ["playlist", vars.sourceId] });
+      } else {
+        void queryClient.invalidateQueries({ queryKey: ["playlist", vars.sourceId] });
+      }
+      void queryClient.invalidateQueries({ queryKey: ["playlists"] });
     },
   });
 }

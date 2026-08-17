@@ -182,3 +182,29 @@ class PlaylistReorderRequest(BaseModel):
 
 class PlaylistResolveEntryRequest(BaseModel):
     item_id: int
+
+
+class PlaylistMergeRequest(BaseModel):
+    """Fold ``source_id`` into the playlist named by the path (the TARGET).
+
+    ``delete_source`` is an explicit, separate choice - the source survives by
+    default. Ticking it removes the source record, its ``.m3u8``, and its Plex
+    copies from admin and from every account it was synced to.
+    """
+
+    source_id: str
+    delete_source: bool = False
+
+
+class PlaylistMergeResponse(BaseModel):
+    """The merged target, plus what the merge actually did.
+
+    ``added`` and ``skipped_duplicates`` come back from the server rather than
+    being inferred client-side, so the confirmation can state the outcome
+    without recounting a list it would have to fetch twice to get right.
+    """
+
+    playlist: PlaylistDetail
+    added: int
+    skipped_duplicates: int
+    source_deleted: bool

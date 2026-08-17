@@ -184,6 +184,13 @@ origin question is the one with a deadline of sorts: it matters before the next 
 - `aside.w-96` on `ArtistAlbumsPage` overflows a 390px viewport by 18px, reproduced with the
   panel closed (`App.tsx:53` gives main `px-6`, leaving ~342px for a 384px rail). Fix is
   `w-full max-w-96 lg:w-96`, not a design change.
+- **`ImportPlaylistsPage.tsx:403-412` has a dead checkbox label.** The visible text sits beside
+  a Radix `Checkbox` that carries the accessible name as an `aria-label`, and the text itself is
+  inert — clicking the words does nothing, so only the small box is a target. Found while fixing
+  the identical bug on the merge dialog (where the fix was: put the toggle handler on the text
+  alone, keep it `aria-hidden` so the control keeps exactly one accessible name, and leave the
+  checkbox as the single tab stop). A wrapping `<label>` does NOT work here — Radix renders
+  `role="checkbox"` on a `<button>`, and `<label for>` does not associate with a button.
 - `SegmentedControl` segments are 28px tall, under the 44px touch-target guidance. Shared
   component; the artist-image wave made it load-bearing on a mobile flow for the first time.
   `py-1` → `py-2` reaches ~36px without touching the visual language; 44px needs a design call.

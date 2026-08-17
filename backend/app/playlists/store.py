@@ -23,6 +23,7 @@ import os
 import re
 import threading
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -376,15 +377,116 @@ def replace_plex_states(
         return record
 
 
+def _delete_record_files(playlists_dir: Path, playlist_id: str) -> bool:
+    """Unlink a playlist's record (and any art files). True iff it existed.
+
+    PRECONDITION: the caller already holds ``_LOCK`` and has established that
+    ``playlist_id`` is a valid id. ``_LOCK`` is a plain, NON-REENTRANT
+    ``threading.Lock``, so a lock-holding caller (``merge_playlists``) must come
+    here rather than to ``delete_playlist``, which takes the lock itself and
+    would deadlock.
+    """
+    try:
+        _record_path(playlists_dir, playlist_id).unlink()
+    except FileNotFoundError:
+        return False
+    # Sweep any art files too - no record survives to point at them.
+    for fmt in ("jpg", "png"):
+        artwork_path(playlists_dir, playlist_id, fmt).unlink(missing_ok=True)
+    return True
+
+
 def delete_playlist(playlists_dir: Path, playlist_id: str) -> bool:
     if not _is_valid_id(playlist_id):
         return False
     with _LOCK:
-        try:
-            _record_path(playlists_dir, playlist_id).unlink()
-        except FileNotFoundError:
-            return False
-        # Sweep any art files too — no record survives to point at them.
-        for fmt in ("jpg", "png"):
-            artwork_path(playlists_dir, playlist_id, fmt).unlink(missing_ok=True)
-        return True
+        return _delete_record_files(playlists_dir, playlist_id)
+
+
+@dataclass(frozen=True)
+class MergeOutcome:
+    """What one merge did. A dataclass, not a Pydantic model, because it never
+    crosses the wire - the router builds the response model from it."""
+
+    playlist: StoredPlaylist
+    added: int
+    skipped_duplicates: int
+    source_deleted: bool
+
+
+def merge_playlists(
+    playlists_dir: Path,
+    target_id: str,
+    source_id: str,
+    *,
+    delete_source: bool,
+) -> MergeOutcome | None:
+    """Append ``source_id``'s rows to ``target_id``; optionally delete the source.
+
+    The FIRST two-record operation in this module - every other mutator touches
+    one record. Both reads, the target write and the optional source removal
+    happen inside ONE ``_LOCK`` acquisition, so nothing can interleave against
+    either record mid-merge. ``_LOCK`` is NON-REENTRANT: ``get_playlist`` is
+    lock-free so it is safe to call here, and the source removal goes through
+    ``_delete_record_files`` rather than ``delete_playlist``, which would
+    deadlock.
+
+    Rules (see docs/superpowers/specs/2026-08-16-playlist-merge-design.md):
+
+    - Duplicates are decided on ``item_id`` ONLY, against a SNAPSHOT of the
+      target's ids taken before anything is copied. The snapshot does not grow
+      while copying, so a source listing one track twice brings BOTH rows
+      across. Merge must never cost a row.
+    - This store has no beets access, so it cannot tell a resolved entry from
+      one whose library track has vanished; both are entries carrying an
+      ``item_id`` and both are subject to that id check.
+    - A PENDING row is copied VERBATIM and is NEVER text-matched against the
+      target. It has no library track behind it, so any dedupe would be guessing
+      on artist/title text - "Last Christmas" by two artists is two recordings -
+      and dropping a row on a fuzzy match is the one way merge could quietly
+      lose a song.
+    - Every copied row gets a FRESH ``uuid4().hex`` uid. Uids are per-playlist
+      handles: reusing the source's would break "duplicate tracks are
+      individually addressable" and could collide with ``legacy-<i>-<id>``.
+    - The target keeps its OWN ``artwork`` and ``target_plex_users``. Both are
+      properties of the playlist you are keeping, not of its contents.
+    - ``plex`` state is untouched; only ``updated_at`` bumps, so the editor's
+      existing "updated_at > synced_at => out of date" rule asks for a re-sync
+      instead of merge fanning out to every target account on its own.
+
+    Returns ``None`` when either record is missing or its id is invalid, so the
+    caller owns the 404.
+
+    PRECONDITION: ``target_id != source_id``. The caller refuses a self-merge
+    (409) before getting here; passing one id twice would append a record to
+    itself.
+    """
+    with _LOCK:
+        target = get_playlist(playlists_dir, target_id)
+        source = get_playlist(playlists_dir, source_id)
+        if target is None or source is None:
+            return None
+        already = set(target.resolved_item_ids)
+        copied: list[StoredEntry] = []
+        skipped = 0
+        for entry in source.entries:
+            if entry.item_id is not None and entry.item_id in already:
+                skipped += 1
+                continue
+            copied.append(
+                StoredEntry(
+                    uid=uuid.uuid4().hex,
+                    item_id=entry.item_id,
+                    pending=entry.pending.model_copy() if entry.pending is not None else None,
+                )
+            )
+        target.entries = [*target.entries, *copied]
+        target.updated_at = _now()
+        _write_atomic(_record_path(playlists_dir, target_id), target)
+        source_deleted = delete_source and _delete_record_files(playlists_dir, source_id)
+        return MergeOutcome(
+            playlist=target,
+            added=len(copied),
+            skipped_duplicates=skipped,
+            source_deleted=source_deleted,
+        )

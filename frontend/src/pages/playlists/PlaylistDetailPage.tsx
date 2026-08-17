@@ -4,6 +4,7 @@ import { toast } from "sonner";
 
 import {
   type PlaylistDetail,
+  type PlaylistMergeResult,
   type PlaylistTrack,
   useDeletePlaylist,
   useDeletePlaylistArtwork,
@@ -18,6 +19,7 @@ import {
 } from "@/api/usePlaylists";
 import { usePlexUsers } from "@/api/usePlex";
 import { BackLink } from "@/components/albums/album-grid";
+import { MergePlaylistDialog } from "@/components/playlists/MergePlaylistDialog";
 import { PlaylistCover } from "@/components/playlists/PlaylistCover";
 import { TrackMatchPicker } from "@/components/playlists/TrackMatchPicker";
 import {
@@ -25,6 +27,7 @@ import {
   Cover,
   Edit,
   Error as ErrorIcon,
+  Merge,
   MoveDown,
   MoveUp,
   MusicFallback,
@@ -248,6 +251,18 @@ function sameSet(a: Set<string>, b: Set<string>): boolean {
   return true;
 }
 
+/** The merge outcome as one announceable sentence, built from the SERVER's
+ * counts. The client never recounts: the response is the authority on what
+ * actually happened, and merge deliberately leaves Plex alone, so the sentence
+ * ends by asking for the sync the "Out of date" status is about to demand. */
+function mergeSummary(result: PlaylistMergeResult, sourceName: string): string {
+  const added = `${result.added} ${result.added === 1 ? "track" : "tracks"}`;
+  const skipped =
+    result.skipped_duplicates > 0 ? `, skipped ${result.skipped_duplicates} already here` : "";
+  const deleted = result.source_deleted ? `, and deleted ${sourceName}` : "";
+  return `Merged ${sourceName}: added ${added}${skipped}${deleted}. Sync to Plex to push the change.`;
+}
+
 export function PlaylistDetailPage() {
   const { playlistId } = useParams<{ playlistId: string }>();
   const id = playlistId ?? "";
@@ -307,6 +322,11 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
   // shared picker is driven off this — clicking a row's "Match…" arms it, the
   // pick resolves that uid and disarms.
   const [matchUid, setMatchUid] = useState<string | null>(null);
+
+  // The merge dialog. Mounted only while open - nothing here needs it before
+  // then. Its own usePlaylists() is disabled while closed as well, so neither
+  // path can fire GET /api/playlists off a page that merely CAN merge.
+  const [mergeOpen, setMergeOpen] = useState(false);
 
   // Local copy of the tracklist so reorder/remove update the UI immediately
   // (optimistic) and keyboard focus can be restored deterministically once the
@@ -693,6 +713,11 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
             )}
           </Button>
 
+          <Button variant="outline" size="sm" onClick={() => setMergeOpen(true)}>
+            <Merge className="size-4" aria-hidden="true" /> Merge another playlist into this
+            one&hellip;
+          </Button>
+
           <AlertDialog>
             <AlertDialogTrigger asChild>
               <Button variant="outline" size="sm">
@@ -898,6 +923,15 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
             ))}
           </TableBody>
         </Table>
+      )}
+
+      {mergeOpen && (
+        <MergePlaylistDialog
+          target={playlist}
+          open
+          onOpenChange={setMergeOpen}
+          onMerged={(result, sourceName) => setStatusMsg(mergeSummary(result, sourceName))}
+        />
       )}
 
       {/* One shared picker for whichever row is armed (matchUid). It is

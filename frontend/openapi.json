@@ -3339,6 +3339,79 @@
         }
       }
     },
+    "/api/playlists/{playlist_id}/merge": {
+      "post": {
+        "tags": [
+          "playlists"
+        ],
+        "summary": "Merge Playlist Endpoint",
+        "description": "Fold ``source_id``'s rows into THIS playlist (the target), appending them\nin source order and skipping any whose library item is already here.\n\nDoes NOT sync. It bumps the target's ``updated_at``, so the editor's\nexisting out-of-date rule asks for a re-sync - syncing here would fan out to\nevery target account off a single merge click.",
+        "operationId": "merge_playlist_endpoint_api_playlists__playlist_id__merge_post",
+        "parameters": [
+          {
+            "name": "playlist_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Playlist Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaylistMergeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaylistMergeResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The target or the source playlist is gone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A playlist cannot be merged into itself.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playlists/{playlist_id}/artwork": {
       "get": {
         "tags": [
@@ -9119,6 +9192,53 @@
           "created"
         ],
         "title": "PlaylistImportResponse"
+      },
+      "PlaylistMergeRequest": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          },
+          "delete_source": {
+            "type": "boolean",
+            "title": "Delete Source",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_id"
+        ],
+        "title": "PlaylistMergeRequest",
+        "description": "Fold ``source_id`` into the playlist named by the path (the TARGET).\n\n``delete_source`` is an explicit, separate choice - the source survives by\ndefault. Ticking it removes the source record, its ``.m3u8``, and its Plex\ncopies from admin and from every account it was synced to."
+      },
+      "PlaylistMergeResponse": {
+        "properties": {
+          "playlist": {
+            "$ref": "#/components/schemas/PlaylistDetail"
+          },
+          "added": {
+            "type": "integer",
+            "title": "Added"
+          },
+          "skipped_duplicates": {
+            "type": "integer",
+            "title": "Skipped Duplicates"
+          },
+          "source_deleted": {
+            "type": "boolean",
+            "title": "Source Deleted"
+          }
+        },
+        "type": "object",
+        "required": [
+          "playlist",
+          "added",
+          "skipped_duplicates",
+          "source_deleted"
+        ],
+        "title": "PlaylistMergeResponse",
+        "description": "The merged target, plus what the merge actually did.\n\n``added`` and ``skipped_duplicates`` come back from the server rather than\nbeing inferred client-side, so the confirmation can state the outcome\nwithout recounting a list it would have to fetch twice to get right."
       },
       "PlaylistReorderRequest": {
         "properties": {
