@@ -25,10 +25,23 @@ class PlexSettingsUpdate(BaseModel):
     token: str | None = None
 
 
-class PlexSectionList(BaseModel):
-    """GET /plex/sections — the server's music (artist-type) section titles."""
+class PlexSectionInfo(BaseModel):
+    """One music (artist-type) library section on the Plex server.
 
-    sections: list[str]
+    ``locations`` are the folder paths PLEX reports for that library — the truth
+    the ``library_path`` setting has to agree with, since ``translate_path``
+    rebases every beets path onto it. A library can span several folders, so
+    this is a list; it is empty only when the server listed none.
+    """
+
+    title: str
+    locations: list[str]
+
+
+class PlexSectionList(BaseModel):
+    """GET /plex/sections — the server's music (artist-type) sections."""
+
+    sections: list[PlexSectionInfo]
 
 
 class PlexPlaylistInfo(BaseModel):

@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 
 import {
+  type PlexSectionInfo,
   type PlexSettings,
   usePlexSections,
   usePlexSettings,
@@ -8,10 +9,34 @@ import {
   useTestPlex,
 } from "@/api/usePlex";
 import type { components } from "@/api/schema";
-import { Spinner, Success } from "@/components/icons";
+import { Spinner, Success, Warning } from "@/components/icons";
 import { SettingsSection } from "@/components/system/SettingsSection";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+
+/** Compare a configured path with a folder Plex reported, the way the backend
+ * effectively does: `translate_path` joins the root onto the track's relative
+ * path and normalizes, so a trailing slash on the root changes nothing and must
+ * not read as a mismatch. "/" keeps its one slash. */
+function samePath(a: string, b: string) {
+  const strip = (p: string) => {
+    const t = p.trim();
+    return t.length > 1 ? t.replace(/\/+$/, "") : t;
+  };
+  return strip(a) === strip(b);
+}
+
+/** Which fetched section the current selection resolves to, mirroring the
+ * backend's own rule (`app/plex/client.py: music_section`): a set title matches
+ * case-insensitively, and a blank title ("Auto") resolves ONLY when the server
+ * has exactly one music library — with several the backend refuses to guess, so
+ * neither may the panel. `undefined` means "nothing known", which is also what a
+ * failed or unconfigured probe produces, and the panel then claims nothing. */
+function resolveSection(sections: PlexSectionInfo[], title: string) {
+  const wanted = title.trim().toLowerCase();
+  if (!wanted) return sections.length === 1 ? sections[0] : undefined;
+  return sections.find((section) => section.title.toLowerCase() === wanted);
+}
 
 /** Settings → Plex: the single-account connection (base URL + write-only admin
  * token + the music-library path as Plex sees it) plus a connection test. The
@@ -88,10 +113,45 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
   // Always keep the current saved value selectable, even if the probe failed or
   // it's no longer among the server's sections.
   const fetchedSections = sections.data?.sections ?? [];
+  const sectionTitles = fetchedSections.map((section) => section.title);
   const sectionOptions =
-    librarySection && !fetchedSections.includes(librarySection)
-      ? [librarySection, ...fetchedSections]
-      : fetchedSections;
+    librarySection && !sectionTitles.includes(librarySection)
+      ? [librarySection, ...sectionTitles]
+      : sectionTitles;
+
+  // The folders Plex itself reports for the selected library — the truth the
+  // Library path has to agree with, since every sync rebases beets paths onto
+  // it. Empty when the probe failed, Plex is unconfigured, or the selection
+  // can't be resolved: the panel then shows and claims nothing.
+  const selectedSection = resolveSection(fetchedSections, librarySection);
+  const folders = selectedSection?.locations ?? [];
+  const pathIsBlank = libraryPath.trim() === "";
+  const pathMismatch =
+    folders.length > 0 && !pathIsBlank && !folders.some((folder) => samePath(folder, libraryPath));
+
+  function handleSectionChange(nextTitle: string) {
+    setLibrarySection(nextTitle);
+    const next = resolveSection(fetchedSections, nextTitle);
+    // Fill the Library path in from Plex's own answer, but only when the fill is
+    // both unambiguous and non-destructive.
+    //  - Unambiguous: the chosen library reports EXACTLY ONE folder. When it
+    //    spans several, only the user knows which one their beets root maps
+    //    onto, so we list them all and fill nothing.
+    //  - Non-destructive: the field is blank, or still holds a folder of the
+    //    library that was selected a moment ago — i.e. a leftover of the
+    //    previous pick, not a deliberate value. Anything else the user typed
+    //    stands, and the warning below tells them it looks wrong.
+    // Blank counts as non-deliberate because it is the default of a fresh
+    // install and the exact state this feature exists to rescue; where blank is
+    // genuinely right (MusicDrop and Plex share a mount) the folder we fill in
+    // IS the shared root, so the filled value behaves identically. The fill
+    // only ever runs on an explicit pick, never from an effect, so a background
+    // sections refetch can't rewrite the field mid-edit — and nothing is
+    // persisted until Save, so the change is visible and undoable.
+    if (next?.locations.length !== 1) return;
+    const inherited = pathIsBlank || folders.some((folder) => samePath(folder, libraryPath));
+    if (inherited) setLibraryPath(next.locations[0]);
+  }
 
   function handleSave() {
     // Clear any prior success line and stale test result before a new attempt,
@@ -180,6 +240,46 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
           <p className="text-muted-foreground text-xs">
             music library path as Plex sees it; leave blank if the same
           </p>
+          {/* One always-mounted polite region for what Plex reports about the
+              selected library. Kept mounted (rather than inserted when a
+              mismatch appears) so its text changes are announced — the same
+              reason the save/test status line below is always mounted. It must
+              not be display:none while idle either: a region hidden at the
+              moment it gains content is not exposed, which would put us back to
+              announcing on insertion. Empty, it is simply a zero-height box. */}
+          <div role="status" aria-live="polite" className="flex max-w-md flex-col gap-1 text-xs">
+            {selectedSection && folders.length > 0 && (
+              <p className="text-muted-foreground">
+                Plex reports {folders.length === 1 ? "this folder" : "these folders"} for “
+                {selectedSection.title || "your music library"}”:{" "}
+                {folders.map((folder, i) => (
+                  <Fragment key={folder}>
+                    {i > 0 && ", "}
+                    {/* break-all: a path is an opaque string, and one long
+                        segment with no "/" to wrap at pushed the whole page
+                        sideways at 375px. */}
+                    <span className="text-foreground font-mono break-all">{folder}</span>
+                  </Fragment>
+                ))}
+              </p>
+            )}
+            {pathMismatch && (
+              <p className="border-warning/50 bg-warning/10 text-foreground flex items-start gap-2 rounded-md border p-2">
+                <Warning className="text-warning mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                <span>
+                  Plex doesn’t list this path for that library. Path matching will fail
+                  silently and every sync will fall back to matching on artist and title —
+                  which holds up until Plex spells a name differently.
+                </span>
+              </p>
+            )}
+            {folders.length > 0 && pathIsBlank && (
+              <p className="text-muted-foreground">
+                Blank passes paths through unchanged, which is right only if MusicDrop’s
+                own library root is one of the folders above.
+              </p>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-col gap-1">
@@ -190,7 +290,7 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
             id="plex-library-section"
             className="border-input bg-background h-9 max-w-md rounded-md border px-2 text-sm"
             value={librarySection}
-            onChange={(e) => setLibrarySection(e.target.value)}
+            onChange={(e) => handleSectionChange(e.target.value)}
           >
             <option value="">Auto: first music library</option>
             {sectionOptions.map((title) => (

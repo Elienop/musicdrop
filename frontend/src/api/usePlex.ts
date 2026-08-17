@@ -8,6 +8,7 @@ export type PlexSettings = components["schemas"]["PlexSettings"];
 export type PlexConnection = components["schemas"]["PlexConnection"];
 export type PlexUserList = components["schemas"]["PlexUserList"];
 export type PlexSectionList = components["schemas"]["PlexSectionList"];
+export type PlexSectionInfo = components["schemas"]["PlexSectionInfo"];
 
 export function usePlexUsers() {
   return useQuery({

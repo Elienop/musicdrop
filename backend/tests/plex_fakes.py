@@ -361,9 +361,20 @@ class FakePlaylist:
 class FakeSection:
     TYPE = "artist"
 
-    def __init__(self, tracks: list[FakeTrack], *, title: str = "Music") -> None:
+    def __init__(
+        self,
+        tracks: list[FakeTrack],
+        *,
+        title: str = "Music",
+        locations: list[str] | None = None,
+    ) -> None:
         self._tracks = tracks
         self.title = title
+        # The folder paths Plex holds for this library (``locations``,
+        # ``library.py:457``). Defaults to ONE folder, never to none: PMS refuses
+        # to leave a library with zero folders (``library.py:620-621``), so an
+        # empty default would make the degenerate case the norm every test sees.
+        self.locations = list(locations) if locations is not None else ["/data/music"]
 
     def searchTracks(self) -> list[FakeTrack]:
         return self._tracks

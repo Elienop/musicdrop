@@ -9499,11 +9499,33 @@
         ],
         "title": "PlexPlaylistList"
       },
+      "PlexSectionInfo": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "locations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Locations"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "locations"
+        ],
+        "title": "PlexSectionInfo",
+        "description": "One music (artist-type) library section on the Plex server.\n\n``locations`` are the folder paths PLEX reports for that library \u2014 the truth\nthe ``library_path`` setting has to agree with, since ``translate_path``\nrebases every beets path onto it. A library can span several folders, so\nthis is a list; it is empty only when the server listed none."
+      },
       "PlexSectionList": {
         "properties": {
           "sections": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/PlexSectionInfo"
             },
             "type": "array",
             "title": "Sections"
@@ -9514,7 +9536,7 @@
           "sections"
         ],
         "title": "PlexSectionList",
-        "description": "GET /plex/sections \u2014 the server's music (artist-type) section titles."
+        "description": "GET /plex/sections \u2014 the server's music (artist-type) sections."
       },
       "PlexSettings": {
         "properties": {

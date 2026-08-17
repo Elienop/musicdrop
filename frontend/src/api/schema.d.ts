@@ -3859,12 +3859,27 @@ export interface components {
             playlists: components["schemas"]["PlexPlaylistInfo"][];
         };
         /**
+         * PlexSectionInfo
+         * @description One music (artist-type) library section on the Plex server.
+         *
+         *     ``locations`` are the folder paths PLEX reports for that library — the truth
+         *     the ``library_path`` setting has to agree with, since ``translate_path``
+         *     rebases every beets path onto it. A library can span several folders, so
+         *     this is a list; it is empty only when the server listed none.
+         */
+        PlexSectionInfo: {
+            /** Title */
+            title: string;
+            /** Locations */
+            locations: string[];
+        };
+        /**
          * PlexSectionList
-         * @description GET /plex/sections — the server's music (artist-type) section titles.
+         * @description GET /plex/sections — the server's music (artist-type) sections.
          */
         PlexSectionList: {
             /** Sections */
-            sections: string[];
+            sections: components["schemas"]["PlexSectionInfo"][];
         };
         /**
          * PlexSettings

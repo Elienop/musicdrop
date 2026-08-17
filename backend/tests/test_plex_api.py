@@ -85,21 +85,34 @@ def test_settings_round_trips_library_section(client: TestClient) -> None:
     assert client.get("/api/plex/settings").json()["library_section"] == "MusicDrop"
 
 
-def test_sections_endpoint_lists_titles(
+def test_sections_endpoint_lists_titles_with_their_folders(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The folders ride along on the wire so Settings can show the user what Plex
+    # actually reports instead of asking them to retype it from memory.
+    from app.models.plex import PlexSectionInfo
+
     monkeypatch.setattr(
-        "app.api.plex.service.list_music_sections", lambda config: ["Music", "MusicDrop"]
+        "app.api.plex.service.list_music_sections",
+        lambda config: [
+            PlexSectionInfo(title="Music", locations=["/data/music"]),
+            PlexSectionInfo(title="MusicDrop", locations=["/musicdrop", "/mnt/spill"]),
+        ],
     )
     r = client.get("/api/plex/sections")
     assert r.status_code == 200
-    assert r.json() == {"sections": ["Music", "MusicDrop"]}
+    assert r.json() == {
+        "sections": [
+            {"title": "Music", "locations": ["/data/music"]},
+            {"title": "MusicDrop", "locations": ["/musicdrop", "/mnt/spill"]},
+        ]
+    }
 
 
 def test_sections_endpoint_409_when_unconfigured(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def _raise(config: object) -> list[str]:
+    def _raise(config: object) -> list[object]:
         raise PlexNotConfigured("Plex is not configured.")
 
     monkeypatch.setattr("app.api.plex.service.list_music_sections", _raise)
