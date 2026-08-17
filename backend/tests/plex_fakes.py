@@ -98,12 +98,19 @@ class _PlexIdentity:
 
 
 class FakeTrack(_PlexIdentity):
-    """``duration`` is MILLISECONDS, as plexapi's ``Track.duration`` is
-    (``audio.py`` -> ``utils.cast(int, data.attrib.get('duration'))``), and
-    ``None`` when the server carried no such attrib -- an unanalysed file. The
-    unit is the trap the fake exists to keep honest: beets' ``length`` is
+    """``duration`` is MILLISECONDS, as plexapi's ``Track.duration`` is:
+    ``audio.py:504`` documents "Length of the track in milliseconds" and
+    ``audio.py:543`` sets ``utils.cast(int, data.attrib.get('duration'))``. The
+    unit is the trap the fake exists to keep honest -- beets' ``length`` is
     seconds, so a matcher that forgot the conversion would still see two
-    plausible numbers."""
+    plausible numbers.
+
+    It is typed ``int | float | None`` because ``utils.cast`` has THREE
+    outcomes, not two (``utils.py:171-184``): ``None`` when the server carried
+    no such attrib (an unanalysed file), the int, or ``float('nan')`` when the
+    attrib was there but would not parse. NaN loses every comparison it takes
+    part in, so a matcher must rule it out rather than compare with it.
+    """
 
     def __init__(
         self,
@@ -114,7 +121,7 @@ class FakeTrack(_PlexIdentity):
         parentTitle: str = "",
         title: str = "",
         index: int | None = None,
-        duration: int | None = None,
+        duration: int | float | None = None,
     ) -> None:
         self.ratingKey = rating_key
         self.locations = locations
@@ -137,7 +144,7 @@ class FakePlaylistItem(_PlexIdentity):
     parentTitle: str
     title: str
     index: int | None
-    duration: int | None
+    duration: int | float | None
 
     def __init__(self, track: FakeItem, playlist_item_id: int) -> None:
         self.playlistItemID = playlist_item_id

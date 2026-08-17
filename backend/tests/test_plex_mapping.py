@@ -2,7 +2,12 @@ import pytest
 
 from app.plex.client import music_section
 from app.plex.errors import PlexConnectionError
-from app.plex.mapping import PlexResolution, PlexTrackSpec, resolve_ordered_tracks
+from app.plex.mapping import (
+    PlexResolution,
+    PlexTrackSpec,
+    _plex_seconds,
+    resolve_ordered_tracks,
+)
 from tests.plex_fakes import FakeSection, FakeTrack
 
 
@@ -68,7 +73,7 @@ def _track(
     album: str = "",
     title: str = "",
     index: int | None = None,
-    duration: int | None = None,
+    duration: int | float | None = None,
 ) -> FakeTrack:
     """One Plex track at ``path``, its plexapi fields named the way a playlist
     spec talks about them (grandparentTitle = album-artist, parentTitle = album).
@@ -604,6 +609,23 @@ def test_album_fallback_reads_a_zero_duration_as_absent_on_either_side() -> None
     )
     res = resolve_ordered_tracks(real_in_plex, [both_zero])
     assert res.tracks == []
+
+
+def test_plex_seconds_converts_milliseconds_and_rules_out_every_non_length() -> None:
+    # The unit boundary and the "is there a length at all?" decision, tested
+    # where they are decided rather than through a scenario that would refuse
+    # for several reasons at once.
+    #
+    # plexapi's cast has THREE outcomes, not two (utils.py:171-184): None when
+    # the server carried no `duration` attrib, the int, or float("nan") when it
+    # carried one that would not parse. NaN loses EVERY comparison it takes part
+    # in -- including the one meant to reject it -- so it has to be ruled out
+    # here, as absent, and never handed to a tolerance check downstream.
+    assert _plex_seconds(_track(1, "/a.flac", duration=254_000)) == 254.0
+    assert _plex_seconds(_track(2, "/b.flac", duration=None)) is None
+    assert _plex_seconds(_track(3, "/c.flac", duration=0)) is None
+    assert _plex_seconds(_track(4, "/d.flac", duration=float("nan"))) is None
+    assert _plex_seconds(object()) is None  # not even a duration attribute
 
 
 def test_an_ambiguous_artist_match_is_never_re_answered_by_the_album_fallback() -> None:
