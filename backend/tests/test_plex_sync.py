@@ -34,6 +34,7 @@ def _p(path: str) -> PlexTrackSpec:
         album="",
         title="",
         track=None,
+        length_seconds=None,
     )
 
 
@@ -364,6 +365,7 @@ def test_missing_tracks_are_reported_and_capped(monkeypatch: pytest.MonkeyPatch)
             album="B",
             title=f"t{i}",
             track=None,
+            length_seconds=None,
         )
         for i in range(MISSING_TRACKS_CAP + 5)
     ]
@@ -643,6 +645,7 @@ def test_sync_metadata_fallback_populates(monkeypatch: pytest.MonkeyPatch) -> No
         album="19",
         title="Daydreamer",
         track=1,
+        length_seconds=None,
     )
     state = sync.sync_playlist(CONFIG, "Mix", [spec], playlist_id="p1")
     assert state.status == "ok"
@@ -832,6 +835,7 @@ def test_sync_uses_the_configured_section(monkeypatch: pytest.MonkeyPatch) -> No
                 album="",
                 title="x",
                 track=None,
+                length_seconds=None,
             )
         ],
         playlist_id="p1",

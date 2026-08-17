@@ -93,7 +93,7 @@ def test_malformed_id_is_404_not_500(client: TestClient) -> None:
     assert client.delete("/api/playlists/not-a-uuid").status_code == 404
 
 
-def _add_track(handle: LibraryHandle, title: str) -> int:
+def _add_track(handle: LibraryHandle, title: str, *, length: float | None = None) -> int:
     music = handle.lib.directory  # bytes
     folder = os.path.join(os.fsdecode(music), "Seed")
     os.makedirs(folder, exist_ok=True)
@@ -101,6 +101,8 @@ def _add_track(handle: LibraryHandle, title: str) -> int:
     with open(path, "wb") as fh:
         fh.write(b"\x00")
     item = Item(album="Seed", albumartist="Art", artist="Art", title=title, track=1)
+    if length is not None:
+        item.length = length
     item.path = os.fsencode(path)
     handle.lib.add(item)
     return _require_id(item.id)
@@ -361,6 +363,21 @@ def test_export_and_sync_feed_from_resolved_entries_only(
     assert reread is not None
     specs = _plex_specs_for(reread, beets_library, PlexConfig(base_url="http://x", token="t"))
     assert len(specs) == 2
+
+
+def test_plex_specs_carry_the_track_length(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    # The (album, title) fallback accepts a candidate only on a length that
+    # agrees, so a spec built without one turns that fallback off for the track.
+    # Nothing between beets and the matcher may drop the value.
+    from app.api.playlists import _plex_specs_for
+    from app.plex.config import PlexConfig
+
+    t1 = _add_track(beets_library, "Timed", length=251.5)
+    record = store.create_playlist(_dir(), name="Mix", entries=[StoredEntry(uid="u1", item_id=t1)])
+    specs = _plex_specs_for(record, beets_library, PlexConfig(base_url="http://x", token="t"))
+    assert [s.length_seconds for s in specs] == [251.5]
 
 
 def _export_dir(handle: LibraryHandle) -> str:

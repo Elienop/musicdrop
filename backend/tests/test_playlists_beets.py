@@ -297,3 +297,28 @@ def test_track_match_refs_track_zero_becomes_none(tmp_path: Path) -> None:
     lib.add(it)
     refs = track_match_refs(lib, [_require_id(it.id)])
     assert refs[0].track is None  # absent/zero track number -> None
+
+
+def test_track_match_refs_carry_length_for_the_plex_duration_guard(tmp_path: Path) -> None:
+    # Plex's (album, title) fallback accepts a candidate only when its length
+    # agrees, so a ref built without one silently disables that fallback for the
+    # track -- and the ref has to carry ITS OWN length, not the neighbour's.
+    lib, ids = _lib_with_items(tmp_path)
+    refs = track_match_refs(lib, [ids[1], ids[0]])  # reversed
+    assert [r.length_seconds for r in refs] == [200.0, 100.0]
+
+
+def test_track_match_refs_zero_length_becomes_none(tmp_path: Path) -> None:
+    # A length beets never read is 0.0 in the DB. The Plex side has to see that
+    # as ABSENT: taken literally, a zero-second track agrees with every other
+    # zero-second track and the duration guard stops guarding.
+    music = tmp_path / "music"
+    lib = Library(str(tmp_path / "library.db"), directory=str(music))
+    music.mkdir(parents=True, exist_ok=True)
+    f = music / "z.flac"
+    f.write_bytes(b"\x00")
+    it = Item(album="Al", albumartist="Ar", artist="Ar", title="T", track=1, length=0.0)
+    it.path = os.fsencode(str(f))
+    lib.add(it)
+    refs = track_match_refs(lib, [_require_id(it.id)])
+    assert refs[0].length_seconds is None

@@ -98,6 +98,13 @@ class _PlexIdentity:
 
 
 class FakeTrack(_PlexIdentity):
+    """``duration`` is MILLISECONDS, as plexapi's ``Track.duration`` is
+    (``audio.py`` -> ``utils.cast(int, data.attrib.get('duration'))``), and
+    ``None`` when the server carried no such attrib -- an unanalysed file. The
+    unit is the trap the fake exists to keep honest: beets' ``length`` is
+    seconds, so a matcher that forgot the conversion would still see two
+    plausible numbers."""
+
     def __init__(
         self,
         rating_key: int,
@@ -107,6 +114,7 @@ class FakeTrack(_PlexIdentity):
         parentTitle: str = "",
         title: str = "",
         index: int | None = None,
+        duration: int | None = None,
     ) -> None:
         self.ratingKey = rating_key
         self.locations = locations
@@ -114,6 +122,7 @@ class FakeTrack(_PlexIdentity):
         self.parentTitle = parentTitle
         self.title = title
         self.index = index
+        self.duration = duration
 
 
 class FakePlaylistItem(_PlexIdentity):
@@ -128,6 +137,7 @@ class FakePlaylistItem(_PlexIdentity):
     parentTitle: str
     title: str
     index: int | None
+    duration: int | None
 
     def __init__(self, track: FakeItem, playlist_item_id: int) -> None:
         self.playlistItemID = playlist_item_id
@@ -137,6 +147,7 @@ class FakePlaylistItem(_PlexIdentity):
         self.parentTitle = track.parentTitle
         self.title = track.title
         self.index = track.index
+        self.duration = track.duration
 
 
 # What plexapi accepts wherever it wants "an item": a Track fetched from the

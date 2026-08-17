@@ -428,6 +428,7 @@ def _plex_specs_for(
             album=r.album,
             title=r.title,
             track=r.track,
+            length_seconds=r.length_seconds,
         )
         for r in refs
     ]

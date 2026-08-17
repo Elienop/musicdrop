@@ -68,9 +68,14 @@ def _track(
     album: str = "",
     title: str = "",
     index: int | None = None,
+    duration: int | None = None,
 ) -> FakeTrack:
     """One Plex track at ``path``, its plexapi fields named the way a playlist
-    spec talks about them (grandparentTitle = album-artist, parentTitle = album)."""
+    spec talks about them (grandparentTitle = album-artist, parentTitle = album).
+
+    ``duration`` is MILLISECONDS, as Plex reports it — the spec's length is
+    seconds, and the whole point of the duration guard is that the two units
+    never get confused."""
     return FakeTrack(
         rating_key,
         [path],
@@ -78,11 +83,16 @@ def _track(
         parentTitle=album,
         title=title,
         index=index,
+        duration=duration,
     )
 
 
 def _section(tracks: list[FakeTrack]) -> FakeSection:
     return FakeSection(tracks)
+
+
+def _opt_float(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) else None
 
 
 def _spec(path: str, item_id: int = 1, **meta: object) -> PlexTrackSpec:
@@ -93,6 +103,7 @@ def _spec(path: str, item_id: int = 1, **meta: object) -> PlexTrackSpec:
         album=str(meta.get("album", "")),
         title=str(meta.get("title", "")),
         track=meta.get("track"),  # type: ignore[arg-type]  # int | None
+        length_seconds=_opt_float(meta.get("length_seconds")),
     )
 
 
@@ -238,10 +249,22 @@ def test_missing_carries_identity_and_reason_not_found() -> None:
         section,
         [
             PlexTrackSpec(
-                item_id=11, path="/plex/a.flac", albumartist="A", album="X", title="one", track=1
+                item_id=11,
+                path="/plex/a.flac",
+                albumartist="A",
+                album="X",
+                title="one",
+                track=1,
+                length_seconds=None,
             ),
             PlexTrackSpec(
-                item_id=12, path="/plex/gone.flac", albumartist="B", album="Y", title="two", track=2
+                item_id=12,
+                path="/plex/gone.flac",
+                albumartist="B",
+                album="Y",
+                title="two",
+                track=2,
+                length_seconds=None,
             ),
         ],
     )
@@ -270,6 +293,7 @@ def test_missing_reason_ambiguous_when_metadata_ties() -> None:
                 album="Same",
                 title="one",
                 track=None,
+                length_seconds=None,
             )
         ],
     )
@@ -283,8 +307,321 @@ def test_incomplete_metadata_key_is_not_found_not_ambiguous() -> None:
         section,
         [
             PlexTrackSpec(
-                item_id=7, path="/beets/z.flac", albumartist="", album="", title="one", track=None
+                item_id=7,
+                path="/beets/z.flac",
+                albumartist="",
+                album="",
+                title="one",
+                track=None,
+                length_seconds=None,
             )
         ],
     )
     assert [(m.item_id, m.reason) for m in res.missing] == [(7, "not_found")]
+
+
+# --- the third fallback: (album, title) agreed on DURATION --------------------
+#
+# Plex's own agent rewrites artist names, sometimes into a DIFFERENT SCRIPT, and
+# no casefold bridges "Wael Kfoury" and its Arabic spelling. The album title
+# survives that rewrite, so (album, title) can still find the track -- but many
+# of these releases are SINGLES where album == title, which degenerates the key
+# into a title-only match. A length that agrees is what keeps it from being a
+# guess.
+
+_ARABIC_WAEL = "وائل كفوري"  # what Plex's agent writes for beets' "Wael Kfoury"
+
+
+def test_album_and_duration_bridge_a_rewritten_artist_script() -> None:
+    # THE REAL BUG, from the owner's library: beets holds the Latin spelling and
+    # Plex the Arabic one, so the (albumartist, title) fallback can never fire.
+    section = _section(
+        [
+            _track(
+                90,
+                "/musicdrop/W/Kelna Mnenjar/01.flac",
+                artist=_ARABIC_WAEL,
+                album="Kelna Mnenjar",
+                title="Kelna Mnenjar",
+                duration=254_000,
+            )
+        ]
+    )
+    spec = _spec(
+        "/music/Wael Kfoury/Kelna Mnenjar/01.flac",  # the WRONG library_path -> a path miss
+        albumartist="Wael Kfoury",
+        album="Kelna Mnenjar",
+        title="Kelna Mnenjar",
+        length_seconds=254.0,
+    )
+    res = resolve_ordered_tracks(section, [spec])
+    assert [t.ratingKey for t in res.tracks] == [90]
+    assert res.missing == []
+
+
+def test_album_and_title_alone_never_match_a_wrong_duration() -> None:
+    # THE ANTI-GUESSING GUARD, and the reason this fallback is duration-keyed at
+    # all. Two artists both released a single called "Habibi", so album == title
+    # == "Habibi" for each of them and the key collides exactly. Only the OTHER
+    # artist's copy is in Plex; album+title alone would hand it back, put a
+    # stranger's recording in the user's playlist, and report the sync "ok".
+    section = _section(
+        [
+            _track(
+                91,
+                "/musicdrop/Other/Habibi/01.flac",
+                artist="Some Other Singer",
+                album="Habibi",
+                title="Habibi",
+                duration=185_000,
+            )
+        ]
+    )
+    spec = _spec(
+        "/music/Wael Kfoury/Habibi/01.flac",
+        albumartist="Wael Kfoury",
+        album="Habibi",
+        title="Habibi",
+        length_seconds=254.0,  # 69 seconds apart: a different recording entirely
+    )
+    res = resolve_ordered_tracks(section, [spec])
+    assert res.tracks == []
+    assert [(m.item_id, m.reason) for m in res.missing] == [(1, "not_found")]
+
+
+def test_album_fallback_tolerates_a_small_encoder_disagreement() -> None:
+    # The same recording in two files: container/encoder rounding puts them a
+    # bit over a second apart. Demanding exact equality would refuse every real
+    # match and make the fallback useless.
+    section = _section(
+        [
+            _track(
+                99,
+                "/musicdrop/W/Kelna Mnenjar/01.flac",
+                artist=_ARABIC_WAEL,
+                album="Kelna Mnenjar",
+                title="Kelna Mnenjar",
+                duration=255_100,
+            )
+        ]
+    )
+    spec = _spec(
+        "/music/gone.flac",
+        albumartist="Wael Kfoury",
+        album="Kelna Mnenjar",
+        title="Kelna Mnenjar",
+        length_seconds=254.0,
+    )
+    res = resolve_ordered_tracks(section, [spec])
+    assert [t.ratingKey for t in res.tracks] == [99]
+    assert res.missing == []
+
+
+def test_two_candidates_agreeing_on_album_title_and_duration_stay_ambiguous() -> None:
+    # Album, title AND length all agree twice over -- the guard has nothing left
+    # to separate them with, so the row stays missing. Never pick one.
+    section = _section(
+        [
+            _track(
+                92,
+                "/musicdrop/a.flac",
+                artist=_ARABIC_WAEL,
+                album="Habibi",
+                title="Habibi",
+                duration=254_000,
+            ),
+            _track(
+                93,
+                "/musicdrop/b.flac",
+                artist="Another Singer",
+                album="Habibi",
+                title="Habibi",
+                duration=254_500,
+            ),
+        ]
+    )
+    spec = _spec(
+        "/music/gone.flac",
+        albumartist="Wael Kfoury",
+        album="Habibi",
+        title="Habibi",
+        length_seconds=254.0,
+    )
+    res = resolve_ordered_tracks(section, [spec])
+    assert res.tracks == []
+    assert [(m.item_id, m.reason) for m in res.missing] == [(1, "ambiguous")]
+
+
+def test_exact_path_still_wins_over_the_album_fallback() -> None:
+    # Order is contract: whatever resolves by PATH today keeps resolving by path.
+    # Track 95 is a flawless album+title+duration match, so a fallback that ran
+    # first would return IT and silently repoint the row.
+    section = _section(
+        [
+            _track(
+                94,
+                "/plex/exact.flac",
+                artist="X",
+                album="Other Album",
+                title="Other Title",
+                duration=10_000,
+            ),
+            _track(
+                95, "/plex/decoy.flac", artist="X", album="Habibi", title="Habibi", duration=254_000
+            ),
+        ]
+    )
+    spec = _spec(
+        "/plex/exact.flac",
+        albumartist="Wael Kfoury",
+        album="Habibi",
+        title="Habibi",
+        length_seconds=254.0,
+    )
+    res = resolve_ordered_tracks(section, [spec])
+    assert [t.ratingKey for t in res.tracks] == [94]
+    assert res.missing == []
+
+
+def test_albumartist_title_still_wins_over_the_album_fallback() -> None:
+    # The middle rung keeps its place too: the (albumartist, title) hit and the
+    # (album, title) hit are DIFFERENT tracks here, so a swapped order shows up
+    # as a different ratingKey rather than as a passing test.
+    section = _section(
+        [
+            _track(
+                96, "/plex/by-artist.flac", artist="Wael Kfoury", title="Habibi", duration=254_000
+            ),
+            _track(
+                97,
+                "/plex/by-album.flac",
+                artist=_ARABIC_WAEL,
+                album="Habibi",
+                title="Habibi",
+                duration=254_000,
+            ),
+        ]
+    )
+    spec = _spec(
+        "/music/gone.flac",
+        albumartist="Wael Kfoury",
+        album="Habibi",
+        title="Habibi",
+        length_seconds=254.0,
+    )
+    res = resolve_ordered_tracks(section, [spec])
+    assert [t.ratingKey for t in res.tracks] == [96]
+    assert res.missing == []
+
+
+def test_album_fallback_refuses_when_the_spec_has_no_length() -> None:
+    # beets never read this file's length, so there is nothing to check the
+    # candidate against -- and an unchecked album+title match is the guess.
+    section = _section(
+        [
+            _track(
+                98,
+                "/musicdrop/a.flac",
+                artist=_ARABIC_WAEL,
+                album="Habibi",
+                title="Habibi",
+                duration=254_000,
+            )
+        ]
+    )
+    spec = _spec("/music/gone.flac", albumartist="Wael Kfoury", album="Habibi", title="Habibi")
+    res = resolve_ordered_tracks(section, [spec])
+    assert res.tracks == []
+    assert [(m.item_id, m.reason) for m in res.missing] == [(1, "not_found")]
+
+
+def test_album_fallback_refuses_when_plex_reports_no_duration() -> None:
+    # Symmetric: Plex has not analysed the file, so its duration is absent.
+    section = _section(
+        [_track(100, "/musicdrop/a.flac", artist=_ARABIC_WAEL, album="Habibi", title="Habibi")]
+    )
+    spec = _spec(
+        "/music/gone.flac",
+        albumartist="Wael Kfoury",
+        album="Habibi",
+        title="Habibi",
+        length_seconds=254.0,
+    )
+    res = resolve_ordered_tracks(section, [spec])
+    assert res.tracks == []
+    assert [(m.item_id, m.reason) for m in res.missing] == [(1, "not_found")]
+
+
+def test_album_fallback_reads_a_zero_duration_as_absent_on_either_side() -> None:
+    # beets stores 0.0 for a length it never read and Plex reports 0 for a track
+    # it has not analysed, so zero means ABSENT, not "zero seconds". Taken
+    # literally, 0 and 0 agree perfectly -- every unanalysed track would match
+    # every unread one that happens to share an album and a title.
+    zero_in_plex = _section(
+        [
+            _track(
+                101,
+                "/musicdrop/a.flac",
+                artist=_ARABIC_WAEL,
+                album="Habibi",
+                title="Habibi",
+                duration=0,
+            )
+        ]
+    )
+    both_zero = _spec(
+        "/music/gone.flac",
+        albumartist="Wael Kfoury",
+        album="Habibi",
+        title="Habibi",
+        length_seconds=0.0,
+    )
+    res = resolve_ordered_tracks(zero_in_plex, [both_zero])
+    assert res.tracks == []
+    assert [(m.item_id, m.reason) for m in res.missing] == [(1, "not_found")]
+
+    real_length = _spec(
+        "/music/gone.flac",
+        albumartist="Wael Kfoury",
+        album="Habibi",
+        title="Habibi",
+        length_seconds=254.0,
+    )
+    res = resolve_ordered_tracks(zero_in_plex, [real_length])
+    assert res.tracks == []
+
+    real_in_plex = _section(
+        [
+            _track(
+                102,
+                "/musicdrop/a.flac",
+                artist=_ARABIC_WAEL,
+                album="Habibi",
+                title="Habibi",
+                duration=254_000,
+            )
+        ]
+    )
+    res = resolve_ordered_tracks(real_in_plex, [both_zero])
+    assert res.tracks == []
+
+
+def test_an_ambiguous_artist_match_is_never_re_answered_by_the_album_fallback() -> None:
+    # Two Plex copies share album-artist, album and title and no track number
+    # separates them: today that is `ambiguous`, and it stays `ambiguous`. The
+    # (album, title) key is WIDER than the one that just refused -- it drops the
+    # artist constraint -- so letting a length pick one of these two would be
+    # guessing with a weaker key after a stronger one declined, and it would
+    # also downgrade an honest "I found it twice" into "not found".
+    section = _section(
+        [
+            _track(1, "/plex/a.flac", artist="X", album="Al", title="Song", duration=254_000),
+            _track(2, "/plex/b.flac", artist="X", album="Al", title="Song", duration=185_000),
+        ]
+    )
+    spec = _spec(
+        "/beets/none.flac", albumartist="X", album="Al", title="Song", length_seconds=254.0
+    )
+    res = resolve_ordered_tracks(section, [spec])
+    assert res.tracks == []
+    assert [(m.item_id, m.reason) for m in res.missing] == [(1, "ambiguous")]
