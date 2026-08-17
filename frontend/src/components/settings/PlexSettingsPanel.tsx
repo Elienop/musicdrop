@@ -196,7 +196,14 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
     test.reset();
     const body: components["schemas"]["PlexSettingsUpdate"] = {
       base_url: baseUrl,
-      library_path: libraryPath,
+      // Saved TRIMMED, because every check above compares it trimmed: a path
+      // with a stray space passes `pathInside` and draws no warning, then goes
+      // to the server padded, where `translate_path` joins it verbatim and
+      // rebases every track onto " /musicdrop/..." — so the panel would report
+      // all-clear on the one setting whose silent failure cost this app years.
+      // A whitespace-only value is likewise saved as the empty string it looks
+      // like, since blank means "same mount" to the backend and " " does not.
+      library_path: libraryPath.trim(),
       library_section: librarySection,
     };
     // Omit the token unless the user typed a replacement, so a blank field

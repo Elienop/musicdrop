@@ -448,4 +448,50 @@ describe("PlexSettingsPanel", () => {
       screen.queryByText(/couldn.t save plex settings/i),
     ).not.toBeInTheDocument();
   });
+
+  test("saves the library path trimmed, so a padded one can't pass the check and break the join", async () => {
+    // Every check in this panel compares the path TRIMMED, so " /musicdrop"
+    // matches the reported folder and draws no warning. Sent padded, the server
+    // stores it verbatim and translate_path joins it into " /musicdrop/A/x.mp3"
+    // — every path lookup misses, silently, on the one setting whose failure
+    // this whole panel exists to prevent.
+    let sent: Record<string, unknown> | null = null;
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings())),
+      http.get(SECTIONS, () => HttpResponse.json({ sections: [SECTION_DROP] })),
+      http.put(SETTINGS, async ({ request }) => {
+        sent = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(settings({ library_path: "/musicdrop" }));
+      }),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    const path = await screen.findByLabelText(/library path/i);
+    await userEvent.type(path, "  /musicdrop  ");
+    // The panel is satisfied: no mismatch warning, because it compares trimmed.
+    expect(screen.queryByText(/doesn.t list this path/i)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(sent).not.toBeNull());
+    expect(sent!.library_path).toBe("/musicdrop");
+  });
+
+  test("saves a whitespace-only library path as blank, which is what it looks like", async () => {
+    // Blank means "same mount, pass paths through" to the backend. " " does
+    // not: it is a non-empty root that translate_path rebases everything onto.
+    let sent: Record<string, unknown> | null = null;
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings())),
+      http.put(SETTINGS, async ({ request }) => {
+        sent = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(settings());
+      }),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    await userEvent.type(await screen.findByLabelText(/library path/i), "   ");
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(sent).not.toBeNull());
+    expect(sent!.library_path).toBe("");
+  });
 });
