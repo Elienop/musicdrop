@@ -6,6 +6,15 @@ name: CI
 on:
   pull_request:
   workflow_call:
+    inputs:
+      build_image:
+        description: >-
+          Build the Docker image as a gate. release.yml passes false: its own
+          release job builds and pushes the real image immediately after these
+          gates, and a failure there aborts the release before any tag exists —
+          so a throwaway build here only pays for the same work twice.
+        type: boolean
+        default: true
 
 # One live run per PR: a re-push cancels the superseded run instead of letting
 # it burn minutes. When called from release.yml (event = push to main) the
@@ -74,6 +83,15 @@ jobs:
         run: npm run build
 
   docker:
+    # A PR is the ONLY place the Dockerfile is exercised without also shipping,
+    # so it always builds here. A caller can opt out (release.yml does).
+    #
+    # The `github.event_name` half is load-bearing, not belt-and-braces: the
+    # `inputs` context does not exist outside workflow_call/workflow_dispatch,
+    # so on a `pull_request` event `inputs.build_image` is the empty string and
+    # the `default: true` above never applies. `if: inputs.build_image` alone
+    # would silently skip this job on every PR — the one place it matters most.
+    if: ${{ github.event_name == 'pull_request' || inputs.build_image }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

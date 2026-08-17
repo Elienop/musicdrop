@@ -16,9 +16,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Identical gates to a PR — a release never ships with fewer checks.
+  # The same gates a PR runs, minus the throwaway image build. These are NOT
+  # redundant with the PR's own run: a `pull_request` run tests the branch
+  # merged into main AS MAIN STOOD WHEN IT STARTED, so when two PRs branch from
+  # one base and merge in sequence, the second one's shipped tree was never
+  # tested by anything. This job is the only thing that tests what actually
+  # ships. (The proper fix is a merge queue, which tests the prospective merged
+  # state before merging and would make this job genuinely redundant.)
+  #
+  # The image build IS redundant here, though: the release job below builds and
+  # pushes the real one, and `needs: gates` means a failure there aborts before
+  # any tag or image exists. Building a throwaway first only pays twice.
   gates:
     uses: ./.github/workflows/ci.yml
+    with:
+      build_image: false
 
   release:
     needs: gates
