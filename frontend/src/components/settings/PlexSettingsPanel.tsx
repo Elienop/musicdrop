@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 
 import {
   type PlexSectionInfo,
@@ -57,6 +57,17 @@ function resolveSection(sections: PlexSectionInfo[], title: string) {
   return sections.find((section) => section.title.toLowerCase() === wanted);
 }
 
+/** Who put the value currently in the Library path field there. The section
+ * auto-fill may only ever REPLACE a value the panel itself authored, and no
+ * value can be recognised as authored by looking at it — a user is free to type
+ * the very folder Plex reports — so authorship is remembered, not inferred:
+ *  - "loaded": it came from the saved settings, so the panel has no record of
+ *    who wrote it (its own earlier fill and a hand-typed, saved value are
+ *    indistinguishable). `handleSectionChange` claims it in exactly one case.
+ *  - "panel": the exact string the auto-fill wrote, this session.
+ *  - "typed": the user edited the field. Theirs, whatever it happens to say. */
+type PathOrigin = { kind: "loaded" } | { kind: "panel"; value: string } | { kind: "typed" };
+
 /** Settings → Plex: the single-account connection (base URL + write-only admin
  * token + the music-library path as Plex sees it) plus a connection test. The
  * token is write-only — the API returns only `has_token`, so the field shows a
@@ -107,6 +118,10 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
   // set this state from the save/test handlers rather than conditionally
   // mounting the confirmation nodes.
   const [statusMsg, setStatusMsg] = useState("");
+  // Who authored what is in the Library path field (see PathOrigin). A ref, not
+  // state: nothing renders from it, and the pick handler needs the authorship
+  // as of the click.
+  const pathOrigin = useRef<PathOrigin>({ kind: "loaded" });
 
   // Reseed the inputs when the persisted snapshot changes (e.g. after a Save
   // refetch) WITHOUT remounting. A remount-on-key would destroy the focused
@@ -118,6 +133,9 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
     setLibraryPath(initial.library_path);
     setLibrarySection(initial.library_section);
     setToken("");
+    // The field now holds the server's value, so whatever the panel wrote (or
+    // the user typed) before is no longer what is on screen.
+    pathOrigin.current = { kind: "loaded" };
   }, [initial.base_url, initial.library_path, initial.library_section, initial.has_token]);
 
   // The form differs from what's saved on the server. "Test connection" probes
@@ -159,18 +177,30 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
   function handleSectionChange(nextTitle: string) {
     setLibrarySection(nextTitle);
     const next = resolveSection(fetchedSections, nextTitle);
-    // Fill the Library path in from Plex's own answer, but only when the fill
-    // REPLACES a value the previous pick put there — never when it would author
-    // one.
+    // Fill the Library path in from Plex's own answer, but only over a value
+    // the PANEL put there — never over one the user did, and never authoring
+    // one from nothing.
     //  - Unambiguous: the chosen library reports EXACTLY ONE folder. When it
     //    spans several, only the user knows which one their beets root maps
     //    onto, so we list them all and fill nothing.
-    //  - A leftover, not a decision: the field must already hold a folder of
-    //    the library selected a moment ago. Anything the user typed stands, and
-    //    the warning above tells them if it looks wrong. Matched by exact
-    //    folder, not "inside it": a path UNDER the old folder is one they
-    //    narrowed by hand.
-    // Blank is left ALONE, though it looks like an empty slot. Blank is a
+    //  - Ours to replace: `pathOrigin` records who wrote what is in the field,
+    //    because the value cannot say. A typed one stands even when it happens
+    //    to equal a folder Plex reports — picking a multi-folder library and
+    //    typing the one of its folders that your beets root maps onto is the
+    //    supported way to configure exactly that, and overwriting it with some
+    //    other library's `locations[0]` destroys a value no pick can bring
+    //    back. The warning above is the whole remedy for a typed path that
+    //    looks wrong.
+    //  - A freshly loaded value has no recorded author, and "replace only what
+    //    we wrote" cannot bootstrap without claiming one (nothing would ever be
+    //    filled, since the panel would never write a first value). So it is
+    //    claimed in exactly one case: it is the SOLE folder of the library
+    //    selected until now — the only string an auto-fill could have produced,
+    //    and one that re-picking that library always restores. Compared by
+    //    folder, not "inside it": a path UNDER that folder was narrowed by hand.
+    // Blank needs no guard of its own — an empty field equals no reported
+    // folder, and is not something the panel ever wrote — but it is left ALONE
+    // by design, not by accident, though it looks like an empty slot. Blank is a
     // setting — "Plex sees the same paths I do" — and it is the CORRECT one
     // whenever the two share a mount. A library rooted at "/data" whose shared
     // music root is "/data/music" would be filled in as "/data", and after Save
@@ -183,9 +213,15 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
     // background sections refetch can't rewrite the field mid-edit — and
     // nothing is persisted until Save, so the change is visible and undoable.
     if (next?.locations.length !== 1) return;
-    if (folders.some((folder) => samePath(folder, libraryPath))) {
-      setLibraryPath(next.locations[0]);
-    }
+    const origin = pathOrigin.current;
+    const ours =
+      origin.kind === "panel"
+        ? libraryPath === origin.value
+        : origin.kind === "loaded" && folders.length === 1 && samePath(folders[0], libraryPath);
+    if (!ours) return;
+    const filled = next.locations[0];
+    pathOrigin.current = { kind: "panel", value: filled };
+    setLibraryPath(filled);
   }
 
   function handleSave() {
@@ -276,7 +312,12 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
             id="plex-library-path"
             placeholder="/data/music"
             value={libraryPath}
-            onChange={(e) => setLibraryPath(e.target.value)}
+            onChange={(e) => {
+              // Any edit makes the value the user's, so no later section pick
+              // will overwrite it (see PathOrigin).
+              pathOrigin.current = { kind: "typed" };
+              setLibraryPath(e.target.value);
+            }}
             className="max-w-md font-mono"
           />
           <p className="text-muted-foreground text-xs">

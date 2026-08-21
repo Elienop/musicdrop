@@ -1348,6 +1348,75 @@ describe("PlaylistDetailPage", () => {
     expect(screen.getAllByText("Matched 28 tracks by file.")).toHaveLength(1);
   });
 
+  test("a failed admin push doesn't erase the tally a target that went through recorded", async () => {
+    server.use(
+      http.get(USERS, () =>
+        HttpResponse.json({ users: [{ id: "7", name: "Partner", home: true }] }),
+      ),
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          target_plex_users: ["7"],
+          plex: {
+            // The owner's own push failed, so the server zeroed ITS tally. The
+            // library scan runs ONCE, before the per-target loop
+            // (`sync_playlist_to_targets`), so the target that did go through
+            // carries the numbers that scan produced — the same ones admin
+            // would have carried.
+            admin: {
+              rating_key: "900",
+              status: "failed",
+              missing: 0,
+              missing_tracks: [],
+              matched_by: { path: 0, artist_title: 0, album_length: 0 },
+              synced_at: "2026-08-16T10:00:00+00:00",
+              error: "Couldn’t sync to this Plex account.",
+            },
+            "7": { ...adminMatched({ artist_title: 28 }).admin, rating_key: "901" },
+          },
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+
+    // Reading `admin` alone renders NOTHING here: the summary, and with it the
+    // "nothing matched by file" warning this surface exists for, disappears on
+    // a sync whose library scan did run and matched every track by tags alone —
+    // the exact signature of a wrong library path.
+    expect(
+      await screen.findByText("Matched 28 tracks: none by file, 28 by artist and title."),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Nothing matched by file\./).closest("p")).toHaveClass(
+      "bg-warning/10",
+    );
+    // …and it says so WITHOUT covering for the push that failed.
+    expect(screen.getByText("Couldn’t sync to this Plex account.")).toBeInTheDocument();
+  });
+
+  test("a sync where every target failed still says nothing about matching", async () => {
+    const failed = (ratingKey: string) => ({
+      rating_key: ratingKey,
+      status: "failed",
+      missing: 0,
+      missing_tracks: [],
+      matched_by: { path: 0, artist_title: 0, album_length: 0 },
+      synced_at: "2026-08-16T10:00:00+00:00",
+      error: "Couldn’t sync to this Plex account.",
+    });
+    renderWithPlex({ admin: failed("900"), "7": failed("901") });
+
+    expect(await screen.findByText("Alpha")).toBeInTheDocument();
+    // Looking past admin for numbers must not turn "no target has any" into "0
+    // by file": to a user whose sync never got far enough to look, that reads
+    // as a broken library path.
+    expect(screen.queryByText(/^Matched \d/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/none by file/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/nothing matched by file/i)).not.toBeInTheDocument();
+  });
+
   test("a sync that matched nothing by file announces it in the live region", async () => {
     let synced = false;
     const after = adminMatched({ artist_title: 3 });
@@ -1375,6 +1444,50 @@ describe("PlaylistDetailPage", () => {
     await waitFor(() =>
       expect(region).toHaveTextContent(
         "Plex sync: Synced. Matched 3 tracks: none by file, 3 by artist and title. " +
+          "Nothing matched by file — check the Plex library path in Settings.",
+      ),
+    );
+  });
+
+  test("announces the tally after a failed admin push, as one readable sentence", async () => {
+    let synced = false;
+    const after = {
+      admin: {
+        rating_key: "900",
+        status: "failed",
+        missing: 0,
+        missing_tracks: [],
+        matched_by: { path: 0, artist_title: 0, album_length: 0 },
+        synced_at: "2026-08-16T10:00:00+00:00",
+        error: "Couldn’t sync to this Plex account.",
+      },
+      "7": { ...adminMatched({ artist_title: 3 }).admin, rating_key: "901" },
+    };
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: synced ? after : {} }),
+      ),
+      http.post(`${BASE}/sync`, () => {
+        synced = true;
+        return HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: after });
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    const region = document.querySelector('p[aria-live="polite"]');
+    await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
+
+    // Read aloud in one go, so the seam between the status and the tally has to
+    // be one full stop: a server error label already ends in one, where
+    // "Synced" does not, and only a failed target with the numbers surviving
+    // elsewhere puts the two together.
+    await waitFor(() =>
+      expect(region?.textContent).toBe(
+        "Plex sync: Couldn’t sync to this Plex account. " +
+          "Matched 3 tracks: none by file, 3 by artist and title. " +
           "Nothing matched by file — check the Plex library path in Settings.",
       ),
     );

@@ -202,6 +202,123 @@ describe("PlexSettingsPanel", () => {
     expect(path).toHaveValue("/musicdrop");
   });
 
+  test("keeps replacing its OWN fill as you try one library after another", async () => {
+    server.use(
+      http.get(SETTINGS, () =>
+        HttpResponse.json(settings({ library_section: "Music", library_path: "/data/music" })),
+      ),
+      http.get(SECTIONS, () =>
+        HttpResponse.json({ sections: [SECTION_MUSIC, SECTION_DROP, SECTION_SHARED] }),
+      ),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    const path = await screen.findByLabelText(/library path/i);
+    const select = await screen.findByLabelText(/library section/i);
+    await within(select).findByRole("option", { name: /musicdrop/i });
+    await userEvent.selectOptions(select, "MusicDrop");
+    expect(path).toHaveValue("/musicdrop");
+
+    // "/musicdrop" is now the panel's own fill, so it is still the panel's to
+    // replace: shopping through libraries must not strand you on the folder of
+    // whichever one you happened to try second.
+    await userEvent.selectOptions(select, "Shared");
+    expect(path).toHaveValue("/data");
+  });
+
+  test("still replaces its own fill after a library it could not fill", async () => {
+    server.use(
+      http.get(SETTINGS, () =>
+        HttpResponse.json(settings({ library_section: "Music", library_path: "/data/music" })),
+      ),
+      http.get(SECTIONS, () =>
+        HttpResponse.json({
+          sections: [SECTION_MUSIC, SECTION_SPLIT, SECTION_SHARED, SECTION_DROP],
+        }),
+      ),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    const path = await screen.findByLabelText(/library path/i);
+    const select = await screen.findByLabelText(/library section/i);
+    await within(select).findByRole("option", { name: /shared/i });
+    await userEvent.selectOptions(select, "Shared");
+    expect(path).toHaveValue("/data");
+
+    // Split spans two folders, so it fills nothing and leaves "/data" standing.
+    await userEvent.selectOptions(select, "Split");
+    expect(path).toHaveValue("/data");
+
+    // "/data" is STILL the panel's own fill, never something the user touched.
+    // Recognising it only as "a folder of the library selected a moment ago"
+    // loses it here — the library selected a moment ago is Split.
+    await userEvent.selectOptions(select, "MusicDrop");
+    expect(path).toHaveValue("/musicdrop");
+  });
+
+  test("keeps a hand-typed folder of a multi-folder library when you pick another section", async () => {
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings({ library_section: "Split" }))),
+      http.get(SECTIONS, () => HttpResponse.json({ sections: [SECTION_SPLIT, SECTION_DROP] })),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    // Split spans two folders and the panel fills nothing for it, so typing the
+    // one your beets root maps onto IS how this gets configured.
+    const path = await screen.findByLabelText(/library path/i);
+    await userEvent.type(path, "/mnt/spill");
+    const select = await screen.findByLabelText(/library section/i);
+    await within(select).findByRole("option", { name: /musicdrop/i });
+    await userEvent.selectOptions(select, "MusicDrop");
+
+    // Reading "equals a folder of the library selected a moment ago" as
+    // leftover spends this on MusicDrop's "/musicdrop" — a value the user never
+    // typed, and one no pick can bring back, since Split fills nothing.
+    expect(path).toHaveValue("/mnt/spill");
+  });
+
+  test("keeps a hand-typed path even when it is exactly the folder Plex reports", async () => {
+    server.use(
+      http.get(SETTINGS, () => HttpResponse.json(settings({ library_section: "MusicDrop" }))),
+      http.get(SECTIONS, () => HttpResponse.json({ sections: [SECTION_DROP, SECTION_MUSIC] })),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    // Reading the folder list under the field and typing what it says is the
+    // obvious thing to do — and it makes the typed value indistinguishable from
+    // a fill by VALUE. Only who wrote it tells them apart.
+    const path = await screen.findByLabelText(/library path/i);
+    await userEvent.type(path, "/musicdrop");
+    const select = await screen.findByLabelText(/library section/i);
+    await within(select).findByRole("option", { name: /^music$/i });
+    await userEvent.selectOptions(select, "Music");
+
+    // Changing library does not license overwriting what the user typed: the
+    // path now disagrees with the new library, and the warning says so.
+    expect(path).toHaveValue("/musicdrop");
+    expect(await screen.findByText(/doesn.t list this path/i)).toBeInTheDocument();
+  });
+
+  test("keeps a SAVED path a multi-folder library reports, which it never filled", async () => {
+    server.use(
+      http.get(SETTINGS, () =>
+        HttpResponse.json(settings({ library_section: "Split", library_path: "/mnt/spill" })),
+      ),
+      http.get(SECTIONS, () => HttpResponse.json({ sections: [SECTION_SPLIT, SECTION_DROP] })),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    const path = await screen.findByLabelText(/library path/i);
+    const select = await screen.findByLabelText(/library section/i);
+    await within(select).findByRole("option", { name: /musicdrop/i });
+    await userEvent.selectOptions(select, "MusicDrop");
+
+    // Same value, arriving from the server instead of the keyboard: the panel
+    // cannot have authored it (it fills nothing for a multi-folder library), so
+    // it is someone's deliberate setting either way.
+    expect(path).toHaveValue("/mnt/spill");
+  });
+
   test("keeps a hand-typed path when you pick a section, and warns instead", async () => {
     server.use(
       http.get(SETTINGS, () => HttpResponse.json(settings())),

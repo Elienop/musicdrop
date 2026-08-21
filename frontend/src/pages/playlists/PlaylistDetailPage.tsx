@@ -118,33 +118,51 @@ interface MatchBreakdown {
   albumLength: number;
 }
 
-/** The `admin` target's tally, or null when there is nothing to say.
+/** THE tally for the last sync, or null when there is nothing to say.
  *
  * ONE tally per sync, not one per target: the server resolves the library once
- * and reuses that resolution for every account (ratingKeys are server-global),
- * so `admin` carries THE numbers and repeating them under each fan-out user
- * would imply each account was looked up separately. This is the same rule the
- * per-row miss markers follow (`plexMissesByItem`).
+ * and reuses that resolution for every account (`sync_playlist_to_targets`
+ * scans before the per-target loop; ratingKeys are server-global), so every
+ * target it reached carries the SAME numbers and repeating them under each
+ * fan-out user would imply each account was looked up separately.
  *
- * All-zero means "nothing to say", NEVER "zero matched by file": a record
- * written before the server started tallying has no counts, and a target whose
- * push failed deliberately zeroes them even when the resolution succeeded.
- * Reading zero as evidence would invent the exact false alarm this surface
- * exists to avoid — so an empty sum returns null and renders nothing. */
+ * Which target we read them off is therefore free — so we read the first that
+ * HAS any, admin first. A target whose push failed records zeros even when the
+ * resolution behind it succeeded, so reading admin alone would throw the whole
+ * summary away (the "nothing matched by file" warning included) whenever the
+ * owner's own push is the one that failed and a fan-out target went through.
+ *
+ * All-zero EVERYWHERE means "nothing to say", NEVER "zero matched by file": a
+ * record written before the server started tallying has no counts, and a sync
+ * where every target failed zeroes them all. Reading zero as evidence would
+ * invent the exact false alarm this surface exists to avoid — so an empty sum
+ * is skipped, and nothing but empty sums returns null and renders nothing. */
 function matchBreakdown(playlist: PlaylistDetail): MatchBreakdown | null {
-  const counts = playlist.plex?.admin?.matched_by;
-  if (!counts) {
-    return null;
-  }
-  const total = counts.path + counts.artist_title + counts.album_length;
-  return total === 0
-    ? null
-    : {
+  // Admin first, explicitly: it is the carrier on an ordinary sync, and object
+  // key order would otherwise decide (a numeric Plex user id sorts ahead of
+  // "admin" in a JS object). Built from real entries only — the state map is a
+  // plain index signature, so `plex.admin` types as present whether it is or not.
+  const entries = Object.entries(playlist.plex ?? {});
+  const ordered = [
+    ...entries.filter(([key]) => key === "admin"),
+    ...entries.filter(([key]) => key !== "admin"),
+  ];
+  for (const [, state] of ordered) {
+    const counts = state.matched_by;
+    if (!counts) {
+      continue;
+    }
+    const total = counts.path + counts.artist_title + counts.album_length;
+    if (total > 0) {
+      return {
         total,
         path: counts.path,
         artistTitle: counts.artist_title,
         albumLength: counts.album_length,
       };
+    }
+  }
+  return null;
 }
 
 /** True when at least one track was found by something weaker than its file —
@@ -307,7 +325,8 @@ function StatusLine({ status }: { status: SyncStatus }) {
 /** How the last sync found its tracks — the footnote of the Plex sync section.
  *
  * Three tiers, and the tiering is the whole design:
- *  - nothing recorded (or a failed target) — renders nothing at all;
+ *  - nothing recorded anywhere (a record predating the tally, or a sync whose
+ *    every target failed) — renders nothing at all;
  *  - everything found by file, the normal case — one muted line, no icon, no
  *    color, at the section's footnote size. Present so the user has a baseline
  *    to notice a change AGAINST, quiet enough not to read as news;
@@ -834,10 +853,15 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
                 // did not adds nothing, so the healthy case is announced in
                 // exactly the words it always was.
                 onSuccess: (updated) => {
+                  const label = adminSyncStatus(updated).label;
                   const note = matchAnnouncement(matchBreakdown(updated));
-                  setStatusMsg(
-                    `Plex sync: ${adminSyncStatus(updated).label}${note ? `. ${note}` : ""}`,
-                  );
+                  // Exactly one full stop at the seam. Most labels are
+                  // fragments ("Synced") that need one; a server-authored error
+                  // label is already a sentence and brings its own — a pairing
+                  // only a failed push whose tally survived on another target
+                  // produces.
+                  const head = label.endsWith(".") ? label : `${label}.`;
+                  setStatusMsg(note ? `Plex sync: ${head} ${note}` : `Plex sync: ${label}`);
                 },
               })
             }
