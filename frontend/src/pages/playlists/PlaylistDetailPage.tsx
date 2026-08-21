@@ -92,13 +92,42 @@ const MISS_TITLES: Record<PlexMissReason, string> = {
     "Several Plex tracks share this artist and title, and none has this file, so MusicDrop won't guess which one. Sort out the copies in Plex, then sync again.",
 };
 
+/** The recorded target whose copy of the shared resolution is trustworthy: the
+ * first one — admin explicitly first, because a numeric Plex user id sorts
+ * ahead of "admin" in a JS object — carrying a non-zero tally. One library scan
+ * serves every target, so every target that went through carries identical
+ * numbers and identical misses; a FAILED target stores zeros and an empty miss
+ * list, which must never overwrite the signal a succeeding target recorded.
+ * Null when nothing carries a tally: every target failed, or the record
+ * predates the tally entirely. */
+function resolvedTargetState(playlist: PlaylistDetail) {
+  const entries = Object.entries(playlist.plex ?? {});
+  const ordered = [
+    ...entries.filter(([key]) => key === "admin"),
+    ...entries.filter(([key]) => key !== "admin"),
+  ];
+  for (const [, state] of ordered) {
+    const counts = state.matched_by;
+    if (counts && counts.path + counts.artist_title + counts.album_length > 0) {
+      return state;
+    }
+  }
+  return null;
+}
+
 /** item id -> why Plex couldn't place it on the last sync. Keyed by item id (not
  * row uid) because the resolve is per library track: two rows for one item are
- * both missing or both found. The admin target's list is THE list — one resolve
- * against the (server-global) ratingKeys serves every fan-out target. */
+ * both missing or both found. Any target that went through carries THE list —
+ * one resolve against the (server-global) ratingKeys serves every fan-out
+ * target — and a FAILED target stores an empty one, so the list is read off
+ * `resolvedTargetState`, never off admin alone. */
 function plexMissesByItem(playlist: PlaylistDetail): Map<number, PlexMissReason> {
+  // A record from before the tally existed carries misses but no counts, so it
+  // cannot satisfy resolvedTargetState — fall back to admin's list for those,
+  // which is exactly what this function always read.
+  const source = resolvedTargetState(playlist) ?? playlist.plex?.admin;
   const out = new Map<number, PlexMissReason>();
-  for (const miss of playlist.plex?.admin?.missing_tracks ?? []) {
+  for (const miss of source?.missing_tracks ?? []) {
     out.set(miss.item_id, miss.reason);
   }
   return out;
@@ -138,31 +167,16 @@ interface MatchBreakdown {
  * invent the exact false alarm this surface exists to avoid — so an empty sum
  * is skipped, and nothing but empty sums returns null and renders nothing. */
 function matchBreakdown(playlist: PlaylistDetail): MatchBreakdown | null {
-  // Admin first, explicitly: it is the carrier on an ordinary sync, and object
-  // key order would otherwise decide (a numeric Plex user id sorts ahead of
-  // "admin" in a JS object). Built from real entries only — the state map is a
-  // plain index signature, so `plex.admin` types as present whether it is or not.
-  const entries = Object.entries(playlist.plex ?? {});
-  const ordered = [
-    ...entries.filter(([key]) => key === "admin"),
-    ...entries.filter(([key]) => key !== "admin"),
-  ];
-  for (const [, state] of ordered) {
-    const counts = state.matched_by;
-    if (!counts) {
-      continue;
-    }
-    const total = counts.path + counts.artist_title + counts.album_length;
-    if (total > 0) {
-      return {
-        total,
-        path: counts.path,
-        artistTitle: counts.artist_title,
-        albumLength: counts.album_length,
-      };
-    }
+  const counts = resolvedTargetState(playlist)?.matched_by;
+  if (!counts) {
+    return null;
   }
-  return null;
+  return {
+    total: counts.path + counts.artist_title + counts.album_length,
+    path: counts.path,
+    artistTitle: counts.artist_title,
+    albumLength: counts.album_length,
+  };
 }
 
 /** True when at least one track was found by something weaker than its file —

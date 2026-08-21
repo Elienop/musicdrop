@@ -1396,6 +1396,49 @@ describe("PlaylistDetailPage", () => {
     expect(screen.getByText("Couldn’t sync to this Plex account.")).toBeInTheDocument();
   });
 
+  test("a failed admin push doesn't erase the row badges a target that went through recorded", async () => {
+    // The same bug shape as the tally above, one surface over: plexMissesByItem
+    // read `plex.admin.missing_tracks`, and a failed push stores that as [] —
+    // so every per-row "Not in Plex" badge vanished exactly when a target that
+    // DID go through had recorded the misses. One library scan serves every
+    // target, so the succeeding target's list is the same one admin would have
+    // carried.
+    server.use(
+      http.get(USERS, () =>
+        HttpResponse.json({ users: [{ id: "7", name: "Partner", home: true }] }),
+      ),
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          target_plex_users: ["7"],
+          plex: {
+            admin: {
+              rating_key: "900",
+              status: "failed",
+              missing: 0,
+              missing_tracks: [],
+              matched_by: { path: 0, artist_title: 0, album_length: 0 },
+              synced_at: "2026-08-16T10:00:00+00:00",
+              error: "Couldn’t sync to this Plex account.",
+            },
+            "7": {
+              ...adminMatched({ path: 27 }).admin,
+              rating_key: "901",
+              missing: 1,
+              missing_tracks: [{ item_id: 1, reason: "not_found" }],
+            },
+          },
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+
+    expect(await screen.findByText("Not in Plex")).toBeInTheDocument();
+  });
+
   test("a sync where every target failed still says nothing about matching", async () => {
     const failed = (ratingKey: string) => ({
       rating_key: ratingKey,
