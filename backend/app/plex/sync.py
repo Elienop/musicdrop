@@ -18,8 +18,19 @@ means resolution failed, not that the user emptied the playlist).
 
 plexapi traps this module is written around (installed 4.18.2, playlist.py):
 ``removeItems``/``moveItem`` act on the FIRST cached row whose ratingKey
-matches; ``items()`` is cached until ``reload()``; no mutator reloads. See
+matches; ``items()`` is cached until ``reload()``; no mutator reloads. A
+playlist that lists one track TWICE has a second row no first-match call can
+name, so that case addresses rows by ``playlistItemID`` instead. See
 ``_reconcile_items``.
+
+What no client can know about a Plex server is whether it will hold one track
+on two rows at all: ``addItems`` is answered 200 whether the row appeared or
+was collapsed into the one already there. So the duplicate path never assumes —
+it asks for one repeat, reloads, and reads the answer off the row count. When
+the server refuses, the sync still lands the distinct playlist and reports each
+occurrence Plex would not hold as a ``duplicate_collapsed`` miss (status
+``partial``): the copy is right about everything it says it is, and says what
+it is short.
 
 Resolution is one library scan (``resolve_ordered_tracks``) reused for every
 target (ratingKeys are server-global). The caller passes ``PlexTrackSpec``s
@@ -39,17 +50,22 @@ Time is stamped by the caller (this module has no clock): the returned
 from __future__ import annotations
 
 import bisect
-from collections import Counter
+from collections import Counter, defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.models.plex import MISSING_TRACKS_CAP, PlexTargetState
+from app.models.plex import MISSING_TRACKS_CAP, PlexMissingTrack, PlexTargetState
 from app.plex import client as client  # explicit re-export: the patchable seam (sync.client)
 from app.plex.config import PlexConfig
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
-from app.plex.mapping import PlexResolution, PlexTrackSpec, resolve_ordered_tracks
+from app.plex.mapping import (
+    PlexResolution,
+    PlexTrackSpec,
+    missing_from_spec,
+    resolve_ordered_tracks,
+)
 
 _SMART_ERROR = "This Plex playlist is a smart playlist; MusicDrop can't update it in place."
 _NOT_APPLIED_ERROR = "Plex did not apply the playlist changes."
@@ -142,32 +158,6 @@ def _find_our_playlist(server: Any, playlist_id: str, rating_key: str | None) ->
     return None
 
 
-def _unique_key_chunks(tracks: list[Any]) -> list[list[Any]]:
-    """Split ``tracks`` into the fewest ORDER-PRESERVING runs that each carry a
-    ratingKey at most once.
-
-    plexapi comma-joins one ``addItems`` into a single ``/library/metadata/2,1,2``
-    uri (``playlist.py:255-262``), and whether PMS honours a repeated id inside
-    one uri cannot be known from the client — if it de-dups we would silently
-    build the wrong playlist and still report ``ok``. So we never ask. Splitting
-    at each repeat keeps every call unique while the concatenation stays in
-    desired order, and costs one call per repeat DEPTH (2 for a playlist holding
-    a track twice) rather than one per track.
-    """
-    chunks: list[list[Any]] = []
-    current: list[Any] = []
-    seen: set[Any] = set()
-    for track in tracks:
-        if track.ratingKey in seen:
-            chunks.append(current)
-            current, seen = [], set()
-        current.append(track)
-        seen.add(track.ratingKey)
-    if current:
-        chunks.append(current)
-    return chunks
-
-
 def _first_occurrences(tracks: list[Any]) -> list[Any]:
     """``tracks`` with repeats dropped, first occurrence kept, order preserved."""
     seen: set[Any] = set()
@@ -218,36 +208,233 @@ def _repeats_a_key(keys: list[Any]) -> bool:
     return len(set(keys)) != len(keys)
 
 
-def _append_then_strip_old(playlist: Any, current_rows: list[Any], tracks: list[Any]) -> None:
-    """Rebuild ``playlist`` as old-rows-then-desired-rows, then drop every old row.
+@dataclass(frozen=True)
+class _PlaylistRow:
+    """One row of a Plex playlist: WHICH track (``key``, its ratingKey) and
+    WHICH ROW (``row_id``, its ``playlistItemID``).
 
-    The duplicate-key strategy: with a key on two rows, plexapi's first-match
-    removal cannot be aimed by key alone, so the desired rows are parked AFTER
-    the old ones and the old ones are peeled off the front one at a time — the
-    earliest surviving row for a key is then always an OLD row, never a freshly
-    appended one.
+    That distinction is the whole duplicate story. plexapi names a row by its
+    track's ratingKey and acts on the first match, so on a playlist holding one
+    track twice the second row cannot be removed, moved, or moved after — while
+    the row id names exactly one row and always has.
     """
-    current = [row.ratingKey for row in current_rows]
-    desired = [track.ratingKey for track in tracks]
-    for chunk in _unique_key_chunks(tracks):
-        playlist.addItems(chunk)
-    # This path removes EVERY old row, so the appends have to be confirmed
-    # before the first removal: a PUT Plex answered but ignored would
-    # otherwise leave the playlist EMPTY and the sync would report "ok". The
-    # reload is the one the removal loop needed anyway (moved out of it), so
-    # the check is free.
-    # Compared as a LIST, not a multiset: the removals below take the FIRST
-    # cached row per key, which is only the old row if Plex appended the new
-    # rows AFTER the old ones in the order we sent — placement matters here
-    # as much as completeness (a complete-but-reordered result would strip
-    # the wrong rows).
+
+    key: Any
+    row_id: int
+
+
+def _rows_of(items: list[Any]) -> list[_PlaylistRow]:
+    """plexapi's playlist rows as ours.
+
+    ``playlistItemID`` is a plain attribute plexapi sets on every object built
+    from a playlist's ``/items`` response (``base.py:864``), so reading it is
+    free here — unlike the partial-object reads ``_summary_of`` goes out of its
+    way to avoid, a row fetched FROM a playlist always carries one.
+    """
+    return [_PlaylistRow(key=row.ratingKey, row_id=row.playlistItemID) for row in items]
+
+
+def _reloaded_rows(playlist: Any) -> list[_PlaylistRow]:
+    """The rows Plex holds NOW — the only thing worth verifying against."""
     playlist.reload()
-    if [row.ratingKey for row in playlist.items()] != current + desired:
+    return _rows_of(list(playlist.items()))
+
+
+def _row_request(playlist: Any, path: str, verb: str) -> None:
+    """Issue one ROW-PRECISE request, exactly the way plexapi issues its own.
+
+    ``removeItems`` and ``moveItem`` build ``{playlist.key}/items/{id}`` and
+    ``{playlist.key}/items/{id}/move?after={id}`` and hand them to
+    ``server.query(key, method=server._session.<verb>)`` (``playlist.py:285-317``).
+    The one thing that changes here is WHICH row the id names: plexapi resolves
+    it through ``_getPlaylistItemID``, a first-match on ratingKey, and no public
+    call can be aimed at the second row of a duplicated track. Same endpoints,
+    same verbs, same session — the playlistItemID is simply ours to choose.
+    """
+    server = playlist._server
+    server.query(f"{playlist.key}{path}", method=getattr(server._session, verb))
+
+
+def _remove_row(playlist: Any, row: _PlaylistRow) -> None:
+    _row_request(playlist, f"/items/{row.row_id}", "delete")
+
+
+def _move_row(playlist: Any, row: _PlaylistRow, after: _PlaylistRow | None) -> None:
+    """Place ``row`` directly after ``after`` — at the front when it is None."""
+    tail = "" if after is None else f"?after={after.row_id}"
+    _row_request(playlist, f"/items/{row.row_id}/move{tail}", "put")
+
+
+def _surplus_rows(rows: list[_PlaylistRow], want: Counter[Any]) -> list[_PlaylistRow]:
+    """Every row beyond what the desired list asks for — a key it does not want
+    at all, and the later rows of one it wants fewer times than the playlist
+    holds it.
+
+    WHICH rows go is free, since two rows of a track are interchangeable, so the
+    EARLIEST are kept: that leaves the longest stretch of the existing order in
+    place for the ordering pass to build on.
+    """
+    seen: Counter[Any] = Counter()
+    surplus: list[_PlaylistRow] = []
+    for row in rows:
+        seen[row.key] += 1
+        if seen[row.key] > want[row.key]:
+            surplus.append(row)
+    return surplus
+
+
+def _fill_and_trim(
+    playlist: Any, rows: list[_PlaylistRow], tracks: list[Any]
+) -> list[_PlaylistRow]:
+    """Get the rows to "every desired track present, nothing surplus" — the
+    layer that asks Plex no question it cannot answer.
+
+    Every desired key the playlist does not hold at all goes in ONE ``addItems``
+    whose uri names each key once and none of them already present: the very
+    call the unique-key path makes, the one proven against a real server. Then
+    surplus rows are dropped BY ROW ID, so a key held three times loses exactly
+    two rows without the reload-between-removals dance a first-match removal
+    needs — and a copy left holding junk by an earlier failed attempt reconciles
+    down in one pass.
+
+    Additions land before removals AND are confirmed present first, per the
+    module's never-destroy rule: a PUT Plex answered but ignored must never be
+    followed by a removal. Returns the rows Plex holds afterwards — reloaded, so
+    every later step reasons about the server rather than about what we asked
+    for. A removal Plex ignored is not checked here: it leaves a row the desired
+    list does not want, which is exactly what ``_order_rows`` refuses.
+    """
+    want = Counter(track.ratingKey for track in tracks)
+    have = Counter(row.key for row in rows)
+    absent = [track for track in _first_occurrences(tracks) if not have[track.ratingKey]]
+    if absent:
+        playlist.addItems(absent)
+        rows = _reloaded_rows(playlist)
+        if Counter(row.key for row in rows) != have + Counter(t.ratingKey for t in absent):
+            raise PlexConnectionError(_NOT_APPLIED_ERROR)
+    surplus = _surplus_rows(rows, want)
+    if not surplus:
+        return rows
+    for row in surplus:
+        _remove_row(playlist, row)
+    return _reloaded_rows(playlist)
+
+
+def _top_up_repeats(
+    playlist: Any, rows: list[_PlaylistRow], tracks: list[Any]
+) -> tuple[list[_PlaylistRow], list[int]]:
+    """Ask Plex to hold a track a SECOND time, one occurrence at a time, and
+    learn from what it does.
+
+    Whether a server will is not knowable from the client — plexapi sends one
+    comma-joined uri and gets a 200 whether the row appeared or was collapsed
+    into the one already there — so this never assumes. It appends one
+    occurrence, reloads, and reads the answer off the count: grown by that key,
+    the server honours duplicates and we ask for the next one; unchanged, it
+    collapses them, so we stop asking rather than send calls whose answer we now
+    know. Anything else means Plex applied something we did not ask for, which
+    is not a state to keep building on.
+
+    Returns the rows Plex holds now and the DESIRED-LIST INDICES of the
+    occurrences that did not land. The LATER occurrence is the one reported: the
+    earlier ones keep the rows, so a playlist listing a track twice still holds
+    it once, in its first position.
+    """
+    available = Counter(row.key for row in rows)
+    collapsed: list[int] = []
+    refused = False
+    for index, track in enumerate(tracks):
+        key = track.ratingKey
+        if available[key]:
+            available[key] -= 1
+            continue
+        if refused:
+            collapsed.append(index)
+            continue
+        before = Counter(row.key for row in rows)
+        playlist.addItems([track])
+        rows = _reloaded_rows(playlist)
+        after = Counter(row.key for row in rows)
+        if after == before + Counter([key]):
+            continue
+        if after != before:
+            raise PlexConnectionError(_NOT_APPLIED_ERROR)
+        refused = True
+        collapsed.append(index)
+    return rows, collapsed
+
+
+def _rows_for(rows: list[_PlaylistRow], target: list[Any]) -> list[_PlaylistRow]:
+    """One row per target position — the earliest still-unused row of that key.
+
+    Precondition: the rows hold exactly ``target`` as a multiset (the caller's
+    ``Counter`` check). Rows of one key are interchangeable, so any assignment
+    lands the right sequence; taking them in current order keeps those rows in
+    their existing relative order, which is the assignment that leaves the most
+    of the list already in place.
+    """
+    pool: dict[Any, deque[_PlaylistRow]] = defaultdict(deque)
+    for row in rows:
+        pool[row.key].append(row)
+    return [pool[key].popleft() for key in target]
+
+
+def _order_rows(playlist: Any, rows: list[_PlaylistRow], target: list[Any]) -> None:
+    """Move rows BY ROW ID until the playlist reads ``target``, then prove it did.
+
+    ``moveItem`` cannot do this once a key sits on two rows — it resolves the row
+    AND the anchor by first ratingKey match — so every move names its
+    playlistItemID. Only the rows outside one longest increasing subsequence
+    move, which is the minimum, and each lands directly after its predecessor:
+    after step i the first i+1 rows are ``target[:i+1]`` (induction on i).
+
+    ``rows`` is what Plex last told us it holds, so the count check is what
+    catches a removal Plex answered and ignored — and it comes BEFORE the moves:
+    the closing check would refuse that playlist too, but only after reordering
+    a copy we already knew was wrong.
+
+    That closing reload is what this path promises: the rows Plex REALLY holds,
+    compared as a LIST, or the sync says Plex did not apply the change.
+    """
+    if Counter(row.key for row in rows) != Counter(target):
         raise PlexConnectionError(_NOT_APPLIED_ERROR)
-    for position, row in enumerate(current_rows):
-        if position:  # the verification reload above already refreshed the cache
-            playlist.reload()
-        playlist.removeItems([row])
+    if [row.key for row in rows] == target:
+        return  # `rows` came from Plex, so equality here IS the verification
+    placed = _rows_for(rows, target)
+    at = {row.row_id: index for index, row in enumerate(rows)}
+    keep = _stable_rows([at[row.row_id] for row in placed])
+    for index, row in enumerate(placed):
+        if index in keep:
+            continue
+        _move_row(playlist, row, placed[index - 1] if index else None)
+    if [row.key for row in _reloaded_rows(playlist)] != target:
+        raise PlexConnectionError(_NOT_APPLIED_ERROR)
+
+
+def _reconcile_by_row(playlist: Any, rows: list[_PlaylistRow], tracks: list[Any]) -> list[int]:
+    """The duplicate strategy: reconcile the MULTISET in layers, naming rows.
+
+    A key on two rows defeats every first-match call plexapi offers, and the
+    question "will this server hold it twice?" has no answer until it is asked.
+    So the layers are ordered by how much they have to assume:
+
+    1. the DISTINCT layer — add the keys the playlist is missing, drop the
+       surplus rows (``_fill_and_trim``). Nothing here is a repeat, so it is the
+       reconcile the unique path already proves against the owner's server.
+    2. the REPEATS — one occurrence at a time, each one confirmed or refused by
+       the row count (``_top_up_repeats``). Refused occurrences come back as
+       indices and are reported, never silently dropped.
+    3. the ORDER — one move per row that is genuinely out of place, by row id,
+       verified against a reload (``_order_rows``).
+
+    Returns the desired-list indices Plex would not hold a second time.
+    """
+    rows = _fill_and_trim(playlist, rows, tracks)
+    rows, collapsed = _top_up_repeats(playlist, rows, tracks)
+    dropped = set(collapsed)
+    target = [track.ratingKey for index, track in enumerate(tracks) if index not in dropped]
+    _order_rows(playlist, rows, target)
+    return collapsed
 
 
 def _move_into_order(playlist: Any, tracks: list[Any], order: list[Any]) -> None:
@@ -299,7 +486,7 @@ def _diff_then_reorder(playlist: Any, current_rows: list[Any], tracks: list[Any]
     _move_into_order(playlist, tracks, order)
 
 
-def _reconcile_items(playlist: Any, tracks: list[Any]) -> None:
+def _reconcile_items(playlist: Any, tracks: list[Any]) -> list[int]:
     """Make ``playlist``'s rows equal ``tracks`` (multiset AND order), in place.
 
     Two strategies, chosen by whether any ratingKey repeats:
@@ -314,26 +501,43 @@ def _reconcile_items(playlist: Any, tracks: list[Any]) -> None:
       ``moveItem`` after its predecessor (``after=None`` = front). Dragging one
       track of a 500-row playlist is 1 PUT, not 499.
 
-    * Any duplicate key: append-then-remove-old — ``_append_then_strip_old``. The
-      desired rows are appended in order AFTER the old ones (in unique-key
-      chunks, see ``_unique_key_chunks``); one ``reload()`` then confirms Plex
-      really holds old + desired before a single row is removed; then each OLD
-      row is removed with a ``reload()`` before every further ``removeItems`` —
-      the first-match row for a key is then always the earliest surviving OLD
-      row, never one of the freshly appended ones. Costs 2 calls per old row;
-      only paid when a playlist actually holds a track twice.
+    * Any duplicate key: reconcile the multiset by ROW — ``_reconcile_by_row``.
+      Distinct keys first, then the repeats one at a time (whether Plex holds a
+      track twice is the server's answer to give, not ours to guess), then the
+      order, every row named by its playlistItemID because a repeated key
+      defeats plexapi's first-match addressing.
 
     Either way additions land before removals, so the playlist never empties.
+
+    Returns the INDICES into ``tracks`` of occurrences Plex refused to hold a
+    second time — empty for every unique playlist. Indices, because ``tracks``
+    is the caller's resolved matches in order, so ``resolution.matches[i]`` is
+    the row that collapsed and knows which library item it came from.
     """
     current_rows = list(playlist.items())
     current = [row.ratingKey for row in current_rows]
     desired = [track.ratingKey for track in tracks]
     if current == desired:
-        return
+        return []
     if _repeats_a_key(current) or _repeats_a_key(desired):
-        _append_then_strip_old(playlist, current_rows, tracks)
-        return
+        return _reconcile_by_row(playlist, _rows_of(current_rows), tracks)
     _diff_then_reorder(playlist, current_rows, tracks)
+    return []
+
+
+def _misses(resolution: PlexResolution, collapsed: list[int]) -> list[PlexMissingTrack]:
+    """Every playlist row Plex does not fully hold: the ones that resolved to
+    nothing, then the occurrences it would not hold a second time.
+
+    Both are the same news to a user looking at a row — "this is not on Plex" —
+    and both belong in one count, so a playlist listing a track twice on a
+    server that keeps it once reads ``partial`` and names the row, instead of
+    ``ok`` about a copy that is a row short.
+    """
+    return resolution.missing + [
+        missing_from_spec(resolution.matches[index].spec, "duplicate_collapsed")
+        for index in collapsed
+    ]
 
 
 def _best_effort_stamp(playlist: Any, marker: str) -> None:
@@ -406,16 +610,18 @@ def _create_our_playlist(
     distinct = _first_occurrences(tracks)
     playlist = server.createPlaylist(title, items=distinct)
     _best_effort_stamp(playlist, marker)
-    if len(distinct) != len(tracks):
-        _reconcile_items(playlist, tracks)
+    collapsed = _reconcile_items(playlist, tracks) if len(distinct) != len(tracks) else []
     pushed_hash: str | None = None
     if artwork is not None and _best_effort_poster(playlist, artwork):
         pushed_hash = artwork.hash
+    # A fresh copy on a server that will not hold a track twice is short those
+    # rows from its first minute, and says so exactly as an updated one does.
+    misses = _misses(resolution, collapsed)
     return PlexTargetState(
         rating_key=str(playlist.ratingKey),
-        status="ok" if not missing else "partial",
-        missing=len(missing),
-        missing_tracks=shown,
+        status="ok" if not misses else "partial",
+        missing=len(misses),
+        missing_tracks=misses[:MISSING_TRACKS_CAP],
         matched_by=resolution.matched_by,
         artwork_hash=pushed_hash,
     )
@@ -466,7 +672,7 @@ def _update_our_playlist(
             matched_by=resolution.matched_by,
             artwork_hash=prior_hash,
         )
-    _reconcile_items(existing, tracks)
+    collapsed = _reconcile_items(existing, tracks)
     if getattr(existing, "title", None) != title:
         existing.editTitle(title)
     if marker not in _summary_of(existing):
@@ -474,11 +680,12 @@ def _update_our_playlist(
     # Pushes the poster to Plex when the art changed; a statement, not an
     # argument, so the outbound call is visible in the body.
     artwork_hash = _poster_hash_after_update(existing, artwork, prior_hash)
+    misses = _misses(resolution, collapsed)
     return PlexTargetState(
         rating_key=key,
-        status="ok" if not missing else "partial",
-        missing=len(missing),
-        missing_tracks=shown,
+        status="ok" if not misses else "partial",
+        missing=len(misses),
+        missing_tracks=misses[:MISSING_TRACKS_CAP],
         matched_by=resolution.matched_by,
         artwork_hash=artwork_hash,
     )
