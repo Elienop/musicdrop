@@ -34,6 +34,7 @@ def _p(path: str) -> PlexTrackSpec:
         album="",
         title="",
         track=None,
+        length_seconds=None,
     )
 
 
@@ -70,6 +71,97 @@ def test_partial_when_some_paths_missing(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     assert state.status == "partial"
     assert state.missing == 1
+
+
+def test_the_recorded_state_says_which_rung_matched_each_track(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # "ok" and "ok, but nothing matched by path any more" are the same status and
+    # very different news — this app ran for its whole life on a fallback while
+    # every sync reported "ok". The tally is what a UI can show instead, so it
+    # has to survive the trip out of the matcher and into the recorded state.
+    server = FakeServer(
+        [
+            FakeTrack(10, ["/m/a.flac"]),
+            FakeTrack(20, ["/plex/renamed.flac"], grandparentTitle="Adele", title="Hello"),
+        ]
+    )
+    _patch(monkeypatch, server)
+    by_metadata = PlexTrackSpec(
+        item_id=2,
+        path="/m/b.flac",  # Plex holds this file under another name
+        albumartist="Adele",
+        album="19",
+        title="Hello",
+        track=None,
+        length_seconds=None,
+    )
+    state = sync.sync_playlist(
+        CONFIG, "Mix", [_p("/m/a.flac"), by_metadata, _p("/m/gone.flac")], playlist_id="p1"
+    )
+    assert state.status == "partial"
+    assert state.missing == 1
+    assert state.matched_by.model_dump() == {"path": 1, "artist_title": 1, "album_length": 0}
+
+
+def test_an_in_place_update_records_the_rung_tally_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A playlist is CREATED once and UPDATED on every sync afterwards, so a tally
+    # that only rides out of the create path is a tally the user never sees. It
+    # would also fail in the direction that hides the problem: an all-zero
+    # `matched_by` on a healthy sync reads exactly like the misconfiguration this
+    # count exists to expose. All three rungs at once, so a site that dropped one
+    # shows up as a rung rather than as a smaller number.
+    plex_arabic_wael = "وائل كفوري"  # what Plex's agent writes for beets' "Wael Kfoury"
+    server = FakeServer(
+        [
+            FakeTrack(10, ["/m/a.flac"]),
+            FakeTrack(20, ["/plex/renamed.flac"], grandparentTitle="Adele", title="Hello"),
+            FakeTrack(
+                30,
+                ["/plex/habibi.flac"],
+                grandparentTitle=plex_arabic_wael,
+                parentTitle="Habibi",
+                title="Habibi",
+                duration=212_000,
+            ),
+        ]
+    )
+    existing = _marked(server.createPlaylist("Mix", items=[FakeTrack(10, ["/m/a.flac"])]))
+    _patch(monkeypatch, server)
+    by_metadata = PlexTrackSpec(
+        item_id=2,
+        path="/m/b.flac",  # Plex holds this file under another name
+        albumartist="Adele",
+        album="19",
+        title="Hello",
+        track=None,
+        length_seconds=None,
+    )
+    by_album_and_length = PlexTrackSpec(
+        item_id=3,
+        path="/m/habibi.flac",
+        albumartist="Wael Kfoury",  # Plex rewrote it into Arabic: only the album key bridges it
+        album="Habibi",
+        title="Habibi",
+        track=None,
+        length_seconds=212.0,
+    )
+    state = sync.sync_playlist(
+        CONFIG,
+        "Mix",
+        [_p("/m/a.flac"), by_metadata, by_album_and_length, _p("/m/gone.flac")],
+        playlist_id="p1",
+    )
+    # The marked copy was updated IN PLACE — no second create, so this really is
+    # the update path and not the create path wearing a different key.
+    assert len(server.created) == 1
+    assert state.rating_key == str(existing.ratingKey)
+    assert existing.live_keys() == [10, 20, 30]
+    assert state.status == "partial"
+    assert state.missing == 1
+    assert state.matched_by.model_dump() == {"path": 1, "artist_title": 1, "album_length": 1}
 
 
 def test_stamp_failure_does_not_orphan_the_playlist(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -255,6 +347,11 @@ def test_smart_playlist_is_reported_failed_not_deleted(monkeypatch: pytest.Monke
     )
     assert existing.deleted is False
     assert server.created == []
+    # The resolution SUCCEEDED — Plex just won't let us apply it — and the
+    # recorded state says so. Zeroing the tally here would report "nothing
+    # matched", which is a different diagnosis pointing at the library rather
+    # than at the playlist being smart.
+    assert state.matched_by.model_dump() == {"path": 1, "artist_title": 0, "album_length": 0}
 
 
 def test_a_smart_playlist_found_in_a_listing_still_names_the_smart_error(
@@ -364,6 +461,7 @@ def test_missing_tracks_are_reported_and_capped(monkeypatch: pytest.MonkeyPatch)
             album="B",
             title=f"t{i}",
             track=None,
+            length_seconds=None,
         )
         for i in range(MISSING_TRACKS_CAP + 5)
     ]
@@ -395,6 +493,16 @@ def test_failed_target_carries_prior_key_and_artwork_hash(monkeypatch: pytest.Mo
     assert states["u1"].status == "failed"
     assert states["u1"].rating_key == "42"
     assert states["u1"].artwork_hash == "h9"
+    # The other half of the rule every applying site follows: a target that
+    # never got as far as applying the resolution reports NO matches, even
+    # though the resolution itself succeeded (the admin copy matched a track by
+    # path). A tally here would describe a Plex copy that was never written.
+    assert states["u1"].matched_by.model_dump() == {"path": 0, "artist_title": 0, "album_length": 0}
+    assert states["admin"].matched_by.model_dump() == {
+        "path": 1,
+        "artist_title": 0,
+        "album_length": 0,
+    }
 
 
 def test_leaves_same_titled_stranger_alone(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -643,6 +751,7 @@ def test_sync_metadata_fallback_populates(monkeypatch: pytest.MonkeyPatch) -> No
         album="19",
         title="Daydreamer",
         track=1,
+        length_seconds=None,
     )
     state = sync.sync_playlist(CONFIG, "Mix", [spec], playlist_id="p1")
     assert state.status == "ok"
@@ -832,6 +941,7 @@ def test_sync_uses_the_configured_section(monkeypatch: pytest.MonkeyPatch) -> No
                 album="",
                 title="x",
                 track=None,
+                length_seconds=None,
             )
         ],
         playlist_id="p1",

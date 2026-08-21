@@ -23,7 +23,10 @@ matches; ``items()`` is cached until ``reload()``; no mutator reloads. See
 
 Resolution is one library scan (``resolve_ordered_tracks``) reused for every
 target (ratingKeys are server-global). The caller passes ``PlexTrackSpec``s
-whose paths are already translated to Plex's view.
+whose paths are already translated to Plex's view. The whole ``PlexResolution``
+travels down, not just its tracks: each target's recorded state carries the
+per-rung tally (``matched_by``) beside the miss count, because "28 ok" and "28
+matched, none of them by path" are the same status and very different news.
 
 Exception contract — raises ONLY:
 - ``PlexNotConfigured`` when no URL/token is set, or
@@ -42,11 +45,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.models.plex import MISSING_TRACKS_CAP, PlexMissingTrack, PlexTargetState
+from app.models.plex import MISSING_TRACKS_CAP, PlexTargetState
 from app.plex import client as client  # explicit re-export: the patchable seam (sync.client)
 from app.plex.config import PlexConfig
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
-from app.plex.mapping import PlexTrackSpec, resolve_ordered_tracks
+from app.plex.mapping import PlexResolution, PlexTrackSpec, resolve_ordered_tracks
 
 _SMART_ERROR = "This Plex playlist is a smart playlist; MusicDrop can't update it in place."
 _NOT_APPLIED_ERROR = "Plex did not apply the playlist changes."
@@ -376,8 +379,7 @@ def _poster_hash_after_update(
 def _create_our_playlist(
     server: Any,
     title: str,
-    tracks: list[Any],
-    missing: list[PlexMissingTrack],
+    resolution: PlexResolution,
     *,
     marker: str,
     artwork: PlexArtwork | None,
@@ -387,10 +389,15 @@ def _create_our_playlist(
     Plex refuses an empty create, so an empty resolve yields ``empty`` and no
     key rather than a playlist.
     """
+    tracks, missing = resolution.tracks, resolution.missing
     shown = missing[:MISSING_TRACKS_CAP]
     if not tracks:
         return PlexTargetState(
-            rating_key=None, status="empty", missing=len(missing), missing_tracks=shown
+            rating_key=None,
+            status="empty",
+            missing=len(missing),
+            missing_tracks=shown,
+            matched_by=resolution.matched_by,
         )
     # Create from the distinct keys, then let the reconcile append the
     # repeats — one create uri must not carry a key twice either. The marker
@@ -409,6 +416,7 @@ def _create_our_playlist(
         status="ok" if not missing else "partial",
         missing=len(missing),
         missing_tracks=shown,
+        matched_by=resolution.matched_by,
         artwork_hash=pushed_hash,
     )
 
@@ -416,8 +424,7 @@ def _create_our_playlist(
 def _update_our_playlist(
     existing: Any,
     title: str,
-    tracks: list[Any],
-    missing: list[PlexMissingTrack],
+    resolution: PlexResolution,
     *,
     marker: str,
     prior_hash: str | None,
@@ -429,6 +436,7 @@ def _update_our_playlist(
     touch nothing: a smart playlist (``failed`` — Plex won't let us edit its
     rows) and an empty resolve (``empty``).
     """
+    tracks, missing = resolution.tracks, resolution.missing
     shown = missing[:MISSING_TRACKS_CAP]
     key = str(existing.ratingKey)
     # Deliberately a PLAIN attribute read: on a partial listing object plexapi
@@ -443,6 +451,7 @@ def _update_our_playlist(
             status="failed",
             missing=len(missing),
             missing_tracks=shown,
+            matched_by=resolution.matched_by,
             artwork_hash=prior_hash,
             error=_SMART_ERROR,
         )
@@ -454,6 +463,7 @@ def _update_our_playlist(
             status="empty",
             missing=len(missing),
             missing_tracks=shown,
+            matched_by=resolution.matched_by,
             artwork_hash=prior_hash,
         )
     _reconcile_items(existing, tracks)
@@ -469,6 +479,7 @@ def _update_our_playlist(
         status="ok" if not missing else "partial",
         missing=len(missing),
         missing_tracks=shown,
+        matched_by=resolution.matched_by,
         artwork_hash=artwork_hash,
     )
 
@@ -476,8 +487,7 @@ def _update_our_playlist(
 def _reconcile_on(
     server: Any,
     title: str,
-    tracks: list[Any],
-    missing: list[PlexMissingTrack],
+    resolution: PlexResolution,
     *,
     playlist_id: str,
     prior: PlexTargetState | None,
@@ -501,12 +511,11 @@ def _reconcile_on(
 
     existing = _find_our_playlist(server, playlist_id, prior_key)
     if existing is None:
-        return _create_our_playlist(server, title, tracks, missing, marker=marker, artwork=artwork)
+        return _create_our_playlist(server, title, resolution, marker=marker, artwork=artwork)
     return _update_our_playlist(
         existing,
         title,
-        tracks,
-        missing,
+        resolution,
         marker=marker,
         prior_hash=prior_hash,
         artwork=artwork,
@@ -534,8 +543,7 @@ def sync_playlist(
         return _reconcile_on(
             server,
             title,
-            resolution.tracks,
-            resolution.missing,
+            resolution,
             playlist_id=playlist_id,
             prior=prior,
             artwork=artwork,
@@ -588,8 +596,7 @@ def sync_playlist_to_targets(
         return _reconcile_on(
             server,
             title,
-            resolution.tracks,
-            resolution.missing,
+            resolution,
             playlist_id=playlist_id,
             prior=priors.get(key),
             artwork=artwork,
@@ -627,6 +634,9 @@ def _safe_reconcile(
         # caller replaces the WHOLE state map with what we return, so recording
         # None here would ERASE a known key and orphan the still-existing Plex
         # copy (a later delete/de-target short-circuits on a None key).
+        # `matched_by` deliberately stays at zero: the resolution may well have
+        # succeeded, but nothing of it reached this target, and a tally here
+        # would read as a description of the copy Plex actually holds.
         return PlexTargetState(
             rating_key=prior.rating_key if prior is not None else None,
             status="failed",

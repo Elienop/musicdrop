@@ -92,16 +92,141 @@ const MISS_TITLES: Record<PlexMissReason, string> = {
     "Several Plex tracks share this artist and title, and none has this file, so MusicDrop won't guess which one. Sort out the copies in Plex, then sync again.",
 };
 
+/** The recorded target whose copy of the shared resolution is trustworthy: the
+ * first one — admin explicitly first, because a numeric Plex user id sorts
+ * ahead of "admin" in a JS object — carrying a non-zero tally. One library scan
+ * serves every target, so every target that went through carries identical
+ * numbers and identical misses; a FAILED target stores zeros and an empty miss
+ * list, which must never overwrite the signal a succeeding target recorded.
+ * Null when nothing carries a tally: every target failed, or the record
+ * predates the tally entirely. */
+function resolvedTargetState(playlist: PlaylistDetail) {
+  const entries = Object.entries(playlist.plex ?? {});
+  const ordered = [
+    ...entries.filter(([key]) => key === "admin"),
+    ...entries.filter(([key]) => key !== "admin"),
+  ];
+  for (const [, state] of ordered) {
+    const counts = state.matched_by;
+    if (counts && counts.path + counts.artist_title + counts.album_length > 0) {
+      return state;
+    }
+  }
+  return null;
+}
+
 /** item id -> why Plex couldn't place it on the last sync. Keyed by item id (not
  * row uid) because the resolve is per library track: two rows for one item are
- * both missing or both found. The admin target's list is THE list — one resolve
- * against the (server-global) ratingKeys serves every fan-out target. */
+ * both missing or both found. Any target that went through carries THE list —
+ * one resolve against the (server-global) ratingKeys serves every fan-out
+ * target — and a FAILED target stores an empty one, so the list is read off
+ * `resolvedTargetState`, never off admin alone. */
 function plexMissesByItem(playlist: PlaylistDetail): Map<number, PlexMissReason> {
+  // A record from before the tally existed carries misses but no counts, so it
+  // cannot satisfy resolvedTargetState — fall back to admin's list for those,
+  // which is exactly what this function always read.
+  const source = resolvedTargetState(playlist) ?? playlist.plex?.admin;
   const out = new Map<number, PlexMissReason>();
-  for (const miss of playlist.plex?.admin?.missing_tracks ?? []) {
+  for (const miss of source?.missing_tracks ?? []) {
     out.set(miss.item_id, miss.reason);
   }
   return out;
+}
+
+/** How the last sync FOUND each track it placed on Plex, in the three ways the
+ * server tallies (`PlexMatchCounts`). Split out of the wire shape so the copy
+ * below reads one flat object and never has to know the field names.
+ *
+ * `total` is the number of tracks the sync actually resolved — always the sum,
+ * never the playlist length, so the sentence built from it stays true when some
+ * rows are missing from Plex (those are the separate "N not in Plex" count). */
+interface MatchBreakdown {
+  total: number;
+  path: number;
+  artistTitle: number;
+  albumLength: number;
+}
+
+/** THE tally for the last sync, or null when there is nothing to say.
+ *
+ * ONE tally per sync, not one per target: the server resolves the library once
+ * and reuses that resolution for every account (`sync_playlist_to_targets`
+ * scans before the per-target loop; ratingKeys are server-global), so every
+ * target it reached carries the SAME numbers and repeating them under each
+ * fan-out user would imply each account was looked up separately.
+ *
+ * Which target we read them off is therefore free — so we read the first that
+ * HAS any, admin first. A target whose push failed records zeros even when the
+ * resolution behind it succeeded, so reading admin alone would throw the whole
+ * summary away (the "nothing matched by file" warning included) whenever the
+ * owner's own push is the one that failed and a fan-out target went through.
+ *
+ * All-zero EVERYWHERE means "nothing to say", NEVER "zero matched by file": a
+ * record written before the server started tallying has no counts, and a sync
+ * where every target failed zeroes them all. Reading zero as evidence would
+ * invent the exact false alarm this surface exists to avoid — so an empty sum
+ * is skipped, and nothing but empty sums returns null and renders nothing. */
+function matchBreakdown(playlist: PlaylistDetail): MatchBreakdown | null {
+  const counts = resolvedTargetState(playlist)?.matched_by;
+  if (!counts) {
+    return null;
+  }
+  return {
+    total: counts.path + counts.artist_title + counts.album_length,
+    path: counts.path,
+    artistTitle: counts.artist_title,
+    albumLength: counts.album_length,
+  };
+}
+
+/** True when at least one track was found by something weaker than its file —
+ * the only condition under which this surface says anything beyond the count. */
+function hasWeakMatches(breakdown: MatchBreakdown): boolean {
+  return breakdown.path < breakdown.total;
+}
+
+/** The counts, as one sentence a Plex user can read without knowing how
+ * MusicDrop matches. "by file" is the strong rung; the other two are named for
+ * what they compared, not for their internal names.
+ *
+ * A zero file count is stated OUT LOUD ("none by file") rather than dropped
+ * from the list: the absence of that clause is precisely what went unnoticed
+ * for years, and a reader cannot notice a clause that was never printed. */
+function matchCountsSentence(breakdown: MatchBreakdown): string {
+  const tracks = `${breakdown.total} ${breakdown.total === 1 ? "track" : "tracks"}`;
+  const weaker: string[] = [];
+  if (breakdown.artistTitle > 0) {
+    weaker.push(`${breakdown.artistTitle} by artist and title`);
+  }
+  if (breakdown.albumLength > 0) {
+    weaker.push(`${breakdown.albumLength} by album and length`);
+  }
+  if (weaker.length === 0) {
+    return `Matched ${tracks} by file.`;
+  }
+  const byFile = breakdown.path === 0 ? "none by file" : `${breakdown.path} by file`;
+  return `Matched ${tracks}: ${byFile}, ${weaker.join(", ")}.`;
+}
+
+/** What a weaker match risks, in the user's terms: a tag match can land on a
+ * different copy of the track than the file they meant. */
+const WEAK_MATCH_NOTE =
+  "The rest were matched on their tags rather than their files, which can land on a different copy of a track.";
+
+/** The announcement appended to the post-sync live-region message — "" on a
+ * healthy sync, so the common case stays exactly as quiet as it was.
+ *
+ * Deliberately terser than the visible copy: a live region is read aloud in one
+ * go, so it flags the problem and names where to fix it instead of reciting the
+ * whole explanation the section already shows on screen. */
+function matchAnnouncement(breakdown: MatchBreakdown | null): string {
+  if (breakdown === null || !hasWeakMatches(breakdown)) {
+    return "";
+  }
+  const counts = matchCountsSentence(breakdown);
+  return breakdown.path === 0
+    ? `${counts} Nothing matched by file — check the Plex library path in Settings.`
+    : `${counts} ${WEAK_MATCH_NOTE}`;
 }
 
 /** Visual tone for a sync status, mapped to a leading icon + a semantic text
@@ -208,6 +333,49 @@ function StatusLine({ status }: { status: SyncStatus }) {
       {Icon ? <Icon className="size-3.5 shrink-0" aria-hidden="true" /> : null}
       {label}
     </span>
+  );
+}
+
+/** How the last sync found its tracks — the footnote of the Plex sync section.
+ *
+ * Three tiers, and the tiering is the whole design:
+ *  - nothing recorded anywhere (a record predating the tally, or a sync whose
+ *    every target failed) — renders nothing at all;
+ *  - everything found by file, the normal case — one muted line, no icon, no
+ *    color, at the section's footnote size. Present so the user has a baseline
+ *    to notice a change AGAINST, quiet enough not to read as news;
+ *  - not one track found by file — a warning box naming the likely cause. That
+ *    is the failure this whole surface exists for: it means every path lookup
+ *    missed, which for a whole playlist is a wrong `library_path`, not luck.
+ *    A partial (some by file, some by tags) stays in the muted tier: a handful
+ *    of tracks Plex holds under a different copy is ordinary, so escalating it
+ *    would train the user to ignore the box that matters. */
+function MatchSummary({ playlist }: { playlist: PlaylistDetail }) {
+  const breakdown = matchBreakdown(playlist);
+  if (breakdown === null) {
+    return null;
+  }
+  return (
+    <div className="flex flex-col gap-1 text-xs">
+      <p className="text-muted-foreground">{matchCountsSentence(breakdown)}</p>
+      {breakdown.path === 0 ? (
+        // The settings panel's inline-warning idiom: the icon is decoration,
+        // the sentence carries the meaning, so nothing here is color-only.
+        <p className="border-warning/50 bg-warning/10 text-foreground flex items-start gap-2 rounded-md border p-2">
+          <Warning className="text-warning mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span>
+            Nothing matched by file. That usually means the Plex library path in{" "}
+            <Link to="/settings/integrations" className="focus-ring rounded-sm underline">
+              Settings
+            </Link>{" "}
+            doesn’t point where Plex keeps your music, so MusicDrop fell back to matching
+            on tags — which can land on a different copy of a track.
+          </span>
+        </p>
+      ) : (
+        hasWeakMatches(breakdown) && <p className="text-muted-foreground">{WEAK_MATCH_NOTE}</p>
+      )}
+    </div>
   );
 }
 
@@ -694,9 +862,21 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
               sync.mutate(undefined, {
                 // Announce the real outcome (synced / N not in Plex / no
                 // matching tracks) instead of a blanket "complete" — derived
-                // from the same label the visible status line shows.
-                onSuccess: (updated) =>
-                  setStatusMsg(`Plex sync: ${adminSyncStatus(updated).label}`),
+                // from the same label the visible status line shows. A sync
+                // that leaned on the weaker matching says so as well; one that
+                // did not adds nothing, so the healthy case is announced in
+                // exactly the words it always was.
+                onSuccess: (updated) => {
+                  const label = adminSyncStatus(updated).label;
+                  const note = matchAnnouncement(matchBreakdown(updated));
+                  // Exactly one full stop at the seam. Most labels are
+                  // fragments ("Synced") that need one; a server-authored error
+                  // label is already a sentence and brings its own — a pairing
+                  // only a failed push whose tally survived on another target
+                  // produces.
+                  const head = label.endsWith(".") ? label : `${label}.`;
+                  setStatusMsg(note ? `Plex sync: ${head} ${note}` : `Plex sync: ${label}`);
+                },
               })
             }
             disabled={sync.isPending}
@@ -890,6 +1070,9 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
             })
           )}
         </ul>
+        {/* Sits below the per-target list because it describes the one library
+            lookup they all share, not any single account's push. */}
+        <MatchSummary playlist={playlist} />
       </section>
 
       {tracks.length === 0 ? (

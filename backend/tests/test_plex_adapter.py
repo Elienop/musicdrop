@@ -3,6 +3,7 @@ import pytest
 from app.plex import service
 from app.plex.config import PlexConfig
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
+from tests.plex_fakes import FakeSection, FakeServer
 
 
 class _FakeUser:
@@ -94,6 +95,7 @@ def test_list_music_sections_returns_artist_titles(monkeypatch: pytest.MonkeyPat
         def __init__(self, type_: str, title: str) -> None:
             self.TYPE = type_
             self.title = title
+            self.locations = [f"/data/{title.lower()}"]
 
     class _Server:
         library = type(
@@ -109,8 +111,48 @@ def test_list_music_sections_returns_artist_titles(monkeypatch: pytest.MonkeyPat
         )()
 
     monkeypatch.setattr(service.client, "connect", lambda url, token: _Server())
-    titles = service.list_music_sections(PlexConfig(base_url="http://p", token="t"))
-    assert titles == ["Music", "MusicDrop"]
+    sections = service.list_music_sections(PlexConfig(base_url="http://p", token="t"))
+    assert [s.title for s in sections] == ["Music", "MusicDrop"]
+
+
+def test_list_music_sections_reports_the_folders_plex_holds_for_each(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The folders are the whole point: a section's `locations` is the ONLY place
+    # the true Plex-side library path can be read from, and dropping it is what
+    # left the user typing `/music` for a library that lives at `/musicdrop`.
+    # A Plex library may hold several folders, so the wire carries a list.
+    server = FakeServer(
+        [],
+        sections=[
+            FakeSection([], title="Music", locations=["/data/music"]),
+            FakeSection([], title="MusicDrop", locations=["/musicdrop", "/mnt/spill"]),
+        ],
+    )
+    monkeypatch.setattr(service.client, "connect", lambda url, token: server)
+    sections = service.list_music_sections(PlexConfig(base_url="http://p", token="t"))
+    assert [(s.title, s.locations) for s in sections] == [
+        ("Music", ["/data/music"]),
+        ("MusicDrop", ["/musicdrop", "/mnt/spill"]),
+    ]
+
+
+def test_list_music_sections_survives_a_section_that_reports_no_folders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Every real library has at least one folder, but the attribute is read off
+    # whatever the server sent; a section listed without one must degrade to "no
+    # folders known" rather than break the whole dropdown.
+    class _Bare:
+        TYPE = "artist"
+        title = "Music"
+
+    class _Server:
+        library = type("L", (), {"sections": lambda _self: [_Bare()]})()
+
+    monkeypatch.setattr(service.client, "connect", lambda url, token: _Server())
+    sections = service.list_music_sections(PlexConfig(base_url="http://p", token="t"))
+    assert [(s.title, s.locations) for s in sections] == [("Music", [])]
 
 
 def test_list_music_sections_requires_config() -> None:

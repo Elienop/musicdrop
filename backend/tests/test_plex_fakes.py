@@ -198,6 +198,21 @@ def test_server_takes_explicit_sections() -> None:
     assert server.library.sections() == [first, second]
 
 
+def test_a_section_reports_its_folders_and_never_reports_none() -> None:
+    # `LibrarySection.locations` is the list of folder paths Plex holds for the
+    # library (library.py:457), and PMS refuses to leave a library with zero of
+    # them ("You are unable to remove all locations from a library.",
+    # library.py:620-621). So a fake defaulting to an EMPTY list would make the
+    # degenerate "Plex reports no folder" case look like the ordinary one, and a
+    # UI that only renders folders when it has them would test green while
+    # showing the user nothing. A library can legitimately span several folders.
+    assert FakeSection([], title="Music").locations == ["/data/music"]
+    assert FakeSection([], title="MusicDrop", locations=["/musicdrop", "/mnt/spill"]).locations == [
+        "/musicdrop",
+        "/mnt/spill",
+    ]
+
+
 def test_switch_user_isolates_playlists_but_shares_library() -> None:
     server = FakeServer([_t(1)])
     user = server.switchUser("u1")

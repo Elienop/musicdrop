@@ -30,6 +30,11 @@ class TrackRef:
 
     Plex-unaware on purpose (CLAUDE.md rule 3): the API translates ``abs_path``
     into a Plex view and pairs it with this metadata as a ``PlexTrackSpec``.
+
+    ``length_seconds`` is beets' ``item.length`` -- SECONDS, and ``None`` when
+    beets never read one (it stores 0.0 for that). Plex's fallback that keys on
+    (album, title) accepts a candidate only when the lengths agree, so a ref
+    without one turns that fallback off for the track rather than guessing.
     """
 
     item_id: int
@@ -38,6 +43,7 @@ class TrackRef:
     album: str
     title: str
     track: int | None
+    length_seconds: float | None
 
 
 def _coerce_track(value: object) -> int | None:
@@ -187,8 +193,8 @@ def track_match_refs(lib: Library, ids: list[int]) -> list[TrackRef]:
     """Ordered ``TrackRef``s for resolvable tracks (missing ids dropped).
 
     Read inside ``music_dir_context`` so beets re-expands DB-relative paths.
-    Carries album-artist/album/title/track so the Plex side can fall back to
-    metadata matching when the exact file path isn't present in Plex."""
+    Carries album-artist/album/title/track/length so the Plex side can fall back
+    to metadata matching when the exact file path isn't present in Plex."""
     refs: list[TrackRef] = []
     with lib.music_dir_context():
         by_id = _items_by_id(lib, ids)
@@ -204,6 +210,7 @@ def track_match_refs(lib: Library, ids: list[int]) -> list[TrackRef]:
                     album=_coerce_str(item.album),
                     title=_coerce_str(item.title),
                     track=_coerce_track(item.track),
+                    length_seconds=_coerce_duration(item.length),
                 )
             )
     return refs

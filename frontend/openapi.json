@@ -9421,6 +9421,28 @@
         ],
         "title": "PlexConnection"
       },
+      "PlexMatchCounts": {
+        "properties": {
+          "path": {
+            "type": "integer",
+            "title": "Path",
+            "default": 0
+          },
+          "artist_title": {
+            "type": "integer",
+            "title": "Artist Title",
+            "default": 0
+          },
+          "album_length": {
+            "type": "integer",
+            "title": "Album Length",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "PlexMatchCounts",
+        "description": "How many of a sync's tracks each matching rung accounted for.\n\nA flat \"ok\" hides which rung did the work, and that blind spot has already\ncost this app once: path matching was broken for the app's whole life while\nthe metadata fallback silently carried 100% of every sync, and every sync\nstill reported \"ok\". These counts are what makes that visible \u2014 a library\nwhose ``path`` count is suddenly zero is misconfigured, not fine.\n\nEvery field DEFAULTS to zero, which is also how a new rung is added without\nbreaking the wire: a reader that predates the new field ignores it, and a\nreader that postdates a record written without it sees zero. A rung missing\nfrom here would be counted nowhere, so ``PlexMatchMethod`` and these field\nnames are pinned equal by a test."
+      },
       "PlexMissingTrack": {
         "properties": {
           "item_id": {
@@ -9499,11 +9521,33 @@
         ],
         "title": "PlexPlaylistList"
       },
+      "PlexSectionInfo": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "locations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Locations"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "locations"
+        ],
+        "title": "PlexSectionInfo",
+        "description": "One music (artist-type) library section on the Plex server.\n\n``locations`` are the folder paths PLEX reports for that library \u2014 the truth\nthe ``library_path`` setting has to agree with, since ``translate_path``\nrebases every beets path onto it. A library can span several folders, so\nthis is a list; it is empty only when the server listed none."
+      },
       "PlexSectionList": {
         "properties": {
           "sections": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/PlexSectionInfo"
             },
             "type": "array",
             "title": "Sections"
@@ -9514,7 +9558,7 @@
           "sections"
         ],
         "title": "PlexSectionList",
-        "description": "GET /plex/sections \u2014 the server's music (artist-type) section titles."
+        "description": "GET /plex/sections \u2014 the server's music (artist-type) sections."
       },
       "PlexSettings": {
         "properties": {
@@ -9634,6 +9678,9 @@
             "title": "Missing Tracks",
             "default": []
           },
+          "matched_by": {
+            "$ref": "#/components/schemas/PlexMatchCounts"
+          },
           "artwork_hash": {
             "anyOf": [
               {
@@ -9670,7 +9717,7 @@
         },
         "type": "object",
         "title": "PlexTargetState",
-        "description": "Per-target Plex sync bookkeeping recorded on a playlist.\n\nKeyed by target in ``StoredPlaylist.plex`` \u2014 ``\"admin\"`` for the owner's\naccount, per-user account ids for fan-out targets. ``rating_key`` is the\nPlex playlist this target's copy IS \u2014 a sync updates that playlist in place\nand never mints a new key while it exists. ``artwork_hash`` is the poster\nlast pushed to that copy (so a sync re-uploads only when the art changed)."
+        "description": "Per-target Plex sync bookkeeping recorded on a playlist.\n\nKeyed by target in ``StoredPlaylist.plex`` \u2014 ``\"admin\"`` for the owner's\naccount, per-user account ids for fan-out targets. ``rating_key`` is the\nPlex playlist this target's copy IS \u2014 a sync updates that playlist in place\nand never mints a new key while it exists. ``artwork_hash`` is the poster\nlast pushed to that copy (so a sync re-uploads only when the art changed).\n``matched_by`` breaks the resolved tracks down by which rung found them."
       },
       "PlexUserInfo": {
         "properties": {
