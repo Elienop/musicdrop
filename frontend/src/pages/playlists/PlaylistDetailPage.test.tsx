@@ -1021,6 +1021,110 @@ describe("PlaylistDetailPage", () => {
     expect(await screen.findAllByText("Not in Plex")).toHaveLength(2);
   });
 
+  /** The tooltip/sr-only sentence for a repeat the Plex copy holds once. It
+   * states the OUTCOME and nothing else: the server answers 200 whether it
+   * refused the second row or swallowed it, so no client may name a cause. */
+  const DUP_TITLE =
+    "This playlist lists this track more than once, and the Plex copy keeps a single row for it. " +
+    "MusicDrop can't make Plex hold a second row; remove the repeat from this playlist to stop it being reported.";
+
+  /** A `partial` admin state whose misses are the ones given. */
+  function partialAdminWith(
+    missing: number,
+    misses: Array<{ item_id: number; reason: string; title?: string }>,
+  ) {
+    return {
+      admin: {
+        rating_key: "500",
+        status: "partial",
+        missing,
+        missing_tracks: misses.map((miss) => ({
+          title: "T",
+          albumartist: "A",
+          album: "B",
+          ...miss,
+        })),
+        synced_at: "2026-08-15T10:00:00+00:00",
+        error: null,
+      },
+    };
+  }
+
+  test("a repeat Plex holds once reads as present, on both of its rows", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([
+            track(11, "Found"),
+            { ...track(12, "Twice"), uid: "u12a" },
+            { ...track(12, "Twice"), uid: "u12b" },
+          ]),
+          plex: partialAdminWith(1, [
+            { item_id: 12, title: "Twice", reason: "duplicate_collapsed" },
+          ]),
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+
+    // The whole point: this track IS on Plex and the user can play it, so
+    // nothing on the row may say it is missing — a badge caught lying here is a
+    // badge nobody trusts on the rows where "Not in Plex" is true.
+    const badges = await screen.findAllByText("In Plex once");
+    expect(badges).toHaveLength(2);
+    expect(screen.queryByText(/not in plex/i)).toBeNull();
+    // The reason travels as a `title` for sighted hover…
+    expect(badges[0]).toHaveAttribute("title", DUP_TITLE);
+    // …and as real text for assistive tech, on BOTH rows of the doubled item —
+    // the misses are keyed by library item, so the row whose copy Plex DID keep
+    // wears the badge too. The sentence is about the track, not "this row", so
+    // it stays true on either one.
+    const rows = screen.getAllByRole("row", { name: /Twice/ });
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      const carrier = within(row).getByText(`In Plex once: ${DUP_TITLE}`);
+      // Read exactly, not through the query's whitespace normalizer: the label
+      // and the reason are two JSX expressions with the separator between them,
+      // and the normalizer would forgive a doubled or stray space at the seam.
+      expect(carrier.textContent).toBe(`In Plex once: ${DUP_TITLE}`);
+    }
+    // The track Plex placed normally stays unmarked.
+    expect(within(screen.getByRole("row", { name: /Found/ })).queryByText(/plex/i)).toBeNull();
+  });
+
+  test("offers Match… for a track Plex hasn't got, but not for a repeat it holds", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([
+            track(11, "Lost"),
+            { ...track(12, "Twice"), uid: "u12a" },
+            { ...track(12, "Twice"), uid: "u12b" },
+          ]),
+          plex: partialAdminWith(2, [
+            { item_id: 11, title: "Lost", reason: "not_found" },
+            { item_id: 12, title: "Twice", reason: "duplicate_collapsed" },
+          ]),
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+
+    // Re-pointing the row is the remedy for a track Plex couldn't find…
+    expect(await screen.findByRole("button", { name: "Match Lost" })).toBeInTheDocument();
+    // …and fixes nothing for a repeat: that row matched, and its track is on
+    // Plex. Offering it there would advertise a remedy that cannot work — the
+    // only thing that changes the report is removing the repeat, which every
+    // row already offers.
+    expect(screen.queryByRole("button", { name: "Match Twice" })).toBeNull();
+  });
+
   test("does not stack the Plex badge on a row whose library item is gone", async () => {
     server.use(
       http.get(BASE, () =>
@@ -1055,22 +1159,14 @@ describe("PlaylistDetailPage", () => {
    * total — the shape the cap (MISSING_TRACKS_CAP = 200) produces on a very
    * lossy sync. */
   function partialAdmin(missing: number, marked: number) {
-    return {
-      admin: {
-        rating_key: "500",
-        status: "partial",
-        missing,
-        missing_tracks: Array.from({ length: marked }, (_, i) => ({
-          item_id: 1000 + i,
-          title: `T${i}`,
-          albumartist: "A",
-          album: "B",
-          reason: "not_found",
-        })),
-        synced_at: "2026-08-15T10:00:00+00:00",
-        error: null,
-      },
-    };
+    return partialAdminWith(
+      missing,
+      Array.from({ length: marked }, (_, i) => ({
+        item_id: 1000 + i,
+        title: `T${i}`,
+        reason: "not_found",
+      })),
+    );
   }
 
   test("says how many misses are marked when the identity list is capped", async () => {
@@ -1084,8 +1180,40 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     // Only 200 rows can wear a badge, so the count alone would let the other
-    // 150 unbadged rows read as fine.
-    expect(await screen.findByText("350 not in Plex; first 200 marked")).toBeInTheDocument();
+    // 150 unbadged rows read as fine. The 350 are NOT called absent: the
+    // reasons are known only for the marked ones, and the server appends
+    // collapsed duplicates after the absences, so truncation hides them first
+    // and the visible slice reads all-absent exactly when it isn't. The one
+    // wording true of both kinds is used instead.
+    expect(
+      await screen.findByText("350 not on the Plex copy; first 200 marked"),
+    ).toBeInTheDocument();
+  });
+
+  test("a capped list carrying a repeat still doesn't call the total absent", async () => {
+    const misses = [
+      ...Array.from({ length: 199 }, (_, i) => ({ item_id: 1000 + i, reason: "not_found" })),
+      { item_id: 2000, reason: "duplicate_collapsed" },
+    ];
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: partialAdminWith(210, misses),
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    // 210 misses, 200 carried: at least one is a track Plex HAS, and the ten it
+    // couldn't carry are unclassified. Neither number can be stated, so the
+    // total says only what is true of every miss.
+    expect(
+      await screen.findByText("210 not on the Plex copy; first 200 marked"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/not in plex/i)).toBeNull();
   });
 
   test("keeps the plain count when every miss is marked", async () => {
@@ -1113,8 +1241,58 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     // A target last synced before the identities existed carries none (the cap
-    // truncates to 200, never to 0), and one re-sync is what fixes it.
+    // truncates to 200, never to 0), and one re-sync is what fixes it. Such a
+    // record predates collapsed duplicates as well — the sync that can report
+    // one always writes identities — so this arm can still name absence.
     expect(await screen.findByText("3 not in Plex; re-sync to see which")).toBeInTheDocument();
+  });
+
+  test("a sync short only of repeats is not reported as tracks missing from Plex", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: partialAdminWith(2, [
+            { item_id: 24, reason: "duplicate_collapsed" },
+            { item_id: 169, reason: "duplicate_collapsed" },
+          ]),
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    // The live shape this fix serves: a playlist listing two of its tracks
+    // twice, on a server that keeps one row of each. Both tracks are on Plex,
+    // so "2 not in Plex" would be the row badge's lie one level up.
+    expect(
+      await screen.findByText("2 duplicate rows; Plex keeps one of each"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/not in plex/i)).toBeNull();
+  });
+
+  test("counts absences and repeats apart when the sync had both", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: partialAdminWith(2, [
+            { item_id: 7, reason: "not_found" },
+            { item_id: 24, reason: "duplicate_collapsed" },
+          ]),
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    // Two misses, two different pieces of news — one track to go and find, one
+    // repeat to remove — so the total is never the number the user reads.
+    expect(
+      await screen.findByText("1 not in Plex; 1 duplicate row; Plex keeps one of each"),
+    ).toBeInTheDocument();
   });
 
   test("says the Plex copy was left alone when nothing resolved but a copy exists", async () => {
