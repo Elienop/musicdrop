@@ -779,6 +779,11 @@ def test_the_veto_still_allows_the_rewrites_plexs_agent_actually_makes() -> None
         ("Beyonce", "Beyoncé"),  # a diacritic beets never had
         ("The Beatles", "Beatles, The"),  # the article moved to the back
         ("Ella Fitzgerald", "Fitzgerald, Ella"),  # the same inversion, no article to hide it
+        # The article rule ALONE, with nothing else to carry the pair: "Beatles,
+        # The" agrees whether or not "the" is dropped (the words are sorted, so
+        # both sides hold it), and "Beyoncé" agrees on the NFKD fold. Only a Plex
+        # name that simply lost the article shows that dropping it is doing work.
+        ("The Doors", "Doors"),
         ("Wael Kfoury", f"{_ARABIC_WAEL} (Wael Kfoury)"),  # bilingual: the Latin halves agree
     ]:
         section = _section(
@@ -802,6 +807,60 @@ def test_the_veto_still_allows_the_rewrites_plexs_agent_actually_makes() -> None
         )
         res = resolve_ordered_tracks(section, [spec])
         assert [t.ratingKey for t in res.tracks] == [70], plex_name
+
+
+def test_a_blank_albumartist_is_refused_by_the_album_rung_outright() -> None:
+    # The hole the veto could not see, reproduced through the real API: beets
+    # stores "" for an untagged singleton and nothing back-fills it, so the veto
+    # compares "" against Plex's name, finds no shared alphabet, and waves the
+    # candidate through without ever having read a name. Album, title and a
+    # length within a couple of seconds were then the whole case — and "Habibi"
+    # is a single, so album == title and that key is TITLE-ONLY. Anyone's
+    # "Habibi" of about the right length would answer.
+    #
+    # A blank is not the cross-script case: there the artist evidence exists and
+    # merely cannot be read as text, here there is NO artist evidence at all —
+    # and tags blank enough to lose the artist cast doubt on the album and title
+    # the key is built from too. Both spellings of blank refuse, so the guard
+    # cannot be written against the raw string.
+    for untagged in ("", "   "):
+        section = _section([_habibi_in_plex(3, 212_000, artist="Nancy Ajram")])
+        spec = _spec(
+            "/music/gone.flac",
+            albumartist=untagged,
+            album="Habibi",
+            title="Habibi",
+            length_seconds=212.0,
+        )
+        res = resolve_ordered_tracks(section, [spec])
+        assert res.tracks == [], repr(untagged)
+        assert [(m.item_id, m.reason) for m in res.missing] == [(1, "not_found")], repr(untagged)
+
+
+def test_a_letterless_but_real_artist_name_still_reaches_the_length_guard() -> None:
+    # What refusing a blank must NOT sweep up. "!!!", "3" and "+/-" are real
+    # bands, and a letterless name stands exactly where "وائل كفوري" stands:
+    # artist evidence that cannot be compared as text, not artist evidence that
+    # is missing. Refusing them would strand real music, so the rung stays open
+    # and the LENGTH decides — the second arm here, and the reason this is more
+    # than an assertion that the name got past the door.
+    #
+    # Plex spells this band out ("Chk Chk Chk"), which is what keeps the
+    # (album-artist, title) rung from answering first and hiding the whole
+    # question — the rung that resolved it is asserted for the same reason.
+    section = _section([_habibi_in_plex(4, 212_000, artist="Chk Chk Chk")])
+    agreeing = _spec(
+        "/music/gone.flac", albumartist="!!!", album="Habibi", title="Habibi", length_seconds=212.0
+    )
+    res = resolve_ordered_tracks(section, [agreeing])
+    assert [(m.track.ratingKey, m.method) for m in res.matches] == [(4, "album_length")]
+
+    disagreeing = _spec(
+        "/music/gone.flac", albumartist="!!!", album="Habibi", title="Habibi", length_seconds=254.0
+    )
+    res = resolve_ordered_tracks(section, [disagreeing])
+    assert res.tracks == []
+    assert [(m.item_id, m.reason) for m in res.missing] == [(1, "not_found")]
 
 
 # --- one Plex track answers at most one playlist row --------------------------

@@ -19,7 +19,8 @@ title, so ``(album, title)`` degenerates into a TITLE-ONLY key for exactly the
 tracks that motivated it -- and two artists with a single called "Habibi"
 collide there. So no candidate is ever accepted on album and title alone: the
 lengths have to agree too and Plex's OWN artist name must not contradict the
-one we asked for. See ``_album_match``.
+one we asked for -- and a row carrying no album-artist for Plex to contradict
+is refused this rung outright. See ``_album_match``.
 
 One Plex track answers at most one playlist row: a track a row already resolved
 to is off the table for every LATER row that isn't the same library item. See
@@ -211,6 +212,11 @@ def _artist_contradicts(spec: PlexTrackSpec, candidate: Any) -> bool:
     different recording — and album, title and a length that happens to land
     within a couple of seconds are not enough to overrule that.
 
+    A spec with no album-artist AT ALL never reaches here — ``_album_match``
+    refuses it before any candidate is read — because this function could only
+    ever answer False for one, reporting "nothing contradicts" where the truth
+    is "there was nothing to read".
+
     So the two names are compared only in the alphabet they SHARE. Share none —
     beets' "Wael Kfoury" against Plex's "وائل كفوري" — and there is no textual
     comparison to make, which is precisely the case this rung was built for, so
@@ -319,14 +325,28 @@ def _album_match(
     where Plex DID keep a readable artist name, that name gets a veto —
     ``_artist_contradicts``.
 
+    A spec with a BLANK album-artist is refused outright, before any of that.
+    The veto cannot speak for a name that is not there: it would compare "" to
+    Plex's artist, find no alphabet in common, and pass — so an untagged
+    singleton (beets stores "" and nothing back-fills it) would match anyone's
+    single of about the right length. That is not the cross-script case. There
+    the artist evidence exists and merely cannot be read as text; here there is
+    none at all, and tags blank enough to lose the artist cast doubt on the
+    album and title this key is built from too. Refusing costs a row the user
+    can fix by hand; accepting costs a stranger's recording under a sync
+    reported "ok". A letterless but REAL name ("!!!", "3", "+/-") is not blank
+    and keeps this rung: it carries exactly the status a name in another script
+    does.
+
     Returns ``(track, None)`` on the one surviving candidate;
     ``(None, "ambiguous")`` when several survive — the caller leaves the row
     missing rather than picking one; ``(None, "not_found")`` when the key is
-    incomplete, the length is unknown, or nothing survives.
+    incomplete, the album-artist is blank, the length is unknown, or nothing
+    survives.
     """
     key = (_norm(spec.album), _norm(spec.title))
     length = _measured_length(spec.length_seconds)
-    if not all(key) or length is None:
+    if not all(key) or not _norm(spec.albumartist) or length is None:
         return None, "not_found"
     pool = [
         cand
