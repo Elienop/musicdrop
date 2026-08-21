@@ -11,7 +11,14 @@ from app.plex.config import PlexConfig
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
 from app.plex.mapping import PlexTrackSpec
 from app.plex.sync import PlexArtwork
-from tests.plex_fakes import FakeItem, FakePlaylist, FakeSection, FakeServer, FakeTrack
+from tests.plex_fakes import (
+    DuplicateAdds,
+    FakeItem,
+    FakePlaylist,
+    FakeSection,
+    FakeServer,
+    FakeTrack,
+)
 
 CONFIG = PlexConfig(base_url="http://plex:32400", token="t")
 
@@ -297,39 +304,312 @@ def test_unchanged_duplicate_playlist_is_not_churned(monkeypatch: pytest.MonkeyP
     assert existing.live_keys() == [1, 1, 2]
 
 
+@pytest.mark.parametrize("mode", ["honour", "dedupe"])
 def test_a_track_added_twice_reconciles_through_the_duplicate_path(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, mode: DuplicateAdds
 ) -> None:
     # A user re-adds a track already in the playlist: current is UNIQUE, desired
     # holds a duplicate. Only the desired-side duplicate check routes this away
-    # from the diff path, which would ask Plex to move a row after ITSELF.
+    # from the diff path, which cannot see the difference between a track that
+    # needs a second row and one already there — it would add nothing and then
+    # fail the multiset check.
     a, b = FakeTrack(1, ["/m/a"]), FakeTrack(2, ["/m/b"])
-    server = FakeServer([a, b])
+    server = FakeServer([a, b], duplicates=mode)
     existing = _marked(server.createPlaylist("Mix", items=[a, b]))
     _patch(monkeypatch, server)
     state = sync.sync_playlist(
         CONFIG, "Mix", [_p("/m/a"), _p("/m/a"), _p("/m/b")], playlist_id="p1"
     )
-    assert state.status == "ok"
-    assert existing.live_keys() == [1, 1, 2]
-    assert existing.calls.index("addItems") < existing.calls.index("removeItems")
+    # The repeat is asked for ALONE, so the answer is about that one occurrence.
+    assert existing.add_calls == [[1]]
+    if mode == "honour":
+        assert state.status == "ok"
+        assert existing.live_keys() == [1, 1, 2]
+        return
+    assert state.status == "partial"
+    assert existing.live_keys() == [1, 2]  # the distinct playlist, intact
+    assert [(m.item_id, m.reason) for m in state.missing_tracks] == [
+        (_p("/m/a").item_id, "duplicate_collapsed")
+    ]
 
 
+@pytest.mark.parametrize("mode", ["honour", "dedupe"])
 def test_duplicate_tracks_reconcile_to_the_desired_multiset_and_order(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, mode: DuplicateAdds
 ) -> None:
     a, b = FakeTrack(1, ["/m/a"]), FakeTrack(2, ["/m/b"])
-    server = FakeServer([a, b])
+    server = FakeServer([a, b], duplicates=mode)
     existing = _marked(server.createPlaylist("Mix", items=[a, a, b]))  # 1,1,2
     _patch(monkeypatch, server)
     # Desired: 2, 1, 2  (drops one 'a', adds a second 'b', reorders)
     state = sync.sync_playlist(
         CONFIG, "Mix", [_p("/m/b"), _p("/m/a"), _p("/m/b")], playlist_id="p1"
     )
-    assert state.status == "ok"
-    assert existing.live_keys() == [2, 1, 2]
     assert existing.deleted is False
     assert state.rating_key == str(existing.ratingKey)
+    if mode == "honour":
+        assert state.status == "ok"
+        assert existing.live_keys() == [2, 1, 2]
+        return
+    # The surplus 'a' still goes and the order is still rebuilt — everything
+    # this server CAN do it does, and the one thing it won't is reported.
+    assert state.status == "partial"
+    assert existing.live_keys() == [2, 1]
+    assert [(m.item_id, m.reason) for m in state.missing_tracks] == [
+        (_p("/m/b").item_id, "duplicate_collapsed")
+    ]
+
+
+# The owner's "Pop Essentials": 246 rows, two library items each listed twice
+# among the uniques, the repeats far apart. Scaled down to the same SHAPE —
+# what matters is that the copy on Plex was created from the DISTINCT tracks
+# (that is what the first sync does) and that every sync since has had to hold
+# two tracks twice.
+_OWNERS_SHAPE = [1, 2, 3, 4, 2, 5, 6, 7, 4, 8]
+_OWNERS_DISTINCT = [1, 2, 3, 4, 5, 6, 7, 8]
+
+
+def _shape_server(mode: DuplicateAdds) -> tuple[FakeServer, FakePlaylist]:
+    """A server in ``mode`` holding the owner's playlist as his really is: the
+    distinct tracks, in first-occurrence order, stamped with our marker."""
+    tracks = {key: FakeTrack(key, [f"/m/{key}"]) for key in _OWNERS_DISTINCT}
+    server = FakeServer(list(tracks.values()), duplicates=mode)
+    existing = _marked(
+        server.createPlaylist("Pop", items=[tracks[key] for key in _OWNERS_DISTINCT])
+    )
+    return server, existing
+
+
+@pytest.mark.parametrize("mode", ["honour", "dedupe"])
+def test_the_owners_duplicate_playlist_syncs_instead_of_failing_flat(
+    monkeypatch: pytest.MonkeyPatch, mode: DuplicateAdds
+) -> None:
+    """REGRESSION (the live incident): every sync of a playlist listing one track
+    twice died with "Plex did not apply the playlist changes." — on both targets,
+    every time, since v0.35.0.
+
+    The old duplicate strategy re-appended EVERY desired key after the current
+    rows and then demanded to see old + desired; a server that will not hold a
+    track twice answers that add with 200 and changes nothing, so the check
+    failed and the whole playlist — 244 tracks of it already correct — was
+    reported failed. Neither answer may fail the sync now: with duplicates
+    honoured the copy is the full list, and with them collapsed the copy is the
+    distinct list and the sync SAYS which occurrences Plex would not hold.
+    """
+    server, existing = _shape_server(mode)
+    _patch(monkeypatch, server)
+    state = sync.sync_playlist(
+        CONFIG, "Pop", [_p(f"/m/{key}") for key in _OWNERS_SHAPE], playlist_id="p1"
+    )
+    assert state.rating_key == str(existing.ratingKey)  # updated in place, as ever
+    if mode == "honour":
+        assert state.status == "ok"
+        assert state.missing == 0
+        assert existing.live_keys() == _OWNERS_SHAPE
+        return
+    assert state.status == "partial"  # NOT "failed", and NOT a silent "ok"
+    assert existing.live_keys() == _OWNERS_DISTINCT
+    assert state.missing == 2
+    assert [(miss.item_id, miss.reason) for miss in state.missing_tracks] == [
+        (_p("/m/2").item_id, "duplicate_collapsed"),
+        (_p("/m/4").item_id, "duplicate_collapsed"),
+    ]
+
+
+@pytest.mark.parametrize("mode", ["honour", "dedupe"])
+def test_the_owners_shape_on_a_fresh_create_lands_the_same_way(
+    monkeypatch: pytest.MonkeyPatch, mode: DuplicateAdds
+) -> None:
+    # The create path routes its repeats through the same reconcile, so a brand
+    # new copy has to answer the duplicate question exactly as an existing one
+    # does — including reporting the collapse. A create that silently dropped
+    # the repeats would report "ok" over a playlist that is two rows short from
+    # its first minute.
+    tracks = {key: FakeTrack(key, [f"/m/{key}"]) for key in _OWNERS_DISTINCT}
+    server = FakeServer(list(tracks.values()), duplicates=mode)
+    _patch(monkeypatch, server)
+    state = sync.sync_playlist(
+        CONFIG, "Pop", [_p(f"/m/{key}") for key in _OWNERS_SHAPE], playlist_id="p1"
+    )
+    created = server.created[0]
+    assert server.create_calls == [_OWNERS_DISTINCT]  # one uri, each key once
+    assert state.rating_key == str(created.ratingKey)
+    if mode == "honour":
+        assert state.status == "ok"
+        assert created.live_keys() == _OWNERS_SHAPE
+        return
+    assert state.status == "partial"
+    assert created.live_keys() == _OWNERS_DISTINCT
+    assert [(miss.item_id, miss.reason) for miss in state.missing_tracks] == [
+        (_p("/m/2").item_id, "duplicate_collapsed"),
+        (_p("/m/4").item_id, "duplicate_collapsed"),
+    ]
+
+
+@pytest.mark.parametrize("mode", ["honour", "dedupe"])
+def test_a_copy_left_holding_junk_by_a_failed_attempt_reconciles_down(
+    monkeypatch: pytest.MonkeyPatch, mode: DuplicateAdds
+) -> None:
+    # What the owner's server may actually be holding after months of failed
+    # syncs: rows nobody wants (9), a track on more rows than the playlist asks
+    # for, a track missing entirely (4), and the order wrong. An arbitrary
+    # multiset has to reconcile down in ONE pass — an add, precise removals, a
+    # repeat asked for, and the order rebuilt.
+    tracks = {key: FakeTrack(key, [f"/m/{key}"]) for key in (1, 3, 4, 9)}
+    server = FakeServer(list(tracks.values()), duplicates=mode)
+    junk = [tracks[key] for key in (1, 9, 3, 1)]
+    existing = _marked(FakePlaylist("Mix", junk, 700, duplicates=mode))
+    server._playlists.append(existing)
+    _patch(monkeypatch, server)
+    state = sync.sync_playlist(
+        CONFIG,
+        "Mix",
+        [_p("/m/3"), _p("/m/1"), _p("/m/4"), _p("/m/1"), _p("/m/1")],
+        playlist_id="p1",
+    )
+    assert state.rating_key == "700"
+    assert 9 not in existing.live_keys()  # the junk row is gone either way
+    if mode == "honour":
+        assert state.status == "ok"
+        assert existing.live_keys() == [3, 1, 4, 1, 1]
+        return
+    # The third '1' is the only thing this server would not do; everything else
+    # still happened.
+    assert state.status == "partial"
+    assert existing.live_keys() == [3, 1, 4, 1]
+    assert [(m.item_id, m.reason) for m in state.missing_tracks] == [
+        (_p("/m/1").item_id, "duplicate_collapsed")
+    ]
+
+
+@pytest.mark.parametrize("mode", ["honour", "dedupe"])
+def test_reordering_a_duplicate_playlist_costs_moves_only(
+    monkeypatch: pytest.MonkeyPatch, mode: DuplicateAdds
+) -> None:
+    # Same rows, different order. Nothing is added and nothing is removed, so
+    # neither server has a duplicate question to answer and both land the same
+    # list — a reorder must never go near the add path just because a key
+    # repeats.
+    tracks = {key: FakeTrack(key, [f"/m/{key}"]) for key in (1, 2, 3)}
+    server = FakeServer(list(tracks.values()), duplicates=mode)
+    existing = _marked(FakePlaylist("Mix", [tracks[k] for k in (1, 2, 1, 3)], 700, duplicates=mode))
+    server._playlists.append(existing)
+    _patch(monkeypatch, server)
+    state = sync.sync_playlist(
+        CONFIG, "Mix", [_p("/m/3"), _p("/m/1"), _p("/m/1"), _p("/m/2")], playlist_id="p1"
+    )
+    assert state.status == "ok"
+    assert state.missing == 0
+    assert existing.live_keys() == [3, 1, 1, 2]
+    assert existing.add_calls == []
+    # Two rows are genuinely out of place and two move — the same minimum the
+    # unique path pays, now counted over rows instead of keys.
+    assert len(existing.queries) == 2
+    assert all(query.startswith("PUT") for query in existing.queries)  # moves, nothing else
+
+
+@pytest.mark.parametrize("mode", ["honour", "dedupe"])
+def test_moving_one_row_past_a_run_of_its_twins_costs_one_move(
+    monkeypatch: pytest.MonkeyPatch, mode: DuplicateAdds
+) -> None:
+    # Which row of a repeated track fills which position is free — they are
+    # interchangeable — but it decides how much has to MOVE. Filling the
+    # positions from the rows in the order Plex already holds them leaves three
+    # identical rows exactly where they are and moves the odd one out; pairing
+    # them the other way round reverses that run and costs a move per row. The
+    # unique path pays this same minimum, and a playlist with duplicates must
+    # not pay more just for having them.
+    tracks = {key: FakeTrack(key, [f"/m/{key}"]) for key in (1, 2)}
+    server = FakeServer(list(tracks.values()), duplicates=mode)
+    rows = [tracks[1], tracks[1], tracks[1], tracks[2]]
+    existing = _marked(FakePlaylist("Mix", rows, 700, duplicates=mode))
+    server._playlists.append(existing)
+    _patch(monkeypatch, server)
+    state = sync.sync_playlist(
+        CONFIG, "Mix", [_p("/m/2"), _p("/m/1"), _p("/m/1"), _p("/m/1")], playlist_id="p1"
+    )
+    assert state.status == "ok"
+    assert existing.live_keys() == [2, 1, 1, 1]
+    assert existing.queries == ["PUT /playlists/700/items/4/move"]  # one row, to the front
+
+
+def test_the_unique_key_path_still_reconciles_through_plexapi_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # INVARIANT: the unique-key path is the one proven against the owner's live
+    # server, and the duplicate work must not have moved it a millimetre. It
+    # still costs one addItems, one removeItems, one reload and one moveItem, in
+    # that order, and issues no row-precise request at all — those exist for the
+    # rows plexapi cannot name, and a unique playlist has none.
+    tracks = [FakeTrack(key, [f"/m/{key}"]) for key in (1, 2, 3, 4)]
+    server = FakeServer(tracks)
+    existing = _marked(server.createPlaylist("Mix", items=tracks[:3]))  # 1,2,3
+    _patch(monkeypatch, server)
+    state = sync.sync_playlist(
+        CONFIG, "Mix", [_p("/m/3"), _p("/m/4"), _p("/m/1")], playlist_id="p1"
+    )
+    assert state.status == "ok"
+    assert existing.live_keys() == [3, 4, 1]
+    assert existing.calls == ["addItems", "removeItems", "reload", "moveItem"]
+    assert existing.queries == []
+
+
+def test_a_collapsed_duplicate_is_re_reported_and_re_asked_every_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The second sync of the owner's playlist, and every one after it. It must
+    # not settle into reporting "ok" over a copy that is two rows short, and it
+    # must not give up asking either — a PMS that starts honouring duplicates
+    # fixes itself on the next sync. The cost of asking is ONE add: the first
+    # refusal answers for every remaining repeat.
+    server, existing = _shape_server("dedupe")
+    _patch(monkeypatch, server)
+    specs = [_p(f"/m/{key}") for key in _OWNERS_SHAPE]
+    first = sync.sync_playlist(CONFIG, "Pop", specs, playlist_id="p1")
+    existing.calls.clear()
+    existing.queries.clear()
+    existing.add_calls.clear()
+    second = sync.sync_playlist(CONFIG, "Pop", specs, playlist_id="p1", prior=first)
+    assert second.status == "partial"
+    assert [(m.item_id, m.reason) for m in second.missing_tracks] == [
+        (m.item_id, m.reason) for m in first.missing_tracks
+    ]
+    assert existing.live_keys() == _OWNERS_DISTINCT  # not churned
+    assert existing.add_calls == [[2]]  # asked once, for the first repeat only
+    assert existing.calls == ["addItems", "reload"]
+    assert existing.queries == []  # nothing to remove, nothing to move
+
+
+def test_every_fan_out_target_reports_its_own_collapsed_duplicates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The incident hit admin AND the shared user, because each account holds its
+    # own copy and each one is reconciled on its own. Both have to come back
+    # partial with the same two rows named — a report that only rode out of the
+    # admin arm would leave the user's copy silently short.
+    tracks = {key: FakeTrack(key, [f"/m/{key}"]) for key in _OWNERS_DISTINCT}
+    server = FakeServer(list(tracks.values()), duplicates="dedupe")
+    _patch(monkeypatch, server)
+    states = sync.sync_playlist_to_targets(
+        CONFIG,
+        "Pop",
+        [_p(f"/m/{key}") for key in _OWNERS_SHAPE],
+        ["7"],
+        playlist_id="p1",
+        priors={},
+    )
+    assert {target: state.status for target, state in states.items()} == {
+        "admin": "partial",
+        "7": "partial",
+    }
+    for state in states.values():
+        assert state.missing == 2
+        assert [miss.reason for miss in state.missing_tracks] == [
+            "duplicate_collapsed",
+            "duplicate_collapsed",
+        ]
+    assert server.created[0].live_keys() == _OWNERS_DISTINCT
+    assert server.users["7"].created[0].live_keys() == _OWNERS_DISTINCT
 
 
 def test_smart_playlist_is_reported_failed_not_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1232,20 +1512,28 @@ def test_reordering_costs_exactly_the_rows_that_moved(
     assert existing.calls.count("moveItem") == moves
 
 
-def test_reconcile_lands_on_the_desired_rows_for_arbitrary_shapes() -> None:
+@pytest.mark.parametrize("mode", ["honour", "dedupe"])
+def test_reconcile_lands_on_the_desired_rows_for_arbitrary_shapes(mode: DuplicateAdds) -> None:
     # Property sweep over add/remove/reorder/duplicate shapes at once: whatever
     # the playlist holds and whatever is wanted, the rows end up EXACTLY the
-    # desired multiset in the desired order. Seeded, so a failure is replayable.
+    # desired list minus what the reconcile SAID it could not place — which ties
+    # the report to the state on every shape, in both directions. A reconcile
+    # that dropped a row silently, or claimed a collapse it did not need, fails
+    # here. Seeded, so a failure is replayable.
     rng = random.Random(1234)
     pool = [FakeTrack(key, [f"/m/{key}"]) for key in range(1, 9)]
     for _ in range(300):
         current = [rng.choice(pool) for _ in range(rng.randrange(0, 7))]
         desired = [rng.choice(pool) for _ in range(rng.randrange(1, 7))]
-        playlist = FakePlaylist("Mix", current, 500)
-        sync._reconcile_items(playlist, desired)
-        expected = [track.ratingKey for track in desired]
+        playlist = FakePlaylist("Mix", current, 500, duplicates=mode)
+        collapsed = sync._reconcile_items(playlist, desired)
+        dropped = set(collapsed)
+        expected = [t.ratingKey for i, t in enumerate(desired) if i not in dropped]
         assert playlist.live_keys() == expected, f"{[t.ratingKey for t in current]} -> {expected}"
         assert all(len(set(keys)) == len(keys) for keys in playlist.add_calls)
+        # A server that holds duplicates never has one collapsed on it, so the
+        # dedupe arm is the only one that may report anything at all.
+        assert mode == "dedupe" or collapsed == []
 
 
 def test_no_plex_call_ever_carries_the_same_key_twice(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1301,44 +1589,37 @@ def test_a_server_that_silently_drops_an_add_fails_loudly(
 
 
 class _SwallowsAdds(FakePlaylist):
-    """A PMS that answers the ``addItems`` PUT with 200 and changes nothing.
-
-    The one failure the duplicate path cannot survive: it appends the desired
-    rows and then removes ALL the old ones, so an add that quietly did nothing
-    leaves the playlist empty.
-    """
+    """A PMS that answers the ``addItems`` PUT with 200 and changes nothing."""
 
     def addItems(self, items: Sequence[FakeItem] | FakeItem) -> FakePlaylist:
         self.calls.append("addItems")
         return self
 
 
+@pytest.mark.parametrize("mode", ["honour", "dedupe"])
 def test_a_dropped_add_on_the_duplicate_path_removes_nothing_and_fails_loudly(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, mode: DuplicateAdds
 ) -> None:
-    # The duplicate path deletes every old row, so it must confirm the appends
-    # landed BEFORE it removes anything: otherwise a silently ignored add empties
-    # the playlist and the sync still reports "ok".
-    a, b = FakeTrack(1, ["/m/a"]), FakeTrack(2, ["/m/b"])
-    server = FakeServer([a, b])
-    existing = _marked(_SwallowsAdds("Mix", [a, a, b], 500))  # 1,1,2
+    # The never-destroy rule, on the path that has rows to destroy: this shape
+    # needs a track ADDED (key 3) and two surplus rows REMOVED, and an add Plex
+    # quietly ignored must stop the removals dead. Confirm-then-remove is the
+    # only ordering that survives it; the other one strips rows off a playlist
+    # that never got its replacement and calls the sync ok.
+    a, b, c = FakeTrack(1, ["/m/a"]), FakeTrack(2, ["/m/b"]), FakeTrack(3, ["/m/c"])
+    server = FakeServer([a, b, c], duplicates=mode)
+    existing = _marked(_SwallowsAdds("Mix", [a, a, b], 500, duplicates=mode))  # 1,1,2
     server._playlists.append(existing)
     _patch(monkeypatch, server)
-    specs = [_p("/m/b"), _p("/m/a"), _p("/m/b")]
+    specs = [_p("/m/c"), _p("/m/b"), _p("/m/c")]
     with pytest.raises(PlexConnectionError) as err:
         sync.sync_playlist(CONFIG, "Mix", specs, playlist_id="p1")
     assert "Plex did not apply the playlist changes." in str(err.value)
     assert existing.live_keys() == [1, 1, 2]  # untouched — nothing was removed
-    assert "removeItems" not in existing.calls
+    assert existing.queries == []  # not one row request was issued
 
 
 class _PrependsAdds(FakePlaylist):
-    """A PMS that honours every add but puts the new rows at the FRONT.
-
-    Complete, so a multiset check would pass — but the duplicate path then
-    removes the FIRST row per key, which is now a NEW row, and the old rows
-    survive. Placement has to be verified, not just membership.
-    """
+    """A PMS that honours every add but puts the new row at the FRONT."""
 
     def addItems(self, items: Sequence[FakeItem] | FakeItem) -> FakePlaylist:
         self.calls.append("addItems")
@@ -1349,19 +1630,116 @@ class _PrependsAdds(FakePlaylist):
         return self
 
 
-def test_complete_but_misplaced_adds_on_the_duplicate_path_fail_loudly(
+def test_a_misplaced_add_is_moved_into_place_rather_than_failing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Where a server PUTS an added row is its business: rows are placed by their
+    # playlistItemID afterwards, so an append that landed at the front costs one
+    # move and nothing else. (The strategy this replaced could not survive it —
+    # it removed the first row per key, which would have been the new one.)
     a, b = FakeTrack(1, ["/m/a"]), FakeTrack(2, ["/m/b"])
     server = FakeServer([a, b])
     existing = _marked(_PrependsAdds("Mix", [a, a, b], 500))  # 1,1,2
     server._playlists.append(existing)
     _patch(monkeypatch, server)
-    specs = [_p("/m/b"), _p("/m/a"), _p("/m/b")]
+    state = sync.sync_playlist(
+        CONFIG, "Mix", [_p("/m/a"), _p("/m/b"), _p("/m/b")], playlist_id="p1"
+    )
+    assert state.status == "ok"
+    assert existing.live_keys() == [1, 2, 2]
+
+
+class _AddsTwice(FakePlaylist):
+    """A PMS that answers ONE add by making two rows.
+
+    The bonus row is appended directly rather than through a second
+    ``addItems``, so ``add_calls`` still counts what production SENT.
+    """
+
+    def addItems(self, items: Sequence[FakeItem] | FakeItem) -> FakePlaylist:
+        super().addItems(items)
+        for track in self._as_list(items):
+            self._append(track)
+        return self
+
+
+def test_an_add_that_lands_more_than_asked_for_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The repeat probe reads Plex's answer off the row count, so it has to rule
+    # out the third answer: not "honoured" (+1) and not "collapsed" (+0) but
+    # something else — a server that doubled the row, or another client writing
+    # to the same playlist. Reading only "did it grow?" would take this for a
+    # yes and keep writing to a playlist that is doing something we don't
+    # understand, which is why the giveaway is the SECOND repeat never being
+    # asked for: this stops at the first answer it cannot read.
+    a, b = FakeTrack(1, ["/m/a"]), FakeTrack(2, ["/m/b"])
+    server = FakeServer([a, b])
+    existing = _marked(_AddsTwice("Mix", [a, b], 500))
+    server._playlists.append(existing)
+    _patch(monkeypatch, server)
+    specs = [_p("/m/a"), _p("/m/a"), _p("/m/b"), _p("/m/b")]
     with pytest.raises(PlexConnectionError) as err:
         sync.sync_playlist(CONFIG, "Mix", specs, playlist_id="p1")
     assert "Plex did not apply the playlist changes." in str(err.value)
-    assert "removeItems" not in existing.calls  # refused before stripping the wrong rows
+    assert existing.add_calls == [[1]]  # the second repeat was never asked for
+    assert existing.queries == []  # and not one row was touched
+
+
+class _IgnoresDeletes(FakePlaylist):
+    """A PMS that answers the row DELETE with 200 and keeps the row."""
+
+    def _apply_delete_row(self, row_id: int) -> None:
+        return None
+
+
+def test_a_server_that_ignores_the_removals_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A removal Plex quietly refused leaves a row nobody asked for, and the copy
+    # is then not the playlist. The ordering pass counts the rows before it
+    # touches them, so the sync stops on the DELETE that did not take — rather
+    # than reordering a playlist it already knows is wrong and finding out at
+    # the end.
+    a, b = FakeTrack(1, ["/m/a"]), FakeTrack(2, ["/m/b"])
+    server = FakeServer([a, b])
+    existing = _marked(_IgnoresDeletes("Mix", [b, a, a], 500))  # 2,1,1
+    server._playlists.append(existing)
+    _patch(monkeypatch, server)
+    specs = [_p("/m/a"), _p("/m/b")]  # one 'a' too many on the server
+    with pytest.raises(PlexConnectionError) as err:
+        sync.sync_playlist(CONFIG, "Mix", specs, playlist_id="p1")
+    assert "Plex did not apply the playlist changes." in str(err.value)
+    assert existing.live_keys() == [2, 1, 1]
+    assert existing.queries == ["DELETE /playlists/500/items/3"]  # asked, refused, stopped
+
+
+class _IgnoresMoves(FakePlaylist):
+    """A PMS that answers the move PUT with 200 and reorders nothing."""
+
+    def _apply_move_row(self, row_id: int, after_row_id: int | None) -> None:
+        return None
+
+
+def test_a_server_that_ignores_the_moves_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The duplicate path holds the whole desired ORDER, not just its contents:
+    # every row is right and in the wrong place is still not what the user
+    # asked for. Only the closing reload can tell — the moves themselves are
+    # answered 200 — so dropping it would report "ok" over a playlist Plex
+    # never reordered.
+    a, b = FakeTrack(1, ["/m/a"]), FakeTrack(2, ["/m/b"])
+    server = FakeServer([a, b])
+    existing = _marked(_IgnoresMoves("Mix", [a, a, b], 500))  # 1,1,2
+    server._playlists.append(existing)
+    _patch(monkeypatch, server)
+    specs = [_p("/m/b"), _p("/m/a"), _p("/m/a")]
+    with pytest.raises(PlexConnectionError) as err:
+        sync.sync_playlist(CONFIG, "Mix", specs, playlist_id="p1")
+    assert "Plex did not apply the playlist changes." in str(err.value)
+    assert existing.live_keys() == [1, 1, 2]  # every desired row is there...
+    assert existing.queries  # ...the moves were issued and simply did nothing
 
 
 class _AutoReloadTrap:

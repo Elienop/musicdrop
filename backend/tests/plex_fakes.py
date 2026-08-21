@@ -40,6 +40,20 @@ STRICTER branch: a fake that forgives more than Plex does is worse than no fake.
   ratingKey twice in one such uri is unknowable from the client, so the fake
   records the per-call key lists (``add_calls``, ``FakeServer.create_calls``)
   and production is expected never to send a repeat inside one call.
+- Whether a server holds one track on two rows AT ALL is the same unknown, one
+  step further out: an ``addItems`` naming a key the playlist already has may be
+  honoured or silently collapsed, and PMS answers 200 either way. The fake models
+  BOTH as an explicit ``duplicates`` mode ("honour" / "dedupe") rather than
+  picking one, so every duplicate-path test runs under each. Seeding rows through
+  the ``FakePlaylist`` constructor is server STATE, not a request, and is never
+  deduped — that is how a copy that already holds duplicates is stood up.
+- Row-precise requests: ``DELETE {playlist.key}/items/{playlistItemID}`` and
+  ``PUT {playlist.key}/items/{playlistItemID}/move[?after={playlistItemID}]``,
+  reached through ``playlist._server.query(key, method=server._session.<verb>)``
+  — exactly the URLs plexapi's own ``removeItems``/``moveItem`` build
+  (``playlist.py:285-317``), with the id chosen by the caller instead of by a
+  first-ratingKey-match. They act on SERVER rows and, like every other mutator,
+  leave the client's ``items()`` cache stale.
 - Smart playlists raise BadRequest on all three item mutators; a DELETED
   playlist's key 404s, so every mutator raises NotFound.
 - ``createPlaylist`` matches ``PlexServer.createPlaylist(title, section=None,
@@ -57,9 +71,10 @@ here — a fake whose ``removeItems`` clears everything lets a wrong diff pass.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, TypeVar
 
 
 class FakeNotFound(Exception):
@@ -68,6 +83,14 @@ class FakeNotFound(Exception):
 
 class FakeBadRequest(Exception):
     """Stands in for ``plexapi.exceptions.BadRequest``."""
+
+
+# What a server does with an ``addItems`` naming a track the playlist already
+# holds (or naming one twice inside a single comma-joined uri): keep both rows,
+# or keep one. The client cannot tell which server it is talking to — the
+# response is 200 either way — so the fake refuses to choose and the tests run
+# both ways.
+DuplicateAdds = Literal["honour", "dedupe"]
 
 
 class _PlexIdentity:
@@ -182,9 +205,107 @@ class _KeyAllocator:
         return key
 
 
+_ItemT = TypeVar("_ItemT", bound=_PlexIdentity)
+
+
+def _appended(present: list[int], items: Sequence[_ItemT], mode: DuplicateAdds) -> list[_ItemT]:
+    """The items a server in ``mode`` really appends to rows already holding
+    ``present``.
+
+    ``honour`` takes the uri as sent, repeats and all. ``dedupe`` keeps at most
+    one row per key, which covers BOTH ways one call can name a key twice: a key
+    the playlist already holds, and a key repeated inside the single comma-joined
+    uri (the later items are weighed against the rows the earlier ones just
+    made). Neither branch touches what was SENT — ``add_calls`` records that.
+    """
+    if mode == "honour":
+        return list(items)
+    keys = set(present)
+    kept: list[_ItemT] = []
+    for item in items:
+        if item.ratingKey in keys:
+            continue
+        keys.add(item.ratingKey)
+        kept.append(item)
+    return kept
+
+
+class _Verb:
+    """One HTTP verb as ``requests.Session`` exposes it.
+
+    plexapi never names a verb as a string: it picks the bound session method and
+    hands it to ``query`` (``server.py:738-748``), which is the shape production
+    has to reach for too. The fake's verbs are inert markers — its ``query``
+    dispatches on which one it was given — but they carry ``__name__`` because
+    plexapi's real ``query`` logs it (``server.py:746``), so anything that works
+    here works there.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.__name__ = name
+
+
+class _FakeSession:
+    """``PlexServer._session`` — the private attribute plexapi reads its own
+    verbs off, and the only way to name one."""
+
+    def __init__(self) -> None:
+        self.get = _Verb("get")
+        self.put = _Verb("put")
+        self.delete = _Verb("delete")
+
+
+# The two row-precise playlist requests, split so a PUT to the delete URL (or the
+# reverse) is refused rather than quietly doing the other thing.
+_DELETE_ROW = re.compile(r"^/items/(\d+)$")
+_MOVE_ROW = re.compile(r"^/items/(\d+)/move(?:\?after=(\d+))?$")
+
+
+class _PlaylistServer:
+    """The sliver of ``PlexServer`` a row-precise request goes through, bound to
+    one playlist.
+
+    Production reaches it as ``playlist._server`` and uses exactly two things —
+    ``query`` and ``_session`` — which is all plexapi's own ``removeItems`` and
+    ``moveItem`` use. Binding it per playlist keeps the rows next to the code
+    that mutates them; a real server would route by the ratingKey in the URL, so
+    a request for a DIFFERENT playlist is refused here rather than misapplied.
+    """
+
+    def __init__(self, playlist: FakePlaylist) -> None:
+        self._playlist = playlist
+        self._session = _FakeSession()
+
+    def query(self, key: str, method: Any = None) -> None:
+        playlist = self._playlist
+        verb = getattr(method, "__name__", None)
+        if verb not in ("put", "delete"):
+            raise NotImplementedError(f"the fake models row PUT/DELETE only, not {method!r}")
+        if not key.startswith(f"{playlist.key}/"):
+            raise NotImplementedError(f"{key} is not a request for playlist {playlist.ratingKey}")
+        path = key[len(playlist.key) :]
+        deleting, moving = _DELETE_ROW.match(path), _MOVE_ROW.match(path)
+        if verb == "delete" and deleting is not None:
+            playlist.queries.append(f"DELETE {key}")
+            playlist._apply_delete_row(int(deleting.group(1)))
+            return
+        if verb == "put" and moving is not None:
+            playlist.queries.append(f"PUT {key}")
+            after = moving.group(2)
+            playlist._apply_move_row(int(moving.group(1)), None if after is None else int(after))
+            return
+        raise NotImplementedError(f"the fake models no {verb.upper()} on {path}")
+
+
 class FakePlaylist:
     def __init__(
-        self, title: str, items: list[FakeTrack], rating_key: int, *, smart: bool = False
+        self,
+        title: str,
+        items: list[FakeTrack],
+        rating_key: int,
+        *,
+        smart: bool = False,
+        duplicates: DuplicateAdds = "honour",
     ) -> None:
         self.title = title
         self.ratingKey = rating_key
@@ -203,19 +324,41 @@ class FakePlaylist:
         # single comma-joined uri, where PMS's behaviour is unknown — tests assert
         # production never does it.
         self.add_calls: list[list[int]] = []
+        # Row-precise requests, verb and URL, in the order they were issued. They
+        # go through `_server.query`, not through a method on this object, so
+        # they stay out of `calls`.
+        self.queries: list[str] = []
+        self._server = _PlaylistServer(self)
+        self._duplicates = duplicates
         self._live_title = title
         self._live_summary = ""
         self._live_smart = smart
         self._next_row_id = 1
         self._rows: list[_Row] = []
+        # Seeded rows are server STATE, not an add request: a copy that already
+        # holds a track twice (an earlier PMS, a hand-made playlist, a prior sync)
+        # has to be expressible under every duplicates mode.
         for track in items:
             self._append(track)
         # What items() returns until reload(): None = not fetched yet.
         self._cache: list[FakePlaylistItem] | None = None
 
+    @property
+    def key(self) -> str:
+        """``/playlists/{ratingKey}`` — plexapi strips the listing key's
+        ``/items`` suffix (``playlist.py:62``), and every row-precise URL is
+        built by appending to what is left."""
+        return f"/playlists/{self.ratingKey}"
+
     # -- server truth (test-only helpers) ------------------------------------
     def live_keys(self) -> list[int]:
         return [row.track.ratingKey for row in self._rows]
+
+    def live_row_ids(self) -> list[int]:
+        """The playlistItemIDs in server order. Two rows of one track are
+        indistinguishable in ``live_keys``, so anything about WHICH row moved or
+        went has to be read here."""
+        return [row.row_id for row in self._rows]
 
     def live_title(self) -> str:
         return self._live_title
@@ -311,7 +454,7 @@ class FakePlaylist:
         self.calls.append("addItems")
         added = self._as_list(items)
         self.add_calls.append([track.ratingKey for track in added])
-        for track in added:
+        for track in _appended(self.live_keys(), added, self._duplicates):
             self._append(track)
         return self
 
@@ -351,6 +494,52 @@ class FakePlaylist:
         assert anchor is not None  # checked above, and the pop cannot have removed it
         self._rows.insert(anchor + 1, row)
         return self
+
+    # -- row-precise endpoints (reached via _server.query, never called directly) --
+    def _row_index(self, row_id: int) -> int:
+        position = self._live_index(row_id)
+        if position is None:
+            raise FakeNotFound(f"(404) not_found; playlist item {row_id} is already gone")
+        return position
+
+    def _apply_delete_row(self, row_id: int) -> None:
+        """``DELETE {key}/items/{row_id}``: drop THAT row, whatever else shares
+        its ratingKey.
+
+        The smart guard stands in for PMS refusing to edit a smart playlist's
+        rows — the stricter branch, since production never reaches here on one
+        (a smart copy is reported failed long before the reconcile). Like every
+        other mutator this leaves the client's item cache stale.
+        """
+        self._guard_smart()
+        self._guard_deleted()
+        del self._rows[self._row_index(row_id)]
+
+    def _apply_move_row(self, row_id: int, after_row_id: int | None) -> None:
+        """``PUT {key}/items/{row_id}/move[?after={after_row_id}]``: place THAT
+        row, no ``after`` meaning the front.
+
+        Both ids are resolved before anything moves, as ``moveItem`` resolves
+        both of its arguments first; a row after ITSELF is refused for the same
+        reason it is there — PMS behaviour is undefined and production must not
+        lean on it.
+        """
+        self._guard_smart()
+        self._guard_deleted()
+        if after_row_id == row_id:
+            raise FakeBadRequest(
+                "move a row after itself: PMS behaviour is undefined; the fake refuses it"
+            )
+        position = self._row_index(row_id)
+        if after_row_id is not None:
+            self._row_index(after_row_id)
+        row = self._rows.pop(position)
+        if after_row_id is None:
+            self._rows.insert(0, row)
+            return
+        anchor = self._live_index(after_row_id)
+        assert anchor is not None  # checked above, and the pop cannot have removed it
+        self._rows.insert(anchor + 1, row)
 
     def editTitle(self, title: str, locked: bool = True) -> FakePlaylist:
         self._guard_deleted()
@@ -413,6 +602,7 @@ class FakeServer:
         *,
         section_title: str = "Music",
         sections: list[FakeSection] | None = None,
+        duplicates: DuplicateAdds = "honour",
         _library: _Library | None = None,
         _keys: _KeyAllocator | None = None,
     ) -> None:
@@ -422,6 +612,7 @@ class FakeServer:
             list(sections) if sections is not None else [FakeSection(tracks, title=section_title)]
         )
         self._tracks = tracks
+        self._duplicates = duplicates
         self._keys = _keys or _KeyAllocator()
         self.created: list[FakePlaylist] = []
         # ratingKeys per createPlaylist call — same one-uri hazard as add_calls.
@@ -450,7 +641,14 @@ class FakeServer:
         if not items:
             raise FakeBadRequest("Must include items to add when creating new playlist.")
         self.create_calls.append([track.ratingKey for track in items])
-        pl = FakePlaylist(title, list(items), self._keys.take())
+        # One create uri carries the same hazard one addItems uri does, so a
+        # deduping server keeps the first row per key here too.
+        pl = FakePlaylist(
+            title,
+            _appended([], list(items), self._duplicates),
+            self._keys.take(),
+            duplicates=self._duplicates,
+        )
         self.created.append(pl)
         self._playlists.append(pl)
         return pl
@@ -458,7 +656,13 @@ class FakeServer:
     def switchUser(self, uid: str) -> FakeServer:
         # Real plexapi returns a NEW PlexServer per call (server.py:269); the fake
         # keeps one per uid so a test can reach the playlists it created. The
-        # library and the ratingKey space are the SERVER's, so both are shared.
+        # library, the ratingKey space and how the server treats a duplicate add
+        # are the SERVER's, so all three are shared.
         if uid not in self.users:
-            self.users[uid] = FakeServer(self._tracks, _library=self.library, _keys=self._keys)
+            self.users[uid] = FakeServer(
+                self._tracks,
+                duplicates=self._duplicates,
+                _library=self.library,
+                _keys=self._keys,
+            )
         return self.users[uid]

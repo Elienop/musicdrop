@@ -83,13 +83,41 @@ type PlexTargetState = PlaylistDetail["plex"][string];
 type PlexMissReason = PlexTargetState["missing_tracks"][number]["reason"];
 
 /** The tooltip for each miss reason — they're different remedies (nothing
- * matched at all vs. several matched and we refuse to guess), so each row says
- * which one it hit rather than a generic "not found". */
+ * matched at all vs. several matched and we refuse to guess vs. a repeat the
+ * Plex copy holds once), so each row says which one it hit rather than a
+ * generic "not found".
+ *
+ * `duplicate_collapsed` says only what happened, never why: the server answers
+ * 200 whether it refused the second row or silently swallowed it, so no client
+ * can tell those apart and neither may be named. What it CAN state is the
+ * outcome (this playlist lists the track more than once; the Plex copy keeps
+ * one row) and the one thing that changes it — which is not a re-sync, so that
+ * entry ends on the remedy that actually works. */
 const MISS_TITLES: Record<PlexMissReason, string> = {
   not_found:
     "Plex has no track with this file, and nothing matched by artist and title. Check the file is in your Plex library, then sync again.",
   ambiguous:
     "Several Plex tracks share this artist and title, and none has this file, so MusicDrop won't guess which one. Sort out the copies in Plex, then sync again.",
+  duplicate_collapsed:
+    "This playlist lists this track more than once, and the Plex copy keeps a single row for it. MusicDrop can't make Plex hold a second row; remove the repeat from this playlist to stop it being reported.",
+};
+
+/** The row badge for each miss reason: the words a sighted user reads on the
+ * chip AND the phrase assistive tech is handed (the sr-only carrier below).
+ *
+ * Two of the three are absences and share one label. The third is NOT: that
+ * track is on Plex and playable, so labelling it "Not in Plex" would be a plain
+ * falsehood on a row the user can play — and a badge caught lying once is a
+ * badge nobody reads on the rows where it is true.
+ *
+ * The label speaks about the TRACK, not the row, because both rows of a doubled
+ * item are marked (the misses are keyed by library item) — including the one
+ * whose copy is the row Plex kept. "In Plex once" is the state of the track,
+ * so it reads correctly on either. */
+const MISS_BADGES: Record<PlexMissReason, string> = {
+  not_found: "Not in Plex",
+  ambiguous: "Not in Plex",
+  duplicate_collapsed: "In Plex once",
 };
 
 /** The recorded target whose copy of the shared resolution is trustworthy: the
@@ -246,6 +274,37 @@ function isAfter(a: string, b: string): boolean {
   return new Date(a).getTime() > new Date(b).getTime();
 }
 
+/** How many of the carried miss identities are collapsed duplicates. They are
+ * misses — a row of this playlist has no counterpart row on the Plex copy — but
+ * they are not absences, so they are counted apart from the "not in Plex"
+ * total rather than folded into it. */
+function collapsedCount(misses: PlexTargetState["missing_tracks"]): number {
+  return misses.filter((miss) => miss.reason === "duplicate_collapsed").length;
+}
+
+/** The `partial` label when the carried identities account for every miss, so
+ * the split between the two kinds is exact.
+ *
+ * They are named apart because they are different news: "not in Plex" is a
+ * track the Plex library hasn't got, while a collapsed duplicate is a track it
+ * HAS — a sync whose only misses are repeats is not "2 not in Plex", which
+ * would be the same falsehood the row badge refuses to tell, one level up.
+ *
+ * A clause is dropped when its count is zero; a state with neither keeps the
+ * bare count wording it has always had. */
+function partialLabel(absent: number, collapsed: number): string {
+  const clauses: string[] = [];
+  if (absent > 0 || collapsed === 0) {
+    clauses.push(`${absent} not in Plex`);
+  }
+  if (collapsed > 0) {
+    clauses.push(
+      `${collapsed} duplicate ${collapsed === 1 ? "row" : "rows"}; Plex keeps one of each`,
+    );
+  }
+  return clauses.join("; ");
+}
+
 /** The one-line Plex sync status for one target (admin or a fan-out user).
  * "Out of date" wins when the playlist changed after this target's last push.
  * An absent/unknown state falls back to `notSyncedLabel` (e.g. a freshly-checked
@@ -266,19 +325,33 @@ function syncStatus(
       return { label: "Synced", tone: "success" };
     case "partial": {
       const marked = state.missing_tracks.length;
+      const collapsed = collapsedCount(state.missing_tracks);
       if (marked >= state.missing) {
-        return { label: `${state.missing} not in Plex`, tone: "warning" };
+        // Every miss is carried, so every reason is known: name the two kinds.
+        return {
+          label: partialLabel(Math.max(state.missing - collapsed, 0), collapsed),
+          tone: "warning",
+        };
       }
       // Fewer carried identities than misses — the server caps the list
       // (MISSING_TRACKS_CAP). Only those rows can wear a badge, so say which
       // ones the badges cover; otherwise the unmarked remainder reads as fine.
+      // The unmarked remainder's REASONS are unknown as well, so the total
+      // can't be split here and mustn't be called absent: it takes the wording
+      // that is true of both kinds instead ("not on the Plex copy" covers a
+      // track Plex hasn't got AND a repeat of one it holds once). Guessing
+      // from the visible slice would be worse than vague — the server lists
+      // collapsed duplicates after the absences, so truncation hides them
+      // first and the slice reads as all-absent precisely when it isn't.
       // `marked === 0` can't come from the cap (it truncates to 200, never 0):
-      // it means the state predates the identities, which one re-sync fixes.
+      // it means the state predates the identities, which one re-sync fixes —
+      // and a record that predates them predates collapsed duplicates too, so
+      // that arm alone can still say plainly that they aren't in Plex.
       return {
         label:
           marked === 0
             ? `${state.missing} not in Plex; re-sync to see which`
-            : `${state.missing} not in Plex; first ${marked} marked`,
+            : `${state.missing} not on the Plex copy; first ${marked} marked`,
         tone: "warning",
       };
     }
@@ -1283,11 +1356,18 @@ const PlaylistTrackRow = memo(function PlaylistTrackRow({
 
   // Offer the re-point action on any row that is not cleanly playable AND
   // placed: a pending import, a row whose beets item is gone, or a resolved row
-  // the last Plex sync could not put on the server. A healthy row keeps no
+  // the last Plex sync could not FIND on the server. A healthy row keeps no
   // action - one identical button per row down a 61-track playlist is noise.
   // (`!track.available` already covers pending today; the explicit term keeps
   // the three states legible if `_pending_row` ever changes.)
-  const canMatch = track.pending || !track.available || plexMiss !== undefined;
+  // A collapsed duplicate is excluded on purpose: that row matched, and its
+  // track is on Plex, so re-pointing it at some other track fixes nothing.
+  // Removing the repeat is the only thing that changes the report, and every
+  // row already offers Remove.
+  const canMatch =
+    track.pending ||
+    !track.available ||
+    (plexMiss !== undefined && plexMiss !== "duplicate_collapsed");
   return (
     <TableRow className={track.available ? undefined : "bg-muted/40"}>
       <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
@@ -1321,23 +1401,27 @@ const PlaylistTrackRow = memo(function PlaylistTrackRow({
               )
             )}
             {/* The row is in the library but the last sync couldn't put it on
-                Plex (the "N not in Plex" count says how many, this says WHICH
-                and why). The sr-only phrase is the announced carrier — a Badge
-                renders a generic <span>, where `title`/`aria-label` are not
-                reliably announced, so the badge is hidden from the tree and
-                keeps `title` for sighted hover (the album page's idiom).
-                Skipped when the beets item is gone: "not in Plex" is noise on
-                top of "unavailable". */}
+                the Plex copy as this playlist asks (the status count says how
+                many, this says WHICH and what happened). The label comes from
+                the reason, because the reasons are not one story: two are
+                absences, one is a track Plex HAS. The sr-only phrase is the
+                announced carrier — a Badge renders a generic <span>, where
+                `title`/`aria-label` are not reliably announced, so the badge is
+                hidden from the tree and keeps `title` for sighted hover (the
+                album page's idiom). Skipped when the beets item is gone: a Plex
+                note is noise on top of "unavailable". */}
             {plexMiss && track.available && (
               <>
-                <span className="sr-only">Not in Plex: {MISS_TITLES[plexMiss]}</span>
+                <span className="sr-only">
+                  {MISS_BADGES[plexMiss]}: {MISS_TITLES[plexMiss]}
+                </span>
                 <Badge
                   variant="outline"
                   aria-hidden="true"
                   className="border-warning text-warning shrink-0 text-xs font-normal"
                   title={MISS_TITLES[plexMiss]}
                 >
-                  Not in Plex
+                  {MISS_BADGES[plexMiss]}
                 </Badge>
               </>
             )}

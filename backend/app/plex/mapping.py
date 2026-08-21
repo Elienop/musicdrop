@@ -40,8 +40,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from app.models.plex import PlexMatchCounts, PlexMatchMethod, PlexMissingTrack
+from app.models.plex import PlexMatchCounts, PlexMatchMethod, PlexMissingTrack, PlexMissReason
 
+# Why THIS module gave up on a row. The wire's ``PlexMissReason`` is wider: the
+# sync reports one more kind of miss, about a track that resolved perfectly well.
 MissReason = Literal["not_found", "ambiguous"]
 
 
@@ -66,15 +68,22 @@ class PlexTrackSpec:
 
 @dataclass(frozen=True)
 class PlexMatch:
-    """One resolved Plex Track and the rung that resolved it.
+    """One resolved Plex Track, the rung that resolved it, and the row it came
+    from.
 
     The rung travels WITH the track because it is evidence about the sync, not
     about the track: "22 by path, 6 by album+length" reads as healthy, while the
     same 28 tracks all matched by a fallback means the paths are wrong and only
-    luck is holding the sync together."""
+    luck is holding the sync together.
+
+    The ``spec`` travels with it for a narrower reason: a Plex Track knows
+    nothing about the playlist row it was resolved FOR, and the sync has to be
+    able to name the row when Plex will not hold a track twice. It stays in this
+    dataclass — the wire carries the identity, never the linkage."""
 
     track: Any
     method: PlexMatchMethod
+    spec: PlexTrackSpec
 
 
 @dataclass(frozen=True)
@@ -271,7 +280,7 @@ def _free(candidates: Iterable[Any], spec: PlexTrackSpec, claimed: dict[Any, int
 
     Claimed by the SAME item is not a collision but a playlist that holds one
     library track twice — a legitimate thing to do, and one the sync goes out of
-    its way to support (``sync._unique_key_chunks``), so it must keep resolving
+    its way to support (``sync._reconcile_by_row``), so it must keep resolving
     twice.
     """
     return [c for c in candidates if claimed.get(c.ratingKey, spec.item_id) == spec.item_id]
@@ -375,16 +384,32 @@ def _path_claims(by_path: dict[str, Any], specs: list[PlexTrackSpec]) -> dict[An
     return claims
 
 
+def missing_from_spec(spec: PlexTrackSpec, reason: PlexMissReason) -> PlexMissingTrack:
+    """``spec``'s identity as a reported miss.
+
+    Shared with the sync, which reports a resolved track Plex would not hold a
+    second time through this same shape — one place decides which of a spec's
+    fields the UI needs in order to point at the row.
+    """
+    return PlexMissingTrack(
+        item_id=spec.item_id,
+        title=spec.title,
+        albumartist=spec.albumartist,
+        album=spec.album,
+        reason=reason,
+    )
+
+
 def _resolve_one(
     indexes: _Indexes, spec: PlexTrackSpec, claimed: dict[Any, int]
 ) -> tuple[PlexMatch | None, MissReason | None]:
     """``spec`` against each rung in turn — path, album-artist, album+length."""
     track = indexes.by_path.get(spec.path)
     if track is not None:
-        return PlexMatch(track=track, method="path"), None
+        return PlexMatch(track=track, method="path", spec=spec), None
     track, reason = _meta_match(indexes.by_artist_title, spec, claimed)
     if track is not None:
-        return PlexMatch(track=track, method="artist_title"), None
+        return PlexMatch(track=track, method="artist_title", spec=spec), None
     if reason == "ambiguous":
         # Only a CLEAN miss drops to the album key. "ambiguous" means the
         # album-artist index found this track and could not tell its copies
@@ -396,7 +421,7 @@ def _resolve_one(
         return None, reason
     track, reason = _album_match(indexes.by_album_title, spec, claimed)
     if track is not None:
-        return PlexMatch(track=track, method="album_length"), None
+        return PlexMatch(track=track, method="album_length", spec=spec), None
     return None, reason
 
 
@@ -410,15 +435,7 @@ def resolve_ordered_tracks(section: Any, specs: list[PlexTrackSpec]) -> PlexReso
     for spec in specs:
         match, reason = _resolve_one(indexes, spec, claimed)
         if match is None:
-            missing.append(
-                PlexMissingTrack(
-                    item_id=spec.item_id,
-                    title=spec.title,
-                    albumartist=spec.albumartist,
-                    album=spec.album,
-                    reason=reason or "not_found",
-                )
-            )
+            missing.append(missing_from_spec(spec, reason or "not_found"))
         else:
             # First claimant wins. Today that reads the same as an assignment —
             # a fallback can't reach a claimed track at all (``_free``) and the

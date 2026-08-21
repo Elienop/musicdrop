@@ -3849,11 +3849,18 @@ export interface components {
         };
         /**
          * PlexMissingTrack
-         * @description One playlist track that did not resolve to a Plex track on the last sync.
+         * @description One playlist track the last sync could not fully place on Plex.
          *
          *     ``reason``: ``not_found`` — no Plex track at that path and no metadata
          *     candidate; ``ambiguous`` — several Plex tracks matched the metadata and
-         *     album/track-number could not single one out (never guessed).
+         *     album/track-number could not single one out (never guessed);
+         *     ``duplicate_collapsed`` — the track is on Plex and in the playlist, but this
+         *     playlist lists it more than once and Plex kept a single row.
+         *
+         *     ``item_id`` is the beets library item, so two rows for one item report under
+         *     one id — which is exactly right for the first two reasons (both rows are
+         *     missing) and is what makes the third readable: the item is there, the
+         *     second listing of it is not.
          */
         PlexMissingTrack: {
             /** Item Id */
@@ -3868,7 +3875,7 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "not_found" | "ambiguous";
+            reason: "not_found" | "ambiguous" | "duplicate_collapsed";
         };
         /**
          * PlexPlaylistInfo

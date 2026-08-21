@@ -8,6 +8,13 @@ createPlaylist rejects an empty list; smart playlists reject every mutator; a
 listing row carries no `smart` until an attribute read pays for the refetch. If a
 future edit "simplifies" the fake, these fail before a production bug can hide
 behind it.
+
+Two things here are NOT read off plexapi, because no client can read them: what
+a server does with an add naming a track the playlist already holds, and the
+exact URLs of the row-precise endpoints. The first is modelled BOTH ways behind
+`duplicates=` and pinned in each mode below; the second is pinned against the
+URLs plexapi's own removeItems/moveItem build, which is the closest thing to
+evidence there is.
 """
 
 from collections.abc import Callable
@@ -15,6 +22,7 @@ from collections.abc import Callable
 import pytest
 
 from tests.plex_fakes import (
+    DuplicateAdds,
     FakeBadRequest,
     FakeNotFound,
     FakePlaylist,
@@ -190,6 +198,164 @@ def test_per_call_item_keys_are_recorded_for_the_one_uri_hazard() -> None:
     pl.addItems([b])
     pl.addItems([a, b])
     assert pl.add_calls == [[2], [1, 2]]
+
+
+def test_honouring_server_keeps_every_row_it_was_sent() -> None:
+    # The default mode, and the one the fake had before there was a switch: an
+    # add naming a key the playlist already holds makes a SECOND row, and a key
+    # repeated inside one uri makes two.
+    a, b = _t(1), _t(2)
+    pl = FakePlaylist("Mix", [a, b], 500)
+    pl.addItems([a])
+    assert pl.live_keys() == [1, 2, 1]
+    pl.addItems([a, a])
+    assert pl.live_keys() == [1, 2, 1, 1, 1]
+
+
+def test_deduping_server_holds_one_row_per_track() -> None:
+    # The other server this app has to survive: the add is answered 200 and
+    # changes nothing, whether the key was already on a row or is repeated inside
+    # the single comma-joined uri. `add_calls` still records what was SENT — the
+    # uri is the thing production is judged on, the effect is the server's.
+    a, b, c = _t(1), _t(2), _t(3)
+    pl = FakePlaylist("Mix", [a, b], 500, duplicates="dedupe")
+    pl.addItems([a])
+    assert pl.live_keys() == [1, 2]
+    pl.addItems([c, c])
+    assert pl.live_keys() == [1, 2, 3]  # the repeat inside ONE uri collapses too
+    pl.addItems([a, _t(4)])
+    assert pl.live_keys() == [1, 2, 3, 4]  # a present key drops, a new one lands
+    assert pl.add_calls == [[1], [3, 3], [1, 4]]
+
+
+@pytest.mark.parametrize("mode", ["honour", "dedupe"])
+def test_seeded_rows_are_server_state_and_are_never_deduped(mode: DuplicateAdds) -> None:
+    # The constructor stands for rows the server ALREADY has, not for a request:
+    # a copy holding a track twice is exactly the shape the duplicate path has to
+    # reconcile, and a deduping fake that refused to hold one could never be
+    # pointed at it.
+    a = _t(1)
+    pl = FakePlaylist("Mix", [a, _t(2), a], 500, duplicates=mode)
+    assert pl.live_keys() == [1, 2, 1]
+
+
+def test_a_deduping_server_collapses_a_repeat_in_the_create_uri() -> None:
+    # createPlaylist comma-joins its items into one uri like addItems does, so it
+    # carries the same unknown — and the same two answers.
+    a, b = _t(1), _t(2)
+    honouring = FakeServer([a, b]).createPlaylist("Mix", items=[a, a, b])
+    assert honouring.live_keys() == [1, 1, 2]
+    deduping = FakeServer([a, b], duplicates="dedupe")
+    assert deduping.createPlaylist("Mix", items=[a, a, b]).live_keys() == [1, 2]
+    assert deduping.create_calls == [[1, 1, 2]]  # what was sent, not what stuck
+
+
+def test_a_created_playlist_inherits_the_servers_duplicate_behaviour() -> None:
+    # One server behaves one way; a playlist it minted must not answer adds
+    # differently from one that was seeded, or a create-path test would pass
+    # under a mode it never actually ran.
+    server = FakeServer([_t(1), _t(2)], duplicates="dedupe")
+    pl = server.createPlaylist("Mix", items=[_t(1)])
+    pl.addItems([_t(1), _t(2)])
+    assert pl.live_keys() == [1, 2]
+    assert server.switchUser("u1")._duplicates == "dedupe"  # and so does every account
+
+
+def test_a_row_is_deleted_by_its_playlist_item_id() -> None:
+    # The whole reason the raw endpoint is there: removeItems resolves a key to
+    # its FIRST row, so it cannot address the SECOND row of a duplicated track.
+    # The URL is the one plexapi's own removeItems builds (playlist.py:289-290).
+    a = _t(1)
+    pl = FakePlaylist("Mix", [a, _t(2), a], 500)
+    rows = pl.items()
+    server = pl._server
+    server.query(f"{pl.key}/items/{rows[2].playlistItemID}", method=server._session.delete)
+    assert pl.live_keys() == [1, 2]
+    assert pl.queries == ["DELETE /playlists/500/items/3"]
+    assert pl.calls == []  # it is a server call, not a method on the playlist
+    assert [row.playlistItemID for row in pl.items()] == [1, 2, 3]  # cache still stale
+
+
+def test_a_row_is_moved_by_its_playlist_item_id() -> None:
+    # Same for placement: moveItem resolves BOTH arguments by first match, so the
+    # second row of a key can neither be moved nor be moved after. The URL is the
+    # one moveItem builds (playlist.py:310-313).
+    a = _t(1)
+    pl = FakePlaylist("Mix", [a, _t(2), a], 500)
+    rows = pl.items()
+    server = pl._server
+    server.query(
+        f"{pl.key}/items/{rows[2].playlistItemID}/move?after={rows[0].playlistItemID}",
+        method=server._session.put,
+    )
+    # Read by ROW: both rows here are track 1, so the key list cannot tell
+    # "after row 1" from "to the front" — the two land the same keys.
+    assert pl.live_row_ids() == [1, 3, 2]
+    assert pl.live_keys() == [1, 1, 2]
+    server.query(f"{pl.key}/items/{rows[1].playlistItemID}/move", method=server._session.put)
+    assert pl.live_row_ids() == [2, 1, 3]  # no `after` = the front
+    assert pl.live_keys() == [2, 1, 1]
+    assert pl.queries == [
+        "PUT /playlists/500/items/3/move?after=1",
+        "PUT /playlists/500/items/2/move",
+    ]
+
+
+def test_row_requests_404_on_a_row_the_server_no_longer_has() -> None:
+    a, b = _t(1), _t(2)
+    pl = FakePlaylist("Mix", [a, b], 500)
+    server = pl._server
+    gone = pl.items()[1].playlistItemID
+    server.query(f"{pl.key}/items/{gone}", method=server._session.delete)
+    with pytest.raises(FakeNotFound):
+        server.query(f"{pl.key}/items/{gone}", method=server._session.delete)
+    with pytest.raises(FakeNotFound):
+        server.query(f"{pl.key}/items/{gone}/move", method=server._session.put)
+    with pytest.raises(FakeNotFound):  # and the ANCHOR has to be there too
+        server.query(f"{pl.key}/items/1/move?after={gone}", method=server._session.put)
+    assert pl.live_keys() == [1]  # a refused move moves nothing
+
+
+def test_moving_a_row_after_itself_is_refused_as_undefined() -> None:
+    # By key this is unavoidable on [1, 2, 1] and the fake refuses it; by ROW id
+    # it is a request production never has to make, so it stays refused rather
+    # than quietly meaning "leave it alone".
+    pl = FakePlaylist("Mix", [_t(1), _t(2)], 500)
+    server = pl._server
+    with pytest.raises(FakeBadRequest):
+        server.query(f"{pl.key}/items/1/move?after=1", method=server._session.put)
+    assert pl.live_keys() == [1, 2]
+
+
+def test_row_requests_are_refused_on_a_smart_or_deleted_playlist() -> None:
+    smart = FakePlaylist("Smart", [_t(1)], 500, smart=True)
+    with pytest.raises(FakeBadRequest):
+        smart._server.query(f"{smart.key}/items/1", method=smart._server._session.delete)
+    dead = FakePlaylist("Mix", [_t(1)], 501)
+    dead.delete()
+    with pytest.raises(FakeNotFound):
+        dead._server.query(f"{dead.key}/items/1/move", method=dead._server._session.put)
+
+
+def test_the_fake_refuses_a_request_it_does_not_model() -> None:
+    # A fake that quietly accepted an unmodelled URL, verb or session would let
+    # production ship a request no real server answers the way this test suite
+    # assumed. Each of these is a way to get the shape wrong.
+    pl = FakePlaylist("Mix", [_t(1)], 500)
+    server = pl._server
+    bad: list[Callable[[], object]] = [
+        lambda: server.query(f"{pl.key}/items/1"),  # no verb: plexapi defaults to GET
+        lambda: server.query(f"{pl.key}/items/1", method="delete"),  # a string, not the session's
+        lambda: server.query(f"{pl.key}/items/1", method=server._session.put),  # PUT on delete URL
+        lambda: server.query(f"{pl.key}/items/1/move", method=server._session.delete),
+        lambda: server.query(f"{pl.key}/items", method=server._session.delete),  # whole list
+        lambda: server.query("/playlists/999/items/1", method=server._session.delete),  # not ours
+    ]
+    for request in bad:
+        with pytest.raises(NotImplementedError):
+            request()
+    assert pl.live_keys() == [1]
+    assert pl.queries == []
 
 
 def test_server_takes_explicit_sections() -> None:

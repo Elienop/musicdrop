@@ -84,19 +84,34 @@ SyncStatus = Literal["ok", "partial", "empty", "failed", "pending"]
 MISSING_TRACKS_CAP = 200
 
 
+# Why one playlist row is not on Plex after a sync. The first two are the
+# MATCHER's verdicts about a track it could not find at all (``app/plex/mapping.py``);
+# the third is the SYNC's, and is a different kind of news — the track resolved
+# and IS in the Plex playlist, once, but the playlist lists it twice and this
+# server would not hold a second row of it (``app/plex/sync.py``).
+PlexMissReason = Literal["not_found", "ambiguous", "duplicate_collapsed"]
+
+
 class PlexMissingTrack(BaseModel):
-    """One playlist track that did not resolve to a Plex track on the last sync.
+    """One playlist track the last sync could not fully place on Plex.
 
     ``reason``: ``not_found`` — no Plex track at that path and no metadata
     candidate; ``ambiguous`` — several Plex tracks matched the metadata and
-    album/track-number could not single one out (never guessed).
+    album/track-number could not single one out (never guessed);
+    ``duplicate_collapsed`` — the track is on Plex and in the playlist, but this
+    playlist lists it more than once and Plex kept a single row.
+
+    ``item_id`` is the beets library item, so two rows for one item report under
+    one id — which is exactly right for the first two reasons (both rows are
+    missing) and is what makes the third readable: the item is there, the
+    second listing of it is not.
     """
 
     item_id: int
     title: str
     albumartist: str
     album: str
-    reason: Literal["not_found", "ambiguous"]
+    reason: PlexMissReason
 
 
 # Which rung of the matcher resolved a track — see ``app/plex/mapping.py``, whose
