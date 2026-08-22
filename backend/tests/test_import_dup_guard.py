@@ -585,7 +585,11 @@ def test_variant_index_built_once_until_library_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Pin (a): the expensive full-scan (lib.albums(), NO query) runs EXACTLY
-    # ONCE per session across many tasks while the library is unchanged. beets'
+    # ONCE per session WHILE THE LIBRARY IS UNCHANGED — the quiescent shape
+    # (sweeps whose tasks bank/skip; re-scans). An APPLIED task mutates the
+    # library and legitimately rebuilds on the next call, so this test's claim
+    # is scoped to quiescence on purpose; the invalidation test pins the other
+    # half. beets'
     # exact path queries with an argument (lib.albums(dup_query)), so a zero-arg
     # full-scan is uniquely the guard's normalized-index build; a "rebuild per
     # task" mutant would scan once per guard call.
