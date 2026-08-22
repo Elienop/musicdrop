@@ -43,6 +43,7 @@ from app.beets.delete import delete_artist_op
 from app.beets.library import LibraryHandle, list_artists
 from app.config import resolve_artist_image_cache_dir
 from app.config import settings as _module_settings
+from app.etag import size_scoped_etag
 from app.events.emit import emit_art_changed, emit_library_changed
 from app.library_busy import raise_if_library_busy
 from app.models.artist import (
@@ -157,18 +158,6 @@ async def list_artists_endpoint(
     return await run_in_threadpool(list_artists, handle.lib)
 
 
-def _image_etag(validator: str, size: Literal["full", "thumb"]) -> str:
-    """The revalidation tag for ONE size of one artist's portrait.
-
-    The thumb is a DIFFERENT entity than the full image (distinct bytes), so it
-    needs its own ETag under the same URL family - splice a "-t" marker inside
-    the closing quote so the tag stays one opaque quoted string. A shared tag
-    would let a cache/proxy serve a thumb response for a full request (or vice
-    versa) on a matching If-None-Match.
-    """
-    return validator if size == "full" else f'{validator[:-1]}-t"'
-
-
 async def _serve_cached(
     cache: ArtistImageCache, name: str, *, size: Literal["full", "thumb"], etag: str
 ) -> Response | None:
@@ -181,8 +170,8 @@ async def _serve_cached(
     same file, so a 404 here would be permanent instead of self-healing, and a
     re-resolve overwrites the unusable slot.
 
-    Precondition: ``etag`` is the tag ``_image_etag`` built from the validator
-    that proved this slot exists, for THIS size.
+    Precondition: ``etag`` is the tag ``app.etag.size_scoped_etag`` built from
+    the validator that proved this slot exists, for THIS size.
     """
     if size == "thumb":
         thumb = await run_in_threadpool(cache.get_thumb, name)
@@ -228,7 +217,9 @@ async def _serve_thumb(
     if thumb is not None:
         validator = await run_in_threadpool(cache.validator, name)
         if validator is not None:
-            return image_response(thumb.data, thumb.content_type, _image_etag(validator, "thumb"))
+            return image_response(
+                thumb.data, thumb.content_type, size_scoped_etag(validator, "thumb")
+            )
         return await run_in_threadpool(
             revalidating_image_response, request, thumb.data, thumb.content_type
         )
@@ -284,7 +275,11 @@ async def get_artist_image_endpoint(
     # cache.validator stats the winning slot (override > positive) instead, so
     # an unchanged portrait answers 304 without touching the bytes at all.
     validator = await run_in_threadpool(cache.validator, name)
-    etag = _image_etag(validator, size) if validator is not None else None
+    # The thumb (size == "thumb") needs its OWN tag under this one URL: a shared
+    # tag would let a cache/proxy or the client 304 a thumb request off the
+    # full tag (or vice versa). size_scoped_etag splices the "-t" marker inside
+    # the closing quote and passes a None validator through as None.
+    etag = size_scoped_etag(validator, size)
     if etag is not None and if_none_match_hit(request, etag):
         return not_modified(etag)
 
