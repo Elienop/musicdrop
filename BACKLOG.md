@@ -13,14 +13,9 @@ _Last groomed: 2026-08-22, after the doc-corrections pass._
 
 ## Next up
 
-- **Answer the phantom one-track-album origin question before the next bulk import** (detail
-  under Open questions). The 2026-08-15 investigation proved the *mechanism* — beets' duplicate
-  check is a byte-exact SQL equality, so any typographic variant defeats it — but never
-  attributed the 2026-08-01 incident to one of the two candidate causes. It is the one open
-  item with a deadline of sorts.
-
-_(Then pick from Open bugs / hardening below — the m3u8 export 500 and the CSRF/Origin posture
-are the standing candidates.)_
+- Pick from Open bugs / hardening below — the m3u8 export 500 and the CSRF/Origin posture
+  are the standing candidates. (The phantom-album question that used to sit here is
+  RESOLVED — see Open questions and the 2026-08-22 guard entry under Recently shipped.)
 
 ## Open bugs / hardening
 
@@ -87,11 +82,23 @@ are the standing candidates.)_
 
 ## Open questions
 
-- **Where did the phantom one-track album row come from?** The 2026-08-01 incident's origin:
-  an import created a second album row ("Greatest Hits – Chapter One", en dash) holding one
-  duplicate track. Leading suspicion: duplicate-merge + as-is import path. If it is
-  systematic, big imports will keep minting phantoms; worth a look at the import/merge flow
-  before the next bulk import. Detail: memory `reorganize-collision-churn`.
+- **Phantom one-track album row: RESOLVED 2026-08-22.** Root cause diagnosed at the code
+  level: beets' import duplicate gate is byte-exact on albumartist+album, and every
+  MusicDrop protection was a reactive hook behind it — dead code for a typographic
+  variant, so a lone en-dash-titled file minted a sibling row with zero prompts. It WAS
+  systematic. Fixed by the import-gate guard (Recently shipped, 2026-08-22). Live
+  forensics on the production DB (owner-run, read-only): the phantom and its duplicate
+  item were already cleaned up, zero double-counted files, zero orphan singletons —
+  library clean; the specific entry path (as-is tags vs an MB variant apply) is
+  unrecoverable and both are closed by the guard. Full report: the vault note
+  `phantom-album-diagnosis` (authored by pi/qwen, verified line-by-line).
+  Follow-ups deliberately NOT built (each needs its own decision):
+  the upfront warning endpoint (`find_import_duplicates`) stays byte-exact, so the
+  gate can prompt where the pre-import warning showed nothing — align later if wanted;
+  and beets' SINGLETON duplicate check structurally excludes album members
+  (`NoneQuery("album_id")`), so an explicit as-tracks import of an existing album's
+  track can still mint an orphan item silently — the astracks window is deliberate and
+  narrow, but unguarded.
 
 - **Hardlink alias of a vacating unit-mate** may refuse instead of settle (the alias keeps
   the inode alive across the move, so the next sweep's pre-flight still sees it). Reasoned,
@@ -255,6 +262,19 @@ are the standing candidates.)_
 
 ## Recently shipped
 
+- **2026-08-22 — import-gate guard: typographic-variant duplicates engage the duplicate
+  machinery** (branch `feat/import-dup-guard`): a per-task wrapper over beets'
+  `task.find_duplicates`, armed in `choose_match` before beets' `_resolve_duplicates`
+  runs, adds a normalized-variant scan (the existing `_fuzzy_part` ladder from
+  `duplicates.py` — no third normalization scheme) on top of beets' untouched byte-exact
+  pass. An en-dash/case twin now parks the duplicate prompt attended, banks
+  `needs_dup_resolution` in a sweep, SKIPs on an undecided directive, and honors all four
+  resolution actions — the paths that silently minted the production phantom. beets'
+  exclusions mirrored (no-artist as-is; re-import of own files). 14 tests incl. a wiring
+  pin that goes through `choose_match` itself (added after a review mutation proved the
+  original 13 all armed the guard directly — the install line could be deleted green);
+  3/3 mutants killed. Implemented by pi/qwen via the new `pi-delegate` agent, verified
+  first-hand.
 - **2026-08-22 — playlists list shows Plex sync state at a glance** (branch
   `feat/playlists-plex-status`, owner request): each row carries one badge — Synced, the
   failed sync's own error text, "N not on the Plex copy", or "Out of date; re-sync" —

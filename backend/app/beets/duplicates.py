@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +82,12 @@ def normalize(text: str) -> str:
     return _WS_RE.sub(" ", _PUNCT_RE.sub(" ", _soft_normalize(text))).strip()
 
 
+# Pure text -> text, so safe to memoize; the import gate's variant index re-runs
+# the ladder over every album title on each rebuild, and an applied import run
+# rebuilds per task — the memo turns those repeat rebuilds into dict hits. The
+# 64k bound caps worst-case memory around 15-20 MB (measured with realistic
+# 50-char titles); typical libraries stay far below the cap.
+@lru_cache(maxsize=65536)
 def _fuzzy_part(text: str) -> str:
     """One half of the fuzzy signal: the strongest normalization that still says
     something. Three rungs, each used only when the one above empties the value.

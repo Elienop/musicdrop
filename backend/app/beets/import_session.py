@@ -16,7 +16,7 @@ import os
 import queue
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from beets import config
 from beets.autotag.match import Recommendation as BeetsRec
@@ -26,6 +26,7 @@ from beets.importer.session import ImportAbortError, ImportSession
 
 from app.bank import store as bank_store
 from app.bank.fingerprint import folder_fingerprint
+from app.beets.duplicates import _fuzzy_part
 from app.beets.existing_album import to_existing_album
 from app.beets.import_mapping import (
     _REC_MAP,
@@ -495,6 +496,220 @@ class WebImportSession(ImportSession):
         # keep_both: import alongside the existing copy.
         return BeetsDuplicateAction.KEEP
 
+    # ----- import-gate guard: typographic-variant duplicates -----
+
+    def _install_dup_guard(self, task: ImportTask) -> None:
+        """Wrap ``task.find_duplicates`` so beets' downstream ``_resolve_duplicates``
+        sees typographic-variant duplicates, not just byte-exact ones.
+
+        beets' ``AlbumImportTask.find_duplicates`` (tasks.py) is a byte-exact SQL
+        match on albumartist+album, so a typographic twin ("\u2013" en dash vs "-"
+        hyphen, or a case variant) sails through and mints a sibling one-track
+        album. We install a per-task wrapper over the bound method at the top of
+        ``choose_match`` (precedent: the ``md_album_index`` setattr at the same
+        spot) so the SAME duplicate machinery the exact case already uses — the
+        park prompt, the sweep bank, the unattended SKIP, the four resolution
+        actions via ``get_duplicate_action`` — engages unchanged for the variant.
+
+        Idempotent across re-calls on one task: the pristine bound method is
+        stashed on a dynamic attribute (``_md_dup_guard_orig``) so a second install
+        re-wraps the original, never a prior wrapper. mypy strict (and a re-wrap,
+        not recursion) is preserved because we capture the bound method BEFORE the
+        instance attribute shadows it.
+        """
+        pristine = getattr(task, "_md_dup_guard_orig", None)
+        if pristine is None:
+            pristine = task.find_duplicates
+            # Dynamic attr beets' ImportTask does not declare; setattr (not
+            # ``task._md_dup_guard_orig = ...``) to dodge mypy attr-defined (same
+            # convention as the md_album_index stash above).
+            setattr(task, "_md_dup_guard_orig", pristine)  # noqa: B010  # stash the pristine bound method for the wrapper's closure
+
+        def guarded(lib: Any) -> Any:
+            return self._guarded_find_duplicates(task, lib, pristine)
+
+        # beets reads find_duplicates in _resolve_duplicates AFTER choose_match (and
+        # again in duplicate_items/remove_duplicates), so this per-task shadow is
+        # exactly the seam; mypy forbids plain instance method assignment — reason:
+        # intentional, beets has no typed override hook, and the closure keeps the
+        # byte-exact pass intact (see _guarded_find_duplicates).
+        task.find_duplicates = guarded  # type: ignore[method-assign]  # wrap beets' per-task bound method for _resolve_duplicates; see _install_dup_guard
+
+    def _library_change_signature(self, lib: Any) -> tuple[int, int]:
+        """(lib.revision, PRAGMA data_version): the cache-invalidation probe.
+
+        Two components, complementary by construction (both verified by
+        direct measurement against beets 2.13.1 / SQLite):
+
+        * ``lib.revision`` — beets' in-memory mutation counter,
+          ``dbcore/db.py``: every ``Transaction.__exit__`` adds ``_mutated``
+          (nested transactions included, so one logical operation may bump it
+          by 2-6; reads and no-op stores add 0). It catches every mutation
+          made THROUGH THIS ``Library`` object — including an in-place album
+          rename and the delete-then-reinsert a merge performs, where SQLite
+          reuses the deleted max rowid and no row-set aggregate can see the
+          swap (``id INTEGER PRIMARY KEY`` without AUTOINCREMENT reuses ids).
+          A stale index across such a swap is not a cosmetic miss: the cached
+          Album object is a ghost bound to an id that now names a different
+          album, a duplicate prompt built from it shows one album, and a
+          ``replace`` decision would trash the other.
+        * ``PRAGMA data_version`` — SQLite's own signal for exactly the
+          remaining case: it changes when ANY OTHER connection commits (a
+          stray ``beet`` CLI, another process — including a foreign
+          delete-then-reinsert that leaves every aggregate identical, and
+          foreign in-place edits), never for this connection's own writes
+          (those are ``revision``'s job). Single value, so the probe cannot
+          tear; O(1) regardless of table size (~6µs measured); the VALUE is
+          documented as unpredictable, so it is only ever compared for
+          change, which is all the equality tuple does.
+
+        The ``Library`` object is swapped only by the config editor's Apply,
+        which is import-gated — within one session run the object is stable,
+        and a swap resets ``revision`` to a value that compares unequal, the
+        safe direction (spurious rebuild).
+
+        :param lib: the beets Library (``session.lib``).
+        :return: the (revision, data_version) pair to cache-check against.
+        """
+        with lib.transaction() as tx:
+            data_version = int(tx.query("PRAGMA data_version")[0][0])
+        return (int(lib.revision), data_version)
+
+    def _variant_album_index(self, lib: Any) -> dict[tuple[str, str], tuple[Any, ...]]:
+        """Normalized (artist, title) -> album rows, cached per session run.
+
+        Rebuilt whenever :meth:`_library_change_signature` changes, returned
+        read-through while it does not. Two workloads, stated honestly (both
+        measured by review):
+
+        * A run whose tasks mostly SKIP (an all-duplicate sweep, a re-scan):
+          the library never changes, the index builds once, later guarded
+          calls cost the ~µs probe plus an O(1) lookup. Review measured the
+          win at 5,000x-26,000x per call (3k-20k albums, sparse rows) — the
+          exact ratio depends on row width, so treat it as "rebuild cost
+          amortized away", not a fixed number.
+        * A run whose tasks mostly APPLY: every ``task.add`` mutates the
+          library, so the NEXT guarded call rebuilds — one full
+          ``lib.albums()`` pass per applied album, the same order of work the
+          pre-cache code paid. ``_fuzzy_part`` is memoized at the module level
+          (see ``duplicates.py``), so repeat rebuilds re-fetch rows but do not
+          re-run the regex ladder on unchanged strings; the fetch, not the
+          normalization, is the remaining cost.
+
+        Invariant this cache must honor: an album added (or merged away and
+        re-minted) by an earlier task in the same run must be visible to later
+        tasks' guards — ``lib.revision`` in the signature guarantees rebuild
+        after every in-process mutation, and ``PRAGMA data_version`` after any
+        other connection's commit, so the index never serves an album object
+        whose row has since been rewritten by anyone.
+
+        :param lib: the beets Library (``session.lib``).
+        :return: a mapping ``(artist_key, title_key) -> tuple of Albums``.
+        """
+        # The cached value is (signature, index). It lives on the instance for
+        # the session run's lifetime; a fresh WebImportSession is per run, so
+        # "at most once per session run" falls out of per-instance state. We
+        # do not declare it in __init__ — the gate's tests construct the
+        # session via __new__ and set attrs manually, and beets ImportTask
+        # precedent already uses dynamic attrs the same way (mypy attr-
+        # defined is a known trade-off for these beets-side seams). The cast
+        # asserts the shape mypy cannot see through getattr; only this method
+        # reads and writes the attribute, keeping the assertion one-sided.
+        cached = cast(
+            "tuple[tuple[int, int], dict[tuple[str, str], tuple[Any, ...]]] | None",
+            getattr(self, "_variant_index_cache", None),
+        )
+        sig = self._library_change_signature(lib)
+        if cached is not None and cached[0] == sig:
+            return cached[1]
+
+        index: dict[tuple[str, str], list[Any]] = {}
+        for existing in lib.albums():
+            artist_key = _fuzzy_part(str(getattr(existing, "albumartist", "") or ""))
+            title_key = _fuzzy_part(str(getattr(existing, "album", "") or ""))
+            index.setdefault((artist_key, title_key), []).append(existing)
+        final: dict[tuple[str, str], tuple[Any, ...]] = {
+            key: tuple(bucket) for key, bucket in index.items()
+        }
+
+        setattr(self, "_variant_index_cache", (sig, final))  # noqa: B010
+        return final
+
+    def _guarded_find_duplicates(self, task: ImportTask, lib: Any, exact_find: Any) -> list[Any]:
+        """beets' byte-exact ``find_duplicates`` plus a normalized-variant scan.
+
+        The exact pass runs FIRST and UNCHANGED — byte-identical duplicates
+        keep working exactly as before (the existing duplicate tests are the
+        net), and it is also independent of the variant index's cache (it is
+        beets' own bound method), so a stale index can never corrupt the
+        byte-exact path. We then add library albums the exact match missed
+        because the incoming artist/album differs only in the ways
+        ``app.beets.duplicates``'s ``_fuzzy_part`` folds (dash glyph, case,
+        parentheticals, feat clauses, whitespace) — the SAME signal the fuzzy
+        duplicate finder groups on (``_grouping_signals``), so the gate and
+        fuzzy detection cannot disagree about which titles are twins.
+
+        We resolve candidates by LOOKING UP the incoming (artist_key,
+        title_key) in the cached :meth:`_variant_album_index` (an O(1) dict
+        access after the ~µs change probe) rather than rescan the whole
+        library per task; the per-task work is then just the exclusions below
+        over the (usually small) candidate bucket.
+
+        The exclusions beets bakes into ``find_duplicates`` are mirrored for
+        the variant hits (invariant: mirror beets' own exclusions):
+
+        * as-is / no-artist — beets returns ``[]`` when ``info["artist"]`` is
+          None; we do the same for the variant scan, so an artistless album
+          still imports.
+        * re-import — an existing album whose files are ALL in the task is
+          being re-imported (replaced), not duplicated, so it is not flagged.
+          Mirrored as ``existing_paths <= task_paths`` — a subset of the task
+          (INCLUDING the empty set) is excluded, exactly like beets — so a
+          childless library album row in the (artist, title) bucket never
+          surfaces as a false "album-level" twin prompt.
+        * symbol-only / whitespace-only title — a value ``_fuzzy_part`` leaves
+          empty is a "no usable key" on that half, so it contributes no match
+          (never "matches every other such album"), mirroring
+          ``_grouping_signals``'s ``artist or title`` guard.
+
+        :param task: the album task being resolved.
+        :param lib: the beets Library (``session.lib``).
+        :param exact_find: the pristine beets bound method (already captured
+          by :meth:`_install_dup_guard` before the wrapper shadows it).
+        :return: beets' exact hits, plus any variant twins it missed.
+        """
+        exact: list[Any] = list(exact_find(lib))
+        info = task.chosen_info()
+        artist = info.get("artist")
+        album = info.get("album")
+        if artist is None or album is None:
+            # as-is/no-artist guard (mirrors beets) and no album name: nothing
+            # to compare on the variant side.
+            return exact
+        artist_key = _fuzzy_part(str(artist))
+        title_key = _fuzzy_part(str(album))
+        if not artist_key or not title_key:
+            # a half that normalizes to empty is a "no usable key", not "matches
+            # everything" (symbol/whitespace-only titles).
+            return exact
+        task_paths: set[Any] = {i.path for i in task.items if i}
+        known: set[Any] = {getattr(a, "id", None) for a in exact}
+        out: list[Any] = list(exact)
+        for existing in self._variant_album_index(lib).get((artist_key, title_key), ()):
+            existing_id = getattr(existing, "id", None)
+            if existing_id is None or existing_id in known:
+                continue
+            # beets' re-import exclusion (tasks.py find_duplicates): an album
+            # whose files are ALL in the task (or has none at all, i.e. empty
+            # set ⊆ any set) is being re-imported / isn't a file-bearing twin,
+            # not duplicated.
+            existing_paths: set[Any] = {i.path for i in existing.items()}
+            if existing_paths <= task_paths:
+                continue
+            known.add(existing_id)
+            out.append(existing)
+        return out
+
     def choose_match(self, task: ImportTask) -> Any:
         """Auto-apply a strong match; otherwise park and await the user.
 
@@ -504,6 +719,15 @@ class WebImportSession(ImportSession):
         """
         # Pause lands here first: abort BEFORE this album claims a feed index.
         self._check_pause()
+        # The duplicate gate MUST be armed before beets' _resolve_duplicates runs
+        # (a later stage in the same album task), because it reads
+        # task.find_duplicates. Installed exactly ONCE per album task: this is the
+        # single choose seam a task passes through before beets hands it to
+        # _resolve_duplicates, so no task is armed twice in the normal flow.
+        # (_install_dup_guard keeps a pristine stash purely as a cheap safety net
+        # so a hypothetical re-install re-wraps the original, not a wrapper; that
+        # is not an expected re-entrancy.)
+        self._install_dup_guard(task)
         # Flush the PREVIOUS task's library album id (its task.add has run by
         # now — sequential pipeline) before this album claims the feed.
         self._flush_album_ids()
