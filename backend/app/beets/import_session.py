@@ -23,7 +23,6 @@ from beets.autotag.match import Recommendation as BeetsRec
 from beets.importer.actions import Action
 from beets.importer.actions import DuplicateAction as BeetsDuplicateAction
 from beets.importer.session import ImportAbortError, ImportSession
-from beets.library import Album
 
 from app.bank import store as bank_store
 from app.bank.fingerprint import folder_fingerprint
@@ -536,59 +535,59 @@ class WebImportSession(ImportSession):
         # byte-exact pass intact (see _guarded_find_duplicates).
         task.find_duplicates = guarded  # type: ignore[method-assign]  # wrap beets' per-task bound method for _resolve_duplicates; see _install_dup_guard
 
-    def _album_table_signature(self, lib: Any) -> tuple[int, int, int]:
-        """(revision, row count, max id): the cache-invalidation probe.
+    def _library_change_signature(self, lib: Any) -> tuple[int, int]:
+        """(lib.revision, PRAGMA data_version): the cache-invalidation probe.
 
-        Three components, each load-bearing for a different writer:
+        Two components, complementary by construction (both verified by
+        direct measurement against beets 2.13.1 / SQLite):
 
-        * ``lib.revision`` — beets' in-memory mutation counter, bumped in
-          ``Transaction.__exit__`` for every mutating root transaction on THIS
-          ``Library`` object. The app opens one ``Library`` per process and
-          hands it to every surface (imports, the edit API, disk sync), so any
-          in-process mutation — including an in-place album rename, and the
-          delete-then-reinsert a merge performs — bumps it. This is what
-          catches SQLite ROWID REUSE: ``id INTEGER PRIMARY KEY`` without
-          AUTOINCREMENT reuses a deleted max id, so a merge that deletes the
-          newest album row and reinserts leaves ``(COUNT, MAX(id))`` unchanged
-          while the cached Album objects are stale ghosts bound to a reused
-          id — a prompt built from those could show one album and ``replace``
-          would trash another.
-        * ``COUNT(*)`` and ``COALESCE(MAX(id), -1)`` — cover OUT-of-process
-          writers (a stray ``beet`` CLI against the same db), which never
-          touch this process's ``revision``. Queried SEPARATELY on purpose:
-          SQLite optimizes ``MAX(id)`` alone to an index ``SEARCH`` and a lone
-          ``COUNT(*)`` to a payload-free scan, but the combined query plans
-          as a full row ``SCAN`` (~20x slower at 20k rows; verified with
-          ``EXPLAIN QUERY PLAN``).
+        * ``lib.revision`` — beets' in-memory mutation counter,
+          ``dbcore/db.py``: every ``Transaction.__exit__`` adds ``_mutated``
+          (nested transactions included, so one logical operation may bump it
+          by 2-6; reads and no-op stores add 0). It catches every mutation
+          made THROUGH THIS ``Library`` object — including an in-place album
+          rename and the delete-then-reinsert a merge performs, where SQLite
+          reuses the deleted max rowid and no row-set aggregate can see the
+          swap (``id INTEGER PRIMARY KEY`` without AUTOINCREMENT reuses ids).
+          A stale index across such a swap is not a cosmetic miss: the cached
+          Album object is a ghost bound to an id that now names a different
+          album, a duplicate prompt built from it shows one album, and a
+          ``replace`` decision would trash the other.
+        * ``PRAGMA data_version`` — SQLite's own signal for exactly the
+          remaining case: it changes when ANY OTHER connection commits (a
+          stray ``beet`` CLI, another process — including a foreign
+          delete-then-reinsert that leaves every aggregate identical, and
+          foreign in-place edits), never for this connection's own writes
+          (those are ``revision``'s job). Single value, so the probe cannot
+          tear; O(1) regardless of table size (~6µs measured); the VALUE is
+          documented as unpredictable, so it is only ever compared for
+          change, which is all the equality tuple does.
 
-        The residual blind spot is an out-of-process IN-PLACE edit (no row
-        add/delete, foreign process): invisible until the next in-process
-        mutation or row-set change. Bounded consequence either way: the
-        byte-exact beets pass never reads this cache, so a stale index can at
-        worst miss a variant twin or offer a bucket entry whose per-task
-        exclusions still run.
+        The ``Library`` object is swapped only by the config editor's Apply,
+        which is import-gated — within one session run the object is stable,
+        and a swap resets ``revision`` to a value that compares unequal, the
+        safe direction (spurious rebuild).
 
         :param lib: the beets Library (``session.lib``).
-        :return: the (revision, count, max id) tuple to cache-check against.
+        :return: the (revision, data_version) pair to cache-check against.
         """
         with lib.transaction() as tx:
-            count = int(tx.query(f"SELECT COUNT(*) c FROM {Album._table}", [])[0]["c"])
-            max_id = int(
-                tx.query(f"SELECT COALESCE(MAX(id), -1) m FROM {Album._table}", [])[0]["m"]
-            )
-        return (int(lib.revision), count, max_id)
+            data_version = int(tx.query("PRAGMA data_version")[0][0])
+        return (int(lib.revision), data_version)
 
     def _variant_album_index(self, lib: Any) -> dict[tuple[str, str], tuple[Any, ...]]:
         """Normalized (artist, title) -> album rows, cached per session run.
 
-        Rebuilt whenever :meth:`_album_table_signature` changes, returned
+        Rebuilt whenever :meth:`_library_change_signature` changes, returned
         read-through while it does not. Two workloads, stated honestly (both
         measured by review):
 
         * A run whose tasks mostly SKIP (an all-duplicate sweep, a re-scan):
           the library never changes, the index builds once, later guarded
-          calls cost the probe plus an O(1) lookup — the ~400x win the cache
-          exists for.
+          calls cost the ~µs probe plus an O(1) lookup. Review measured the
+          win at 5,000x-26,000x per call (3k-20k albums, sparse rows) — the
+          exact ratio depends on row width, so treat it as "rebuild cost
+          amortized away", not a fixed number.
         * A run whose tasks mostly APPLY: every ``task.add`` mutates the
           library, so the NEXT guarded call rebuilds — one full
           ``lib.albums()`` pass per applied album, the same order of work the
@@ -600,8 +599,9 @@ class WebImportSession(ImportSession):
         Invariant this cache must honor: an album added (or merged away and
         re-minted) by an earlier task in the same run must be visible to later
         tasks' guards — ``lib.revision`` in the signature guarantees rebuild
-        after every in-process mutation, so the index never serves an album
-        object whose row this process has since rewritten.
+        after every in-process mutation, and ``PRAGMA data_version`` after any
+        other connection's commit, so the index never serves an album object
+        whose row has since been rewritten by anyone.
 
         :param lib: the beets Library (``session.lib``).
         :return: a mapping ``(artist_key, title_key) -> tuple of Albums``.
@@ -616,10 +616,10 @@ class WebImportSession(ImportSession):
         # asserts the shape mypy cannot see through getattr; only this method
         # reads and writes the attribute, keeping the assertion one-sided.
         cached = cast(
-            "tuple[tuple[int, int, int], dict[tuple[str, str], tuple[Any, ...]]] | None",
+            "tuple[tuple[int, int], dict[tuple[str, str], tuple[Any, ...]]] | None",
             getattr(self, "_variant_index_cache", None),
         )
-        sig = self._album_table_signature(lib)
+        sig = self._library_change_signature(lib)
         if cached is not None and cached[0] == sig:
             return cached[1]
 
@@ -651,7 +651,7 @@ class WebImportSession(ImportSession):
 
         We resolve candidates by LOOKING UP the incoming (artist_key,
         title_key) in the cached :meth:`_variant_album_index` (an O(1) dict
-        access after a single µs aggregate probe) rather than rescan the whole
+        access after the ~µs change probe) rather than rescan the whole
         library per task; the per-task work is then just the exclusions below
         over the (usually small) candidate bucket.
 

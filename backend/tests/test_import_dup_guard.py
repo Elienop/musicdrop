@@ -701,10 +701,14 @@ def test_variant_index_sees_out_of_process_writers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # `lib.revision` is in-memory: a SECOND connection to the same db file (a
-    # stray `beet` CLI in production) never bumps it. The COUNT/MAX(id) halves
-    # of the signature are what notice such writers. Shape chosen so COUNT
-    # stays equal (delete a non-max row, add a new one) — a count-only
-    # signature mutant misses it and only MAX(id) catches it.
+    # stray `beet` CLI in production) never bumps it. `PRAGMA data_version` is
+    # what notices such writers — it changes on any OTHER connection's commit.
+    # Shape chosen as the WORST case: the foreign writer deletes the MAX-id
+    # album and reinserts (SQLite reuses the rowid), so COUNT and MAX(id) both
+    # come back identical and revision never moved — every row-set aggregate
+    # is blind here; only data_version catches it. Without it the cache would
+    # serve a ghost Album bound to a reused id (round-3 review's reproduced
+    # wrong-album-replace hazard).
     lib = _lib_album_in("Radiohead", "Filler Album", tmp_path)
     ok_path = str(tmp_path / "music" / "Radiohead - OK Computer" / "01.mp3")
     ok = Item(
@@ -724,12 +728,15 @@ def test_variant_index_sees_out_of_process_writers(
     session._install_dup_guard(t1)
     assert [a.album for a in t1.find_duplicates(lib)] == ["OK Computer"]
 
-    # Foreign writer: delete the NON-max filler, add a new album. COUNT is
-    # back where it was; only MAX(id) moved; this lib's revision never did.
+    # Foreign writer: delete the MAX-id album ("OK Computer") and reinsert a
+    # different one — SQLite reuses the freed max rowid, so COUNT and MAX are
+    # unchanged and this lib's revision never moved.
     other = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
-    filler = next(a for a in other.albums() if a.album == "Filler Album")
-    filler.remove(delete=False, with_items=True)
-    other.add_album(
+    victim = next(a for a in other.albums() if a.album == "OK Computer")
+    assert victim.id is not None
+    victim_id = int(victim.id)
+    victim.remove(delete=False, with_items=True)
+    reborn = other.add_album(
         [
             Item(
                 artist="Radiohead",
@@ -742,7 +749,13 @@ def test_variant_index_sees_out_of_process_writers(
             )
         ]
     )
+    assert reborn.id is not None
+    assert int(reborn.id) == victim_id  # the rowid really was reused
 
+    # The live title resolves through the reused id; the dead one matches nothing.
     t2 = _apply_task(_match("in rainbows"), monkeypatch)
     session._install_dup_guard(t2)
-    assert [a.album for a in t2.find_duplicates(lib)] == ["In Rainbows"]
+    assert [(a.id, a.album) for a in t2.find_duplicates(lib)] == [(victim_id, "In Rainbows")]
+    t3 = _apply_task(_match("ok computer"), monkeypatch)
+    session._install_dup_guard(t3)
+    assert t3.find_duplicates(lib) == []
