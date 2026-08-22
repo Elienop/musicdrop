@@ -6,6 +6,18 @@ stops the problem recurring (`fix: store item paths relative to the music dir, l
 If you are reading this a year from now with no memory of any of it, sections 1 and 2 are
 enough context. Section 3 is the rule that decides whether this goes well.
 
+> **This repair was completed on 2026-08-15** on the production TrueNAS library, in one
+> maintenance window with the code fix (PR #134, `e9c940c`, released v0.34.2 — tag verified).
+> The dry run predicted 22,100 rows and the migration converted exactly that: items went
+> 22,100 absolute → 0, the 123 mixed albums cleared, and the replacement lookup recovered.
+> Two things the real run taught that the text below now reflects: the container-side prefix
+> on that box was **`/library`**, not the `/music` used in every example (section 4 step A is
+> what catches this — do it, don't trust the examples), and the **albums half printed only its
+> backup line, no `Migrating` banner**, because its 21 surviving artpaths were already relative
+> and 3,098 were NULL — which looks like section 5's burned-shot signature but is the healthy
+> outcome for a table with nothing to convert (see the per-table note in section 5).
+> The document stays as a runbook in case a future library needs it again.
+
 ---
 
 ## 1. What went wrong
@@ -56,7 +68,9 @@ rows — do that first if you are unsure.
 
 ```sh
 DB=./data/beets/library.db     # host path (the ./data:/data volume)
-MUSIC_DIR=/music               # the CONTAINER-side prefix the rows carry — not the host path
+MUSIC_DIR=/music               # the CONTAINER-side prefix the rows carry — not the host path.
+                               # Generic example: the 2026-08-15 production run measured
+                               # /library here. Read it off your own rows (section 4 step A).
 
 sqlite3 -readonly "file:${DB}?mode=ro" "
 SELECT CASE WHEN substr(hex(path),1,2)='2F' THEN 'ABSOLUTE' ELSE 'relative' END AS form,
@@ -359,6 +373,14 @@ the earlier rehearsal was done — the two backup lines land at the *end* instea
 were measured. Same work, same guarantee, different flush order: if you see the backup lines last,
 nothing is wrong.
 
+**A table's `Migrating`/`Migration complete` pair appears only if that table holds at least
+one absolute row.** A table with nothing to convert prints its backup line and nothing else —
+`_migrate_field` returns before printing, while `migrate_model` still takes the backup and
+still records the ledger row. The 2026-08-15 production run looked exactly like that: the
+items half printed all three lines, the albums half printed only its backup line, because
+every surviving `artpath` was already relative (21 relative, 3,098 NULL, 0 absolute). Judge
+each table against its own census count from section 2, not against this transcript.
+
 If you see **no `Migrating` lines**, read the backup lines to tell the two very different causes
 apart:
 
@@ -367,11 +389,16 @@ apart:
   reason). Nothing ran and nothing is burned: fix the path, redo steps 4 and 5, and run step 6
   again.
 - **No `Migrating` lines but both backup lines present** — the migration *did* run, found no
-  absolute row to fix, and re-recorded itself. **The one shot is burned** (recover per section 7).
-  Either you are pointed at the wrong `library.db`, or that database was already repaired.
+  absolute row to fix, and re-recorded itself.
   `beets/library/migrations.py` `_migrate_field` returns before printing anything when no row is
   absolute, while `migrate_model` still takes both backups and still calls `record_migration` —
-  which is exactly why the backup lines are the tell and the missing banner is not.
+  which is exactly why the backup lines are the tell and the missing banner is not. **Judge it
+  per table, against the section 2 census.** For a table the census counted absolute rows in,
+  a missing banner means **the one shot is burned** (recover per section 7): you are pointed at
+  the wrong `library.db`, or that database was already repaired. For a table the census found
+  clean, backup-line-only is the correct, healthy outcome — on the 2026-08-15 production run
+  the albums half printed exactly that, because its artpaths were already relative, while the
+  items half showed the full three-line pair. Nothing was burned.
 
 ---
 
