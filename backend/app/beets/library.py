@@ -23,6 +23,7 @@ from mediafile import MediaFile
 
 from app.artwork.normalize import normalize_artist_name
 from app.beets.release_identity import release_identity
+from app.etag import stat_etag
 from app.models.album import Album, AlbumDetail, Track
 from app.models.artist import Artist
 from app.models.search import SearchEntity, SearchResults, SearchTrack, TypedSearchPage
@@ -599,16 +600,6 @@ def get_album_cover(lib: Library, album_id: int) -> tuple[bytes, str] | None:
     return _cover_from_artpath(lib, album) or _cover_from_embedded(lib, album)
 
 
-def _stat_etag(path: str) -> str | None:
-    """An opaque ETag from a file's ``mtime_ns`` + ``size`` — no read. ``None`` if
-    the file vanished between the caller's isfile check and here (race)."""
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    return f'"{st.st_mtime_ns}-{st.st_size}"'
-
-
 def cover_validator(lib: Library, album_id: int) -> str | None:
     """A CHEAP ETag for an album's cover — derived by ``stat``-ing the cover SOURCE
     file, with NO image read and NO ``MediaFile`` parse.
@@ -621,7 +612,11 @@ def cover_validator(lib: Library, album_id: int) -> str | None:
     cover writes a new file, and editing embedded art bumps the audio file's mtime,
     so a stale tag can never yield a false ``304``. ``None`` when the album is
     missing or has no cover source (the endpoint then falls through to the full
-    read, which returns the image or a 404)."""
+    read, which returns the image or a 404).
+
+    Each tag is a ``stat``-only ETag from :func:`app.etag.stat_etag`; it returns
+    ``None`` if the file vanished between this function's ``isfile`` check and the
+    ``stat`` (a race), and the endpoint then falls through to the full read."""
     album = lib.get_album(album_id)
     if album is None:
         return None
@@ -629,10 +624,10 @@ def cover_validator(lib: Library, album_id: int) -> str | None:
     if raw_path:
         path = _abs_path(lib, raw_path)
         if os.path.isfile(path) and _EXTENSION_MIME.get(os.path.splitext(path)[1].lower()):
-            return _stat_etag(path)
+            return stat_etag(path)
     items = list(album.items())
     if items:
         track = _abs_path(lib, items[0].path)
         if os.path.isfile(track):
-            return _stat_etag(track)
+            return stat_etag(track)
     return None
