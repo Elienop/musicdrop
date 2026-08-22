@@ -33,7 +33,7 @@ from beets.autotag.match import Recommendation as BeetsRec
 from beets.importer.actions import Action
 from beets.importer.actions import DuplicateAction as BeetsDuplicateAction
 from beets.importer.tasks import ImportTask
-from beets.library import Item, Library
+from beets.library import Album, Item, Library
 
 from app.bank import store as bank_store
 from app.beets.import_session import ImportBridge, WebImportSession
@@ -246,32 +246,66 @@ def test_variant_gate_symbol_only_title_matches_nothing(
 def test_variant_gate_reimport_is_not_a_duplicate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # beets' re-import exclusion must hold for the variant path too: an
-    # existing album whose files are all in the task is being re-imported, not
-    # duplicated, even when its title is the en-dash twin of the incoming one.
-    shared = str(tmp_path / "music" / "Radiohead" / "01.mp3")
-    variant = "Greatest Hits " + _EN_DASH + " Chapter One"
-    lib = _lib_album_in("Radiohead", variant, tmp_path, path=shared)
+    # beets' re-import exclusion (tasks.py find_duplicates) mirrored for the
+    # variant path, pinned on BOTH directions of the subset check. To force
+    # ONLY the guard's variant scan to engage (not the byte-exact path), the
+    # library album is the HYPHEN title and the incoming is the EN-DASH twin.
+    #
+    # (i)  full re-import — the task's files are a SUPERSET of the existing
+    #      album's files (it re-imports them all) -> EXCLUDED (being replaced).
+    # (ii) partial import — the existing album has STRICTLY more files than the
+    #      task (the task is a strict subset of it) -> FLAGGED, i.e. the subset
+    #      is `existing_paths <= task_paths` on the EXISTING side, not the
+    #      reverse. A mutant that reversed the subset direction would wrongly
+    #      exclude (ii) and trip its assertion.
+    base = tmp_path / "music" / "Radiohead"
+    lib_files = [str(base / f"{n:02d}.mp3") for n in (1, 2, 3)]
+    lib_album = "Greatest Hits - Chapter One"
+    incoming = "Greatest Hits " + _EN_DASH + " Chapter One"
 
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
-        return ("Radiohead", variant, Proposal([], BeetsRec.none))
+    def make_album(files: list[str], album: str, title_fmt: str) -> list[Item]:
+        return [
+            Item(
+                artist="Radiohead",
+                albumartist="Radiohead",
+                album=album,
+                title=title_fmt.format(n=n),
+                track=n,
+                length=200.0,
+                path=os.fsencode(p),
+            )
+            for n, p in enumerate(files, 1)
+        ]
 
-    in_item = Item(
-        artist="Radiohead",
-        albumartist="Radiohead",
-        album=variant,
-        title="Chapter One",
-        track=1,
-        length=200.0,
-        path=os.fsencode(shared),
-    )
-    monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
-    task = ImportTask(toppath=None, paths=[b"/incoming/album"], items=[in_item])
-    task.lookup_candidates([])
-    task.set_choice(Action.ASIS)
+    lib = Library(str(tmp_path / "library.db"), directory=str(base))
+    lib_album_obj = lib.add_album(make_album(lib_files, lib_album, "Chapter {n}"))
+
+    def make_task(paths: list[str]) -> ImportTask:
+        def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
+            return ("Radiohead", incoming, Proposal([], BeetsRec.none))
+
+        monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
+        task = ImportTask(
+            toppath=None,
+            paths=[b"/incoming/album"],
+            items=make_album(paths, incoming, "Chapter {n}"),
+        )
+        task.lookup_candidates([])
+        task.set_choice(Action.ASIS)
+        return task
+
     session = _gate_session(ImportBridge(), lib)
-    session._install_dup_guard(task)
-    assert task.find_duplicates(lib) == []
+
+    # (i) full re-import: task superset-contains every existing file -> no dup.
+    full = make_task(lib_files)
+    session._install_dup_guard(full)
+    assert full.find_duplicates(lib) == []
+
+    # (ii) partial import: task has only file 1, album has all three -> dup.
+    partial = make_task([lib_files[0]])
+    session._install_dup_guard(partial)
+    flagged = partial.find_duplicates(lib)
+    assert [a.id for a in flagged] == [lib_album_obj.id]
 
 
 def test_variant_gate_no_artist_asis_returns_nothing(
@@ -465,3 +499,137 @@ def test_variant_gate_directive_replace_trashes_the_twin(
 
     assert action is BeetsDuplicateAction.KEEP  # new imports, old kept in DB
     assert session._replace_album_ids == {_require_id(found[0].id)}  # post-run Trash by id
+
+
+# --------------------------------------------------------------------------
+# the variant signal is a compound (artist, title) key, and the normalization
+# ladder is what makes symbol-only titles group at all.
+# --------------------------------------------------------------------------
+
+
+def test_variant_gate_different_artist_same_title_is_not_a_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A different ARTIST with the same title is not a duplicate. Here the titles
+    # fold to the identical key; only the artist half of the compound (artist,
+    # title) key differs. A guard keyed on title alone (dropping artist) would
+    # wrongly flag this; pin the artist half.
+    lib = _lib_album_in("Nirvana", "Greatest Hits - Chapter One", tmp_path)
+    task = _apply_task(_match("Greatest Hits " + _EN_DASH + " Chapter One"), monkeypatch)
+    session = _gate_session(ImportBridge(), lib)
+    session._install_dup_guard(task)
+    assert task.find_duplicates(lib) == []
+
+
+def test_variant_gate_symbol_title_rung2_deluxe_pair_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # symbol-only titles: plain normalize() empties BOTH "=" and its
+    # "(Deluxe Edition)" twin, but the soft rung (_soft_normalize, rung 2) keeps
+    # the shared non-empty key "=" so the pair still groups. A mutant that drops
+    # the soft rung (_fuzzy_part = normalize) empties both keys, the guard sees
+    # "no usable key", and misses this common deluxe/standard dup shape.
+    lib = _lib_album_in("Radiohead", "=", tmp_path)
+    task = _apply_task(_match("= (Deluxe Edition)"), monkeypatch)
+    session = _gate_session(ImportBridge(), lib)
+    session._install_dup_guard(task)
+    assert [a.album for a in task.find_duplicates(lib)] == ["="]
+
+
+# --------------------------------------------------------------------------
+# the normalized index is built ONCE per session and rebuilt on library
+# change (count + max-id signature).
+# --------------------------------------------------------------------------
+
+
+def test_variant_index_invalidates_when_library_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Pin (b): an album added by an earlier task in the same session run must
+    # be visible to the NEXT task's guard. The library is empty when task 1 runs
+    # (so its guard builds an EMPTY index), then task 1's apply lands as a real
+    # library album, then task 2's guard must SEE IT. A "never invalidate the
+    # cache" mutant keeps the empty index and misses it.
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    assert list(lib.albums()) == []
+    session = _gate_session(ImportBridge(), lib)
+
+    # Task 1: empty lib -> no dup found.
+    added_path = str(tmp_path / "music" / "Greatest Hits - Chapter One" / "01.mp3")
+    t1 = _apply_task(_match("Greatest Hits - Chapter One"), monkeypatch)
+    session._install_dup_guard(t1)
+    assert t1.find_duplicates(lib) == []
+
+    # Simulate task 1's APPLY landing that album into the library.
+    lib.add_album(
+        [
+            Item(
+                artist="Radiohead",
+                albumartist="Radiohead",
+                album="Greatest Hits - Chapter One",
+                title="Chapter One",
+                track=1,
+                length=200.0,
+                path=os.fsencode(added_path),
+            )
+        ]
+    )
+
+    # Task 2: the EN-DASH twin now must SEE the album task 1 added.
+    t2 = _apply_task(_match("Greatest Hits " + _EN_DASH + " Chapter One"), monkeypatch)
+    session._install_dup_guard(t2)
+    assert [a.album for a in t2.find_duplicates(lib)] == ["Greatest Hits - Chapter One"]
+
+
+def test_variant_index_built_once_until_library_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Pin (a): the expensive full-scan (lib.albums(), NO query) runs EXACTLY
+    # ONCE per session across many tasks while the library is unchanged. beets'
+    # exact path queries with an argument (lib.albums(dup_query)), so a zero-arg
+    # full-scan is uniquely the guard's normalized-index build; a "rebuild per
+    # task" mutant would scan once per guard call.
+    lib = _lib_album_in("Radiohead", "Greatest Hits - Chapter One", tmp_path)
+    full_scans: list[int] = []
+    real_albums = lib.albums
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        if not args and not kwargs:
+            full_scans.append(1)
+        return real_albums(*args, **kwargs)
+
+    monkeypatch.setattr(lib, "albums", spy)
+    session = _gate_session(ImportBridge(), lib)
+
+    t1 = _apply_task(_match("Greatest Hits " + _EN_DASH + " Chapter One"), monkeypatch)
+    session._install_dup_guard(t1)
+    assert [a.album for a in t1.find_duplicates(lib)] == ["Greatest Hits - Chapter One"]
+
+    # Second guard on the SAME unchanged library (a case+dash variant twin).
+    t2 = _apply_task(_match("greatest hits " + _EN_DASH + " chapter one"), monkeypatch)
+    session._install_dup_guard(t2)
+    assert [a.album for a in t2.find_duplicates(lib)] == ["Greatest Hits - Chapter One"]
+
+    assert full_scans == [1]  # built once, reused by the second task
+
+
+def test_variant_gate_childless_album_is_excluded_as_reimport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A library album with ZERO item rows (a childless album) has an EMPTY
+    # file set, and the empty set is a (trivial) subset of the incoming task's
+    # files -- so it is EXCLUDED as a re-import, exactly as on the exact path.
+    # The old guard's `existing_paths and existing_paths <= task_paths` made the
+    # empty set a NON-subset and wrongly flagged it; the guard now mirrors beets'
+    # `existing_paths <= task_paths` (empty included). Force the variant path by
+    # keeping the titles a non-byte-identical twin (hyphen vs en-dash).
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    childless = Album(lib, albumartist="Radiohead", album="Greatest Hits - Chapter One")
+    lib.add(childless)
+    assert [al.id for al in lib.albums()] == [childless.id]
+    assert list(childless.items()) == []
+
+    task = _apply_task(_match("Greatest Hits " + _EN_DASH + " Chapter One"), monkeypatch)
+    session = _gate_session(ImportBridge(), lib)
+    session._install_dup_guard(task)
+    assert task.find_duplicates(lib) == []
