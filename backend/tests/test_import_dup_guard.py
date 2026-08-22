@@ -286,6 +286,43 @@ def test_variant_gate_no_artist_asis_returns_nothing(
 
 
 # --------------------------------------------------------------------------
+# wiring: the guard is installed through choose_match — the real production entry
+# --------------------------------------------------------------------------
+
+
+def test_choose_match_arms_the_guard_on_strong_auto(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wiring net: choose_match itself must install the per-task guard.
+
+    Every other test arms the guard by calling ``_install_dup_guard`` directly;
+    this one goes through the REAL production entry point (strong auto-apply —
+    choose_match returns without parking/blocking). If the
+    ``self._install_dup_guard(task)`` line in choose_match is deleted, this FAILS:
+    ``task.find_duplicates`` stays beets' pristine byte-exact bound method, the
+    wrapper assertion trips first, and ``find_duplicates`` returns [] on the
+    en-dash twin instead of the library's hyphen album.
+    """
+    lib = _lib_album_in("Radiohead", "Greatest Hits - Chapter One", tmp_path)
+    task = _apply_task(_match("Greatest Hits " + _EN_DASH + " Chapter One"), monkeypatch)
+    bridge = ImportBridge()
+    session = _gate_session(bridge, lib, unattended=True)
+    # __new__-built fixture (run()/choose_match paths beyond the guard need init state).
+    session._await_album_id = []
+    session._astracks_in_flight = False
+
+    # Strong auto-apply path: choose_match RETURNS (no park, no blocking worker).
+    choice = session.choose_match(task)
+    assert choice is not None
+
+    # The guard wrapper is installed on the task (mypy: dynamic shadow attr).
+    assert task.find_duplicates.__name__ == "guarded"
+    # The downstream (beets' _resolve_duplicates) sees the variant twin through
+    # the entry-point-installed guard, not beets' byte-exact-only match.
+    assert [a.album for a in task.find_duplicates(lib)] == ["Greatest Hits - Chapter One"]
+
+
+# --------------------------------------------------------------------------
 # machinery: the variant engages the SAME downstream the exact case already uses
 # --------------------------------------------------------------------------
 
