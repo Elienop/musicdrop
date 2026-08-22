@@ -262,14 +262,16 @@ def test_default_settings_disabled_endpoint_404s(
     # flip the feature on — the env default (artist_images_enabled=False) then
     # governs. No dependency override: the real wired service is constructed from
     # default settings, so it returns None -> 404 (no outbound call when off).
-    monkeypatch.setattr(app_settings, "artist_image_cache_dir", str(tmp_path))
+    _pin_settings_at(tmp_path, monkeypatch)
     with TestClient(app) as client:
         resp = client.get("/api/artists/image", params={"name": "ABBA"})
         assert resp.status_code == 404
 
 
 @respx.mock
-def test_integration_real_service_resolves_through_deezer(tmp_path: Path) -> None:
+def test_integration_real_service_resolves_through_deezer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # End-to-end through the real wired stack (source -> cache -> service ->
     # endpoint), with Deezer mocked by respx. Proves the wiring resolves.
     respx.get("https://api.deezer.com/search/artist").mock(
@@ -293,6 +295,7 @@ def test_integration_real_service_resolves_through_deezer(tmp_path: Path) -> Non
     )
 
     client = httpx.AsyncClient()
+    _pin_settings_at(tmp_path, monkeypatch)
     cache = ArtistImageCache(tmp_path)
     service = ArtistImageService(
         source=DeezerArtistImageSource(client=client, search_limit=5),
