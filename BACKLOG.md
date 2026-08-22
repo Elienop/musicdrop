@@ -268,6 +268,18 @@ origin question is the one with a deadline of sorts: it matters before the next 
 
 ## Recently shipped
 
+- **2026-08-22 — playlists list shows Plex sync state at a glance** (branch
+  `feat/playlists-plex-status`, owner request): each row carries one badge — Synced, the
+  failed sync's own error text, "N not on the Plex copy", or "Out of date; re-sync" —
+  computed by the SAME status vocabulary the detail page ships, extracted into
+  `plexSyncStatus.tsx` rather than duplicated (detail output pinned byte-identical by its
+  suite). The list wire deliberately omits `missing_tracks`, so a summary partial never
+  says "re-sync to see which" (false there — opening the playlist shows the misses) and
+  never splits absent-vs-duplicate (unknowable on that wire). Multi-target aggregation is
+  severity-first: the worst target wins the badge, a lone problem keeps its own label, so
+  a failed fan-out target can never hide behind a healthy admin copy. Rows with no Plex
+  state stay quiet. Six TDD tests, three mutants killed, live-browser-verified across all
+  five states incl. long-name truncation.
 - **2026-08-22 — backlog minors wave** (branch `fix/backlog-minors-wave`): the duplicated
   stat-ETag helpers are one shared `app/etag.py` (with the thumb `-t` marker splice pulled in
   beside it, so the quoted tag format is one module's internal contract); `AlreadyInLibrary`

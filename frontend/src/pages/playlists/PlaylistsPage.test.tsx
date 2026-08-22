@@ -118,4 +118,143 @@ describe("PlaylistsPage", () => {
 
     expect(await screen.findByText("Import flow")).toBeInTheDocument();
   });
+
+  test("a synced playlist shows a 'Synced' badge on its row", async () => {
+    server.use(
+      http.get(URL, () =>
+        HttpResponse.json([
+          playlist({
+            plex: {
+              admin: {
+                status: "ok",
+                missing: 0,
+                missing_tracks: [],
+                synced_at: "2026-06-08T00:00:00+00:00",
+              },
+            },
+          }),
+        ]),
+      ),
+    );
+    renderWithProviders(<PlaylistsPage />);
+    expect(await screen.findByText("Synced")).toBeInTheDocument();
+    expect(screen.getByText(/3 tracks/i)).toBeInTheDocument();
+  });
+
+  test("a failed sync shows its error text on the row", async () => {
+    server.use(
+      http.get(URL, () =>
+        HttpResponse.json([
+          playlist({
+            plex: {
+              admin: {
+                status: "failed",
+                missing: 3,
+                missing_tracks: [],
+                error: "Rate limited by Plex",
+                synced_at: null,
+              },
+            },
+          }),
+        ]),
+      ),
+    );
+    renderWithProviders(<PlaylistsPage />);
+    expect(await screen.findByText("Rate limited by Plex")).toBeInTheDocument();
+  });
+
+  test("a partial sync says 'N not on the Plex copy' and never 're-sync to see which'", async () => {
+    server.use(
+      http.get(URL, () =>
+        HttpResponse.json([
+          playlist({
+            plex: {
+              admin: {
+                status: "partial",
+                missing: 2,
+                missing_tracks: [], // always empty on the list wire
+                synced_at: null,
+              },
+            },
+          }),
+        ]),
+      ),
+    );
+    renderWithProviders(<PlaylistsPage />);
+    expect(await screen.findByText("2 not on the Plex copy")).toBeInTheDocument();
+    // The detail-wire phrase is false here (opening the playlist shows the
+    // misses; no re-sync needed), so it must never appear on a list row.
+    expect(screen.queryByText(/re-sync to see which/i)).not.toBeInTheDocument();
+  });
+
+  test("an out-of-date playlist beats its ok status", async () => {
+    server.use(
+      http.get(URL, () =>
+        HttpResponse.json([
+          playlist({
+            updated_at: "2026-06-07T00:00:00+00:00",
+            plex: {
+              admin: {
+                status: "ok",
+                missing: 0,
+                missing_tracks: [],
+                synced_at: "2026-06-05T00:00:00+00:00", // before updated_at
+              },
+            },
+          }),
+        ]),
+      ),
+    );
+    renderWithProviders(<PlaylistsPage />);
+    expect(await screen.findByText("Out of date; re-sync")).toBeInTheDocument();
+    expect(screen.queryByText("Synced")).not.toBeInTheDocument();
+  });
+
+  test("a playlist with no Plex state shows no sync badge at all", async () => {
+    server.use(
+      http.get(URL, () =>
+        HttpResponse.json([
+          playlist(), // no plex field at all
+          playlist({ plex: {} }), // present but empty
+        ]),
+      ),
+    );
+    renderWithProviders(<PlaylistsPage />);
+    expect((await screen.findAllByText(/tracks/i)).length).toBeGreaterThanOrEqual(1);
+    // A muted "Not synced" on quiet rows would be noise — none of these may show.
+    expect(screen.queryByText("Synced")).not.toBeInTheDocument();
+    expect(screen.queryByText("Not synced")).not.toBeInTheDocument();
+    expect(screen.queryByText(/re-sync/i)).not.toBeInTheDocument();
+  });
+
+  test("a failed fan-out target is surfaced even when the admin copy is synced", async () => {
+    server.use(
+      http.get(URL, () =>
+        HttpResponse.json([
+          playlist({
+            plex: {
+              admin: {
+                status: "ok",
+                missing: 0,
+                missing_tracks: [],
+                synced_at: "2026-06-08T00:00:00+00:00",
+              },
+              // A non-admin fan-out target — a Plex user id, not 'admin'.
+              "u-42": {
+                status: "failed",
+                missing: 1,
+                missing_tracks: [],
+                error: "Token expired",
+                synced_at: null,
+              },
+            },
+          }),
+        ]),
+      ),
+    );
+    renderWithProviders(<PlaylistsPage />);
+    // The bad fan-out target must not be masked by the healthy admin copy.
+    expect(await screen.findByText("Token expired")).toBeInTheDocument();
+    expect(screen.queryByText("Synced")).not.toBeInTheDocument();
+  });
 });
