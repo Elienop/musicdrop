@@ -536,66 +536,75 @@ class WebImportSession(ImportSession):
         # byte-exact pass intact (see _guarded_find_duplicates).
         task.find_duplicates = guarded  # type: ignore[method-assign]  # wrap beets' per-task bound method for _resolve_duplicates; see _install_dup_guard
 
-    def _album_table_signature(self, lib: Any) -> tuple[int, int]:
-        """(row count, max id) of the library's albums table, one raw aggregate.
+    def _album_table_signature(self, lib: Any) -> tuple[int, int, int]:
+        """(revision, row count, max id): the cache-invalidation probe.
 
-        This is the cache-invalidation probe for :meth:`_variant_album_index`,
-        and it deliberately uses beets 2.x's PUBLIC raw-read path
-        (``Library`` subclasses the dbcore ``Database``; see ``library.py``
-        L35) rather than re-materialising ``lib.albums()``: ``COUNT(*)`` +
-        ``MAX(id)`` on the id index is single-digit microsecond work (measured
-        ~6µs) wherever the library size is, so it is safe to run on EVERY
-        guarded call, whereas a full album materialisation is tens of ms at
-        20k rows. A row add or delete — how a prior task's library album
-        lands, and how an external writer changes the set — changes the
-        signature, so the index is rebuilt exactly when the set changed and
-        never in the meantime.
+        Three components, each load-bearing for a different writer:
+
+        * ``lib.revision`` — beets' in-memory mutation counter, bumped in
+          ``Transaction.__exit__`` for every mutating root transaction on THIS
+          ``Library`` object. The app opens one ``Library`` per process and
+          hands it to every surface (imports, the edit API, disk sync), so any
+          in-process mutation — including an in-place album rename, and the
+          delete-then-reinsert a merge performs — bumps it. This is what
+          catches SQLite ROWID REUSE: ``id INTEGER PRIMARY KEY`` without
+          AUTOINCREMENT reuses a deleted max id, so a merge that deletes the
+          newest album row and reinserts leaves ``(COUNT, MAX(id))`` unchanged
+          while the cached Album objects are stale ghosts bound to a reused
+          id — a prompt built from those could show one album and ``replace``
+          would trash another.
+        * ``COUNT(*)`` and ``COALESCE(MAX(id), -1)`` — cover OUT-of-process
+          writers (a stray ``beet`` CLI against the same db), which never
+          touch this process's ``revision``. Queried SEPARATELY on purpose:
+          SQLite optimizes ``MAX(id)`` alone to an index ``SEARCH`` and a lone
+          ``COUNT(*)`` to a payload-free scan, but the combined query plans
+          as a full row ``SCAN`` (~20x slower at 20k rows; verified with
+          ``EXPLAIN QUERY PLAN``).
+
+        The residual blind spot is an out-of-process IN-PLACE edit (no row
+        add/delete, foreign process): invisible until the next in-process
+        mutation or row-set change. Bounded consequence either way: the
+        byte-exact beets pass never reads this cache, so a stale index can at
+        worst miss a variant twin or offer a bucket entry whose per-task
+        exclusions still run.
 
         :param lib: the beets Library (``session.lib``).
-        :return: the (count, max id) tuple to cache-check against.
+        :return: the (revision, count, max id) tuple to cache-check against.
         """
         with lib.transaction() as tx:
-            row = tx.query(f"SELECT COUNT(*) c, COALESCE(MAX(id), -1) m FROM {Album._table}", [])[0]
-        return (int(row["c"]), int(row["m"]))
+            count = int(tx.query(f"SELECT COUNT(*) c FROM {Album._table}", [])[0]["c"])
+            max_id = int(
+                tx.query(f"SELECT COALESCE(MAX(id), -1) m FROM {Album._table}", [])[0]["m"]
+            )
+        return (int(lib.revision), count, max_id)
 
     def _variant_album_index(self, lib: Any) -> dict[tuple[str, str], tuple[Any, ...]]:
         """Normalized (artist, title) -> album rows, cached per session run.
 
-        Built ONCE (see :meth:`_album_table_signature`) and returned
-        read-through until the library's album row set actually changes.
-        After the first build, each guarded call costs the aggregate probe
-        (µs) plus an O(1) dict lookup and the per-task exclusion over whatever
-        rows hash to the lookup key — NOT a full ``lib.albums()`` pass plus
-        two ``_fuzzy_part`` calls per row on every task, which was the measured
-        regression (a 500-album serial sweep re-paid the full rescan per album;
-        at 20k rows one rescan is ~ms, so the old per-album cost was ~ms x the
-        whole sweep).
+        Rebuilt whenever :meth:`_album_table_signature` changes, returned
+        read-through while it does not. Two workloads, stated honestly (both
+        measured by review):
 
-        Invariant this cache must honor: an album added by an earlier task in
-        the same run is a NEW album row and therefore a new count + new max id,
-        so the next guard call's probe detects the change and rebuilds — the
-        later task sees it. (Verified by a test: task 1 imports en-dash twin
-        of a hyphen original; after ``task.add`` lands, task 2 on the ORIGINAL
-        must find BOTH the original and the newly-added en-dash twin, not the
-        stale original-only index.)
+        * A run whose tasks mostly SKIP (an all-duplicate sweep, a re-scan):
+          the library never changes, the index builds once, later guarded
+          calls cost the probe plus an O(1) lookup — the ~400x win the cache
+          exists for.
+        * A run whose tasks mostly APPLY: every ``task.add`` mutates the
+          library, so the NEXT guarded call rebuilds — one full
+          ``lib.albums()`` pass per applied album, the same order of work the
+          pre-cache code paid. ``_fuzzy_part`` is memoized at the module level
+          (see ``duplicates.py``), so repeat rebuilds re-fetch rows but do not
+          re-run the regex ladder on unchanged strings; the fetch, not the
+          normalization, is the remaining cost.
 
-        Accepted staleness window (stated exactly): the signature is
-        ``COUNT(*), COALESCE(MAX(id), -1)`` — there is no modified-time column
-        on beets' albums table to fold in (``when_modified`` does not exist;
-        only ``added``). The signature changes on any row ADD or DELETE,
-        including delete-then-add pairs (either the count or the max id
-        moves). The residual stale window is an IN-PLACE column edit — a
-        concurrent album rename through the server API mid-run — which
-        changes no row and therefore no signature; the index carries the old
-        title until the next add or delete rebuilds it. Bounded consequence:
-        the byte-exact beets pass is independent of this cache, so a stale
-        index can at worst miss a variant twin (a false negative the user can
-        still resolve through the duplicates page) or offer a bucket entry
-        whose per-task exclusions still run — never a crash and never a
-        wrong (non-twin) resolution applied automatically.
+        Invariant this cache must honor: an album added (or merged away and
+        re-minted) by an earlier task in the same run must be visible to later
+        tasks' guards — ``lib.revision`` in the signature guarantees rebuild
+        after every in-process mutation, so the index never serves an album
+        object whose row this process has since rewritten.
 
         :param lib: the beets Library (``session.lib``).
-        :return: a mapping ``_(artist_key, title_key) -> _tuple of Albums__``.
+        :return: a mapping ``(artist_key, title_key) -> tuple of Albums``.
         """
         # The cached value is (signature, index). It lives on the instance for
         # the session run's lifetime; a fresh WebImportSession is per run, so
@@ -603,12 +612,16 @@ class WebImportSession(ImportSession):
         # do not declare it in __init__ — the gate's tests construct the
         # session via __new__ and set attrs manually, and beets ImportTask
         # precedent already uses dynamic attrs the same way (mypy attr-
-        # defined is a known trade-off for these beets-side seams).
-        cached: tuple[tuple[int, int], dict[tuple[str, str], tuple[Any, ...]]] | None
-        cached = getattr(self, "_variant_index_cache", None)
+        # defined is a known trade-off for these beets-side seams). The cast
+        # asserts the shape mypy cannot see through getattr; only this method
+        # reads and writes the attribute, keeping the assertion one-sided.
+        cached = cast(
+            "tuple[tuple[int, int, int], dict[tuple[str, str], tuple[Any, ...]]] | None",
+            getattr(self, "_variant_index_cache", None),
+        )
         sig = self._album_table_signature(lib)
         if cached is not None and cached[0] == sig:
-            return cast("dict[tuple[str, str], tuple[Any, ...]]", cached[1])
+            return cached[1]
 
         index: dict[tuple[str, str], list[Any]] = {}
         for existing in lib.albums():

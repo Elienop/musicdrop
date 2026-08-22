@@ -633,3 +633,112 @@ def test_variant_gate_childless_album_is_excluded_as_reimport(
     session = _gate_session(ImportBridge(), lib)
     session._install_dup_guard(task)
     assert task.find_duplicates(lib) == []
+
+
+def test_variant_index_survives_rowid_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # SQLite `id INTEGER PRIMARY KEY` (no AUTOINCREMENT) REUSES the rowid of a
+    # deleted max-id row, so delete-then-reinsert of the newest album — the
+    # exact shape beets' merge takes through remove_replaced + add_album —
+    # leaves (COUNT, MAX(id)) unchanged. Only `lib.revision` in the signature
+    # catches it; without it the index serves stale Album objects bound to a
+    # reused id, and a duplicate prompt could show one album while `replace`
+    # trashes another. Pin: after the swap, the guard must see the NEW title
+    # under the reused id and must NOT match the dead one.
+    lib = _lib_album_in("Radiohead", "Filler Album", tmp_path)
+    kid_path = str(tmp_path / "music" / "Radiohead - Kid A" / "01.mp3")
+    kid = Item(
+        artist="Radiohead",
+        albumartist="Radiohead",
+        album="Kid A",
+        title="Chapter One",
+        track=1,
+        length=200.0,
+        path=os.fsencode(kid_path),
+    )
+    kid_album = lib.add_album([kid])
+    session = _gate_session(ImportBridge(), lib)
+
+    # Guard call 1 caches an index holding the max-id row ("Kid A").
+    t1 = _apply_task(_match("kid a"), monkeypatch)
+    session._install_dup_guard(t1)
+    assert [a.album for a in t1.find_duplicates(lib)] == ["Kid A"]
+    assert kid_album.id is not None
+    max_id = int(kid_album.id)
+
+    # Merge shape: the max-id album is deleted, a new one reuses its rowid.
+    kid_album.remove(delete=False, with_items=True)
+    replacement = Item(
+        artist="Radiohead",
+        albumartist="Radiohead",
+        album="Amnesiac",
+        title="Chapter One",
+        track=1,
+        length=200.0,
+        path=os.fsencode(str(tmp_path / "music" / "Radiohead - Amnesiac" / "01.mp3")),
+    )
+    new_album = lib.add_album([replacement])
+    assert new_album.id is not None
+    assert int(new_album.id) == max_id  # the rowid really was reused
+
+    # A twin of the NEW title must resolve to the live row...
+    t2 = _apply_task(_match("AMNESIAC"), monkeypatch)
+    session._install_dup_guard(t2)
+    hits = t2.find_duplicates(lib)
+    assert [(a.id, a.album) for a in hits] == [(max_id, "Amnesiac")]
+    # ...and the dead title must no longer match anything.
+    t3 = _apply_task(_match("kid a"), monkeypatch)
+    session._install_dup_guard(t3)
+    assert t3.find_duplicates(lib) == []
+
+
+def test_variant_index_sees_out_of_process_writers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `lib.revision` is in-memory: a SECOND connection to the same db file (a
+    # stray `beet` CLI in production) never bumps it. The COUNT/MAX(id) halves
+    # of the signature are what notice such writers. Shape chosen so COUNT
+    # stays equal (delete a non-max row, add a new one) — a count-only
+    # signature mutant misses it and only MAX(id) catches it.
+    lib = _lib_album_in("Radiohead", "Filler Album", tmp_path)
+    ok_path = str(tmp_path / "music" / "Radiohead - OK Computer" / "01.mp3")
+    ok = Item(
+        artist="Radiohead",
+        albumartist="Radiohead",
+        album="OK Computer",
+        title="Chapter One",
+        track=1,
+        length=200.0,
+        path=os.fsencode(ok_path),
+    )
+    lib.add_album([ok])
+    session = _gate_session(ImportBridge(), lib)
+
+    # Prime the cache on THIS connection.
+    t1 = _apply_task(_match("ok computer"), monkeypatch)
+    session._install_dup_guard(t1)
+    assert [a.album for a in t1.find_duplicates(lib)] == ["OK Computer"]
+
+    # Foreign writer: delete the NON-max filler, add a new album. COUNT is
+    # back where it was; only MAX(id) moved; this lib's revision never did.
+    other = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    filler = next(a for a in other.albums() if a.album == "Filler Album")
+    filler.remove(delete=False, with_items=True)
+    other.add_album(
+        [
+            Item(
+                artist="Radiohead",
+                albumartist="Radiohead",
+                album="In Rainbows",
+                title="Chapter One",
+                track=1,
+                length=200.0,
+                path=os.fsencode(str(tmp_path / "music" / "Radiohead - In Rainbows" / "01.mp3")),
+            )
+        ]
+    )
+
+    t2 = _apply_task(_match("in rainbows"), monkeypatch)
+    session._install_dup_guard(t2)
+    assert [a.album for a in t2.find_duplicates(lib)] == ["In Rainbows"]
