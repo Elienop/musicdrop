@@ -21,6 +21,11 @@ import { usePlexUsers } from "@/api/usePlex";
 import { BackLink } from "@/components/albums/album-grid";
 import { MergePlaylistDialog } from "@/components/playlists/MergePlaylistDialog";
 import { PlaylistCover } from "@/components/playlists/PlaylistCover";
+import {
+  StatusLine,
+  adminSyncStatus,
+  syncStatus,
+} from "@/components/playlists/plexSyncStatus";
 import { TrackMatchPicker } from "@/components/playlists/TrackMatchPicker";
 import {
   Close,
@@ -255,158 +260,6 @@ function matchAnnouncement(breakdown: MatchBreakdown | null): string {
   return breakdown.path === 0
     ? `${counts} Nothing matched by file — check the Plex library path in Settings.`
     : `${counts} ${WEAK_MATCH_NOTE}`;
-}
-
-/** Visual tone for a sync status, mapped to a leading icon + a semantic text
- * color so the state reads at a glance (the text label stays the non-color
- * carrier for screen readers / color-blind users). */
-type StatusTone = "success" | "warning" | "destructive" | "muted";
-
-interface SyncStatus {
-  label: string;
-  tone: StatusTone;
-}
-
-/** True when ISO instant `a` is strictly later than `b`. Compares parsed
- * instants (not raw strings) so it's robust to timezone-offset / sub-second
- * precision drift between the two timestamps. */
-function isAfter(a: string, b: string): boolean {
-  return new Date(a).getTime() > new Date(b).getTime();
-}
-
-/** How many of the carried miss identities are collapsed duplicates. They are
- * misses — a row of this playlist has no counterpart row on the Plex copy — but
- * they are not absences, so they are counted apart from the "not in Plex"
- * total rather than folded into it. */
-function collapsedCount(misses: PlexTargetState["missing_tracks"]): number {
-  return misses.filter((miss) => miss.reason === "duplicate_collapsed").length;
-}
-
-/** The `partial` label when the carried identities account for every miss, so
- * the split between the two kinds is exact.
- *
- * They are named apart because they are different news: "not in Plex" is a
- * track the Plex library hasn't got, while a collapsed duplicate is a track it
- * HAS — a sync whose only misses are repeats is not "2 not in Plex", which
- * would be the same falsehood the row badge refuses to tell, one level up.
- *
- * A clause is dropped when its count is zero; a state with neither keeps the
- * bare count wording it has always had. */
-function partialLabel(absent: number, collapsed: number): string {
-  const clauses: string[] = [];
-  if (absent > 0 || collapsed === 0) {
-    clauses.push(`${absent} not in Plex`);
-  }
-  if (collapsed > 0) {
-    clauses.push(
-      `${collapsed} duplicate ${collapsed === 1 ? "row" : "rows"}; Plex keeps one of each`,
-    );
-  }
-  return clauses.join("; ");
-}
-
-/** The one-line Plex sync status for one target (admin or a fan-out user).
- * "Out of date" wins when the playlist changed after this target's last push.
- * An absent/unknown state falls back to `notSyncedLabel` (e.g. a freshly-checked
- * target that hasn't synced yet). */
-function syncStatus(
-  state: PlexTargetState | undefined,
-  playlist: PlaylistDetail,
-  notSyncedLabel: string,
-): SyncStatus {
-  if (!state) {
-    return { label: notSyncedLabel, tone: "muted" };
-  }
-  if (state.synced_at != null && isAfter(playlist.updated_at, state.synced_at)) {
-    return { label: "Out of date; re-sync", tone: "warning" };
-  }
-  switch (state.status) {
-    case "ok":
-      return { label: "Synced", tone: "success" };
-    case "partial": {
-      const marked = state.missing_tracks.length;
-      const collapsed = collapsedCount(state.missing_tracks);
-      if (marked >= state.missing) {
-        // Every miss is carried, so every reason is known: name the two kinds.
-        return {
-          label: partialLabel(Math.max(state.missing - collapsed, 0), collapsed),
-          tone: "warning",
-        };
-      }
-      // Fewer carried identities than misses — the server caps the list
-      // (MISSING_TRACKS_CAP). Only those rows can wear a badge, so say which
-      // ones the badges cover; otherwise the unmarked remainder reads as fine.
-      // The unmarked remainder's REASONS are unknown as well, so the total
-      // can't be split here and mustn't be called absent: it takes the wording
-      // that is true of both kinds instead ("not on the Plex copy" covers a
-      // track Plex hasn't got AND a repeat of one it holds once). Guessing
-      // from the visible slice would be worse than vague — the server lists
-      // collapsed duplicates after the absences, so truncation hides them
-      // first and the slice reads as all-absent precisely when it isn't.
-      // `marked === 0` can't come from the cap (it truncates to 200, never 0):
-      // it means the state predates the identities, which one re-sync fixes —
-      // and a record that predates them predates collapsed duplicates too, so
-      // that arm alone can still say plainly that they aren't in Plex.
-      return {
-        label:
-          marked === 0
-            ? `${state.missing} not in Plex; re-sync to see which`
-            : `${state.missing} not on the Plex copy; first ${marked} marked`,
-        tone: "warning",
-      };
-    }
-    case "empty":
-      // Nothing resolved, so the sync touched nothing. Say which case this is —
-      // and both are a warning: the user asked for a push and got none, so the
-      // no-copy-at-all outcome must not read quieter than the milder one.
-      // The exception is a playlist with nothing to send in the first place
-      // (empty, or only pending rows): missing === 0, nothing went wrong, so no
-      // alarm is earned.
-      if (state.rating_key) {
-        return { label: "No matching tracks; Plex copy left as is", tone: "warning" };
-      }
-      return state.missing === 0
-        ? { label: "Nothing to sync", tone: "muted" }
-        : { label: "No matching tracks; nothing sent to Plex", tone: "warning" };
-    case "failed":
-      return { label: state.error ?? "Failed", tone: "destructive" };
-    default:
-      return { label: notSyncedLabel, tone: "muted" };
-  }
-}
-
-/** The owner's own copy: the `admin` target, with a Plex-specific "not synced"
- * label. */
-function adminSyncStatus(playlist: PlaylistDetail): SyncStatus {
-  return syncStatus(playlist.plex?.admin, playlist, "Not synced to Plex");
-}
-
-/** Render a sync status with a leading concept icon + semantic color. The text
- * label is always present (the color/icon are emphasis, not the only signal). */
-function StatusLine({ status }: { status: SyncStatus }) {
-  const { label, tone } = status;
-  const Icon =
-    tone === "success"
-      ? Success
-      : tone === "warning"
-        ? Warning
-        : tone === "destructive"
-          ? ErrorIcon
-          : null;
-  const colorClass =
-    tone === "success"
-      ? "text-success"
-      : tone === "warning"
-        ? "text-warning"
-        : tone === "destructive"
-          ? "text-destructive"
-          : "text-muted-foreground";
-  return (
-    <span className={`inline-flex items-center gap-1 ${colorClass}`}>
-      {Icon ? <Icon className="size-3.5 shrink-0" aria-hidden="true" /> : null}
-      {label}
-    </span>
-  );
 }
 
 /** How the last sync found its tracks — the footnote of the Plex sync section.

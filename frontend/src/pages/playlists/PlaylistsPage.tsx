@@ -5,6 +5,7 @@ import { type Playlist, usePlaylists } from "@/api/usePlaylists";
 import { Add, Playlists, Upload } from "@/components/icons";
 import { CreatePlaylistDialog } from "@/components/playlists/CreatePlaylistDialog";
 import { PlaylistCover } from "@/components/playlists/PlaylistCover";
+import { StatusLine, playlistSyncStatus } from "@/components/playlists/plexSyncStatus";
 import { EmptyState } from "@/components/system/EmptyState";
 import { ErrorState } from "@/components/system/ErrorState";
 import { PageHeader } from "@/components/system/PageHeader";
@@ -80,8 +81,13 @@ export function PlaylistsPage() {
   );
 }
 
-/** A single playlist row: whole-card link to its editor (name + track count). */
+/** A single playlist row: whole-card link to its editor (name + track count).
+ * A Plex sync badge sits on the right; the name area is the flexible,
+ * truncating middle (min-w-0 + flex-1) so a long name never pushes the status
+ * out of view. A playlist with no Plex state at all shows no badge — a muted
+ * "Not synced" on every quiet row would be noise (see playlistSyncStatus). */
 function PlaylistRow({ playlist }: { playlist: Playlist }) {
+  const status = playlistSyncStatus(playlist);
   return (
     <Link
       to={`/playlists/${playlist.id}`}
@@ -93,7 +99,7 @@ function PlaylistRow({ playlist }: { playlist: Playlist }) {
             playlist={playlist}
             className="border-border size-14 shrink-0 rounded-lg border"
           />
-          <div className="flex min-w-0 flex-col gap-1">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
             <CardTitle className="truncate" title={playlist.name}>
               {playlist.name}
             </CardTitle>
@@ -101,6 +107,11 @@ function PlaylistRow({ playlist }: { playlist: Playlist }) {
               {playlist.track_count} {playlist.track_count === 1 ? "track" : "tracks"}
             </CardDescription>
           </div>
+          {status ? (
+            <span className="shrink-0">
+              <StatusLine status={status} />
+            </span>
+          ) : null}
         </CardHeader>
       </Card>
     </Link>
