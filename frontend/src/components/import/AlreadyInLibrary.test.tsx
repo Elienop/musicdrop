@@ -70,7 +70,7 @@ describe("blurb", () => {
 
 describe("tracklist rows", () => {
   test("shows number · title · quality, with '-' and 'Untitled' fallbacks", () => {
-    renderSection([
+    const { container } = renderSection([
       makeExisting({
         tracks: [
           {
@@ -90,6 +90,8 @@ describe("tracklist rows", () => {
         ],
       }),
     ]);
+    // The tracklist IS an <ol> — anchors the absence test's selector.
+    expect(container.querySelector("ol")).not.toBeNull();
     expect(screen.getByText("A Question of Live")).toBeInTheDocument();
     // A NULL track falls back to '-', NULL title to 'Untitled'.
     expect(screen.getByText("-")).toBeInTheDocument();
