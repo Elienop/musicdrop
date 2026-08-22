@@ -66,9 +66,6 @@ origin question is the one with a deadline of sorts: it matters before the next 
   no effect on MusicDrop-driven imports. Note: sweep/bank breakage under `autotag: no` was
   reasoned from the stage list, demonstrated only for restore.
 
-- **ENAMETOOLONG is a 500 on trash/inbox endpoints** (pre-existing): `Path.exists()` only
-  swallows ENOENT/ENOTDIR/EBADF/ELOOP, so a >255-byte name component re-raises where a 404
-  was intended. Needs guards at the `exists()` call sites.
 
 - **Wire-safety net coverage caveats** (by design, recorded so nobody assumes otherwise):
   SSE `/api/events` bypasses the response class (scopes are tag-derived today, never paths);
@@ -279,7 +276,10 @@ origin question is the one with a deadline of sorts: it matters before the next 
   `test_artist_image_endpoint.py` lifespan tests no longer open the real dev library
   (canary-proven both directions); and the Plex import rows' playlist NAME is a real click
   target (merge-dialog pattern, three regression tests, live-browser-verified with
-  fixture interception). First wave implemented via pi/qwen delegation under Claude review. (branch `feat/perf-images-pager-cache`):
+  fixture interception). Also: **ENAMETOOLONG no longer 500s trash/inbox endpoints** — new
+  `app/fsutil.py` guarded predicates (only errno 36 reads as absent; every other OSError
+  still raises) at the two request-reachable sites, 10 tests incl. re-raise pins for
+  EACCES/ESTALE. First wave implemented via pi/qwen delegation under Claude review. (branch `feat/perf-images-pager-cache`):
   artist-image and album-cover 304s now answer from a file stat (no read, no hash, off the
   event loop); new 320px WebP thumb variant (`?size=thumb|full`) — grids/tiles request thumbs,
   the two detail-page heroes deliberately keep full-size art. `Pagination.tsx` gained
