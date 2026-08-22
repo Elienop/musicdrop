@@ -66,9 +66,6 @@ origin question is the one with a deadline of sorts: it matters before the next 
   no effect on MusicDrop-driven imports. Note: sweep/bank breakage under `autotag: no` was
   reasoned from the stage list, demonstrated only for restore.
 
-- **ENAMETOOLONG is a 500 on trash/inbox endpoints** (pre-existing): `Path.exists()` only
-  swallows ENOENT/ENOTDIR/EBADF/ELOOP, so a >255-byte name component re-raises where a 404
-  was intended. Needs guards at the `exists()` call sites.
 
 - **Wire-safety net coverage caveats** (by design, recorded so nobody assumes otherwise):
   SSE `/api/events` bypasses the response class (scopes are tag-derived today, never paths);
@@ -184,13 +181,11 @@ origin question is the one with a deadline of sorts: it matters before the next 
 - `aside.w-96` on `ArtistAlbumsPage` overflows a 390px viewport by 18px, reproduced with the
   panel closed (`App.tsx:53` gives main `px-6`, leaving ~342px for a 384px rail). Fix is
   `w-full max-w-96 lg:w-96`, not a design change.
-- **`ImportPlaylistsPage.tsx:403-412` has a dead checkbox label.** The visible text sits beside
-  a Radix `Checkbox` that carries the accessible name as an `aria-label`, and the text itself is
-  inert — clicking the words does nothing, so only the small box is a target. Found while fixing
-  the identical bug on the merge dialog (where the fix was: put the toggle handler on the text
-  alone, keep it `aria-hidden` so the control keeps exactly one accessible name, and leave the
-  checkbox as the single tab stop). A wrapping `<label>` does NOT work here — Radix renders
-  `role="checkbox"` on a `<button>`, and `<label for>` does not associate with a button.
+- The aria-hidden clickable-name idiom now has TWO instances (`MergePlaylistDialog.tsx`,
+  `ImportPlaylistsPage.tsx` since the backlog-minors wave): a third should become a shared
+  component. Reviews of it should also check `select-none` isn't suppressing selection of
+  user data someone might want to copy — on the import rows the playlist NAME is now
+  unselectable, an accepted trade-off of the pattern.
 - `SegmentedControl` segments are 28px tall, under the 44px touch-target guidance. Shared
   component; the artist-image wave made it load-bearing on a mobile flow for the first time.
   `py-1` → `py-2` reaches ~36px without touching the visual language; 44px needs a design call.
@@ -199,28 +194,24 @@ origin question is the one with a deadline of sorts: it matters before the next 
   its visible label (WCAG 2.5.3, pre-existing — fixing it breaks `getByLabelText` in two files);
   generic `alt="Artist image preview"`; comparing two sources costs a Discard; and a possible
   live-region/focus contention that needs a real screen reader to settle.
-- **`tests/test_artist_image_endpoint.py` opens the REAL dev library twice on every suite run.**
-  Two of its four `with TestClient(app)` tests — `test_default_settings_disabled_endpoint_404s`
-  and `test_integration_real_service_resolves_through_deezer` — never point
-  `settings.beets_dir` anywhere, so the lifespan runs `setup_beets` against
-  `MUSICDROP_BEETS_DIR` from `backend/.env` — the live `data/beets`. Measured by wrapping
-  `app.main.setup_beets` for one file run: four opens, two of them the real dir. Nothing
-  autouse guards this: the hermetic `beets_library` fixture (`tests/conftest.py:255`) is
-  opt-in. No debris today (beets 2.13 writes `library.db-before-*.bak` only when a migration
-  actually runs, and the dev DB is current), but it holds a SQLite connection to the real
-  corpus and would back it up on the next beets schema bump. The background-fill wave added a
-  `_pin_settings_at(tmp_path, monkeypatch)` helper to this very file and its own lifespan
-  tests use it, so the fix is now one call in each of the two, not a new helper.
+- `test_default_settings_disabled_endpoint_404s` proves the 404, not the REASON: with the
+  flag mutated to enabled it still passes offline (the inline-grace path also 404s), so
+  "no outbound call when off" is asserted nowhere. A bare `@respx.mock` does NOT close
+  this — tried and refuted by its own mutant on the backlog-minors wave: the service
+  catches source exceptions as transient failures, so an unmocked-call raise is laundered
+  into the same 404. A real proof needs a transport spy plus deterministic background-fill
+  settling; not worth it until the wiring changes.
 - **`tests/test_import_session.py::test_attended_astracks_lands_the_singletons_full_pipeline`
   writes to the developer's PERSONAL beets config dir** (`~/.config/beets/state.pickle`) on every
   full-suite run — bisected as the only offender, and present at least as far back as `643783f`,
   so it predates the path-binding branch. Bounded: only beets' importer scratch state is written,
   the personal `library.db` md5 is unchanged and no `.bak` appears. Same class as the sibling entry
   above and as the 2026-08-15 incident where an agent's unguarded `beet --version` ran two pending
-  migrations against that same personal library. The durable fix is an autouse fixture pointing
-  `BEETSDIR` at `tmp_path` for the whole suite, which would close both entries at once.
-- `_stat_tag` (artwork) duplicates `library.py`'s `_stat_etag` (Path vs str param) — polish
-  only, same behavior.
+  migrations against that same personal library. Its sibling entry (the two
+  `test_artist_image_endpoint.py` lifespan tests that opened the real dev library) was fixed on
+  the backlog-minors wave via `_pin_settings_at`, canary-proven with
+  `MUSICDROP_BEETS_DIR=/nonexistent`; the durable close for THIS entry and the whole class is
+  still an autouse fixture pointing `BEETSDIR` at `tmp_path` for the entire suite.
 - Stat-then-read ETag race on the artwork cache (self-healing, mirrors the covers precedent);
   its integration test only exercises the hash-fallback branch.
 - Thumb edge-case paths (animated/palette/CMYK/tiny source images) were verified by reviewer
@@ -232,7 +223,6 @@ origin question is the one with a deadline of sorts: it matters before the next 
 - `get_artist_image_cache`'s sibling has no lazy fallback (same latent isolated-run fragility
   the cover dep fix addressed); `cover_client` has a pre-existing beets_library state leak; no
   eviction of cover thumbs on album delete (parity with the artist cache is missing).
-- `AlreadyInLibrary` thumb URL has no test file.
 - Pagination: numbered-window `aria-label="Page N"` vs. the visible "N" is a WCAG 2.5.3
   label-in-name partial mismatch; the icon-sm caret width is tight for 3-digit page numbers.
 - Pagination: a component docstring is stale re click-to-edit; there's a minor spinner style
@@ -278,7 +268,18 @@ origin question is the one with a deadline of sorts: it matters before the next 
 
 ## Recently shipped
 
-- **2026-08-08 — perf: images, pager, cache wave** (branch `feat/perf-images-pager-cache`):
+- **2026-08-22 — backlog minors wave** (branch `fix/backlog-minors-wave`): the duplicated
+  stat-ETag helpers are one shared `app/etag.py` (with the thumb `-t` marker splice pulled in
+  beside it, so the quoted tag format is one module's internal contract); `AlreadyInLibrary`
+  finally has a test file, pinning the `?size=thumb` cover URL, the tracklist fallbacks and
+  structure, and the View links (both key mutants killed); the two
+  `test_artist_image_endpoint.py` lifespan tests no longer open the real dev library
+  (canary-proven both directions); and the Plex import rows' playlist NAME is a real click
+  target (merge-dialog pattern, three regression tests, live-browser-verified with
+  fixture interception). Also: **ENAMETOOLONG no longer 500s trash/inbox endpoints** — new
+  `app/fsutil.py` guarded predicates (only errno 36 reads as absent; every other OSError
+  still raises) at the two request-reachable sites, 10 tests incl. re-raise pins for
+  EACCES/ESTALE. First wave implemented via pi/qwen delegation under Claude review. (branch `feat/perf-images-pager-cache`):
   artist-image and album-cover 304s now answer from a file stat (no read, no hash, off the
   event loop); new 320px WebP thumb variant (`?size=thumb|full`) — grids/tiles request thumbs,
   the two detail-page heroes deliberately keep full-size art. `Pagination.tsx` gained

@@ -47,6 +47,7 @@ from typing import Final
 from app.artwork.degrade import derive_thumb_or_degrade, warn_throttled
 from app.artwork.images import FALLBACK_CONTENT_TYPE, header_safe_content_type
 from app.artwork.normalize import normalize_artist_name
+from app.etag import stat_etag
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -161,17 +162,6 @@ class _MemoryFallback:
         existing = self._entries.pop(key, None)
         if isinstance(existing, CachedImage):
             self._bytes -= len(existing.data)
-
-
-def _stat_tag(path: Path) -> str | None:
-    """A strong ETag from mtime_ns+size — no read. None if the file vanished
-    (stat races the backfill daemon's atomic replace; the caller just serves
-    the full body with a content-hash fallback)."""
-    try:
-        st = path.stat()
-    except OSError:
-        return None
-    return f'"{st.st_mtime_ns}-{st.st_size}"'
 
 
 class ArtistImageCache:
@@ -447,7 +437,7 @@ class ArtistImageCache:
         only swallows ENOENT/ENOTDIR/EBADF/ELOOP, so EACCES (a container
         recreate that re-chowned the cache volume) or ESTALE (a dropped network
         mount) would otherwise raise from inside a function that promises not
-        to — same shape as :func:`_stat_tag`.
+        to — same shape as :func:`app.etag.stat_etag`.
         """
         try:
             if not data_path.exists():
@@ -499,18 +489,21 @@ class ArtistImageCache:
         replaces the file (atomic rename bumps mtime), so a stale tag can never
         yield a false 304.
 
-        The probe is guarded for the same reason :func:`_stat_tag` is: this runs
-        FIRST on every image request, so an unreadable cache dir (EACCES after a
+        The probe is guarded for the same reason :func:`app.etag.stat_etag` is:
+        this runs FIRST on every image request, so an unreadable cache dir (EACCES after a
         volume re-chown, ESTALE on a dropped mount) raising out of ``exists()``
         here would 500 both endpoints before any other guard could catch it.
         Unreadable reads as "nothing to validate" — the caller falls through to
-        its resolve path exactly as it does on a cache miss."""
+        its resolve path exactly as it does on cache miss. The ``stat`` itself
+        also races the backfill daemon's atomic replace, so a vanished file makes
+        the tag ``None`` and the caller serves the full body with a content-hash
+        fallback rather than trusting a stale tag."""
         key = self._key(name)
         try:
             for slot in (f"{key}.override", f"{key}.bin"):
                 path = self._dir / slot
                 if path.exists():
-                    return _stat_tag(path)
+                    return stat_etag(path)
         except OSError as exc:
             warn_throttled(
                 "cache-read", "artist-image cache dir is unreadable (%s); serving unvalidated", exc

@@ -4,10 +4,34 @@ Same recipe as the playlists store (uuid-hex ids + id-regex traversal guard +
 ``write_atomic_text``), with one addition: a module-level mutation lock,
 because chunk 3's import worker thread writes rows while the API thread reads
 and mutates them. Pure filesystem I/O — no beets imports.
-"""
+
+SERIALIZATION (lossless, deliberately not the wire path): a stored folder can
+carry a LONE SURROGATE — ``folder`` comes from ``os.fsdecode``, so a folder
+name with undecodable UTF-8 bytes (e.g. ``b"Bj\\xf6rk"``) is a perfectly legal
+Python str (``"Bj\\udcf6rk"``) that the folder on disk actually needs. The store
+must round-trip it losslessly (invariant: ``os.fsencode`` on the reloaded str
+yields the original on-disk bytes), because the apply step resolves the folder
+against the real filesystem. A U+FFFD display-scrub (``app/wire.py``) is the
+opposite guarantee — a scrubbed path would point at a non-existent folder and
+apply would break — so it belongs ONLY on responses, never in this sink.
+
+Pydantic's Rust serializers reject lone surrogates (``model_dump_json`` raises
+``PydanticSerializationError``), so the row file is written with Python's stdlib
+``json`` instead: ``json.dumps(model_dump(mode="json"), ensure_ascii=True)``
+escapes each surrogate as ``\\uXXXX`` (CPython explicitly supports encoding lone
+surrogates in text output), the file stays pure ASCII — hence valid UTF-8 for
+``write_atomic_text`` — and reading with ``json.loads`` restores the identical
+str, which ``model_validate`` accepts. ``ensure_ascii=True`` is REQUIRED: a lone
+surrogate is unencodable to UTF-8, so writing it raw would be a
+``UnicodeEncodeError``, not a data loss. Trade-off: we give up serde speed and
+rely on CPython's lone-surrogate handling (stable since forever, and the ONLY
+stdlib that accepts these strings); rows stay pure-ASCII JSON that reads
+backward-compatible with earlier rows and with ``model_validate_json`` on
+surrogate-free data."""
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import uuid
@@ -140,8 +164,24 @@ def reset_bank_index() -> None:
     _FOLDER.clear()
 
 
+def _row_text(item: BankItem) -> str:
+    """Lossless row serialization. See the module docstring (SINGLE SINK RULE).
+
+    Stdlib ``json`` (not pydantic's Rust serde) because ``model_dump_json``
+    rejects lone surrogates a legal ``os.fsdecode`` folder can carry, and
+    ``ensure_ascii`` keeps the output pure ASCII — UTF-8-safe for the writer.
+    """
+    return json.dumps(item.model_dump(mode="json"), ensure_ascii=True, indent=2)
+
+
+def _parse_row(raw: str) -> BankItem:
+    """Lossless row parse: stdlib ``json.loads`` restores lone surrogates that
+    ``model_dump_json``-era files and current rows both escape as ``\\uXXXX``."""
+    return BankItem.model_validate(json.loads(raw))
+
+
 def _write(bank_dir: Path, item: BankItem) -> None:
-    write_atomic_text(_row_path(bank_dir, item.id), item.model_dump_json(indent=2))
+    write_atomic_text(_row_path(bank_dir, item.id), _row_text(item))
     _index_put(bank_dir, item)
 
 
@@ -191,7 +231,7 @@ def get_item(bank_dir: Path, item_id: str) -> BankItem | None:
         # out-of-band edits are handled by reset_bank_index().
         return None
     try:
-        return BankItem.model_validate_json(raw)
+        return _parse_row(raw)
     except ValueError:
         return None
 
@@ -202,7 +242,7 @@ def _all_items(bank_dir: Path) -> list[BankItem]:
     items: list[BankItem] = []
     for child in bank_dir.glob("*.json"):
         try:
-            items.append(BankItem.model_validate_json(child.read_text(encoding="utf-8")))
+            items.append(_parse_row(child.read_text(encoding="utf-8")))
         except (OSError, ValueError):
             continue  # unreadable/corrupt rows never break the listing
     # Deterministic order for index building; the DISPLAY order (newest banked

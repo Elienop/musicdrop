@@ -407,7 +407,23 @@ export function ImportPlaylistsPage() {
                           togglePlex(playlist.rating_key, checked === true)
                         }
                       />
-                      <span className="min-w-0 flex-1 truncate" title={playlist.name}>
+                      {/* The words are a click target, because people click labels and
+                          a dead one is worse than none. They stay aria-hidden so the
+                          control keeps exactly ONE accessible name (the checkbox's
+                          aria-label above, already qualified for duplicate titles)
+                          instead of a screen reader hearing the same title twice, and
+                          they are deliberately not focusable: the checkbox is the
+                          single tab stop, reached with Tab and toggled with Space.
+                          The handler is on the name alone, not the row, so a click on
+                          the box itself doesn't toggle twice and cancel out. */}
+                      <span
+                        aria-hidden="true"
+                        className="min-w-0 flex-1 cursor-pointer select-none truncate"
+                        title={playlist.name}
+                        onClick={() =>
+                          togglePlex(playlist.rating_key, !plexChecked.has(playlist.rating_key))
+                        }
+                      >
                         {playlist.name}
                       </span>
                       <span className="text-muted-foreground shrink-0 text-sm tabular-nums">

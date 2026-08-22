@@ -26,6 +26,7 @@ from app.beets.library import (
 )
 from app.beets.lyrics import start_album_lyrics_op
 from app.config import resolve_cover_thumb_cache_dir
+from app.etag import size_scoped_etag
 from app.events.emit import emit_art_changed, emit_library_changed
 from app.models.album import Album, AlbumDetail, AlbumPage
 from app.models.completeness import AlbumMissingReport
@@ -144,13 +145,14 @@ async def get_album_cover_endpoint(
     # without touching the bytes. Only a validator miss falls through to the read.
     validator = await run_in_threadpool(cover_validator, lib, album_id)
     # The thumb is a DIFFERENT entity than the full image (distinct bytes), so it
-    # needs its own ETag under the same URL family — splice a "-t" marker inside
-    # the closing quote so the tag stays one opaque quoted string (same scheme as
-    # get_artist_image_endpoint). Compute the SIZE-SCOPED tag and run exactly ONE
-    # If-None-Match check against it: checking the full tag unconditionally would
-    # let a `size=thumb` request 304 off a client's cached FULL etag, serving no
-    # body while claiming the (different, larger) thumb is current.
-    etag = validator if size == "full" else (f'{validator[:-1]}-t"' if validator else None)
+    # needs its own ETag under the same URL family — app.etag splices a "-t" marker
+    # inside the closing quote so the tag stays one opaque quoted string (same
+    # scheme as get_artist_image_endpoint). Compute the SIZE-SCOPED tag and run
+    # exactly ONE If-None-Match check against it: checking the full tag
+    # unconditionally would let a `size=thumb` request 304 off a client's cached
+    # FULL etag, serving no body while claiming the (different, larger) thumb is
+    # current.
+    etag = size_scoped_etag(validator, size)
     if etag is not None and if_none_match_hit(request, etag):
         return not_modified(etag)
 

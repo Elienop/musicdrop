@@ -281,6 +281,18 @@ def test_resolve_trash_child_guards_traversal(tmp_path: Path) -> None:
         resolve_trash_child(trash, ".")  # the Trash root itself
 
 
+def test_resolve_trash_child_refuses_an_overlong_name(tmp_path: Path) -> None:
+    # A >255-byte name component: Path.exists() RAISES OSError(ENAMETOOLONG) —
+    # it only swallows ENOENT/ENOTDIR/EBADF/ELOOP. The resolver's contract is
+    # "unknown child -> ValueError" (the endpoint maps that to its 404), and a
+    # name the kernel cannot even stat cannot be a trashed album — so it must
+    # take the same refusal path instead of surfacing as a 500.
+    trash = tmp_path / "trash"
+    trash.mkdir()
+    with pytest.raises(ValueError):
+        resolve_trash_child(trash, "x" * 300)
+
+
 def test_empty_one_and_all(tmp_path: Path) -> None:
     trash = tmp_path / "trash"
     (trash / "A").mkdir(parents=True)

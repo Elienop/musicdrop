@@ -27,6 +27,7 @@ from app.acquisition.inbox import contain, count_pending, list_inbox, settled_fo
 from app.acquisition.ledger import AcquisitionLedger
 from app.api.import_ import ensure_import_can_start
 from app.config import settings
+from app.fsutil import is_dir
 from app.import_jobs.registry import ImportJobRegistry, get_registry
 from app.models.acquisition import (
     AcquisitionQueueStatus,
@@ -171,7 +172,7 @@ async def import_inbox_item(
             ),
         ) from None
     contained = contain(str(target), inbox_dir, strict=True)
-    if contained is None or not contained.is_dir():
+    if contained is None or not is_dir(contained):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found")
     try:
         job_id = reg.start(str(contained), options=ImportOptions(operation="move"), origin="inbox")

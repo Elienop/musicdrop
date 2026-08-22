@@ -500,6 +500,82 @@ describe("ImportPlaylistsPage", () => {
     expect(previewBody).toEqual({ plex_rating_keys: ["11", "22"] });
   });
 
+  test("clicking the visible playlist NAME toggles the row's selection, both ways", async () => {
+    // The words were inert: the only click target was the small box, and people
+    // click labels — a dead one is worse than none. Now the name span itself
+    // toggles, in BOTH directions, exactly like clicking the box (this fails if
+    // the span's onClick is removed).
+    server.use(
+      http.get(PLEX_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            { name: "Road", track_count: 12, rating_key: "11" },
+            { name: "Chill", track_count: 5, rating_key: "22" },
+          ],
+        }),
+      ),
+    );
+    renderImport();
+
+    const box = await screen.findByRole("checkbox", { name: "Road" });
+    const name = await screen.findByText("Road");
+    expect(box).not.toBeChecked();
+
+    await userEvent.click(name);
+    expect(box).toBeChecked();
+
+    // …and unchecking, not just checking.
+    await userEvent.click(name);
+    expect(box).not.toBeChecked();
+  });
+
+  test("the track-count span is not part of the click target", async () => {
+    // The toggle handler sits on the name span alone, not the row — so the
+    // muted count gets by and, more importantly, clicking it must not toggle
+    // (a whole-row handler would risk a double-toggle cancelling itself out).
+    server.use(
+      http.get(PLEX_URL, () =>
+        HttpResponse.json({
+          playlists: [{ name: "Road", track_count: 12, rating_key: "11" }],
+        }),
+      ),
+    );
+    renderImport();
+
+    const box = await screen.findByRole("checkbox", { name: "Road" });
+    await userEvent.click(await screen.findByText("Road"));
+    expect(box).toBeChecked();
+
+    // Clicking the count leaves the selection untouched.
+    await userEvent.click(screen.getByText("12 tracks"));
+    expect(box).toBeChecked();
+  });
+
+  test("clicking a duplicate's NAME toggles the right row of a same-titled pair", async () => {
+    // Same-titled rows used to be unaddressable by name; each still needs to
+    // reach ITS OWN checkbox when the human clicks the words they actually see.
+    server.use(
+      http.get(PLEX_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            { name: "Road", track_count: 12, rating_key: "11" },
+            { name: "Road", track_count: 5, rating_key: "22" },
+          ],
+        }),
+      ),
+    );
+    renderImport();
+
+    const first = await screen.findByRole("checkbox", { name: /road.*12 tracks/i });
+    const second = screen.getByRole("checkbox", { name: /road.*5 tracks/i });
+    // Distinct visible names, in document order.
+    const names = await screen.findAllByText("Road");
+
+    await userEvent.click(names[1]);
+    expect(second).toBeChecked();
+    expect(first).not.toBeChecked();
+  });
+
   test("picking the SECOND of two same-titled Plex playlists sends only its key", async () => {
     // The shadowing bug's sharpest edge: the later duplicate used to be the only
     // one reachable by title — now each is reachable on its own.

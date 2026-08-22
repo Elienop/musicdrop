@@ -1,6 +1,7 @@
 """Bank store tests — pure filesystem, no beets, payloads kept None
 (ParkedAlbum construction is exercised by its own model/mapping tests)."""
 
+import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -756,3 +757,96 @@ def test_rescan_item_rejects_settled_statuses(tmp_path: Path) -> None:
             recommendation=None,
             confidence=None,
         )
+
+
+def _surrogate_folder() -> str:
+    # A real filesystem folder whose name is not valid UTF-8: os.fsdecode
+    # yields a Python str carrying a lone surrogate.
+    return os.fsdecode(b"/music/inbox/Bj\xf6rk")
+
+
+def test_surrogate_folder_row_persists_and_roundtrips(tmp_path: Path) -> None:
+    """The store is lossless: the saved folder reloads to the identical str,
+    so os.fsencode gives back the original on-disk bytes."""
+    bank = _bank(tmp_path)
+    folder = _surrogate_folder()
+    item_id = store.create_item(
+        bank, folder=folder, source="manual", reason="no_match", fingerprint="s" * 64
+    ).id
+    item = store.get_item(bank, item_id)
+    assert item is not None
+    assert item.folder == folder
+    assert os.fsencode(item.folder) == b"/music/inbox/Bj\xf6rk"
+    # The on-disk text must be plain UTF-8 (a lone surrogate is unencodable
+    # as UTF-8; the store escapes it instead of scrubbing it).
+    raw = (bank / f"{item_id}.json").read_text(encoding="utf-8")
+    assert "\\udcf6" in raw  # escaped as the 6-char \\udcf6 text, not U+FFFD and not raw bytes
+
+
+def test_surrogate_folder_row_survives_index_reset(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    folder = _surrogate_folder()
+    store.create_item(bank, folder=folder, source="manual", reason="no_match", fingerprint="s" * 64)
+    store.reset_bank_index()
+    page = store.list_items(bank, offset=0, limit=50)
+    assert len(page) == 1
+    assert page[0].folder == folder
+    assert store.count_items(bank) == 1
+
+
+def test_surrogate_folder_payload_row_roundtrips(tmp_path: Path) -> None:
+    """A needs_review row (parked payload present) with a surrogate folder —
+    every store sink (write, index build, full-row load) must handle it."""
+    bank = _bank(tmp_path)
+    folder = _surrogate_folder()
+    parking = _parked_payload()
+    item_id = store.create_item(
+        bank,
+        folder=folder,
+        source="manual",
+        reason="needs_review",
+        fingerprint="s" * 64,
+        parked=parking,
+    ).id
+    store.reset_bank_index()
+    item = store.get_item(bank, item_id)
+    assert item is not None
+    assert item.folder == folder
+    assert item.parked == parking
+    assert [s.folder for s in store.list_items(bank, offset=0, limit=50)] == [folder]
+
+
+def test_surrogate_folder_row_survives_a_rewrite(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    folder = _surrogate_folder()
+    item_id = store.create_item(
+        bank, folder=folder, source="manual", reason="no_match", fingerprint="s" * 64
+    ).id
+    store.decide_item(bank, item_id, BankDecision(action="asis"))
+    item = store.get_item(bank, item_id)
+    assert item is not None
+    assert item.status == "queued"
+    assert item.folder == folder
+
+
+def test_legacy_pydantic_json_row_still_loads(tmp_path: Path) -> None:
+    """Backward compat: a row written by the OLD code (model_dump_json) must
+    read back unchanged under the new sink."""
+    bank = _bank(tmp_path)
+    bank.mkdir(parents=True)
+    legacy = BankItem(
+        id="b" * 32,
+        folder="/music/l\u00fcne",  # real UTF-8 folder, as old rows carry it
+        source="sweep",
+        reason="no_match",
+        fingerprint="y" * 64,
+        status="needs_review",
+        banked_at=store._now(),
+    )
+    (bank / f"{legacy.id}.json").write_text(legacy.model_dump_json(indent=2), encoding="utf-8")
+    item = store.get_item(bank, legacy.id)
+    assert item is not None
+    assert item.folder == legacy.folder
+    assert item.banked_at == legacy.banked_at
+    store.reset_bank_index()
+    assert [s.id for s in store.list_items(bank, offset=0, limit=50)] == [legacy.id]

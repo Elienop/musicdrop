@@ -18,6 +18,7 @@ from beets.library import Item, Library
 
 from app.beets.import_session import ImportBridge, WebImportSession, run_import_worker
 from app.beets.library import _coerce_int, _coerce_optional_str, _coerce_str
+from app.fsutil import exists
 from app.models.bank import BankApplyDirective
 from app.models.import_models import AlbumOutcomeStatus
 from app.models.trash import EmptyResult, RestoreResult, TrashedAlbum
@@ -123,7 +124,7 @@ def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
     """
     base = trash_dir.resolve()
     dest = resolve_display_path(trash_dir, rel).resolve()
-    if dest == base or not dest.is_relative_to(base) or not dest.exists():
+    if dest == base or not dest.is_relative_to(base) or not exists(dest):
         raise ValueError(f"{rel!r} is not a trashed album")
     return dest
 
