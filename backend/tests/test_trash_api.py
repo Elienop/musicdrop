@@ -52,6 +52,28 @@ def test_empty_unknown_folder_404(client: TestClient) -> None:
     assert r.status_code == 404
 
 
+def test_empty_overlong_folder_404_not_500(client: TestClient) -> None:
+    """A >255-byte folder name must hit the same 404 as any other unknown
+    folder. Path.exists() raises OSError(ENAMETOOLONG) on such a component
+    (it only swallows ENOENT/ENOTDIR/EBADF/ELOOP), which used to 500 the
+    endpoint from inside the resolver's not-found check. A sibling is seeded so
+    the base dir exists — the kernel only reports ENAMETOOLONG once every
+    leading component resolved (a missing base dir answers ENOENT instead)."""
+    trash = _trash_dir(client)
+    (trash / "Album").mkdir(parents=True)
+    r = client.delete("/api/trash", params={"folder": "x" * 300})
+    assert r.status_code == 404
+    assert (trash / "Album").exists()  # the overlong name must not drag it down
+
+
+def test_restore_overlong_folder_404_not_500(client: TestClient) -> None:
+    trash = _trash_dir(client)
+    (trash / "A").mkdir(parents=True)
+    r = client.post("/api/trash/restore", json={"folder": "x" * 300})
+    assert r.status_code == 404
+    assert (trash / "A").exists()
+
+
 def test_restore_409_when_a_library_job_is_active(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -165,6 +165,21 @@ def test_import_inbox_item_rejects_escape(tmp_path: Path) -> None:
             assert resp.status_code == 404, name
 
 
+def test_import_inbox_item_rejects_overlong_name(tmp_path: Path) -> None:
+    # A >255-byte name component trips OSError(ENAMETOOLONG) inside the
+    # contain/is_dir predicates (Path.exists/is_dir only swallow
+    # ENOENT/ENOTDIR/EBADF/ELOOP). Such a name cannot be an inbox item, so it
+    # must take the endpoint's unknown-item 404 like "Does Not Exist" above —
+    # not surface as an unhandled 500.
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    reset_registry(runner=FakeImportRunner(parked=[]))
+    with _state(inbox):
+        client = TestClient(app)
+        resp = client.post("/api/acquisition/inbox/items/import", json={"name": "x" * 300})
+        assert resp.status_code == 404
+
+
 def test_import_inbox_item_409_while_swap_lock_held(tmp_path: Path) -> None:
     inbox = tmp_path / "inbox"
     _album(inbox, "Echoes 4412", tracks=1)
