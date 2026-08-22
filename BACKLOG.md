@@ -9,26 +9,18 @@ detail lives.
 *Recently shipped* with the PR number. When something new turns up (review finding, incident,
 parked idea), add it here in the same commit that discovers it.
 
-_Last groomed: 2026-08-02, after the reorganize collision wave._
+_Last groomed: 2026-08-22, after the doc-corrections pass._
 
 ## Next up
 
-- **Repair the production `library.db`'s absolute item paths — both halves in one maintenance
-  window.** 22,100 of 25,576 item rows store absolute paths instead of music-dir-relative ones,
-  and 123 albums hold both forms: the import worker never bound `lib.music_dir_context()`, so
-  every row MusicDrop imported since v0.1.0 was written the way beets does not write them. Nothing
-  is damaged and no audio is at risk today — but those rows stop resolving the moment the music
-  share moves to a new mount, dataset or box, and `beet update` (or disk sync) then deletes them
-  without a prompt, taking added dates, play counts, lyrics, flexible fields and album grouping
-  with them. The code half is fixed on branch `fix/import-music-dir-binding` (not merged yet); the
-  DB half is a one-time beets migration the owner runs by hand against the TrueNAS library.
-  **Order is the dangerous part: deploying the code fix without the DB repair took the importer's
-  replacement lookup from 57/83 rows to 28/83 in the rehearsal lab — measurably worse than
-  deploying neither** — so both land together with no imports in between. Census, procedure,
-  verification and the recovery path: `docs/import-path-repair.md`.
+- **Answer the phantom one-track-album origin question before the next bulk import** (detail
+  under Open questions). The 2026-08-15 investigation proved the *mechanism* — beets' duplicate
+  check is a byte-exact SQL equality, so any typographic variant defeats it — but never
+  attributed the 2026-08-01 incident to one of the two candidate causes. It is the one open
+  item with a deadline of sorts.
 
-_(After that, pick from Open bugs / hardening or Open questions below. The phantom-album-row
-origin question is the one with a deadline of sorts: it matters before the next bulk import.)_
+_(Then pick from Open bugs / hardening below — the m3u8 export 500 and the CSRF/Origin posture
+are the standing candidates.)_
 
 ## Open bugs / hardening
 
@@ -52,11 +44,6 @@ origin question is the one with a deadline of sorts: it matters before the next 
   right fix is writing raw bytes (`surrogateescape`), NOT a U+FFFD placeholder — a
   placeholder inside an `.m3u8` silently points the player at a nonexistent file — and the
   primitive is shared with the JSON stores, so it needs its own slice.
-
-- **Bank rows cannot be persisted when the source folder name is not valid UTF-8** —
-  `store.py` `model_dump_json` raises `PydanticSerializationError` (different sink from the
-  wire; the response-class net does not cover files on disk). Pre-existing; surfaces only
-  when an undecodable folder enters the bank.
 
 - **Config editor accepts `import.autotag` that MusicDrop now ignores.** `run_import_worker`
   force-enables autotag (with snapshot/restore) because beets swaps out the `user_query`
@@ -291,7 +278,21 @@ origin question is the one with a deadline of sorts: it matters before the next 
   fixture interception). Also: **ENAMETOOLONG no longer 500s trash/inbox endpoints** — new
   `app/fsutil.py` guarded predicates (only errno 36 reads as absent; every other OSError
   still raises) at the two request-reachable sites, 10 tests incl. re-raise pins for
-  EACCES/ESTALE. First wave implemented via pi/qwen delegation under Claude review. (branch `feat/perf-images-pager-cache`):
+  EACCES/ESTALE. And **bank rows with non-UTF-8 folder names now persist** — the store sink
+  moved from pydantic's Rust serializer (which refuses lone surrogates) to stdlib `json` with
+  `ensure_ascii=True`, the one path that round-trips them losslessly, so `os.fsencode`
+  recovers the exact on-disk bytes; legacy rows still load. First wave implemented via
+  pi/qwen delegation under Claude review.
+- **2026-08-15 — the production `library.db` absolute-path repair, both halves in one window**
+  (PR #134 `e9c940c` → v0.34.2, tag verified; the DB half run by hand on TrueNAS the same
+  evening). The import worker now binds `lib.music_dir_context()` around its whole body — the
+  one function both callers pass through, so Trash restore is covered too — and the one-shot
+  beets migration converted the rows: items 22,100 absolute → 0 (dry run predicted 22,100
+  exactly), the 123 mixed albums cleared, replacement lookup recovered. The albums half
+  legitimately printed no `Migrating` banner (artpaths were already relative);
+  `docs/import-path-repair.md` now carries the as-run outcome and that per-table nuance, and
+  stays as the runbook.
+- **2026-08-08 — perf: images, pager, cache wave** (branch `feat/perf-images-pager-cache`):
   artist-image and album-cover 304s now answer from a file stat (no read, no hash, off the
   event loop); new 320px WebP thumb variant (`?size=thumb|full`) — grids/tiles request thumbs,
   the two detail-page heroes deliberately keep full-size art. `Pagination.tsx` gained
