@@ -26,24 +26,13 @@ _Last groomed: 2026-08-23, with the app-wide origin guard._
   resolving to one folder with disjoint track names would land `cover.1.jpg` silently.
   One-shot (no churn — the unit is item-settled next run), which is why it was descoped.
 
-- **Origin==Host CSRF check is defeated by DNS rebinding — no Host allowlist exists.** The
-  2026-08-23 origin guard anchors on `Origin` authority == `Host`, and nothing validates
-  `Host` (no `TrustedHostMiddleware`, `uvicorn --host 0.0.0.0`, no `MUSICDROP_ALLOWED_HOSTS`).
-  An attacker who rebinds a hostname to the server's LAN IP serves the victim a page on
-  :3030 whose same-origin `fetch` carries `Origin == Host` and passes the guard — full
-  unauthenticated read+write. Bounded to attackers willing to run DNS; the guard still
-  closes the ordinary cross-origin CSRF vector. Fix (separate slice, needs an owner call on
-  config): trust `Host`/`X-Forwarded-Host` only when it is a bare IP literal (rebinding needs
-  a DNS name) or a name in a configured `MUSICDROP_ALLOWED_HOSTS`; `TrustedHostMiddleware` is
-  the off-the-shelf half if the IP-literal carve-out is added. CWE-350/346.
-
-- **`static_dir` silently controls the CSRF posture, and is never logged.**
+- **`static_dir` gate mismatch (residual of the logged-posture fix).**
   `resolve_extra_origins` keys on the truthiness of `MUSICDROP_STATIC_DIR`, but `mount_static`
   (`app/static_files.py:42`) no-ops unless `index.html` exists — so a stale or invalid path
-  yields the production posture (every dev write 403s) with NO SPA served and nothing logged
-  to explain it. New coupling as of the 2026-08-23 origin guard: before it, `static_dir` had
-  nothing to do with CSRF. Fix: log the resolved origin tuple at startup, and consider gating
-  on the same `index.html` check `mount_static` uses.
+  still yields the production posture (every dev write 403s) with NO SPA served. The silent
+  half is closed (the effective posture is logged at startup — see the Host-allowlist entry
+  under Recently shipped), but the gate itself may still want to key on the same `index.html`
+  check `mount_static` uses, so the posture and the served SPA stay in agreement.
 
 - **OpenAPI under-declares 403 on 61 write routes.** 64 write routes can now return 403 from
   the app-wide guard; `frontend/openapi.json` declares 403 on 3 (counted 2026-08-23). Per
@@ -309,6 +298,17 @@ _Last groomed: 2026-08-23, with the app-wide origin guard._
 
 ## Recently shipped
 
+- **Host allowlist (DNS-rebinding guard) — shipped 2026-08-23 (PR # filled in at merge).** All-method
+  `HostGuardMiddleware` (outermost): Host / X-Forwarded-Host must be a bare IP literal,
+  `localhost`, or a name in `MUSICDROP_ALLOWED_HOSTS` (exact, case/port-insensitive match, no
+  wildcards); everything else 400s. Dev posture additionally allows `testserver` (prod-pinned
+  not to). Startup now logs the effective security posture (closes the silent-`static_dir`
+  minor). Deploy delta: browsing via a DNS name (e.g. the Caddy site) requires
+  `MUSICDROP_ALLOWED_HOSTS=<that name>`; by-IP access and the container healthcheck are
+  unaffected. Residuals: real auth is still the stronger long-term control (separate item);
+  wildcard entries deliberately unsupported until a deployment needs them.
+  Spec: `docs/superpowers/specs/2026-08-23-host-guard-design.md`.
+
 - **App-wide origin guard (PR #TBD, 2026-08-23).** Cross-origin browser writes are
   rejected 403 by `OriginGuardMiddleware` on every POST/PUT/PATCH/DELETE — closing
   the 19 CORS-simple routes (config/apply, review-inbox, disk-sync, reorganize,
@@ -318,9 +318,9 @@ _Last groomed: 2026-08-23, with the app-wide origin guard._
   guard, not auth. The `localhost:5173` dev allowance (writes AND CORS read
   access) now applies in dev mode only (`static_dir` empty); prod rejects it.
   **Caveat — this is not "browser CSRF fully closed":** it closes the
-  CORS-simple / cross-origin vector, but NOT DNS rebinding (the check is
-  `Origin` authority == `Host`, and no Host allowlist exists — see the Open
-  item above), and not the cross-origin no-cors GET side effects (also above).
+  CORS-simple / cross-origin vector, but NOT DNS rebinding (closed separately by
+  the Host allowlist — see the Host-allowlist entry above), and not the
+  cross-origin no-cors GET side effects (also above).
   Deployment note: a Host-rewriting reverse proxy must FORWARD (set, not
   append) `X-Forwarded-Host`, or every browser write 403s.
   Spec: `docs/superpowers/specs/2026-08-23-origin-guard-design.md`. Note carried
