@@ -9,13 +9,14 @@ detail lives.
 *Recently shipped* with the PR number. When something new turns up (review finding, incident,
 parked idea), add it here in the same commit that discovers it.
 
-_Last groomed: 2026-08-22, after the doc-corrections pass._
+_Last groomed: 2026-08-23, with the m3u8 export fix._
 
 ## Next up
 
-- Pick from Open bugs / hardening below — the m3u8 export 500 and the CSRF/Origin posture
-  are the standing candidates. (The phantom-album question that used to sit here is
-  RESOLVED — see Open questions and the 2026-08-22 guard entry under Recently shipped.)
+- Pick from Open bugs / hardening below — the CSRF/Origin posture is the standing
+  candidate. (The phantom-album question that used to sit here is RESOLVED — see Open
+  questions and the 2026-08-22 guard entry under Recently shipped. The m3u8 export fix
+  shipped 2026-08-23.)
 
 ## Open bugs / hardening
 
@@ -33,12 +34,6 @@ _Last groomed: 2026-08-22, after the doc-corrections pass._
   all — Starlette percent-decodes queries with `errors="replace"`). Bounded (ambiguity
   refuses, no fan-out), inherent to making such folders restorable; weigh it when the origin
   decision is made.
-
-- **`.m3u8` playlist export still violates the no-500 invariant.** `write_atomic_text` opens
-  `encoding="utf-8"` strict, so a playlist rewrite 500s on an undecodable track path. The
-  right fix is writing raw bytes (`surrogateescape`), NOT a U+FFFD placeholder — a
-  placeholder inside an `.m3u8` silently points the player at a nonexistent file — and the
-  primitive is shared with the JSON stores, so it needs its own slice.
 
 - **Config editor accepts `import.autotag` that MusicDrop now ignores.** `run_import_worker`
   force-enables autotag (with snapshot/restore) because beets swaps out the `user_query`
@@ -261,6 +256,20 @@ _Last groomed: 2026-08-22, after the doc-corrections pass._
   inside it); the placeholder scandir path widens that pre-existing TOCTOU window slightly.
 
 ## Recently shipped
+
+- **2026-08-23 — `.m3u8` export survives undecodable track paths** (branch
+  `fix/m3u8-export-surrogate-paths`): the export sink wrote strict UTF-8, so a track path
+  carrying lone surrogates (`os.fsdecode` of undecodable on-disk bytes) raised
+  `UnicodeEncodeError`. Correction to this backlog's old claim, established while scoping:
+  that never surfaced as a 500 — every export call site goes through the best-effort
+  `_export_playlist`, so the real symptom was a **silently stale or missing `.m3u8`** plus a
+  warning log. Fix: `write_atomic_bytes` is now the atomic primitive (same recipe, raw
+  bytes); `write_atomic_text` delegates with a strict encode — JSON stores and config
+  writers keep byte-identical behavior, pinned by a test that the wrapper still raises on
+  surrogates; `write_m3u` encodes `surrogateescape` so such paths round-trip to their
+  original on-disk bytes (never U+FFFD, which would point the player at a nonexistent
+  file). 9 new tests; 3 mutants (strict encode back, `replace`, loosened text wrapper) each
+  killed by exactly its intended test.
 
 - **2026-08-22 — import-gate guard: typographic-variant duplicates engage the duplicate
   machinery** (branch `feat/import-dup-guard`): a per-task wrapper over beets'
