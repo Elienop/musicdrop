@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
@@ -40,6 +41,7 @@ from app.beets.setup import setup_beets
 from app.body_limit import BodySizeLimitMiddleware
 from app.config import resolve_artist_image_cache_dir, resolve_cover_thumb_cache_dir, settings
 from app.events.emit import emit_art_changed
+from app.host_guard import HostGuardMiddleware, resolve_allowed_hosts
 from app.origin_guard import OriginGuardMiddleware, resolve_extra_origins
 from app.static_files import mount_static
 from app.wire import SurrogateSafeJSONResponse, install_wire_safety
@@ -275,6 +277,8 @@ install_wire_safety(app)
 
 extra_origins = resolve_extra_origins(settings.static_dir)
 
+allowed_hosts = resolve_allowed_hosts(settings.static_dir, settings.allowed_hosts)
+
 # Innermost of the three middlewares. BodySizeLimit MUST wrap outermost so an
 # oversize body is refused before anything else runs — that one is load-bearing
 # and pinned by test_oversize_body_beats_the_origin_guard. CORS-outside-guard is
@@ -300,6 +304,26 @@ app.add_middleware(
     BodySizeLimitMiddleware,
     max_bytes=settings.max_body_bytes,
     allowed_origins=extra_origins,
+)
+
+# Added after BodySizeLimit so it wraps OUTERMOST of all four: a request whose
+# Host is not allowlisted (the DNS-rebinding guard) is refused before the body
+# limit, CORS, or the origin guard spend anything on it. Pinned by
+# test_disallowed_host_beats_the_body_limit.
+app.add_middleware(HostGuardMiddleware, allowed_hosts=allowed_hosts)
+
+# One loud line so the deploy-time posture is never silent (`static_dir`
+# selects dev/prod for BOTH guards; MUSICDROP_ALLOWED_HOSTS extends the host
+# guard). Closes the "static_dir silently controls the CSRF posture" minor.
+# Logged through `uvicorn.error`, NOT `__name__`: uvicorn's LOGGING_CONFIG
+# configures only its own loggers and leaves root at WARNING with no handlers,
+# so an INFO record from `app.main` is discarded before it reaches any output
+# under the Dockerfile CMD. Pinned by test_posture_log_emits_under_real_uvicorn.
+logging.getLogger("uvicorn.error").info(
+    "security posture: %s; extra write origins: %s; allowed hosts: IP literals, localhost%s",
+    "prod (static_dir set)" if settings.static_dir else "dev (static_dir empty)",
+    ", ".join(extra_origins) or "none",
+    "".join(f", {name}" for name in allowed_hosts),
 )
 
 app.include_router(health_router, prefix="/api")

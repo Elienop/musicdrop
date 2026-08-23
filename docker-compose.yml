@@ -14,6 +14,11 @@ services:
       # Optional integrations (see README):
       # - MUSICDROP_ARTIST_IMAGE_FANARTTV_API_KEY=...
       # - MUSICDROP_INBOX_DIR=/inbox   # pair with the /inbox volume below
+      # Browsing MusicDrop via a DNS name (e.g. behind Caddy/Traefik/nginx)?
+      # List every such name here or those requests are rejected with a 400
+      # (the DNS-rebinding guard). By-IP access needs nothing.
+      # Also list names other containers use to call MusicDrop (e.g. slskd's webhook URL host).
+      # - MUSICDROP_ALLOWED_HOSTS=music.example.com
     volumes:
       - ./data:/data            # beets library.db + config.yaml + app state
       - /path/to/music:/music   # your music library (beets `directory`)

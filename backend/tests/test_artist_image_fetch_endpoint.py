@@ -516,7 +516,7 @@ async def test_the_fetch_waits_on_the_automatic_chains_limiter(
     monkeypatch.setattr(library_mod, "get_artist_mbid", recording)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         auto = asyncio.create_task(service.get_artist_image("Some Other Artist"))
         try:
             # Ordered, not raced: the automatic call must HOLD the single slot

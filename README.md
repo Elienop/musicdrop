@@ -87,6 +87,16 @@ services:
 
 `docker compose up -d`, then open `http://<host>:3030`. First boot writes a starter beets config to `data/beets/config.yaml` with `directory: /music`; edit it under **Settings → beets** (plugins, import behavior) — MusicDrop reads it like the beets CLI would. Optional integrations (slskd webhook, Plex, fanart.tv/Spotify artist images) are configured under Settings or via `MUSICDROP_*` env vars; for slskd, mount its downloads dir (e.g. `/inbox`) and set `MUSICDROP_INBOX_DIR=/inbox`.
 
+**Browsing by DNS name?** Requests are only accepted when the `Host` is an IP literal,
+`localhost`, or a name listed in `MUSICDROP_ALLOWED_HOSTS` (comma-separated) — a
+DNS-rebinding guard, same shape as Plex's and Transmission's. Reaching MusicDrop through a
+reverse proxy or any hostname (`http://nas.local:3030`, `https://music.example.com`) requires
+listing that name: `MUSICDROP_ALLOWED_HOSTS=music.example.com`. By-IP access always works.
+Behind a proxy that rewrites `Host`, the forwarded public name (`X-Forwarded-Host`) must be in the list too — Caddy forwards both by default.
+The same goes for server-to-server callers — a proxy that rewrites `Host` to an upstream
+*name*, or another container calling MusicDrop by service name (slskd's webhook posting to
+`http://musicdrop:3030`) — list those names too; container/host IPs always work.
+
 Releases are automatic: every merged PR publishes a new image tag (`vX.Y.Z`, plus `latest`) with generated notes on the [Releases page](https://github.com/Elienop/musicdrop/releases).
 
 **One-time repair, for libraries built before the path fix.** Every release up to and including v0.34.0 stored MusicDrop-imported track paths in `library.db` *absolutely* (`/music/Artist/…`) instead of relative to the music directory, the way beets does. Nothing is damaged, but such rows do not follow the music share if it ever moves to a new mount, dataset, or machine. The release containing `fix(import): store item paths relative to the music dir` stops it recurring; the existing rows need a separate one-time database repair, and **the two have to land in the same maintenance window** — deploying either half on its own leaves the importer's duplicate lookup worse off than doing neither. The procedure, starting with the census that tells you whether you are affected, is [`docs/import-path-repair.md`](docs/import-path-repair.md).

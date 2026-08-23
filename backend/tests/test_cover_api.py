@@ -418,11 +418,14 @@ def test_proxy_forwarded_host_upload_allowed(cover_client: TestClient, edit_lib:
     # Behind a reverse proxy that rewrites Host to the upstream, the public host
     # the browser used arrives in X-Forwarded-Host. A same-origin upload (Origin
     # authority == X-Forwarded-Host) must be allowed even though it != Host.
+    # The host guard (outermost) screens X-Forwarded-Host too, so the public
+    # host here is an IP literal (always allowlisted); the NAME-based proxy flow
+    # (MUSICDROP_ALLOWED_HOSTS) is pinned by test_host_guard.py's prod-posture test.
     aid = _aid(edit_lib)
     r = cover_client.post(
         f"/api/albums/{aid}/cover",
         files={"file": ("cover.png", PNG.read_bytes(), "image/png")},
-        headers={"Origin": "http://public.example", "X-Forwarded-Host": "public.example"},
+        headers={"Origin": "http://127.0.0.1:3030", "X-Forwarded-Host": "127.0.0.1:3030"},
     )
     assert r.status_code == 200
 
@@ -431,11 +434,14 @@ def test_spoofed_forwarded_host_still_rejected(cover_client: TestClient, edit_li
     # A cross-origin attacker can't set X-Forwarded-Host to match its own Origin
     # without making the request non-simple (a preflight the CORS policy rejects),
     # so an Origin that matches neither Host nor X-Forwarded-Host is still 403.
+    # X-Forwarded-Host is a host-guard-passing value here so the request reaches
+    # the ORIGIN guard at all — an unallowlisted X-Forwarded-Host now 400s
+    # earlier (pinned in test_host_guard.py).
     aid = _aid(edit_lib)
     r = cover_client.post(
         f"/api/albums/{aid}/cover",
         files={"file": ("cover.png", PNG.read_bytes(), "image/png")},
-        headers={"Origin": "http://evil.test", "X-Forwarded-Host": "public.example"},
+        headers={"Origin": "http://evil.test", "X-Forwarded-Host": "127.0.0.1:3030"},
     )
     assert r.status_code == 403
 
