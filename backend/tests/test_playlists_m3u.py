@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from app.playlists.m3u import M3uEntry, delete_m3u, render_m3u, write_m3u
@@ -49,6 +50,38 @@ def test_render_sanitizes_crlf_in_metadata() -> None:
     extinf_lines = [ln for ln in text.split("\n") if ln.startswith("#EXTINF")]
     assert len(extinf_lines) == 1  # the artist newline folded inline, no forged line
     assert "Injected" in extinf_lines[0]
+
+
+def test_write_m3u_round_trips_undecodable_path_bytes(tmp_path: Path) -> None:
+    """A path produced by ``os.fsdecode`` (lone surrogate) must survive the export:
+    the ``.m3u8`` carries the ORIGINAL on-disk bytes (``os.fsencode`` round-trip),
+    never a U+FFFD replacement that would point the player at a nonexistent file."""
+    raw_path = "Caf\udce9/track.mp3"  # 'Café' with an undecodable 0xE9 byte
+    entry = M3uEntry(duration_seconds=1, artist="A", title="T", path=raw_path)
+    dest = tmp_path / "p.m3u8"
+    write_m3u(dest, "name", [entry])
+    data = dest.read_bytes()
+    assert os.fsencode(raw_path) in data  # byte-level round-trip through the sink
+    assert b"Caf\xe9/track.mp3" in data
+    assert b"\xef\xbf\xbd" not in data  # no U+FFFD replacement
+    assert b"\\" not in data  # no backslash-escape sequences
+
+
+def test_write_m3u_surrogates_in_name_artist_title(tmp_path: Path) -> None:
+    """Surrogates in ANY field ride the same sink and must not crash the export."""
+    entry = M3uEntry(
+        duration_seconds=1,
+        artist="Ar\udce9tist",
+        title="Ti\udce9tle",
+        path="t.mp3",
+    )
+    dest = tmp_path / "p.m3u8"
+    write_m3u(dest, "Nam\udce9e", [entry])
+    data = dest.read_bytes()
+    assert b"#PLAYLIST:Nam\xe9e" in data
+    assert b"Ar\xe9tist" in data
+    assert b"Ti\xe9tle" in data
+    assert b"\xef\xbf\xbd" not in data  # no U+FFFD replacement
 
 
 def test_write_and_delete(tmp_path: Path) -> None:
