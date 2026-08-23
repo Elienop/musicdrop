@@ -35,6 +35,17 @@ _Last groomed: 2026-08-23, with the m3u8 export fix._
   refuses, no fan-out), inherent to making such folders restorable; weigh it when the origin
   decision is made.
 
+- **`POST /api/playlists` 500s on a lone-surrogate playlist NAME.** Found by the m3u8-export
+  deep review (2026-08-23); pre-existing, same bug class as the bank-rows fix in #147 one
+  door over. Pydantic's JSON parser admits `"\udce9"`-style escapes in the request body, and
+  the playlists store sink (`store.py:124` `record.model_dump_json`) raises
+  `PydanticSerializationError` → unhandled 500 (`api/playlists.py:226` → `store.py:180` →
+  `:124`), before `write_atomic_text` is ever reached — so the strict-wrapper test does not
+  cover this path, and the export's surrogateescape window gap is unreachable via `name`
+  precisely because this crash fires first. Verified live by the reviewer (U+D800 and
+  U+DCE9 → 500; clean control → 200). Candidate fix: the #147 pattern — an
+  `ensure_ascii=True` stdlib sink for the playlists store.
+
 - **Config editor accepts `import.autotag` that MusicDrop now ignores.** `run_import_worker`
   force-enables autotag (with snapshot/restore) because beets swaps out the `user_query`
   stage under `autotag: no` — the only stage that fires `choose_match`, the sole hook
@@ -55,6 +66,13 @@ _Last groomed: 2026-08-23, with the m3u8 export fix._
   crash-path sidecar carry, `edit.py` `_inside_library` guard (pre-existing from main),
   disk-sync emptied-row first-dir-wins and `"."`-fallback, dismiss double-click swallow,
   the aria-disabled-not-disabled focus rule (the "Pagination rule" is convention, not test).
+  From the 2026-08-23 m3u8 deep review, on the shared atomic recipe (`atomic.py`): the
+  final `chmod` is umask-blind in tests (deleting it survives under the usual umask 022 —
+  only visible under 077; a mode test should set the umask itself), the same-directory tmp
+  placement is unpinned (a `/tmp`-located tmp survives because pytest's tmp shares the
+  device; on a NAS-mounted `.playlists` it would EXDEV every export), the `.m3u8` export's
+  0o644 mode is unpinned, and the fsync durability lines rest on review alone (untestable
+  without crash injection).
 
 - **Disk-sync emptied-row path shows the first item's folder,** not the album root — a
   multi-disc emptied album reads `Artist/Album/CD1`. Still separates label twins (the
