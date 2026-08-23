@@ -275,9 +275,12 @@ install_wire_safety(app)
 
 extra_origins = resolve_extra_origins(settings.static_dir)
 
-# Innermost of the three middlewares: CORSMiddleware (which wraps it) answers
-# preflights and decorates responses first, so only real writes reach the
-# guard — and a rejected dev-origin request still gets CORS headers on its 403.
+# Innermost of the three middlewares: CORSMiddleware must wrap the guard so
+# preflight OPTIONS are answered before it, and BodySizeLimit wraps OUTERMOST
+# so an oversize body is refused before anything else runs. (A guard 403
+# carries no CORS headers: the guard's allowed origins are a superset of the
+# CORS allowlist, so an origin the guard rejects was never CORS-approved
+# either — the rejection is opaque to a foreign page, which is fine.)
 app.add_middleware(OriginGuardMiddleware, extra_origins=extra_origins)
 app.add_middleware(
     CORSMiddleware,
@@ -290,7 +293,11 @@ app.add_middleware(
 )
 # Added last so it wraps OUTERMOST (Starlette applies middleware in reverse add
 # order): an oversize body is refused before CORS or any route touches it.
-app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_body_bytes)
+app.add_middleware(
+    BodySizeLimitMiddleware,
+    max_bytes=settings.max_body_bytes,
+    allowed_origins=extra_origins,
+)
 
 app.include_router(health_router, prefix="/api")
 app.include_router(events_router, prefix="/api")

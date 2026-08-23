@@ -8,6 +8,7 @@ healthcheck, the slskd webhook) is allowed by design.
 from __future__ import annotations
 
 import pytest
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -15,6 +16,7 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 
 from app.api.csrf import origin_allowed
+from app.body_limit import BodySizeLimitMiddleware
 from app.main import app as real_app
 from app.origin_guard import OriginGuardMiddleware, resolve_extra_origins
 
@@ -177,6 +179,7 @@ def test_real_app_json_post_rejects_a_foreign_origin() -> None:
         headers={"Origin": "http://evil.test"},
     )
     assert r.status_code == 403
+    assert r.json()["detail"] == "cross-origin request rejected"
 
 
 def test_real_app_same_origin_post_still_works() -> None:
@@ -207,3 +210,31 @@ def test_real_app_dev_origin_post_works_in_dev_mode() -> None:
 def test_real_app_get_with_a_foreign_origin_passes() -> None:
     r = TestClient(real_app).get("/api/health", headers={"Origin": "http://evil.test"})
     assert r.status_code == 200
+
+
+def _middleware_kwargs(cls: object) -> dict[str, object]:
+    for m in real_app.user_middleware:
+        if m.cls is cls:
+            return dict(m.kwargs)
+    raise AssertionError(f"middleware not registered: {cls!r}")
+
+
+def test_all_three_middlewares_read_one_resolved_tuple() -> None:
+    # The spec's consolidation invariant: the guard, the CORS allowlist, and
+    # the body-limit 413 echo all read the SAME resolved origin tuple.
+    guard = _middleware_kwargs(OriginGuardMiddleware)["extra_origins"]
+    assert isinstance(guard, tuple)
+    assert _middleware_kwargs(CORSMiddleware)["allow_origins"] == list(guard)
+    assert _middleware_kwargs(BodySizeLimitMiddleware)["allowed_origins"] == guard
+
+
+def test_oversize_body_beats_the_origin_guard() -> None:
+    # Pins the middleware nesting: BodySizeLimit wraps OUTERMOST, so an
+    # oversize foreign-origin write is refused 413 before the origin guard
+    # sees it. Reordering the add_middleware calls in app.main breaks this.
+    r = TestClient(real_app).post(
+        "/api/config/validate",
+        content=b"x" * (26 * 1024 * 1024),
+        headers={"Origin": "http://evil.test", "Content-Type": "application/json"},
+    )
+    assert r.status_code == 413

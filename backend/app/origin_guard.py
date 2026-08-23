@@ -11,8 +11,11 @@ This is a browser-CSRF guard, NOT auth: a request without an Origin header
 (curl, LAN tooling, the container healthcheck, the slskd webhook) is allowed.
 
 Runs INSIDE CORSMiddleware (added before it in ``app.main``; Starlette applies
-middleware in reverse add order), so a rejected dev-origin request still gets
-CORS headers on its 403 and the dev frontend can read the reason.
+middleware in reverse add order) so that CORS preflight OPTIONS are answered
+before the guard sees them. A guard 403 carries no CORS headers: the guard's
+allowed origins are a superset of the CORS allowlist, so an origin the guard
+rejects was never CORS-approved either — the rejection is opaque to a foreign
+page, which is fine.
 """
 
 from __future__ import annotations
