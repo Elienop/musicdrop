@@ -11,8 +11,11 @@ name — every near-miss below shares one.
 from __future__ import annotations
 
 import os
+import queue
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -159,6 +162,17 @@ def test_disallowed_forwarded_host_rejected_even_with_an_allowed_host() -> None:
     assert r.json() == _REJECT_BODY
 
 
+def test_empty_forwarded_host_rejected() -> None:
+    # Pins `forwarded is not None` against a truthiness rewrite: a PRESENT but
+    # empty X-Forwarded-Host must still be policed (it fails the predicate and
+    # 400s), not skipped as falsy. Fail-closed either way today, but the
+    # decision is the fail-open-able one — a `if forwarded:` refactor makes an
+    # empty header bypass the check for free.
+    r = _client().get("/api/health", headers={"X-Forwarded-Host": ""})
+    assert r.status_code == 400
+    assert r.json() == _REJECT_BODY
+
+
 def test_allowed_forwarded_host_passes() -> None:
     r = _client().get("/api/health", headers={"X-Forwarded-Host": "127.0.0.1:3030"})
     assert r.status_code == 200
@@ -267,3 +281,73 @@ def test_prod_posture_rejects_testserver_and_honors_the_setting(tmp_path: Path) 
     lines = out.stdout.strip().splitlines()
     assert lines[-2] == "400 200 200 200"
     assert lines[-1] == "('music.example.test',)"
+
+
+def test_posture_log_emits_under_real_uvicorn(tmp_path: Path) -> None:
+    """The startup posture line must actually reach the operator's console.
+
+    No in-process caplog test can prove this: caplog attaches a handler to the
+    root logger, so ANY logger name passes. Under the real Dockerfile entrypoint
+    uvicorn configures only ``uvicorn``/``uvicorn.error``/``uvicorn.access`` and
+    leaves root at WARNING with no handlers — an INFO record from ``app.main``
+    is dropped before it reaches stdout, which is how the line shipped invisible.
+    So boot real uvicorn in PROD posture and read its output.
+
+    Guards the whole diagnostic: with a wrong allowlist every request 400s, and
+    this line is the only thing that says which posture and which names are live.
+    """
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text('<!doctype html><div id="root"></div>')
+    env = {
+        **os.environ,
+        "MUSICDROP_STATIC_DIR": str(dist),
+        "MUSICDROP_ALLOWED_HOSTS": "music.example.test",
+        # Real uvicorn runs the lifespan, which OPENS a beets library; aim it at
+        # a throwaway dir so the boot cannot touch the dev library `.env` points at.
+        "MUSICDROP_BEETS_DIR": str(tmp_path / "beets"),
+    }
+    backend = Path(__file__).resolve().parents[1]
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "app.main:app", "--port", "0", "--log-level", "info"],
+        cwd=backend,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    seen: list[str] = []
+    posture: str | None = None
+    # Pump on a thread so a MISSING line fails on the deadline instead of
+    # blocking forever in readline() once uvicorn goes quiet after startup.
+    lines: queue.Queue[str | None] = queue.Queue()
+
+    def _pump() -> None:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            lines.put(line)
+        lines.put(None)
+
+    reader = threading.Thread(target=_pump, daemon=True)
+    reader.start()
+    try:
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            try:
+                line = lines.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if line is None:  # child exited
+                break
+            seen.append(line)
+            if "security posture:" in line:
+                posture = line
+                break
+    finally:
+        proc.terminate()
+        proc.wait(timeout=30)
+        reader.join(timeout=30)
+    assert posture is not None, f"no posture line in uvicorn output: {seen!r}"
+    assert "prod (static_dir set)" in posture
+    assert "music.example.test" in posture
+    assert "IP literals, localhost" in posture

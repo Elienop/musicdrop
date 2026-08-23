@@ -315,7 +315,11 @@ app.add_middleware(HostGuardMiddleware, allowed_hosts=allowed_hosts)
 # One loud line so the deploy-time posture is never silent (`static_dir`
 # selects dev/prod for BOTH guards; MUSICDROP_ALLOWED_HOSTS extends the host
 # guard). Closes the "static_dir silently controls the CSRF posture" minor.
-logging.getLogger(__name__).info(
+# Logged through `uvicorn.error`, NOT `__name__`: uvicorn's LOGGING_CONFIG
+# configures only its own loggers and leaves root at WARNING with no handlers,
+# so an INFO record from `app.main` is discarded before it reaches any output
+# under the Dockerfile CMD. Pinned by test_posture_log_emits_under_real_uvicorn.
+logging.getLogger("uvicorn.error").info(
     "security posture: %s; extra write origins: %s; allowed hosts: IP literals, localhost%s",
     "prod (static_dir set)" if settings.static_dir else "dev (static_dir empty)",
     ", ".join(extra_origins) or "none",
