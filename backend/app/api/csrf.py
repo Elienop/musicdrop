@@ -58,3 +58,29 @@ def verify_upload_origin(request: Request) -> None:
     if origin == _DEV_FRONTEND_ORIGIN:
         return  # the dev frontend (matches the CORS allowlist)
     raise HTTPException(status_code=403, detail="cross-origin request rejected")
+
+
+def origin_allowed(
+    origin: str | None,
+    *,
+    host: str | None,
+    forwarded_host: str | None,
+    extra_origins: tuple[str, ...],
+) -> bool:
+    """The one origin policy, as a pure predicate (used by the app-wide
+    origin-guard middleware).
+
+    Allowed: a missing Origin (non-browser client — curl, LAN tooling, the
+    container healthcheck, the slskd webhook); a same-origin request (Origin
+    authority equals Host, or X-Forwarded-Host behind a Host-rewriting
+    reverse proxy — scheme is deliberately ignored); an explicitly allowed
+    extra origin (the Vite dev server, dev mode only). Everything else —
+    including ``Origin: null`` — is a cross-origin browser write: rejected.
+    """
+    if origin is None:
+        return True
+    authority = origin.split("://", 1)[-1]
+    for value in (host, forwarded_host):
+        if value is not None and authority == value:
+            return True
+    return origin in extra_origins
