@@ -64,6 +64,17 @@ def test_413_omits_cors_for_a_disallowed_origin() -> None:
     assert "access-control-allow-origin" not in r.headers
 
 
+def test_413_omits_cors_for_a_foreign_origin_when_the_allowlist_is_non_empty() -> None:
+    # Membership, not emptiness: the sibling omission tests use an empty allowlist,
+    # so they cannot see an echo that ignores the tuple's contents. Without this,
+    # `value if value in self._allowed` degraded to `value if self._allowed` lets a
+    # 413 echo ANY origin back, with credentials.
+    client = TestClient(_app(max_bytes=10, allowed_origins=("http://localhost:5173",)))
+    r = client.post("/", content=b"x" * 50, headers={"Origin": "http://evil.test"})
+    assert r.status_code == 413
+    assert "access-control-allow-origin" not in r.headers
+
+
 def test_413_omits_cors_when_no_origin() -> None:
     client = TestClient(_app(max_bytes=10))
     r = client.post("/", content=b"x" * 50)

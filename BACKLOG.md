@@ -37,6 +37,21 @@ _Last groomed: 2026-08-23, with the app-wide origin guard._
   a DNS name) or a name in a configured `MUSICDROP_ALLOWED_HOSTS`; `TrustedHostMiddleware` is
   the off-the-shelf half if the IP-literal carve-out is added. CWE-350/346.
 
+- **`static_dir` silently controls the CSRF posture, and is never logged.**
+  `resolve_extra_origins` keys on the truthiness of `MUSICDROP_STATIC_DIR`, but `mount_static`
+  (`app/static_files.py:42`) no-ops unless `index.html` exists — so a stale or invalid path
+  yields the production posture (every dev write 403s) with NO SPA served and nothing logged
+  to explain it. New coupling as of the 2026-08-23 origin guard: before it, `static_dir` had
+  nothing to do with CSRF. Fix: log the resolved origin tuple at startup, and consider gating
+  on the same `index.html` check `mount_static` uses.
+
+- **OpenAPI under-declares 403 on 61 write routes.** 64 write routes can now return 403 from
+  the app-wide guard; `frontend/openapi.json` declares 403 on 3 (counted 2026-08-23). Per
+  CLAUDE.md rule 2 the schema is the contract and the TS types are generated from it, so the
+  generated client types 403 as impossible where it is reachable. Low impact today (the
+  frontend is same-origin); the guard widened this from 6 routes to 64. Either declare a
+  global 403 or record the acceptance.
+
 - **Cross-origin no-cors GET side effects are an accepted residual.** `GET
   /api/artists/image` (and its peer cache-fillers), plus the outbound-credential GETs like
   `/api/plex/*`, still fire for a foreign page — GETs are structurally outside an

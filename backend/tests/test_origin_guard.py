@@ -79,6 +79,27 @@ def test_extra_origin_not_in_tuple_is_rejected() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://evil-nas:3030",
+        "http://nas:3030.evil.test",
+        "http://nas:30300",
+        "https://nas:3030.evil.test",
+    ],
+)
+def test_authority_compare_is_exact_not_a_suffix_or_substring(origin: str) -> None:
+    # The canonical origin-validation bug is a suffix/substring match. Each origin
+    # here is a near-miss on the host, so `==` degraded to `endswith`/`in` lets one
+    # of them through. Both the host arm and the forwarded-host arm are covered.
+    # The other negative fixtures share no substring with the host, so they are
+    # blind to this: only near-misses can see it.
+    assert not origin_allowed(origin, host="nas:3030", forwarded_host=None, extra_origins=())
+    assert not origin_allowed(
+        origin, host="127.0.0.1:3030", forwarded_host="nas:3030", extra_origins=()
+    )
+
+
 def _guarded_app(extra_origins: tuple[str, ...]) -> Starlette:
     async def ran(request: Request) -> PlainTextResponse:
         return PlainTextResponse("ran")
@@ -228,6 +249,15 @@ def test_prod_posture_rejects_the_dev_origin_write(tmp_path: Path) -> None:
     ``extra_origins = resolve_extra_origins(settings.static_dir)`` linkage:
     hardcode the dev tuple there and the guard accepts :5173 in prod, so this
     fails.
+
+    Status codes alone only see the GUARD. The child therefore also prints all
+    three resolved consumers, because hardcoding CORS's ``allow_origins`` or the
+    body-limit's ``allowed_origins`` leaves the guard's 403/200 untouched while
+    silently granting a foreign page credentialed cross-origin READ access to
+    the whole API in production. ``test_all_three_middlewares_read_one_resolved
+    _tuple`` cannot see it either: it compares the consumers to EACH OTHER, and
+    the suite runs in dev posture where the correct tuple and a hardcoded dev
+    tuple are identical.
     """
     dist = tmp_path / "dist"
     (dist / "assets").mkdir(parents=True)
@@ -240,7 +270,14 @@ def test_prod_posture_rejects_the_dev_origin_write(tmp_path: Path) -> None:
         " headers={'Origin': 'http://localhost:5173'})\n"
         "same = c.post('/api/config/validate', json={'yaml_text': 'a: 1'},"
         " headers={'Origin': 'http://testserver'})\n"
+        "g = next(m.kwargs['extra_origins'] for m in app.user_middleware"
+        " if m.cls.__name__ == 'OriginGuardMiddleware')\n"
+        "cors = next(m.kwargs['allow_origins'] for m in app.user_middleware"
+        " if m.cls.__name__ == 'CORSMiddleware')\n"
+        "b = next(m.kwargs['allowed_origins'] for m in app.user_middleware"
+        " if m.cls.__name__ == 'BodySizeLimitMiddleware')\n"
         "print(dev.status_code, same.status_code)\n"
+        "print(tuple(g), list(cors), tuple(b))\n"
     )
     env = {**os.environ, "MUSICDROP_STATIC_DIR": str(dist)}
     backend = Path(__file__).resolve().parents[1]
@@ -256,7 +293,13 @@ def test_prod_posture_rejects_the_dev_origin_write(tmp_path: Path) -> None:
     # Prod posture: the dev origin is a foreign origin (403); same-origin still
     # 200 (so a child that 403s everything cannot pass this for the wrong reason).
     assert out.returncode == 0, f"child failed: stderr={out.stderr!r}"
-    assert out.stdout.strip() == "403 200", f"stdout={out.stdout!r} stderr={out.stderr!r}"
+    lines = out.stdout.strip().splitlines()
+    assert len(lines) == 2, f"stdout={out.stdout!r} stderr={out.stderr!r}"
+    statuses, wiring = lines
+    assert statuses == "403 200", f"stdout={out.stdout!r} stderr={out.stderr!r}"
+    # ...and EVERY consumer resolved to the production tuple, not the dev one:
+    # guard `()`, CORS `[]`, body-limit `()`.
+    assert wiring == "() [] ()", f"stdout={out.stdout!r} stderr={out.stderr!r}"
 
 
 def _middleware_kwargs(cls: object) -> dict[str, object]:
