@@ -3,7 +3,6 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
-from app.api.csrf import verify_upload_origin
 from app.api.http_cache import (
     NO_SNIFF,
     if_none_match_hit,
@@ -188,7 +187,6 @@ async def get_album_cover_endpoint(
 
 @router.post(
     "/albums/{album_id}/cover/fetch",
-    dependencies=[Depends(verify_upload_origin)],
     responses={
         # The 200 is image bytes; without this entry the generated client is
         # offered a JSON body and never told about the binary one. (FastAPI adds
@@ -237,7 +235,6 @@ async def fetch_album_cover_endpoint(
 @router.post(
     "/albums/{album_id}/cover",
     response_model=CoverInstallResult,
-    dependencies=[Depends(verify_upload_origin)],
 )
 async def install_album_cover_endpoint(
     album_id: int,

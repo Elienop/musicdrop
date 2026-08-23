@@ -40,6 +40,7 @@ from app.beets.setup import setup_beets
 from app.body_limit import BodySizeLimitMiddleware
 from app.config import resolve_artist_image_cache_dir, resolve_cover_thumb_cache_dir, settings
 from app.events.emit import emit_art_changed
+from app.origin_guard import OriginGuardMiddleware, resolve_extra_origins
 from app.static_files import mount_static
 from app.wire import SurrogateSafeJSONResponse, install_wire_safety
 
@@ -272,9 +273,17 @@ app = FastAPI(
 )
 install_wire_safety(app)
 
+extra_origins = resolve_extra_origins(settings.static_dir)
+
+# Innermost of the three middlewares: CORSMiddleware (which wraps it) answers
+# preflights and decorates responses first, so only real writes reach the
+# guard — and a rejected dev-origin request still gets CORS headers on its 403.
+app.add_middleware(OriginGuardMiddleware, extra_origins=extra_origins)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Vite dev server (frontend added later)
+    # Dev: the Vite server. Prod: empty — cross-origin pages get no read
+    # access either (owner decision, see the origin-guard spec).
+    allow_origins=list(extra_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

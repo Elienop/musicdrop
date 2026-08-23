@@ -15,6 +15,7 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 
 from app.api.csrf import origin_allowed
+from app.main import app as real_app
 from app.origin_guard import OriginGuardMiddleware, resolve_extra_origins
 
 _EXTRA = ("http://localhost:5173",)
@@ -159,3 +160,50 @@ def test_dev_origin_allowed_under_the_dev_posture() -> None:
 def test_dev_origin_rejected_under_the_prod_posture() -> None:
     r = TestClient(_guarded_app(())).post("/write", headers={"Origin": "http://localhost:5173"})
     assert r.status_code == 403
+
+
+def test_real_app_bodyless_post_rejects_a_foreign_origin() -> None:
+    # /api/reorganize/dismiss was one of the 19 open CORS-simple routes.
+    r = TestClient(real_app).post("/api/reorganize/dismiss", headers={"Origin": "http://evil.test"})
+    assert r.status_code == 403
+    assert r.json()["detail"] == "cross-origin request rejected"
+
+
+def test_real_app_json_post_rejects_a_foreign_origin() -> None:
+    # Defense-in-depth: JSON routes no longer rely on the preflight assumption.
+    r = TestClient(real_app).post(
+        "/api/config/validate",
+        json={"yaml_text": "a: 1"},
+        headers={"Origin": "http://evil.test"},
+    )
+    assert r.status_code == 403
+
+
+def test_real_app_same_origin_post_still_works() -> None:
+    r = TestClient(real_app).post(
+        "/api/config/validate",
+        json={"yaml_text": "a: 1"},
+        headers={"Origin": "http://testserver"},
+    )
+    assert r.status_code == 200
+
+
+def test_real_app_no_origin_post_still_works() -> None:
+    # curl / LAN tooling / webhooks: unchanged by this slice.
+    r = TestClient(real_app).post("/api/config/validate", json={"yaml_text": "a: 1"})
+    assert r.status_code == 200
+
+
+def test_real_app_dev_origin_post_works_in_dev_mode() -> None:
+    # The test env has no MUSICDROP_STATIC_DIR, so the real app is in dev mode.
+    r = TestClient(real_app).post(
+        "/api/config/validate",
+        json={"yaml_text": "a: 1"},
+        headers={"Origin": "http://localhost:5173"},
+    )
+    assert r.status_code == 200
+
+
+def test_real_app_get_with_a_foreign_origin_passes() -> None:
+    r = TestClient(real_app).get("/api/health", headers={"Origin": "http://evil.test"})
+    assert r.status_code == 200
