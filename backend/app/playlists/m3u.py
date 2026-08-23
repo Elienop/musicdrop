@@ -4,6 +4,13 @@ Pure module: no beets, no Plex. The track rows (``M3uEntry``) are built by
 ``app.beets.playlists.m3u_entries`` (which owns path resolution); this module
 only formats and writes them. The human name rides in a ``#PLAYLIST`` directive
 so the id-based filename stays stable across renames.
+
+The write is byte-exact on purpose: track paths arrive as ``os.fsdecode``d
+strings and may carry lone surrogates for undecodable bytes. We encode the
+rendered text as UTF-8 with ``surrogateescape`` and hand raw bytes to the
+atomic sink, so those paths round-trip to their ORIGINAL on-disk bytes. A
+strict UTF-8 write would raise on them (silently failing the export), and a
+U+FFFD replacement would point the player at a nonexistent file — both wrong.
 """
 
 from __future__ import annotations
@@ -12,7 +19,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from app.playlists.atomic import write_atomic_text
+from app.playlists.atomic import write_atomic_bytes
 
 
 class M3uEntry(BaseModel):
@@ -46,8 +53,14 @@ def render_m3u(name: str, entries: list[M3uEntry]) -> str:
 
 
 def write_m3u(path: Path, name: str, entries: list[M3uEntry]) -> None:
-    """Atomically write the `.m3u8` (crash-safe; creates the export dir)."""
-    write_atomic_text(path, render_m3u(name, entries))
+    """Atomically write the ``.m3u8`` (crash-safe; creates the export dir).
+
+    Encodes the rendered text with ``surrogateescape`` so paths carrying lone
+    surrogates (``os.fsdecode`` of undecodable bytes) round-trip to their
+    original on-disk bytes instead of raising or being replaced by U+FFFD.
+    """
+    data = render_m3u(name, entries).encode("utf-8", "surrogateescape")
+    write_atomic_bytes(path, data)
 
 
 def delete_m3u(path: Path) -> None:
