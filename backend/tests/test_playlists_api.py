@@ -1224,3 +1224,108 @@ def test_merge_reads_out_of_date_against_the_targets_last_sync(
     # updated_at > synced_at is exactly the editor's "Out of date; re-sync" rule.
     assert merged["playlist"]["updated_at"] > synced_at
     assert merged["playlist"]["plex"]["admin"]["synced_at"] == synced_at
+
+
+# --- Lone-surrogate names: no 500, lossless in the store, scrubbed on the wire ---
+
+
+def test_create_with_lone_surrogate_name_is_2xx_and_degrades_on_wire(
+    client: TestClient,
+) -> None:
+    """The first-hand repro: POST with a lone surrogate in the name must not 500.
+
+    The client delivers the lone surrogate as a `"\\udce9"` JSON escape without
+    sending a single non-UTF-8 byte, so httpx's ``json=`` kwarg cannot even build
+    the body (its encoder rejects the lone surrogate) — a raw ``content=`` body is
+    required. The store keeps the exact code points; the WIRE degrades them to
+    U+FFFD on the way out (see ``app/wire.py``).
+    """
+    r = client.post(
+        "/api/playlists",
+        content=b'{"name": "Caf\\udce9"}',
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 200
+    pid = r.json()["id"]
+    # The create response degrades the lone surrogate to U+FFFD.
+    assert r.json()["name"] == "Caf\ufffd"
+
+    # The list and detail routes also 2xx, carrying the degraded name.
+    listed = client.get("/api/playlists")
+    assert listed.status_code == 200
+    assert [p["name"] for p in listed.json()] == ["Caf\ufffd"]
+
+    detail = client.get(f"/api/playlists/{pid}")
+    assert detail.status_code == 200
+    assert detail.json()["name"] == "Caf\ufffd"
+
+    # ...while the STORE keeps the exact code points (lossless, not scrubbed).
+    loaded = store.get_playlist(_dir(), pid)
+    assert loaded is not None
+    assert loaded.name == "Caf\udce9"
+
+
+def test_create_with_leading_surrogate_name_is_2xx(client: TestClient) -> None:
+    """A LEADING lone surrogate (``\\ud800``) is equally legal and must not 500.
+
+    The store stays lossless (exact code point); the response carries the WIRE
+    degradation, which for a high surrogate (outside ``surrogateescape``'s
+    U+DC80..U+DCFF) is what ``app.wire.wire_safe`` produces — so pin against it
+    rather than hardcoding a placeholder count.
+    """
+    from app.wire import wire_safe
+
+    r = client.post(
+        "/api/playlists",
+        content=b'{"name": "\\ud800bad"}',
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 200
+    assert r.json()["name"] == wire_safe("\ud800bad")
+    loaded = store.get_playlist(_dir(), r.json()["id"])
+    assert loaded is not None
+    assert loaded.name == "\ud800bad"  # lossless in the store
+
+
+def test_export_survives_a_high_surrogate_name(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """A stored high surrogate (``\\ud800``) must not kill the ``.m3u8`` export.
+
+    ``write_m3u`` encodes with ``surrogateescape``, whose window is
+    U+DC80..U+DCFF — a high surrogate would raise and the best-effort export
+    would silently skip the file (the exact silent-failure class #151 fixed for
+    paths). The export therefore renders the NAME through ``wire_safe`` first:
+    the name is a display label, so lossy is correct there — unlike the track
+    paths, which stay byte-exact. The store still keeps the exact code points.
+    """
+    from app.wire import wire_safe
+
+    r = client.post(
+        "/api/playlists",
+        content=b'{"name": "\\ud800bad"}',
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 200
+    pid = r.json()["id"]
+    m3u = os.path.join(_export_dir(beets_library), f"{pid}.m3u8")
+    assert os.path.isfile(m3u)
+    degraded = wire_safe("\ud800bad")
+    with open(m3u, encoding="utf-8") as fh:
+        assert f"#PLAYLIST:{degraded}" in fh.read()
+
+
+def test_patch_rename_with_lone_surrogate_name_is_2xx(client: TestClient) -> None:
+    """A non-create mutation (rename) through the shared sink also succeeds."""
+    pid = client.post("/api/playlists", json={"name": "Old"}).json()["id"]
+    r = client.patch(
+        f"/api/playlists/{pid}",
+        content=b'{"name": "New\\udce9"}',
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 200
+    assert r.json()["name"] == "New\ufffd"
+    # Store is lossless; the wire is the only place the U+FFFD shows up.
+    loaded = store.get_playlist(_dir(), pid)
+    assert loaded is not None
+    assert loaded.name == "New\udce9"

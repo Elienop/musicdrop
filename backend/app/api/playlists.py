@@ -64,6 +64,7 @@ from app.plex.errors import PlexConnectionError, PlexNotConfigured
 from app.plex.mapping import PlexTrackSpec
 from app.plex.paths import translate_path
 from app.plex.sync import PlexArtwork
+from app.wire import wire_safe
 
 router = APIRouter(tags=["playlists"])
 logger = logging.getLogger(__name__)
@@ -164,7 +165,12 @@ def _export_dir(handle: LibraryHandle) -> Path:
 
 def _render_export(record: StoredPlaylist, handle: LibraryHandle, export_dir: Path) -> None:
     entries = m3u_entries(handle.lib, record.resolved_item_ids, str(export_dir))
-    write_m3u(export_dir / f"{record.id}.m3u8", record.name, entries)
+    # The NAME is a display label, so it gets the wire treatment (surrogates ->
+    # U+FFFD) before rendering: the store keeps a client-sent lone surrogate
+    # losslessly, and a HIGH one (outside surrogateescape's window) would kill
+    # the whole best-effort export that track PATHS — the locators, written
+    # byte-exact — depend on. Lossy on the label, never on the locator.
+    write_m3u(export_dir / f"{record.id}.m3u8", wire_safe(record.name), entries)
 
 
 async def _export_playlist(record: StoredPlaylist, handle: LibraryHandle) -> None:

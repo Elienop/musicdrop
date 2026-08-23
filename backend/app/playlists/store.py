@@ -19,6 +19,7 @@ read never sees a half-written file).
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import threading
@@ -120,8 +121,21 @@ def _record_path(playlists_dir: Path, playlist_id: str) -> Path:
 
 
 def _write_atomic(path: Path, record: StoredPlaylist) -> None:
-    """Crash-safe write of the JSON record (shared atomic-text recipe)."""
-    write_atomic_text(path, record.model_dump_json(indent=2))
+    """Crash-safe write of the JSON record (shared atomic-text recipe).
+
+    Serialized with stdlib ``json`` (not pydantic's Rust ``model_dump_json``): a
+    name or pending-track field can carry a LONE SURROGATE — a client delivers one
+    with a ``"\\udce9"`` JSON escape without a single non-UTF-8 byte — and the
+    Rust serializer rejects those with ``PydanticSerializationError`` (an unhandled
+    500 on every mutation). ``json.dumps`` escapes each surrogate as ``\\uXXXX``
+    (lossless) and, with ``ensure_ascii=True``, keeps the output pure ASCII so the
+    strict-UTF-8 ``write_atomic_text`` sink never sees an unencodable byte. The
+    store stays LOSSLESS (exact code points on disk); the U+FFFD degradation
+    belongs on the WIRE only (``app/wire.py``), never here. Mirrors
+    ``app/bank/store.py``'s SINGLE SINK RULE.
+    """
+    text = json.dumps(record.model_dump(mode="json"), ensure_ascii=True, indent=2)
+    write_atomic_text(path, text)
 
 
 def artwork_path(playlists_dir: Path, playlist_id: str, format: str) -> Path:
@@ -190,7 +204,13 @@ def get_playlist(playlists_dir: Path, playlist_id: str) -> StoredPlaylist | None
     except OSError:
         return None
     try:
-        return StoredPlaylist.model_validate_json(raw)
+        # ``json.loads`` -> ``model_validate`` (not the Rust ``model_validate_json``):
+        # the former restores the identical str INCLUDING lone surrogates the new
+        # sink writes as ``\\uXXXX``, and ``model_validate`` accepts it where the
+        # Rust JSON parser does not. ``json.JSONDecodeError`` and pydantic's
+        # ``ValidationError`` are both ``ValueError`` subclasses, so the corrupt-file
+        # posture (return None) is unchanged.
+        return StoredPlaylist.model_validate(json.loads(raw))
     except ValueError:
         return None
 
@@ -201,8 +221,13 @@ def list_playlists(playlists_dir: Path) -> list[StoredPlaylist]:
         return []
     records: list[StoredPlaylist] = []
     for child in playlists_dir.glob("*.json"):
+        # ``json.loads`` -> ``model_validate`` (see ``get_playlist``); a corrupt
+        # file (``json.JSONDecodeError`` / pydantic ``ValidationError``, both
+        # ``ValueError`` subclasses) or unreadable one (``OSError``) is skipped.
         try:
-            records.append(StoredPlaylist.model_validate_json(child.read_text(encoding="utf-8")))
+            records.append(
+                StoredPlaylist.model_validate(json.loads(child.read_text(encoding="utf-8")))
+            )
         except (OSError, ValueError):
             continue
     records.sort(key=lambda record: record.created_at)
