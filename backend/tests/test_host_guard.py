@@ -10,9 +10,16 @@ name — every near-miss below shares one.
 
 from __future__ import annotations
 
-import pytest
+import os
+import subprocess
+import sys
+from pathlib import Path
 
-from app.host_guard import host_allowed, resolve_allowed_hosts
+import pytest
+from starlette.testclient import TestClient
+
+from app.host_guard import HostGuardMiddleware, host_allowed, resolve_allowed_hosts
+from app.main import app as real_app
 
 
 @pytest.mark.parametrize(
@@ -97,3 +104,166 @@ def test_resolver_parses_the_comma_separated_setting() -> None:
         "nas",
         "music.example.test",
     )
+
+
+# ---------------------------------------------------------------------------
+# Wire tests on the REAL app (dev posture: `testserver` is allowlisted).
+# ---------------------------------------------------------------------------
+
+_REJECT_BODY = {"detail": "invalid host"}
+
+
+def _client() -> TestClient:
+    # No lifespan: none of these routes need the library, and the guard runs
+    # before the router anyway.
+    return TestClient(real_app)
+
+
+def _middleware_kwargs(cls: object) -> dict[str, object]:
+    for m in real_app.user_middleware:
+        if m.cls is cls:
+            return dict(m.kwargs)
+    raise AssertionError(f"middleware not registered: {cls!r}")
+
+
+def test_dev_posture_resolved_tuple_reaches_the_guard() -> None:
+    allowed = _middleware_kwargs(HostGuardMiddleware)["allowed_hosts"]
+    assert allowed == ("testserver",)
+
+
+def test_allowed_host_passes() -> None:
+    r = _client().get("/api/health")  # Host: testserver
+    assert r.status_code == 200
+
+
+def test_disallowed_host_rejected_on_get_and_post() -> None:
+    c = _client()
+    get = c.get("/api/health", headers={"Host": "evil.test:3030"})
+    post = c.post(
+        "/api/config/validate",
+        json={"yaml_text": "a: 1"},
+        headers={"Host": "evil.test:3030"},
+    )
+    assert get.status_code == 400
+    assert get.json() == _REJECT_BODY
+    assert get.headers["content-type"] == "application/json"
+    assert post.status_code == 400
+    assert post.json() == _REJECT_BODY
+
+
+def test_disallowed_forwarded_host_rejected_even_with_an_allowed_host() -> None:
+    # X-Forwarded-Host feeds the ORIGIN guard's authority comparison, so the
+    # host guard holds it to the same policy whenever it is present.
+    r = _client().get("/api/health", headers={"X-Forwarded-Host": "evil.test"})
+    assert r.status_code == 400
+    assert r.json() == _REJECT_BODY
+
+
+def test_allowed_forwarded_host_passes() -> None:
+    r = _client().get("/api/health", headers={"X-Forwarded-Host": "127.0.0.1:3030"})
+    assert r.status_code == 200
+
+
+def test_options_from_a_disallowed_host_rejected() -> None:
+    # ALL methods — a CORS preflight from a rebound page dies here, before
+    # CORSMiddleware would answer it.
+    r = _client().options(
+        "/api/config/validate",
+        headers={
+            "Host": "evil.test:3030",
+            "Origin": "http://evil.test:3030",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert r.status_code == 400
+
+
+def test_dns_rebinding_simulation_is_closed() -> None:
+    # THE attack this slice exists for, exactly as it beat #153's origin
+    # guard: attacker-chosen Host with a MATCHING Origin (the browser's
+    # same-origin fetch after rebinding evil.test to the box's LAN IP). The
+    # origin guard passes this pair by construction; the host guard must not.
+    r = _client().post(
+        "/api/config/validate",
+        json={"yaml_text": "a: 1"},
+        headers={"Host": "evil.test:3030", "Origin": "http://evil.test:3030"},
+    )
+    assert r.status_code == 400
+    assert r.json() == _REJECT_BODY
+
+
+def test_healthcheck_shape_passes() -> None:
+    # The Docker HEALTHCHECK: urllib GET with Host: 127.0.0.1:3030, no Origin.
+    r = _client().get("/api/health", headers={"Host": "127.0.0.1:3030"})
+    assert r.status_code == 200
+
+
+def test_disallowed_host_beats_the_body_limit() -> None:
+    # Ordering pin: HostGuard wraps OUTERMOST, so a wrong-host oversize body
+    # gets the host 400, not the body-limit 413. (The oversize-vs-ORIGIN-guard
+    # precedence pin lives in test_body_limit.py and is unchanged.)
+    big = b"x" * (25 * 1024 * 1024 + 1)
+    r = _client().post(
+        "/api/config/validate",
+        content=big,
+        headers={"Host": "evil.test:3030", "Content-Type": "application/json"},
+    )
+    assert r.status_code == 400
+    assert r.json() == _REJECT_BODY
+
+
+def test_prod_posture_rejects_testserver_and_honors_the_setting(tmp_path: Path) -> None:
+    """The prod half of the dev/prod seam, on the REAL app wiring.
+
+    The suite runs in dev posture, where a correctly-resolved allowlist and a
+    hardcoded ``("testserver",)`` are identical — no in-process test can tell
+    them apart (the #153 lesson). This builds ``app.main`` in a subprocess
+    with ``MUSICDROP_STATIC_DIR`` and ``MUSICDROP_ALLOWED_HOSTS`` set, so
+    import-time settings resolve to PRODUCTION, and pins:
+    - ``testserver`` is REJECTED (the dev extra does not leak into prod);
+    - the configured name is allowed (the setting actually reaches the guard);
+    - an IP literal is allowed (the carve-out is not posture-keyed);
+    - the name-based reverse-proxy WRITE flow works end-to-end: internal IP
+      Host + allowlisted ``X-Forwarded-Host`` + matching Origin is accepted
+      (the Caddy deployment shape — host guard passes all three, origin guard
+      matches the forwarded host);
+    - the guard's resolved kwargs are exactly the configured tuple.
+    """
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text('<!doctype html><div id="root"></div>')
+    code = (
+        "from starlette.testclient import TestClient\n"
+        "from app.main import app\n"
+        "c = TestClient(app)\n"
+        "default = c.get('/api/health')\n"
+        "named = c.get('/api/health', headers={'Host': 'music.example.test'})\n"
+        "ip = c.get('/api/health', headers={'Host': '127.0.0.1:3030'})\n"
+        "proxy = c.post('/api/config/validate', json={'yaml_text': 'a: 1'},"
+        " headers={'Host': '127.0.0.1:3030',"
+        " 'X-Forwarded-Host': 'music.example.test',"
+        " 'Origin': 'http://music.example.test'})\n"
+        "g = next(m.kwargs['allowed_hosts'] for m in app.user_middleware"
+        " if m.cls.__name__ == 'HostGuardMiddleware')\n"
+        "print(default.status_code, named.status_code, ip.status_code, proxy.status_code)\n"
+        "print(tuple(g))\n"
+    )
+    env = {
+        **os.environ,
+        "MUSICDROP_STATIC_DIR": str(dist),
+        "MUSICDROP_ALLOWED_HOSTS": "Music.Example.Test",
+    }
+    backend = Path(__file__).resolve().parents[1]
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=backend,
+        timeout=180,
+        check=False,
+    )
+    assert out.returncode == 0, f"child failed: stderr={out.stderr!r}"
+    lines = out.stdout.strip().splitlines()
+    assert lines[-2] == "400 200 200 200"
+    assert lines[-1] == "('music.example.test',)"
