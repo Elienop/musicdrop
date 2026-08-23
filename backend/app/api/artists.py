@@ -644,8 +644,8 @@ def _reset_slots(cache: ArtistImageCache, name: str) -> tuple[bool, bool]:
     # The app-wide Origin guard is invisible in OpenAPI - middleware emits no
     # security scheme - so a status this route really returns would otherwise be
     # undeclared, and the generated client would be typed as if it could not
-    # happen. 422 stays undeclared on purpose: declaring it
-    # would replace FastAPI's HTTPValidationError, whose `detail` is a list.
+    # happen. 422 stays undeclared on purpose: declaring it would replace
+    # FastAPI's HTTPValidationError, whose `detail` is a list.
     responses={
         403: {"model": ErrorDetail, "description": "The request is cross-origin."},
         409: _ART_BUSY_RESPONSE,

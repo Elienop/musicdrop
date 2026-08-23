@@ -7,6 +7,11 @@ healthcheck, the slskd webhook) is allowed by design.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
@@ -212,6 +217,48 @@ def test_real_app_get_with_a_foreign_origin_passes() -> None:
     assert r.status_code == 200
 
 
+def test_prod_posture_rejects_the_dev_origin_write(tmp_path: Path) -> None:
+    """The prod half of the dev/prod posture, on the REAL app wiring.
+
+    The suite itself runs in dev posture (no ``MUSICDROP_STATIC_DIR``), where a
+    correctly-resolved tuple and a hardcoded ``("http://localhost:5173",)`` are
+    identical — so no in-process test can tell them apart. This builds
+    ``app.main`` in a subprocess with ``MUSICDROP_STATIC_DIR`` set, so
+    import-time settings resolve to PRODUCTION, and pins main.py's
+    ``extra_origins = resolve_extra_origins(settings.static_dir)`` linkage:
+    hardcode the dev tuple there and the guard accepts :5173 in prod, so this
+    fails.
+    """
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text('<!doctype html><div id="root"></div>')
+    code = (
+        "from starlette.testclient import TestClient\n"
+        "from app.main import app\n"
+        "c = TestClient(app)\n"
+        "dev = c.post('/api/config/validate', json={'yaml_text': 'a: 1'},"
+        " headers={'Origin': 'http://localhost:5173'})\n"
+        "same = c.post('/api/config/validate', json={'yaml_text': 'a: 1'},"
+        " headers={'Origin': 'http://testserver'})\n"
+        "print(dev.status_code, same.status_code)\n"
+    )
+    env = {**os.environ, "MUSICDROP_STATIC_DIR": str(dist)}
+    backend = Path(__file__).resolve().parents[1]
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=backend,
+        timeout=180,
+        check=False,
+    )
+    # Prod posture: the dev origin is a foreign origin (403); same-origin still
+    # 200 (so a child that 403s everything cannot pass this for the wrong reason).
+    assert out.returncode == 0, f"child failed: stderr={out.stderr!r}"
+    assert out.stdout.strip() == "403 200", f"stdout={out.stdout!r} stderr={out.stderr!r}"
+
+
 def _middleware_kwargs(cls: object) -> dict[str, object]:
     for m in real_app.user_middleware:
         if m.cls is cls:
@@ -226,6 +273,14 @@ def test_all_three_middlewares_read_one_resolved_tuple() -> None:
     assert isinstance(guard, tuple)
     assert _middleware_kwargs(CORSMiddleware)["allow_origins"] == list(guard)
     assert _middleware_kwargs(BodySizeLimitMiddleware)["allowed_origins"] == guard
+
+    cors = _middleware_kwargs(CORSMiddleware)
+    # X-Forwarded-Host is guard-trusted, so any origin CORS approves could steer
+    # the guard's authority compare. Keep CORS from ever exceeding the tuple.
+    assert cors.get("allow_origin_regex") is None
+    allow_origins = cors["allow_origins"]
+    assert isinstance(allow_origins, list)
+    assert "*" not in allow_origins
 
 
 def test_oversize_body_beats_the_origin_guard() -> None:

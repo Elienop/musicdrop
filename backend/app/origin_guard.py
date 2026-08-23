@@ -12,7 +12,8 @@ This is a browser-CSRF guard, NOT auth: a request without an Origin header
 
 Runs INSIDE CORSMiddleware (added before it in ``app.main``; Starlette applies
 middleware in reverse add order) so that CORS preflight OPTIONS are answered
-before the guard sees them. A guard 403 carries no CORS headers: the guard's
+before the guard sees them. A guard 403 carries no ``Access-Control-Allow-Origin``
+header (CORSMiddleware still stamps ``Allow-Credentials``): the guard's
 allowed origins are a superset of the CORS allowlist, so an origin the guard
 rejects was never CORS-approved either — the rejection is opaque to a foreign
 page, which is fine.

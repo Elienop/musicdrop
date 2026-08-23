@@ -26,6 +26,23 @@ _Last groomed: 2026-08-23, with the app-wide origin guard._
   resolving to one folder with disjoint track names would land `cover.1.jpg` silently.
   One-shot (no churn — the unit is item-settled next run), which is why it was descoped.
 
+- **Origin==Host CSRF check is defeated by DNS rebinding — no Host allowlist exists.** The
+  2026-08-23 origin guard anchors on `Origin` authority == `Host`, and nothing validates
+  `Host` (no `TrustedHostMiddleware`, `uvicorn --host 0.0.0.0`, no `MUSICDROP_ALLOWED_HOSTS`).
+  An attacker who rebinds a hostname to the server's LAN IP serves the victim a page on
+  :3030 whose same-origin `fetch` carries `Origin == Host` and passes the guard — full
+  unauthenticated read+write. Bounded to attackers willing to run DNS; the guard still
+  closes the ordinary cross-origin CSRF vector. Fix (separate slice, needs an owner call on
+  config): trust `Host`/`X-Forwarded-Host` only when it is a bare IP literal (rebinding needs
+  a DNS name) or a name in a configured `MUSICDROP_ALLOWED_HOSTS`; `TrustedHostMiddleware` is
+  the off-the-shelf half if the IP-literal carve-out is added. CWE-350/346.
+
+- **Cross-origin no-cors GET side effects are an accepted residual.** `GET
+  /api/artists/image` (and its peer cache-fillers), plus the outbound-credential GETs like
+  `/api/plex/*`, still fire for a foreign page — GETs are structurally outside an
+  unsafe-method guard, so the 2026-08-23 slice's "not in this slice" note stands as an
+  accepted risk, not an oversight.
+
 - **No security response headers anywhere.** The backend emits no
   `X-Content-Type-Options`, `X-Frame-Options`, or CSP on any response (verified
   2026-08-09; deliberately left out of the 2026-08-23 origin-guard slice to keep
@@ -285,6 +302,12 @@ _Last groomed: 2026-08-23, with the app-wide origin guard._
   (curl/LAN/webhook/healthcheck) still allowed by design — this is a browser-CSRF
   guard, not auth. The `localhost:5173` dev allowance (writes AND CORS read
   access) now applies in dev mode only (`static_dir` empty); prod rejects it.
+  **Caveat — this is not "browser CSRF fully closed":** it closes the
+  CORS-simple / cross-origin vector, but NOT DNS rebinding (the check is
+  `Origin` authority == `Host`, and no Host allowlist exists — see the Open
+  item above), and not the cross-origin no-cors GET side effects (also above).
+  Deployment note: a Host-rewriting reverse proxy must FORWARD (set, not
+  append) `X-Forwarded-Host`, or every browser write 403s.
   Spec: `docs/superpowers/specs/2026-08-23-origin-guard-design.md`. Note carried
   from the closed CSRF entry: display-name resolution keeps undecodable-named
   trash/inbox folders addressable by a guessable display string for NON-browser
