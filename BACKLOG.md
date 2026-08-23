@@ -35,6 +35,20 @@ _Last groomed: 2026-08-23, with the playlist-name 500 fix._
   refuses, no fan-out), inherent to making such folders restorable; weigh it when the origin
   decision is made.
 
+- **Bank store sink has the same inf/NaN shape the playlists store just fixed.**
+  `app/bank/store.py:174` (`json.dumps(model_dump(mode="json"), ensure_ascii=True)`) writes
+  a bare `Infinity` token for a non-finite float — `app/models/bank.py` carries
+  `confidence: float | None`. Reachability is low (confidence is set internally by the
+  beets matcher, not from a client body), which is why it wasn't fixed in the 2026-08-23
+  playlists slice — apply the same `_finite_only` + `allow_nan=False` treatment when the
+  bank store is next touched.
+
+- **`get_playlist` propagates `UnicodeDecodeError` on a non-UTF-8 record file** while
+  `list_playlists` skips it (its guard is `except (OSError, ValueError)`; get's `read_text`
+  sits under `except OSError` only). Pre-existing, unreachable via the store's own sink
+  (`ensure_ascii=True` output is pure ASCII) — needs external file corruption. Align the
+  two sites' posture when next in the file.
+
 - **Config editor accepts `import.autotag` that MusicDrop now ignores.** `run_import_worker`
   force-enables autotag (with snapshot/restore) because beets swaps out the `user_query`
   stage under `autotag: no` — the only stage that fires `choose_match`, the sole hook
@@ -61,7 +75,13 @@ _Last groomed: 2026-08-23, with the playlist-name 500 fix._
   placement is unpinned (a `/tmp`-located tmp survives because pytest's tmp shares the
   device; on a NAS-mounted `.playlists` it would EXDEV every export), the `.m3u8` export's
   0o644 mode is unpinned, and the fsync durability lines rest on review alone (untestable
-  without crash injection).
+  without crash injection). From the 2026-08-23 playlist-name review: the store sink's
+  `mode="json"` is equivalent-but-forward-fragile (a future `datetime`/`enum`/`Decimal`
+  field would make `json.dumps` raise `TypeError` on every mutation — nothing guards it);
+  the export's in-window-surrogate name degradation (raw byte → U+FFFD vs #151's direct
+  `write_m3u` behavior) is intended but untested; a surrogate-named Plex sync degrades to
+  a generic `failed` target state (reasoned from `_safe_reconcile`'s broad except, never
+  executed against a real encoder).
 
 - **Disk-sync emptied-row path shows the first item's folder,** not the album root — a
   multi-disc emptied album reads `Artist/Album/CD1`. Still separates label twins (the
