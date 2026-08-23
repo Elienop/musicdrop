@@ -9,14 +9,14 @@ detail lives.
 *Recently shipped* with the PR number. When something new turns up (review finding, incident,
 parked idea), add it here in the same commit that discovers it.
 
-_Last groomed: 2026-08-23, with the m3u8 export fix._
+_Last groomed: 2026-08-23, with the playlist-name 500 fix._
 
 ## Next up
 
 - Pick from Open bugs / hardening below — the CSRF/Origin posture is the standing
   candidate. (The phantom-album question that used to sit here is RESOLVED — see Open
-  questions and the 2026-08-22 guard entry under Recently shipped. The m3u8 export fix
-  shipped 2026-08-23.)
+  questions and the 2026-08-22 guard entry under Recently shipped. The m3u8 export fix and
+  the playlist-name 500 both shipped 2026-08-23.)
 
 ## Open bugs / hardening
 
@@ -34,17 +34,6 @@ _Last groomed: 2026-08-23, with the m3u8 export fix._
   all — Starlette percent-decodes queries with `errors="replace"`). Bounded (ambiguity
   refuses, no fan-out), inherent to making such folders restorable; weigh it when the origin
   decision is made.
-
-- **`POST /api/playlists` 500s on a lone-surrogate playlist NAME.** Found by the m3u8-export
-  deep review (2026-08-23); pre-existing, same bug class as the bank-rows fix in #147 one
-  door over. Pydantic's JSON parser admits `"\udce9"`-style escapes in the request body, and
-  the playlists store sink (`store.py:124` `record.model_dump_json`) raises
-  `PydanticSerializationError` → unhandled 500 (`api/playlists.py:226` → `store.py:180` →
-  `:124`), before `write_atomic_text` is ever reached — so the strict-wrapper test does not
-  cover this path, and the export's surrogateescape window gap is unreachable via `name`
-  precisely because this crash fires first. Verified live by the reviewer (U+D800 and
-  U+DCE9 → 500; clean control → 200). Candidate fix: the #147 pattern — an
-  `ensure_ascii=True` stdlib sink for the playlists store.
 
 - **Config editor accepts `import.autotag` that MusicDrop now ignores.** `run_import_worker`
   force-enables autotag (with snapshot/restore) because beets swaps out the `user_query`
@@ -274,6 +263,22 @@ _Last groomed: 2026-08-23, with the m3u8 export fix._
   inside it); the placeholder scandir path widens that pre-existing TOCTOU window slightly.
 
 ## Recently shipped
+
+- **2026-08-23 — playlist mutations survive a lone-surrogate NAME** (branch
+  `fix/playlist-name-surrogate-500`): a client can deliver a lone surrogate without one
+  non-UTF-8 byte (the JSON escape `"\udce9"` parses), and the store sink
+  `model_dump_json` raised `PydanticSerializationError` → unhandled 500 on every playlist
+  mutation (found by #151's deep review; verified first-hand). Fix mirrors the bank's #147
+  single-sink rule: stdlib `json.dumps(model_dump(mode="json"), ensure_ascii=True)` sink +
+  `json.loads` → `model_validate` at BOTH read sites (the Rust JSON parser rejects the
+  escaped surrogates the sink writes — verified against pydantic 2.13.4). Store lossless,
+  wire degrades (`SurrogateSafeJSONResponse` already covered responses); corrupt-file and
+  legacy-file behavior pinned unchanged. Plus: the export renders the NAME through
+  `wire_safe` — a stored high surrogate (outside surrogateescape's window) would otherwise
+  silently kill the playlist's whole `.m3u8` export, the class #151 fixed for paths (lossy
+  on the display label, never on the path locators). Plex sync checked: a surrogate name
+  becomes a failed target state, never a 500. 10 new tests; 5 mutants killed, each by
+  exactly its intended tests.
 
 - **2026-08-23 — `.m3u8` export survives undecodable track paths** (branch
   `fix/m3u8-export-surrogate-paths`): the export sink wrote strict UTF-8, so a track path
