@@ -9,14 +9,15 @@ detail lives.
 *Recently shipped* with the PR number. When something new turns up (review finding, incident,
 parked idea), add it here in the same commit that discovers it.
 
-_Last groomed: 2026-08-23, with the playlist-name 500 fix._
+_Last groomed: 2026-08-23, with the app-wide origin guard._
 
 ## Next up
 
-- Pick from Open bugs / hardening below — the CSRF/Origin posture is the standing
-  candidate. (The phantom-album question that used to sit here is RESOLVED — see Open
-  questions and the 2026-08-22 guard entry under Recently shipped. The m3u8 export fix and
-  the playlist-name 500 both shipped 2026-08-23.)
+- Pick from Open bugs / hardening below — security response headers are the standing
+  candidate now that the origin guard has shipped (2026-08-23), leaving them the remaining
+  half of the security posture. (The phantom-album question that used to sit here is
+  RESOLVED — see Open questions and the 2026-08-22 guard entry under Recently shipped. The
+  m3u8 export fix and the playlist-name 500 both shipped 2026-08-23.)
 
 ## Open bugs / hardening
 
@@ -25,15 +26,11 @@ _Last groomed: 2026-08-23, with the playlist-name 500 fix._
   resolving to one folder with disjoint track names would land `cover.1.jpg` silently.
   One-shot (no churn — the unit is item-settled next run), which is why it was descoped.
 
-- **CSRF/Origin posture on state-changing POSTs.** `/api/reorganize` (starts a library-wide
-  move), `/stop`, and `/dismiss` are all CORS-simple POSTs with no origin check
-  (`verify_upload_origin` covers multipart uploads only). Harden all three together or
-  accept the posture deliberately — do not fix one route in isolation. 2026-08-02 addendum
-  from the wire-safety audit: display-name resolution makes undecodable-named trash/inbox
-  folders addressable by a *guessable* display string (previously unaddressable over HTTP at
-  all — Starlette percent-decodes queries with `errors="replace"`). Bounded (ambiguity
-  refuses, no fan-out), inherent to making such folders restorable; weigh it when the origin
-  decision is made.
+- **No security response headers anywhere.** The backend emits no
+  `X-Content-Type-Options`, `X-Frame-Options`, or CSP on any response (verified
+  2026-08-09; deliberately left out of the 2026-08-23 origin-guard slice to keep
+  it one concern). A reverse proxy is currently the only mitigation, and the
+  shipped compose has none. See the memory note `musicdrop-security-posture-gaps`.
 
 - **Bank store sink has the same inf/NaN shape the playlists store just fixed.**
   `app/bank/store.py:174` (`json.dumps(model_dump(mode="json"), ensure_ascii=True)`) writes
@@ -180,10 +177,6 @@ _Last groomed: 2026-08-23, with the playlist-name 500 fix._
   #83 and #111. Shape: a backend pytest comparing PARSED DICTS (not serialized text — a byte
   comparison fails on formatting drift and teaches people to distrust the guard); a missing file
   must FAIL, not skip; the failure message spells out the two-step regen.
-- **Nothing enforces the CSRF policy for the next body-less POST.** `verify_upload_origin` now
-  guards six routes, but a route-enumeration test ("every POST whose signature has no body param
-  carries `verify_upload_origin`") is what would have caught the artist-fetch gap the day it
-  landed. `csrf.py`'s docstring states the policy in prose, and prose cannot fail.
 - **`download_image` validates only the FIRST and LAST redirect hop, and issues the intermediate
   request anyway.** Measured: `public → 127.0.0.1:9 → public` returns bytes and the internal GET
   happens. Its sibling `fetch_image_bytes` (the user-pasted-URL path) does it correctly with
@@ -283,6 +276,23 @@ _Last groomed: 2026-08-23, with the playlist-name 500 fix._
   inside it); the placeholder scandir path widens that pre-existing TOCTOU window slightly.
 
 ## Recently shipped
+
+- **App-wide origin guard (PR #TBD, 2026-08-23).** Cross-origin browser writes are
+  rejected 403 by `OriginGuardMiddleware` on every POST/PUT/PATCH/DELETE — closing
+  the 19 CORS-simple routes (config/apply, review-inbox, disk-sync, reorganize,
+  playlist sync, ...) that executed with no preflight and no origin check. The
+  per-route `verify_upload_origin` dependency is retired; missing-Origin
+  (curl/LAN/webhook/healthcheck) still allowed by design — this is a browser-CSRF
+  guard, not auth. The `localhost:5173` dev allowance (writes AND CORS read
+  access) now applies in dev mode only (`static_dir` empty); prod rejects it.
+  Spec: `docs/superpowers/specs/2026-08-23-origin-guard-design.md`. Note carried
+  from the closed CSRF entry: display-name resolution keeps undecodable-named
+  trash/inbox folders addressable by a guessable display string for NON-browser
+  callers — bounded (ambiguity refuses, no fan-out), inherent to restorability.
+  Also closes the deferred "nothing enforces the CSRF policy for the next
+  body-less POST" minor: with the guard applied by construction there is no
+  per-route dependency left to forget, so the route-enumeration test it asked for
+  is moot.
 
 - **2026-08-23 — playlist mutations survive a lone-surrogate NAME** (branch
   `fix/playlist-name-surrogate-500`): a client can deliver a lone surrogate without one
