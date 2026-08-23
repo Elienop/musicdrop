@@ -279,7 +279,15 @@ def test_prod_posture_rejects_the_dev_origin_write(tmp_path: Path) -> None:
         "print(dev.status_code, same.status_code)\n"
         "print(tuple(g), list(cors), tuple(b))\n"
     )
-    env = {**os.environ, "MUSICDROP_STATIC_DIR": str(dist)}
+    # The child runs in PROD posture, where the host guard (outermost) rejects
+    # the TestClient's `Host: testserver` before the origin guard runs; this
+    # test is about ORIGIN posture, so allowlist the test host explicitly.
+    # Prod host-guard behavior has its own subprocess test in test_host_guard.py.
+    env = {
+        **os.environ,
+        "MUSICDROP_STATIC_DIR": str(dist),
+        "MUSICDROP_ALLOWED_HOSTS": "testserver",
+    }
     backend = Path(__file__).resolve().parents[1]
     out = subprocess.run(
         [sys.executable, "-c", code],

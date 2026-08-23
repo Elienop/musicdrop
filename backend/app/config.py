@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     # this seam is a no-op. (env MUSICDROP_STATIC_DIR)
     static_dir: str = ""
 
+    # DNS names (comma-separated) accepted in the Host header — e.g. the
+    # reverse-proxy site name the box is browsed by. IP literals and localhost
+    # always pass; every other name is rejected with a 400 (the DNS-rebinding
+    # guard — see app/host_guard.py). (env MUSICDROP_ALLOWED_HOSTS)
+    allowed_hosts: str = ""
+
     # Library-wide lyrics backfill: a courtesy pause between LRCLib requests
     # (beets adds none; LRCLib is a free community API).
     # (env MUSICDROP_LYRICS_BACKFILL_DELAY_SECONDS)
