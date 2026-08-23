@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.albums import get_library
-from app.api.csrf import verify_upload_origin
 from app.api.http_cache import (
     NO_SNIFF,
     if_none_match_hit,
@@ -395,7 +394,6 @@ async def list_artist_image_sources_endpoint(
 
 @router.post(
     "/artists/image/fetch",
-    dependencies=[Depends(verify_upload_origin)],
     responses={
         200: {
             # FastAPI adds `application/json: {schema: {}}` here as well, from
@@ -414,9 +412,9 @@ async def list_artist_image_sources_endpoint(
         # generated response instead of merging into it, which strips the body
         # schema and generates `content?: never` - a type saying the body cannot
         # exist for statuses whose body the client has to read.
-        # TWO causes, and the second one is invisible in the schema: a
-        # `dependencies=[...]` guard emits no OpenAPI security scheme, so this
-        # sentence is the only place the cross-origin refusal is documented.
+        # TWO causes, and the second one is invisible in the schema: the
+        # app-wide Origin guard is middleware, which emits no OpenAPI security
+        # scheme, so this sentence is the only place it is documented.
         403: {
             "model": ErrorDetail,
             "description": "Artist images are turned off, or the request is cross-origin.",
@@ -556,7 +554,6 @@ async def fetch_artist_image_endpoint(
 @router.post(
     "/artists/image/override",
     response_model=ArtistImageOverrideResult,
-    dependencies=[Depends(verify_upload_origin)],
     responses={409: _ART_BUSY_RESPONSE},
 )
 async def upload_artist_image_override_endpoint(
@@ -644,12 +641,11 @@ def _reset_slots(cache: ArtistImageCache, name: str) -> tuple[bool, bool]:
 @router.post(
     "/artists/image/reset",
     response_model=ArtistImageResetResult,
-    dependencies=[Depends(verify_upload_origin)],
-    # The Origin guard below is invisible in OpenAPI - a `dependencies=[...]`
-    # entry emits no security scheme - so a status this route really returns
-    # would otherwise be undeclared, and the generated client would be typed as
-    # if it could not happen. 422 stays undeclared on purpose: declaring it
-    # would replace FastAPI's HTTPValidationError, whose `detail` is a list.
+    # The app-wide Origin guard is invisible in OpenAPI - middleware emits no
+    # security scheme - so a status this route really returns would otherwise be
+    # undeclared, and the generated client would be typed as if it could not
+    # happen. 422 stays undeclared on purpose: declaring it would replace
+    # FastAPI's HTTPValidationError, whose `detail` is a list.
     responses={
         403: {"model": ErrorDetail, "description": "The request is cross-origin."},
         409: _ART_BUSY_RESPONSE,

@@ -40,6 +40,7 @@ from app.beets.setup import setup_beets
 from app.body_limit import BodySizeLimitMiddleware
 from app.config import resolve_artist_image_cache_dir, resolve_cover_thumb_cache_dir, settings
 from app.events.emit import emit_art_changed
+from app.origin_guard import OriginGuardMiddleware, resolve_extra_origins
 from app.static_files import mount_static
 from app.wire import SurrogateSafeJSONResponse, install_wire_safety
 
@@ -272,16 +273,34 @@ app = FastAPI(
 )
 install_wire_safety(app)
 
+extra_origins = resolve_extra_origins(settings.static_dir)
+
+# Innermost of the three middlewares. BodySizeLimit MUST wrap outermost so an
+# oversize body is refused before anything else runs — that one is load-bearing
+# and pinned by test_oversize_body_beats_the_origin_guard. CORS-outside-guard is
+# defense-in-depth, not a requirement: CORS answers preflights itself, and the
+# guard ignores OPTIONS by construction, so preflights are answered either way.
+# (A guard 403 carries no Access-Control-Allow-Origin header — CORSMiddleware
+# still stamps Allow-Credentials: the guard's allowed origins are a superset of
+# the CORS allowlist, so an origin the guard rejects was never CORS-approved
+# either — the rejection is opaque to a foreign page, which is fine.)
+app.add_middleware(OriginGuardMiddleware, extra_origins=extra_origins)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Vite dev server (frontend added later)
+    # Dev: the Vite server. Prod: empty — cross-origin pages get no read
+    # access either (owner decision, see the origin-guard spec).
+    allow_origins=list(extra_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 # Added last so it wraps OUTERMOST (Starlette applies middleware in reverse add
 # order): an oversize body is refused before CORS or any route touches it.
-app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_body_bytes)
+app.add_middleware(
+    BodySizeLimitMiddleware,
+    max_bytes=settings.max_body_bytes,
+    allowed_origins=extra_origins,
+)
 
 app.include_router(health_router, prefix="/api")
 app.include_router(events_router, prefix="/api")

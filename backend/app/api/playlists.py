@@ -18,7 +18,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.albums import get_library
-from app.api.csrf import verify_upload_origin
 from app.api.http_cache import revalidating_image_response
 from app.api.plex import get_plex_store
 from app.beets.library import LibraryHandle
@@ -577,7 +576,6 @@ async def get_playlist_artwork_endpoint(
 @router.put(
     "/playlists/{playlist_id}/artwork",
     response_model=Playlist,
-    dependencies=[Depends(verify_upload_origin)],
 )
 async def put_playlist_artwork_endpoint(
     playlist_id: str,

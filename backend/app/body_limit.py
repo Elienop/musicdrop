@@ -11,15 +11,21 @@ from __future__ import annotations
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-# Kept in step with the CORS ``allow_origins`` in app.main and the csrf dev origin
-# (the Vite dev server): the only cross-origin caller we echo CORS headers to.
-_DEV_FRONTEND_ORIGIN = b"http://localhost:5173"
-
 
 class BodySizeLimitMiddleware:
-    def __init__(self, app: ASGIApp, *, max_bytes: int) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        max_bytes: int,
+        allowed_origins: tuple[str, ...] = (),
+    ) -> None:
         self._app = app
         self._max = max_bytes
+        # The cross-origin callers we echo CORS headers to on our own 413
+        # (this middleware wraps OUTERMOST, so the inner CORSMiddleware never
+        # runs on a rejection). Resolved in app.main; empty in production.
+        self._allowed = tuple(o.encode("ascii") for o in allowed_origins)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
@@ -31,7 +37,7 @@ class BodySizeLimitMiddleware:
                     except ValueError:
                         too_big = False
                     if too_big:
-                        await self._reject(send, _allowed_origin(headers))
+                        await self._reject(send, self._allowed_origin(headers))
                         return
                     break
         await self._app(scope, receive, send)
@@ -48,10 +54,9 @@ class BodySizeLimitMiddleware:
         await send({"type": "http.response.start", "status": 413, "headers": headers})
         await send({"type": "http.response.body", "body": b'{"detail":"Request body too large"}'})
 
-
-def _allowed_origin(headers: list[tuple[bytes, bytes]]) -> bytes | None:
-    """The request Origin iff it is an allowed cross-origin caller, else None."""
-    for name, value in headers:
-        if name == b"origin":
-            return value if value == _DEV_FRONTEND_ORIGIN else None
-    return None
+    def _allowed_origin(self, headers: list[tuple[bytes, bytes]]) -> bytes | None:
+        """The request Origin iff it is an allowed cross-origin caller, else None."""
+        for name, value in headers:
+            if name == b"origin":
+                return value if value in self._allowed else None
+        return None

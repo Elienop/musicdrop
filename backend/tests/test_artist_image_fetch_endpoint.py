@@ -429,11 +429,11 @@ def test_every_declared_status_carries_the_body_it_actually_returns() -> None:
         assert ref(code) == "#/components/schemas/ErrorDetail", code
     assert ref("422") == "#/components/schemas/HTTPValidationError"
 
-    # The 403 has TWO causes and the second is invisible in the schema: a
-    # `dependencies=[...]` guard emits no security scheme, so this prose is the
-    # only place the cross-origin refusal is documented. Pinned because Task 9
-    # writes user-facing copy off it and a re-worded description could silently
-    # drop half of what the status means.
+    # The 403 has TWO causes and the second is invisible in the schema: the
+    # app-wide origin-guard middleware runs outside the route, so it emits no
+    # security scheme and this prose is the only place the cross-origin refusal
+    # is documented. Pinned because Task 9 writes user-facing copy off it and a
+    # re-worded description could silently drop half of what the status means.
     description = responses["403"]["description"]
     assert "turned off" in description
     assert "origin" in description

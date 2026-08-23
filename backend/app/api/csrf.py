@@ -1,60 +1,43 @@
-"""CSRF guard for the state-changing endpoints a browser can reach WITHOUT a
-preflight.
+"""The origin policy behind the app-wide CSRF guard.
 
-Two shapes qualify, and both are guarded:
+Browsers send CORS-"simple" writes (body-less, query-only, and multipart
+POSTs) WITHOUT a preflight, so the strict CORS allowlist never gets a vote on
+them, and JSON routes are only protected as long as every client really sends
+``Content-Type: application/json``. Rather than reason per-route about which
+shapes preflight, ``app.origin_guard.OriginGuardMiddleware`` applies the
+predicate below to EVERY state-changing method, app-wide — a new route is
+protected the day it is written, and converting a DELETE to a body-less POST
+no longer silently sheds a protection.
 
-* a ``multipart/form-data`` POST — a CORS "simple" content type, so a
-  cross-origin page can upload a cover / artist image without the strict CORS
-  allowlist ever getting a say;
-* a **body-less** POST (query params only, no custom headers) — equally simple,
-  and the shape ``POST /api/artists/image/reset`` takes. It destroys data (it
-  unlinks the user's uploaded override), so it needs this guard just as much.
-
-(The JSON endpoints are already safe: ``application/json`` forces a preflight,
-which the CORS policy rejects. So does any non-simple METHOD — the ``DELETE``
-that the reset POST replaced was protected by its verb alone, which is why
-swapping the verb without adding this dependency would have quietly removed a
-protection.)
-
-``verify_upload_origin`` closes that gap by checking the ``Origin`` header: a
-browser always sends it on a cross-origin (and same-origin) POST, while non-browser
-clients (curl, LAN tooling) send none. We allow a missing Origin, a same-origin
-request (Origin authority == Host, or == X-Forwarded-Host behind a Host-rewriting
-reverse proxy), and the dev frontend; anything else is 403.
+The predicate is a browser-CSRF guard, not auth: non-browser clients (curl,
+LAN tooling, the container healthcheck, the slskd webhook) send no Origin
+header and are allowed through unchanged.
 """
 
 from __future__ import annotations
 
-from fastapi import HTTPException, Request
 
-# Must stay in step with the CORS ``allow_origins`` in app.main (the Vite dev server).
-_DEV_FRONTEND_ORIGIN = "http://localhost:5173"
+def origin_allowed(
+    origin: str | None,
+    *,
+    host: str | None,
+    forwarded_host: str | None,
+    extra_origins: tuple[str, ...],
+) -> bool:
+    """The one origin policy, as a pure predicate (used by the app-wide
+    origin-guard middleware).
 
-
-def verify_upload_origin(request: Request) -> None:
-    """Reject a cross-origin browser POST; allow same-origin, the dev frontend,
-    and non-browser clients (no Origin header).
-
-    Half the routes behind this guard upload nothing - the two artwork fetch
-    previews and the artist-image reset are body-less POSTs - so neither the
-    docstring nor the ``detail`` says "upload". The FUNCTION name still does;
-    renaming it is a mechanical sweep across three routers with no user-visible
-    effect, and the string a user reads is the part that has to be true.
+    Allowed: a missing Origin (non-browser client — curl, LAN tooling, the
+    container healthcheck, the slskd webhook); a same-origin request (Origin
+    authority equals Host, or X-Forwarded-Host behind a Host-rewriting
+    reverse proxy — scheme is deliberately ignored); an explicitly allowed
+    extra origin (the Vite dev server, dev mode only). Everything else —
+    including ``Origin: null`` — is a cross-origin browser write: rejected.
     """
-    origin = request.headers.get("origin")
     if origin is None:
-        return  # non-browser client (curl, trusted LAN tooling) — allow
+        return True
     authority = origin.split("://", 1)[-1]
-    # Same-origin: the Origin authority matches the host the app sees. Behind a
-    # reverse proxy that REWRITES Host to the upstream, the public host arrives in
-    # X-Forwarded-Host instead, so accept a match against either header. This is
-    # still safe against the CSRF vector: a browser cannot set X-Forwarded-Host on
-    # a cross-origin `fetch` without making the request non-simple, which forces a
-    # CORS preflight that the strict allowlist rejects.
-    for header in ("host", "x-forwarded-host"):
-        value = request.headers.get(header)
+    for value in (host, forwarded_host):
         if value is not None and authority == value:
-            return
-    if origin == _DEV_FRONTEND_ORIGIN:
-        return  # the dev frontend (matches the CORS allowlist)
-    raise HTTPException(status_code=403, detail="cross-origin request rejected")
+            return True
+    return origin in extra_origins

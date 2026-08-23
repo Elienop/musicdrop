@@ -209,12 +209,12 @@ def test_the_reset_declares_the_403_and_409_its_own_guards_return() -> None:
     """A status the route really returns must be in the spec with its body.
 
     The test above proves the 403 is real; this proves the generated client is
-    told about it. An `Origin` guard is a `dependencies=[...]` entry, which
-    emits no security scheme, so nothing but this declaration puts the status in
-    the schema - and `openapi-typescript` would otherwise type the branch as
-    impossible while the route takes it. 422 stays undeclared: declaring it
-    would replace `HTTPValidationError`, whose `detail` is a list, not a
-    sentence.
+    told about it. The origin guard is app-wide middleware running outside the
+    route, which emits no security scheme, so nothing but this declaration puts
+    the status in the schema - and `openapi-typescript` would otherwise type the
+    branch as impossible while the route takes it. 422 stays undeclared:
+    declaring it would replace `HTTPValidationError`, whose `detail` is a list,
+    not a sentence.
 
     The 409 is invisible for a second reason: `_gate_artist_art_busy` is a plain
     call in the handler body, so nothing but this entry announces it.
