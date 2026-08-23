@@ -774,3 +774,149 @@ def test_merge_with_an_unparseable_source_returns_none_and_leaves_the_target_alo
     assert after.updated_at == before.updated_at
     # A failed merge must not delete the source either, corrupt or not.
     assert (tmp_path / f"{source.id}.json").is_file()
+
+
+# --- Lone-surrogate round-trip (SINGLE SINK RULE, mirroring app/bank/store) ---
+
+
+def test_round_trip_lossless_with_lone_surrogates(tmp_path: Path) -> None:
+    """The store must round-trip lone surrogates LOSSLESSLY (no U+FFFD).
+
+    A playlist name or a pending track's artist/title can carry a lone surrogate
+    (a client can deliver one with a `"\\udce9"` JSON escape, or an m3u line can
+    decode to one). The store is the single sink and must preserve the exact code
+    points on disk. ``model_dump_json`` rejects them (``PydanticSerializationError``
+    -> a 500 on every mutation), so the sink goes through stdlib json (see the
+    module's ``_write_atomic`` docstring); the wire is responsible for the U+FFFD
+    degradation on the way out, NEVER the store.
+    """
+    record = store.create_playlist(
+        tmp_path,
+        name="Caf\udce9",
+        entries=[
+            StoredEntry(
+                uid=uuid.uuid4().hex,
+                pending=PendingTrack(artist="A\ud800r", title="T\udce9tle", source="line"),
+            )
+        ],
+    )
+    # Lossless through BOTH read sites (get_playlist and list_playlists).
+    reloaded = store.get_playlist(tmp_path, record.id)
+    assert reloaded is not None
+    assert reloaded.name == "Caf\udce9"
+    assert reloaded.entries[0].pending is not None
+    assert reloaded.entries[0].pending.artist == "A\ud800r"
+    assert reloaded.entries[0].pending.title == "T\udce9tle"
+    listed = store.list_playlists(tmp_path)
+    assert [p.id for p in listed] == [record.id]
+    assert listed[0].name == "Caf\udce9"
+    # No U+FFFD anywhere in the parsed values — lossless, not scrubbed.
+    assert "\ufffd" not in reloaded.name
+    assert "\ufffd" not in reloaded.entries[0].pending.artist
+    assert "\ufffd" not in reloaded.entries[0].pending.title
+
+
+def test_round_trip_survives_a_rename_with_a_lone_surrogate(tmp_path: Path) -> None:
+    """A non-create mutation (update_playlist) through the SAME sink is lossless.
+
+    create_playlist is the 500 the user hit; rename/update share ``_write_atomic``,
+    so pin a mutation too: the reloaded name keeps its exact code points.
+    """
+    record = store.create_playlist(tmp_path, name="Old")
+    updated = store.update_playlist(tmp_path, record.id, name="New\udce9")
+    assert updated is not None
+    reloaded = store.get_playlist(tmp_path, record.id)
+    assert reloaded is not None
+    assert reloaded.name == "New\udce9"
+    assert "\ufffd" not in reloaded.name
+
+
+def test_non_finite_floats_persist_as_null_like_the_rust_sink_did(tmp_path: Path) -> None:
+    """A non-finite duration must land on disk as ``null``, never ``Infinity``.
+
+    ``json.loads("1e400")`` returns a real ``inf`` and pydantic admits it into
+    ``float | None``, so a request body can put one in a pending track. The Rust
+    sink wrote ``null`` for it (``ser_json_inf_nan``); the stdlib sink must do
+    the same — its default writes the bare token ``Infinity``, which is not JSON
+    and 500s the detail response forever once on disk (Starlette renders with
+    ``allow_nan=False``, and the wire net only catches ``UnicodeEncodeError``).
+    """
+    record = store.create_playlist(
+        tmp_path,
+        name="P",
+        entries=[
+            StoredEntry(
+                uid=uuid.uuid4().hex,
+                pending=PendingTrack(
+                    artist="A", title="T", source="line", duration_seconds=float("inf")
+                ),
+            ),
+            StoredEntry(
+                uid=uuid.uuid4().hex,
+                pending=PendingTrack(
+                    artist="B", title="U", source="line", duration_seconds=float("nan")
+                ),
+            ),
+        ],
+    )
+    raw = (tmp_path / f"{record.id}.json").read_text(encoding="utf-8")
+    assert "Infinity" not in raw
+    assert "NaN" not in raw
+    # Strict RFC-JSON parse: the non-finite constants would trip parse_constant.
+    json.loads(raw, parse_constant=lambda token: pytest.fail(f"non-JSON token {token!r} on disk"))
+    reloaded = store.get_playlist(tmp_path, record.id)
+    assert reloaded is not None
+    assert reloaded.entries[0].pending is not None
+    assert reloaded.entries[0].pending.duration_seconds is None
+    assert reloaded.entries[1].pending is not None
+    assert reloaded.entries[1].pending.duration_seconds is None
+
+
+def test_legacy_sink_file_still_loads_through_new_read_path(tmp_path: Path) -> None:
+    """A record written by the OLD sink (model_dump_json) still loads identically.
+
+    The old sink wrote literal UTF-8 (a real "é", non-ASCII text). The new read
+    path (``json.loads`` -> ``model_validate``) must read such a file back with
+    the exact same value — backward-compatible with earlier rows.
+    """
+    record = store.create_playlist(tmp_path, name="Café")
+    # Emulate a file produced by the OLD ``model_dump_json`` sink, with non-ASCII.
+    (tmp_path / f"{record.id}.json").write_text(
+        StoredPlaylist(id=record.id, name="Café", created_at="t", updated_at="t").model_dump_json(
+            indent=2
+        ),
+        encoding="utf-8",
+    )
+    loaded = store.get_playlist(tmp_path, record.id)
+    assert loaded is not None
+    assert loaded.name == "Café"
+    listed = store.list_playlists(tmp_path)
+    assert [p.name for p in listed] == ["Café"]
+
+
+def test_invalid_json_get_returns_none(tmp_path: Path) -> None:
+    """Corrupt-file posture preserved: get_playlist on invalid JSON returns None.
+
+    ``json.JSONDecodeError`` is a ``ValueError`` subclass (as the bank noted), so
+    the same ``except ValueError`` guard that used to catch the pydantic path still
+    swallows the new stdlib path.
+    """
+    record = store.create_playlist(tmp_path, name="P")
+    (tmp_path / f"{record.id}.json").write_text("{ not json", encoding="utf-8")
+    assert store.get_playlist(tmp_path, record.id) is None
+
+
+def test_invalid_schema_get_returns_none(tmp_path: Path) -> None:
+    """Corrupt-file posture preserved: get_playlist on a valid-JSON-wrong-schema
+    file returns None (pydantic ``ValidationError`` is a ``ValueError`` subclass).
+    """
+    record = store.create_playlist(tmp_path, name="P")
+    (tmp_path / f"{record.id}.json").write_text('{"entries": "not a list"}', encoding="utf-8")
+    assert store.get_playlist(tmp_path, record.id) is None
+
+
+def test_invalid_json_list_skips_file(tmp_path: Path) -> None:
+    """Corrupt-file posture preserved: list_playlists still skips unreadable files."""
+    good = store.create_playlist(tmp_path, name="Good")
+    (tmp_path / "garbage.json").write_text("{ not json", encoding="utf-8")
+    assert [p.id for p in store.list_playlists(tmp_path)] == [good.id]
