@@ -831,6 +831,47 @@ def test_round_trip_survives_a_rename_with_a_lone_surrogate(tmp_path: Path) -> N
     assert "\ufffd" not in reloaded.name
 
 
+def test_non_finite_floats_persist_as_null_like_the_rust_sink_did(tmp_path: Path) -> None:
+    """A non-finite duration must land on disk as ``null``, never ``Infinity``.
+
+    ``json.loads("1e400")`` returns a real ``inf`` and pydantic admits it into
+    ``float | None``, so a request body can put one in a pending track. The Rust
+    sink wrote ``null`` for it (``ser_json_inf_nan``); the stdlib sink must do
+    the same — its default writes the bare token ``Infinity``, which is not JSON
+    and 500s the detail response forever once on disk (Starlette renders with
+    ``allow_nan=False``, and the wire net only catches ``UnicodeEncodeError``).
+    """
+    record = store.create_playlist(
+        tmp_path,
+        name="P",
+        entries=[
+            StoredEntry(
+                uid=uuid.uuid4().hex,
+                pending=PendingTrack(
+                    artist="A", title="T", source="line", duration_seconds=float("inf")
+                ),
+            ),
+            StoredEntry(
+                uid=uuid.uuid4().hex,
+                pending=PendingTrack(
+                    artist="B", title="U", source="line", duration_seconds=float("nan")
+                ),
+            ),
+        ],
+    )
+    raw = (tmp_path / f"{record.id}.json").read_text(encoding="utf-8")
+    assert "Infinity" not in raw
+    assert "NaN" not in raw
+    # Strict RFC-JSON parse: the non-finite constants would trip parse_constant.
+    json.loads(raw, parse_constant=lambda token: pytest.fail(f"non-JSON token {token!r} on disk"))
+    reloaded = store.get_playlist(tmp_path, record.id)
+    assert reloaded is not None
+    assert reloaded.entries[0].pending is not None
+    assert reloaded.entries[0].pending.duration_seconds is None
+    assert reloaded.entries[1].pending is not None
+    assert reloaded.entries[1].pending.duration_seconds is None
+
+
 def test_legacy_sink_file_still_loads_through_new_read_path(tmp_path: Path) -> None:
     """A record written by the OLD sink (model_dump_json) still loads identically.
 
