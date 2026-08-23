@@ -22,7 +22,7 @@ const WEBHOOK_SNIPPET = `integration:
     musicdrop:
       on: [DownloadDirectoryComplete]
       call:
-        url: http://<musicdrop-host>:3030/api/slskd/webhook
+        url: http://<musicdrop-host>:3030/api/slskd/webhook  # host must be an IP, or a name listed in MUSICDROP_ALLOWED_HOSTS
         headers:
           - name: X-API-Key
             value: <your webhook secret>`;

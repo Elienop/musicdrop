@@ -309,7 +309,7 @@ _Last groomed: 2026-08-23, with the app-wide origin guard._
   wildcard entries deliberately unsupported until a deployment needs them.
   Spec: `docs/superpowers/specs/2026-08-23-host-guard-design.md`.
 
-- **App-wide origin guard (PR #TBD, 2026-08-23).** Cross-origin browser writes are
+- **App-wide origin guard (PR #153, 2026-08-23).** Cross-origin browser writes are
   rejected 403 by `OriginGuardMiddleware` on every POST/PUT/PATCH/DELETE — closing
   the 19 CORS-simple routes (config/apply, review-inbox, disk-sync, reorganize,
   playlist sync, ...) that executed with no preflight and no origin check. The

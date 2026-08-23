@@ -93,6 +93,9 @@ DNS-rebinding guard, same shape as Plex's and Transmission's. Reaching MusicDrop
 reverse proxy or any hostname (`http://nas.local:3030`, `https://music.example.com`) requires
 listing that name: `MUSICDROP_ALLOWED_HOSTS=music.example.com`. By-IP access always works.
 Behind a proxy that rewrites `Host`, the forwarded public name (`X-Forwarded-Host`) must be in the list too — Caddy forwards both by default.
+The same goes for server-to-server callers — a proxy that rewrites `Host` to an upstream
+*name*, or another container calling MusicDrop by service name (slskd's webhook posting to
+`http://musicdrop:3030`) — list those names too; container/host IPs always work.
 
 Releases are automatic: every merged PR publishes a new image tag (`vX.Y.Z`, plus `latest`) with generated notes on the [Releases page](https://github.com/Elienop/musicdrop/releases).
 
