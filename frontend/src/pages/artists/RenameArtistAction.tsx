@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 
+import type { components } from "@/api/schema";
 import { useApplyArtistRename, usePreviewArtistRename } from "@/api/useArtistRename";
-import { Edit } from "@/components/icons";
+import { Edit, Spinner, Warning } from "@/components/icons";
 import { IconAction } from "@/components/system/IconAction";
+import { StatusBanner } from "@/components/system/StatusBanner";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -16,10 +18,31 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 
+type ArtistRenameAlbumResult = components["schemas"]["ArtistRenameAlbumResult"];
+
+/** Renamed-but-damaged is NOT a clean success: nonzero write/move failures
+ * must block the auto-navigate and be shown to the user, per-album counts and
+ * all (the AlbumEditPanel failures alert is the honesty bar). */
+function isClean(a: ArtistRenameAlbumResult): boolean {
+  return a.outcome === "renamed" && a.write_failures === 0 && a.move_failures === 0;
+}
+
+/** The damage phrase for a renamed-but-damaged album: "renamed, but 3 files
+ * failed to write and 2 failed to move" (singular-aware, either or both). */
+function damagePhrase(a: ArtistRenameAlbumResult): string {
+  const parts: string[] = [];
+  if (a.write_failures > 0)
+    parts.push(`${a.write_failures} file${a.write_failures === 1 ? "" : "s"} failed to write`);
+  if (a.move_failures > 0) parts.push(`${a.move_failures} failed to move`);
+  return `renamed, but ${parts.join(" and ")}`;
+}
+
 /**
  * Rename an artist: fan the album edit (album artist ONLY — per-track artists
  * never follow) across every album, with the AlbumEditPanel gating discipline:
- * Apply is disabled until a fresh Preview exists, and any keystroke re-gates.
+ * the apply verb is aria-disabled until a fresh Preview exists, and any
+ * keystroke re-gates. Buttons never go `disabled` (focus would strand on
+ * <body>); busy is a non-visual channel (aria-disabled/aria-busy + spinner).
  */
 export function RenameArtistAction({ name }: { name: string }) {
   const navigate = useNavigate();
@@ -29,8 +52,16 @@ export function RenameArtistAction({ name }: { name: string }) {
   const apply = useApplyArtistRename();
 
   const trimmed = newName.trim();
-  const canPreview = trimmed !== "" && trimmed !== name && !preview.isPending;
+  const nameNeedsChange = trimmed !== "" && trimmed !== name;
+  // Preview is gated while EITHER mutation is in flight: no second preview
+  // racing the apply, no preview of a half-renamed library.
+  const canPreview = nameNeedsChange && !preview.isPending && !apply.isPending;
   const canApply = !!preview.data && !apply.isPending;
+  const merging = !!preview.data?.merge;
+
+  const previewAlbums = preview.data?.albums ?? [];
+  const totalMoves = previewAlbums.reduce((sum, a) => sum + a.move_count, 0);
+  const totalRefusals = previewAlbums.reduce((sum, a) => sum + a.refusals.length, 0);
 
   function reset() {
     setNewName(name);
@@ -47,20 +78,37 @@ export function RenameArtistAction({ name }: { name: string }) {
   }
 
   const result = apply.data;
-  const failures = result?.albums.filter((a) => a.outcome !== "renamed") ?? [];
+  const failures = result ? result.albums.filter((a) => !isClean(a)) : [];
+
+  function onSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!canPreview) return;
+    preview.mutate({ name, new_name: trimmed });
+  }
 
   function onApply() {
     apply.mutate(
       { name, new_name: trimmed },
       {
         onSuccess: (res) => {
-          if (res.albums.every((a) => a.outcome === "renamed")) {
+          if (res.albums.every(isClean)) {
             setOpen(false);
             void navigate(`/artists/${encodeURIComponent(res.new_name)}`);
+          } else {
+            // The preview was computed before the move; it must not enable a
+            // second Apply on a half-renamed library — the user re-previews.
+            // The failure banner stays (it renders from apply.data).
+            preview.reset();
           }
         },
       },
     );
+  }
+
+  function goRenamed() {
+    if (!result) return;
+    setOpen(false);
+    void navigate(`/artists/${encodeURIComponent(result.new_name)}`);
   }
 
   return (
@@ -76,7 +124,17 @@ export function RenameArtistAction({ name }: { name: string }) {
           <Edit weight="thin" className="size-10" aria-hidden="true" />
         </IconAction>
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent
+        // Corner X hides while the apply is in flight; Esc and outside-click
+        // are swallowed either way so a dismissal can't race the rename.
+        showCloseButton={!apply.isPending}
+        onEscapeKeyDown={(e) => {
+          if (apply.isPending) e.preventDefault();
+        }}
+        onInteractOutside={(e) => {
+          if (apply.isPending) e.preventDefault();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>Rename {name}</DialogTitle>
           <DialogDescription>
@@ -85,98 +143,195 @@ export function RenameArtistAction({ name }: { name: string }) {
           </DialogDescription>
         </DialogHeader>
 
-        <label className="flex flex-col gap-2 text-sm">
-          New name
-          <Input
-            value={newName}
-            onChange={(e) => onNameChange(e.target.value)}
-            disabled={apply.isPending}
-          />
-        </label>
+        {/* Always mounted: fills on preview success, empties on reset. */}
+        <span className="sr-only" role="status">
+          {preview.data
+            ? `Preview ready: ${preview.data.albums.length} album${preview.data.albums.length === 1 ? "" : "s"}, ${totalMoves} file${totalMoves === 1 ? "" : "s"} will move${preview.data.merge ? `, merges into ${preview.data.new_name}` : ""}`
+            : ""}
+        </span>
 
-        {preview.isError && (
-          <p className="text-destructive text-sm" role="alert">
-            {preview.error.message}
-          </p>
-        )}
-
-        {preview.data && (
-          <div className="flex flex-col gap-2 text-sm">
-            {preview.data.merge && (
-              <p className="font-medium">
-                Merges into existing “{preview.data.new_name}” (
-                {preview.data.merge.existing_album_count}{" "}
-                {preview.data.merge.existing_album_count === 1 ? "album" : "albums"}).
-              </p>
-            )}
-            {!preview.data.move_enabled && (
-              <p className="text-muted-foreground">
-                Files will not move (moving is disabled in beets config).
-              </p>
-            )}
-            <ul className="flex flex-col gap-1">
-              {preview.data.albums.map((a) => (
-                <li key={a.album_id} className="flex justify-between gap-4">
-                  <span className="truncate">{a.title}</span>
-                  <span className="text-muted-foreground shrink-0 tabular-nums">
-                    {a.move_count} {a.move_count === 1 ? "file" : "files"} to move
-                    {a.refusals.length > 0 && `, ${a.refusals.length} refused`}
-                  </span>
-                </li>
-              ))}
-            </ul>
-            {preview.data.albums.some((a) => a.refusals.length > 0) && (
-              <p className="text-destructive">
-                Some files would collide at their new name and will not be moved —
-                their tags still change. See the album edit panel for details.
+        <form
+          // min-w-0: DialogContent is a single-column grid whose min-width
+          // defaults to its content; without this the long titles below would
+          // push the form wider than the dialog box.
+          className="flex min-w-0 flex-col gap-3"
+          onSubmit={onSubmit}
+        >
+          <div className="flex flex-col gap-1">
+            <label htmlFor="rename-artist-name" className="text-sm font-medium">
+              New name
+            </label>
+            <Input
+              id="rename-artist-name"
+              value={newName}
+              onChange={(e) => {
+                if (apply.isPending) return;
+                onNameChange(e.target.value);
+              }}
+              onFocus={(e) => e.currentTarget.select()}
+              aria-disabled={apply.isPending || undefined}
+              className="aria-disabled:opacity-50"
+            />
+            {!nameNeedsChange && (
+              <p className="text-muted-foreground text-xs">
+                Enter a different name to preview.
               </p>
             )}
           </div>
-        )}
 
-        {apply.isError && (
-          <p className="text-destructive text-sm" role="alert">
-            {apply.error.message}
-          </p>
-        )}
+          {preview.isError && (
+            <StatusBanner tone="destructive" icon={Warning}>
+              {preview.error.message}
+            </StatusBanner>
+          )}
 
-        {result && failures.length > 0 && (
-          <div className="flex flex-col gap-1 text-sm" role="alert">
-            <p className="font-medium">
-              {failures.length} {failures.length === 1 ? "album" : "albums"} not renamed:
-            </p>
-            <ul className="flex flex-col gap-1">
-              {failures.map((a) => (
-                <li key={a.album_id}>
-                  {a.title} — {a.error ?? a.outcome}
-                </li>
-              ))}
-            </ul>
+          {preview.data && (
+            <div className="flex min-w-0 flex-col gap-2 text-sm">
+              {/* Summary line: always visible even though the list below scrolls. */}
+              <p className="font-medium">
+                {preview.data.albums.length} album
+                {preview.data.albums.length === 1 ? "" : "s"} · {totalMoves} file
+                {totalMoves === 1 ? "" : "s"} will move
+              </p>
+
+              {preview.data.merge && (
+                <p className="font-medium">
+                  &ldquo;{preview.data.new_name}&rdquo; already exists with{" "}
+                  {preview.data.merge.existing_album_count} album
+                  {preview.data.merge.existing_album_count === 1 ? "" : "s"}. Applying merges
+                  the two artists into one; renaming back will not split them again.
+                </p>
+              )}
+
+              {preview.data.move_enabled ? (
+                totalMoves > 0 && (
+                  <StatusBanner tone="warning" icon={Warning}>
+                    {totalMoves} file{totalMoves === 1 ? "" : "s"} will be moved on disk; this
+                    relocates the files in your library.
+                  </StatusBanner>
+                )
+              ) : (
+                <p className="text-muted-foreground">
+                  Files will not move (moving is disabled in beets config).
+                </p>
+              )}
+
+              {totalRefusals > 0 && (
+                <p className="text-destructive font-medium">
+                  {totalRefusals} file{totalRefusals === 1 ? "" : "s"} cannot be moved (the
+                  destination name is already taken). Their tags will still be updated; these
+                  files keep their current names.
+                </p>
+              )}
+
+              {/* Bounded + scrolling: Radix scroll-locks the page, so an
+                  unbounded list would push the footer off-screen unreachable. */}
+              <ul className="flex max-h-72 flex-col gap-2 overflow-y-auto pr-2">
+                {preview.data.albums.map((a) => (
+                  <li key={a.album_id} className="min-w-0">
+                    <div className="flex justify-between gap-4">
+                      <span className="truncate">{a.title}</span>
+                      <span className="text-muted-foreground shrink-0 tabular-nums">
+                        {a.move_count} file{a.move_count === 1 ? "" : "s"} to move
+                      </span>
+                    </div>
+                    {a.refusals.length > 0 && (
+                      <ul className="mt-0.5 flex flex-col gap-0.5">
+                        {a.refusals.map((r) => (
+                          <li key={r.item_id} className="text-destructive text-xs">
+                            {r.track !== null && r.track !== undefined && r.track !== 0
+                              ? `#${r.track} `
+                              : ""}
+                            {r.detail}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {apply.isError && (
+            <StatusBanner tone="destructive" icon={Warning}>
+              {apply.error.message}
+            </StatusBanner>
+          )}
+
+          {result && failures.length > 0 && (
+            <StatusBanner
+              tone="destructive"
+              icon={Warning}
+              action={
+                <Button variant="outline" size="sm" type="button" onClick={goRenamed}>
+                  Go to renamed artist
+                </Button>
+              }
+            >
+              <p className="font-medium">
+                {failures.length} album{failures.length === 1 ? "" : "s"} not cleanly renamed:
+              </p>
+              <ul className="mt-1 flex flex-col gap-0.5">
+                {failures.map((a) => (
+                  <li key={a.album_id} className="truncate">
+                    <span className="font-medium">{a.title}</span> —{" "}
+                    {a.outcome === "renamed" ? damagePhrase(a) : a.error ?? a.outcome}
+                  </li>
+                ))}
+              </ul>
+            </StatusBanner>
+          )}
+
+          <DialogFooter aria-busy={preview.isPending || apply.isPending}>
             <Button
+              type="button"
               variant="outline"
-              size="sm"
+              aria-disabled={apply.isPending || undefined}
+              className="aria-disabled:opacity-50"
               onClick={() => {
+                if (apply.isPending) return;
                 setOpen(false);
-                void navigate(`/artists/${encodeURIComponent(result.new_name)}`);
               }}
             >
-              Go to renamed artist
+              Cancel
             </Button>
-          </div>
-        )}
-
-        <DialogFooter>
-          <Button
-            variant="outline"
-            disabled={!canPreview}
-            onClick={() => preview.mutate({ name, new_name: trimmed })}
-          >
-            {preview.isPending ? "Previewing…" : "Preview"}
-          </Button>
-          <Button disabled={!canApply} onClick={onApply}>
-            {apply.isPending ? "Renaming…" : "Apply"}
-          </Button>
-        </DialogFooter>
+            <Button
+              type="submit"
+              aria-disabled={!canPreview || undefined}
+              className="aria-disabled:opacity-50"
+            >
+              {preview.isPending ? (
+                <>
+                  <Spinner className="size-4 animate-spin" aria-hidden="true" />
+                  Previewing&hellip;
+                </>
+              ) : (
+                "Preview"
+              )}
+            </Button>
+            <Button
+              type="button"
+              aria-disabled={!canApply || undefined}
+              className="aria-disabled:opacity-50"
+              onClick={() => {
+                if (!canApply) return;
+                onApply();
+              }}
+            >
+              {apply.isPending ? (
+                <>
+                  <Spinner className="size-4 animate-spin" aria-hidden="true" />
+                  {merging ? "Merging" : "Renaming"}&hellip;
+                </>
+              ) : merging ? (
+                "Merge"
+              ) : (
+                "Apply"
+              )}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );
