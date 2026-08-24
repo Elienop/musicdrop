@@ -23,7 +23,7 @@ class BodySizeLimitMiddleware:
         self._app = app
         self._max = max_bytes
         # The cross-origin callers we echo CORS headers to on our own 413
-        # (this middleware wraps OUTERMOST, so the inner CORSMiddleware never
+        # (this middleware wraps outside CORSMiddleware, so the latter never
         # runs on a rejection). Resolved in app.main; empty in production.
         self._allowed = tuple(o.encode("ascii") for o in allowed_origins)
 
@@ -43,7 +43,7 @@ class BodySizeLimitMiddleware:
         await self._app(scope, receive, send)
 
     async def _reject(self, send: Send, allow_origin: bytes | None) -> None:
-        # This middleware wraps OUTERMOST, so on rejection the inner CORSMiddleware
+        # This middleware wraps outside CORSMiddleware, so on rejection the latter
         # never runs. Echo the CORS headers ourselves for an allowed origin, else a
         # cross-origin caller (the dev frontend) gets an opaque CORS error instead
         # of the JSON reason.

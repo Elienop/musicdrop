@@ -43,6 +43,7 @@ from app.config import resolve_artist_image_cache_dir, resolve_cover_thumb_cache
 from app.events.emit import emit_art_changed
 from app.host_guard import HostGuardMiddleware, resolve_allowed_hosts
 from app.origin_guard import OriginGuardMiddleware, resolve_extra_origins
+from app.security_headers import SecurityHeadersMiddleware
 from app.static_files import mount_static
 from app.wire import SurrogateSafeJSONResponse, install_wire_safety
 
@@ -279,9 +280,13 @@ extra_origins = resolve_extra_origins(settings.static_dir)
 
 allowed_hosts = resolve_allowed_hosts(settings.static_dir, settings.allowed_hosts)
 
-# Innermost of the three middlewares. BodySizeLimit MUST wrap outermost so an
-# oversize body is refused before anything else runs — that one is load-bearing
-# and pinned by test_oversize_body_beats_the_origin_guard. CORS-outside-guard is
+# The middleware stack, innermost first: origin guard, CORS, body limit, host
+# guard, security headers. Starlette applies add_middleware in REVERSE add
+# order, so each block below wraps the ones above it.
+#
+# Innermost of them all. BodySizeLimit MUST wrap outside this pair so an
+# oversize body is refused before CORS or the origin guard touch it — that one
+# is load-bearing and pinned by test_oversize_body_beats_the_origin_guard. CORS-outside-guard is
 # defense-in-depth, not a requirement: CORS answers preflights itself, and the
 # guard ignores OPTIONS by construction, so preflights are answered either way.
 # (A guard 403 carries no Access-Control-Allow-Origin header — CORSMiddleware
@@ -298,19 +303,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# Added last so it wraps OUTERMOST (Starlette applies middleware in reverse add
-# order): an oversize body is refused before CORS or any route touches it.
+# Added after the pair above so it wraps outside both: an oversize body is
+# refused before CORS or any route touches it.
 app.add_middleware(
     BodySizeLimitMiddleware,
     max_bytes=settings.max_body_bytes,
     allowed_origins=extra_origins,
 )
 
-# Added after BodySizeLimit so it wraps OUTERMOST of all four: a request whose
-# Host is not allowlisted (the DNS-rebinding guard) is refused before the body
-# limit, CORS, or the origin guard spend anything on it. Pinned by
+# Added after BodySizeLimit so it wraps outside all three of those: a request
+# whose Host is not allowlisted (the DNS-rebinding guard) is refused before the
+# body limit, CORS, or the origin guard spend anything on it. Pinned by
 # test_disallowed_host_beats_the_body_limit.
 app.add_middleware(HostGuardMiddleware, allowed_hosts=allowed_hosts)
+
+# Added last of all, so it wraps OUTERMOST: the three guards above write their
+# rejections (400/413/403) straight to the transport without reaching the
+# router, so this is the only position from which the security headers land on
+# them too. It never rejects, buffers or reorders — it edits the response head
+# in flight — so the precedence the two ordering pins above describe is
+# unchanged. Pinned by test_security_headers_wrap_outermost.
+app.add_middleware(SecurityHeadersMiddleware)
 
 # One loud line so the deploy-time posture is never silent (`static_dir`
 # selects dev/prod for BOTH guards; MUSICDROP_ALLOWED_HOSTS extends the host

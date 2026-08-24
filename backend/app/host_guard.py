@@ -14,9 +14,10 @@ origin guard's authority comparison, so it cannot stay untrusted. (Browsers
 cannot send it CORS-simply; validating it closes the coupling rather than
 arguing about reachability.)
 
-Added LAST in ``app.main`` so it wraps OUTERMOST (Starlette applies middleware
-in reverse add order): a wrong-host request is refused before the body limit,
-CORS, or the origin guard spend anything on it. Dev/prod posture keys on
+Added in ``app.main`` so it wraps outside every guard (Starlette applies
+middleware in reverse add order; only the security-headers stamper wraps it):
+a wrong-host request is refused before the body limit, CORS, or the origin
+guard spend anything on it. Dev/prod posture keys on
 ``settings.static_dir`` exactly like ``resolve_extra_origins``; dev
 additionally allows Starlette's TestClient default host (``testserver``),
 production rejects it (pinned by the prod-posture subprocess test).

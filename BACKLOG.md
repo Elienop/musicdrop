@@ -9,15 +9,14 @@ detail lives.
 *Recently shipped* with the PR number. When something new turns up (review finding, incident,
 parked idea), add it here in the same commit that discovers it.
 
-_Last groomed: 2026-08-23, with the app-wide origin guard._
+_Last groomed: 2026-08-24, with the security response headers._
 
 ## Next up
 
-- Pick from Open bugs / hardening below — security response headers are the standing
-  candidate now that the origin guard has shipped (2026-08-23), leaving them the remaining
-  half of the security posture. (The phantom-album question that used to sit here is
-  RESOLVED — see Open questions and the 2026-08-22 guard entry under Recently shipped. The
-  m3u8 export fix and the playlist-name 500 both shipped 2026-08-23.)
+- Pick from Open bugs / hardening below, or the artist-rename fan-out (decided 2026-08-17,
+  unstarted — the biggest queued feature). The security-headers slice shipped 2026-08-24,
+  closing the response-header half of the posture; real authentication remains the standing
+  long-term security item.
 
 ## Open bugs / hardening
 
@@ -46,12 +45,6 @@ _Last groomed: 2026-08-23, with the app-wide origin guard._
   `/api/plex/*`, still fire for a foreign page — GETs are structurally outside an
   unsafe-method guard, so the 2026-08-23 slice's "not in this slice" note stands as an
   accepted risk, not an oversight.
-
-- **No security response headers anywhere.** The backend emits no
-  `X-Content-Type-Options`, `X-Frame-Options`, or CSP on any response (verified
-  2026-08-09; deliberately left out of the 2026-08-23 origin-guard slice to keep
-  it one concern). A reverse proxy is currently the only mitigation, and the
-  shipped compose has none. See the memory note `musicdrop-security-posture-gaps`.
 
 - **Bank store sink has the same inf/NaN shape the playlists store just fixed.**
   `app/bank/store.py:174` (`json.dumps(model_dump(mode="json"), ensure_ascii=True)`) writes
@@ -297,6 +290,23 @@ _Last groomed: 2026-08-23, with the app-wide origin guard._
   inside it); the placeholder scandir path widens that pre-existing TOCTOU window slightly.
 
 ## Recently shipped
+
+- **Security response headers — shipped 2026-08-24 (PR # filled in at merge).** Outermost
+  pure-ASGI `SecurityHeadersMiddleware`: five headers on every response (`nosniff`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`,
+  `Cross-Origin-Resource-Policy: same-origin` — closes the no-CORS `<img>` library-existence
+  oracle the security audit found — and a CSP). Strict CSP everywhere (`script-src 'self'`;
+  inline styles allowed for shadcn/Radix; `img-src` broad for user-pasted image previews);
+  `/docs`, `/docs/oauth2-redirect`, `/redoc` alone get a docs-relaxed policy for the
+  Swagger/ReDoc CDN assets — exact path match, fail-closed. Browser-verified violation-free
+  (SPA + both docs pages) twice independently. Accepted residuals, recorded: the docs policy
+  is a union over the three pages (each page individually over-granted; nothing exploitable
+  — no injection sink on any of them); the docs pages load floating-major vendor bundles
+  from cdn.jsdelivr.net, so a CDN compromise runs same-origin script for a `/docs` visitor
+  (tightening path if ever needed: self-host the bundles via custom docs routes); Starlette's
+  synthesized 500 and uvicorn's protocol-level 400 carry no headers (fixed bodies — and a
+  global `Exception` handler would move real 500s OUT of header reach; don't add one).
+  No HSTS by design (TLS terminates at Caddy; plain-HTTP LAN access exists).
 
 - **Host allowlist (DNS-rebinding guard) — shipped 2026-08-23 (PR # filled in at merge).** All-method
   `HostGuardMiddleware` (outermost): Host / X-Forwarded-Host must be a bare IP literal,
