@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 from beets.library import Library
 
-from app.beets.library import _require_id
 from app.models.rename import ArtistRenameRequest
 
 
@@ -108,7 +107,7 @@ def test_preview_survives_a_vanished_album(rename_lib: Library) -> None:
     def with_ghost(lib: Library, name: str) -> list[tuple[int, str]]:
         result = real(lib, name)
         if name == "Fayrouz":
-            result = [*result, (_require_id(999999), "Ghost")]
+            result = [*result, (999999, "Ghost")]
         return result
 
     with patch.object(rename_mod, "_artist_albums", side_effect=with_ghost):
@@ -153,7 +152,8 @@ def test_apply_writes_the_tag_into_the_files(rename_lib: Library) -> None:
 
     from app.beets.rename import apply_artist_rename
 
-    apply_artist_rename(rename_lib, request=_req(), write=True, move=False)
+    outcome = apply_artist_rename(rename_lib, request=_req(), write=True, move=False)
+    assert outcome.moved_item_ids == []  # move=False moves nothing
     for it in rename_lib.items():
         if str(it.album) in ("Best Of", "Live"):
             mf = MediaFile(os.fsdecode(it.path))
@@ -190,6 +190,33 @@ def test_apply_skips_a_drifted_album(rename_lib: Library) -> None:
     assert outcomes == ["renamed", "skipped_drifted"]
     skipped = next(a for a in outcome.albums if a.outcome == "skipped_drifted")
     assert skipped.error is not None
+
+
+def test_apply_reports_a_vanished_album_as_drifted(rename_lib: Library) -> None:
+    """An album gone between the drift check and the apply is skipped_drifted,
+    not failed — same verdict as the preview's drop."""
+    from unittest.mock import patch
+
+    from app.beets import rename as rename_mod
+    from app.beets.edit import AlbumNotFoundError
+    from app.beets.edit import apply_album_edit as real_apply
+
+    calls: dict[str, int] = {"n": 0}
+
+    def flaky(lib: Library, **kwargs: object) -> object:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise AlbumNotFoundError("album 1 not found")
+        return real_apply(lib, **kwargs)  # type: ignore[arg-type]  # kwargs mirror the real signature
+
+    with patch.object(rename_mod, "apply_album_edit", side_effect=flaky):
+        outcome = rename_mod.apply_artist_rename(
+            rename_lib, request=_req(), write=False, move=False
+        )
+
+    assert sorted(a.outcome for a in outcome.albums) == ["renamed", "skipped_drifted"]
+    skipped = next(a for a in outcome.albums if a.outcome == "skipped_drifted")
+    assert skipped.error == "album no longer exists"
 
 
 def test_apply_one_failure_does_not_abort_the_batch(rename_lib: Library) -> None:

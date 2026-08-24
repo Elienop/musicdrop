@@ -73,7 +73,7 @@ def preview_artist_rename(
             except AlbumNotFoundError:
                 # Vanished since the snapshot (concurrent delete — the preview
                 # holds no lock): no longer part of this artist, drop it rather
-                # than abort the whole preview (recorded, never aborts the rest).
+                # than abort the whole preview.
                 continue
             rows.append(
                 ArtistRenameAlbumPreview(
@@ -132,6 +132,18 @@ def apply_artist_rename(
                 continue
             try:
                 res = apply_album_edit(lib, album_id=album_id, request=edit, write=write, move=move)
+            except AlbumNotFoundError:
+                # Vanished between the drift check and the re-fetch — same
+                # verdict as the preview's drop, not a "failed".
+                results.append(
+                    ArtistRenameAlbumResult(
+                        album_id=album_id,
+                        title=title,
+                        outcome="skipped_drifted",
+                        error="album no longer exists",
+                    )
+                )
+                continue
             except Exception as exc:  # isolate: report this album, continue the batch
                 results.append(
                     ArtistRenameAlbumResult(

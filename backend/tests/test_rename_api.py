@@ -194,6 +194,7 @@ def test_apply_kicks_the_art_job_when_files_moved_and_toggle_on(
     assert r.status_code == 200
     assert r.json()["artist_art_job"] == "started"
     assert reg.calls and reg.calls[0]["artist"] == "Fairuz"
+    assert reg.calls[0]["scope_label"] == "Fairuz"
     assert started == ["Fairuz"]
 
 
@@ -216,7 +217,7 @@ def test_all_drifted_batch_does_not_rekey_the_portrait(
         moved_item_ids=[],
     )
 
-    async def _fake_op(_req: object, _payload: object) -> object:
+    async def _fake_op(_req: object, _payload: object) -> ArtistRenameApplyOutcome:
         return fake
 
     calls: list[str] = []

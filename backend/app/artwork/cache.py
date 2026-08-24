@@ -431,9 +431,11 @@ class ArtistImageCache:
           source outranks the target's bare auto image. So: target pin wins
           outright ("kept_target"); target auto image wins when the source
           has no pin ("kept_target"); a source pin over a target auto image
-          moves the override pair to the new key ("moved") — the target's
-          auto slot is left beneath it (it resurfaces if the user later
-          clears the pin), and every OTHER old-key file is deleted. Leaving
+          moves the override pair to the new key — reported "moved" when the
+          pin actually landed, "kept_target" when the move failed (the
+          target's auto image is then still what get() serves) — and the
+          target's auto slot is left beneath it (it resurfaces if the user
+          later clears the pin). Every OTHER old-key file is deleted. Leaving
           old-key files would recreate the forever-orphan this method exists
           to prevent.
         * Otherwise the old key's image slots move to the new key. A negative
@@ -469,13 +471,15 @@ class ArtistImageCache:
             self._replace(
                 self._dir / f"{old_key}.override.mime", self._dir / f"{new_key}.override.mime"
             )
-            self._replace(self._dir / f"{old_key}.override", self._dir / f"{new_key}.override")
+            moved_pin = self._replace(
+                self._dir / f"{old_key}.override", self._dir / f"{new_key}.override"
+            )
             for suffix in _ALL_SLOT_SUFFIXES:
                 if suffix not in (".override", ".override.mime"):
                     self._unlink(self._dir / f"{old_key}{suffix}")
             self._unlink(self._dir / f"{new_key}.miss")
             self._memory.discard(old_key)
-            return "moved"
+            return "moved" if moved_pin else "kept_target"
         self._unlink(self._dir / f"{old_key}.miss")
         self._unlink(self._dir / f"{new_key}.miss")
         moved = False

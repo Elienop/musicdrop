@@ -78,8 +78,12 @@ async def test_export_failure_does_not_abort_the_fan_out(
     store.create_playlist(playlists_dir, name="A", entries=[StoredEntry(uid="a1", item_id=iid)])
     store.create_playlist(playlists_dir, name="B", entries=[StoredEntry(uid="b1", item_id=iid)])
 
+    calls: list[str] = []
+
     def raise_render(record: object, handle_: object, export_dir: object) -> None:
+        calls.append("render")
         raise OSError("disk full")
 
     monkeypatch.setattr(playlists_api, "_render_export", raise_render)
     assert await reexport_playlists_containing({iid}, handle, playlists_dir) == 2
+    assert len(calls) == 2  # the patched renderer really intercepted both exports

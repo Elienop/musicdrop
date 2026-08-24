@@ -33,7 +33,7 @@ function damagePhrase(a: ArtistRenameAlbumResult): string {
   const parts: string[] = [];
   if (a.write_failures > 0)
     parts.push(`${a.write_failures} file${a.write_failures === 1 ? "" : "s"} failed to write`);
-  if (a.move_failures > 0) parts.push(`${a.move_failures} failed to move`);
+  if (a.move_failures > 0) parts.push(`${a.move_failures} file${a.move_failures === 1 ? "" : "s"} failed to move`);
   return `renamed, but ${parts.join(" and ")}`;
 }
 

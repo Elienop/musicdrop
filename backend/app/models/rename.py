@@ -10,9 +10,9 @@ applies, so the fan-out covers precisely the albums the user is looking at.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.edit import TrackMoveRefusal
 
@@ -33,14 +33,18 @@ class ArtistRenameRequest(BaseModel):
     name: str = Field(min_length=1, max_length=_MAX_TEXT)
     new_name: str = Field(min_length=1, max_length=_MAX_TEXT)
 
-    @model_validator(mode="after")
-    def _clean_new_name(self) -> ArtistRenameRequest:
-        stripped = self.new_name.strip()
+    @field_validator("new_name")
+    @classmethod
+    def _strip_new_name(cls, value: str) -> str:
+        stripped = value.strip()
         if not stripped:
             raise ValueError("new_name must not be blank")
-        if stripped == self.name:
+        return stripped
+
+    @model_validator(mode="after")
+    def _reject_no_op(self) -> Self:
+        if self.new_name == self.name:
             raise ValueError("new_name is the same as the current name")
-        self.new_name = stripped
         return self
 
 
@@ -92,6 +96,7 @@ class ArtistRenameResult(BaseModel):
     # not_rekeyed = the old name still has albums (partial failure), so neither
     # side's portrait may be touched.
     portrait: Literal["moved", "kept_target", "none", "not_rekeyed"]
+    # Playlists MATCHED and re-exported best-effort — a failed write still counts.
     playlists_reexported: int
     # not_needed = no files moved, or writing artist art to the library is off.
     artist_art_job: Literal["started", "skipped_busy", "not_needed"]

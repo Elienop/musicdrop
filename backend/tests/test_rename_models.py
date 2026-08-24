@@ -34,6 +34,16 @@ def test_case_only_change_is_allowed() -> None:
     assert req.new_name == "Fairuz"
 
 
+def test_over_long_new_name_rejected() -> None:
+    with pytest.raises(ValidationError):
+        ArtistRenameRequest(name="Fayrouz", new_name="x" * 1001)
+
+
+def test_empty_name_rejected() -> None:
+    with pytest.raises(ValidationError):
+        ArtistRenameRequest(name="", new_name="Fairuz")
+
+
 def test_name_is_not_stripped() -> None:
     # ``name`` is the exact roster identity; a trailing space is part of it.
     req = ArtistRenameRequest(name="Fayrouz ", new_name="Fairuz")

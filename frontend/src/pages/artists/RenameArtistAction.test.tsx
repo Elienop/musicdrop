@@ -180,7 +180,7 @@ describe("RenameArtistAction", () => {
     await userEvent.click(screen.getByRole("button", { name: /^merge/i }));
 
     expect(
-      await screen.findByText(/3 files failed to write and 2 failed to move/i),
+      await screen.findByText(/3 files failed to write and 2 files failed to move/i),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /go to renamed artist/i })).toBeInTheDocument();
     expect(screen.getByTestId("loc")).toHaveTextContent("/artists/Fayrouz");
@@ -205,5 +205,22 @@ describe("RenameArtistAction", () => {
       await screen.findByText(/a library job is running; try again when it finishes/i),
     ).toBeInTheDocument();
     expect(screen.getByTestId("loc")).toHaveTextContent("/artists/Fayrouz");
+  });
+
+  it("surfaces the server's own error detail on a structured failure", async () => {
+    vi.spyOn(client, "POST").mockImplementation(async (url: string) =>
+      url.endsWith("/preview")
+        ? ok(PREVIEW)
+        : ({
+            data: undefined,
+            error: { detail: { message: "Rename failed: disk on fire", recovery: "reload" } },
+            response: { ok: false, status: 500 },
+          } as never),
+    );
+    renderAction();
+    await openAndPreview();
+    await userEvent.click(screen.getByRole("button", { name: /^merge/i }));
+
+    expect(await screen.findByText(/rename failed: disk on fire/i)).toBeInTheDocument();
   });
 });

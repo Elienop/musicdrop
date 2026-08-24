@@ -32,7 +32,7 @@ export function useApplyArtistRename() {
     mutationFn: async (body) => {
       const { data, error, response } = await client.POST("/api/artists/rename", { body });
       // Guard on !response.ok: a bodyless 5xx leaves openapi-fetch's `error` undefined.
-      // The structured mid-batch-500 {message, recovery} must reach the user verbatim.
+      // The structured mid-batch-500's message reaches the user (detailMessage returns detail.message; surfacing the recovery line too is a repo-wide lib.ts follow-up).
       if (error || !response.ok || !data) {
         if (response.status === 409)
           throw new Error(

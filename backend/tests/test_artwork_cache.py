@@ -1037,3 +1037,24 @@ def test_rename_never_raises_when_the_cache_dir_refuses(
 
 def test_every_slot_suffix_is_either_moved_or_deliberately_dropped() -> None:
     assert set(_MOVE_ORDER) | {".miss"} == set(_ALL_SLOT_SUFFIXES)
+
+
+def test_rename_move_failure_returns_kept_target(
+    cache: ArtistImageCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the override-pin move fails (broken dir), return 'kept_target'
+    because the target's auto image is still available via get()."""
+    cache.write_override("Fayrouz", b"pinned", "image/png")
+    cache.store_positive("Fairuz", b"auto", "image/jpeg")
+
+    def raise_for_override(src: object, dst: object) -> None:
+        src_str = str(src) if not isinstance(src, str) else src
+        if src_str.endswith(".override"):
+            raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "replace", raise_for_override)
+    result = cache.rename("Fayrouz", "Fairuz")
+    assert result == "kept_target"
+    # The target's auto image is still available.
+    got = cache.get("Fairuz")
+    assert isinstance(got, CachedImage) and got.data == b"auto"

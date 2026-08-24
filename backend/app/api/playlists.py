@@ -191,7 +191,8 @@ async def reexport_playlists_containing(
     The rename's collateral: exports embed paths RELATIVE to the export dir, so
     a batch of file moves leaves every existing export stale until the playlist
     is next mutated. Best-effort per playlist (``_export_playlist`` already
-    never raises); returns how many exports were rewritten.
+    never raises); returns how many playlists were re-exported (best-effort: a
+    failed write still counts).
     """
     if not item_ids:
         return 0
