@@ -206,8 +206,7 @@ export function RenameArtistAction({ name }: { name: string }) {
               {preview.data.move_enabled ? (
                 totalMoves > 0 && (
                   <StatusBanner tone="warning" icon={Warning}>
-                    {totalMoves} file{totalMoves === 1 ? "" : "s"} will be moved on disk; this
-                    relocates the files in your library.
+                    {totalMoves} file{totalMoves === 1 ? "" : "s"} will be moved on disk.
                   </StatusBanner>
                 )
               ) : (

@@ -95,9 +95,7 @@ describe("RenameArtistAction", () => {
     // Preview rendered: albums, the merge consequence, and the warning banner.
     expect(await screen.findByText(/best of/i)).toBeInTheDocument();
     expect(screen.getByText(/merges the two artists into one/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/will be moved on disk; this relocates the files/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/will be moved on disk\./i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^merge/i })).not.toHaveAttribute(
       "aria-disabled",
     );
