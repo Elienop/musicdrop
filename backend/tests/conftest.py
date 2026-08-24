@@ -401,6 +401,52 @@ def edit_lib(tmp_path: "Path") -> "Library":
 
 
 @pytest.fixture
+def rename_lib(tmp_path: "Path") -> "Library":
+    """A hermetic library for artist-rename tests (REAL tag-writable FLACs).
+
+        Fayrouz / Best Of : 2 tracks   (the rename subject, album 1)
+        Fayrouz / Live    : 1 track    (the rename subject, album 2)
+        Fairuz  / Legend  : 1 track    (an existing artist to merge INTO)
+
+    Files are seeded at their CURRENT path-format destination
+    ($albumartist/$album/$track $title), so renaming the albumartist is what
+    makes them move.
+    """
+    import os
+    import shutil
+
+    from beets.library import Item
+
+    sample = Path(__file__).parent / "fixtures" / "silent.flac"
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+
+    def add_album(artist: str, album: str, titles: list[str]) -> None:
+        base = music / artist / album
+        base.mkdir(parents=True, exist_ok=True)
+        items = []
+        for i, title in enumerate(titles, start=1):
+            f = base / f"{i:02d} {title}.flac"
+            shutil.copyfile(sample, f)
+            it = Item(
+                album=album,
+                albumartist=artist,
+                artist=artist,
+                title=title,
+                track=i,
+                disc=1,
+            )
+            it.path = os.fsencode(str(f))
+            items.append(it)
+        lib.add_album(items)
+
+    add_album("Fayrouz", "Best Of", ["Habaytak", "Nassam"])
+    add_album("Fayrouz", "Live", ["Kifak Inta"])
+    add_album("Fairuz", "Legend", ["Zahrat"])
+    return lib
+
+
+@pytest.fixture
 def reorganize_lib(tmp_path: "Path") -> "Library":
     """A hermetic library for reorganize tests.
 
