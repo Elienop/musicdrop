@@ -272,7 +272,7 @@ export function RenameArtistAction({ name }: { name: string }) {
               <p className="font-medium">
                 {failures.length} album{failures.length === 1 ? "" : "s"} not cleanly renamed:
               </p>
-              <ul className="mt-1 flex flex-col gap-0.5">
+              <ul className="mt-1 flex max-h-56 flex-col gap-0.5 overflow-y-auto pr-2">
                 {failures.map((a) => (
                   <li key={a.album_id} className="truncate">
                     <span className="font-medium">{a.title}</span> —{" "}
@@ -298,6 +298,7 @@ export function RenameArtistAction({ name }: { name: string }) {
             </Button>
             <Button
               type="submit"
+              variant="outline"
               aria-disabled={!canPreview || undefined}
               className="aria-disabled:opacity-50"
             >
