@@ -28,7 +28,7 @@ function isClean(a: ArtistRenameAlbumResult): boolean {
 }
 
 /** The damage phrase for a renamed-but-damaged album: "renamed, but 3 files
- * failed to write and 2 failed to move" (singular-aware, either or both). */
+ * failed to write and 2 files failed to move" (singular-aware, either or both). */
 function damagePhrase(a: ArtistRenameAlbumResult): string {
   const parts: string[] = [];
   if (a.write_failures > 0)

@@ -14,8 +14,8 @@ export function usePreviewArtistRename() {
     mutationFn: async (body) => {
       const { data, error, response } = await client.POST("/api/artists/rename/preview", { body });
       // Guard on !response.ok: a bodyless 5xx leaves openapi-fetch's `error` undefined.
-      // detailMessage surfaces the server's own message (incl. structured
-      // {message, recovery}) verbatim; the status fallbacks are last resort.
+      // detailMessage surfaces the server's own message (this endpoint only ever
+      // raises a plain-string 404 detail); the status fallback is last resort.
       if (error || !response.ok || !data) {
         if (response.status === 404)
           throw new Error(detailMessage(error) ?? "Artist not found — reload the page.");
