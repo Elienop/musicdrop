@@ -45,10 +45,41 @@ async def test_reexports_only_playlists_containing_the_items(
 
 
 @pytest.mark.anyio
-async def test_empty_item_set_is_a_cheap_noop(rename_lib: Library, tmp_path: Path) -> None:
+async def test_empty_item_set_never_lists_playlists(
+    rename_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty id set must return 0 WITHOUT touching the playlist store."""
+    from app.api.playlists import reexport_playlists_containing
+
+    def boom(_dir: Path) -> list[store.StoredPlaylist]:
+        raise AssertionError("empty id set must not touch the playlist store")
+
+    monkeypatch.setattr(store, "list_playlists", boom)
+    handle = make_test_handle(rename_lib, tmp_path)
+    assert await reexport_playlists_containing(set(), handle, tmp_path / "playlists") == 0
+
+
+@pytest.mark.anyio
+async def test_export_failure_does_not_abort_the_fan_out(
+    rename_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing export is swallowed per playlist: the rest still export and the
+    count still counts the attempt (best-effort semantics)."""
+    import app.api.playlists as playlists_api
     from app.api.playlists import reexport_playlists_containing
 
     handle = make_test_handle(rename_lib, tmp_path)
     playlists_dir = tmp_path / "playlists"
     playlists_dir.mkdir()
-    assert await reexport_playlists_containing(set(), handle, playlists_dir) == 0
+
+    items = sorted(rename_lib.items(), key=lambda i: str(i.title))
+    fayrouz_item = next(i for i in items if str(i.albumartist) == "Fayrouz")
+    iid = _require_id(fayrouz_item.id)
+    store.create_playlist(playlists_dir, name="A", entries=[StoredEntry(uid="a1", item_id=iid)])
+    store.create_playlist(playlists_dir, name="B", entries=[StoredEntry(uid="b1", item_id=iid)])
+
+    def raise_render(record: object, handle_: object, export_dir: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(playlists_api, "_render_export", raise_render)
+    assert await reexport_playlists_containing({iid}, handle, playlists_dir) == 2
