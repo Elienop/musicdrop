@@ -43,6 +43,11 @@ class _RegistryRecorder:
         self.calls.append(kwargs)
 
 
+class _RegistryBusy:
+    def start(self, **kwargs: object) -> None:
+        raise RuntimeError("an artist-art backfill is already running")
+
+
 @pytest.fixture
 def rename_client(
     rename_lib: Library, tmp_path: Path
@@ -214,6 +219,11 @@ def test_all_drifted_batch_does_not_rekey_the_portrait(
     async def _fake_op(_req: object, _payload: object) -> object:
         return fake
 
+    calls: list[str] = []
+    monkeypatch.setattr(artists_mod, "emit_library_changed", lambda _app: calls.append("lib"))
+    monkeypatch.setattr(
+        artists_mod, "emit_art_changed", lambda _app, scope=None: calls.append("art")
+    )
     monkeypatch.setattr(artists_mod, "apply_artist_rename_op", _fake_op)
     client, cache, _ = rename_client
     cache.store_positive("Fayrouz", b"portrait", "image/jpeg")
@@ -229,3 +239,30 @@ def test_all_drifted_batch_does_not_rekey_the_portrait(
     # Nothing moved, so the art job is not kicked either (its stub would raise).
     assert body["artist_art_job"] == "not_needed"
     assert body["playlists_reexported"] == 0
+    assert calls == ["lib"]  # art:changed must NOT fire when nothing was re-keyed
+
+
+def test_apply_reports_skipped_busy_and_never_starts_the_runner(
+    rename_client: tuple[TestClient, ArtistImageCache, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lost slot claim = skipped_busy, and _start must NOT run for a claim we did not win."""
+    import beets.ui
+
+    import app.api.artists as artists_mod
+
+    monkeypatch.setattr(beets.ui, "should_move", lambda _opt: True)
+    monkeypatch.setattr(beets.ui, "should_write", lambda _opt: True)
+    app.dependency_overrides[get_artist_art_write_toggle] = lambda: _ToggleOn()
+    app.dependency_overrides[get_artist_art_backfill] = lambda: _RegistryBusy()
+    started: list[str] = []
+    monkeypatch.setattr(
+        artists_mod,
+        "_start",
+        lambda _app, _reg, _lib, *, force, artist: started.append(str(artist)),
+    )
+    client, _, _ = rename_client
+    r = client.post("/api/artists/rename", json={"name": "Fayrouz", "new_name": "Fairuz"})
+    assert r.status_code == 200
+    assert r.json()["artist_art_job"] == "skipped_busy"
+    assert started == []
