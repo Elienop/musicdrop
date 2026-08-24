@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from beets.library import Library
 
@@ -67,3 +69,26 @@ def test_preview_persists_nothing(rename_lib: Library) -> None:
 
     preview_artist_rename(rename_lib, request=_req(), move_enabled=True)
     assert sorted({str(a.albumartist) for a in rename_lib.albums()}) == ["Fairuz", "Fayrouz"]
+
+
+def test_preview_does_not_strip_when_selecting(rename_lib: Library) -> None:
+    """A padded albumartist is a DIFFERENT artist (delete_artist strips; rename must not)."""
+    import os
+    import shutil
+
+    from beets.library import Item
+
+    from app.beets.rename import preview_artist_rename
+
+    base = Path(os.fsdecode(rename_lib.directory)) / "Fayrouz " / "Rarities"
+    base.mkdir(parents=True, exist_ok=True)
+    f = base / "01 Padded.flac"
+    shutil.copyfile(Path(__file__).parent / "fixtures" / "silent.flac", f)
+    it = Item(
+        album="Rarities", albumartist="Fayrouz ", artist="Fayrouz ", title="Padded", track=1, disc=1
+    )
+    it.path = os.fsencode(str(f))
+    rename_lib.add_album([it])
+
+    preview = preview_artist_rename(rename_lib, request=_req(), move_enabled=False)
+    assert sorted(a.title for a in preview.albums) == ["Best Of", "Live"]  # NOT "Rarities"
