@@ -28,6 +28,7 @@ import { PAGE_SIZE, Pagination } from "@/components/system/Pagination";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { DeleteArtistAction } from "@/pages/artists/DeleteArtistAction";
+import { RenameArtistAction } from "@/pages/artists/RenameArtistAction";
 
 /** `decodeURIComponent` throws `URIError` on malformed input (e.g. a lone "%").
  * Fall back to the raw param so a bad URL renders gracefully rather than
@@ -199,6 +200,7 @@ export function ArtistAlbumsPage() {
                   {writeEnabled && (
                     <ArtistArtStatus displayName={displayName} />
                   )}
+                  <RenameArtistAction name={artist} />
                   <DeleteArtistAction name={artist} albumCount={total} />
                 </>
               }

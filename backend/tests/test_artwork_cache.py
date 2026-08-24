@@ -11,7 +11,13 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from app.artwork.cache import NEGATIVE, ArtistImageCache, CachedImage
+from app.artwork.cache import (
+    _ALL_SLOT_SUFFIXES,
+    _MOVE_ORDER,
+    NEGATIVE,
+    ArtistImageCache,
+    CachedImage,
+)
 
 _StrPath = str | os.PathLike[str]
 
@@ -907,3 +913,148 @@ def test_has_fresh_negative_never_raises_on_an_unreadable_dir(
 
     monkeypatch.setattr(Path, "exists", boom)
     assert cache.has_fresh_negative("ABBA") is False
+
+
+# --- rename (portrait cache re-key) ----------------------------------------
+
+
+def _slot_files(tmp_path: Path) -> set[str]:
+    return {p.name for p in tmp_path.iterdir() if not p.name.endswith(".tmp")}
+
+
+def test_rename_moves_every_slot_to_the_new_key(cache: ArtistImageCache, tmp_path: Path) -> None:
+    cache.store_positive("Fayrouz", b"portrait", "image/jpeg")
+    assert cache.rename("Fayrouz", "Queen Fairuz") == "moved"
+    got = cache.get("Queen Fairuz")
+    assert isinstance(got, CachedImage) and got.data == b"portrait"
+    assert got.content_type == "image/jpeg"
+    assert cache.get("Fayrouz") is None
+    # Nothing remains under the old key on disk.
+    old_key = cache._key("Fayrouz")
+    assert not any(name.startswith(old_key) for name in _slot_files(tmp_path))
+
+
+def test_rename_moves_a_manual_override(cache: ArtistImageCache, tmp_path: Path) -> None:
+    cache.write_override("Fayrouz", b"pinned", "image/png")
+    assert cache.rename("Fayrouz", "Queen Fairuz") == "moved"
+    got = cache.get("Queen Fairuz")
+    assert isinstance(got, CachedImage) and got.data == b"pinned"
+    # The mime sidecar moved too — a dropped one would serve the generic type.
+    assert got.content_type == "image/png"
+    old_key = cache._key("Fayrouz")
+    assert not any(name.startswith(old_key) for name in _slot_files(tmp_path))
+
+
+def test_rename_merge_keeps_the_targets_portrait(cache: ArtistImageCache, tmp_path: Path) -> None:
+    cache.store_positive("Fayrouz", b"source", "image/jpeg")
+    cache.store_positive("Fairuz", b"target", "image/jpeg")
+    assert cache.rename("Fayrouz", "Fairuz") == "kept_target"
+    got = cache.get("Fairuz")
+    assert isinstance(got, CachedImage) and got.data == b"target"
+    old_key = cache._key("Fayrouz")
+    assert not any(name.startswith(old_key) for name in _slot_files(tmp_path))
+
+
+def test_rename_a_stale_miss_on_the_target_loses_to_a_real_portrait(
+    cache: ArtistImageCache,
+) -> None:
+    cache.store_positive("Fayrouz", b"source", "image/jpeg")
+    cache.store_negative("Fairuz", ttl_seconds=3600)
+    assert cache.rename("Fayrouz", "Fairuz") == "moved"
+    # The target's marker went: without this the assertion below passes too,
+    # since get() never reaches a .miss once a portrait exists.
+    assert cache.has_fresh_negative("Fairuz") is False
+    got = cache.get("Fairuz")
+    assert isinstance(got, CachedImage) and got.data == b"source"
+
+
+def test_rename_never_carries_a_negative_marker(cache: ArtistImageCache) -> None:
+    """A .miss recorded 'sources had nothing for the OLD name'; the new name
+    deserves a fresh lookup."""
+    cache.store_negative("Fayrouz", ttl_seconds=3600)
+    assert cache.rename("Fayrouz", "Fairuz") == "none"
+    assert cache.get("Fairuz") is None  # not NEGATIVE: no marker travelled
+
+
+def test_rename_same_normalized_key_is_a_noop(cache: ArtistImageCache) -> None:
+    cache.store_positive("Beyoncé", b"img", "image/jpeg")
+    assert cache.rename("Beyoncé", "beyonce") == "moved"
+    got = cache.get("beyonce")
+    assert isinstance(got, CachedImage) and got.data == b"img"
+
+
+def test_rename_with_nothing_cached_reports_none(cache: ArtistImageCache) -> None:
+    assert cache.rename("Fayrouz", "Fairuz") == "none"
+
+
+def test_rename_carries_the_memory_fallback_entry(cache: ArtistImageCache) -> None:
+    """An image stranded in the in-memory fallback (broken cache dir at write
+    time) must follow the rename too, or it is orphaned exactly like a file."""
+    cache._memory.put(cache._key("Fayrouz"), CachedImage(data=b"mem", content_type="image/png"))
+    assert cache.rename("Fayrouz", "Fairuz") == "moved"
+    got = cache.get("Fairuz")
+    assert isinstance(got, CachedImage) and got.data == b"mem"
+    assert cache.get("Fayrouz") is None
+
+
+def test_rename_merge_source_override_outranks_target_auto(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """A user-pinned portrait must not lose to the target's auto-fetched one."""
+    cache.write_override("Fayrouz", b"pinned", "image/png")
+    cache.store_positive("Fairuz", b"auto", "image/jpeg")
+    assert cache.rename("Fayrouz", "Fairuz") == "moved"
+    got = cache.get("Fairuz")
+    assert isinstance(got, CachedImage) and got.data == b"pinned"
+    assert got.content_type == "image/png"
+    # Clearing the pin reveals the target's auto image again (it was kept beneath).
+    assert cache.clear_override("Fairuz") is True
+    got2 = cache.get("Fairuz")
+    assert isinstance(got2, CachedImage) and got2.data == b"auto"
+    old_key = cache._key("Fayrouz")
+    assert not any(name.startswith(old_key) for name in _slot_files(tmp_path))
+
+
+def test_rename_merge_target_override_beats_source_override(cache: ArtistImageCache) -> None:
+    cache.write_override("Fayrouz", b"source-pin", "image/png")
+    cache.write_override("Fairuz", b"target-pin", "image/png")
+    assert cache.rename("Fayrouz", "Fairuz") == "kept_target"
+    got = cache.get("Fairuz")
+    assert isinstance(got, CachedImage) and got.data == b"target-pin"
+
+
+def test_rename_never_raises_when_the_cache_dir_refuses(
+    cache: ArtistImageCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache.store_positive("Fayrouz", b"portrait", "image/jpeg")
+
+    def boom(src: object, dst: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "replace", boom)
+    assert cache.rename("Fayrouz", "Fairuz") == "none"  # degraded, never a 500
+
+
+def test_every_slot_suffix_is_either_moved_or_deliberately_dropped() -> None:
+    assert set(_MOVE_ORDER) | {".miss"} == set(_ALL_SLOT_SUFFIXES)
+
+
+def test_rename_move_failure_returns_kept_target(
+    cache: ArtistImageCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the override-pin move fails (broken dir), return 'kept_target'
+    because the target's auto image is still available via get()."""
+    cache.write_override("Fayrouz", b"pinned", "image/png")
+    cache.store_positive("Fairuz", b"auto", "image/jpeg")
+
+    def raise_for_override(src: object, dst: object) -> None:
+        src_str = str(src) if not isinstance(src, str) else src
+        if src_str.endswith(".override"):
+            raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "replace", raise_for_override)
+    result = cache.rename("Fayrouz", "Fairuz")
+    assert result == "kept_target"
+    # The target's auto image is still available.
+    got = cache.get("Fairuz")
+    assert isinstance(got, CachedImage) and got.data == b"auto"

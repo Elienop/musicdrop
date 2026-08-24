@@ -228,6 +228,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/artists/rename/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Artist Rename Endpoint
+         * @description Preview an artist rename: per-album move counts + refusals + merge note.
+         *
+         *     Read-only. The rename edits ``album_artist`` only; per-track artists never
+         *     follow (see the spec's owner decisions).
+         */
+        post: operations["preview_artist_rename_endpoint_api_artists_rename_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/artists/rename": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rename Artist Endpoint
+         * @description Rename an artist: fan the album edit across every album, then the collateral.
+         *
+         *     Collateral order matters: the portrait re-key runs FIRST (only when the old
+         *     name is fully vacated AND at least one album actually renamed - a
+         *     fully-drifted batch vacates the old name without renaming anything, so
+         *     re-keying would orphan the still-live old key's image), THEN the artist-art
+         *     job is kicked (it writes poster files FROM the cache, so the cache must
+         *     already answer for the new name), then the ``.m3u8`` re-export (best-effort).
+         *     All collateral is best-effort reporting, never a failure of the rename
+         *     itself.
+         */
+        post: operations["rename_artist_endpoint_api_artists_rename_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/artists/image": {
         parameters: {
             query?: never;
@@ -2232,6 +2284,114 @@ export interface components {
              * Format: uri
              */
             url: string;
+        };
+        /**
+         * ArtistRenameAlbumPreview
+         * @description One album's slice of the rename preview.
+         */
+        ArtistRenameAlbumPreview: {
+            /** Album Id */
+            album_id: number;
+            /** Title */
+            title: string;
+            /** Move Count */
+            move_count: number;
+            /** Refusals */
+            refusals: components["schemas"]["TrackMoveRefusal"][];
+        };
+        /**
+         * ArtistRenameAlbumResult
+         * @description One album's apply outcome. ``skipped_drifted`` = its albumartist changed
+         *     between preview and apply, so it was left alone rather than silently renamed.
+         */
+        ArtistRenameAlbumResult: {
+            /** Album Id */
+            album_id: number;
+            /** Title */
+            title: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "renamed" | "skipped_drifted" | "failed";
+            /**
+             * Write Failures
+             * @default 0
+             */
+            write_failures: number;
+            /**
+             * Move Failures
+             * @default 0
+             */
+            move_failures: number;
+            /** Error */
+            error?: string | null;
+        };
+        /**
+         * ArtistRenameMergeInfo
+         * @description Present when ``new_name`` already has albums: the rename merges into it.
+         */
+        ArtistRenameMergeInfo: {
+            /** Existing Album Count */
+            existing_album_count: number;
+        };
+        /**
+         * ArtistRenamePreview
+         * @description The aggregate preview: per-album move picture + the merge note.
+         */
+        ArtistRenamePreview: {
+            /** Name */
+            name: string;
+            /** New Name */
+            new_name: string;
+            /** Move Enabled */
+            move_enabled: boolean;
+            /** Albums */
+            albums: components["schemas"]["ArtistRenameAlbumPreview"][];
+            merge?: components["schemas"]["ArtistRenameMergeInfo"] | null;
+        };
+        /**
+         * ArtistRenameRequest
+         * @description Rename ``name`` -> ``new_name`` across every album of the artist.
+         *
+         *     ``new_name`` is stripped; equal to ``name`` after the strip is refused up
+         *     front (a rename to itself is a no-op the UI should never submit). A case-
+         *     or accent-only change is NOT equal and passes — fixing casing is a
+         *     legitimate rename. ``name`` is never stripped or normalized: it is the
+         *     identity, not an input.
+         */
+        ArtistRenameRequest: {
+            /** Name */
+            name: string;
+            /** New Name */
+            new_name: string;
+        };
+        /**
+         * ArtistRenameResult
+         * @description The full apply result, collateral included. Partial failure is a 200
+         *     that says so per album — never a 4xx/5xx pretending the batch is atomic.
+         */
+        ArtistRenameResult: {
+            /** Name */
+            name: string;
+            /** New Name */
+            new_name: string;
+            /** Albums */
+            albums: components["schemas"]["ArtistRenameAlbumResult"][];
+            /** Old Name Remaining Albums */
+            old_name_remaining_albums: number;
+            /**
+             * Portrait
+             * @enum {string}
+             */
+            portrait: "moved" | "kept_target" | "none" | "not_rekeyed";
+            /** Playlists Reexported */
+            playlists_reexported: number;
+            /**
+             * Artist Art Job
+             * @enum {string}
+             */
+            artist_art_job: "started" | "skipped_busy" | "not_needed";
         };
         /** BankBulkDeleteRequest */
         BankBulkDeleteRequest: {
@@ -5183,6 +5343,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeleteResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_artist_rename_endpoint_api_artists_rename_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ArtistRenameRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtistRenamePreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_artist_endpoint_api_artists_rename_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ArtistRenameRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtistRenameResult"];
                 };
             };
             /** @description Validation Error */

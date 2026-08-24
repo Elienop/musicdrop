@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Annotated, Final, Literal, cast
 
 import httpx
@@ -12,6 +13,7 @@ from app.api.http_cache import (
     not_modified,
     revalidating_image_response,
 )
+from app.api.playlists import get_playlists_dir, reexport_playlists_containing
 from app.artist_art_jobs.registry import (
     ArtistArtBackfillRegistry,
     artist_art_backfill_active,
@@ -40,6 +42,7 @@ from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
 from app.beets import library as beets_library
 from app.beets.delete import delete_artist_op
 from app.beets.library import LibraryHandle, list_artists
+from app.beets.rename import apply_artist_rename_op, preview_artist_rename_op
 from app.config import resolve_artist_image_cache_dir
 from app.config import settings as _module_settings
 from app.etag import size_scoped_etag
@@ -58,6 +61,7 @@ from app.models.artist import (
 from app.models.artist_art import ArtistArtBackfillStatus, ArtistArtWriteSettings
 from app.models.delete import DeleteResult
 from app.models.errors import ErrorDetail
+from app.models.rename import ArtistRenamePreview, ArtistRenameRequest, ArtistRenameResult
 
 router = APIRouter(tags=["artists"])
 
@@ -155,6 +159,79 @@ async def list_artists_endpoint(
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> list[Artist]:
     return await run_in_threadpool(list_artists, handle.lib)
+
+
+@router.post("/artists/rename/preview", response_model=ArtistRenamePreview)
+async def preview_artist_rename_endpoint(
+    payload: ArtistRenameRequest,
+    request: Request,
+) -> ArtistRenamePreview:
+    """Preview an artist rename: per-album move counts + refusals + merge note.
+
+    Read-only. The rename edits ``album_artist`` only; per-track artists never
+    follow (see the spec's owner decisions).
+    """
+    return await preview_artist_rename_op(request, payload)
+
+
+@router.post("/artists/rename", response_model=ArtistRenameResult)
+async def rename_artist_endpoint(
+    payload: ArtistRenameRequest,
+    request: Request,
+    cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
+    toggle: Annotated[ArtistArtWriteToggle, Depends(get_artist_art_write_toggle)],
+    reg: Annotated[ArtistArtBackfillRegistry, Depends(get_artist_art_backfill)],
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
+) -> ArtistRenameResult:
+    """Rename an artist: fan the album edit across every album, then the collateral.
+
+    Collateral order matters: the portrait re-key runs FIRST (only when the old
+    name is fully vacated AND at least one album actually renamed - a
+    fully-drifted batch vacates the old name without renaming anything, so
+    re-keying would orphan the still-live old key's image), THEN the artist-art
+    job is kicked (it writes poster files FROM the cache, so the cache must
+    already answer for the new name), then the ``.m3u8`` re-export (best-effort).
+    All collateral is best-effort reporting, never a failure of the rename
+    itself.
+    """
+    outcome = await apply_artist_rename_op(request, payload)
+    app_obj = request.app
+    handle = app_obj.state.beets_library
+
+    portrait: Literal["moved", "kept_target", "none", "not_rekeyed"] = "not_rekeyed"
+    if outcome.old_name_remaining_albums == 0 and any(
+        a.outcome == "renamed" for a in outcome.albums
+    ):
+        # Ruling: an all-drifted batch empties the old name without renaming
+        # anything - the old key is still live, so the portrait must stay.
+        portrait = await run_in_threadpool(cache.rename, payload.name, payload.new_name)
+
+    moved_ids = set(outcome.moved_item_ids)
+    art_job: Literal["started", "skipped_busy", "not_needed"] = "not_needed"
+    if moved_ids and toggle.is_enabled():
+        try:
+            reg.start(force=True, artist=payload.new_name, scope_label=payload.new_name)
+        except RuntimeError:
+            art_job = "skipped_busy"
+        else:
+            _start(app_obj, reg, handle.lib, force=True, artist=payload.new_name)
+            art_job = "started"
+
+    reexported = await reexport_playlists_containing(moved_ids, handle, playlists_dir)
+
+    emit_library_changed(app_obj)
+    if portrait in ("moved", "kept_target"):
+        emit_art_changed(app_obj)
+
+    return ArtistRenameResult(
+        name=payload.name,
+        new_name=payload.new_name,
+        albums=outcome.albums,
+        old_name_remaining_albums=outcome.old_name_remaining_albums,
+        portrait=portrait,
+        playlists_reexported=reexported,
+        artist_art_job=art_job,
+    )
 
 
 async def _serve_cached(
