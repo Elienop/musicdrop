@@ -628,6 +628,90 @@
         }
       }
     },
+    "/api/artists/rename/preview": {
+      "post": {
+        "tags": [
+          "artists"
+        ],
+        "summary": "Preview Artist Rename Endpoint",
+        "description": "Preview an artist rename: per-album move counts + refusals + merge note.\n\nRead-only. The rename edits ``album_artist`` only; per-track artists never\nfollow (see the spec's owner decisions).",
+        "operationId": "preview_artist_rename_endpoint_api_artists_rename_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtistRenameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtistRenamePreview"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artists/rename": {
+      "post": {
+        "tags": [
+          "artists"
+        ],
+        "summary": "Rename Artist Endpoint",
+        "description": "Rename an artist: fan the album edit across every album, then the collateral.\n\nCollateral order matters: the portrait re-key runs FIRST (only when the old\nname is fully vacated AND at least one album actually renamed - a\nfully-drifted batch vacates the old name without renaming anything, so\nre-keying would orphan the still-live old key's image), THEN the artist-art\njob is kicked (it writes poster files FROM the cache, so the cache must\nalready answer for the new name), then the ``.m3u8`` re-export (best-effort).\nAll collateral is best-effort reporting, never a failure of the rename\nitself.",
+        "operationId": "rename_artist_endpoint_api_artists_rename_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtistRenameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtistRenameResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/artists/image": {
       "get": {
         "tags": [
@@ -5502,6 +5586,225 @@
         ],
         "title": "ArtistImageUrlOverride",
         "description": "Request body for setting an artist override from an image URL."
+      },
+      "ArtistRenameAlbumPreview": {
+        "properties": {
+          "album_id": {
+            "type": "integer",
+            "title": "Album Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "move_count": {
+            "type": "integer",
+            "title": "Move Count"
+          },
+          "refusals": {
+            "items": {
+              "$ref": "#/components/schemas/TrackMoveRefusal"
+            },
+            "type": "array",
+            "title": "Refusals"
+          }
+        },
+        "type": "object",
+        "required": [
+          "album_id",
+          "title",
+          "move_count",
+          "refusals"
+        ],
+        "title": "ArtistRenameAlbumPreview",
+        "description": "One album's slice of the rename preview."
+      },
+      "ArtistRenameAlbumResult": {
+        "properties": {
+          "album_id": {
+            "type": "integer",
+            "title": "Album Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "renamed",
+              "skipped_drifted",
+              "failed"
+            ],
+            "title": "Outcome"
+          },
+          "write_failures": {
+            "type": "integer",
+            "title": "Write Failures",
+            "default": 0
+          },
+          "move_failures": {
+            "type": "integer",
+            "title": "Move Failures",
+            "default": 0
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "album_id",
+          "title",
+          "outcome"
+        ],
+        "title": "ArtistRenameAlbumResult",
+        "description": "One album's apply outcome. ``skipped_drifted`` = its albumartist changed\nbetween preview and apply, so it was left alone rather than silently renamed."
+      },
+      "ArtistRenameMergeInfo": {
+        "properties": {
+          "existing_album_count": {
+            "type": "integer",
+            "title": "Existing Album Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "existing_album_count"
+        ],
+        "title": "ArtistRenameMergeInfo",
+        "description": "Present when ``new_name`` already has albums: the rename merges into it."
+      },
+      "ArtistRenamePreview": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "new_name": {
+            "type": "string",
+            "title": "New Name"
+          },
+          "move_enabled": {
+            "type": "boolean",
+            "title": "Move Enabled"
+          },
+          "albums": {
+            "items": {
+              "$ref": "#/components/schemas/ArtistRenameAlbumPreview"
+            },
+            "type": "array",
+            "title": "Albums"
+          },
+          "merge": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtistRenameMergeInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "new_name",
+          "move_enabled",
+          "albums"
+        ],
+        "title": "ArtistRenamePreview",
+        "description": "The aggregate preview: per-album move picture + the merge note."
+      },
+      "ArtistRenameRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "new_name": {
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "New Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "new_name"
+        ],
+        "title": "ArtistRenameRequest",
+        "description": "Rename ``name`` -> ``new_name`` across every album of the artist.\n\n``new_name`` is stripped; equal to ``name`` after the strip is refused up\nfront (a rename to itself is a no-op the UI should never submit). A case-\nor accent-only change is NOT equal and passes \u2014 fixing casing is a\nlegitimate rename. ``name`` is never stripped or normalized: it is the\nidentity, not an input."
+      },
+      "ArtistRenameResult": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "new_name": {
+            "type": "string",
+            "title": "New Name"
+          },
+          "albums": {
+            "items": {
+              "$ref": "#/components/schemas/ArtistRenameAlbumResult"
+            },
+            "type": "array",
+            "title": "Albums"
+          },
+          "old_name_remaining_albums": {
+            "type": "integer",
+            "title": "Old Name Remaining Albums"
+          },
+          "portrait": {
+            "type": "string",
+            "enum": [
+              "moved",
+              "kept_target",
+              "none",
+              "not_rekeyed"
+            ],
+            "title": "Portrait"
+          },
+          "playlists_reexported": {
+            "type": "integer",
+            "title": "Playlists Reexported"
+          },
+          "artist_art_job": {
+            "type": "string",
+            "enum": [
+              "started",
+              "skipped_busy",
+              "not_needed"
+            ],
+            "title": "Artist Art Job"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "new_name",
+          "albums",
+          "old_name_remaining_albums",
+          "portrait",
+          "playlists_reexported",
+          "artist_art_job"
+        ],
+        "title": "ArtistRenameResult",
+        "description": "The full apply result, collateral included. Partial failure is a 200\nthat says so per album \u2014 never a 4xx/5xx pretending the batch is atomic."
       },
       "BankBulkDeleteRequest": {
         "properties": {
