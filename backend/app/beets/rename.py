@@ -14,13 +14,17 @@ recorded and never aborts the rest.
 
 from __future__ import annotations
 
-from beets.library import Library
+from dataclasses import dataclass
 
-from app.beets.edit import preview_album_edit
+from beets.library import Library
+from fastapi import Request
+
+from app.beets.edit import AlbumNotFoundError, apply_album_edit, preview_album_edit
 from app.beets.library import _coerce_str, _require_id
 from app.models.edit import AlbumEditRequest, AlbumFieldEdits
 from app.models.rename import (
     ArtistRenameAlbumPreview,
+    ArtistRenameAlbumResult,
     ArtistRenameMergeInfo,
     ArtistRenamePreview,
     ArtistRenameRequest,
@@ -62,7 +66,15 @@ def preview_artist_rename(
         edit = _edit_request(request.new_name)
         rows: list[ArtistRenameAlbumPreview] = []
         for album_id, title in targets:
-            p = preview_album_edit(lib, album_id=album_id, request=edit, move_enabled=move_enabled)
+            try:
+                p = preview_album_edit(
+                    lib, album_id=album_id, request=edit, move_enabled=move_enabled
+                )
+            except AlbumNotFoundError:
+                # Vanished since the snapshot (concurrent delete — the preview
+                # holds no lock): no longer part of this artist, drop it rather
+                # than abort the whole preview (recorded, never aborts the rest).
+                continue
             rows.append(
                 ArtistRenameAlbumPreview(
                     album_id=album_id,
@@ -78,3 +90,126 @@ def preview_artist_rename(
             albums=rows,
             merge=(ArtistRenameMergeInfo(existing_album_count=existing) if existing else None),
         )
+
+
+@dataclass(frozen=True)
+class ArtistRenameApplyOutcome:
+    """What the adapter did. The API layer composes the wire result on top:
+    portrait re-key, playlist re-export and the art-job kick are not beets
+    concerns and stay out of this module."""
+
+    albums: list[ArtistRenameAlbumResult]
+    old_name_remaining_albums: int
+    moved_item_ids: list[int]
+
+
+def apply_artist_rename(
+    lib: Library, *, request: ArtistRenameRequest, write: bool, move: bool
+) -> ArtistRenameApplyOutcome:
+    """Apply the rename album by album. One transaction per album (inside
+    ``apply_album_edit``); a drifted album is skipped and recorded; one album's
+    failure never aborts the rest (the resolve-all batch discipline)."""
+    with lib.music_dir_context():
+        # Snapshot ids BEFORE mutating: renaming changes the very field the
+        # selection matches on (the delete_artist lesson).
+        targets = _artist_albums(lib, request.name)
+        if not targets:
+            raise ArtistNotFoundError(f"artist {request.name!r} not found")
+        edit = _edit_request(request.new_name)
+        results: list[ArtistRenameAlbumResult] = []
+        moved_item_ids: list[int] = []
+        for album_id, title in targets:
+            album = lib.get_album(album_id)
+            if album is None or _coerce_str(album.albumartist) != request.name:
+                results.append(
+                    ArtistRenameAlbumResult(
+                        album_id=album_id,
+                        title=title,
+                        outcome="skipped_drifted",
+                        error="album no longer belongs to this artist",
+                    )
+                )
+                continue
+            try:
+                res = apply_album_edit(lib, album_id=album_id, request=edit, write=write, move=move)
+            except Exception as exc:  # isolate: report this album, continue the batch
+                results.append(
+                    ArtistRenameAlbumResult(
+                        album_id=album_id, title=title, outcome="failed", error=str(exc)
+                    )
+                )
+                continue
+            moved_item_ids.extend(r.item_id for r in res.items if r.moved)
+            results.append(
+                ArtistRenameAlbumResult(
+                    album_id=album_id,
+                    title=title,
+                    outcome="renamed",
+                    write_failures=res.write_failures,
+                    move_failures=res.move_failures,
+                )
+            )
+        remaining = len(_artist_albums(lib, request.name))
+        return ArtistRenameApplyOutcome(
+            albums=results,
+            old_name_remaining_albums=remaining,
+            moved_item_ids=moved_item_ids,
+        )
+
+
+async def preview_artist_rename_op(
+    request_obj: Request, payload: ArtistRenameRequest
+) -> ArtistRenamePreview:
+    """Read-only preview: no lock, no gate — mirrors ``preview_album_edit_op``."""
+    from beets.ui import should_move
+    from fastapi import HTTPException
+    from fastapi.concurrency import run_in_threadpool
+
+    handle = request_obj.app.state.beets_library
+    move_enabled = bool(should_move(None))
+    try:
+        return await run_in_threadpool(
+            preview_artist_rename, handle.lib, request=payload, move_enabled=move_enabled
+        )
+    except ArtistNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+async def apply_artist_rename_op(
+    request_obj: Request, payload: ArtistRenameRequest
+) -> ArtistRenameApplyOutcome:
+    """Gate (409) + the shared swap lock held ONCE for the whole batch +
+    threadpool — the duplicates ``resolve_all_op`` shape."""
+    from beets.ui import should_move, should_write
+    from fastapi import HTTPException
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.beets.config_editor import _swap_lock
+    from app.library_busy import library_job_active
+
+    app = request_obj.app
+    if library_job_active():
+        raise HTTPException(
+            status_code=409,
+            detail="A library operation is in progress; rename available when it finishes",
+        )
+    async with _swap_lock(app):
+        handle = app.state.beets_library
+        write = bool(should_write(None))
+        move = bool(should_move(None))
+        try:
+            return await run_in_threadpool(
+                apply_artist_rename, handle.lib, request=payload, write=write, move=move
+            )
+        except ArtistNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:  # structured 500 like the album edit
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": f"Rename failed: {exc}",
+                    "recovery": (
+                        "Albums already renamed keep the new name; reload and retry for the rest."
+                    ),
+                },
+            ) from exc
