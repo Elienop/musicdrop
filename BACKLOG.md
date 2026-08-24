@@ -9,14 +9,12 @@ detail lives.
 *Recently shipped* with the PR number. When something new turns up (review finding, incident,
 parked idea), add it here in the same commit that discovers it.
 
-_Last groomed: 2026-08-24, with the security response headers._
+_Last groomed: 2026-08-24, with the artist rename._
 
 ## Next up
 
-- Pick from Open bugs / hardening below, or the artist-rename fan-out (decided 2026-08-17,
-  unstarted — the biggest queued feature). The security-headers slice shipped 2026-08-24,
-  closing the response-header half of the posture; real authentication remains the standing
-  long-term security item.
+- Pick from Open bugs / hardening below. The artist-rename fan-out shipped 2026-08-24
+  (see Recently shipped); real authentication remains the standing long-term security item.
 
 ## Open bugs / hardening
 
@@ -290,6 +288,38 @@ _Last groomed: 2026-08-24, with the security response headers._
   inside it); the placeholder scandir path widens that pre-existing TOCTOU window slightly.
 
 ## Recently shipped
+
+- **Artist rename — shipped 2026-08-24 (PR # filled in at merge).** One action on the artist
+  page that fans the existing album edit across every album of the artist: `album_artist`
+  only (per-track artists never follow — lyrics fetching keys on them), merges onto an
+  existing name are the primary use case, synchronous apply with per-album outcomes
+  (drift-skip, one failure never aborts the batch), portrait-cache re-key (a manual pin
+  outranks a bare auto image on merge), best-effort artist-art job kick and `.m3u8`
+  re-export for moved tracks. Browser-verified end-to-end (8-album rename + a merge) on a
+  throwaway library. Accepted residuals, in rough priority order:
+  - The old audio-empty artist folder (possibly holding stale `artist-poster.*`) is left for
+    the library-scope reorganize orphan sweep.
+  - A GET-driven artist-image fill for the OLD name can interleave with the cache re-key and
+    recreate old-key slot files (leftover bytes only; a fix needs a cache tombstone/epoch).
+  - `PlexMissingTrack.albumartist` snapshots keep the old spelling until the next sync
+    (self-healing); the `["artist-image","sources",name]` FE query still has no event
+    invalidation (pre-existing).
+  - `detailMessage` (frontend `lib.ts`) drops the `recovery` half of structured 500 details
+    repo-wide — the actionable "albums already renamed keep the new name" line never reaches
+    the user on a mid-batch abort.
+  - `StatusBanner`'s `action` slot renders inside the alert live region, so an action
+    button's label is announced as alert text (component-level fix).
+  - The rename routes declare no 404/409 in `responses=` while the artist-art routes declare
+    their 409 — the `responses=` convention is split and worth settling once.
+  - The busy-path exception contract (`RuntimeError` from `claim_slot`) is pinned only via
+    stubs that mirror the type; slot-layout writers still use scattered literals (the
+    `_ALL_SLOT_SUFFIXES` relationship test ties constants, not writers).
+  - Rename/edit/delete/resolve-all QUEUE on a held swap lock rather than 409 (sibling
+    semantics, judged deliberate); a uniform 409 would be a five-site slice.
+  - UI polish queue: surface `portrait`/collateral outcomes (a `not_rekeyed` landing shows a
+    missing portrait with no explanation), a success toast, retry labeling after partial
+    failure, the older dialogs' plain-`disabled` buttons vs the new aria-disabled doctrine,
+    and a typographic-twin warning on near-invisible rename targets (reuse the import gate's).
 
 - **Security response headers — shipped 2026-08-24 (PR # filled in at merge).** Outermost
   pure-ASGI `SecurityHeadersMiddleware`: five headers on every response (`nosniff`,
