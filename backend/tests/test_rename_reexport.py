@@ -1,0 +1,54 @@
+"""The rename's playlist collateral: .m3u8 re-export for affected playlists."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+from beets.library import Library
+
+from app.beets.library import _require_id
+from app.playlists import store
+from app.playlists.store import StoredEntry
+from tests.conftest import make_test_handle
+
+
+@pytest.mark.anyio
+async def test_reexports_only_playlists_containing_the_items(
+    rename_lib: Library, tmp_path: Path
+) -> None:
+    from app.api.playlists import reexport_playlists_containing
+
+    handle = make_test_handle(rename_lib, tmp_path)
+    playlists_dir = tmp_path / "playlists"
+    playlists_dir.mkdir()
+
+    items = sorted(rename_lib.items(), key=lambda i: str(i.title))
+    fayrouz_item = next(i for i in items if str(i.albumartist) == "Fayrouz")
+    fairuz_item = next(i for i in items if str(i.albumartist) == "Fairuz")
+
+    def entry(item: object) -> StoredEntry:
+        return StoredEntry(uid=os.urandom(8).hex(), item_id=_require_id(item.id))  # type: ignore[attr-defined]  # beets Item is untyped
+
+    affected = store.create_playlist(playlists_dir, name="Affected", entries=[entry(fayrouz_item)])
+    untouched = store.create_playlist(playlists_dir, name="Untouched", entries=[entry(fairuz_item)])
+
+    count = await reexport_playlists_containing(
+        {_require_id(fayrouz_item.id)}, handle, playlists_dir
+    )
+
+    assert count == 1
+    export_dir = Path(os.fsdecode(rename_lib.directory)) / ".playlists"
+    assert (export_dir / f"{affected.id}.m3u8").exists()
+    assert not (export_dir / f"{untouched.id}.m3u8").exists()
+
+
+@pytest.mark.anyio
+async def test_empty_item_set_is_a_cheap_noop(rename_lib: Library, tmp_path: Path) -> None:
+    from app.api.playlists import reexport_playlists_containing
+
+    handle = make_test_handle(rename_lib, tmp_path)
+    playlists_dir = tmp_path / "playlists"
+    playlists_dir.mkdir()
+    assert await reexport_playlists_containing(set(), handle, playlists_dir) == 0

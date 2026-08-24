@@ -183,6 +183,27 @@ async def _export_playlist(record: StoredPlaylist, handle: LibraryHandle) -> Non
         logger.warning("Playlist .m3u8 export failed for %s", record.id, exc_info=True)
 
 
+async def reexport_playlists_containing(
+    item_ids: set[int], handle: LibraryHandle, playlists_dir: Path
+) -> int:
+    """Re-export the ``.m3u8`` of every stored playlist holding any of ``item_ids``.
+
+    The rename's collateral: exports embed paths RELATIVE to the export dir, so
+    a batch of file moves leaves every existing export stale until the playlist
+    is next mutated. Best-effort per playlist (``_export_playlist`` already
+    never raises); returns how many exports were rewritten.
+    """
+    if not item_ids:
+        return 0
+    records = await run_in_threadpool(store.list_playlists, playlists_dir)
+    count = 0
+    for record in records:
+        if any(iid in item_ids for iid in record.resolved_item_ids):
+            await _export_playlist(record, handle)
+            count += 1
+    return count
+
+
 async def _remove_export(playlist_id: str, handle: LibraryHandle) -> None:
     try:
         await run_in_threadpool(delete_m3u, _export_dir(handle) / f"{playlist_id}.m3u8")
