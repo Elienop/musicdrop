@@ -25,7 +25,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.responses import PlainTextResponse
-from starlette.types import Message, Scope
+from starlette.types import Message, Receive, Scope, Send
 
 from app.events.broker import EventBroker
 from app.host_guard import HostGuardMiddleware
@@ -212,6 +212,45 @@ def test_a_route_cannot_weaken_the_headers_it_sets_itself() -> None:
     _assert_stamped(r, csp=_STRICT)
 
 
+@pytest.mark.anyio
+async def test_capitalized_inner_headers_are_still_replaced() -> None:
+    # The test above cannot reach the case branch: Starlette's Response
+    # lowercases every header name it emits, so only a raw-ASGI sender can
+    # produce a capitalized name. Without the .lower() in _stamp, these would
+    # ride through NEXT TO ours — and a duplicated X-Frame-Options is ignored
+    # outright by some browsers, i.e. the weakening would win.
+    async def inner(scope: Scope, receive: Receive, send: Send) -> None:
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"X-Frame-Options", b"SAMEORIGIN"),
+                    (b"Content-Security-Policy", b"default-src *"),
+                    (b"Cross-Origin-Resource-Policy", b"cross-origin"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"x"})
+
+    wrapped = SecurityHeadersMiddleware(inner)
+    sent: list[Message] = []
+
+    async def capture(message: Message) -> None:
+        sent.append(message)
+
+    async def receive() -> Message:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    await wrapped({"type": "http", "path": "/anything", "headers": []}, receive, capture)
+    headers = [(n.lower(), v) for n, v in sent[0]["headers"]]
+    assert headers.count((b"x-frame-options", b"DENY")) == 1
+    assert (b"x-frame-options", b"SAMEORIGIN") not in headers
+    assert (b"cross-origin-resource-policy", b"same-origin") in headers
+    assert (b"cross-origin-resource-policy", b"cross-origin") not in headers
+    assert [v for n, v in headers if n == b"content-security-policy"] == [_STRICT.encode()]
+
+
 # ---------------------------------------------------------------------------
 # The SSE stream: a StreamingResponse goes through the same stamping.
 # ---------------------------------------------------------------------------
@@ -361,27 +400,40 @@ def test_lookalike_paths_stay_strict(path: str) -> None:
 
 
 @pytest.mark.parametrize("path", _DOCS_PATHS)
-def test_docs_paths_still_carry_the_three_static_headers(path: str) -> None:
-    # Only the CSP relaxes; nosniff/DENY/same-origin are the same everywhere.
+def test_docs_paths_still_carry_the_static_headers(path: str) -> None:
+    # Only the CSP relaxes; the four static headers are the same everywhere.
     r = _client().get(path)
     assert r.headers["x-content-type-options"] == "nosniff"
     assert r.headers["x-frame-options"] == "DENY"
     assert r.headers["referrer-policy"] == "same-origin"
+    assert r.headers["cross-origin-resource-policy"] == "same-origin"
 
 
 def test_relaxed_policy_permits_exactly_the_docs_dependencies() -> None:
+    # Exact equality, not membership: this test is the sole end-to-end
+    # distinguisher between the two policies (proven by combo mutation), so a
+    # membership assert would let an extra origin ride in unnoticed.
     d = _directives(_DOCS)
     # Swagger UI: bundle JS + CSS from jsdelivr, an inline init script,
     # the favicon from fastapi.tiangolo.com, /openapi.json same-origin.
-    assert "https://cdn.jsdelivr.net" in d["script-src"]
-    assert "'unsafe-inline'" in d["script-src"]
-    assert "https://cdn.jsdelivr.net" in d["style-src"]
-    assert "https://fastapi.tiangolo.com" in d["img-src"]
-    assert d["connect-src"] == ["'self'"]
-    # ReDoc: a Google Fonts stylesheet, its font files, and a blob: web worker.
-    assert "https://fonts.googleapis.com" in d["style-src"]
+    # ReDoc: a Google Fonts stylesheet, its font files, a blob: web worker,
+    # and its default logo from cdn.redoc.ly.
+    assert d["script-src"] == ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"]
+    assert d["style-src"] == [
+        "'self'",
+        "'unsafe-inline'",
+        "https://cdn.jsdelivr.net",
+        "https://fonts.googleapis.com",
+    ]
+    assert d["img-src"] == [
+        "'self'",
+        "data:",
+        "https://fastapi.tiangolo.com",
+        "https://cdn.redoc.ly",
+    ]
     assert d["font-src"] == ["'self'", "https://fonts.gstatic.com"]
-    assert "blob:" in d["worker-src"]
+    assert d["worker-src"] == ["blob:"]
+    assert d["connect-src"] == ["'self'"]
 
 
 def test_relaxed_policy_keeps_the_hardening_directives() -> None:
@@ -415,7 +467,8 @@ def test_strict_policy_permits_the_ui_it_has_to_serve() -> None:
     d = _directives(_STRICT)
     # shadcn/Radix set style attributes; the art panels preview user-pasted
     # image URLs (any scheme) and blob: object URLs from local file picks.
-    assert "'unsafe-inline'" in d["style-src"]
+    # Exact equality so an extra origin cannot ride in on either directive.
+    assert d["style-src"] == ["'self'", "'unsafe-inline'"]
     assert set(d["img-src"]) == {"'self'", "blob:", "data:", "https:", "http:"}
     assert d["connect-src"] == ["'self'"]  # same-origin API + the SSE stream
 
