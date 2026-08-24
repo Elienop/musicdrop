@@ -907,3 +907,77 @@ def test_has_fresh_negative_never_raises_on_an_unreadable_dir(
 
     monkeypatch.setattr(Path, "exists", boom)
     assert cache.has_fresh_negative("ABBA") is False
+
+
+# --- rename (portrait cache re-key) ----------------------------------------
+
+
+def _slot_files(tmp_path: Path) -> set[str]:
+    return {p.name for p in tmp_path.iterdir() if not p.name.endswith(".tmp")}
+
+
+def test_rename_moves_every_slot_to_the_new_key(cache: ArtistImageCache, tmp_path: Path) -> None:
+    cache.store_positive("Fayrouz", b"portrait", "image/jpeg")
+    assert cache.rename("Fayrouz", "Queen Fairuz") == "moved"
+    got = cache.get("Queen Fairuz")
+    assert isinstance(got, CachedImage) and got.data == b"portrait"
+    assert cache.get("Fayrouz") is None
+    # Nothing remains under the old key on disk.
+    old_key = cache._key("Fayrouz")
+    assert not any(name.startswith(old_key) for name in _slot_files(tmp_path))
+
+
+def test_rename_moves_a_manual_override(cache: ArtistImageCache) -> None:
+    cache.write_override("Fayrouz", b"pinned", "image/png")
+    assert cache.rename("Fayrouz", "Queen Fairuz") == "moved"
+    got = cache.get("Queen Fairuz")
+    assert isinstance(got, CachedImage) and got.data == b"pinned"
+
+
+def test_rename_merge_keeps_the_targets_portrait(cache: ArtistImageCache, tmp_path: Path) -> None:
+    cache.store_positive("Fayrouz", b"source", "image/jpeg")
+    cache.store_positive("Fairuz", b"target", "image/jpeg")
+    assert cache.rename("Fayrouz", "Fairuz") == "kept_target"
+    got = cache.get("Fairuz")
+    assert isinstance(got, CachedImage) and got.data == b"target"
+    old_key = cache._key("Fayrouz")
+    assert not any(name.startswith(old_key) for name in _slot_files(tmp_path))
+
+
+def test_rename_a_stale_miss_on_the_target_loses_to_a_real_portrait(
+    cache: ArtistImageCache,
+) -> None:
+    cache.store_positive("Fayrouz", b"source", "image/jpeg")
+    cache.store_negative("Fairuz", ttl_seconds=3600)
+    assert cache.rename("Fayrouz", "Fairuz") == "moved"
+    got = cache.get("Fairuz")
+    assert isinstance(got, CachedImage) and got.data == b"source"
+
+
+def test_rename_never_carries_a_negative_marker(cache: ArtistImageCache) -> None:
+    """A .miss recorded 'sources had nothing for the OLD name'; the new name
+    deserves a fresh lookup."""
+    cache.store_negative("Fayrouz", ttl_seconds=3600)
+    assert cache.rename("Fayrouz", "Fairuz") == "none"
+    assert cache.get("Fairuz") is None  # not NEGATIVE: no marker travelled
+
+
+def test_rename_same_normalized_key_is_a_noop(cache: ArtistImageCache) -> None:
+    cache.store_positive("Beyoncé", b"img", "image/jpeg")
+    assert cache.rename("Beyoncé", "beyonce") == "moved"
+    got = cache.get("beyonce")
+    assert isinstance(got, CachedImage) and got.data == b"img"
+
+
+def test_rename_with_nothing_cached_reports_none(cache: ArtistImageCache) -> None:
+    assert cache.rename("Fayrouz", "Fairuz") == "none"
+
+
+def test_rename_carries_the_memory_fallback_entry(cache: ArtistImageCache) -> None:
+    """An image stranded in the in-memory fallback (broken cache dir at write
+    time) must follow the rename too, or it is orphaned exactly like a file."""
+    cache._memory.put(cache._key("Fayrouz"), CachedImage(data=b"mem", content_type="image/png"))
+    assert cache.rename("Fayrouz", "Fairuz") == "moved"
+    got = cache.get("Fairuz")
+    assert isinstance(got, CachedImage) and got.data == b"mem"
+    assert cache.get("Fayrouz") is None
