@@ -11,7 +11,13 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from app.artwork.cache import NEGATIVE, ArtistImageCache, CachedImage
+from app.artwork.cache import (
+    _ALL_SLOT_SUFFIXES,
+    _MOVE_ORDER,
+    NEGATIVE,
+    ArtistImageCache,
+    CachedImage,
+)
 
 _StrPath = str | os.PathLike[str]
 
@@ -921,17 +927,22 @@ def test_rename_moves_every_slot_to_the_new_key(cache: ArtistImageCache, tmp_pat
     assert cache.rename("Fayrouz", "Queen Fairuz") == "moved"
     got = cache.get("Queen Fairuz")
     assert isinstance(got, CachedImage) and got.data == b"portrait"
+    assert got.content_type == "image/jpeg"
     assert cache.get("Fayrouz") is None
     # Nothing remains under the old key on disk.
     old_key = cache._key("Fayrouz")
     assert not any(name.startswith(old_key) for name in _slot_files(tmp_path))
 
 
-def test_rename_moves_a_manual_override(cache: ArtistImageCache) -> None:
+def test_rename_moves_a_manual_override(cache: ArtistImageCache, tmp_path: Path) -> None:
     cache.write_override("Fayrouz", b"pinned", "image/png")
     assert cache.rename("Fayrouz", "Queen Fairuz") == "moved"
     got = cache.get("Queen Fairuz")
     assert isinstance(got, CachedImage) and got.data == b"pinned"
+    # The mime sidecar moved too — a dropped one would serve the generic type.
+    assert got.content_type == "image/png"
+    old_key = cache._key("Fayrouz")
+    assert not any(name.startswith(old_key) for name in _slot_files(tmp_path))
 
 
 def test_rename_merge_keeps_the_targets_portrait(cache: ArtistImageCache, tmp_path: Path) -> None:
@@ -950,6 +961,9 @@ def test_rename_a_stale_miss_on_the_target_loses_to_a_real_portrait(
     cache.store_positive("Fayrouz", b"source", "image/jpeg")
     cache.store_negative("Fairuz", ttl_seconds=3600)
     assert cache.rename("Fayrouz", "Fairuz") == "moved"
+    # The target's marker went: without this the assertion below passes too,
+    # since get() never reaches a .miss once a portrait exists.
+    assert cache.has_fresh_negative("Fairuz") is False
     got = cache.get("Fairuz")
     assert isinstance(got, CachedImage) and got.data == b"source"
 
@@ -981,3 +995,45 @@ def test_rename_carries_the_memory_fallback_entry(cache: ArtistImageCache) -> No
     got = cache.get("Fairuz")
     assert isinstance(got, CachedImage) and got.data == b"mem"
     assert cache.get("Fayrouz") is None
+
+
+def test_rename_merge_source_override_outranks_target_auto(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """A user-pinned portrait must not lose to the target's auto-fetched one."""
+    cache.write_override("Fayrouz", b"pinned", "image/png")
+    cache.store_positive("Fairuz", b"auto", "image/jpeg")
+    assert cache.rename("Fayrouz", "Fairuz") == "moved"
+    got = cache.get("Fairuz")
+    assert isinstance(got, CachedImage) and got.data == b"pinned"
+    assert got.content_type == "image/png"
+    # Clearing the pin reveals the target's auto image again (it was kept beneath).
+    assert cache.clear_override("Fairuz") is True
+    got2 = cache.get("Fairuz")
+    assert isinstance(got2, CachedImage) and got2.data == b"auto"
+    old_key = cache._key("Fayrouz")
+    assert not any(name.startswith(old_key) for name in _slot_files(tmp_path))
+
+
+def test_rename_merge_target_override_beats_source_override(cache: ArtistImageCache) -> None:
+    cache.write_override("Fayrouz", b"source-pin", "image/png")
+    cache.write_override("Fairuz", b"target-pin", "image/png")
+    assert cache.rename("Fayrouz", "Fairuz") == "kept_target"
+    got = cache.get("Fairuz")
+    assert isinstance(got, CachedImage) and got.data == b"target-pin"
+
+
+def test_rename_never_raises_when_the_cache_dir_refuses(
+    cache: ArtistImageCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache.store_positive("Fayrouz", b"portrait", "image/jpeg")
+
+    def boom(src: object, dst: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "replace", boom)
+    assert cache.rename("Fayrouz", "Fairuz") == "none"  # degraded, never a 500
+
+
+def test_every_slot_suffix_is_either_moved_or_deliberately_dropped() -> None:
+    assert set(_MOVE_ORDER) | {".miss"} == set(_ALL_SLOT_SUFFIXES)

@@ -61,6 +61,10 @@ _ALL_SLOT_SUFFIXES: Final = (
     ".thumb.src",
 )
 
+# Move order for the re-key (sidecar before bytes at the destination);
+# ``.miss`` is deliberately absent — a negative marker never travels.
+_MOVE_ORDER: Final = (".override.mime", ".override", ".mime", ".bin", ".thumb.src", ".thumb.bin")
+
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     """Publish ``data`` to ``path`` atomically: write a unique same-dir tmp,
@@ -423,9 +427,15 @@ class ArtistImageCache:
           "moved" when a portrait exists (it already serves the new name),
           else "none".
         * The target already has a REAL portrait (override or positive, disk
-          or memory): it wins — the old key's files are deleted
-          ("kept_target"). Leaving them would recreate the forever-orphan
-          this method exists to prevent.
+          or memory): it wins, with one precedence rule — a MANUAL PIN on the
+          source outranks the target's bare auto image. So: target pin wins
+          outright ("kept_target"); target auto image wins when the source
+          has no pin ("kept_target"); a source pin over a target auto image
+          moves the override pair to the new key ("moved") — the target's
+          auto slot is left beneath it (it resurfaces if the user later
+          clears the pin), and every OTHER old-key file is deleted. Leaving
+          old-key files would recreate the forever-orphan this method exists
+          to prevent.
         * Otherwise the old key's image slots move to the new key. A negative
           ``.miss`` never travels in either direction: it recorded "sources
           had no image for the OLD name", and the new name deserves a fresh
@@ -441,15 +451,35 @@ class ArtistImageCache:
         old_key, new_key = self._key(old_name), self._key(new_name)
         if old_key == new_key:
             return "moved" if self._has_portrait(old_key) else "none"
-        if self._has_portrait(new_key):
+        if self._has_override(new_key):
             for suffix in _ALL_SLOT_SUFFIXES:
                 self._unlink(self._dir / f"{old_key}{suffix}")
             self._memory.discard(old_key)
             return "kept_target"
+        if self._has_portrait(new_key) and not self._has_override(old_key):
+            for suffix in _ALL_SLOT_SUFFIXES:
+                self._unlink(self._dir / f"{old_key}{suffix}")
+            self._memory.discard(old_key)
+            return "kept_target"
+        if self._has_portrait(new_key):
+            # A source MANUAL PIN outranks the target's auto image: move only
+            # the override pair (sidecar before bytes), delete the rest of the
+            # old key (the old artist is gone), and leave the target's auto
+            # slot beneath the pin — it resurfaces if the user clears it.
+            self._replace(
+                self._dir / f"{old_key}.override.mime", self._dir / f"{new_key}.override.mime"
+            )
+            self._replace(self._dir / f"{old_key}.override", self._dir / f"{new_key}.override")
+            for suffix in _ALL_SLOT_SUFFIXES:
+                if suffix not in (".override", ".override.mime"):
+                    self._unlink(self._dir / f"{old_key}{suffix}")
+            self._unlink(self._dir / f"{new_key}.miss")
+            self._memory.discard(old_key)
+            return "moved"
         self._unlink(self._dir / f"{old_key}.miss")
         self._unlink(self._dir / f"{new_key}.miss")
         moved = False
-        for suffix in (".override.mime", ".override", ".mime", ".bin", ".thumb.src", ".thumb.bin"):
+        for suffix in _MOVE_ORDER:
             relocated = self._replace(
                 self._dir / f"{old_key}{suffix}", self._dir / f"{new_key}{suffix}"
             )
@@ -461,6 +491,19 @@ class ArtistImageCache:
             moved = True
         self._memory.discard(old_key)
         return "moved" if moved else "none"
+
+    def _has_override(self, key: str) -> bool:
+        """Whether a MANUAL PIN (``.override``) exists under ``key``.
+
+        Guarded like ``_has_portrait``: an unreadable cache dir reads as "no
+        pin". Nothing to check in the memory fallback — ``write_override``
+        does not go through ``_or_remember``, so a pin never lands there.
+        """
+        try:
+            return (self._dir / f"{key}.override").exists()
+        except OSError as exc:
+            warn_throttled("cache-read", "artist-image cache dir is unreadable: %s", exc)
+            return False
 
     def _has_portrait(self, key: str) -> bool:
         """Whether a REAL image (override or positive) exists under ``key`` —
