@@ -14,7 +14,6 @@ relative item paths resolve on the worker thread (which doesn't inherit the
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from beets.library import Library
 from fastapi import HTTPException, Request
@@ -67,7 +66,7 @@ def delete_artist(lib: Library, artist_name: str, *, trash_dir: Path) -> DeleteR
     return DeleteResult(trashed_albums=len(album_ids), trash_path=str(trash_dir))
 
 
-def _gate(app: Any) -> None:
+def _gate() -> None:
     """Refuse (409) while any library job that mutates the library is running.
 
     Same set as config Apply / duplicates resolve — a delete tears at the same
@@ -93,7 +92,7 @@ def _failed(exc: Exception) -> HTTPException:
 async def delete_album_op(request: Request, album_id: int) -> DeleteResult:
     """Async wrapper for :func:`delete_album`: gate + swap-lock + threadpool."""
     app = request.app
-    _gate(app)
+    _gate()
     async with _swap_lock(app):
         handle: LibraryHandle = app.state.beets_library
         trash_dir = resolve_trash_dir(_settings(app), handle)
@@ -108,7 +107,7 @@ async def delete_album_op(request: Request, album_id: int) -> DeleteResult:
 async def delete_artist_op(request: Request, artist_name: str) -> DeleteResult:
     """Async wrapper for :func:`delete_artist`: gate + swap-lock + threadpool."""
     app = request.app
-    _gate(app)
+    _gate()
     async with _swap_lock(app):
         handle: LibraryHandle = app.state.beets_library
         trash_dir = resolve_trash_dir(_settings(app), handle)

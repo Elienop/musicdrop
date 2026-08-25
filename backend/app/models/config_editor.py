@@ -54,10 +54,10 @@ def _writable_path(p: Path) -> Path:
             raise ValueError(f"{resolved} is not a directory")
         if not os.access(resolved, os.W_OK):
             raise ValueError(f"directory {resolved} is not writable")
-        return p
-    parent = resolved.parent
-    if not parent.exists() or not os.access(parent, os.W_OK):
-        raise ValueError(f"parent directory {parent} is not writable")
+    else:
+        parent = resolved.parent
+        if not parent.exists() or not os.access(parent, os.W_OK):
+            raise ValueError(f"parent directory {parent} is not writable")
     return p
 
 

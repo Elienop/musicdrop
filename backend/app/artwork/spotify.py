@@ -16,14 +16,14 @@ import httpx
 
 from app.artwork.download import download_image
 from app.artwork.normalize import normalize_artist_name
-from app.artwork.source import ResolvedImage, TransientSourceError
+from app.artwork.source import ArtistImageSourceBase, ResolvedImage, TransientSourceError
 
 _TOKEN_URL = "https://accounts.spotify.com/api/token"
 _SEARCH_URL = "https://api.spotify.com/v1/search"
 _TOKEN_SKEW = 60.0  # refresh this many seconds before the stated expiry
 
 
-class SpotifyArtistImageSource:
+class SpotifyArtistImageSource(ArtistImageSourceBase):
     def __init__(
         self,
         *,

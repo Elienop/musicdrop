@@ -49,11 +49,15 @@ from app.artwork.images import FALLBACK_CONTENT_TYPE, header_safe_content_type
 from app.artwork.normalize import normalize_artist_name
 from app.etag import stat_etag
 
+_OVERRIDE_SUFFIX = ".override"
+_OVERRIDE_MIME_SUFFIX = ".override.mime"
+_CACHE_DIR_UNREADABLE = "artist-image cache dir is unreadable: %s"
+
 # Every slot suffix an artist's key can own (kept in ONE place so rename and
 # any future sweep cannot drift from the layout above).
 _ALL_SLOT_SUFFIXES: Final = (
-    ".override",
-    ".override.mime",
+    _OVERRIDE_SUFFIX,
+    _OVERRIDE_MIME_SUFFIX,
     ".bin",
     ".mime",
     ".miss",
@@ -63,7 +67,14 @@ _ALL_SLOT_SUFFIXES: Final = (
 
 # Move order for the re-key (sidecar before bytes at the destination);
 # ``.miss`` is deliberately absent — a negative marker never travels.
-_MOVE_ORDER: Final = (".override.mime", ".override", ".mime", ".bin", ".thumb.src", ".thumb.bin")
+_MOVE_ORDER: Final = (
+    _OVERRIDE_MIME_SUFFIX,
+    _OVERRIDE_SUFFIX,
+    ".mime",
+    ".bin",
+    ".thumb.src",
+    ".thumb.bin",
+)
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -204,7 +215,7 @@ class ArtistImageCache:
         key = self._key(name)
 
         override = self._read_image(
-            self._dir / f"{key}.override", self._dir / f"{key}.override.mime"
+            self._dir / f"{key}{_OVERRIDE_SUFFIX}", self._dir / f"{key}{_OVERRIDE_MIME_SUFFIX}"
         )
         if override is not None:
             return override
@@ -225,7 +236,7 @@ class ArtistImageCache:
                 # Expired (or unparseable): drop the marker so the caller re-resolves.
                 miss.unlink(missing_ok=True)
         except OSError as exc:
-            warn_throttled("cache-read", "artist-image cache dir is unreadable: %s", exc)
+            warn_throttled("cache-read", _CACHE_DIR_UNREADABLE, exc)
 
         # Disk had nothing usable. Consult the fallback LAST so a healthy disk
         # always wins: this only ever holds what a failed write could not store.
@@ -258,7 +269,7 @@ class ArtistImageCache:
             if miss.exists() and time.time() < self._read_expiry(miss):
                 return True
         except OSError as exc:
-            warn_throttled("cache-read", "artist-image cache dir is unreadable: %s", exc)
+            warn_throttled("cache-read", _CACHE_DIR_UNREADABLE, exc)
         remembered = self._memory.get(key)
         return isinstance(remembered, _NegativeUntil) and time.time() < remembered.expiry
 
@@ -316,8 +327,10 @@ class ArtistImageCache:
         self._ensure_dir()
         key = self._key(name)
         # Mime before bytes, both atomic (see store_positive).
-        _atomic_write_bytes(self._dir / f"{key}.override.mime", content_type.encode("utf-8"))
-        _atomic_write_bytes(self._dir / f"{key}.override", data)
+        _atomic_write_bytes(
+            self._dir / f"{key}{_OVERRIDE_MIME_SUFFIX}", content_type.encode("utf-8")
+        )
+        _atomic_write_bytes(self._dir / f"{key}{_OVERRIDE_SUFFIX}", data)
 
     def _unlink(self, path: Path) -> bool:
         """Remove one slot file. True when it was there and is now gone.
@@ -382,7 +395,9 @@ class ArtistImageCache:
         :class:`_MemoryFallback` and there is nothing of its own to forget.
         """
         key = self._key(name)
-        return self._clear_slots(self._dir / f"{key}.override", self._dir / f"{key}.override.mime")
+        return self._clear_slots(
+            self._dir / f"{key}{_OVERRIDE_SUFFIX}", self._dir / f"{key}{_OVERRIDE_MIME_SUFFIX}"
+        )
 
     def clear_auto(self, name: str) -> bool:
         """Forget the AUTOMATIC image for ``name`` so the next lookup re-resolves.
@@ -487,13 +502,14 @@ class ArtistImageCache:
         actually relocated.
         """
         self._replace(
-            self._dir / f"{old_key}.override.mime", self._dir / f"{new_key}.override.mime"
+            self._dir / f"{old_key}{_OVERRIDE_MIME_SUFFIX}",
+            self._dir / f"{new_key}{_OVERRIDE_MIME_SUFFIX}",
         )
         moved_pin = self._replace(
-            self._dir / f"{old_key}.override", self._dir / f"{new_key}.override"
+            self._dir / f"{old_key}{_OVERRIDE_SUFFIX}", self._dir / f"{new_key}{_OVERRIDE_SUFFIX}"
         )
         for suffix in _ALL_SLOT_SUFFIXES:
-            if suffix not in (".override", ".override.mime"):
+            if suffix not in (_OVERRIDE_SUFFIX, _OVERRIDE_MIME_SUFFIX):
                 self._unlink(self._dir / f"{old_key}{suffix}")
         self._unlink(self._dir / f"{new_key}.miss")
         self._memory.discard(old_key)
@@ -520,7 +536,7 @@ class ArtistImageCache:
             relocated = self._replace(
                 self._dir / f"{old_key}{suffix}", self._dir / f"{new_key}{suffix}"
             )
-            if suffix in (".override", ".bin"):
+            if suffix in (_OVERRIDE_SUFFIX, ".bin"):
                 moved = moved or relocated
         remembered = self._memory.get(old_key)
         if isinstance(remembered, CachedImage):
@@ -537,9 +553,9 @@ class ArtistImageCache:
         does not go through ``_or_remember``, so a pin never lands there.
         """
         try:
-            return (self._dir / f"{key}.override").exists()
+            return (self._dir / f"{key}{_OVERRIDE_SUFFIX}").exists()
         except OSError as exc:
-            warn_throttled("cache-read", "artist-image cache dir is unreadable: %s", exc)
+            warn_throttled("cache-read", _CACHE_DIR_UNREADABLE, exc)
             return False
 
     def _has_portrait(self, key: str) -> bool:
@@ -547,11 +563,11 @@ class ArtistImageCache:
         on disk or stranded in the memory fallback. Guarded: an unreadable
         cache dir reads as "no portrait" (same posture as ``validator``)."""
         try:
-            for suffix in (".override", ".bin"):
+            for suffix in (_OVERRIDE_SUFFIX, ".bin"):
                 if (self._dir / f"{key}{suffix}").exists():
                     return True
         except OSError as exc:
-            warn_throttled("cache-read", "artist-image cache dir is unreadable: %s", exc)
+            warn_throttled("cache-read", _CACHE_DIR_UNREADABLE, exc)
         return isinstance(self._memory.get(key), CachedImage)
 
     def _replace(self, old: Path, new: Path) -> bool:
@@ -670,7 +686,7 @@ class ArtistImageCache:
         fallback rather than trusting a stale tag."""
         key = self._key(name)
         try:
-            for slot in (f"{key}.override", f"{key}.bin"):
+            for slot in (f"{key}{_OVERRIDE_SUFFIX}", f"{key}.bin"):
                 path = self._dir / slot
                 if path.exists():
                     return stat_etag(path)

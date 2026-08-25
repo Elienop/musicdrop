@@ -16,6 +16,8 @@ from app.plex import client as client  # explicit re-export: the patchable seam 
 from app.plex.config import PlexConfig
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
 
+_PLEX_NOT_CONFIGURED = "Plex is not configured."
+
 
 def _friendly(exc: Exception) -> str:
     if isinstance(exc, Unauthorized):
@@ -28,7 +30,7 @@ def _friendly(exc: Exception) -> str:
 def test_connection(config: PlexConfig) -> PlexConnection:
     """Connect and report the server name, or a friendly error (never raises)."""
     if not (config.base_url and config.token):
-        return PlexConnection(ok=False, error="Plex is not configured.")
+        return PlexConnection(ok=False, error=_PLEX_NOT_CONFIGURED)
     try:
         server = client.connect(config.base_url, config.token)
         name = str(getattr(server, "friendlyName", "") or "Plex")
@@ -40,7 +42,7 @@ def test_connection(config: PlexConfig) -> PlexConnection:
 def discover_users(config: PlexConfig) -> list[PlexUserInfo]:
     """List the Plex accounts (for the per-playlist target picker)."""
     if not (config.base_url and config.token):
-        raise PlexNotConfigured("Plex is not configured.")
+        raise PlexNotConfigured(_PLEX_NOT_CONFIGURED)
     try:
         server = client.connect(config.base_url, config.token)
         account = server.myPlexAccount()
@@ -78,7 +80,7 @@ def _section_locations(section: object) -> list[str]:
 def list_music_sections(config: PlexConfig) -> list[PlexSectionInfo]:
     """The server's music (artist-type) sections with their folders, in server order."""
     if not (config.base_url and config.token):
-        raise PlexNotConfigured("Plex is not configured.")
+        raise PlexNotConfigured(_PLEX_NOT_CONFIGURED)
     try:
         server = client.connect(config.base_url, config.token)
         return [

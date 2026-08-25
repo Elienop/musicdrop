@@ -6,6 +6,7 @@ the only implementation in this chunk; MusicBrainz/fanart.tv/Spotify can be
 added later behind the same Protocol.
 """
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -35,5 +36,28 @@ class ArtistImageSource(Protocol):
 
         Returns ``None`` ONLY for a confirmed no-verified-match. Raises
         :class:`TransientSourceError` for any transient failure.
+        """
+        ...
+
+
+class ArtistImageSourceBase(ABC):
+    """Concrete base for the named artist-image sources (Deezer, fanart.tv, Spotify).
+
+    ``resolve`` declares BOTH identifiers — the human ``name`` and the MusicBrainz
+    ``mbid`` — because callers pass them uniformly and source picking is
+    deterministic (a caller cannot know which one each source needs). Each concrete
+    source may therefore ignore the identifier it cannot use: fanart.tv keys
+    purely off ``mbid`` (ignores ``name``), while Deezer and Spotify search by
+    ``name`` (ignore ``mbid``). Overriding :meth:`resolve` is exempt from the
+    unused-argument rule (python:S1172) on exactly this account.
+    """
+
+    @abstractmethod
+    async def resolve(self, name: str, *, mbid: str | None = None) -> ResolvedImage | None:
+        """Resolve ``name`` (optionally aided by a MusicBrainz ``mbid``) to a portrait.
+
+        Returns ``None`` ONLY for a confirmed no-verified-match. Raises
+        :class:`TransientSourceError` for any transient failure. An implementation
+        may ignore either identifier it cannot use.
         """
         ...

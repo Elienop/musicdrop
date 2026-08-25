@@ -35,6 +35,8 @@ from app.models.import_models import (
     ImportChoice,
 )
 
+_IMPORT_ALBUM_NOT_FOUND = "Import album not found"
+
 router = APIRouter(tags=["import"])
 
 
@@ -132,7 +134,7 @@ async def get_import_album(
     except KeyError:
         # Either the job is unknown or no album is parked at this index.
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Import album not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail=_IMPORT_ALBUM_NOT_FOUND
         ) from None
 
 
@@ -150,7 +152,7 @@ async def get_import_album_cover(
         cover = await run_in_threadpool(reg.candidate_cover, job_id, index)
     except KeyError:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Import album not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail=_IMPORT_ALBUM_NOT_FOUND
         ) from None
     if cover is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No cover art") from None
@@ -191,7 +193,7 @@ async def get_import_album_duplicates(
         parked = reg.parked_album(job_id, index)
     except KeyError:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Import album not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail=_IMPORT_ALBUM_NOT_FOUND
         ) from None
     candidate = parked.candidate
     albumartist, album, year, mb_albumid = selected_option_identity(
@@ -223,7 +225,7 @@ async def post_import_choice(
         # No job, or no album parked at this index (incl. a second choice after
         # the worker advanced — park popped the slot).
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Import album not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail=_IMPORT_ALBUM_NOT_FOUND
         ) from None
     except RuntimeError:
         # A choice was already pushed for this album, racing the same slot.

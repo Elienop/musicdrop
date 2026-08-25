@@ -13,7 +13,7 @@ from urllib.parse import unquote, urlparse
 from app.models.playlist_import import ParsedPlaylist, SourceEntry
 from app.playlists.stem import filename_stem
 
-_EXTINF = re.compile(r"\A#EXTINF:\s*(-?\d+(?:\.\d+)?)?\s*,\s*(.*)\Z")
+_EXTINF_SECS = re.compile(r"-?\d+(?:\.\d+)?")
 
 
 def _split_artist_title(text: str) -> tuple[str | None, str | None]:
@@ -34,13 +34,20 @@ def _decode_path(line: str) -> str:
 
 def _parse_extinf(line: str) -> tuple[float | None, str | None, str | None] | None:
     """Parse an ``#EXTINF`` line into ``(seconds, artist, title)``; ``None`` if
-    the line is not an ``#EXTINF`` (other directives/comments are skipped)."""
-    m = _EXTINF.match(line)
-    if m is None:
+    the line is not an ``#EXTINF`` (other directives/comments are skipped).
+
+    Split, don't regex, the freeform line: only the short, already-split
+    seconds field gets a bounded ``fullmatch`` (no backtracking surface)."""
+    if not line.startswith("#EXTINF:"):
         return None
-    secs_raw, text = m.group(1), m.group(2)
-    secs = float(secs_raw) if secs_raw is not None and float(secs_raw) > 0 else None
-    artist, title = _split_artist_title(text)
+    head, sep, text = line[len("#EXTINF:") :].partition(",")
+    if not sep:
+        return None  # the comma is mandatory
+    secs_raw = head.strip()
+    if secs_raw and not _EXTINF_SECS.fullmatch(secs_raw):
+        return None  # not a well-formed seconds field — not an EXTINF line
+    secs = float(secs_raw) if secs_raw and float(secs_raw) > 0 else None
+    artist, title = _split_artist_title(text.lstrip())
     return secs, artist, title
 
 

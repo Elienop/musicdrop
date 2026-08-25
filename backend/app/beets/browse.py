@@ -301,7 +301,7 @@ def _collect_facts(lib: Library) -> dict[int, _AlbumFacts]:
 
     facts: dict[int, _AlbumFacts] = {}
     for album_id, rows in groupby(item_rows, key=lambda row: _coerce_int(row["album_id"])):
-        facts[album_id] = _album_facts(rows, instrumental)
+        facts[album_id] = _album_facts(list(rows), instrumental)
     return facts
 
 

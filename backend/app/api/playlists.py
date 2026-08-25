@@ -73,6 +73,10 @@ logger = logging.getLogger(__name__)
 # headroom for a full-res JPEG/PNG while bounding an abusive upload.
 _MAX_ARTWORK_BYTES = 8 * 1024 * 1024
 
+# 404 detail strings (matched verbatim by the API tests).
+_PLAYLIST_NOT_FOUND = "Playlist not found"
+_PLAYLIST_ENTRY_NOT_FOUND = "Playlist entry not found"
+
 
 def _sniff_image_format(data: bytes) -> Literal["jpg", "png"] | None:
     """The image format from its magic bytes — JPEG or PNG only, else None."""
@@ -269,7 +273,7 @@ async def get_playlist_endpoint(
 ) -> PlaylistDetail:
     record = await run_in_threadpool(store.get_playlist, playlists_dir, playlist_id)
     if record is None:
-        raise HTTPException(status_code=404, detail="Playlist not found")
+        raise HTTPException(status_code=404, detail=_PLAYLIST_NOT_FOUND)
     return await _detail_response(record, handle)
 
 
@@ -288,7 +292,7 @@ async def add_tracks_endpoint(
         position=body.position,
     )
     if record is None:
-        raise HTTPException(status_code=404, detail="Playlist not found")
+        raise HTTPException(status_code=404, detail=_PLAYLIST_NOT_FOUND)
     await _export_playlist(record, handle)
     return await _detail_response(record, handle)
 
@@ -302,10 +306,10 @@ async def remove_entry_endpoint(
 ) -> PlaylistDetail:
     record = await run_in_threadpool(store.get_playlist, playlists_dir, playlist_id)
     if record is None or all(e.uid != entry_uid for e in record.entries):
-        raise HTTPException(status_code=404, detail="Playlist entry not found")
+        raise HTTPException(status_code=404, detail=_PLAYLIST_ENTRY_NOT_FOUND)
     record = await run_in_threadpool(store.remove_entry, playlists_dir, playlist_id, entry_uid)
     if record is None:
-        raise HTTPException(status_code=404, detail="Playlist not found")
+        raise HTTPException(status_code=404, detail=_PLAYLIST_NOT_FOUND)
     await _export_playlist(record, handle)
     return await _detail_response(record, handle)
 
@@ -322,14 +326,14 @@ async def resolve_entry_endpoint(
     re-points a resolved one) while keeping its position."""
     record = await run_in_threadpool(store.get_playlist, playlists_dir, playlist_id)
     if record is None or all(e.uid != entry_uid for e in record.entries):
-        raise HTTPException(status_code=404, detail="Playlist entry not found")
+        raise HTTPException(status_code=404, detail=_PLAYLIST_ENTRY_NOT_FOUND)
     if not await run_in_threadpool(item_exists, handle.lib, body.item_id):
         raise HTTPException(status_code=422, detail=f"unknown item ids: {body.item_id}")
     record = await run_in_threadpool(
         store.resolve_entry, playlists_dir, playlist_id, entry_uid, item_id=body.item_id
     )
     if record is None:
-        raise HTTPException(status_code=404, detail="Playlist entry not found")
+        raise HTTPException(status_code=404, detail=_PLAYLIST_ENTRY_NOT_FOUND)
     await _export_playlist(record, handle)
     return await _detail_response(record, handle)
 
@@ -343,7 +347,7 @@ async def reorder_tracks_endpoint(
 ) -> PlaylistDetail:
     record = await run_in_threadpool(store.get_playlist, playlists_dir, playlist_id)
     if record is None:
-        raise HTTPException(status_code=404, detail="Playlist not found")
+        raise HTTPException(status_code=404, detail=_PLAYLIST_NOT_FOUND)
     known = {e.uid for e in record.entries}
     unknown = [uid for uid in body.entry_uids if uid not in known]
     if unknown:
@@ -352,7 +356,7 @@ async def reorder_tracks_endpoint(
         store.set_entry_order, playlists_dir, playlist_id, uids=body.entry_uids
     )
     if record is None:
-        raise HTTPException(status_code=404, detail="Playlist not found")
+        raise HTTPException(status_code=404, detail=_PLAYLIST_NOT_FOUND)
     await _export_playlist(record, handle)
     return await _detail_response(record, handle)
 
@@ -366,7 +370,7 @@ async def sync_playlist_endpoint(
 ) -> PlaylistDetail:
     record = await run_in_threadpool(store.get_playlist, playlists_dir, playlist_id)
     if record is None:
-        raise HTTPException(status_code=404, detail="Playlist not found")
+        raise HTTPException(status_code=404, detail=_PLAYLIST_NOT_FOUND)
     config = plex_store.get()
     if not (config.base_url and config.token):
         raise HTTPException(status_code=409, detail="Connect Plex first")
@@ -439,7 +443,7 @@ async def sync_playlist_endpoint(
     except OSError as exc:
         raise HTTPException(status_code=500, detail="Failed to record sync state.") from exc
     if record is None:  # deleted mid-flight
-        raise HTTPException(status_code=404, detail="Playlist not found")
+        raise HTTPException(status_code=404, detail=_PLAYLIST_NOT_FOUND)
     return await _detail_response(record, handle)
 
 
@@ -478,7 +482,7 @@ async def update_playlist_endpoint(
         target_plex_users=body.target_plex_users,
     )
     if record is None:
-        raise HTTPException(status_code=404, detail="Playlist not found")
+        raise HTTPException(status_code=404, detail=_PLAYLIST_NOT_FOUND)
     await _export_playlist(record, handle)
     return await _summary(record, handle)
 
@@ -497,7 +501,7 @@ async def delete_playlist_endpoint(
     record = await run_in_threadpool(store.get_playlist, playlists_dir, playlist_id)
     deleted = await run_in_threadpool(store.delete_playlist, playlists_dir, playlist_id)
     if not deleted:
-        raise HTTPException(status_code=404, detail="Playlist not found")
+        raise HTTPException(status_code=404, detail=_PLAYLIST_NOT_FOUND)
     await _remove_export(playlist_id, handle)
     if record is not None:
         rating_keys = {target: state.rating_key for target, state in record.plex.items()}
@@ -552,7 +556,7 @@ async def merge_playlist_endpoint(
         delete_source=body.delete_source,
     )
     if outcome is None:
-        raise HTTPException(status_code=404, detail="Playlist not found")
+        raise HTTPException(status_code=404, detail=_PLAYLIST_NOT_FOUND)
     await _export_playlist(outcome.playlist, handle)
     if outcome.source_deleted:
         await _remove_export(body.source_id, handle)
@@ -622,7 +626,7 @@ async def put_playlist_artwork_endpoint(
         store.set_artwork, playlists_dir, playlist_id, data, image_format
     )
     if record is None:
-        raise HTTPException(status_code=404, detail="Playlist not found")
+        raise HTTPException(status_code=404, detail=_PLAYLIST_NOT_FOUND)
     return await _summary(record, handle)
 
 
@@ -635,7 +639,7 @@ async def delete_playlist_artwork_endpoint(
     for an unknown playlist."""
     record = await run_in_threadpool(store.delete_artwork, playlists_dir, playlist_id)
     if record is None:
-        raise HTTPException(status_code=404, detail="Playlist not found")
+        raise HTTPException(status_code=404, detail=_PLAYLIST_NOT_FOUND)
     return Response(status_code=204)
 
 

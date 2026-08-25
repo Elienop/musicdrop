@@ -266,7 +266,7 @@ async def fetch_album_lyrics_endpoint(
 ) -> LyricsBackfillStatus:
     """Start an album-scoped lyrics fetch job (writes tags → Plex). Poll
     GET /api/lyrics/backfill for marching progress. 404 unknown album, 409 if busy."""
-    return await start_album_lyrics_op(
+    return start_album_lyrics_op(
         request, album_id, on_complete=lambda: emit_library_changed(request.app)
     )
 

@@ -52,7 +52,7 @@ from app.models.duplicates import (
 )
 from app.models.import_models import ExistingAlbum
 
-_PAREN_RE = re.compile(r"[\(\[].*?[\)\]]")
+_PAREN_RE = re.compile(r"[\(\[][^\)\]]*[\)\]]")
 _FEAT_RE = re.compile(r"\b(?:feat|ft|featuring)\b.*", re.IGNORECASE)
 _PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
 _WS_RE = re.compile(r"\s+")
