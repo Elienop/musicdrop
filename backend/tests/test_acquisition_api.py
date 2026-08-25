@@ -95,19 +95,16 @@ def test_lifespan_waits_for_in_flight_import_before_closing_library(
     assert closed_at_poll == poll_count
 
 
-def test_acquisition_status_lazy_fallback_without_lifespan(client: TestClient) -> None:
+def test_acquisition_status_lazy_fallback_without_lifespan(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # The lifespan-less `client` fixture sets no acquisition_queue on app.state;
     # remove any stale one a prior lifespan test left so the fallback is exercised.
-    prior = getattr(app.state, "acquisition_queue", None)
-    if prior is not None:
-        del app.state.acquisition_queue
-    try:
-        resp = client.get("/api/acquisition/status")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["phase"] == "idle"
-        assert body["queued"] == 0
-        assert body["current"] is None
-    finally:
-        if prior is not None:
-            app.state.acquisition_queue = prior
+    if getattr(app.state, "acquisition_queue", None) is not None:
+        monkeypatch.delattr(app.state, "acquisition_queue")
+    resp = client.get("/api/acquisition/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["phase"] == "idle"
+    assert body["queued"] == 0
+    assert body["current"] is None

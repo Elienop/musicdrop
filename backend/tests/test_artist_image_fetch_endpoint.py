@@ -179,7 +179,9 @@ def test_a_client_that_sends_no_origin_is_allowed() -> None:
     assert source.calls == [("ABBA", "the-mbid")]
 
 
-def test_the_fetch_writes_nothing_to_the_cache(tmp_path: Path) -> None:
+def test_the_fetch_writes_nothing_to_the_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A FORWARD guard: the route takes no cache dependency today.
 
     So this cannot fail on the current code - it fails the day someone adds a
@@ -191,12 +193,9 @@ def test_the_fetch_writes_nothing_to_the_cache(tmp_path: Path) -> None:
     cache = ArtistImageCache(tmp_path)
     source = _RecordingSource(ResolvedImage(data=_PNG + b"PORTRAIT", content_type="image/jpeg"))
     client = _client(source)
-    app.dependency_overrides[get_artist_image_cache] = lambda: cache
-    app.state.artist_image_cache = cache
-    try:
-        resp = client.post(_URL, params={"name": "ABBA", "source": "deezer"})
-    finally:
-        del app.state.artist_image_cache
+    monkeypatch.setitem(app.dependency_overrides, get_artist_image_cache, lambda: cache)
+    monkeypatch.setattr(app.state, "artist_image_cache", cache, raising=False)
+    resp = client.post(_URL, params={"name": "ABBA", "source": "deezer"})
     assert resp.status_code == 200  # the bytes WERE fetched; nothing was stored
     assert resp.content == _PNG + b"PORTRAIT"
     assert list(tmp_path.iterdir()) == []

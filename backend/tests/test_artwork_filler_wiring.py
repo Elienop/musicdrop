@@ -119,7 +119,7 @@ def test_the_filler_notification_publishes_an_art_changed_event(
 
     _pin_settings_at(tmp_path, monkeypatch)
     with TestClient(main_mod.app):
-        main_mod.app.state.event_broker = _Broker()
+        monkeypatch.setattr(main_mod.app.state, "event_broker", _Broker(), raising=False)
         main_mod.app.state.artist_image_filler._notify()
     assert published == [None]  # UNSCOPED: the asset is keyed by normalized name
 

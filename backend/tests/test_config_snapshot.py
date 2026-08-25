@@ -55,9 +55,11 @@ def test_effective_yaml_has_merged_defaults(loaded_handle: LibraryHandle) -> Non
     assert snap.effective_yaml != snap.yaml_text
 
 
-def test_effective_yaml_redacts_per_view_flag(loaded_handle: LibraryHandle) -> None:
+def test_effective_yaml_redacts_per_view_flag(
+    loaded_handle: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
     beets.config["spotify"]["client_secret"].set("supersecret")
-    beets.config["spotify"]["client_secret"].redact = True
+    monkeypatch.setattr(beets.config["spotify"]["client_secret"], "redact", True)
     snap = build_config_snapshot(loaded_handle)
     assert "supersecret" not in snap.effective_yaml
     assert "REDACTED" in snap.effective_yaml
@@ -240,7 +242,9 @@ def test_safety_net_leaves_null_secret_as_null(loaded_handle: LibraryHandle) -> 
     assert parsed["mything"]["password"] is None
 
 
-def test_confuse_pass1_ignores_redact_on_a_list_shaped_section() -> None:
+def test_confuse_pass1_ignores_redact_on_a_list_shaped_section(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Pin the upstream fact the safety-net exists for (``beetsplug/kodiupdate.py``).
 
     The plugin registers the section ``kodi`` and adds a LIST as its default,
@@ -251,7 +255,7 @@ def test_confuse_pass1_ignores_redact_on_a_list_shaped_section() -> None:
     change to why ``_plain_redacted`` is load-bearing, and this test says so.
     """
     beets.config["kodi"].set([{"host": "kodi.local", "pwd": 4815162342}])
-    beets.config["kodi"]["pwd"].redact = True
+    monkeypatch.setattr(beets.config["kodi"]["pwd"], "redact", True)
 
     with pytest.raises(confuse.ConfigTypeError):
         beets.config["kodi"].flatten(redact=True)
@@ -261,7 +265,7 @@ def test_confuse_pass1_ignores_redact_on_a_list_shaped_section() -> None:
     assert flat["kodi"] is beets.config["kodi"].get()  # ...and the LIVE list
 
 
-def test_confuse_pass1_masks_a_null_redact_field() -> None:
+def test_confuse_pass1_masks_a_null_redact_field(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the asymmetry documented on the null carve-out.
 
     ``_plain_redacted`` leaves a null under a secret-matching key alone, and its
@@ -269,7 +273,7 @@ def test_confuse_pass1_masks_a_null_redact_field() -> None:
     asserts the "opposite" half so the justification can't quietly go stale.
     """
     beets.config["mything"]["api_key"].set(None)
-    beets.config["mything"]["api_key"].redact = True
+    monkeypatch.setattr(beets.config["mything"]["api_key"], "redact", True)
 
     assert beets.config.flatten(redact=True)["mything"]["api_key"] == "REDACTED"
 

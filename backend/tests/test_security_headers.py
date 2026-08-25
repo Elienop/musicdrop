@@ -305,15 +305,19 @@ async def _response_start(path: str) -> Message:
 
 
 @pytest.mark.anyio
-async def test_sse_stream_carries_the_headers() -> None:
+async def test_sse_stream_carries_the_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # A live broker so the endpoint really streams (no broker = a plain 503,
     # which would prove nothing about StreamingResponse). Deleted afterwards:
     # a leaked broker whose loop is closed poisons every later lifespan-less test.
-    real_app.state.event_broker = EventBroker(asyncio.get_running_loop())
-    try:
-        start = await _response_start("/api/events")
-    finally:
-        del real_app.state.event_broker
+    monkeypatch.setattr(
+        real_app.state,
+        "event_broker",
+        EventBroker(asyncio.get_running_loop()),
+        raising=False,
+    )
+    start = await _response_start("/api/events")
 
     assert start["status"] == 200
     headers = {name.decode(): value.decode() for name, value in start["headers"]}

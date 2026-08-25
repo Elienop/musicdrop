@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 import beets
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
@@ -61,7 +62,7 @@ def test_get_config_reflects_mtime_change(
 
 
 def test_get_config_redacts_numeric_secret_in_list_shaped_plugin_config(
-    client: TestClient,
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The served body must not carry an unquoted numeric password in cleartext.
 
@@ -90,7 +91,9 @@ def test_get_config_redacts_numeric_secret_in_list_shaped_plugin_config(
     beets.config["kodi"].set(
         [{"host": "kodi.local", "port": 8080, "user": "kodi", "pwd": 4815162342}]
     )
-    beets.config["kodi"]["pwd"].redact = True  # what KodiUpdate.__init__ does
+    monkeypatch.setattr(
+        beets.config["kodi"]["pwd"], "redact", True
+    )  # what KodiUpdate.__init__ does
 
     r = client.get("/api/config")
 

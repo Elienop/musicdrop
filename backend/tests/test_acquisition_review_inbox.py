@@ -105,7 +105,9 @@ def test_review_inbox_starts_attended_move_import(tmp_path: Path) -> None:
         assert state["origin"] == "inbox"
 
 
-def test_review_inbox_409_while_swap_lock_held(tmp_path: Path) -> None:
+def test_review_inbox_409_while_swap_lock_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     inbox = tmp_path / "inbox"
     (inbox / "ZZ Artist").mkdir(parents=True)
     fake = FakeImportRunner(parked=[])
@@ -115,16 +117,9 @@ def test_review_inbox_409_while_swap_lock_held(tmp_path: Path) -> None:
         def locked(self) -> bool:
             return True
 
-    prior = getattr(app.state, "beets_swap_lock", None)
-    app.state.beets_swap_lock = _LockedLock()
-    try:
-        with _inbox_on_state(inbox):
-            resp = TestClient(app).post("/api/acquisition/review-inbox")
-    finally:
-        if prior is None:
-            del app.state.beets_swap_lock
-        else:
-            app.state.beets_swap_lock = prior
+    monkeypatch.setattr(app.state, "beets_swap_lock", _LockedLock(), raising=False)
+    with _inbox_on_state(inbox):
+        resp = TestClient(app).post("/api/acquisition/review-inbox")
     assert resp.status_code == 409
     assert fake.received_options is None  # gate fired before start
 
@@ -219,7 +214,9 @@ def test_review_inbox_ignores_an_audio_free_folder(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("settle", [0])
-def test_review_inbox_settle_window_is_configurable(tmp_path: Path, settle: int) -> None:
+def test_review_inbox_settle_window_is_configurable(
+    tmp_path: Path, settle: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # With the window at 0 a just-written folder is eligible immediately — the
     # knob exists so a user whose downloader writes differently can tune it.
     inbox = tmp_path / "inbox"
@@ -229,16 +226,14 @@ def test_review_inbox_settle_window_is_configurable(tmp_path: Path, settle: int)
 
     fake = FakeImportRunner(parked=[])
     reset_registry(runner=fake)
-    prior = getattr(app.state, "settings", None)
-    app.state.settings = SimpleNamespace(inbox_settle_seconds=settle)
-    try:
-        with _inbox_on_state(inbox):
-            resp = TestClient(app).post("/api/acquisition/review-inbox")
-    finally:
-        if prior is None:
-            del app.state.settings
-        else:
-            app.state.settings = prior
+    monkeypatch.setattr(
+        app.state,
+        "settings",
+        SimpleNamespace(inbox_settle_seconds=settle),
+        raising=False,
+    )
+    with _inbox_on_state(inbox):
+        resp = TestClient(app).post("/api/acquisition/review-inbox")
 
     assert resp.json()["started"] is True
     assert fake.received_paths == [str(album)]
