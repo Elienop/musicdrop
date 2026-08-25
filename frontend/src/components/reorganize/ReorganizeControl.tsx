@@ -280,11 +280,22 @@ export function ReorganizeControl({
 
   // Once THIS scope's job is terminal, surface its per-unit failures (label +
   // reason) under the controls — counts alone can't say which file is stuck.
-  const isTerminal =
-    phase === "done" || phase === "stopped" || phase === "failed";
-  const failures = isThis && isTerminal ? (job?.failures ?? []) : [];
-  // Non-null only on a terminal job, so the block can date itself.
-  const finishedAt = isThis && isTerminal ? (job?.finished_at ?? null) : null;
+  // `finishedAt` is non-null only on a terminal job so the list can date
+  // itself; for any non-terminal job — or another scope's — both stay empty.
+  function terminalJob(): {
+    isTerminal: boolean;
+    failures: ReorganizeUnitFailure[];
+    finishedAt: string | null;
+  } {
+    const isTerminal =
+      phase === "done" || phase === "stopped" || phase === "failed";
+    return {
+      isTerminal,
+      failures: isThis && isTerminal ? (job?.failures ?? []) : [],
+      finishedAt: isThis && isTerminal ? (job?.finished_at ?? null) : null,
+    };
+  }
+  const { isTerminal, failures, finishedAt } = terminalJob();
 
   // Files moved + DB paths changed — refresh the album/artist rosters that show
   // those paths once THIS scope's job reaches a terminal state.
@@ -425,18 +436,7 @@ export function ReorganizeControl({
             </Button>
           </>
         )}
-        {message != null && (
-          <span
-            role={message.kind === "error" ? "alert" : "status"}
-            className={
-              message.kind === "error"
-                ? "text-destructive text-center text-sm"
-                : "text-muted-foreground text-center text-sm"
-            }
-          >
-            {message.text}
-          </span>
-        )}
+        {renderMessage(true)}
         {failures.length > 0 && (
           <FailureList
             failures={failures}
@@ -446,6 +446,24 @@ export function ReorganizeControl({
           />
         )}
       </div>
+    );
+  }
+
+  // Action-adjacent feedback span: an empty-preview result is informational
+  // (`role="status"`), a failed action an error (`role="alert"`). `centered`
+  // matches the rail variant, which centers its whole content under the icon
+  // row.
+  function renderMessage(centered: boolean): ReactNode {
+    if (message == null) return null;
+    const tone =
+      message.kind === "error" ? "text-destructive" : "text-muted-foreground";
+    return (
+      <span
+        role={message.kind === "error" ? "alert" : "status"}
+        className={centered ? `${tone} text-center text-sm` : `${tone} text-sm`}
+      >
+        {message.text}
+      </span>
     );
   }
 
@@ -515,18 +533,7 @@ export function ReorganizeControl({
       )}
       <div className="flex flex-wrap items-center gap-3">
         {renderInlineAction()}
-        {message != null && (
-          <span
-            role={message.kind === "error" ? "alert" : "status"}
-            className={
-              message.kind === "error"
-                ? "text-destructive text-sm"
-                : "text-muted-foreground text-sm"
-            }
-          >
-            {message.text}
-          </span>
-        )}
+        {renderMessage(false)}
       </div>
       {failures.length > 0 && (
         <FailureList
