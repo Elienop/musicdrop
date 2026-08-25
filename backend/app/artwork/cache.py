@@ -51,6 +51,7 @@ from app.etag import stat_etag
 
 _OVERRIDE_SUFFIX = ".override"
 _OVERRIDE_MIME_SUFFIX = ".override.mime"
+_CACHE_DIR_UNREADABLE = "artist-image cache dir is unreadable: %s"
 
 # Every slot suffix an artist's key can own (kept in ONE place so rename and
 # any future sweep cannot drift from the layout above).
@@ -235,7 +236,7 @@ class ArtistImageCache:
                 # Expired (or unparseable): drop the marker so the caller re-resolves.
                 miss.unlink(missing_ok=True)
         except OSError as exc:
-            warn_throttled("cache-read", "artist-image cache dir is unreadable: %s", exc)
+            warn_throttled("cache-read", _CACHE_DIR_UNREADABLE, exc)
 
         # Disk had nothing usable. Consult the fallback LAST so a healthy disk
         # always wins: this only ever holds what a failed write could not store.
@@ -268,7 +269,7 @@ class ArtistImageCache:
             if miss.exists() and time.time() < self._read_expiry(miss):
                 return True
         except OSError as exc:
-            warn_throttled("cache-read", "artist-image cache dir is unreadable: %s", exc)
+            warn_throttled("cache-read", _CACHE_DIR_UNREADABLE, exc)
         remembered = self._memory.get(key)
         return isinstance(remembered, _NegativeUntil) and time.time() < remembered.expiry
 
@@ -554,7 +555,7 @@ class ArtistImageCache:
         try:
             return (self._dir / f"{key}{_OVERRIDE_SUFFIX}").exists()
         except OSError as exc:
-            warn_throttled("cache-read", "artist-image cache dir is unreadable: %s", exc)
+            warn_throttled("cache-read", _CACHE_DIR_UNREADABLE, exc)
             return False
 
     def _has_portrait(self, key: str) -> bool:
@@ -566,7 +567,7 @@ class ArtistImageCache:
                 if (self._dir / f"{key}{suffix}").exists():
                     return True
         except OSError as exc:
-            warn_throttled("cache-read", "artist-image cache dir is unreadable: %s", exc)
+            warn_throttled("cache-read", _CACHE_DIR_UNREADABLE, exc)
         return isinstance(self._memory.get(key), CachedImage)
 
     def _replace(self, old: Path, new: Path) -> bool:
