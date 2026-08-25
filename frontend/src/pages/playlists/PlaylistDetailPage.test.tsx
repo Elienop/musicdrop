@@ -690,7 +690,7 @@ describe("PlaylistDetailPage", () => {
     // and not the ambiguous "Not synced".
     expect(await screen.findByText(/plex sync: synced/i)).toBeInTheDocument();
     // And the visible per-playlist status line settles on exactly "Synced".
-    await waitFor(() => expect(screen.getByText("Synced")).toBeInTheDocument());
+    expect(await screen.findByText("Synced")).toBeInTheDocument();
   });
 
   test("points to Settings when sync fails because Plex isn't connected", async () => {
