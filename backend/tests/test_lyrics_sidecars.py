@@ -80,9 +80,30 @@ def test_sidecar_mode_is_world_readable(tmp_path: Path) -> None:
 
     track = tmp_path / "t.flac"
     track.write_bytes(b"")
-    write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN))
+    old_umask = os.umask(0o022)
+    try:
+        write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN))
+    finally:
+        os.umask(old_umask)
     mode = stat.S_IMODE((tmp_path / "t.txt").stat().st_mode)
-    assert mode == 0o644  # so the Plex process (other uid) can read it
+    # first write takes the umask default; umask 0o022 -> 0o644, matching the
+    # rest of the library, so the Plex process (other uid) can read it
+    assert mode == 0o644
+
+
+def test_sidecar_rewrite_preserves_tightened_mode(tmp_path: Path) -> None:
+    from app.beets.lyrics import write_lyric_sidecar
+
+    track = tmp_path / "t.flac"
+    track.write_bytes(b"")
+    write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN))
+    txt = tmp_path / "t.txt"
+    txt.chmod(0o600)
+    # same sidecar type (.txt -> .txt) so the rewrite hits the same dst
+    write_lyric_sidecar(_fake_item(track), Lyrics("updated line one\nupdated line two"))
+    assert stat.S_IMODE(txt.stat().st_mode) == 0o600  # rewrite preserves the tightened mode
+    body = txt.read_text(encoding="utf-8")
+    assert "updated line one" in body  # and the content was updated
 
 
 def test_writing_lrc_removes_stale_txt(tmp_path: Path) -> None:

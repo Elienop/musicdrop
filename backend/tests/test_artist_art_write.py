@@ -23,12 +23,32 @@ def test_get_artist_dirs_returns_album_parent(edit_lib: Library) -> None:
 
 def test_write_creates_poster_and_background(edit_lib: Library) -> None:
     name = _artist_of(edit_lib)
-    out = write_artist_art(edit_lib, name, poster=PNG, background=JPG, force=True)
+    old_umask = os.umask(0o022)
+    try:
+        out = write_artist_art(edit_lib, name, poster=PNG, background=JPG, force=True)
+    finally:
+        os.umask(old_umask)
     assert out.status == "written"
     for d in get_artist_dirs(edit_lib, name):
         assert (d / "artist-poster.png").exists()
         assert (d / "artist-background.jpg").exists()
         assert (d / "artist-poster.png").stat().st_mode & 0o777 == 0o644
+
+
+def test_atomic_write_bytes_preserves_mode_on_rewrite(tmp_path: Path) -> None:
+    from app.beets.artist_art import _atomic_write_bytes
+
+    dst = tmp_path / "artist-poster.png"
+    old_umask = os.umask(0o022)
+    try:
+        _atomic_write_bytes(dst, PNG[0])
+    finally:
+        os.umask(old_umask)
+    assert dst.stat().st_mode & 0o777 == 0o644  # umask 0o022 -> 0o644 on first write
+    dst.chmod(0o600)
+    _atomic_write_bytes(dst, JPG[0])
+    assert dst.stat().st_mode & 0o777 == 0o600  # rewrite preserves the tightened mode
+    assert dst.read_bytes() == JPG[0]  # and the content was replaced
 
 
 def test_skip_existing_unless_force(edit_lib: Library) -> None:

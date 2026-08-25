@@ -9,6 +9,7 @@ Plex can read it. Plex's Local Media Assets reads ``artist-poster.<ext>`` +
 from __future__ import annotations
 
 import os
+import shutil
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -47,14 +48,16 @@ def get_artist_dirs(lib: Any, name: str) -> list[Path]:
 
 def _atomic_write_bytes(dst: Path, data: bytes) -> None:
     """Atomic write (bytes variant of config_editor.atomic_write): tmp in same dir
-    -> fsync -> chmod 0o644 -> os.replace -> fsync parent dir."""
+    -> fsync -> dst mode preserved on rewrite (umask default on first write)
+    -> os.replace -> fsync parent dir."""
     tmp = dst.parent / f".{dst.name}.tmp"
     try:
         with open(tmp, "wb") as f:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.chmod(tmp, 0o644)  # world-readable so Plex can read it
+        if dst.exists():
+            shutil.copymode(dst, tmp)  # mode preserved on rewrite; umask default on first write
         os.replace(tmp, dst)
         dir_fd = os.open(dst.parent, os.O_RDONLY)
         try:

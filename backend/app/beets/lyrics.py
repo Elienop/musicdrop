@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -122,15 +123,17 @@ def active_source_names(plugin: Any) -> list[str]:
 
 
 def _atomic_write_text(dst: Path, text: str) -> None:
-    """Atomic utf-8 write at 0o644 (text mirror of ``artist_art._atomic_write_bytes``):
-    tmp in same dir -> fsync -> chmod 0o644 -> os.replace -> fsync parent dir."""
+    """Atomic utf-8 write (text mirror of ``artist_art._atomic_write_bytes``):
+    tmp in same dir -> fsync -> dst mode preserved on rewrite (umask default on
+    first write) -> os.replace -> fsync parent dir."""
     tmp = dst.parent / f".{dst.name}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
-        os.chmod(tmp, 0o644)  # world-readable so the Plex process (other uid) can read it
+        if dst.exists():
+            shutil.copymode(dst, tmp)  # mode preserved on rewrite; umask default on first write
         os.replace(tmp, dst)
         dir_fd = os.open(dst.parent, os.O_RDONLY)
         try:

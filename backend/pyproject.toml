@@ -40,7 +40,10 @@ target-version = "py311"
 # for Sonar S5778: Sonar also counts multiple invocations inside the one
 # statement, which ruff has no rule for. Preview is needed for autofixes
 # only; selection alone works in stable mode.
-select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF", "PT001", "PT012", "PT018"]
+# S324 locks Sonar S4790 (weak hash without usedforsecurity=False). The
+# S2612 chmod family has NO ruff twin (S103's threshold ignores o+r bits) —
+# the server scan is the only net for that one.
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF", "PT001", "PT012", "PT018", "S324"]
 
 [tool.mypy]
 python_version = "3.11"

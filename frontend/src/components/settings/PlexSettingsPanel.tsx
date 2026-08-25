@@ -282,7 +282,7 @@ function PlexSettingsEditor({ initial }: Readonly<{ initial: PlexSettings }>) {
           </label>
           <Input
             id="plex-base-url"
-            placeholder="http://plex:32400"
+            placeholder="http://127.0.0.1:32400"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             className="max-w-md font-mono"
