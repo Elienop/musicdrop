@@ -31,13 +31,13 @@ from app.models.config_editor import (
 router = APIRouter(tags=["config"])
 
 
-@router.get("/config", response_model=BeetsConfigSnapshot)
+@router.get("/config")
 def get_config(request: Request) -> BeetsConfigSnapshot:
     handle: LibraryHandle = request.app.state.beets_library
     return build_config_snapshot(handle)
 
 
-@router.post("/config/validate", response_model=ValidateResponse)
+@router.post("/config/validate")
 def validate_config(req: ValidateRequest) -> ValidateResponse:
     """Cheap lint pass — never writes. Returns 200 even on errors so the
     CodeMirror async lint source can display them inline."""
@@ -59,7 +59,7 @@ def validate_config(req: ValidateRequest) -> ValidateResponse:
     return ValidateResponse(errors=validate_known_keys(data))
 
 
-@router.post("/config/save", response_model=BeetsConfigSnapshot)
+@router.post("/config/save")
 def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
     """Persist the user-submitted YAML to disk after CAS + schema checks.
 
@@ -72,7 +72,7 @@ def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
     return save_config_op(handle, req)
 
 
-@router.get("/config/naming", response_model=NamingConfig)
+@router.get("/config/naming")
 def get_naming(request: Request) -> NamingConfig:
     """Current ``paths:``/``replace:`` split into rows, with live previews."""
     handle: LibraryHandle = request.app.state.beets_library
@@ -84,7 +84,7 @@ def get_naming(request: Request) -> NamingConfig:
     return cfg.model_copy(update={"previews": rendered, "replace_errors": replace_errors})
 
 
-@router.post("/config/naming/preview", response_model=NamingPreviewResponse)
+@router.post("/config/naming/preview")
 def preview_naming(req: NamingPreviewRequest, request: Request) -> NamingPreviewResponse:
     """Pure render of draft rules + replace against auto-picked samples. Read-only."""
     handle: LibraryHandle = request.app.state.beets_library
@@ -92,7 +92,7 @@ def preview_naming(req: NamingPreviewRequest, request: Request) -> NamingPreview
     return NamingPreviewResponse(rendered=rendered, replace_errors=replace_errors)
 
 
-@router.post("/config/naming/save", response_model=BeetsConfigSnapshot)
+@router.post("/config/naming/save")
 def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSnapshot:
     """Write ``paths:``/``replace:`` back into config.yaml (CAS, 409/422). Apply
     is the existing ``POST /api/config/apply``."""
@@ -100,7 +100,7 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
     return save_naming(handle, req)
 
 
-@router.post("/config/apply", response_model=BeetsConfigSnapshot)
+@router.post("/config/apply")
 async def apply_config(request: Request) -> BeetsConfigSnapshot:
     """Reload beets in-process after a Save, swapping ``app.state.beets_library``.
 

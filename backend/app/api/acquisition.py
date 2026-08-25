@@ -41,7 +41,7 @@ from app.wire import AmbiguousDisplayName, resolve_display_path
 router = APIRouter(tags=["acquisition"])
 
 
-@router.get("/acquisition/status", response_model=AcquisitionQueueStatus)
+@router.get("/acquisition/status")
 async def get_acquisition_status(request: Request) -> AcquisitionQueueStatus:
     inbox_dir = getattr(request.app.state, "inbox_dir", None)
     inbox_pending = (
@@ -64,7 +64,7 @@ async def get_acquisition_status(request: Request) -> AcquisitionQueueStatus:
     return snapshot
 
 
-@router.post("/acquisition/review-inbox", response_model=ReviewInboxResponse)
+@router.post("/acquisition/review-inbox")
 async def review_inbox(
     request: Request,
     reg: Annotated[ImportJobRegistry, Depends(get_registry)],
@@ -119,7 +119,7 @@ async def review_inbox(
     return ReviewInboxResponse(started=True, job_id=job_id, pending=pending, in_flight=in_flight)
 
 
-@router.get("/acquisition/inbox/items", response_model=InboxListing)
+@router.get("/acquisition/inbox/items")
 async def list_inbox_items(request: Request) -> InboxListing:
     """The inbox backlog — top-level folders awaiting review, source-agnostic.
 
@@ -140,7 +140,7 @@ async def list_inbox_items(request: Request) -> InboxListing:
     return InboxListing(items=items)
 
 
-@router.post("/acquisition/inbox/items/import", response_model=ReviewInboxResponse)
+@router.post("/acquisition/inbox/items/import")
 async def import_inbox_item(
     body: ImportInboxItemRequest,
     request: Request,

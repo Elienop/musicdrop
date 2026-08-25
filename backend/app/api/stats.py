@@ -13,7 +13,7 @@ from app.models.stats import LibraryStatsResponse
 router = APIRouter(tags=["stats"])
 
 
-@router.get("/stats", response_model=LibraryStatsResponse)
+@router.get("/stats")
 async def get_stats(
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> LibraryStatsResponse:

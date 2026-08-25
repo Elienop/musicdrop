@@ -10,7 +10,7 @@ from app.models.search import SearchEntity, SearchResults, TypedSearchPage
 router = APIRouter(tags=["search"])
 
 
-@router.get("/search", response_model=SearchResults | TypedSearchPage)
+@router.get("/search")
 async def search_endpoint(
     handle: Annotated[LibraryHandle, Depends(get_library)],
     # Empty q is allowed (no min_length): a blank term returns empty results

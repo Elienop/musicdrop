@@ -70,7 +70,7 @@ def get_cover_thumb_cache(request: Request) -> CoverThumbCache:
     return cache
 
 
-@router.get("/albums", response_model=AlbumPage)
+@router.get("/albums")
 async def list_albums_endpoint(
     handle: Annotated[LibraryHandle, Depends(get_library)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
@@ -84,7 +84,7 @@ async def list_albums_endpoint(
     return AlbumPage(items=items, total=total, limit=limit, offset=offset)
 
 
-@router.get("/albums/{album_id}", response_model=AlbumDetail)
+@router.get("/albums/{album_id}")
 async def get_album_detail_endpoint(
     album_id: int,
     handle: Annotated[LibraryHandle, Depends(get_library)],
@@ -95,7 +95,7 @@ async def get_album_detail_endpoint(
     return detail
 
 
-@router.get("/albums/{album_id}/missing", response_model=AlbumMissingReport)
+@router.get("/albums/{album_id}/missing")
 async def get_album_missing_endpoint(
     album_id: int,
     handle: Annotated[LibraryHandle, Depends(get_library)],
@@ -104,7 +104,7 @@ async def get_album_missing_endpoint(
     return await missing_report_op(handle.lib, album_id)
 
 
-@router.post("/albums/{album_id}/edit/preview", response_model=AlbumEditPreview)
+@router.post("/albums/{album_id}/edit/preview")
 async def preview_album_edit_endpoint(
     album_id: int,
     payload: AlbumEditRequest,
@@ -115,7 +115,7 @@ async def preview_album_edit_endpoint(
     return await preview_album_edit_op(request, album_id, payload)
 
 
-@router.post("/albums/{album_id}/edit", response_model=AlbumEditResult)
+@router.post("/albums/{album_id}/edit")
 async def edit_album_endpoint(
     album_id: int,
     payload: AlbumEditRequest,
@@ -234,7 +234,6 @@ async def fetch_album_cover_endpoint(
 
 @router.post(
     "/albums/{album_id}/cover",
-    response_model=CoverInstallResult,
 )
 async def install_album_cover_endpoint(
     album_id: int,
@@ -259,7 +258,7 @@ async def install_album_cover_endpoint(
     return result
 
 
-@router.post("/albums/{album_id}/lyrics/fetch", response_model=LyricsBackfillStatus)
+@router.post("/albums/{album_id}/lyrics/fetch")
 async def fetch_album_lyrics_endpoint(
     album_id: int,
     request: Request,
@@ -272,7 +271,7 @@ async def fetch_album_lyrics_endpoint(
     )
 
 
-@router.delete("/albums/{album_id}", response_model=DeleteResult)
+@router.delete("/albums/{album_id}")
 async def delete_album_endpoint(album_id: int, request: Request) -> DeleteResult:
     """Move the album's whole folder to Trash (reversible) and drop it from the
     library. 404 unknown album; 409 while a library job is running."""

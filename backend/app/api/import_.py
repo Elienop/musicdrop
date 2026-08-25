@@ -37,7 +37,7 @@ from app.models.import_models import (
 router = APIRouter(tags=["import"])
 
 
-@router.get("/imports/active", response_model=ActiveImportStatus)
+@router.get("/imports/active")
 async def get_active_import(
     reg: Annotated[ImportJobRegistry, Depends(get_registry)],
 ) -> ActiveImportStatus:
@@ -88,7 +88,7 @@ def ensure_import_can_start(request: Request) -> None:
         )
 
 
-@router.post("/import", response_model=StartImportResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post("/import", status_code=status.HTTP_202_ACCEPTED)
 async def start_import(
     body: StartImportRequest,
     request: Request,
@@ -108,7 +108,7 @@ async def start_import(
     return StartImportResponse(job_id=job_id)
 
 
-@router.get("/import/{job_id}", response_model=ImportJobState)
+@router.get("/import/{job_id}")
 async def get_import_state(
     job_id: str, reg: Annotated[ImportJobRegistry, Depends(get_registry)]
 ) -> ImportJobState:
@@ -120,7 +120,7 @@ async def get_import_state(
         ) from None
 
 
-@router.get("/import/{job_id}/albums/{index}", response_model=Candidate)
+@router.get("/import/{job_id}/albums/{index}")
 async def get_import_album(
     job_id: str,
     index: Annotated[int, Path(ge=0)],
@@ -172,7 +172,6 @@ async def get_import_album_cover(
 
 @router.get(
     "/import/{job_id}/albums/{index}/duplicates",
-    response_model=DuplicatesCheckResponse,
 )
 async def get_import_album_duplicates(
     job_id: str,
@@ -249,7 +248,7 @@ async def post_import_choice(
         ) from None
 
 
-@router.get("/import/{job_id}/albums/{index}/duplicate", response_model=DuplicatePrompt)
+@router.get("/import/{job_id}/albums/{index}/duplicate")
 async def get_import_duplicate(
     job_id: str,
     index: Annotated[int, Path(ge=0)],

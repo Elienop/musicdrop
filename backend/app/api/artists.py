@@ -154,14 +154,14 @@ def _inline_grace_seconds(app: object) -> float:
     return float(getattr(app_settings, "artist_image_inline_grace_seconds", 1.5))
 
 
-@router.get("/artists", response_model=list[Artist])
+@router.get("/artists")
 async def list_artists_endpoint(
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> list[Artist]:
     return await run_in_threadpool(list_artists, handle.lib)
 
 
-@router.post("/artists/rename/preview", response_model=ArtistRenamePreview)
+@router.post("/artists/rename/preview")
 async def preview_artist_rename_endpoint(
     payload: ArtistRenameRequest,
     request: Request,
@@ -174,7 +174,7 @@ async def preview_artist_rename_endpoint(
     return await preview_artist_rename_op(request, payload)
 
 
-@router.post("/artists/rename", response_model=ArtistRenameResult)
+@router.post("/artists/rename")
 async def rename_artist_endpoint(
     payload: ArtistRenameRequest,
     request: Request,
@@ -393,14 +393,14 @@ async def get_artist_image_endpoint(
     return await _serve_full(request, cache, name, image_bytes, mime)
 
 
-@router.get("/artists/image/settings", response_model=ArtistImageSettings)
+@router.get("/artists/image/settings")
 async def get_artist_image_settings_endpoint(
     toggle: Annotated[ArtistImageToggle, Depends(get_artist_image_toggle)],
 ) -> ArtistImageSettings:
     return ArtistImageSettings(enabled=toggle.is_enabled())
 
 
-@router.put("/artists/image/settings", response_model=ArtistImageSettings)
+@router.put("/artists/image/settings")
 async def set_artist_image_settings_endpoint(
     body: ArtistImageSettings,
     toggle: Annotated[ArtistImageToggle, Depends(get_artist_image_toggle)],
@@ -436,7 +436,7 @@ def _source_option(source_id: str, blocked_because: str | None) -> ArtistImageSo
     )
 
 
-@router.get("/artists/image/sources", response_model=ArtistImageSourceList)
+@router.get("/artists/image/sources")
 async def list_artist_image_sources_endpoint(
     name: Annotated[str, Query(min_length=1)],
     sources: Annotated[ArtistImageSources, Depends(get_artist_image_sources)],
@@ -630,7 +630,6 @@ async def fetch_artist_image_endpoint(
 
 @router.post(
     "/artists/image/override",
-    response_model=ArtistImageOverrideResult,
     responses={409: _ART_BUSY_RESPONSE},
 )
 async def upload_artist_image_override_endpoint(
@@ -669,7 +668,6 @@ async def upload_artist_image_override_endpoint(
 
 @router.post(
     "/artists/image/override/from-url",
-    response_model=ArtistImageOverrideResult,
     responses={409: _ART_BUSY_RESPONSE},
 )
 async def set_artist_image_override_from_url_endpoint(
@@ -717,7 +715,6 @@ def _reset_slots(cache: ArtistImageCache, name: str) -> tuple[bool, bool]:
 
 @router.post(
     "/artists/image/reset",
-    response_model=ArtistImageResetResult,
     # The app-wide Origin guard is invisible in OpenAPI - middleware emits no
     # security scheme - so a status this route really returns would otherwise be
     # undeclared, and the generated client would be typed as if it could not
@@ -823,14 +820,14 @@ def _gate_artist_art_busy() -> None:
         )
 
 
-@router.get("/artists/art/settings", response_model=ArtistArtWriteSettings)
+@router.get("/artists/art/settings")
 async def get_artist_art_settings(
     toggle: Annotated[ArtistArtWriteToggle, Depends(get_artist_art_write_toggle)],
 ) -> ArtistArtWriteSettings:
     return ArtistArtWriteSettings(enabled=toggle.is_enabled())
 
 
-@router.put("/artists/art/settings", response_model=ArtistArtWriteSettings)
+@router.put("/artists/art/settings")
 async def set_artist_art_settings(
     body: ArtistArtWriteSettings,
     toggle: Annotated[ArtistArtWriteToggle, Depends(get_artist_art_write_toggle)],
@@ -838,7 +835,7 @@ async def set_artist_art_settings(
     return ArtistArtWriteSettings(enabled=toggle.set_enabled(body.enabled))
 
 
-@router.post("/artists/art/apply", response_model=ArtistArtBackfillStatus)
+@router.post("/artists/art/apply")
 async def apply_artist_art(
     request: Request,
     name: Annotated[str, Query(min_length=1)],
@@ -859,7 +856,7 @@ async def apply_artist_art(
     return reg.state()
 
 
-@router.post("/artists/art/backfill", response_model=ArtistArtBackfillStatus)
+@router.post("/artists/art/backfill")
 async def start_artist_art_backfill(
     request: Request,
     toggle: Annotated[ArtistArtWriteToggle, Depends(get_artist_art_write_toggle)],
@@ -879,14 +876,14 @@ async def start_artist_art_backfill(
     return reg.state()
 
 
-@router.get("/artists/art/backfill", response_model=ArtistArtBackfillStatus)
+@router.get("/artists/art/backfill")
 async def get_artist_art_backfill_status(
     reg: Annotated[ArtistArtBackfillRegistry, Depends(get_artist_art_backfill)],
 ) -> ArtistArtBackfillStatus:
     return reg.state()
 
 
-@router.post("/artists/art/backfill/stop", response_model=ArtistArtBackfillStatus)
+@router.post("/artists/art/backfill/stop")
 async def stop_artist_art_backfill(
     reg: Annotated[ArtistArtBackfillRegistry, Depends(get_artist_art_backfill)],
 ) -> ArtistArtBackfillStatus:
@@ -922,7 +919,7 @@ def _start(
     )
 
 
-@router.delete("/artists", response_model=DeleteResult)
+@router.delete("/artists")
 async def delete_artist_endpoint(
     request: Request,
     name: Annotated[str, Query(min_length=1)],

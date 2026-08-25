@@ -66,7 +66,7 @@ def _child_or_404(app: Any, folder: str) -> tuple[LibraryHandle, Path]:
         raise HTTPException(status_code=404, detail="Not in Trash") from None
 
 
-@router.get("/trash", response_model=TrashListing)
+@router.get("/trash")
 async def list_trash(request: Request) -> TrashListing:
     """List the albums sitting in Trash (read off disk; no gate)."""
     app = request.app
@@ -76,7 +76,7 @@ async def list_trash(request: Request) -> TrashListing:
     return TrashListing(albums=albums, trash_path=str(trash_dir))
 
 
-@router.post("/trash/restore", response_model=RestoreResult)
+@router.post("/trash/restore")
 async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult:
     """Re-import a trashed folder as-is. 409 if busy, 404 if not in Trash."""
     app = request.app
@@ -94,7 +94,7 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
             raise HTTPException(status_code=500, detail=f"Restore failed: {exc}") from exc
 
 
-@router.delete("/trash", response_model=EmptyResult)
+@router.delete("/trash")
 async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> EmptyResult:
     """Permanently remove one trashed album folder. 409 if busy, 404 if not in Trash."""
     app = request.app
@@ -106,7 +106,7 @@ async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> 
     return result
 
 
-@router.delete("/trash/all", response_model=EmptyResult)
+@router.delete("/trash/all")
 async def empty_trash_all(request: Request) -> EmptyResult:
     """Permanently clear the whole Trash dir. 409 if busy."""
     app = request.app

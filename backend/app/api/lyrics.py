@@ -23,14 +23,14 @@ from app.models.lyrics import LyricsBackfillStatus, LyricsCoverage
 router = APIRouter(tags=["lyrics"])
 
 
-@router.get("/lyrics/coverage", response_model=LyricsCoverage)
+@router.get("/lyrics/coverage")
 async def get_lyrics_coverage(request: Request) -> LyricsCoverage:
     """Fraction of library tracks that already carry lyrics. Read-only."""
     handle = request.app.state.beets_library
     return await run_in_threadpool(lyrics_coverage, handle.lib)
 
 
-@router.post("/lyrics/backfill", response_model=LyricsBackfillStatus)
+@router.post("/lyrics/backfill")
 async def start_lyrics_backfill(
     request: Request,
     reg: Annotated[LyricsBackfillRegistry, Depends(get_lyrics_backfill)],
@@ -94,7 +94,7 @@ async def start_lyrics_backfill(
     return reg.state()
 
 
-@router.get("/lyrics/backfill", response_model=LyricsBackfillStatus)
+@router.get("/lyrics/backfill")
 async def get_lyrics_backfill_status(
     reg: Annotated[LyricsBackfillRegistry, Depends(get_lyrics_backfill)],
 ) -> LyricsBackfillStatus:
@@ -102,7 +102,7 @@ async def get_lyrics_backfill_status(
     return reg.state()
 
 
-@router.post("/lyrics/backfill/stop", response_model=LyricsBackfillStatus)
+@router.post("/lyrics/backfill/stop")
 async def stop_lyrics_backfill(
     reg: Annotated[LyricsBackfillRegistry, Depends(get_lyrics_backfill)],
 ) -> LyricsBackfillStatus:
