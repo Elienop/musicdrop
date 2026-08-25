@@ -12,7 +12,7 @@ import { ArtistImage } from "@/components/artists/ArtistImage";
  * wrapper div owns hover ring + clipping, the portrait owns the scale, and
  * focus is the shared focus-ring dialect on the link.
  */
-export function ArtistCard({ artist }: { artist: Artist }) {
+export function ArtistCard({ artist }: Readonly<{ artist: Artist }>) {
   // Empty names shouldn't reach here (backend excludes them) but guard anyway.
   const displayName = artist.name || "Unknown artist";
   return (

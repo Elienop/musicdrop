@@ -16,10 +16,10 @@ import { Button } from "@/components/ui/button";
 export function AlreadyInLibrary({
   existing,
   blurb,
-}: {
+}: Readonly<{
   existing: ExistingAlbum[];
   blurb: string;
-}) {
+}> ) {
   return (
     <section aria-label="Already in your library" className="flex flex-col gap-3">
       <SectionLabel>Already in your library</SectionLabel>
@@ -48,7 +48,7 @@ export function AlreadyInLibrary({
 }
 
 /** The library copy's own tracks: number · title · quality. */
-function ExistingTracklist({ tracks }: { tracks: ExistingAlbum["tracks"] }) {
+function ExistingTracklist({ tracks }: Readonly<{ tracks: ExistingAlbum["tracks"] }>) {
   return (
     <ol className="border-border divide-border divide-y rounded-lg border text-sm">
       {tracks.map((t, i) => (

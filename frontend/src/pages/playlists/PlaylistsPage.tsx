@@ -86,7 +86,7 @@ export function PlaylistsPage() {
  * truncating middle (min-w-0 + flex-1) so a long name never pushes the status
  * out of view. A playlist with no Plex state at all shows no badge — a muted
  * "Not synced" on every quiet row would be noise (see playlistSyncStatus). */
-function PlaylistRow({ playlist }: { playlist: Playlist }) {
+function PlaylistRow({ playlist }: Readonly<{ playlist: Playlist }>) {
   const status = playlistSyncStatus(playlist);
   return (
     <Link

@@ -292,7 +292,7 @@ function matchAnnouncement(breakdown: MatchBreakdown | null): string {
  *    A partial (some by file, some by tags) stays in the muted tier: a handful
  *    of tracks Plex holds under a different copy is ordinary, so escalating it
  *    would train the user to ignore the box that matters. */
-function MatchSummary({ playlist }: { playlist: PlaylistDetail }) {
+function MatchSummary({ playlist }: Readonly<{ playlist: PlaylistDetail }>) {
   const breakdown = matchBreakdown(playlist);
   if (breakdown === null) {
     return null;
@@ -402,7 +402,7 @@ export function PlaylistDetailPage() {
   return <PlaylistDetailView playlist={data} />;
 }
 
-function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
+function PlaylistDetailView({ playlist }: Readonly<{ playlist: PlaylistDetail }>) {
   const navigate = useNavigate();
   const rename = useRenamePlaylist(playlist.id);
   const remove = useDeletePlaylist();
@@ -1112,10 +1112,10 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
 function ArtworkEditPanel({
   playlist,
   onClose,
-}: {
+}: Readonly<{
   playlist: PlaylistDetail;
   onClose: () => void;
-}) {
+}> ) {
   const upload = useUploadPlaylistArtwork(playlist.id);
   const removeArtwork = useDeletePlaylistArtwork(playlist.id);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1381,9 +1381,9 @@ const PlaylistTrackRow = memo(function PlaylistTrackRow({
 
 function EmptyTracks({
   register,
-}: {
+}: Readonly<{
   register: (key: string, el: HTMLElement | null) => void;
-}) {
+}> ) {
   return (
     // The wrapper (not the inner copy) is the focus target the remove-last-
     // track flow lands on — registered under the "empty" key so the shared

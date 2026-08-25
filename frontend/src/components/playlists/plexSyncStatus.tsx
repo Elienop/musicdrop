@@ -176,7 +176,7 @@ export function adminSyncStatus(playlist: PlexPlaylistView): SyncStatus {
  * the same badge markup. `label` stays the non-color carrier of meaning — it is
  * what gets queried on the list rows; the icon and tone are only emphasis.
  */
-export function StatusLine({ status }: { status: SyncStatus }) {
+export function StatusLine({ status }: Readonly<{ status: SyncStatus }>) {
   const { label, tone } = status;
   const Icon =
     tone === "success"

@@ -179,7 +179,7 @@ export interface AppSidebarProps {
   badges?: Partial<Record<NavConcept, number>>;
 }
 
-export function AppSidebar({ badges }: AppSidebarProps) {
+export function AppSidebar({ badges }: Readonly<AppSidebarProps>) {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const activeSection = sectionForPathname(location.pathname, location.state);

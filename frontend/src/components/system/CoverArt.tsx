@@ -25,7 +25,7 @@ export function CoverArt({
   alt = "",
   className,
   assetKey,
-}: {
+}: Readonly<{
   src: string | null;
   alt?: string;
   className?: string;
@@ -35,7 +35,7 @@ export function CoverArt({
    * for covers with no library identity (import candidates) — they then follow
    * the global bump, as every cover did before. */
   assetKey?: string;
-}) {
+}> ) {
   const [failed, setFailed] = useState(false);
   const assetVersion = useAssetVersion(assetKey);
 

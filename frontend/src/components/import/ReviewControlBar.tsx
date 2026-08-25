@@ -37,7 +37,7 @@ export function ReviewControlBar({
   checking = false,
   hint,
   messages,
-}: {
+}: Readonly<{
   decisions: BarDecision[];
   primary: BarPrimary | null;
   rescan: { onClick: () => void; pending: boolean; disabled: boolean };
@@ -52,7 +52,7 @@ export function ReviewControlBar({
   checking?: boolean;
   hint?: string;
   messages?: React.ReactNode;
-}) {
+}> ) {
   const hintId = useId();
   const formId = useId();
   const [searchOpen, setSearchOpen] = useState(search?.defaultOpen ?? false);

@@ -89,12 +89,12 @@ export function AlphabetIndex({
   pageSize,
   offset,
   onJump,
-}: {
+}: Readonly<{
   artists: Artist[];
   pageSize: number;
   offset: number;
   onJump: (offset: number) => void;
-}) {
+}> ) {
   const firstIndex = useMemo(() => {
     const map = new Map<string, number>();
     artists.forEach((artist, index) => {

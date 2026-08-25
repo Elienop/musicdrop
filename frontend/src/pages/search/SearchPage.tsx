@@ -43,7 +43,7 @@ export function SearchPage() {
   return <SectionedSearchView q={q} />;
 }
 
-function SectionedSearchView({ q }: { q: string }) {
+function SectionedSearchView({ q }: Readonly<{ q: string }>) {
   const [searchParams] = useSearchParams();
   const { data, isPending, isError, isFetching, isPlaceholderData, refetch } =
     useSearch(q);
@@ -209,7 +209,7 @@ const TYPE_NOUN: Record<SearchType, string> = {
   tracks: "tracks",
 };
 
-function TypedSearchView({ q, type }: { q: string; type: SearchType }) {
+function TypedSearchView({ q, type }: Readonly<{ q: string; type: SearchType }>) {
   const [searchParams, setSearchParams] = useSearchParams();
   const offset = Math.max(0, Number(searchParams.get("offset") ?? "0") || 0);
   const { data, isPending, isError, isFetching, isPlaceholderData, refetch } =
@@ -372,13 +372,13 @@ function ResultSection({
   total,
   viewAllTo,
   children,
-}: {
+}: Readonly<{
   title: string;
   shown: number;
   total: number;
   viewAllTo?: string;
   children: React.ReactNode;
-}) {
+}> ) {
   return (
     <section className="flex flex-col gap-4" aria-label={title}>
       <div className="flex items-baseline gap-3">
@@ -411,7 +411,7 @@ function ResultSection({
  * state) — so the link's accessible name is just the title. Singletons (no
  * `album_id`) render the title as plain text but keep the same row shape.
  */
-function TrackRow({ track, from }: { track: SearchTrack; from: AlbumOrigin }) {
+function TrackRow({ track, from }: Readonly<{ track: SearchTrack; from: AlbumOrigin }>) {
   return (
     <div className="flex min-w-0 items-center gap-3 px-4 py-3">
       <div className="flex min-w-0 flex-1 flex-col">

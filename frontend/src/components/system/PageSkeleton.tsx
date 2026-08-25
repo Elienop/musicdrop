@@ -12,10 +12,10 @@ import type { ReactNode } from "react";
 export function PageSkeleton({
   announce,
   children,
-}: {
+}: Readonly<{
   announce: string;
   children: ReactNode;
-}) {
+}> ) {
   return (
     <>
       <p className="sr-only" role="status">

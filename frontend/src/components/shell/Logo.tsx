@@ -10,7 +10,7 @@
  */
 
 /** Full "[bars]usicDrop" lockup — expanded sidebar + mobile drawer. */
-export function LogoWordmark({ className }: { className?: string }) {
+export function LogoWordmark({ className }: Readonly<{ className?: string }>) {
   return (
     <svg viewBox="0 0 415.31 97.49" aria-hidden="true" className={className}>
       {/* The translucent accent panel behind "Drop". */}
@@ -44,7 +44,7 @@ export function LogoWordmark({ className }: { className?: string }) {
 }
 
 /** Just the three bars — the compact mark for the collapsed rail. */
-export function LogoMark({ className }: { className?: string }) {
+export function LogoMark({ className }: Readonly<{ className?: string }>) {
   return (
     <svg viewBox="0 0 55.91 66.5" aria-hidden="true" className={className}>
       <g className="fill-primary">

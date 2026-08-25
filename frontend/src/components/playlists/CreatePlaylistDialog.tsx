@@ -23,11 +23,11 @@ export function CreatePlaylistDialog({
   open,
   onOpenChange,
   onCreated,
-}: {
+}: Readonly<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated?: (playlist: Playlist) => void;
-}) {
+}> ) {
   const [name, setName] = useState("");
   const create = useCreatePlaylist();
   const trimmed = name.trim();

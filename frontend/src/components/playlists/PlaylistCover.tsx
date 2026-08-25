@@ -46,10 +46,10 @@ function tileSpan(count: number, index: number): string {
 export function PlaylistCover({
   playlist,
   className,
-}: {
+}: Readonly<{
   playlist: PlaylistCoverSource;
   className?: string;
-}) {
+}> ) {
   const { id, artwork_hash, cover_album_ids } = playlist;
 
   if (artwork_hash) {

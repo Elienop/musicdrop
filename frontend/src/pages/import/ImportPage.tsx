@@ -247,7 +247,7 @@ function ImportEntry() {
 }
 
 /** The live run: one continuous, throttled spoken status + the phase view. */
-function ImportRun({ jobId }: { jobId: string }) {
+function ImportRun({ jobId }: Readonly<{ jobId: string }>) {
   const { data, isPending, isError, error, refetch } = useImportJob(jobId);
   const notFound = error instanceof ImportJobNotFoundError;
   const queryClient = useQueryClient();
@@ -346,7 +346,7 @@ function ImportRun({ jobId }: { jobId: string }) {
 }
 
 /** Shared chrome for every run view: the page header + a Start-over action. */
-function ImportShell({ children }: { children: React.ReactNode }) {
+function ImportShell({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <PageBody>
       <PageHeader
@@ -363,7 +363,7 @@ function ImportShell({ children }: { children: React.ReactNode }) {
 }
 
 /** scanning/reviewing/applying: a working line + the growing feed. */
-function LiveFeed({ state, jobId }: { state: ImportJobState; jobId: string }) {
+function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: string }>) {
   const working = state.phase === "scanning" || state.phase === "applying";
   const scanningEmpty = working && state.albums.length === 0;
   // `progress` has no duplicate counter (backend), so derive the
@@ -413,7 +413,7 @@ function LiveFeed({ state, jobId }: { state: ImportJobState; jobId: string }) {
  * stats dialect), the current folder, Pause, and the Review hand-off. Rides
  * the existing 1s job poll. A paused sweep finishes its current album, then
  * the job goes done with a "- paused" summary and `sweep.paused` stays true. */
-function SweepRun({ state, jobId }: { state: ImportJobState; jobId: string }) {
+function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: string }>) {
   const pause = usePauseSweep(jobId);
   const sweep = state.sweep;
   if (sweep == null) {
@@ -493,10 +493,10 @@ function SweepRun({ state, jobId }: { state: ImportJobState; jobId: string }) {
 function FeedList({
   albums,
   jobId,
-}: {
+}: Readonly<{
   albums: ImportAlbumSummary[];
   jobId: string;
-}) {
+}> ) {
   // Pin the album awaiting action to the top — in sequential review it's the one
   // thing to act on (and always the latest), so its Review/Resolve button stays
   // in view without scrolling. A parked duplicate awaits action just the same.
@@ -529,10 +529,10 @@ function FeedList({
 function FeedRow({
   album,
   jobId,
-}: {
+}: Readonly<{
   album: ImportAlbumSummary;
   jobId: string;
-}) {
+}> ) {
   const needsReview = album.status === "needs_review";
   const needsDup = album.status === "needs_dup_resolution";
   // Final fallback is non-empty: `album` may be null and `folder` may be ""/"/",
@@ -601,7 +601,7 @@ function FeedRow({
  * backend gates the flag) flags the failure destructively; else a row that DID
  * land (an album_id arrived) reads as the positive "Imported" chip, upgrading a
  * user-decided Apply from the vague "Decided"; else the per-status label. */
-function StatusBadge({ album }: { album: ImportAlbumSummary }) {
+function StatusBadge({ album }: Readonly<{ album: ImportAlbumSummary }>) {
   if (album.did_not_land) {
     return (
       <Badge variant="destructive" className="shrink-0">
@@ -646,7 +646,7 @@ function folderName(folder: string): string {
 /** done: a legible outcome — imported/skipped counts (counting auto-applied
  * albums) + the feed list, whose applied rows now link straight to their
  * library pages (replaces the old blanket "View in library", spec §1). */
-function JobDone({ state, jobId }: { state: ImportJobState; jobId: string }) {
+function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: string }>) {
   const { applied, skipped, not_landed } = state.progress;
   // Own up to albums that were decided/applied but never landed in the library
   // (the session died before beets ran task.add) — only ever nonzero here on a
@@ -667,7 +667,7 @@ function JobDone({ state, jobId }: { state: ImportJobState; jobId: string }) {
 /** failed: the worker's error + a way to start over. An outcome notice on the
  * EmptyState recipe (the recovery is a navigation, so ErrorState's mandatory
  * Retry would mislead — there is nothing to re-run). */
-function JobFailed({ error }: { error: string | null }) {
+function JobFailed({ error }: Readonly<{ error: string | null }>) {
   return (
     <EmptyState
       bordered
@@ -705,7 +705,7 @@ function JobNotFound() {
 
 /** Transient error fetching the job state (not the same as a failed import) —
  * the one genuinely retryable error, on the shared ErrorState. */
-function JobError({ onRetry }: { onRetry: () => void }) {
+function JobError({ onRetry }: Readonly<{ onRetry: () => void }>) {
   return (
     <ErrorState
       message="Couldn’t load the import. The backend didn’t respond. Try again."

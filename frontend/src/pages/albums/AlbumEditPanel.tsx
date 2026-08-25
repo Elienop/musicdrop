@@ -79,7 +79,7 @@ function initialDraft(album: AlbumDetail): Draft {
   };
 }
 
-export function AlbumEditPanel({ album, onClose }: { album: AlbumDetail; onClose: () => void }) {
+export function AlbumEditPanel({ album, onClose }: Readonly<{ album: AlbumDetail; onClose: () => void }>) {
   const [draft, setDraft] = useState<Draft>(() => initialDraft(album));
   const [preview, setPreview] = useState<AlbumEditPreview | null>(null);
   const previewMutation = usePreviewAlbumEdit(album.id);
@@ -200,7 +200,7 @@ export function AlbumEditPanel({ album, onClose }: { album: AlbumDetail; onClose
 /** The full before -> after diff for a pending edit: album-header fields, the
  * per-track changes, a move warning when files will be relocated, and the
  * renames the apply will refuse because their destination is already taken. */
-function PreviewDiff({ preview }: { preview: AlbumEditPreview }) {
+function PreviewDiff({ preview }: Readonly<{ preview: AlbumEditPreview }>) {
   const before = preview.album_before;
   const after = preview.album_after;
   const fieldRows = preview.changed_fields.map((f) => ({
@@ -258,7 +258,7 @@ function PreviewDiff({ preview }: { preview: AlbumEditPreview }) {
 
 /** Every changed track, current -> proposed (track #, title, artist). Mirrors
  * the import review's TrackDiff (# / Now / After columns). */
-function TrackDiffTable({ tracks }: { tracks: EditTrackChange[] }) {
+function TrackDiffTable({ tracks }: Readonly<{ tracks: EditTrackChange[] }>) {
   return (
     <div className="flex flex-col gap-2">
       <SectionLabel>Tracks · {tracks.length}</SectionLabel>
@@ -301,7 +301,7 @@ function TrackDiffTable({ tracks }: { tracks: EditTrackChange[] }) {
  * `count` is the move plan, which the backend keeps free of refused renames, so
  * the two counts partition the pending moves and this headline can never read a
  * refusal as a file that will move. */
-function MoveNotice({ count, refused }: { count: number; refused: number }) {
+function MoveNotice({ count, refused }: Readonly<{ count: number; refused: number }>) {
   return (
     <div
       role="alert"
@@ -341,7 +341,7 @@ function MoveNotice({ count, refused }: { count: number; refused: number }) {
  * and the "N move failures" banner afterwards reads as fresh bad news rather
  * than the outcome just predicted. Reorganize refuses whole units and does
  * nothing to them, so its ConflictList must NOT carry this sentence. */
-function MoveRefusalList({ refusals }: { refusals: TrackMoveRefusal[] }) {
+function MoveRefusalList({ refusals }: Readonly<{ refusals: TrackMoveRefusal[] }>) {
   return (
     <div className="flex flex-col gap-1">
       <p className="text-muted-foreground text-xs">
@@ -406,9 +406,9 @@ function trackTag(track: number | null | undefined): string | null {
 /** The per-item outcome of an apply: counts + any failed tracks (never hidden). */
 function ApplyOutcome({
   result,
-}: {
+}: Readonly<{
   result: components["schemas"]["AlbumEditResult"];
-}) {
+}> ) {
   const wrote = result.items.filter((i) => i.written).length;
   const moved = result.items.filter((i) => i.moved).length;
   const failures = result.items.filter((i) => Boolean(i.error));
@@ -467,14 +467,14 @@ function diffValue(v: string | number | null | undefined): string {
   return String(v);
 }
 
-function Field({ id, label, value, onChange, disabled, inputMode }: {
+function Field({ id, label, value, onChange, disabled, inputMode }: Readonly<{
   id: string;
   label: string;
   value: string;
   onChange: (v: string) => void;
   disabled?: boolean;
   inputMode?: "numeric";
-}) {
+}> ) {
   return (
     <div className={cn("flex flex-col gap-1", disabled && "opacity-60")}>
       <label htmlFor={id} className="text-sm font-medium">{label}</label>

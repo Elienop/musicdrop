@@ -44,7 +44,7 @@ export function Pagination({
   busy = false,
   compact = false,
   label = "Pagination",
-}: {
+}: Readonly<{
   total: number;
   offset: number;
   limit: number;
@@ -52,7 +52,7 @@ export function Pagination({
   busy?: boolean;
   compact?: boolean;
   label?: string;
-}) {
+}> ) {
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const page = Math.min(totalPages, Math.floor(offset / limit) + 1);
   const canPrev = offset > 0;
@@ -322,13 +322,13 @@ function PageJumpInput({
   totalPages,
   onCommit,
   onCancel,
-}: {
+}: Readonly<{
   page: number;
   totalPages: number;
   /** The clamped 1-based page to go to, or null for "nothing to commit". */
   onCommit: (target: number | null) => void;
   onCancel: () => void;
-}) {
+}> ) {
   const [draft, setDraft] = useState(String(page));
 
   return (
@@ -383,10 +383,10 @@ function PageJumpInput({
 export function PageSizeSelect({
   value,
   onChange,
-}: {
+}: Readonly<{
   value: PageSize;
   onChange: (n: PageSize) => void;
-}) {
+}> ) {
   return (
     // The CandidateReview select anatomy: appearance-none + reserved right
     // padding + our own caret, because Blink draws the UA arrow flush

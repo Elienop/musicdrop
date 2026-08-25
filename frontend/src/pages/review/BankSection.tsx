@@ -422,14 +422,14 @@ function BankRow({
   onIgnore,
   onRemove,
   busy,
-}: {
+}: Readonly<{
   row: BankItemSummary;
   selected: boolean;
   onSelect: (checked: boolean) => void;
   onIgnore: () => void;
   onRemove: () => void;
   busy: boolean;
-}) {
+}> ) {
   const title = (row.album ?? lastSegment(row.folder)) || "Unknown album";
   const metaBits = [
     row.confidence != null ? `${Math.round(row.confidence)}%` : null,

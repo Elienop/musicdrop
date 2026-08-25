@@ -18,11 +18,11 @@ export function ErrorState({
   message,
   onRetry,
   variant = "hero",
-}: {
+}: Readonly<{
   message: string;
   onRetry: () => void;
   variant?: "hero" | "inline";
-}) {
+}> ) {
   if (variant === "inline") {
     return (
       <div

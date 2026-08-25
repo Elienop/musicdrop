@@ -35,11 +35,11 @@ type Pending = { objectUrl: string; blob: Blob; source: string | null };
  * the call site, so the guard travels with the component instead of depending
  * on every future caller remembering it; the unmount cleanup releases the
  * abandoned candidate's object URL on the way out. */
-export function ArtistImageEditPanel(props: {
+export function ArtistImageEditPanel(props: Readonly<{
   name: string;
   onSaved: () => void;
   onClose: () => void;
-}) {
+}> ) {
   return <ArtistImageEditPanelForArtist key={props.name} {...props} />;
 }
 
@@ -58,11 +58,11 @@ function ArtistImageEditPanelForArtist({
   name,
   onSaved,
   onClose,
-}: {
+}: Readonly<{
   name: string;
   onSaved: () => void;
   onClose: () => void;
-}) {
+}> ) {
   const [pending, setPending] = useState<Pending | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
   // ONE outcome channel for every non-error result — a source answering
@@ -417,7 +417,7 @@ function ArtistImageEditPanelForArtist({
 }
 
 /** Inline error notice (matches CoverEditPanel's house recipe). */
-function Notice({ children }: { children: React.ReactNode }) {
+function Notice({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <div
       role="alert"

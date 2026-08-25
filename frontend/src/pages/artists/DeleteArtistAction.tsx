@@ -23,10 +23,10 @@ import {
 export function DeleteArtistAction({
   name,
   albumCount,
-}: {
+}: Readonly<{
   name: string;
   albumCount: number;
-}) {
+}> ) {
   const navigate = useNavigate();
   const del = useDeleteArtist();
   const [open, setOpen] = useState(false);

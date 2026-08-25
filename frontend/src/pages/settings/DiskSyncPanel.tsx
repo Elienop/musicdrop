@@ -48,7 +48,7 @@ function emptiedDetail(album: DiskSyncEmptiedAlbum): string {
 /** The per-item read failures a terminal job carries (label + reason) — mirrors
  * ReorganizeControl's FailureList so the user sees WHICH file could not be read
  * and WHY. */
-function FailureList({ failures }: { failures: DiskSyncReadError[] }) {
+function FailureList({ failures }: Readonly<{ failures: DiskSyncReadError[] }>) {
   return (
     <ul
       role="alert"
@@ -65,7 +65,7 @@ function FailureList({ failures }: { failures: DiskSyncReadError[] }) {
   );
 }
 
-function PlanView({ plan }: { plan: DiskSyncPlan }) {
+function PlanView({ plan }: Readonly<{ plan: DiskSyncPlan }>) {
   return (
     <div className="flex flex-col gap-2" aria-label="Disk sync preview">
       <p className="text-sm font-medium">{planHeadline(plan)}</p>

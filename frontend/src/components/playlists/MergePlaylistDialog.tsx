@@ -55,12 +55,12 @@ export function MergePlaylistDialog({
   open,
   onOpenChange,
   onMerged,
-}: {
+}: Readonly<{
   target: PlaylistDetail;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onMerged: (result: PlaylistMergeResult, sourceName: string) => void;
-}) {
+}> ) {
   // Disabled while closed: the dialog can be mounted ahead of being shown, and
   // the candidate list is only needed once there is a picker to fill. Same
   // shape as the `usePlaylist` call below, which is disabled on an empty id.

@@ -146,7 +146,7 @@ export function ArtistsPage() {
   );
 }
 
-function ArtistsGridSkeleton({ count }: { count: number }) {
+function ArtistsGridSkeleton({ count }: Readonly<{ count: number }>) {
   return (
     <ul className={GRID_CLASS}>
       {Array.from({ length: count }, (_, i) => (

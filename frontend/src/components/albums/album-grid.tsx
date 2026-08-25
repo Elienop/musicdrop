@@ -20,7 +20,7 @@ export const GRID_CLASS =
  * every drill-down page so the up-navigation looks identical. `to` is the
  * parent route; `label` names the destination (e.g. "Artists", "Radiohead").
  */
-export function BackLink({ to, label }: { to: string; label: string }) {
+export function BackLink({ to, label }: Readonly<{ to: string; label: string }>) {
   return (
     // `max-w-full` lets the button shrink within its container; the chevron
     // stays fixed (`shrink-0`) while a long label truncates rather than forcing
@@ -67,10 +67,10 @@ export function albumOriginFromState(state: unknown): AlbumOrigin | undefined {
 export function AlbumCard({
   album,
   from,
-}: {
+}: Readonly<{
   album: Album;
   from?: AlbumOrigin;
-}) {
+}> ) {
   return (
     <Link
       to={`/albums/${album.id}`}
@@ -103,7 +103,7 @@ export function AlbumCard({
   );
 }
 
-export function AlbumsGridSkeleton({ count }: { count: number }) {
+export function AlbumsGridSkeleton({ count }: Readonly<{ count: number }>) {
   return (
     <ul className={GRID_CLASS} aria-hidden="true">
       {Array.from({ length: count }, (_, i) => (

@@ -44,7 +44,7 @@ export function ArtistImage({
   decorative = false,
   version,
   size = "full",
-}: {
+}: Readonly<{
   name: string;
   className?: string;
   monogramClassName?: string;
@@ -58,7 +58,7 @@ export function ArtistImage({
    * multi-hundred-KB original is wasted bytes. Default `"full"`, which is what
    * the 384px detail hero needs. */
   size?: "full" | "thumb";
-}) {
+}> ) {
   const [failed, setFailed] = useState(false);
   // Scoped to THIS artist: a portrait saved for someone else in another tab
   // must not remount every card in the roster.

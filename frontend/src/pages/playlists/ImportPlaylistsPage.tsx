@@ -478,7 +478,7 @@ function PlaylistReview({
   chosenTrack,
   onUseSuggestion,
   onSearch,
-}: {
+}: Readonly<{
   playlist: PlaylistImportPreview;
   name: string;
   onRename: (value: string) => void;
@@ -486,7 +486,7 @@ function PlaylistReview({
   chosenTrack: (entry: ImportEntryPreview) => { title: string; artist: string } | null;
   onUseSuggestion: (position: number, itemId: number) => void;
   onSearch: (position: number) => void;
-}) {
+}> ) {
   const [view, setView] = useState<"attention" | "all">("attention");
   // Inline name editor (the detail-page rename idiom: pencil → input → save).
   // The committed value lives in page state (`names`); the draft is local while
@@ -630,13 +630,13 @@ function EntryRow({
   chosen,
   onUseSuggestion,
   onSearch,
-}: {
+}: Readonly<{
   entry: ImportEntryPreview;
   resolved: number | null;
   chosen: { title: string; artist: string } | null;
   onUseSuggestion: (itemId: number) => void;
   onSearch: () => void;
-}) {
+}> ) {
   const status = liveStatus(entry, resolved);
   const hasSuggestions = entry.suggestions.length > 0;
   return (

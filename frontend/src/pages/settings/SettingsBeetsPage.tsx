@@ -537,7 +537,7 @@ function Loader() {
 
 /** Same error surface as the L2 page — a destructive alert with the message,
  * rather than a generic React Query error that drops the page chrome. */
-function ErrorBanner({ err }: { err: unknown }) {
+function ErrorBanner({ err }: Readonly<{ err: unknown }>) {
   const message = err instanceof Error ? err.message : null;
   return (
     <section className="flex flex-col gap-6" aria-label="Beets configuration">
@@ -569,11 +569,11 @@ function ConfigStateBanner({
   state,
   jobActive,
   data,
-}: {
+}: Readonly<{
   state: PageState;
   jobActive: boolean;
   data: BeetsConfigSnapshot;
-}) {
+}> ) {
   if (state === "clean") {
     return null;
   }

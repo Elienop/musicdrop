@@ -40,12 +40,12 @@ export function StatusBanner({
   icon: Icon,
   action,
   children,
-}: {
+}: Readonly<{
   tone: "neutral" | "warning" | "destructive";
   icon?: AppIcon;
   action?: ReactNode;
   children: ReactNode;
-}) {
+}> ) {
   return (
     <div
       data-slot="status-banner"

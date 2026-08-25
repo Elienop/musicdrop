@@ -180,10 +180,10 @@ export function ReviewPage() {
 function DecisionSection({
   albums,
   jobId,
-}: {
+}: Readonly<{
   albums: ImportAlbumSummary[];
   jobId: string;
-}) {
+}> ) {
   return (
     <section aria-label="Needs your decision" className="flex flex-col gap-3">
       <SectionLabel>Needs your decision</SectionLabel>
@@ -230,7 +230,7 @@ function DecisionSection({
 /** "Importing now" — the so-far-unrendered live fields of the acquisition
  * status probe: what the unattended drain is importing and how many drops
  * wait behind it. Rendered only while the queue is non-idle. */
-function ImportingNowSection({ status }: { status: AcquisitionQueueStatus }) {
+function ImportingNowSection({ status }: Readonly<{ status: AcquisitionQueueStatus }>) {
   return (
     <section aria-label="Importing now" className="flex flex-col gap-2">
       <SectionLabel>Importing now</SectionLabel>
@@ -258,11 +258,11 @@ function InboxSection({
   items,
   importActive,
   onStarted,
-}: {
+}: Readonly<{
   items: InboxItem[];
   importActive: boolean;
   onStarted: (jobId: string) => void;
-}) {
+}> ) {
   const reviewOne = useImportInboxItem();
   const reviewAll = useReviewInbox();
   // null = no no-op yet. Otherwise the number of folders the backend SKIPPED as
@@ -382,13 +382,13 @@ function RecentSection({
   failed,
   processed,
   error,
-}: {
+}: Readonly<{
   imported: number;
   setAside: number;
   failed: number;
   processed: number;
   error: string | null;
-}) {
+}> ) {
   return (
     <section
       aria-label="Recently landed"
@@ -417,7 +417,7 @@ function RecentSection({
 /** Top-level sweep notice (the post-redesign banner dialect): live counters,
  * the current folder, Pause and a link into the run. Decisions below are
  * store writes and stay fully usable while the sweep owns the import slot. */
-function SweepBanner({ jobId, sweep }: { jobId: string; sweep: SweepStatus }) {
+function SweepBanner({ jobId, sweep }: Readonly<{ jobId: string; sweep: SweepStatus }>) {
   const pause = usePauseSweep(jobId);
   return (
     <StatusBanner
@@ -478,7 +478,7 @@ const RECAP_DISMISSED_KEY = "musicdrop.sweepRecapDismissed";
  * "View run" target expires in the same moment, so the link never dangles).
  * Dismiss is per-browser. A PAUSED sweep ends phase=done with the flag set —
  * it reads "Sweep paused" plus the resume hint. */
-function SweepRecap({ recap }: { recap: FinishedSweep }) {
+function SweepRecap({ recap }: Readonly<{ recap: FinishedSweep }>) {
   const [dismissedId, setDismissedId] = useState<string | null>(() =>
     localStorage.getItem(RECAP_DISMISSED_KEY),
   );

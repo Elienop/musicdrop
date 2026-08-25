@@ -307,7 +307,7 @@ export function ArtistAlbumsPage() {
  * re-clicks, the Pagination rule — `disabled` on activation would strand
  * keyboard focus on <body> for the whole job); the aria-label stays constant
  * across the spinner swap so the accessible name never flickers. */
-function ArtistArtStatus({ displayName }: { displayName: string }) {
+function ArtistArtStatus({ displayName }: Readonly<{ displayName: string }>) {
   const status = useArtistArtBackfillStatus();
   const start = useStartArtistArtApply(displayName);
   const running = status.data?.phase === "running";

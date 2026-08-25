@@ -15,12 +15,12 @@ export function StatTile({
   label,
   value,
   hint,
-}: {
+}: Readonly<{
   icon: AppIcon;
   label: string;
   value: string;
   hint?: string;
-}) {
+}> ) {
   return (
     <div className="flex items-center gap-3">
       {/* Thin like the detail-rail actions — large glyphs (here 56px, the

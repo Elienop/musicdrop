@@ -35,13 +35,13 @@ export function AddToPlaylistMenu({
   trackIds,
   label,
   large = false,
-}: {
+}: Readonly<{
   trackIds: number[];
   label?: string;
   /** Larger trigger for the detail-page icon rows (icon-xl + size-10 glyph,
    * muted at rest like IconAction); default stays the compact row size. */
   large?: boolean;
-}) {
+}> ) {
   const menuLabel = label ?? "Add to playlist";
   const [createOpen, setCreateOpen] = useState(false);
   // Radix closes the dropdown on item-select, unmounting its content before the
@@ -164,10 +164,10 @@ export function AddToPlaylistMenu({
 function PlaylistItems({
   onPick,
   pending,
-}: {
+}: Readonly<{
   onPick: (playlistId: string, name: string) => void;
   pending: boolean;
-}) {
+}> ) {
   const { data, isPending, isError } = usePlaylists();
 
   if (isPending) {

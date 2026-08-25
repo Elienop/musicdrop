@@ -90,7 +90,7 @@ export function NamingPanel() {
   return <NamingEditor key={data.sha256} initial={data} />;
 }
 
-function NamingEditor({ initial }: { initial: NamingConfig }) {
+function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
   const [base, setBase] = useState({
     default: initial.default ?? "",
     comp: initial.comp ?? "",
@@ -430,7 +430,7 @@ function PathRow({
   onChange,
   rendered,
   focusedRef,
-}: {
+}: Readonly<{
   label: string;
   ariaLabel?: string;
   name: string;
@@ -438,7 +438,7 @@ function PathRow({
   onChange: (v: string) => void;
   rendered: RenderedRule | undefined;
   focusedRef: React.RefObject<HTMLInputElement | null>;
-}) {
+}> ) {
   return (
     <div className="flex flex-col gap-1">
       {label && (
@@ -479,7 +479,7 @@ function PathRow({
   );
 }
 
-function InsertPalette({ onInsert }: { onInsert: (token: string) => void }) {
+function InsertPalette({ onInsert }: Readonly<{ onInsert: (token: string) => void }>) {
   return (
     <details className="text-sm">
       <summary className="cursor-pointer font-medium">
@@ -510,11 +510,11 @@ function ReplaceEditor({
   rows,
   setRows,
   errors,
-}: {
+}: Readonly<{
   rows: ReplaceRow[];
   setRows: React.Dispatch<React.SetStateAction<ReplaceRow[]>>;
   errors: ReplaceError[];
-}) {
+}> ) {
   const errorAt = (i: number) => errors.find((e) => e.index === i);
   return (
     <div className="flex flex-col gap-2">
