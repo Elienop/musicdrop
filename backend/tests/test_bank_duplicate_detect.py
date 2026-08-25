@@ -171,7 +171,7 @@ def test_exclude_under_drops_reimport_reached_via_a_symlink_alias(
 # ----- endpoint (uses the lifespan-less client wired to a real library) -----
 
 
-@pytest.fixture()
+@pytest.fixture
 def bank_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # Overrides beets_library's settings.beets_dir so get_bank_dir() points at a
     # dedicated bank tree (mirrors test_bank_api.py); the library stays on
@@ -210,7 +210,7 @@ def _candidate(*, artist: str, album: str, release_ids: list[str | None]) -> Can
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def parked_row_in_library(bank_dir: Path, beets_library: LibraryHandle) -> str:
     """A needs_review row whose matched release collides with a library album."""
     _add_album(beets_library.lib, artist="2Pac", album="Me Against the World", mb="mb-1", n=15)
@@ -232,7 +232,7 @@ def parked_row_in_library(bank_dir: Path, beets_library: LibraryHandle) -> str:
     return item.id
 
 
-@pytest.fixture()
+@pytest.fixture
 def no_match_row(bank_dir: Path, beets_library: LibraryHandle) -> str:
     item = store.create_item(
         bank_dir,

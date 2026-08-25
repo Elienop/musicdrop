@@ -40,7 +40,7 @@ target-version = "py311"
 # for Sonar S5778: Sonar also counts multiple invocations inside the one
 # statement, which ruff has no rule for. Preview is needed for autofixes
 # only; selection alone works in stable mode.
-select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF", "PT012", "PT018"]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF", "PT001", "PT012", "PT018"]
 
 [tool.mypy]
 python_version = "3.11"

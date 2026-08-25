@@ -24,7 +24,7 @@ from app.models.import_models import (
 )
 
 
-@pytest.fixture()
+@pytest.fixture
 def bank_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
     return tmp_path / "beets" / "bank"
