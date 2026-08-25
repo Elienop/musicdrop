@@ -280,11 +280,22 @@ export function ReorganizeControl({
 
   // Once THIS scope's job is terminal, surface its per-unit failures (label +
   // reason) under the controls — counts alone can't say which file is stuck.
-  const isTerminal =
-    phase === "done" || phase === "stopped" || phase === "failed";
-  const failures = isThis && isTerminal ? (job?.failures ?? []) : [];
-  // Non-null only on a terminal job, so the block can date itself.
-  const finishedAt = isThis && isTerminal ? (job?.finished_at ?? null) : null;
+  // `finishedAt` is non-null only on a terminal job so the list can date
+  // itself; for any non-terminal job — or another scope's — both stay empty.
+  function terminalJob(): {
+    isTerminal: boolean;
+    failures: ReorganizeUnitFailure[];
+    finishedAt: string | null;
+  } {
+    const isTerminal =
+      phase === "done" || phase === "stopped" || phase === "failed";
+    return {
+      isTerminal,
+      failures: isThis && isTerminal ? (job?.failures ?? []) : [],
+      finishedAt: isThis && isTerminal ? (job?.finished_at ?? null) : null,
+    };
+  }
+  const { isTerminal, failures, finishedAt } = terminalJob();
 
   // Files moved + DB paths changed — refresh the album/artist rosters that show
   // those paths once THIS scope's job reaches a terminal state.
@@ -425,18 +436,7 @@ export function ReorganizeControl({
             </Button>
           </>
         )}
-        {message != null && (
-          <span
-            role={message.kind === "error" ? "alert" : "status"}
-            className={
-              message.kind === "error"
-                ? "text-destructive text-center text-sm"
-                : "text-muted-foreground text-center text-sm"
-            }
-          >
-            {message.text}
-          </span>
-        )}
+        {renderMessage(true)}
         {failures.length > 0 && (
           <FailureList
             failures={failures}
@@ -449,6 +449,81 @@ export function ReorganizeControl({
     );
   }
 
+  // Action-adjacent feedback span: an empty-preview result is informational
+  // (`role="status"`), a failed action an error (`role="alert"`). `centered`
+  // matches the rail variant, which centers its whole content under the icon
+  // row.
+  function renderMessage(centered: boolean): ReactNode {
+    if (message == null) return null;
+    const tone =
+      message.kind === "error" ? "text-destructive" : "text-muted-foreground";
+    return (
+      <span
+        role={message.kind === "error" ? "alert" : "status"}
+        className={centered ? `${tone} text-center text-sm` : `${tone} text-sm`}
+      >
+        {message.text}
+      </span>
+    );
+  }
+
+  // The inline action cell: Stop while THIS scope's job runs, the Reorganize
+  // trigger while idle, and the Confirm/Cancel pair while a plan is open
+  // (Confirm only when the plan has something to actually run — an all-
+  // refusals preview is read-only with Cancel as its sole exit).
+  function renderInlineAction(): ReactNode {
+    if (runningThis) {
+      return (
+        <Button
+          ref={triggerRef}
+          variant="outline"
+          size="sm"
+          aria-disabled={stop.isPending || undefined}
+          className="aria-disabled:opacity-50"
+          onClick={onStop}
+        >
+          Stop
+        </Button>
+      );
+    }
+    if (plan == null) {
+      return (
+        <Button
+          ref={triggerRef}
+          variant="outline"
+          size="sm"
+          aria-disabled={previewBlocked || undefined}
+          className="aria-disabled:opacity-50"
+          onClick={onTriggerPreview}
+        >
+          {preview.isPending ? "Building preview…" : "Reorganize files…"}
+        </Button>
+      );
+    }
+    return (
+      <>
+        {confirmText != null && (
+          <Button
+            size="sm"
+            aria-disabled={start.isPending || otherRunning || undefined}
+            className="aria-disabled:opacity-50"
+            onClick={onConfirmStart}
+          >
+            {start.isPending ? "Starting…" : confirmText}
+          </Button>
+        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setPlan(null)}
+          disabled={start.isPending}
+        >
+          Cancel
+        </Button>
+      </>
+    );
+  }
+
   return (
     <div className="flex flex-col items-start gap-2">
       {plan != null && (
@@ -457,62 +532,8 @@ export function ReorganizeControl({
         </div>
       )}
       <div className="flex flex-wrap items-center gap-3">
-        {runningThis ? (
-          <Button
-            ref={triggerRef}
-            variant="outline"
-            size="sm"
-            aria-disabled={stop.isPending || undefined}
-            className="aria-disabled:opacity-50"
-            onClick={onStop}
-          >
-            Stop
-          </Button>
-        ) : plan == null ? (
-          <Button
-            ref={triggerRef}
-            variant="outline"
-            size="sm"
-            aria-disabled={previewBlocked || undefined}
-            className="aria-disabled:opacity-50"
-            onClick={onTriggerPreview}
-          >
-            {preview.isPending ? "Building preview…" : "Reorganize files…"}
-          </Button>
-        ) : (
-          <>
-            {confirmText != null && (
-              <Button
-                size="sm"
-                aria-disabled={start.isPending || otherRunning || undefined}
-                className="aria-disabled:opacity-50"
-                onClick={onConfirmStart}
-              >
-                {start.isPending ? "Starting…" : confirmText}
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setPlan(null)}
-              disabled={start.isPending}
-            >
-              Cancel
-            </Button>
-          </>
-        )}
-        {message != null && (
-          <span
-            role={message.kind === "error" ? "alert" : "status"}
-            className={
-              message.kind === "error"
-                ? "text-destructive text-sm"
-                : "text-muted-foreground text-sm"
-            }
-          >
-            {message.text}
-          </span>
-        )}
+        {renderInlineAction()}
+        {renderMessage(false)}
       </div>
       {failures.length > 0 && (
         <FailureList

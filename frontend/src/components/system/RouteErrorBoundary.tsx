@@ -20,13 +20,19 @@ import { Button } from "@/components/ui/button";
  * focus query would otherwise no-op), and an in-page crash unmounts the
  * focused element with no announcement at all.
  */
+function routeErrorMessage(error: unknown): string {
+  if (isRouteErrorResponse(error)) {
+    return `${error.status} ${error.statusText}`;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return "Unknown error";
+}
+
 export function RouteErrorBoundary() {
   const error = useRouteError();
-  const detail = isRouteErrorResponse(error)
-    ? `${error.status} ${error.statusText}`
-    : error instanceof Error
-      ? error.message
-      : "Unknown error";
+  const detail = routeErrorMessage(error);
 
   // Move focus to the boundary's own h1 on mount so keyboard/SR users land on
   // the error, not on <body> (in-page crash) or a stale target (navigation).
