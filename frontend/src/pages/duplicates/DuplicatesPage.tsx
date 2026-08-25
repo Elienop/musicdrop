@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import {
@@ -31,6 +31,21 @@ import { Button } from "@/components/ui/button";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { plural } from "@/lib/format";
 import { cn } from "@/lib/utils";
+
+/** One group's resolve plan: the clamped keeper plus the loser album ids. */
+type Decision = {
+  group: DuplicateGroup;
+  keep: number;
+  removeIds: number[];
+};
+
+/** Both resolve mutations treat a 409 the same way: the library drifted under
+ * us, so drop the duplicates query and let it refetch. */
+function invalidateOn409(err: unknown, queryClient: QueryClient): void {
+  if ((err as DuplicatesOpError).status === 409) {
+    void queryClient.invalidateQueries({ queryKey: ["duplicates"] });
+  }
+}
 
 /** A group's chosen keeper, clamped to current membership. A background refetch
  * can change a group's members while keeping its `suggested_keeper_id` (so the
@@ -76,17 +91,21 @@ export function DuplicatesPage() {
       {
         onSettled: () => setConfirmAllOpen(false),
         onSuccess: (res) => setSummary(res),
-        onError: (err) => {
-          if ((err as DuplicatesOpError).status === 409) {
-            void queryClient.invalidateQueries({ queryKey: ["duplicates"] });
-          }
-        },
+        onError: (err) => invalidateOn409(err, queryClient),
       },
     );
   }
 
+  // Switching modes regroups the library — drop keeper overrides (a same
+  // keeper-id can recur with different membership across modes) and the stale
+  // summary so the bulk action can't carry a wrong choice over.
+  function switchMode(m: DuplicateMode) {
+    setMode(m);
+    setSelections({});
+    setSummary(null);
+  }
+
   const allError = resolveAll.error as DuplicatesOpError | null;
-  const skipped = summary?.skipped_stale.length ?? 0;
 
   return (
     <PageBody>
@@ -98,69 +117,19 @@ export function DuplicatesPage() {
             : "Scanning your library…"
         }
         actions={
-          <>
-            {showBulk && (
-              <Button
-                variant="destructive"
-                disabled={resolveAll.isPending}
-                onClick={() => setConfirmAllOpen(true)}
-              >
-                {resolveAll.isPending ? (
-                  <>
-                    <Spinner className="animate-spin" aria-hidden="true" />
-                    Resolving&hellip;
-                  </>
-                ) : (
-                  `Resolve all · ${moveCount} ${plural(moveCount, "copy", "copies")}`
-                )}
-              </Button>
-            )}
-            <SegmentedControl
-              aria-label="Match mode"
-              options={[
-                { value: "strict", label: "Strict · MB-ID" },
-                { value: "fuzzy", label: "Fuzzy · artist + title" },
-              ]}
-              value={mode}
-              onChange={(v) => {
-                // Switching modes regroups the library — drop keeper overrides
-                // (a same keeper-id can recur with different membership across
-                // modes) and the stale summary so the bulk action can't carry a
-                // wrong choice over.
-                const m: DuplicateMode = v === "fuzzy" ? "fuzzy" : "strict";
-                setMode(m);
-                setSelections({});
-                setSummary(null);
-              }}
-            />
-          </>
+          <HeaderActions
+            showBulk={showBulk}
+            moveCount={moveCount}
+            resolving={resolveAll.isPending}
+            onOpenConfirm={() => setConfirmAllOpen(true)}
+            mode={mode}
+            onModeChange={switchMode}
+          />
         }
       />
 
-      {summary &&
-        (summary.moved_count > 0 ? (
-          <p className="text-muted-foreground text-sm" role="status">
-            Moved {summary.moved_count} {summary.moved_count === 1 ? "copy" : "copies"} across{" "}
-            {summary.group_count} {summary.group_count === 1 ? "group" : "groups"} to Trash.
-            {skipped > 0 &&
-              ` ${skipped} group${skipped === 1 ? "" : "s"} changed and ${skipped === 1 ? "was" : "were"} skipped; refreshed; re-check ${skipped === 1 ? "it" : "them"}.`}
-          </p>
-        ) : (
-          // All groups drifted since the scan (a normal 200 with nothing moved):
-          // lead with the actionable part, not a "moved 0" that reads as a no-op.
-          <p className="text-sm" role="status">
-            Nothing moved; {skipped === 1 ? "the group" : `all ${skipped} groups`} changed
-            since the scan and {skipped === 1 ? "was" : "were"} skipped. The report refreshed;
-            re-check {skipped === 1 ? "it" : "them"}.
-          </p>
-        ))}
-      {allError && (
-        <p className="text-destructive text-sm" role="alert">
-          {allError.status === 409
-            ? resolve409Message(allError)
-            : "Resolve all failed. The Trash keeps any moved copies; refresh and retry."}
-        </p>
-      )}
+      {summary && <BulkResolveNote summary={summary} />}
+      {allError && <ResolveAllErrorNote error={allError} />}
 
       {isPending && (
         <p className="text-muted-foreground flex items-center gap-2 text-sm" role="status">
@@ -196,42 +165,155 @@ export function DuplicatesPage() {
           />
         ))}
 
-      <AlertDialog open={confirmAllOpen} onOpenChange={setConfirmAllOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              Move {moveCount} {moveCount === 1 ? "copy" : "copies"} across{" "}
-              {data?.group_count ?? 0} {(data?.group_count ?? 0) === 1 ? "group" : "groups"} to
-              Trash?
-            </AlertDialogTitle>
-            <AlertDialogDescription asChild>
-              <div className="text-sm">
-                Keeping one copy per group (the marked keeper). These move to the
-                Trash folder (reversible; nothing is deleted):
-                <ul className="mt-2 max-h-64 space-y-1 overflow-y-auto">
-                  {decisions.map((d) => {
-                    const keeper = d.group.members.find((m) => m.id === d.keep);
-                    return (
-                      <li key={d.group.suggested_keeper_id} className="text-xs">
-                        Keep <strong>{keeper?.title}</strong>
-                        <span className="text-muted-foreground">
-                          {" "}
-                          - {keeper?.album_artist} · move {d.removeIds.length}
-                        </span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={onConfirmAll}>Move all to Trash</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmAllDialog
+        open={confirmAllOpen}
+        onOpenChange={setConfirmAllOpen}
+        moveCount={moveCount}
+        groupCount={data?.group_count ?? 0}
+        decisions={decisions}
+        onConfirm={onConfirmAll}
+      />
     </PageBody>
+  );
+}
+
+/** Header controls: the bulk "Resolve all" action (only when ≥2 groups exist)
+ * and the match-mode switcher. */
+function HeaderActions({
+  showBulk,
+  moveCount,
+  resolving,
+  onOpenConfirm,
+  mode,
+  onModeChange,
+}: Readonly<{
+  showBulk: boolean;
+  moveCount: number;
+  resolving: boolean;
+  onOpenConfirm: () => void;
+  mode: DuplicateMode;
+  onModeChange: (mode: DuplicateMode) => void;
+}> ) {
+  return (
+    <>
+      {showBulk && (
+        <Button
+          variant="destructive"
+          disabled={resolving}
+          onClick={onOpenConfirm}
+        >
+          {resolving ? (
+            <>
+              <Spinner className="animate-spin" aria-hidden="true" />
+              Resolving&hellip;
+            </>
+          ) : (
+            `Resolve all · ${moveCount} ${plural(moveCount, "copy", "copies")}`
+          )}
+        </Button>
+      )}
+      <SegmentedControl
+        aria-label="Match mode"
+        options={[
+          { value: "strict", label: "Strict · MB-ID" },
+          { value: "fuzzy", label: "Fuzzy · artist + title" },
+        ]}
+        value={mode}
+        onChange={(v) => {
+          const m: DuplicateMode = v === "fuzzy" ? "fuzzy" : "strict";
+          onModeChange(m);
+        }}
+      />
+    </>
+  );
+}
+
+/** The bulk-resolve outcome line. Two shapes: copies actually moved vs. all
+ * groups skipped. */
+function BulkResolveNote({ summary }: Readonly<{ summary: ResolveAllResult }>) {
+  const skipped = summary.skipped_stale.length;
+  return summary.moved_count > 0 ? (
+    <p className="text-muted-foreground text-sm" role="status">
+      Moved {summary.moved_count} {summary.moved_count === 1 ? "copy" : "copies"} across{" "}
+      {summary.group_count} {summary.group_count === 1 ? "group" : "groups"} to Trash.
+      {skipped > 0 &&
+        ` ${skipped} group${skipped === 1 ? "" : "s"} changed and ${skipped === 1 ? "was" : "were"} skipped; refreshed; re-check ${skipped === 1 ? "it" : "them"}.`}
+    </p>
+  ) : (
+    // All groups drifted since the scan (a normal 200 with nothing moved):
+    // lead with the actionable part, not a "moved 0" that reads as a no-op.
+    <p className="text-sm" role="status">
+      Nothing moved; {skipped === 1 ? "the group" : `all ${skipped} groups`} changed
+      since the scan and {skipped === 1 ? "was" : "were"} skipped. The report refreshed;
+      re-check {skipped === 1 ? "it" : "them"}.
+    </p>
+  );
+}
+
+/** The bulk-resolve failure line: a 409 gets the cause-specific hint (see
+ * `resolve409Message`), anything else the generic retry message. */
+function ResolveAllErrorNote({ error }: Readonly<{ error: DuplicatesOpError }>) {
+  return (
+    <p className="text-destructive text-sm" role="alert">
+      {error.status === 409
+        ? resolve409Message(error)
+        : "Resolve all failed. The Trash keeps any moved copies; refresh and retry."}
+    </p>
+  );
+}
+
+/** The bulk "Move all to Trash" confirmation: the per-group keeper and
+ * move-count list plus the confirm action. */
+function ConfirmAllDialog({
+  open,
+  onOpenChange,
+  moveCount,
+  groupCount,
+  decisions,
+  onConfirm,
+}: Readonly<{
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  moveCount: number;
+  groupCount: number;
+  decisions: Decision[];
+  onConfirm: () => void;
+}> ) {
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            Move {moveCount} {moveCount === 1 ? "copy" : "copies"} across{" "}
+            {groupCount} {groupCount === 1 ? "group" : "groups"} to Trash?
+          </AlertDialogTitle>
+          <AlertDialogDescription asChild>
+            <div className="text-sm">
+              Keeping one copy per group (the marked keeper). These move to the
+              Trash folder (reversible; nothing is deleted):
+              <ul className="mt-2 max-h-64 space-y-1 overflow-y-auto">
+                {decisions.map((d) => {
+                  const keeper = d.group.members.find((m) => m.id === d.keep);
+                  return (
+                    <li key={d.group.suggested_keeper_id} className="text-xs">
+                      Keep <strong>{keeper?.title}</strong>
+                      <span className="text-muted-foreground">
+                        {" "}
+                        - {keeper?.album_artist} · move {d.removeIds.length}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={onConfirm}>Move all to Trash</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -270,11 +352,7 @@ function GroupCard({
       { mode, keep_album_id: keeperId, remove_album_ids: removeIds },
       {
         onSettled: () => setConfirmOpen(false),
-        onError: (err) => {
-          if ((err as DuplicatesOpError).status === 409) {
-            void queryClient.invalidateQueries({ queryKey: ["duplicates"] });
-          }
-        },
+        onError: (err) => invalidateOn409(err, queryClient),
       },
     );
   }

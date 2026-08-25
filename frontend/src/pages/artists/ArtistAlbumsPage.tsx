@@ -104,6 +104,86 @@ export function ArtistAlbumsPage() {
     countRef.current?.focus({ preventScroll: true });
   }
 
+  // The loading/error/empty/content ladder as early returns instead of a
+  // chained ternary — same four states, same order, same markup; the nested
+  // total===0 split becomes its own early-return branch.
+  const renderAlbumsBody = () => {
+    if (isPending) {
+      return (
+        <PageSkeleton announce="Loading albums…">
+          <AlbumsGridSkeleton count={Math.min(PAGE_SIZE, 18)} />
+        </PageSkeleton>
+      );
+    }
+    if (isError) {
+      return (
+        <ErrorState
+          message="Couldn’t load albums. Check the backend and try again."
+          onRetry={() => void refetch()}
+        />
+      );
+    }
+    if (data.items.length === 0) {
+      if (total === 0) {
+        // total === 0: the artist genuinely has no albums.
+        return (
+          <EmptyState
+            bordered
+            icon={Albums}
+            title={`No albums for ${displayName}`}
+            body="Nothing in your library is filed under this artist."
+            action={<BackLink to="/artists" label="Artists" />}
+          />
+        );
+      }
+      // total > 0 with an empty page means the offset is past the end
+      // (stale/hand-crafted URL) — the artist DOES have albums, so don't
+      // claim otherwise.
+      return (
+        <EmptyState
+          bordered
+          icon={Albums}
+          title="Nothing on this page"
+          body="This page is past the end of the list."
+          action={
+            <Button variant="outline" size="sm" onClick={() => goToOffset(0)}>
+              Back to first page
+            </Button>
+          }
+        />
+      );
+    }
+    return (
+      <>
+        <ul
+          className={cn(
+            GRID_CLASS,
+            isFetching && "pointer-events-none opacity-60 transition-opacity",
+          )}
+          aria-busy={isFetching}
+        >
+          {/* No `from` origin on purpose: the album page's default back
+              link already walks UP the spine to this artist. */}
+          {data.items.map((album) => (
+            <li key={album.id}>
+              <AlbumCard album={album} />
+            </li>
+          ))}
+        </ul>
+
+        {total > PAGE_SIZE && (
+          <Pagination
+            total={total}
+            offset={offset}
+            limit={PAGE_SIZE}
+            busy={isFetching}
+            onOffsetChange={goToOffset}
+          />
+        )}
+      </>
+    );
+  };
+
   return (
     <PageBody>
       <BackLink to="/artists" label="Artists" />
@@ -227,73 +307,7 @@ export function ArtistAlbumsPage() {
             </div>
           )}
 
-      {isPending ? (
-        <PageSkeleton announce="Loading albums…">
-          <AlbumsGridSkeleton count={Math.min(PAGE_SIZE, 18)} />
-        </PageSkeleton>
-      ) : isError ? (
-        <ErrorState
-          message="Couldn’t load albums. Check the backend and try again."
-          onRetry={() => void refetch()}
-        />
-      ) : data.items.length === 0 ? (
-        // total === 0: the artist genuinely has no albums. total > 0 with an
-        // empty page means the offset is past the end (stale/hand-crafted
-        // URL) — the artist DOES have albums, so don't claim otherwise.
-        total === 0 ? (
-          <EmptyState
-            bordered
-            icon={Albums}
-            title={`No albums for ${displayName}`}
-            body="Nothing in your library is filed under this artist."
-            action={<BackLink to="/artists" label="Artists" />}
-          />
-        ) : (
-          <EmptyState
-            bordered
-            icon={Albums}
-            title="Nothing on this page"
-            body="This page is past the end of the list."
-            action={
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => goToOffset(0)}
-              >
-                Back to first page
-              </Button>
-            }
-          />
-        )
-      ) : (
-        <>
-          <ul
-            className={cn(
-              GRID_CLASS,
-              isFetching && "pointer-events-none opacity-60 transition-opacity",
-            )}
-            aria-busy={isFetching}
-          >
-            {/* No `from` origin on purpose: the album page's default back
-                link already walks UP the spine to this artist. */}
-            {data.items.map((album) => (
-              <li key={album.id}>
-                <AlbumCard album={album} />
-              </li>
-            ))}
-          </ul>
-
-          {total > PAGE_SIZE && (
-            <Pagination
-              total={total}
-              offset={offset}
-              limit={PAGE_SIZE}
-              busy={isFetching}
-              onOffsetChange={goToOffset}
-            />
-          )}
-        </>
-      )}
+      {renderAlbumsBody()}
         </div>
       </div>
     </PageBody>

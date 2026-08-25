@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { plural } from "@/lib/format";
 
 type ArtistRenameAlbumResult = components["schemas"]["ArtistRenameAlbumResult"];
+type ArtistRenamePreview = components["schemas"]["ArtistRenamePreview"];
 
 /** Renamed-but-damaged is NOT a clean success: nonzero write/move failures
  * must block the auto-navigate and be shown to the user, per-album counts and
@@ -36,6 +37,139 @@ function damagePhrase(a: ArtistRenameAlbumResult): string {
     parts.push(`${a.write_failures} file${a.write_failures === 1 ? "" : "s"} failed to write`);
   if (a.move_failures > 0) parts.push(`${a.move_failures} file${a.move_failures === 1 ? "" : "s"} failed to move`);
   return `renamed, but ${parts.join(" and ")}`;
+}
+
+/** The idle-state apply verb: a merge preview flips "Apply" to "Merge". */
+function applyButtonLabel(merging: boolean): string {
+  return merging ? "Merge" : "Apply";
+}
+
+/** The apply verb while the rename is in flight: "Merging" or "Renaming". */
+function applyPendingLabel(merging: boolean): string {
+  return merging ? "Merging" : "Renaming";
+}
+
+/** The sr-only announcement once a fresh preview lands: the move totals, plus
+ * the merge note when the target name already exists; empty before that. */
+function previewAnnouncement(
+  data: components["schemas"]["ArtistRenamePreview"] | undefined,
+  totalMoves: number,
+): string {
+  if (!data) return "";
+  const mergeNote = data.merge ? `, merges into ${data.new_name}` : "";
+  return `Preview ready: ${data.albums.length} ${plural(data.albums.length, "album")}, ${totalMoves} ${plural(totalMoves, "file")} will move${mergeNote}`;
+}
+
+/** The apply-failure banner: which albums didn't rename cleanly and why, with
+ * the manual "Go to renamed artist" escape hatch. */
+function ResultFailureBanner({
+  failures,
+  onGoRenamed,
+}: Readonly<{ failures: ArtistRenameAlbumResult[]; onGoRenamed: () => void }>) {
+  if (failures.length === 0) return null;
+  return (
+    <StatusBanner
+      tone="destructive"
+      icon={Warning}
+      action={
+        <Button variant="outline" size="sm" type="button" onClick={onGoRenamed}>
+          Go to renamed artist
+        </Button>
+      }
+    >
+      <p className="font-medium">
+        {failures.length} album{failures.length === 1 ? "" : "s"} not cleanly renamed:
+      </p>
+      <ul className="mt-1 flex max-h-56 flex-col gap-0.5 overflow-y-auto pr-2">
+        {failures.map((a) => (
+          <li key={a.album_id} className="truncate">
+            <span className="font-medium">{a.title}</span> —{" "}
+            {a.outcome === "renamed" ? damagePhrase(a) : a.error ?? a.outcome}
+          </li>
+        ))}
+      </ul>
+    </StatusBanner>
+  );
+}
+
+/** The preview panel: the move summary line, the merge consequence, the move
+ * banner, the refusal warning, and the per-album list (data is non-null here,
+ * guarded by the `preview.data &&` at the call site). */
+function PreviewPanel({
+  data,
+  totalMoves,
+  totalRefusals,
+}: Readonly<{
+  data: ArtistRenamePreview;
+  totalMoves: number;
+  totalRefusals: number;
+}>) {
+  return (
+    <div className="flex min-w-0 flex-col gap-2 text-sm">
+      {/* Summary line: always visible even though the list below scrolls. */}
+      <p className="font-medium">
+        {data.albums.length} album
+        {data.albums.length === 1 ? "" : "s"} · {totalMoves} file
+        {totalMoves === 1 ? "" : "s"} will move
+      </p>
+
+      {data.merge && (
+        <p className="font-medium">
+          &ldquo;{data.new_name}&rdquo; already exists with{" "}
+          {data.merge.existing_album_count} album
+          {data.merge.existing_album_count === 1 ? "" : "s"}. Applying merges
+          the two artists into one; renaming back will not split them again.
+        </p>
+      )}
+
+      {data.move_enabled ? (
+        totalMoves > 0 && (
+          <StatusBanner tone="warning" icon={Warning}>
+            {totalMoves} file{totalMoves === 1 ? "" : "s"} will be moved on disk.
+          </StatusBanner>
+        )
+      ) : (
+        <p className="text-muted-foreground">
+          Files will not move (moving is disabled in beets config).
+        </p>
+      )}
+
+      {totalRefusals > 0 && (
+        <p className="text-destructive font-medium">
+          {totalRefusals} file{totalRefusals === 1 ? "" : "s"} cannot be moved (the
+          destination name is already taken). Their tags will still be updated; these
+          files keep their current names.
+        </p>
+      )}
+
+      {/* Bounded + scrolling: Radix scroll-locks the page, so an
+          unbounded list would push the footer off-screen unreachable. */}
+      <ul className="flex max-h-72 flex-col gap-2 overflow-y-auto pr-2">
+        {data.albums.map((a) => (
+          <li key={a.album_id} className="min-w-0">
+            <div className="flex justify-between gap-4">
+              <span className="truncate">{a.title}</span>
+              <span className="text-muted-foreground shrink-0 tabular-nums">
+                {a.move_count} file{a.move_count === 1 ? "" : "s"} to move
+              </span>
+            </div>
+            {a.refusals.length > 0 && (
+              <ul className="mt-0.5 flex flex-col gap-0.5">
+                {a.refusals.map((r) => (
+                  <li key={r.item_id} className="text-destructive text-xs">
+                    {r.track !== null && r.track !== undefined && r.track !== 0
+                      ? `#${r.track} `
+                      : ""}
+                    {r.detail}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 /**
@@ -80,9 +214,6 @@ export function RenameArtistAction({ name }: Readonly<{ name: string }>) {
 
   const result = apply.data;
   const failures = result ? result.albums.filter((a) => !isClean(a)) : [];
-  const mergeNote = preview.data?.merge
-    ? `, merges into ${preview.data.new_name}`
-    : "";
 
   function onSubmit(e: SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -149,9 +280,7 @@ export function RenameArtistAction({ name }: Readonly<{ name: string }>) {
 
         {/* Always mounted: fills on preview success, empties on reset. */}
         <span className="sr-only" role="status">
-          {preview.data
-            ? `Preview ready: ${preview.data.albums.length} ${plural(preview.data.albums.length, "album")}, ${totalMoves} ${plural(totalMoves, "file")} will move${preview.data.merge ? mergeNote : ""}`
-            : ""}
+          {previewAnnouncement(preview.data, totalMoves)}
         </span>
 
         <form
@@ -190,70 +319,7 @@ export function RenameArtistAction({ name }: Readonly<{ name: string }>) {
           )}
 
           {preview.data && (
-            <div className="flex min-w-0 flex-col gap-2 text-sm">
-              {/* Summary line: always visible even though the list below scrolls. */}
-              <p className="font-medium">
-                {preview.data.albums.length} album
-                {preview.data.albums.length === 1 ? "" : "s"} · {totalMoves} file
-                {totalMoves === 1 ? "" : "s"} will move
-              </p>
-
-              {preview.data.merge && (
-                <p className="font-medium">
-                  &ldquo;{preview.data.new_name}&rdquo; already exists with{" "}
-                  {preview.data.merge.existing_album_count} album
-                  {preview.data.merge.existing_album_count === 1 ? "" : "s"}. Applying merges
-                  the two artists into one; renaming back will not split them again.
-                </p>
-              )}
-
-              {preview.data.move_enabled ? (
-                totalMoves > 0 && (
-                  <StatusBanner tone="warning" icon={Warning}>
-                    {totalMoves} file{totalMoves === 1 ? "" : "s"} will be moved on disk.
-                  </StatusBanner>
-                )
-              ) : (
-                <p className="text-muted-foreground">
-                  Files will not move (moving is disabled in beets config).
-                </p>
-              )}
-
-              {totalRefusals > 0 && (
-                <p className="text-destructive font-medium">
-                  {totalRefusals} file{totalRefusals === 1 ? "" : "s"} cannot be moved (the
-                  destination name is already taken). Their tags will still be updated; these
-                  files keep their current names.
-                </p>
-              )}
-
-              {/* Bounded + scrolling: Radix scroll-locks the page, so an
-                  unbounded list would push the footer off-screen unreachable. */}
-              <ul className="flex max-h-72 flex-col gap-2 overflow-y-auto pr-2">
-                {preview.data.albums.map((a) => (
-                  <li key={a.album_id} className="min-w-0">
-                    <div className="flex justify-between gap-4">
-                      <span className="truncate">{a.title}</span>
-                      <span className="text-muted-foreground shrink-0 tabular-nums">
-                        {a.move_count} file{a.move_count === 1 ? "" : "s"} to move
-                      </span>
-                    </div>
-                    {a.refusals.length > 0 && (
-                      <ul className="mt-0.5 flex flex-col gap-0.5">
-                        {a.refusals.map((r) => (
-                          <li key={r.item_id} className="text-destructive text-xs">
-                            {r.track !== null && r.track !== undefined && r.track !== 0
-                              ? `#${r.track} `
-                              : ""}
-                            {r.detail}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
+            <PreviewPanel data={preview.data} totalMoves={totalMoves} totalRefusals={totalRefusals} />
           )}
 
           {apply.isError && (
@@ -262,29 +328,7 @@ export function RenameArtistAction({ name }: Readonly<{ name: string }>) {
             </StatusBanner>
           )}
 
-          {result && failures.length > 0 && (
-            <StatusBanner
-              tone="destructive"
-              icon={Warning}
-              action={
-                <Button variant="outline" size="sm" type="button" onClick={goRenamed}>
-                  Go to renamed artist
-                </Button>
-              }
-            >
-              <p className="font-medium">
-                {failures.length} album{failures.length === 1 ? "" : "s"} not cleanly renamed:
-              </p>
-              <ul className="mt-1 flex max-h-56 flex-col gap-0.5 overflow-y-auto pr-2">
-                {failures.map((a) => (
-                  <li key={a.album_id} className="truncate">
-                    <span className="font-medium">{a.title}</span> —{" "}
-                    {a.outcome === "renamed" ? damagePhrase(a) : a.error ?? a.outcome}
-                  </li>
-                ))}
-              </ul>
-            </StatusBanner>
-          )}
+          {result && <ResultFailureBanner failures={failures} onGoRenamed={goRenamed} />}
 
           <DialogFooter aria-busy={preview.isPending || apply.isPending}>
             <Button
@@ -326,12 +370,10 @@ export function RenameArtistAction({ name }: Readonly<{ name: string }>) {
               {apply.isPending ? (
                 <>
                   <Spinner className="size-4 animate-spin" aria-hidden="true" />
-                  {merging ? "Merging" : "Renaming"}&hellip;
+                  {applyPendingLabel(merging)}&hellip;
                 </>
-              ) : merging ? (
-                "Merge"
               ) : (
-                "Apply"
+                applyButtonLabel(merging)
               )}
             </Button>
           </DialogFooter>

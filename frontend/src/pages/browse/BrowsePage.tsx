@@ -136,6 +136,173 @@ export function BrowsePage() {
   const hasFilters = activeChips.length > 0;
   const isFetching = albumsQuery.isFetching;
 
+  // Facet rail body: pending → error → grouped checkboxes, one branch each.
+  const renderFacetRail = () => {
+    if (facetsQuery.isPending) return <FilterRailSkeleton />;
+    if (facetsQuery.isError)
+      return (
+        <ErrorState
+          variant="inline"
+          message="Couldn’t load filters."
+          onRetry={() => void facetsQuery.refetch()}
+        />
+      );
+    return (
+      <div className="flex flex-col gap-5">
+        {FACET_FIELDS.map(({ param, facetKey, label }) => {
+          const values = facetsQuery.data?.[facetKey] ?? [];
+          if (values.length === 0) return null;
+          const shown = expanded[param]
+            ? values
+            : values.slice(0, FACET_PREVIEW_COUNT);
+          return (
+            <fieldset key={param} className="flex flex-col gap-1.5">
+              <legend className="mb-1 text-sm font-medium">
+                {label}
+              </legend>
+              {shown.map((fv) => {
+                const id = `facet-${param}-${encodeURIComponent(fv.value)}`;
+                return (
+                  <div key={fv.value} className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      id={id}
+                      checked={filters[param].includes(fv.value)}
+                      onCheckedChange={() => toggle(param, fv.value)}
+                    />
+                    <label
+                      htmlFor={id}
+                      className="flex min-w-0 flex-1 cursor-pointer items-center gap-2"
+                    >
+                      <span
+                        className={cn(
+                          "flex-1 truncate",
+                          param === "album_type" && "capitalize",
+                        )}
+                      >
+                        {fv.value}
+                      </span>
+                      <span className="text-muted-foreground tabular-nums">
+                        {fv.count}
+                      </span>
+                    </label>
+                  </div>
+                );
+              })}
+              {values.length > FACET_PREVIEW_COUNT && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground h-7 justify-start px-0"
+                  onClick={() =>
+                    setExpanded((prev) => ({
+                      ...prev,
+                      [param]: !prev[param],
+                    }))
+                  }
+                >
+                  {expanded[param]
+                    ? "Show less"
+                    : `Show all (${values.length})`}
+                </Button>
+              )}
+            </fieldset>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // Albums body: error → pending → no-results → past-the-end → grid, one branch
+  // each. The two no-results EmptyStates differ only by whether filters ran.
+  const renderAlbumsBody = () => {
+    if (albumsQuery.isError)
+      return (
+        <ErrorState
+          message="Couldn’t load albums. Check the backend and try again."
+          onRetry={() => void albumsQuery.refetch()}
+        />
+      );
+    if (albumsQuery.isPending)
+      return (
+        <PageSkeleton announce="Loading albums…">
+          <AlbumsGridSkeleton count={Math.min(pageSize, 12)} />
+        </PageSkeleton>
+      );
+    if (total === 0)
+      return hasFilters ? (
+        <EmptyState
+          icon={Browse}
+          title="No albums match these filters."
+          body="Loosen or clear a filter to widen the net."
+        />
+      ) : (
+        <EmptyState
+          icon={MusicFallback}
+          title="No albums in the library yet."
+          body="Import some music to get started."
+          action={
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/import">Add music from a folder</Link>
+            </Button>
+          }
+        />
+      );
+    if (albums.length === 0)
+      return (
+        <EmptyState
+          bordered
+          icon={Albums}
+          title="This page is empty; the filters changed under it."
+          action={
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => goToOffset(0)}
+            >
+              Back to first page
+            </Button>
+          }
+        />
+      );
+    // total > 0 and this page has rows → the grid (+ optional pagination).
+    return (
+      <>
+        <ul
+          className={cn(
+            GRID_CLASS,
+            isFetching && "pointer-events-none opacity-60",
+          )}
+          aria-busy={isFetching}
+        >
+          {albums.map((album) => (
+            <li key={album.id}>
+              <AlbumCard
+                album={album}
+                from={{
+                  label: "Browse",
+                  to: `/browse?${searchParams.toString()}`,
+                }}
+              />
+            </li>
+          ))}
+        </ul>
+        {total > pageSize && (
+          <div className="mt-6">
+            <Pagination
+              total={total}
+              offset={offset}
+              limit={pageSize}
+              busy={isFetching}
+              onOffsetChange={goToOffset}
+            />
+          </div>
+        )}
+      </>
+    );
+  };
+
   return (
     <PageBody>
       <PageHeader
@@ -181,81 +348,7 @@ export function BrowsePage() {
           className="thin-scrollbar max-h-72 shrink-0 overflow-y-auto pr-4 md:sticky md:top-24 md:max-h-[calc(100vh-7.5rem)] md:w-60 md:self-start"
           aria-label="Filters"
         >
-          {facetsQuery.isPending ? (
-            <FilterRailSkeleton />
-          ) : facetsQuery.isError ? (
-            <ErrorState
-              variant="inline"
-              message="Couldn’t load filters."
-              onRetry={() => void facetsQuery.refetch()}
-            />
-          ) : (
-            <div className="flex flex-col gap-5">
-              {FACET_FIELDS.map(({ param, facetKey, label }) => {
-                const values = facetsQuery.data?.[facetKey] ?? [];
-                if (values.length === 0) return null;
-                const shown = expanded[param]
-                  ? values
-                  : values.slice(0, FACET_PREVIEW_COUNT);
-                return (
-                  <fieldset key={param} className="flex flex-col gap-1.5">
-                    <legend className="mb-1 text-sm font-medium">
-                      {label}
-                    </legend>
-                    {shown.map((fv) => {
-                      const id = `facet-${param}-${encodeURIComponent(fv.value)}`;
-                      return (
-                        <div
-                          key={fv.value}
-                          className="flex items-center gap-2 text-sm"
-                        >
-                          <Checkbox
-                            id={id}
-                            checked={filters[param].includes(fv.value)}
-                            onCheckedChange={() => toggle(param, fv.value)}
-                          />
-                          <label
-                            htmlFor={id}
-                            className="flex min-w-0 flex-1 cursor-pointer items-center gap-2"
-                          >
-                            <span
-                              className={cn(
-                                "flex-1 truncate",
-                                param === "album_type" && "capitalize",
-                              )}
-                            >
-                              {fv.value}
-                            </span>
-                            <span className="text-muted-foreground tabular-nums">
-                              {fv.count}
-                            </span>
-                          </label>
-                        </div>
-                      );
-                    })}
-                    {values.length > FACET_PREVIEW_COUNT && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="text-muted-foreground h-7 justify-start px-0"
-                        onClick={() =>
-                          setExpanded((prev) => ({
-                            ...prev,
-                            [param]: !prev[param],
-                          }))
-                        }
-                      >
-                        {expanded[param]
-                          ? "Show less"
-                          : `Show all (${values.length})`}
-                      </Button>
-                    )}
-                  </fieldset>
-                );
-              })}
-            </div>
-          )}
+          {renderFacetRail()}
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col gap-4">
@@ -332,85 +425,7 @@ export function BrowsePage() {
           {/* NO-JUMP INVARIANT: reserved results height — filter flips never
               collapse the column under the sticky rail. */}
           <div className="min-h-[60vh]">
-            {albumsQuery.isError ? (
-              <ErrorState
-                message="Couldn’t load albums. Check the backend and try again."
-                onRetry={() => void albumsQuery.refetch()}
-              />
-            ) : albumsQuery.isPending ? (
-              <PageSkeleton announce="Loading albums…">
-                <AlbumsGridSkeleton count={Math.min(pageSize, 12)} />
-              </PageSkeleton>
-            ) : total === 0 ? (
-              hasFilters ? (
-                <EmptyState
-                  icon={Browse}
-                  title="No albums match these filters."
-                  body="Loosen or clear a filter to widen the net."
-                />
-              ) : (
-                <EmptyState
-                  icon={MusicFallback}
-                  title="No albums in the library yet."
-                  body="Import some music to get started."
-                  action={
-                    <Button variant="outline" size="sm" asChild>
-                      <Link to="/import">Add music from a folder</Link>
-                    </Button>
-                  }
-                />
-              )
-            ) : albums.length === 0 ? (
-              // total > 0 but this page is empty → the offset is past the end.
-              <EmptyState
-                bordered
-                icon={Albums}
-                title="This page is empty; the filters changed under it."
-                action={
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => goToOffset(0)}
-                  >
-                    Back to first page
-                  </Button>
-                }
-              />
-            ) : (
-              <>
-                <ul
-                  className={cn(
-                    GRID_CLASS,
-                    isFetching && "pointer-events-none opacity-60",
-                  )}
-                  aria-busy={isFetching}
-                >
-                  {albums.map((album) => (
-                    <li key={album.id}>
-                      <AlbumCard
-                        album={album}
-                        from={{
-                          label: "Browse",
-                          to: `/browse?${searchParams.toString()}`,
-                        }}
-                      />
-                    </li>
-                  ))}
-                </ul>
-                {total > pageSize && (
-                  <div className="mt-6">
-                    <Pagination
-                      total={total}
-                      offset={offset}
-                      limit={pageSize}
-                      busy={isFetching}
-                      onOffsetChange={goToOffset}
-                    />
-                  </div>
-                )}
-              </>
-            )}
+            {renderAlbumsBody()}
           </div>
         </div>
       </div>
