@@ -186,6 +186,10 @@ _Last groomed: 2026-08-25, with the #143-Minors triage._
   scan of the section" perf invariant is unpinned (`FakeSection.searchTracks` counts
   nothing — three full-library pulls per sync would pass green).
 
+- `ArtworkEditPanel`'s success line is a conditionally-mounted `role="status"` region —
+  it mounts WITH its text, the exact pattern the repo's a11y doctrine (and now the
+  announce comment in `PlaylistDetailPage.tsx`) forbids, so the mount itself may never be
+  announced. Pre-existing; flagged by the 2026-08-25 triage-slice UI review.
 - Artwork degrade logging: three of the six log sites are pinned by no test — mutations that
   silence `cover_thumbs.py`'s thumb-cache-unwritable line, `cache.py`'s
   `mime-sidecar-unsendable` line and `cache.py`'s thumb-cache-unwritable line all SURVIVE.
@@ -337,6 +341,34 @@ _Last groomed: 2026-08-25, with the #143-Minors triage._
   inside it); the placeholder scandir path widens that pre-existing TOCTOU window slightly.
 
 ## Recently shipped
+
+- **#143-Minors triage fix slice — shipped 2026-08-25 (PR # filled in at merge).** The
+  fix-now portion of the banked-Minors adjudication (see Next up). Copy honesty: the
+  settings mismatch warning now describes the real fallback ladder (artist and title,
+  then album, title and length) and the different-copy risk, instead of citing the case
+  the third rung absorbs; the playlist match summary anchors to "Last sync matched…",
+  names the weakest rung "by album, title and length" (it keys on album + title +
+  duration), and the nothing-by-file box ends with the re-test action. A11y: sync
+  outcomes re-announce to assistive tech even when byte-identical — an invisible
+  zero-width-space token varies per announcement; plain `setStatusMsg` bailed in React
+  and the "still broken" step of the repair loop was silent. Prose alignment: the
+  smart-playlist tally exception is stated at the three comment sites that used to state
+  the unqualified all-zero rule; `mapping.py`'s docstring scopes the one-track-one-row
+  claim to the fallback rungs. Seven new test pins (digit-veto pair, settings
+  fill-on-exact-equality, relative-vs-absolute mismatch, section-title
+  case-insensitivity, mixed-tally announcement, singular tally, announcement re-fire) —
+  nine mutants run across them, each killed by exactly its intended test.
+  Browser-verified on all three UI surfaces with fixture interception. The UI review's
+  two Importants were adopted in-branch: tally clauses joined with semicolons (the album
+  rung's name carries its own comma — "22 by artist and title, 6 by album, title and
+  length" reads as four buckets, worst aloud), and the per-row miss tooltips no longer
+  teach the one-rung ladder ("nothing matched by its tags"). Behavior changes: none
+  beyond the re-announce token. Accepted residuals: the ZWSP re-announce is proven at the
+  DOM level (jsdom + real Chromium) but no real screen reader has heard it — one NVDA/
+  VoiceOver pass of the repeat-sync loop is still owed; JAWS's own dedupe of identical
+  consecutive utterances can still eat a rapid repeat regardless of DOM state; ≥4
+  identical announcements batched into ONE React commit would collide on the token cycle
+  (unreachable on this page today).
 
 - **Artist rename — shipped 2026-08-24 (PR # filled in at merge).** One action on the artist
   page that fans the existing album edit across every album of the artist: `album_artist`

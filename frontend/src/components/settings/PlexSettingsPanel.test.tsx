@@ -338,8 +338,10 @@ describe("PlexSettingsPanel", () => {
     expect(await screen.findByText(/doesn.t list this path/i)).toBeInTheDocument();
     // The fallback is a tag-based ladder, and its real risk is a match that
     // lands on a DIFFERENT COPY of a track — pin that consequence, not a
-    // passing word.
+    // passing word. Pin the ladder too: naming only the first rung is the
+    // half-truth this copy replaced.
     expect(screen.getByText(/different copy of it/i)).toBeInTheDocument();
+    expect(screen.getByText(/then album, title and length/i)).toBeInTheDocument();
   });
 
   test("warns about a mismatch the saved settings already carry", async () => {
