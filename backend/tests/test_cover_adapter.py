@@ -44,7 +44,8 @@ def test_install_cover_sets_artpath(edit_lib: Library) -> None:
     assert album.artpath is not None
     assert os.path.isfile(os.fsdecode(album.artpath))
     served = get_album_cover(edit_lib, aid)
-    assert served is not None and served[1] == "image/png"
+    assert served is not None
+    assert served[1] == "image/png"
     assert served[0] == PNG.read_bytes()
 
 
@@ -89,7 +90,8 @@ def test_install_cover_embeds_when_embedart_enabled(
     assert album is not None
     for item in album.items():
         images = MediaFile(os.fsdecode(item.path)).images
-        assert images and bytes(images[0].data) == PNG.read_bytes()
+        assert images
+        assert bytes(images[0].data) == PNG.read_bytes()
 
 
 def test_install_cover_runs_from_a_worker_thread(edit_lib: Library) -> None:

@@ -91,7 +91,8 @@ def test_plan_library_counts(reorganize_lib: Library) -> None:
 def test_plan_artist_scope(reorganize_lib: Library) -> None:
     plan = plan_reorganize(reorganize_lib, scope="artist", artist="Radiohead", album_id=None)
     assert plan.scope_label == "Radiohead"
-    assert plan.total == 1 and plan.will_move == 1
+    assert plan.total == 1
+    assert plan.will_move == 1
 
 
 def test_multidisc_to_path_is_album_root(tmp_path: Path) -> None:
@@ -305,7 +306,8 @@ def test_reorganize_album_refuses_when_a_settled_track_owns_the_destination(
             outcome = reorg.reorganize_album(lib, next(iter(lib.albums())))
         assert outcome.status == "failed"
         assert _tree(music) == before  # no .2, no .3 — the churn is over
-        assert plan.conflicts_total == 1 and plan.will_move == 0
+        assert plan.conflicts_total == 1
+        assert plan.will_move == 0
         # Classified by the ALL-items duplicate check, NOT as a foreign occupant:
         # the settled twin is a unit-mate, so the on-disk arm deliberately exempts
         # it (that exemption is what lets a genuine swap self-heal) and only the
@@ -434,7 +436,8 @@ def test_reorganize_album_allows_a_swap_between_its_own_tracks(tmp_path: Path) -
 
     # Not refused: the preview offers it as a move, not a conflict.
     plan = reorg.plan_reorganize(lib, scope="library", artist=None, album_id=None)
-    assert plan.conflicts_total == 0 and plan.will_move == 1
+    assert plan.conflicts_total == 0
+    assert plan.will_move == 1
 
     for _run in range(3):
         with lib.music_dir_context():

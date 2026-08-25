@@ -31,7 +31,8 @@ def test_plan_shape() -> None:
         read_errors=[DiskSyncReadError(label="X — Y", error="boom")],
         truncated=False,
     )
-    assert plan.will_remove == 2 and plan.changes[0].fields == ["title", "year"]
+    assert plan.will_remove == 2
+    assert plan.changes[0].fields == ["title", "year"]
     assert plan.emptied_albums[0].track_count == 13
     assert plan.emptied_albums[0].path == "blink-182/blink-182"
 
@@ -51,9 +52,11 @@ def test_status_idle_shape() -> None:
         error=None,
         failures=[],
     )
-    assert s.phase == "idle" and s.failures == []
+    assert s.phase == "idle"
+    assert s.failures == []
 
 
 def test_outcome_defaults() -> None:
     out = DiskSyncOutcome(status="removed", label="A — B")
-    assert out.fields == [] and out.error is None
+    assert out.fields == []
+    assert out.error is None

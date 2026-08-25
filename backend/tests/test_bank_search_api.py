@@ -140,7 +140,9 @@ def test_search_no_hit_leaves_the_row_untouched(
     assert r.status_code == 200
     assert r.json()["found"] is False
     reread = store.get_item(bank_api.get_bank_dir(), item_id)
-    assert reread is not None and reread.reason == "no_match" and reread.parked is None
+    assert reread is not None
+    assert reread.reason == "no_match"
+    assert reread.parked is None
 
 
 def test_search_flips_stale_on_fingerprint_mismatch(
@@ -160,7 +162,8 @@ def test_search_flips_stale_on_fingerprint_mismatch(
     assert r.status_code == 409
     assert called["n"] == 0  # never searched a changed folder
     reread = store.get_item(bank_api.get_bank_dir(), item_id)
-    assert reread is not None and reread.status == "stale"
+    assert reread is not None
+    assert reread.status == "stale"
 
 
 def test_search_flips_stale_when_the_folder_is_gone(
@@ -173,7 +176,8 @@ def test_search_flips_stale_when_the_folder_is_gone(
     r = client.post(f"/api/bank/{item_id}/search", json=BODY)
     assert r.status_code == 409
     reread = store.get_item(bank_api.get_bank_dir(), item_id)
-    assert reread is not None and reread.status == "stale"
+    assert reread is not None
+    assert reread.status == "stale"
 
 
 @pytest.mark.parametrize("action", ["asis"])

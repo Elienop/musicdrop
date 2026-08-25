@@ -45,7 +45,8 @@ def test_settings_round_trip_redacts_token(client: TestClient) -> None:
     assert body["base_url"] == "http://plex:32400"
     assert body["library_path"] == "/data/music"
     assert body["has_token"] is True
-    assert "token" not in body and "secret" not in r.text
+    assert "token" not in body
+    assert "secret" not in r.text
 
 
 def test_test_endpoint_ok(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

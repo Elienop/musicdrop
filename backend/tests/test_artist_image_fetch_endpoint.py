@@ -321,7 +321,8 @@ def test_a_header_hostile_type_on_a_refused_format_is_not_echoed() -> None:
     assert resp.status_code == 409
     detail = resp.json()["detail"]
     assert "X-Injected" not in detail
-    assert "\r" not in detail and "\n" not in detail
+    assert "\r" not in detail
+    assert "\n" not in detail
     assert detail.isascii()
 
 

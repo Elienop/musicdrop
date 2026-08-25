@@ -497,7 +497,8 @@ def test_album_detail_exposes_release_identity(temp_library: "Library") -> None:
     album.store()
 
     detail = get_album_detail(temp_library, _require_id(album.id))
-    assert detail is not None and detail.release is not None
+    assert detail is not None
+    assert detail.release is not None
     r = detail.release
     assert r.data_source == "MusicBrainz"
     assert (r.label, r.country, r.media, r.disambiguation) == (

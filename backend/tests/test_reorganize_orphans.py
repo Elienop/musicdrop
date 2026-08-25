@@ -31,7 +31,8 @@ def test_plan_lists_orphans(reorganize_lib: Library, tmp_path: Path) -> None:
 def test_plan_without_trash_dir_has_no_orphans(reorganize_lib: Library) -> None:
     # Back-compat: existing callers pass no trash_dir -> orphan preview inactive.
     plan = plan_reorganize(reorganize_lib, scope="library", artist=None, album_id=None)
-    assert plan.orphans == [] and plan.orphans_total == 0
+    assert plan.orphans == []
+    assert plan.orphans_total == 0
 
 
 def test_scoped_preview_has_no_orphans_premove(reorganize_lib: Library, tmp_path: Path) -> None:
@@ -44,7 +45,8 @@ def test_scoped_preview_has_no_orphans_premove(reorganize_lib: Library, tmp_path
     plan = plan_reorganize(
         reorganize_lib, scope="artist", artist="Radiohead", album_id=None, trash_dir=trash
     )
-    assert plan.orphans == [] and plan.orphans_total == 0
+    assert plan.orphans == []
+    assert plan.orphans_total == 0
 
 
 def test_reorganize_singleton_sets_source_dir(reorganize_lib: Library) -> None:

@@ -132,7 +132,8 @@ def test_apply_renames_rekeys_portrait_and_reexports(
     assert body["artist_art_job"] == "not_needed"  # toggle is off
 
     got = cache.get("Fairuz")
-    assert isinstance(got, CachedImage) and got.data == b"portrait"
+    assert isinstance(got, CachedImage)
+    assert got.data == b"portrait"
     import os
 
     export = Path(os.fsdecode(rename_lib.directory)) / ".playlists" / f"{record.id}.m3u8"
@@ -167,7 +168,8 @@ def test_apply_emits_library_changed(
     cache.store_positive("Fayrouz", b"x", "image/jpeg")
     r = client.post("/api/artists/rename", json={"name": "Fayrouz", "new_name": "Fairuz"})
     assert r.status_code == 200
-    assert "lib" in calls and "art" in calls
+    assert "lib" in calls
+    assert "art" in calls
 
 
 def test_apply_kicks_the_art_job_when_files_moved_and_toggle_on(
@@ -193,7 +195,8 @@ def test_apply_kicks_the_art_job_when_files_moved_and_toggle_on(
     r = client.post("/api/artists/rename", json={"name": "Fayrouz", "new_name": "Fairuz"})
     assert r.status_code == 200
     assert r.json()["artist_art_job"] == "started"
-    assert reg.calls and reg.calls[0]["artist"] == "Fairuz"
+    assert reg.calls
+    assert reg.calls[0]["artist"] == "Fairuz"
     assert reg.calls[0]["scope_label"] == "Fairuz"
     assert started == ["Fairuz"]
 
@@ -235,7 +238,8 @@ def test_all_drifted_batch_does_not_rekey_the_portrait(
     assert body["portrait"] == "not_rekeyed"
     # The old name's cache entry is untouched; nothing was moved to the new key.
     got = cache.get("Fayrouz")
-    assert isinstance(got, CachedImage) and got.data == b"portrait"
+    assert isinstance(got, CachedImage)
+    assert got.data == b"portrait"
     assert cache.get("Fairuz") is None
     # Nothing moved, so the art job is not kicked either (its stub would raise).
     assert body["artist_art_job"] == "not_needed"

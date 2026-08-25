@@ -352,14 +352,16 @@ def test_fetch_item_instrumental_sidecar_removal_noop_when_none(edit_lib: Librar
 
     item = _first_item(edit_lib)
     base, _ext = os.path.splitext(os.fsdecode(item.path))
-    assert not Path(base + ".lrc").exists() and not Path(base + ".txt").exists()
+    assert not Path(base + ".lrc").exists()
+    assert not Path(base + ".txt").exists()
 
     out = fetch_item_lyrics(
         _FakePlugin([_FakeBackend(result=_instrumental())]), item, force=False, write=True
     )
 
     assert out.status == "instrumental"  # no sidecar to delete is not an error
-    assert not Path(base + ".lrc").exists() and not Path(base + ".txt").exists()
+    assert not Path(base + ".lrc").exists()
+    assert not Path(base + ".txt").exists()
 
 
 def test_fetch_item_skips_known_instrumental_even_on_recheck(edit_lib: Library) -> None:

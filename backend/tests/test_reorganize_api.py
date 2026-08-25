@@ -28,7 +28,9 @@ def test_preview_library(reorg_client: TestClient) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["scope_label"] == "library"
-    assert body["total"] == 4 and body["will_move"] == 3 and body["already_in_place"] == 1
+    assert body["total"] == 4
+    assert body["will_move"] == 3
+    assert body["already_in_place"] == 1
 
 
 def test_preview_artist(reorg_client: TestClient) -> None:
@@ -136,10 +138,12 @@ def test_dismiss_clears_a_terminal_jobs_failures(reorg_client: TestClient) -> No
 
     resp = reorg_client.post("/api/reorganize/dismiss")
     assert resp.status_code == 200
-    assert resp.json()["phase"] == "idle" and resp.json()["failures"] == []
+    assert resp.json()["phase"] == "idle"
+    assert resp.json()["failures"] == []
 
     after = reorg_client.get("/api/reorganize/status").json()
-    assert after["phase"] == "idle" and after["failures"] == []
+    assert after["phase"] == "idle"
+    assert after["failures"] == []
 
 
 def test_dismiss_while_running_is_refused_and_the_job_survives(reorg_client: TestClient) -> None:
@@ -151,14 +155,17 @@ def test_dismiss_while_running_is_refused_and_the_job_survives(reorg_client: Tes
     assert resp.status_code == 409
 
     after = reorg_client.get("/api/reorganize/status").json()
-    assert after["phase"] == "running" and len(after["failures"]) == 1
+    assert after["phase"] == "running"
+    assert len(after["failures"]) == 1
 
 
 def test_dismiss_with_no_job_is_idempotent(reorg_client: TestClient) -> None:
     first = reorg_client.post("/api/reorganize/dismiss")
-    assert first.status_code == 200 and first.json()["phase"] == "idle"
+    assert first.status_code == 200
+    assert first.json()["phase"] == "idle"
     second = reorg_client.post("/api/reorganize/dismiss")
-    assert second.status_code == 200 and second.json()["phase"] == "idle"
+    assert second.status_code == 200
+    assert second.json()["phase"] == "idle"
 
 
 def test_dismiss_is_not_gated_by_another_library_job(reorg_client: TestClient) -> None:
@@ -173,7 +180,8 @@ def test_dismiss_is_not_gated_by_another_library_job(reorg_client: TestClient) -
         resp = reorg_client.post("/api/reorganize/dismiss")
     finally:
         lyrics.finish("done")
-    assert resp.status_code == 200 and resp.json()["phase"] == "idle"
+    assert resp.status_code == 200
+    assert resp.json()["phase"] == "idle"
 
 
 def test_reading_status_and_preview_never_clears_the_failure(reorg_client: TestClient) -> None:
@@ -201,7 +209,8 @@ def test_status_carries_finished_at_for_a_terminal_job(
 
 def test_idle_status_invents_no_finished_at(reorg_client: TestClient) -> None:
     body = reorg_client.get("/api/reorganize/status").json()
-    assert body["phase"] == "idle" and body["finished_at"] is None
+    assert body["phase"] == "idle"
+    assert body["finished_at"] is None
 
 
 def test_running_status_invents_no_finished_at(reorg_client: TestClient) -> None:
@@ -209,7 +218,8 @@ def test_running_status_invents_no_finished_at(reorg_client: TestClient) -> None
         scope="library", artist=None, album_id=None, scope_label="library"
     )
     body = reorg_client.get("/api/reorganize/status").json()
-    assert body["phase"] == "running" and body["finished_at"] is None
+    assert body["phase"] == "running"
+    assert body["finished_at"] is None
 
 
 def test_preview_does_not_list_playlists_export_dir(

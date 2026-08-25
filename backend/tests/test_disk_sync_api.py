@@ -33,7 +33,8 @@ def test_preview_lists_missing_file(sync_client: TestClient, edit_lib: Library) 
     r = sync_client.get("/api/disk-sync/preview")
     assert r.status_code == 200
     body = r.json()
-    assert body["will_remove"] == 1 and len(body["removals"]) == 1
+    assert body["will_remove"] == 1
+    assert len(body["removals"]) == 1
 
 
 def test_preview_503_when_root_missing(sync_client: TestClient, edit_lib: Library) -> None:

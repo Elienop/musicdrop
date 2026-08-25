@@ -63,7 +63,8 @@ def test_preview_from_files_matches_and_counts(
     assert r.status_code == 200
     (pl,) = r.json()["playlists"]
     assert pl["name"] == "Road"
-    assert pl["matched_count"] == 1 and pl["unmatched_count"] == 1
+    assert pl["matched_count"] == 1
+    assert pl["unmatched_count"] == 1
     assert pl["entries"][0]["item_id"] == item_id
     assert pl["entries"][1]["status"] == "unmatched"
 
@@ -119,11 +120,13 @@ def test_commit_creates_playlists_with_pending_and_suffixes_collisions(
     assert r.status_code == 200
     (created,) = r.json()["created"]
     assert created["name"] == "Road (2)"
-    assert created["track_count"] == 1 and created["pending_count"] == 1
+    assert created["track_count"] == 1
+    assert created["pending_count"] == 1
     record = store.get_playlist(_dir(), created["id"])
     assert record is not None
     assert record.entries[0].item_id == item_id
-    assert record.entries[1].pending is not None and record.entries[1].pending.title == "Lost"
+    assert record.entries[1].pending is not None
+    assert record.entries[1].pending.title == "Lost"
 
 
 def test_commit_partial_success_when_one_playlist_fails(
@@ -187,7 +190,9 @@ def test_commit_pulls_plex_poster_by_rating_key(
     assert created["artwork_hash"] is not None
     assert seen == [("22", "Road")]
     record = store.get_playlist(_dir(), created["id"])
-    assert record is not None and record.artwork is not None and record.artwork.format == "png"
+    assert record is not None
+    assert record.artwork is not None
+    assert record.artwork.format == "png"
 
 
 def test_commit_pulls_plex_poster_from_a_legacy_title_only_playlist(
@@ -263,7 +268,8 @@ def test_commit_survives_poster_download_failure(
     (created,) = r.json()["created"]
     assert created["artwork_hash"] is None
     record = store.get_playlist(_dir(), created["id"])
-    assert record is not None and record.artwork is None
+    assert record is not None
+    assert record.artwork is None
 
 
 def test_commit_rejects_unknown_item_ids(client: TestClient, beets_library: LibraryHandle) -> None:

@@ -127,7 +127,8 @@ def test_rescan_no_candidates_becomes_no_match_row(
     body = client.post(f"/api/bank/{item_id}/rescan").json()
     assert body["reason"] == "no_match"
     assert body["parked"] is None
-    assert body["artist"] == "CurA" and body["album"] == "CurB"
+    assert body["artist"] == "CurA"
+    assert body["album"] == "CurB"
     assert body["confidence"] == 0.0
 
 

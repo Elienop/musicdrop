@@ -185,7 +185,8 @@ def test_starter_replace_rules_map_typographic_to_ascii() -> None:
 
     # (a) the YAML round-trips into a non-empty replace mapping.
     replace = data["replace"]
-    assert isinstance(replace, dict) and replace
+    assert isinstance(replace, dict)
+    assert replace
 
     # (b) every pattern compiles under Python re (single-quoted YAML keeps the
     # \uXXXX escapes as literal text, which re then decodes).

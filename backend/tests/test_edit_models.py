@@ -16,7 +16,8 @@ def test_year_must_be_int_not_arbitrary_string() -> None:
 
 def test_request_allows_album_only_and_tracks_only() -> None:
     a = AlbumEditRequest(album=AlbumFieldEdits(title="In Rainbows"), tracks=[])
-    assert a.album is not None and a.album.title == "In Rainbows"
+    assert a.album is not None
+    assert a.album.title == "In Rainbows"
     b = AlbumEditRequest(album=None, tracks=[TrackFieldEdits(item_id=5, title="Nude")])
     assert b.tracks[0].item_id == 5
 

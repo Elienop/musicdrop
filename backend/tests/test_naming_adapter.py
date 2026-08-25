@@ -90,7 +90,8 @@ def test_bad_replace_regex_reported_and_excluded(naming_lib: Library) -> None:
         naming_lib, rules=rules, replace=[ReplaceRuleInput(pattern="(", replacement="_")]
     )
     assert len(errs) == 1
-    assert errs[0].index == 0 and errs[0].pattern == "("
+    assert errs[0].index == 0
+    assert errs[0].pattern == "("
     assert rendered[0].sample_path == "Adele/25/Hello.flac"
 
 

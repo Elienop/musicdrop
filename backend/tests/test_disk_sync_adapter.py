@@ -50,8 +50,10 @@ def _bump_title_on_disk(item: Any, new_title: str) -> None:
 
 def test_plan_empty_when_disk_matches_db(edit_lib: Library) -> None:
     plan = plan_disk_sync(edit_lib)
-    assert plan.will_remove == 0 and plan.will_update == 0
-    assert plan.emptied_total == 0 and plan.read_errors == []
+    assert plan.will_remove == 0
+    assert plan.will_update == 0
+    assert plan.emptied_total == 0
+    assert plan.read_errors == []
     assert plan.total_items == len(list(edit_lib.items()))
 
 
@@ -72,7 +74,8 @@ def test_plan_flags_whole_album_as_emptied(edit_lib: Library) -> None:
         os.remove(it.path)
     plan = plan_disk_sync(edit_lib)
     assert plan.emptied_total == 1
-    assert plan.emptied_albums and album.album in plan.emptied_albums[0].label
+    assert plan.emptied_albums
+    assert album.album in plan.emptied_albums[0].label
     assert plan.emptied_albums[0].track_count == 3  # the fixture album's rows
     assert plan.emptied_albums[0].path == os.path.join("Radiohead", "In Rainbows")
 
@@ -126,10 +129,12 @@ def test_plan_lists_changed_tags_with_field_names(edit_lib: Library) -> None:
     _bump_title_on_disk(item, "Renamed On Disk")
     plan = plan_disk_sync(edit_lib)
     assert plan.will_update == 1
-    assert plan.changes and "title" in plan.changes[0].fields
+    assert plan.changes
+    assert "title" in plan.changes[0].fields
     # read-only: the DB still has the old title
     row = edit_lib.get_item(item.id)
-    assert row is not None and row.title != "Renamed On Disk"
+    assert row is not None
+    assert row.title != "Renamed On Disk"
 
 
 def test_plan_skips_untouched_mtime(edit_lib: Library) -> None:
@@ -153,7 +158,8 @@ def test_plan_reports_unreadable_file(edit_lib: Library) -> None:
     future = time.time() + 10
     os.utime(path, (future, future))
     plan = plan_disk_sync(edit_lib)
-    assert len(plan.read_errors) == 1 and plan.read_errors[0].error
+    assert len(plan.read_errors) == 1
+    assert plan.read_errors[0].error
     assert plan.will_update == 0
 
 
@@ -221,12 +227,15 @@ def test_run_refreshes_changed_tags_and_realigns_album(edit_lib: Library) -> Non
     outcomes, _ = _run(edit_lib)
     refreshed = edit_lib.get_item(_require_id(item.id))
     assert refreshed is not None
-    assert refreshed.title == "Fresh Title From Disk" and refreshed.year == 1987
+    assert refreshed.title == "Fresh Title From Disk"
+    assert refreshed.year == 1987
     updated = [o for o in outcomes if o.status == "updated"]
-    assert updated and any("title" in o.fields for o in updated)
+    assert updated
+    assert any("title" in o.fields for o in updated)
     # Album-level realign: year is an Album.item_keys field.
     realigned = edit_lib.get_album(_require_id(album.id))
-    assert realigned is not None and realigned.year == 1987
+    assert realigned is not None
+    assert realigned.year == 1987
 
 
 def test_run_realign_keeps_per_track_album_fields(edit_lib: Library) -> None:
@@ -293,7 +302,8 @@ def test_run_albumartist_special_case_preserved(edit_lib: Library) -> None:
     assert old_albumartist == item.artist  # fixture precondition
     _run(edit_lib)
     row = edit_lib.get_item(item.id)
-    assert row is not None and row.albumartist == old_albumartist
+    assert row is not None
+    assert row.albumartist == old_albumartist
 
 
 def test_run_read_error_is_isolated(edit_lib: Library) -> None:
@@ -308,7 +318,8 @@ def test_run_read_error_is_isolated(edit_lib: Library) -> None:
     statuses = {o.status for o in outcomes}
     assert "read_error" in statuses
     good_row = edit_lib.get_item(good.id)
-    assert good_row is not None and good_row.title == "Still Synced"
+    assert good_row is not None
+    assert good_row.title == "Still Synced"
 
 
 def test_run_honors_stop(edit_lib: Library) -> None:

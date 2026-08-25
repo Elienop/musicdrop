@@ -120,7 +120,8 @@ def test_rescan_folder_runs_the_default_lookup(
     monkeypatch.setattr(res, "tag_album", fake_tag_album)
     outcome = res.rescan_folder(str(tmp_path))
     # Default first-scan lookup: NO search terms of any kind.
-    assert seen["args"] == () and seen["kwargs"] == {}
+    assert seen["args"] == ()
+    assert seen["kwargs"] == {}
     assert outcome.result is not None
     assert outcome.result.candidate.options[0].release_id == "a1"
     assert outcome.result.recommendation is Recommendation.strong

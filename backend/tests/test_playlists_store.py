@@ -287,7 +287,8 @@ def test_legacy_uids_are_stable_across_reads(tmp_path: Path) -> None:
 
     first = store.get_playlist(tmp_path, record.id)
     second = store.get_playlist(tmp_path, record.id)
-    assert first is not None and second is not None
+    assert first is not None
+    assert second is not None
     assert [e.uid for e in first.entries] == [e.uid for e in second.entries]
 
 

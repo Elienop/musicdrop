@@ -87,7 +87,8 @@ def test_bank_item_roundtrip_minimal() -> None:
     assert isinstance(item.banked_at, datetime)
     again = BankItem.model_validate_json(item.model_dump_json())
     assert again == item
-    assert again.parked is None and again.duplicate is None
+    assert again.parked is None
+    assert again.duplicate is None
 
 
 def test_bank_item_rejects_garbage_timestamps() -> None:
@@ -171,4 +172,5 @@ def test_bank_item_decided_row_validates() -> None:
         decided_at=datetime(2026, 6, 12, 1, tzinfo=UTC),
         banked_at=BANKED_AT,
     )
-    assert item.decided is not None and item.decided.action == "asis"
+    assert item.decided is not None
+    assert item.decided.action == "asis"

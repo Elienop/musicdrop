@@ -20,7 +20,8 @@ def test_get_trash_empty(client: TestClient) -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["albums"] == []
-    assert isinstance(body["trash_path"], str) and body["trash_path"]
+    assert isinstance(body["trash_path"], str)
+    assert body["trash_path"]
 
 
 def test_empty_one_removes_folder(client: TestClient) -> None:

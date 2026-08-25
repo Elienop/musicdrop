@@ -84,7 +84,8 @@ def test_failure_rows_are_capped_at_ten() -> None:
     s = reg.state()
     assert s.failed == 11  # count is exact
     assert len(s.failures) == 10  # rows are capped
-    assert s.failures[0].label == "L0" and s.failures[-1].label == "L9"
+    assert s.failures[0].label == "L0"
+    assert s.failures[-1].label == "L9"
 
 
 def test_state_failures_is_a_copy() -> None:
@@ -108,7 +109,9 @@ def test_scope_fields_surface() -> None:
     reg.start(scope="artist", artist="Radiohead", album_id=None, scope_label="Radiohead")
     s = reg.state()
     assert s.scope == "artist"
-    assert s.artist == "Radiohead" and s.album_id is None and s.scope_label == "Radiohead"
+    assert s.artist == "Radiohead"
+    assert s.album_id is None
+    assert s.scope_label == "Radiohead"
 
 
 def test_stop_is_cooperative() -> None:
@@ -127,7 +130,9 @@ def test_dismiss_clears_a_terminal_job_back_to_idle() -> None:
     reg.dismiss()
     s = reg.state()
     assert s.phase == "idle"
-    assert s.job_id is None and s.failed == 0 and s.failures == []
+    assert s.job_id is None
+    assert s.failed == 0
+    assert s.failures == []
 
 
 def test_dismiss_refuses_a_running_job_and_leaves_it_intact() -> None:
@@ -138,7 +143,8 @@ def test_dismiss_refuses_a_running_job_and_leaves_it_intact() -> None:
         reg.dismiss()
     s = reg.state()
     assert s.phase == "running"
-    assert s.failed == 1 and [f.label for f in s.failures] == ["A — B"]
+    assert s.failed == 1
+    assert [f.label for f in s.failures] == ["A — B"]
 
 
 def test_dismiss_on_an_empty_slot_is_a_no_op() -> None:
@@ -201,7 +207,9 @@ def test_a_new_job_clears_the_previous_finished_at_until_it_ends() -> None:
     assert reg.state().finished_at is None  # the new run has not finished yet
     reg.finish("done")
     second = reg.state().finished_at
-    assert first is not None and second is not None and second >= first
+    assert first is not None
+    assert second is not None
+    assert second >= first
 
 
 def test_module_global_active_and_reset() -> None:
@@ -220,8 +228,11 @@ def test_sweep_library_moves_three_skips_one(reorganize_lib: Library, tmp_path: 
     sweep(reg, handle, scope="library", artist=None, album_id=None, delay=0.0)
     s = reg.state()
     assert s.phase == "done"
-    assert s.total == 4 and s.processed == 4
-    assert s.moved == 3 and s.skipped == 1 and s.failed == 0
+    assert s.total == 4
+    assert s.processed == 4
+    assert s.moved == 3
+    assert s.skipped == 1
+    assert s.failed == 0
 
 
 def test_sweep_honors_stop(reorganize_lib: Library, tmp_path: Path) -> None:
@@ -249,4 +260,5 @@ def test_sweep_failure_marks_failed(
     handle = make_test_handle(reorganize_lib, tmp_path)
     sweep(reg, handle, scope="library", artist=None, album_id=None, delay=0.0)
     s = reg.state()
-    assert s.phase == "failed" and "kaboom" in (s.error or "")
+    assert s.phase == "failed"
+    assert "kaboom" in (s.error or "")

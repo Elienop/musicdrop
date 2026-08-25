@@ -212,7 +212,8 @@ def test_candidate_options_carry_per_release_diff() -> None:
     # Every option carries its OWN full diff now, not just identity — so the
     # switcher can re-render the whole preview for the selected release.
     top, alt = options
-    assert top.album_after is not None and top.album_after.album == "OK Computer"
+    assert top.album_after is not None
+    assert top.album_after.album == "OK Computer"
     assert top.album_after.year == 1997
     assert top.changed_fields == []
     assert len(top.tracks) == 1
@@ -383,7 +384,8 @@ def test_multi_disc_rows_keep_release_order_under_per_disc() -> None:
     assert [t.index for t in candidate.tracks] == [1, 2, 3, 4]
     # index (sort key) and track_after (per-disc) diverge on disc 2.
     b1 = candidate.tracks[2]
-    assert b1.index == 3 and b1.track_after == 1
+    assert b1.index == 3
+    assert b1.track_after == 1
 
 
 def test_clean_disambig_drops_none_segments() -> None:

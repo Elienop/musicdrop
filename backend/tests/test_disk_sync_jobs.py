@@ -30,7 +30,8 @@ def test_registry_single_slot_and_counts() -> None:
     assert (s.removed, s.updated, s.unchanged, s.read_errors) == (1, 1, 1, 1)
     assert s.emptied_albums == 2
     assert len(s.failures) == 1
-    assert s.failures[0].label == "d" and s.failures[0].error == "boom"
+    assert s.failures[0].label == "d"
+    assert s.failures[0].error == "boom"
     assert s.phase == "done"
 
 
@@ -59,7 +60,9 @@ def test_sweep_runs_to_done_and_fires_on_complete(edit_lib: Library, tmp_path: P
     fired: list[bool] = []
     sweep(reg, handle, on_complete=lambda: fired.append(True))
     s = reg.state()
-    assert s.phase == "done" and s.removed == 1 and fired == [True]
+    assert s.phase == "done"
+    assert s.removed == 1
+    assert fired == [True]
 
 
 def test_sweep_missing_root_fails_job(edit_lib: Library, tmp_path: Path) -> None:
@@ -76,7 +79,8 @@ def test_sweep_missing_root_fails_job(edit_lib: Library, tmp_path: Path) -> None
     sweep(reg, handle)
     s = reg.state()
     assert s.phase == "failed"
-    assert s.error is not None and "unavailable" in s.error.lower()
+    assert s.error is not None
+    assert "unavailable" in s.error.lower()
 
 
 def test_sweep_crash_is_logged_and_fails_job(

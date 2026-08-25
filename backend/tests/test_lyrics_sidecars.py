@@ -70,7 +70,8 @@ def test_plain_lyrics_write_txt(tmp_path: Path) -> None:
     txt = tmp_path / "01 - Song.txt"
     assert out == str(txt)
     body = txt.read_text(encoding="utf-8")
-    assert "line one" in body and "line two" in body
+    assert "line one" in body
+    assert "line two" in body
     assert "[00:" not in body  # no timestamps in the plain sidecar
 
 

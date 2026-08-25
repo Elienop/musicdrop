@@ -674,7 +674,8 @@ def test_request_pause_flags_sweep_job_and_is_idempotent() -> None:
     job = _install_sweep_job(reg)
     reg.request_pause("sweep-job")
     assert job.bridge.pause_requested() is True
-    assert job.sweep is not None and job.sweep.paused is True
+    assert job.sweep is not None
+    assert job.sweep.paused is True
     reg.request_pause("sweep-job")  # second pause while active: no raise
 
 

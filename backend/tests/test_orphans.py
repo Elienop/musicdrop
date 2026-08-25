@@ -134,7 +134,8 @@ def test_trash_folder_moves_whole_folder(tmp_path: Path) -> None:
     dest = trash_folder(husk, trash_dir=trash)
 
     assert not husk.exists()  # source gone
-    assert dest.parent == trash and dest.name == "Old Name"
+    assert dest.parent == trash
+    assert dest.name == "Old Name"
     assert (dest / "artist-poster.jpg").exists()  # reversible: files live in Trash
 
 
@@ -190,7 +191,8 @@ def test_reorganize_models_carry_orphan_fields() -> None:
         conflicts=[],
         conflicts_total=0,
     )
-    assert plan.orphans[0].file_count == 2 and plan.orphans_total == 1
+    assert plan.orphans[0].file_count == 2
+    assert plan.orphans_total == 1
     out = ReorganizeOutcome(status="moved", label="A — B", source_dir="/m/A/B")
     assert out.source_dir == "/m/A/B"
     assert ReorganizeOutcome(status="skipped", label="x").source_dir is None
