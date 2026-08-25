@@ -93,6 +93,36 @@ def _library_indexes(
     return lib_by_id, lib_by_pos
 
 
+def _build_row(
+    t: Any,
+    import_by_pos: dict[int, Any],
+    lib_by_id: dict[str, Any],
+    lib_by_pos: dict[tuple[int, int], Any],
+) -> tuple[DuplicateTrackRow, DuplicateTrackState]:
+    """Derive one release track's row and its state (lib/import lookup + classify)."""
+    pos = int(getattr(t, "index", 0) or 0)
+    disc = int(getattr(t, "medium", 0) or 1)
+    # per-disc track number (single-disc: == index) for the cross-source match
+    track_num = int(getattr(t, "medium_index", None) or pos)
+    key = _norm_id(getattr(t, "track_id", None))
+    lib_item = (lib_by_id.get(key) if key else None) or lib_by_pos.get((disc, track_num))
+    imp_item = import_by_pos.get(pos)
+    state = _classify(lib_item, imp_item)
+    lib_fmt, lib_kbps = _quality(lib_item)
+    imp_fmt, imp_kbps = _quality(imp_item)
+    row = DuplicateTrackRow(
+        position=pos,
+        disc=disc,
+        title=str(getattr(t, "title", "") or ""),
+        state=state,
+        library_format=lib_fmt,
+        library_bitrate_kbps=lib_kbps,
+        import_format=imp_fmt,
+        import_bitrate_kbps=imp_kbps,
+    )
+    return row, state
+
+
 def build_merge_preview(task: Any, found_duplicates: Any) -> MergePreview | None:
     """Per-position library-vs-import comparison for a parked duplicate.
 
@@ -112,28 +142,8 @@ def build_merge_preview(task: Any, found_duplicates: Any) -> MergePreview | None
     rows: list[DuplicateTrackRow] = []
     in_library = added = upgrade = missing = 0
     for t in tracks:
-        pos = int(getattr(t, "index", 0) or 0)
-        disc = int(getattr(t, "medium", 0) or 1)
-        # per-disc track number (single-disc: == index) for the cross-source match
-        track_num = int(getattr(t, "medium_index", None) or pos)
-        key = _norm_id(getattr(t, "track_id", None))
-        lib_item = (lib_by_id.get(key) if key else None) or lib_by_pos.get((disc, track_num))
-        imp_item = import_by_pos.get(pos)
-        state = _classify(lib_item, imp_item)
-        lib_fmt, lib_kbps = _quality(lib_item)
-        imp_fmt, imp_kbps = _quality(imp_item)
-        rows.append(
-            DuplicateTrackRow(
-                position=pos,
-                disc=disc,
-                title=str(getattr(t, "title", "") or ""),
-                state=state,
-                library_format=lib_fmt,
-                library_bitrate_kbps=lib_kbps,
-                import_format=imp_fmt,
-                import_bitrate_kbps=imp_kbps,
-            )
-        )
+        row, state = _build_row(t, import_by_pos, lib_by_id, lib_by_pos)
+        rows.append(row)
         if state is DuplicateTrackState.added:
             added += 1
         elif state is DuplicateTrackState.missing:

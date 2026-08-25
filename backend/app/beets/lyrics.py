@@ -342,6 +342,42 @@ def _apply_fetched_result(
     return None
 
 
+def _try_backend(
+    backend: Any,
+    item: Any,
+    *,
+    artist: object,
+    title: object,
+    album: str,
+    length: int,
+    item_id: int,
+    write: bool,
+) -> tuple[ItemLyricsOutcome | None, bool]:
+    """One backend's attempt for one (artist, title) pair.
+
+    Returns ``(outcome, failed)``: the outcome when this backend stored a
+    result (None keeps the search going) and whether a transient network
+    error was hit (``fetch_failed`` must NOT be marked ``lyrics_checked``).
+    """
+    try:
+        result = backend.fetch(artist, title, album, length)
+    except HTTPNotFoundError:
+        return None, False  # this pair/backend simply has nothing
+    except requests.exceptions.RequestException as exc:
+        # Concise one-liner (str(exc) reads "429 ... Too Many Requests
+        # for url: ...") instead of a per-item traceback flood.
+        _log.warning(
+            "lyrics fetch failed: %s [%s]: %s",
+            _item_label(item),
+            _backend_name(backend),
+            exc,
+        )
+        return None, True
+    if result is None:
+        return None, False
+    return _apply_fetched_result(item_id, item, result, write=write), False
+
+
 def _search_for_lyrics(
     plugin: Any, item: Any, *, item_id: int, write: bool
 ) -> tuple[ItemLyricsOutcome | None, bool]:
@@ -360,24 +396,17 @@ def _search_for_lyrics(
     for artist, titles in search_pairs(item):
         for title in titles:
             for backend in plugin.backends:
-                try:
-                    result = backend.fetch(artist, title, album, length)
-                except HTTPNotFoundError:
-                    continue  # this pair/backend simply has nothing
-                except requests.exceptions.RequestException as exc:
-                    # Concise one-liner (str(exc) reads "429 ... Too Many Requests
-                    # for url: ...") instead of a per-item traceback flood.
-                    _log.warning(
-                        "lyrics fetch failed: %s [%s]: %s",
-                        _item_label(item),
-                        _backend_name(backend),
-                        exc,
-                    )
-                    failed = True
-                    continue
-                if result is None:
-                    continue
-                outcome = _apply_fetched_result(item_id, item, result, write=write)
+                outcome, backend_failed = _try_backend(
+                    backend,
+                    item,
+                    artist=artist,
+                    title=title,
+                    album=album,
+                    length=length,
+                    item_id=item_id,
+                    write=write,
+                )
+                failed = failed or backend_failed
                 if outcome is not None:
                     return outcome, failed
     return None, failed
