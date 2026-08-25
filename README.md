@@ -196,7 +196,7 @@ npm run build      # production build
 
 Keep the backend on port **3030** — that's the target of the Vite dev proxy.
 
-**API types are generated, not hand-written.** The frontend's TypeScript API types come from the backend's OpenAPI schema — never edit `src/api/schema.d.ts` by hand. After changing a Pydantic model, run both steps (a CI guard fails if `frontend/openapi.json` drifts from the live spec):
+**API types are generated, not hand-written.** The frontend's TypeScript API types come from the backend's OpenAPI schema — never edit `src/api/schema.d.ts` by hand. After changing a Pydantic model, run both steps from the repo root (a CI guard fails if `frontend/openapi.json` drifts from the live spec):
 
 ```bash
 cd backend && uv run python scripts/dump_openapi.py   # app -> frontend/openapi.json

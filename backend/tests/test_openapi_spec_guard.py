@@ -18,6 +18,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from app.main import app
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TRACKED_FILE = REPO_ROOT / "frontend" / "openapi.json"
 
@@ -94,7 +96,7 @@ def _drift_summary(tracked: dict[str, object], live: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def test_tracked_openapi_matches_live_spec(client: TestClient) -> None:
+def test_tracked_openapi_matches_live_spec() -> None:
     if not TRACKED_FILE.is_file():
         pytest.fail(f"tracked API contract is missing at {TRACKED_FILE}\n{REGEN_GUIDANCE}")
     try:
@@ -103,6 +105,13 @@ def test_tracked_openapi_matches_live_spec(client: TestClient) -> None:
         pytest.fail(
             f"tracked API contract at {TRACKED_FILE} is not valid JSON ({exc})\n{REGEN_GUIDANCE}"
         )
+    if not isinstance(tracked, dict):
+        pytest.fail(
+            f"tracked API contract at {TRACKED_FILE} is not a JSON object\n{REGEN_GUIDANCE}"
+        )
+    # Deliberately NOT the conftest ``client`` fixture: the spec needs no
+    # beets library, and that fixture would drag one in for this test.
+    client = TestClient(app)
     resp = client.get("/openapi.json")
     assert resp.status_code == 200
     live = resp.json()

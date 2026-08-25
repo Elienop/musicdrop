@@ -1,11 +1,12 @@
 """Dump the app's live OpenAPI spec into ``frontend/openapi.json``.
 
 This is step 1 of the API-contract refresh (see README): after changing a
-Pydantic model, run this, then ``cd frontend && npm run gen:api``. The
-tracked file's exact serialization is ``json.dumps(spec, indent=2)`` plus a
-single trailing newline, keys in insertion order — byte-identical rewrites
-when the spec is unchanged, so CI's drift guard (tests/test_openapi_spec_guard.py)
-can rely on it.
+Pydantic model, run this, then ``cd ../frontend && npm run gen:api`` (you
+must already be in ``backend/`` to run this script). The canonical
+serialization — ``json.dumps(spec, indent=2, allow_nan=False)`` plus a single
+trailing newline, keys in insertion order — exists so an unchanged spec
+rewrites diff-free (no churn in review); ``tests/test_dump_openapi.py``
+pins those exact bytes.
 """
 
 import json
