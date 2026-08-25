@@ -228,6 +228,14 @@ function HeaderActions({
   );
 }
 
+/** The skipped-groups side note for the moved-copies line — skipped groups
+ * don't change the lead ("moved N copies"), so they trail as one clause. */
+function skippedSuffix(skipped: number): string {
+  return ` ${skipped} group${skipped === 1 ? "" : "s"} changed and ${
+    skipped === 1 ? "was" : "were"
+  } skipped; refreshed; re-check ${skipped === 1 ? "it" : "them"}.`;
+}
+
 /** The bulk-resolve outcome line. Two shapes: copies actually moved vs. all
  * groups skipped. */
 function BulkResolveNote({ summary }: Readonly<{ summary: ResolveAllResult }>) {
@@ -236,8 +244,7 @@ function BulkResolveNote({ summary }: Readonly<{ summary: ResolveAllResult }>) {
     <p className="text-muted-foreground text-sm" role="status">
       Moved {summary.moved_count} {summary.moved_count === 1 ? "copy" : "copies"} across{" "}
       {summary.group_count} {summary.group_count === 1 ? "group" : "groups"} to Trash.
-      {skipped > 0 &&
-        ` ${skipped} group${skipped === 1 ? "" : "s"} changed and ${skipped === 1 ? "was" : "were"} skipped; refreshed; re-check ${skipped === 1 ? "it" : "them"}.`}
+      {skipped > 0 && skippedSuffix(skipped)}
     </p>
   ) : (
     // All groups drifted since the scan (a normal 200 with nothing moved):
