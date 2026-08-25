@@ -875,22 +875,7 @@ class WebImportSession(ImportSession):
             )
             is_search = choice.action is ImportAction.search and choice.search is not None
             is_rescan = choice.action is ImportAction.rescan
-            # Stale-client race: a prior search re-parked a DIFFERENT candidate
-            # list, but the client still renders the old one and submits an apply
-            # against it. Re-confirm instead of letting _apply_choice silently
-            # import a release the user never chose. Two detectors: the index is
-            # out of range for the current list (a search SHRANK it), or the
-            # client-echoed search_revision doesn't match the current park (a
-            # search REPLACED it with an equal-or-longer list, where a stale
-            # in-range index still looks valid). The revision echo closes that
-            # residual for revision-echoing clients; a None revision (a legacy/
-            # non-echoing client) degrades to the length-only guard. Only apply
-            # is revision-checked — skip/asis/astracks/abort are list-independent
-            # decisions and must never be blocked by a stale revision.
-            is_stale_apply = choice.action is ImportAction.apply and (
-                not self._apply_index_in_range(choice, candidates)
-                or (choice.search_revision is not None and choice.search_revision != revision)
-            )
+            is_stale_apply = self._park_stale_apply(choice, candidates, revision)
             if not is_search and not is_rescan and not is_stale_apply:
                 result = self._apply_choice(choice, candidates)
                 if result is Action.TRACKS:
@@ -907,51 +892,19 @@ class WebImportSession(ImportSession):
                 # so the user re-confirms rather than importing the wrong release.
                 feedback = "That release is no longer in the list - please pick again."
             elif is_search:
-                assert choice.search is not None  # is_search narrowed it above
-                new_candidates, new_rec = relookup(task, choice.search)
-                if new_candidates:
-                    candidates = new_candidates
-                    task.candidates = candidates
-                    recommendation = _REC_MAP.get(new_rec, Recommendation.none)
-                    feedback = None
-                else:
-                    feedback = "No release found. Showing your previous matches."
-            elif not folder or not self._under_toppath(folder):
-                # Rescan guard: an empty folder, or one outside every session
-                # toppath (a MERGE task's library-spanning ancestor), must never
-                # be os.walk'd — that can traverse the whole library mount and
-                # swap task.items to every file under it. Refuse instead.
-                feedback = "Rescan isn't available for this album."
+                candidates, recommendation, feedback = self._park_search(
+                    task, choice, candidates, recommendation
+                )
             else:
-                # Rescan: the user changed the folder on purpose — re-read it
-                # from disk and re-run beets' DEFAULT first-scan lookup.
-                new_items = _read_items(Path(folder))
-                if not new_items:
-                    feedback = "No audio files remain in the folder. Skip or Abort."
-                else:
-                    cur_artist, cur_album, new_candidates, new_rec = lookup_items(new_items, None)
-                    if not new_candidates:
-                        # The live payload cannot represent a candidate-less park,
-                        # and a half-swap would let Apply import deleted files —
-                        # keep the task fully consistent on its original scan.
-                        feedback = (
-                            "No release matched the rescanned folder; "
-                            "showing the album as originally scanned."
-                        )
-                    else:
-                        task.items = new_items
-                        task.cur_artist = cur_artist
-                        task.cur_album = cur_album
-                        candidates = new_candidates
-                        task.candidates = candidates
-                        recommendation = _REC_MAP.get(new_rec, Recommendation.none)
-                        # The deleted file may have carried the embedded cover —
-                        # re-detect so the re-park and the cover endpoint stay true.
-                        art_source = self._first_item_art_source(new_items)
-                        has_current_art = (
-                            art_source is not None and embedded_art(art_source) is not None
-                        )
-                        feedback = None
+                (
+                    candidates,
+                    recommendation,
+                    art_source,
+                    has_current_art,
+                    feedback,
+                ) = self._park_rescan(
+                    task, folder, candidates, recommendation, art_source, has_current_art
+                )
             top = candidates[0]
             candidate = map_album_match(
                 top,
@@ -969,6 +922,111 @@ class WebImportSession(ImportSession):
                     index, task, recommendation, AlbumOutcomeStatus.needs_review, match=top
                 )
             )
+
+    def _park_stale_apply(self, choice: ImportChoice, candidates: list[Any], revision: int) -> bool:
+        """Stale-apply detector for the attended re-park loop (see _park_with_research)."""
+        # Stale-client race: a prior search re-parked a DIFFERENT candidate
+        # list, but the client still renders the old one and submits an apply
+        # against it. Re-confirm instead of letting _apply_choice silently
+        # import a release the user never chose. Two detectors: the index is
+        # out of range for the current list (a search SHRANK it), or the
+        # client-echoed search_revision doesn't match the current park (a
+        # search REPLACED it with an equal-or-longer list, where a stale
+        # in-range index still looks valid). The revision echo closes that
+        # residual for revision-echoing clients; a None revision (a legacy/
+        # non-echoing client) degrades to the length-only guard. Only apply
+        # is revision-checked — skip/asis/astracks/abort are list-independent
+        # decisions and must never be blocked by a stale revision.
+        return choice.action is ImportAction.apply and (
+            not self._apply_index_in_range(choice, candidates)
+            or (choice.search_revision is not None and choice.search_revision != revision)
+        )
+
+    def _park_search(
+        self,
+        task: ImportTask,
+        choice: ImportChoice,
+        candidates: list[Any],
+        recommendation: Recommendation,
+    ) -> tuple[list[Any], Recommendation, str | None]:
+        """Search choice: re-run the lookup on this worker thread and re-park.
+
+        A successful relookup swaps BOTH the local candidates and task.candidates
+        and re-maps the recommendation via _REC_MAP; an empty result keeps the
+        previous candidates and sets the exact "No release found." feedback.
+        Returns the updated (candidates, recommendation) + the search_feedback.
+        """
+        assert choice.search is not None  # is_search narrowed it above
+        new_candidates, new_rec = relookup(task, choice.search)
+        if new_candidates:
+            candidates = new_candidates
+            task.candidates = candidates
+            recommendation = _REC_MAP.get(new_rec, Recommendation.none)
+            return candidates, recommendation, None
+        return candidates, recommendation, "No release found. Showing your previous matches."
+
+    def _park_rescan(
+        self,
+        task: ImportTask,
+        folder: str,
+        candidates: list[Any],
+        recommendation: Recommendation,
+        art_source: str | None,
+        has_current_art: bool,
+    ) -> tuple[list[Any], Recommendation, str | None, bool, str | None]:
+        """Rescan choice: guard the folder, re-read it, re-run the default lookup.
+
+        Swaps task state (items / cur_artist / cur_album / candidates / art) only
+        on a successful candidate-yielding lookup — never a half-swap. Returns the
+        updated (candidates, recommendation, art_source, has_current_art) plus the
+        search_feedback string (None on success).
+        """
+        if not folder or not self._under_toppath(folder):
+            # Rescan guard: an empty folder, or one outside every session
+            # toppath (a MERGE task's library-spanning ancestor), must never
+            # be os.walk'd — that can traverse the whole library mount and
+            # swap task.items to every file under it. Refuse instead.
+            return (
+                candidates,
+                recommendation,
+                art_source,
+                has_current_art,
+                "Rescan isn't available for this album.",
+            )
+        # Rescan: the user changed the folder on purpose — re-read it from disk and
+        # re-run beets' DEFAULT first-scan lookup.
+        new_items = _read_items(Path(folder))
+        if not new_items:
+            return (
+                candidates,
+                recommendation,
+                art_source,
+                has_current_art,
+                "No audio files remain in the folder. Skip or Abort.",
+            )
+        cur_artist, cur_album, new_candidates, new_rec = lookup_items(new_items, None)
+        if not new_candidates:
+            # The live payload cannot represent a candidate-less park, and a
+            # half-swap would let Apply import deleted files — keep the task
+            # fully consistent on its original scan.
+            return (
+                candidates,
+                recommendation,
+                art_source,
+                has_current_art,
+                "No release matched the rescanned folder; showing the album as originally scanned.",
+            )
+        task.items = new_items
+        task.cur_artist = cur_artist
+        task.cur_album = cur_album
+        candidates = new_candidates
+        task.candidates = candidates
+        recommendation = _REC_MAP.get(new_rec, Recommendation.none)
+        # The deleted file may have carried the embedded cover — re-detect so the
+        # re-park and the cover endpoint stay true.
+        art_source = self._first_item_art_source(new_items)
+        has_current_art = art_source is not None and embedded_art(art_source) is not None
+        return candidates, recommendation, art_source, has_current_art, None
 
     def _directive_choice(
         self,

@@ -409,6 +409,18 @@ class ImportJobRegistry:
         if job.sweep is not None:
             self._drain_sweep_locked(job)
             return
+        # Pass order is load-bearing: it closes the documented consumer-
+        # interleaving races — see the per-pass helpers below.
+        self._drain_outcomes_locked(job)
+        self._drain_pending_locked(job)
+        self._drain_parked_locked(job)
+        self._drain_parked_duplicate_locked(job)
+
+    def _drain_outcomes_locked(self, job: ImportJob) -> None:
+        """Pull new outcomes into the feed (caller holds ``self._lock``).
+
+        Create-row / status-upgrade / album-id-attach ladder per outcome.
+        """
         for outcome in job.bridge.drain_outcomes():
             row = job.albums.get(outcome.album_index)
             if row is None:
@@ -445,6 +457,12 @@ class ImportJobRegistry:
                 # ups always carry status=applied, so the upgrade branch above
                 # can never match them.
                 row.outcome = row.outcome.model_copy(update={"album_id": outcome.album_id})
+
+    def _drain_pending_locked(self, job: ImportJob) -> None:
+        """Replay buffered parked/duplicate rows now that their row exists.
+
+        Caller holds ``self._lock``.
+        """
         # Replay any parked/duplicate that a PRIOR drain popped before its feed
         # row existed (the outcome pass had run before the worker's note_outcome).
         # This drain's outcome pass has now created the row, so attach + clear.
@@ -459,6 +477,12 @@ class ImportJobRegistry:
                 row.duplicate = job.pending_duplicate.pop(index)
                 row.art_source = job.bridge.art_source(index)
                 row.status = ImportAlbumStatus.needs_dup_resolution
+
+    def _drain_parked_locked(self, job: ImportJob) -> None:
+        """Drain the (at-most-one) parked album into the feed (non-blocking).
+
+        Caller holds ``self._lock``.
+        """
         while True:
             parked = job.bridge.get_parked(timeout=0)
             if parked is None:
@@ -475,6 +499,12 @@ class ImportJobRegistry:
                 # outcome creates the row — otherwise the worker blocks in park()
                 # forever and GET candidate 404s, wedging the single import slot.
                 job.pending_parked[parked.album_index] = parked
+
+    def _drain_parked_duplicate_locked(self, job: ImportJob) -> None:
+        """Drain the (at-most-one) parked duplicate prompt into the feed.
+
+        Caller holds ``self._lock``. Non-blocking.
+        """
         while True:
             prompt = job.bridge.get_parked_duplicate(timeout=0)
             if prompt is None:
