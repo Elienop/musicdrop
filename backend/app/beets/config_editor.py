@@ -284,8 +284,6 @@ def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
 
         if dst.exists():
             shutil.copymode(dst, tmp)
-        else:
-            os.chmod(tmp, 0o644)
 
         os.replace(tmp, dst)
 

@@ -189,7 +189,7 @@ class ArtistImageCache:
 
     def _key(self, name: str) -> str:
         normalized = normalize_artist_name(name)
-        return hashlib.sha1(normalized.encode("utf-8")).hexdigest()
+        return hashlib.sha1(normalized.encode("utf-8"), usedforsecurity=False).hexdigest()
 
     def _ensure_dir(self) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)

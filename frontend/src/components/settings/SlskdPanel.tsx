@@ -173,7 +173,7 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
           </label>
           <Input
             id="slskd-base-url"
-            placeholder="http://slskd:5030"
+            placeholder="http://127.0.0.1:5030"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             className="max-w-md font-mono"
