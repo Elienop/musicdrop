@@ -25,7 +25,7 @@ from app.models.duplicates import (
 router = APIRouter(tags=["duplicates"])
 
 
-@router.get("/duplicates", response_model=DuplicatesReport)
+@router.get("/duplicates")
 def get_duplicates(
     request: Request, mode: DuplicateMode = DuplicateMode.strict
 ) -> DuplicatesReport:
@@ -33,14 +33,14 @@ def get_duplicates(
     return find_duplicate_albums(handle.lib, mode=mode)
 
 
-@router.post("/duplicates/resolve", response_model=ResolveResult)
+@router.post("/duplicates/resolve")
 async def resolve_duplicates(req: ResolveRequest, request: Request) -> ResolveResult:
     result = await resolve_duplicates_op(request, req)
     emit_library_changed(request.app)
     return result
 
 
-@router.post("/duplicates/resolve-all", response_model=ResolveAllResult)
+@router.post("/duplicates/resolve-all")
 async def resolve_all_duplicates(req: ResolveAllRequest, request: Request) -> ResolveAllResult:
     result = await resolve_all_op(request, req)
     emit_library_changed(request.app)

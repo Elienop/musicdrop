@@ -19,14 +19,14 @@ from app.models.browse import BrowseFacets
 router = APIRouter(tags=["browse"])
 
 
-@router.get("/browse/facets", response_model=BrowseFacets)
+@router.get("/browse/facets")
 async def browse_facets_endpoint(
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> BrowseFacets:
     return await run_in_threadpool(browse_facets, handle.lib)
 
 
-@router.get("/browse/albums", response_model=AlbumPage)
+@router.get("/browse/albums")
 async def browse_albums_endpoint(
     handle: Annotated[LibraryHandle, Depends(get_library)],
     genre: Annotated[list[str] | None, Query()] = None,

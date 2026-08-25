@@ -57,7 +57,7 @@ def _ignore_dirs(app: object) -> tuple[Path, ...]:
     return (export_dir,)
 
 
-@router.get("/reorganize/preview", response_model=ReorganizePlan)
+@router.get("/reorganize/preview")
 async def preview_reorganize(
     request: Request,
     handle: Annotated[LibraryHandle, Depends(get_library)],
@@ -76,7 +76,7 @@ async def preview_reorganize(
     )
 
 
-@router.get("/albums/{album_id}/reorganize/preview", response_model=ReorganizePlan)
+@router.get("/albums/{album_id}/reorganize/preview")
 async def preview_album_reorganize(
     album_id: int,
     request: Request,
@@ -96,7 +96,7 @@ async def preview_album_reorganize(
     )
 
 
-@router.post("/reorganize", response_model=ReorganizeBackfillStatus)
+@router.post("/reorganize")
 async def start_reorganize(
     request: Request,
     reg: Annotated[ReorganizeRegistry, Depends(get_reorganize_backfill)],
@@ -124,7 +124,7 @@ async def start_reorganize(
     return reg.state()
 
 
-@router.post("/albums/{album_id}/reorganize", response_model=ReorganizeBackfillStatus)
+@router.post("/albums/{album_id}/reorganize")
 async def start_album_reorganize(
     album_id: int,
     request: Request,
@@ -153,14 +153,14 @@ async def start_album_reorganize(
     return reg.state()
 
 
-@router.get("/reorganize/status", response_model=ReorganizeBackfillStatus)
+@router.get("/reorganize/status")
 async def reorganize_status(
     reg: Annotated[ReorganizeRegistry, Depends(get_reorganize_backfill)],
 ) -> ReorganizeBackfillStatus:
     return reg.state()
 
 
-@router.post("/reorganize/stop", response_model=ReorganizeBackfillStatus)
+@router.post("/reorganize/stop")
 async def stop_reorganize(
     reg: Annotated[ReorganizeRegistry, Depends(get_reorganize_backfill)],
 ) -> ReorganizeBackfillStatus:
@@ -168,7 +168,7 @@ async def stop_reorganize(
     return reg.state()
 
 
-@router.post("/reorganize/dismiss", response_model=ReorganizeBackfillStatus)
+@router.post("/reorganize/dismiss")
 async def dismiss_reorganize(
     reg: Annotated[ReorganizeRegistry, Depends(get_reorganize_backfill)],
 ) -> ReorganizeBackfillStatus:

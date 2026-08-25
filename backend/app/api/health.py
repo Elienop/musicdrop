@@ -11,6 +11,6 @@ class HealthResponse(BaseModel):
     version: str
 
 
-@router.get("/health", response_model=HealthResponse)
+@router.get("/health")
 async def health() -> HealthResponse:
     return HealthResponse(status="ok", version=settings.version)

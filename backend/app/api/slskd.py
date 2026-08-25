@@ -61,14 +61,14 @@ def _to_settings(config: SlskdConfig) -> SlskdSettings:
     )
 
 
-@router.get("/slskd/settings", response_model=SlskdSettings)
+@router.get("/slskd/settings")
 async def get_slskd_settings(
     store: Annotated[SlskdConfigStore, Depends(get_slskd_store)],
 ) -> SlskdSettings:
     return _to_settings(store.get())
 
 
-@router.put("/slskd/settings", response_model=SlskdSettings)
+@router.put("/slskd/settings")
 async def put_slskd_settings(
     body: SlskdSettingsUpdate,
     store: Annotated[SlskdConfigStore, Depends(get_slskd_store)],
@@ -84,14 +84,14 @@ async def put_slskd_settings(
     return _to_settings(config)
 
 
-@router.post("/slskd/test", response_model=SlskdConnection)
+@router.post("/slskd/test")
 async def test_slskd(
     store: Annotated[SlskdConfigStore, Depends(get_slskd_store)],
 ) -> SlskdConnection:
     return await run_in_threadpool(service.test_connection, store.get())
 
 
-@router.post("/slskd/webhook", response_model=WebhookAck)
+@router.post("/slskd/webhook")
 async def slskd_webhook(
     event: SlskdWebhookEvent,
     request: Request,

@@ -46,7 +46,7 @@ def get_bank_dir() -> Path:
     return Path(settings.beets_dir) / "bank"
 
 
-@router.get("/bank", response_model=BankListResponse)
+@router.get("/bank")
 async def list_bank(
     status_filter: Annotated[BankStatus | None, Query(alias="status")] = None,
     view: Annotated[Literal["all", "active"], Query()] = "all",
@@ -76,7 +76,7 @@ async def list_bank(
     )
 
 
-@router.get("/bank/{item_id}", response_model=BankItem)
+@router.get("/bank/{item_id}")
 async def get_bank_item(item_id: str) -> BankItem:
     item = await run_in_threadpool(store.get_item, get_bank_dir(), item_id)
     if item is None:
@@ -84,7 +84,7 @@ async def get_bank_item(item_id: str) -> BankItem:
     return item
 
 
-@router.get("/bank/{item_id}/duplicates", response_model=DuplicatesCheckResponse)
+@router.get("/bank/{item_id}/duplicates")
 async def bank_item_duplicates(
     item_id: str,
     request: Request,
@@ -133,7 +133,7 @@ async def bank_item_duplicates(
     return DuplicatesCheckResponse(existing=existing)
 
 
-@router.post("/bank/{item_id}/search", response_model=BankSearchResponse)
+@router.post("/bank/{item_id}/search")
 async def search_bank_item(item_id: str, search: ImportSearch) -> BankSearchResponse:
     """Re-look-up a banked folder against a release id/URL or a name search.
 
@@ -198,7 +198,7 @@ async def search_bank_item(item_id: str, search: ImportSearch) -> BankSearchResp
     return BankSearchResponse(item=updated, found=True)
 
 
-@router.post("/bank/{item_id}/rescan", response_model=BankItem)
+@router.post("/bank/{item_id}/rescan")
 async def rescan_bank_item(item_id: str) -> BankItem:
     """Re-read the banked folder from disk and re-match it in place.
 
@@ -278,7 +278,7 @@ async def rescan_bank_item(item_id: str) -> BankItem:
     return updated
 
 
-@router.post("/bank/{item_id}/decision", response_model=BankItem)
+@router.post("/bank/{item_id}/decision")
 async def decide_bank_item(item_id: str, decision: BankDecision, request: Request) -> BankItem:
     try:
         item = await run_in_threadpool(store.decide_item, get_bank_dir(), item_id, decision)
@@ -308,13 +308,13 @@ async def delete_bank_item(item_id: str) -> Response:
     return Response(status_code=204)
 
 
-@router.post("/bank/bulk-ignore", response_model=BankBulkIgnoreResponse)
+@router.post("/bank/bulk-ignore")
 async def bulk_ignore_bank(body: BankBulkIgnoreRequest) -> BankBulkIgnoreResponse:
     ignored = await run_in_threadpool(store.bulk_ignore, get_bank_dir(), body.ids)
     return BankBulkIgnoreResponse(ignored=ignored)
 
 
-@router.post("/bank/bulk-delete", response_model=BankBulkDeleteResponse)
+@router.post("/bank/bulk-delete")
 async def bulk_delete_bank(body: BankBulkDeleteRequest) -> BankBulkDeleteResponse:
     deleted = await run_in_threadpool(store.bulk_delete, get_bank_dir(), body.ids)
     return BankBulkDeleteResponse(deleted=deleted)

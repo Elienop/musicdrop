@@ -235,7 +235,7 @@ async def _best_effort_plex_delete(
         return {}
 
 
-@router.get("/playlists", response_model=list[Playlist])
+@router.get("/playlists")
 async def list_playlists_endpoint(
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
     handle: Annotated[LibraryHandle, Depends(get_library)],
@@ -244,7 +244,7 @@ async def list_playlists_endpoint(
     return [await _summary(record, handle) for record in records]
 
 
-@router.post("/playlists", response_model=Playlist)
+@router.post("/playlists")
 async def create_playlist_endpoint(
     body: PlaylistCreateRequest,
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
@@ -260,7 +260,7 @@ async def create_playlist_endpoint(
     return await _summary(record, handle)
 
 
-@router.get("/playlists/{playlist_id}", response_model=PlaylistDetail)
+@router.get("/playlists/{playlist_id}")
 async def get_playlist_endpoint(
     playlist_id: str,
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
@@ -272,7 +272,7 @@ async def get_playlist_endpoint(
     return await _detail_response(record, handle)
 
 
-@router.post("/playlists/{playlist_id}/tracks", response_model=PlaylistDetail)
+@router.post("/playlists/{playlist_id}/tracks")
 async def add_tracks_endpoint(
     playlist_id: str,
     body: PlaylistAddTracksRequest,
@@ -292,7 +292,7 @@ async def add_tracks_endpoint(
     return await _detail_response(record, handle)
 
 
-@router.delete("/playlists/{playlist_id}/entries/{entry_uid}", response_model=PlaylistDetail)
+@router.delete("/playlists/{playlist_id}/entries/{entry_uid}")
 async def remove_entry_endpoint(
     playlist_id: str,
     entry_uid: str,
@@ -309,7 +309,7 @@ async def remove_entry_endpoint(
     return await _detail_response(record, handle)
 
 
-@router.patch("/playlists/{playlist_id}/entries/{entry_uid}", response_model=PlaylistDetail)
+@router.patch("/playlists/{playlist_id}/entries/{entry_uid}")
 async def resolve_entry_endpoint(
     playlist_id: str,
     entry_uid: str,
@@ -333,7 +333,7 @@ async def resolve_entry_endpoint(
     return await _detail_response(record, handle)
 
 
-@router.put("/playlists/{playlist_id}/tracks", response_model=PlaylistDetail)
+@router.put("/playlists/{playlist_id}/tracks")
 async def reorder_tracks_endpoint(
     playlist_id: str,
     body: PlaylistReorderRequest,
@@ -356,7 +356,7 @@ async def reorder_tracks_endpoint(
     return await _detail_response(record, handle)
 
 
-@router.post("/playlists/{playlist_id}/sync", response_model=PlaylistDetail)
+@router.post("/playlists/{playlist_id}/sync")
 async def sync_playlist_endpoint(
     playlist_id: str,
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
@@ -461,7 +461,7 @@ def _plex_specs_for(
     ]
 
 
-@router.patch("/playlists/{playlist_id}", response_model=Playlist)
+@router.patch("/playlists/{playlist_id}")
 async def update_playlist_endpoint(
     playlist_id: str,
     body: PlaylistUpdateRequest,
@@ -508,7 +508,6 @@ async def delete_playlist_endpoint(
 
 @router.post(
     "/playlists/{playlist_id}/merge",
-    response_model=PlaylistMergeResponse,
     responses={
         # Named models, not bare descriptions: a description-only entry REPLACES
         # the generated response and leaves the status with no body schema, which
@@ -597,7 +596,6 @@ async def get_playlist_artwork_endpoint(
 
 @router.put(
     "/playlists/{playlist_id}/artwork",
-    response_model=Playlist,
 )
 async def put_playlist_artwork_endpoint(
     playlist_id: str,
@@ -640,7 +638,7 @@ async def delete_playlist_artwork_endpoint(
     return Response(status_code=204)
 
 
-@router.post("/playlists/import/preview", response_model=PlaylistImportPreviewResponse)
+@router.post("/playlists/import/preview")
 async def import_preview_endpoint(
     body: PlaylistImportPreviewRequest,
     handle: Annotated[LibraryHandle, Depends(get_library)],
@@ -690,7 +688,7 @@ def _unique_name(name: str, taken: set[str]) -> str:
     return f"{name} ({n})"
 
 
-@router.post("/playlists/import", response_model=PlaylistImportResponse)
+@router.post("/playlists/import")
 async def import_commit_endpoint(
     body: PlaylistImportRequest,
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],

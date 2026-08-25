@@ -32,7 +32,7 @@ def _gate_busy(app: object) -> None:
     raise_if_library_busy(app, exclude=("disk_sync",), message=_BUSY)
 
 
-@router.get("/disk-sync/preview", response_model=DiskSyncPlan)
+@router.get("/disk-sync/preview")
 async def preview_disk_sync(
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> DiskSyncPlan:
@@ -43,7 +43,7 @@ async def preview_disk_sync(
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
 
 
-@router.post("/disk-sync", response_model=DiskSyncStatus)
+@router.post("/disk-sync")
 async def start_disk_sync(
     request: Request,
     reg: Annotated[DiskSyncRegistry, Depends(get_disk_sync_registry)],
@@ -59,14 +59,14 @@ async def start_disk_sync(
     return reg.state()
 
 
-@router.get("/disk-sync/status", response_model=DiskSyncStatus)
+@router.get("/disk-sync/status")
 async def disk_sync_status(
     reg: Annotated[DiskSyncRegistry, Depends(get_disk_sync_registry)],
 ) -> DiskSyncStatus:
     return reg.state()
 
 
-@router.post("/disk-sync/stop", response_model=DiskSyncStatus)
+@router.post("/disk-sync/stop")
 async def stop_disk_sync(
     reg: Annotated[DiskSyncRegistry, Depends(get_disk_sync_registry)],
 ) -> DiskSyncStatus:

@@ -50,14 +50,14 @@ def _to_settings(config: PlexConfig) -> PlexSettings:
     )
 
 
-@router.get("/plex/settings", response_model=PlexSettings)
+@router.get("/plex/settings")
 async def get_plex_settings(
     store: Annotated[PlexConfigStore, Depends(get_plex_store)],
 ) -> PlexSettings:
     return _to_settings(store.get())
 
 
-@router.put("/plex/settings", response_model=PlexSettings)
+@router.put("/plex/settings")
 async def put_plex_settings(
     body: PlexSettingsUpdate,
     store: Annotated[PlexConfigStore, Depends(get_plex_store)],
@@ -72,14 +72,14 @@ async def put_plex_settings(
     return _to_settings(config)
 
 
-@router.post("/plex/test", response_model=PlexConnection)
+@router.post("/plex/test")
 async def test_plex(
     store: Annotated[PlexConfigStore, Depends(get_plex_store)],
 ) -> PlexConnection:
     return await run_in_threadpool(service.test_connection, store.get())
 
 
-@router.get("/plex/users", response_model=PlexUserList)
+@router.get("/plex/users")
 async def list_plex_users(
     store: Annotated[PlexConfigStore, Depends(get_plex_store)],
 ) -> PlexUserList:
@@ -92,7 +92,7 @@ async def list_plex_users(
     return PlexUserList(users=users)
 
 
-@router.get("/plex/sections", response_model=PlexSectionList)
+@router.get("/plex/sections")
 async def list_plex_sections(
     store: Annotated[PlexConfigStore, Depends(get_plex_store)],
 ) -> PlexSectionList:
@@ -105,7 +105,7 @@ async def list_plex_sections(
     return PlexSectionList(sections=sections)
 
 
-@router.get("/plex/playlists", response_model=PlexPlaylistList)
+@router.get("/plex/playlists")
 async def list_plex_playlists(
     store: Annotated[PlexConfigStore, Depends(get_plex_store)],
 ) -> PlexPlaylistList:
