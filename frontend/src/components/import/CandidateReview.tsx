@@ -68,10 +68,10 @@ export function CandidateReview({
         />
       )}
       {isTopFallback && (
-        <p className="text-muted-foreground text-sm" role="status">
+        <output className="text-muted-foreground text-sm block">
           Showing the top match; this row predates per-candidate previews. Apply
           will still use the selected release.
-        </p>
+        </output>
       )}
       <BeforeAfter candidate={active} nowCoverUrl={nowCoverUrl} />
       <WhatChanges candidate={active} />

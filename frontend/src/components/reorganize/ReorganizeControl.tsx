@@ -458,12 +458,12 @@ export function ReorganizeControl({
     const tone =
       message.kind === "error" ? "text-destructive" : "text-muted-foreground";
     return (
-      <span
-        role={message.kind === "error" ? "alert" : "status"}
+      <output
+        role={message.kind === "error" ? "alert" : undefined}
         className={centered ? `${tone} text-center text-sm` : `${tone} text-sm`}
       >
         {message.text}
-      </span>
+      </output>
     );
   }
 

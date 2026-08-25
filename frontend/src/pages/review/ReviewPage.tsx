@@ -144,10 +144,10 @@ export function ReviewPage() {
       />
 
       {nothingPending && (
-        <p className="text-muted-foreground text-sm" role="status">
+        <output className="text-muted-foreground text-sm block">
           Nothing to review. Completed downloads that need a decision show up
           here.
-        </p>
+        </output>
       )}
 
       {status && (
@@ -235,9 +235,8 @@ function ImportingNowSection({ status }: Readonly<{ status: AcquisitionQueueStat
   return (
     <section aria-label="Importing now" className="flex flex-col gap-2">
       <SectionLabel>Importing now</SectionLabel>
-      <p
+      <output
         className="text-muted-foreground flex items-center gap-2 text-sm"
-        role="status"
       >
         <Spinner className="size-4 shrink-0 animate-spin" aria-hidden="true" />
         <span>
@@ -246,7 +245,7 @@ function ImportingNowSection({ status }: Readonly<{ status: AcquisitionQueueStat
             : "Waiting for the import slot"}
           {` · ${status.queued} queued`}
         </span>
-      </p>
+      </output>
     </section>
   );
 }

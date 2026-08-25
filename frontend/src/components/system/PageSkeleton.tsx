@@ -18,9 +18,9 @@ export function PageSkeleton({
 }> ) {
   return (
     <>
-      <p className="sr-only" role="status">
+      <output className="sr-only block">
         {announce}
-      </p>
+      </output>
       <div className="contents" aria-hidden="true">
         {children}
       </div>

@@ -71,9 +71,9 @@ export function NamingPanel() {
   if (isPending) {
     return (
       <SettingsSection title="Naming">
-        <p className="text-muted-foreground text-sm" role="status">
+        <output className="text-muted-foreground text-sm block">
           Loading naming…
-        </p>
+        </output>
       </SettingsSection>
     );
   }
@@ -390,15 +390,15 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
           applyPending &&
           !save.isPending &&
           !job.active && (
-            <p className="text-muted-foreground text-sm" role="status">
+            <output className="text-muted-foreground text-sm block">
               Saved. Click <span className="font-medium">Apply</span> to load
               it.
-            </p>
+            </output>
           )}
         {job.active && (
-          <p className="text-muted-foreground text-sm" role="status">
+          <output className="text-muted-foreground text-sm block">
             Apply paused: {job.label} is running; available when it finishes.
-          </p>
+          </output>
         )}
       </div>
 
@@ -409,9 +409,9 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
       )}
       {apply.isError &&
         (apply.error?.status === 409 ? (
-          <p className="text-muted-foreground text-sm" role="status">
+          <output className="text-muted-foreground text-sm block">
             A library job is running; Apply will be available when it finishes.
-          </p>
+          </output>
         ) : (
           <p className="text-destructive text-sm" role="alert">
             Apply failed. Your config is saved on disk; try again or restart

@@ -415,7 +415,7 @@ function ApplyOutcome({
 
   return (
     <div className="flex flex-col gap-2 text-sm">
-      <p role="status">
+      <output className="block">
         Updated
         {(wrote > 0 || moved > 0) && (
           <>
@@ -425,7 +425,7 @@ function ApplyOutcome({
             {moved > 0 && `moved ${moved} file${moved === 1 ? "" : "s"}`}
           </>
         )}
-      </p>
+      </output>
       {(result.write_failures > 0 || result.move_failures > 0) && (
         <div
           role="alert"

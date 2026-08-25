@@ -51,8 +51,8 @@ export function LyricsBackfillPanel() {
     >
 
       {libraryRunning && status.data ? (
-        <div className="flex flex-col gap-2" role="status">
-          <div className="flex items-center gap-3 text-sm">
+        <output className="flex flex-col gap-2">
+          <span className="flex items-center gap-3 text-sm">
             <Spinner className="text-muted-foreground size-4 shrink-0 animate-spin" aria-hidden="true" />
             <span className="flex-1">
               Backfilling… {status.data.processed} / {status.data.total} · found{" "}
@@ -63,11 +63,11 @@ export function LyricsBackfillPanel() {
             <Button variant="outline" size="sm" onClick={() => stop.mutate()} disabled={stop.isPending}>
               Stop
             </Button>
-          </div>
+          </span>
           {status.data.current && (
-            <p className="text-muted-foreground truncate text-xs">{status.data.current}</p>
+            <span className="text-muted-foreground truncate text-xs">{status.data.current}</span>
           )}
-        </div>
+        </output>
       ) : (
         <div className="flex flex-wrap items-center gap-3">
           <Button
@@ -107,11 +107,11 @@ export function LyricsBackfillPanel() {
               hundreds of processed tracks unaccounted for. */}
           {status.data && status.data.album_id == null &&
             (status.data.phase === "done" || status.data.phase === "stopped") && (
-            <span className="text-muted-foreground text-sm" role="status">
+            <output className="text-muted-foreground text-sm">
               {status.data.phase === "done" ? "Done" : "Stopped"}: found {status.data.found} ·
               instrumental {status.data.instrumental} · none {status.data.not_found} · failed{" "}
               {status.data.failed} · skipped {status.data.skipped}
-            </span>
+            </output>
           )}
           {/* A failed job surfaces its error inline so a 409/library-locked
               run isn't a silent no-op. */}

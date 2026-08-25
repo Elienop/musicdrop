@@ -446,7 +446,7 @@ describe("ImportCandidatePage", () => {
 
     // (b) the legacy note explains the fallback (role=status).
     const note = await screen.findByText(/Showing the top match/i);
-    expect(note).toHaveAttribute("role", "status");
+    expect(note.tagName).toBe("OUTPUT"); // native <output> — implicit role="status"
     // (a) the recommendation word STAYS — the preview is still the top match.
     expect(screen.getByText(/Medium match/i)).toBeInTheDocument();
     // (c) album + tracklist stay the TOP match's — no alternate diff to show.

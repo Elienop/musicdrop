@@ -1249,13 +1249,12 @@ function ArtworkEditPanel({
         </StatusBanner>
       )}
       {outcome !== null && !busy && (
-        <p
-          role="status"
+        <output
           className="text-muted-foreground inline-flex items-center gap-1 text-sm"
         >
           <Success className="text-success size-4 shrink-0" aria-hidden="true" />
           {outcome === "uploaded" ? "Artwork updated." : "Artwork removed."}
-        </p>
+        </output>
       )}
     </section>
   );

@@ -475,10 +475,10 @@ export function SettingsBeetsPage() {
         {applyMutation.isError &&
           pageState === "apply_pending" &&
           (applyMutation.error?.status === 409 ? (
-            <p className="text-muted-foreground text-sm" role="status">
+            <output className="text-muted-foreground text-sm block">
               A library job is running; Apply will be available when it
               finishes.
-            </p>
+            </output>
           ) : (
             <p className="text-destructive text-sm" role="alert">
               Apply failed.{" "}
@@ -537,13 +537,12 @@ function Loader() {
       <div className="flex flex-col gap-1">
         <SectionLabel>Beets configuration</SectionLabel>
       </div>
-      <p
+      <output
         className="text-muted-foreground flex items-center gap-2 text-sm"
-        role="status"
       >
         <Spinner className="size-4 animate-spin" aria-hidden="true" />
         Loading configuration&hellip;
-      </p>
+      </output>
     </section>
   );
 }
@@ -592,38 +591,36 @@ function ConfigStateBanner({
   }
   if (state === "dirty") {
     return (
-      <div
+      <output
         className={cn(
           "flex items-start gap-3 rounded-xl border p-3 text-sm",
           "border-primary/40 bg-primary/5",
         )}
-        role="status"
       >
         <Success
           className="text-primary-light mt-0.5 size-5 shrink-0"
           aria-hidden="true"
         />
-        <p>
+        <span>
           <strong>Unsaved changes.</strong> Save to write to{" "}
           <code className="font-mono">{data.config_path}</code>.
-        </p>
-      </div>
+        </span>
+      </output>
     );
   }
   if (state === "saving" || state === "applying") {
     return (
-      <div
+      <output
         className="border-border bg-muted/50 flex items-start gap-3 rounded-xl border p-3 text-sm"
-        role="status"
       >
         <Spinner
           className="text-muted-foreground mt-0.5 size-5 shrink-0 animate-spin"
           aria-hidden="true"
         />
-        <p>
+        <span>
           {state === "saving" ? "Saving configuration…" : "Reloading beets…"}
-        </p>
-      </div>
+        </span>
+      </output>
     );
   }
   // apply_pending — same copy the tests pin; the system banner supplies the

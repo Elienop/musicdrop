@@ -279,9 +279,9 @@ export function RenameArtistAction({ name }: Readonly<{ name: string }>) {
         </DialogHeader>
 
         {/* Always mounted: fills on preview success, empties on reset. */}
-        <span className="sr-only" role="status">
+        <output className="sr-only">
           {previewAnnouncement(preview.data, totalMoves)}
-        </span>
+        </output>
 
         <form
           // min-w-0: DialogContent is a single-column grid whose min-width

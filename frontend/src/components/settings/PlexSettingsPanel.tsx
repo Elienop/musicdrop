@@ -81,9 +81,9 @@ export function PlexSettingsPanel() {
   if (settings.isPending) {
     return (
       <Panel>
-        <p className="text-muted-foreground text-sm" role="status">
+        <output className="text-muted-foreground text-sm block">
           Loading Plex settings…
-        </p>
+        </output>
       </Panel>
     );
   }

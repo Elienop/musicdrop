@@ -307,8 +307,8 @@ function DiskSyncControl() {
       <div className="flex flex-wrap items-center gap-3">
         {renderTriggerButton()}
         {message != null && (
-          <span
-            role={message.kind === "error" ? "alert" : "status"}
+          <output
+            role={message.kind === "error" ? "alert" : undefined}
             className={
               message.kind === "error"
                 ? "text-destructive text-sm"
@@ -316,7 +316,7 @@ function DiskSyncControl() {
             }
           >
             {message.text}
-          </span>
+          </output>
         )}
       </div>
       {terminal && (

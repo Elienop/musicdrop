@@ -126,9 +126,9 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
         </span>
         <span className="text-muted-foreground truncate text-xs">{meta || album.folder}</span>
         {result && (
-          <span className="text-muted-foreground text-xs" role="status">
+          <output className="text-muted-foreground text-xs">
             {restoreResultMessage(result)}
-          </span>
+          </output>
         )}
       </div>
       <Button
