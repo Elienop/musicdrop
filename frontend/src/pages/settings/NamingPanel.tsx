@@ -40,15 +40,15 @@ const mkId = () => nextId++;
  * ASCII in a file browser (e.g. "blink‐182" with a U+2010 HYPHEN), which mints
  * a twin folder next to the ASCII one. beets' built-in replace rules leave
  * these alone, so we offer them one click. Patterns are Python `re` and stored
- * as literal `\uXXXX` text (the `\\u` here escapes to a backslash at runtime)
+ * as literal `\uXXXX` text (String.raw keeps the backslashes literal at runtime)
  * so the characters stay legible instead of being invisible glyphs.
  * Keep in sync with backend/app/beets/config.starter.yaml. */
 const RECOMMENDED_REPLACE_RULES: { pattern: string; replacement: string }[] = [
-  { pattern: "[\\u2010\\u2011\\u2212]", replacement: "-" },
-  { pattern: "[\\u2013\\u2014]", replacement: "-" },
-  { pattern: "[\\u2018\\u2019\\u02bc]", replacement: "'" },
-  { pattern: "[\\u201c\\u201d]", replacement: "_" },
-  { pattern: "\\u2026", replacement: "..." },
+  { pattern: String.raw`[\u2010\u2011\u2212]`, replacement: "-" },
+  { pattern: String.raw`[\u2013\u2014]`, replacement: "-" },
+  { pattern: String.raw`[\u2018\u2019\u02bc]`, replacement: "'" },
+  { pattern: String.raw`[\u201c\u201d]`, replacement: "_" },
+  { pattern: String.raw`\u2026`, replacement: "..." },
 ];
 
 /** Assemble the ordered flat rule list the API expects (default, comp,

@@ -193,10 +193,17 @@
  * liftable onto links/cards/controls as `className="focus-ring"`. The
  * hand-rolled per-component focus variants are gone (Phase 4 sweep) — this
  * utility is the only dialect. */
-@utility focus-ring {
-  @apply outline-none;
-  &:focus-visible {
-    @apply ring-[3px] ring-ring/50;
+/* Both utilities are written as plain classes inside an explicit
+ * `@layer utilities` scoping root — the exact form Tailwind v4 compiles a
+ * used `@utility` into, so the produced CSS is identical. Neither class is
+ * ever used with a variant prefix (verified), which is the one thing the
+ * `@utility` directive would add. */
+@layer utilities {
+  .focus-ring {
+    @apply outline-none;
+    &:focus-visible {
+      @apply ring-[3px] ring-ring/50;
+    }
   }
 }
 
@@ -205,19 +212,21 @@
  * affordance doesn't bloat rows or crowd content. Firefox uses
  * `scrollbar-width: thin`; WebKit/Blink get a 6px track styled with our
  * border token — `height` governs horizontal bars, `width` vertical ones. */
-@utility thin-scrollbar {
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-border) transparent;
-  &::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-  }
-  &::-webkit-scrollbar-thumb {
-    background-color: var(--color-border);
-    border-radius: 9999px;
-  }
-  &::-webkit-scrollbar-track {
-    background: transparent;
+@layer utilities {
+  .thin-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border) transparent;
+    &::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    &::-webkit-scrollbar-thumb {
+      background-color: var(--color-border);
+      border-radius: 9999px;
+    }
+    &::-webkit-scrollbar-track {
+      background: transparent;
+    }
   }
 }
 

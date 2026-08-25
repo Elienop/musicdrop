@@ -12,6 +12,13 @@ import { AppTopbar } from "@/components/shell/Topbar";
 import { RouteAnnouncer } from "@/components/system/RouteAnnouncer";
 import { RouteLoading } from "@/components/system/RouteLoading";
 
+// ONE icon weight app-wide: every Phosphor glyph without an explicit
+// `weight` renders LIGHT (nav, status, buttons…). Deliberate overrides
+// stay local: detail-rail actions = thin (large glyphs), checkbox tick =
+// bold (tiny control glyph needs the stroke). A module constant so the
+// provider value is referentially stable across shell re-renders.
+const ICON_CONTEXT = { weight: "light" } as const;
+
 /**
  * App shell (spec §2): persistent sidebar + topbar around the routed page.
  *
@@ -29,11 +36,7 @@ export function App() {
   useActivityToasts(rows);
   useEventStream();
   return (
-    // ONE icon weight app-wide: every Phosphor glyph without an explicit
-    // `weight` renders LIGHT (nav, status, buttons…). Deliberate overrides
-    // stay local: detail-rail actions = thin (large
-    // glyphs), checkbox tick = bold (tiny control glyph needs the stroke).
-    <IconContext.Provider value={{ weight: "light" }}>
+    <IconContext.Provider value={ICON_CONTEXT}>
     <div className="bg-background text-foreground flex min-h-svh">
       <a
         href="#main-content"

@@ -92,7 +92,7 @@ export function CandidateReview({
  */
 function resolveSelected(candidate: Candidate, selected: number): Candidate {
   const opt = candidate.options[selected];
-  if (!opt || opt.album_after == null) return candidate;
+  if (opt?.album_after == null) return candidate;
   return {
     ...candidate,
     confidence: opt.confidence,
