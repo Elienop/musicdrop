@@ -310,8 +310,12 @@ def test_per_album_fetch_409_during_backfill(
     class _Req:
         app = _App()
 
+    req = _Req()
+    # Calling the async op only CREATES the coroutine — nothing runs (and
+    # nothing can raise) until asyncio.run drives it inside the block.
+    op = start_album_lyrics_op(req, 1)
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(start_album_lyrics_op(_Req(), 1))
+        asyncio.run(op)
     assert ei.value.status_code == 409
     reset_lyrics_backfill()
 

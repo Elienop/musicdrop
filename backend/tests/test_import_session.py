@@ -1082,8 +1082,9 @@ def test_push_duplicate_decision_unknown_index_raises_keyerror() -> None:
     from app.models.import_models import DuplicateAction, DuplicateDecision
 
     bridge = ImportBridge()
+    decision = DuplicateDecision(action=DuplicateAction.skip_new)
     with pytest.raises(KeyError):
-        bridge.push_duplicate_decision(99, DuplicateDecision(action=DuplicateAction.skip_new))
+        bridge.push_duplicate_decision(99, decision)
 
 
 def test_run_import_worker_forces_duplicate_action_ask() -> None:
@@ -1212,8 +1213,9 @@ def test_scoped_move_restores_on_raise() -> None:
         def run(self) -> None:
             raise RuntimeError("x")
 
+    session = _Boom()  # minimal stand-in
     with pytest.raises(RuntimeError):
-        run_import_worker(_Boom(), move=True)  # type: ignore[arg-type]  # minimal stand-in
+        run_import_worker(session, move=True)  # type: ignore[arg-type]
     assert config["import"]["move"].get(bool) is False  # finally restored
     assert config["import"]["copy"].get(bool) is True
 
@@ -1606,8 +1608,9 @@ def test_sweep_config_restores_on_raise() -> None:
         def run(self) -> None:
             raise RuntimeError("x")
 
+    session = _Boom()  # minimal stand-in
     with pytest.raises(RuntimeError):
-        run_import_worker(_Boom(), sweep=True)  # type: ignore[arg-type]  # minimal stand-in
+        run_import_worker(session, sweep=True)  # type: ignore[arg-type]
     assert config["import"]["incremental"].get(bool) is False
     assert config["import"]["resume"].get() == "ask"
     assert config["import"]["singletons"].get(bool) is False
@@ -1857,11 +1860,10 @@ def test_apply_directive_restores_search_ids_on_raise() -> None:
         def run(self) -> None:
             raise RuntimeError("x")
 
+    session = _Boom()  # minimal stand-in
+    directive = BankApplyDirective(action="apply", search_id="rel-1")
     with pytest.raises(RuntimeError):
-        run_import_worker(
-            _Boom(),  # type: ignore[arg-type]  # minimal stand-in
-            directive=BankApplyDirective(action="apply", search_id="rel-1"),
-        )
+        run_import_worker(session, directive=directive)  # type: ignore[arg-type]
     assert config["import"]["search_ids"].get() == ["user-pin"]
 
 

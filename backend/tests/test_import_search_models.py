@@ -41,8 +41,9 @@ def test_import_choice_search_requires_a_payload() -> None:
 
 
 def test_import_choice_non_search_rejects_a_payload() -> None:
+    search = ImportSearch(release_id="abc")
     with pytest.raises(ValidationError):
-        ImportChoice(action=ImportAction.apply, search=ImportSearch(release_id="abc"))
+        ImportChoice(action=ImportAction.apply, search=search)
 
 
 def test_import_choice_search_round_trips() -> None:
@@ -58,8 +59,9 @@ def test_rescan_choice_carries_no_payload() -> None:
 
 
 def test_rescan_choice_rejects_a_search_payload() -> None:
+    search = ImportSearch(release_id="x")
     with pytest.raises(ValidationError):
-        ImportChoice(action=ImportAction.rescan, search=ImportSearch(release_id="x"))
+        ImportChoice(action=ImportAction.rescan, search=search)
 
 
 def test_candidate_search_fields_default() -> None:

@@ -199,8 +199,9 @@ def test_unknown_index_choice_raises_keyerror() -> None:
     registry = ImportJobRegistry(runner=fake)
     job_id = registry.start("/music/incoming")
     _poll(lambda: registry.state(job_id).albums, lambda rows: len(rows) == 1)
+    choice = ImportChoice(action=ImportAction.apply)
     with pytest.raises(KeyError):
-        registry.record_choice(job_id, 99, ImportChoice(action=ImportAction.apply))
+        registry.record_choice(job_id, 99, choice)
 
 
 def test_record_choice_duplicate_raises_runtimeerror() -> None:
@@ -213,9 +214,10 @@ def test_record_choice_duplicate_raises_runtimeerror() -> None:
     registry = ImportJobRegistry(runner=fake)
     job_id = registry.start("/music/incoming")
     _poll(lambda: registry.state(job_id).albums, lambda rows: len(rows) == 1)
-    registry.record_choice(job_id, 0, ImportChoice(action=ImportAction.skip))
+    choice = ImportChoice(action=ImportAction.skip)
+    registry.record_choice(job_id, 0, choice)
     with pytest.raises(RuntimeError):
-        registry.record_choice(job_id, 0, ImportChoice(action=ImportAction.skip))
+        registry.record_choice(job_id, 0, choice)
 
 
 def test_worker_error_marks_job_failed() -> None:
@@ -526,8 +528,9 @@ def test_start_validate_failure_takes_no_slot() -> None:
     runner = FakeImportRunner()
     runner.validate_error = InLibraryCopyError("refused")
     reg = ImportJobRegistry(runner=runner)
+    options = ImportOptions(operation="copy")
     with pytest.raises(InLibraryCopyError):
-        reg.start("/library/Artist", options=ImportOptions(operation="copy"))
+        reg.start("/library/Artist", options=options)
     # The failed validation must not have consumed the single slot:
     assert reg.active_status().active is False
     # The runner was never run for the refused start (validate fail-fasts).
@@ -587,8 +590,9 @@ def test_start_refuses_when_any_list_member_fails_validation() -> None:
     runner = FakeImportRunner()
     runner.validate_error = InLibraryCopyError("refused")
     reg = ImportJobRegistry(runner=runner)
+    options = ImportOptions(operation="copy")
     with pytest.raises(InLibraryCopyError):
-        reg.start(["/inbox/A", "/library/Artist"], options=ImportOptions(operation="copy"))
+        reg.start(["/inbox/A", "/library/Artist"], options=options)
     assert reg.has_active_job() is False
 
 

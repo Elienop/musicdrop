@@ -71,8 +71,9 @@ def test_remove_same_key_twice_with_reload_between_removes_both() -> None:
 
 def test_remove_key_not_in_cache_raises_not_found() -> None:
     pl = FakePlaylist("Mix", [_t(1)], 500)
+    missing = _t(9)
     with pytest.raises(FakeNotFound):
-        pl.removeItems([_t(9)])
+        pl.removeItems([missing])
 
 
 def test_move_without_after_moves_to_front() -> None:
@@ -100,12 +101,14 @@ def test_move_added_item_before_reload_raises_not_found() -> None:
 
 def test_smart_playlist_rejects_mutators() -> None:
     pl = FakePlaylist("Smart", [_t(1)], 500, smart=True)
+    t2 = _t(2)
+    t1 = _t(1)
     with pytest.raises(FakeBadRequest):
-        pl.addItems([_t(2)])
+        pl.addItems([t2])
     with pytest.raises(FakeBadRequest):
-        pl.removeItems([_t(1)])
+        pl.removeItems([t1])
     with pytest.raises(FakeBadRequest):
-        pl.moveItem(_t(1))
+        pl.moveItem(t1)
 
 
 def test_server_rejects_empty_create_and_mints_distinct_keys() -> None:
@@ -411,7 +414,8 @@ def test_tracks_and_rows_compare_and_hash_by_rating_key() -> None:
     # track are equal AND hash equal (the fake hashes by key; real hashes repr).
     # A fake comparing by identity hides every `in` / `==` / set() bug.
     assert _t(1).key == "/library/metadata/1"
-    assert _t(1) == _t(1)
+    left, right = _t(1), _t(1)
+    assert left == right
     assert _t(1) != _t(2)
     assert _t(1) in [_t(1)]
     assert len({_t(1), _t(1), _t(2)}) == 2
@@ -502,8 +506,9 @@ def test_create_playlist_binds_a_second_positional_to_section() -> None:
     # Real is createPlaylist(title, section=None, items=None, ...) (server.py:488),
     # so passing items positionally silently creates nothing.
     server = FakeServer([_t(1)])
+    track = _t(1)
     with pytest.raises(FakeBadRequest):
-        server.createPlaylist("Mix", [_t(1)])
+        server.createPlaylist("Mix", [track])
 
 
 def test_playlist_keys_come_from_one_server_wide_space() -> None:
