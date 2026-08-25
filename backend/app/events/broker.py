@@ -60,7 +60,10 @@ class EventBroker:
             pass  # loop closed/stopped at shutdown — dropping the event is correct
 
     def _fanout(self, event: str) -> None:
-        for q in list(self._subscribers):  # snapshot: safe against mid-iteration change
+        # No snapshot copy: _fanout is synchronous (no await), so on a
+        # single-threaded event loop no other coroutine can mutate
+        # _subscribers mid-iteration.
+        for q in self._subscribers:
             try:
                 q.put_nowait(event)
             except asyncio.QueueFull:

@@ -13,7 +13,7 @@ from urllib.parse import unquote, urlparse
 from app.models.playlist_import import ParsedPlaylist, SourceEntry
 from app.playlists.stem import filename_stem
 
-_EXTINF = re.compile(r"\A#EXTINF:\s*(-?\d+(?:\.\d+)?)?\s*,\s*(.*)\Z")
+_EXTINF = re.compile(r"\A#EXTINF:\s*(?:(-?\d+(?:\.\d+)?)\s*)?,\s*(.*)\Z")
 
 
 def _split_artist_title(text: str) -> tuple[str | None, str | None]:

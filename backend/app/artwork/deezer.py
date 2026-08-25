@@ -27,7 +27,7 @@ import httpx
 
 from app.artwork.download import download_image
 from app.artwork.normalize import normalize_artist_name
-from app.artwork.source import ResolvedImage, TransientSourceError
+from app.artwork.source import ArtistImageSourceBase, ResolvedImage, TransientSourceError
 
 _SEARCH_URL = "https://api.deezer.com/search/artist"
 
@@ -36,7 +36,7 @@ _SEARCH_URL = "https://api.deezer.com/search/artist"
 _NO_PHOTO_PLACEHOLDER = "d41d8cd98f00b204e9800998ecf8427e"
 
 
-class DeezerArtistImageSource:
+class DeezerArtistImageSource(ArtistImageSourceBase):
     def __init__(self, *, client: httpx.AsyncClient, search_limit: int) -> None:
         self._client = client
         self._search_limit = search_limit

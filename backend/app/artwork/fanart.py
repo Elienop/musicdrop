@@ -14,12 +14,12 @@ from typing import Any
 import httpx
 
 from app.artwork.download import download_image
-from app.artwork.source import ResolvedImage, TransientSourceError
+from app.artwork.source import ArtistImageSourceBase, ResolvedImage, TransientSourceError
 
 _BASE_URL = "https://webservice.fanart.tv/v3/music"
 
 
-class FanartTvArtistImageSource:
+class FanartTvArtistImageSource(ArtistImageSourceBase):
     def __init__(self, *, client: httpx.AsyncClient, api_key: str, client_key: str = "") -> None:
         self._client = client
         self._api_key = api_key

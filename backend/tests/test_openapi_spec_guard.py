@@ -99,12 +99,7 @@ def _drift_summary(tracked: dict[str, object], live: dict[str, object]) -> str:
 def test_tracked_openapi_matches_live_spec() -> None:
     if not TRACKED_FILE.is_file():
         pytest.fail(f"tracked API contract is missing at {TRACKED_FILE}\n{REGEN_GUIDANCE}")
-    try:
-        tracked = json.loads(TRACKED_FILE.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        pytest.fail(
-            f"tracked API contract at {TRACKED_FILE} is not valid JSON ({exc})\n{REGEN_GUIDANCE}"
-        )
+    tracked = json.loads(TRACKED_FILE.read_text(encoding="utf-8"))
     if not isinstance(tracked, dict):
         pytest.fail(
             f"tracked API contract at {TRACKED_FILE} is not a JSON object\n{REGEN_GUIDANCE}"

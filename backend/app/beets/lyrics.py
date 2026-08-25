@@ -488,7 +488,7 @@ def _album_scope_label(lib: Library, album_id: int) -> str:
         return label or f"album {album_id}"
 
 
-async def start_album_lyrics_op(
+def start_album_lyrics_op(
     request_obj: Any, album_id: int, on_complete: Callable[[], None] | None = None
 ) -> LyricsBackfillStatus:
     """Start an album-scoped lyrics fetch JOB (marching progress); returns its status.

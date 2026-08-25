@@ -470,17 +470,19 @@ class ImportJobRegistry:
         # Replay any parked/duplicate that a PRIOR drain popped before its feed
         # row existed (the outcome pass had run before the worker's note_outcome).
         # This drain's outcome pass has now created the row, so attach + clear.
-        for index in list(job.pending_parked):
-            row = job.albums.get(index)
-            if row is not None:
-                row.parked = job.pending_parked.pop(index)
-                row.art_source = job.bridge.art_source(index)
-        for index in list(job.pending_duplicate):
-            row = job.albums.get(index)
-            if row is not None:
-                row.duplicate = job.pending_duplicate.pop(index)
-                row.art_source = job.bridge.art_source(index)
-                row.status = ImportAlbumStatus.needs_dup_resolution
+        ready_parked = [index for index in job.pending_parked if job.albums.get(index) is not None]
+        for index in ready_parked:
+            row = job.albums[index]
+            row.parked = job.pending_parked.pop(index)
+            row.art_source = job.bridge.art_source(index)
+        ready_duplicate = [
+            index for index in job.pending_duplicate if job.albums.get(index) is not None
+        ]
+        for index in ready_duplicate:
+            row = job.albums[index]
+            row.duplicate = job.pending_duplicate.pop(index)
+            row.art_source = job.bridge.art_source(index)
+            row.status = ImportAlbumStatus.needs_dup_resolution
 
     def _drain_parked_locked(self, job: ImportJob) -> None:
         """Drain the (at-most-one) parked album into the feed (non-blocking).

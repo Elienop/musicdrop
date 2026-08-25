@@ -59,7 +59,7 @@ _log = logging.getLogger(__name__)
 # emits ONE of these per maximal invalid SEQUENCE, not per byte, so two
 # differently-damaged names can land on the same display form — which is exactly
 # why ``resolve_display_path`` refuses to guess between them.
-PLACEHOLDER = "�"
+PLACEHOLDER = "\ufffd"  # U+FFFD, the Unicode replacement character
 
 StrOrBytesPath = str | bytes | os.PathLike[str] | os.PathLike[bytes]
 

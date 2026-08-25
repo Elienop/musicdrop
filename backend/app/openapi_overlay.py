@@ -72,6 +72,32 @@ def _ensure_error_detail(components: dict[str, object]) -> None:
         schemas["ErrorDetail"] = ErrorDetail.model_json_schema()
 
 
+def _stamp_operation(method: str, operation: object) -> None:
+    """Stamp the guard responses onto one operation, only where ABSENT.
+
+    - ``400`` on every operation (host guard, all methods);
+    - ``403`` on operations whose method is in ``UNSAFE_METHODS`` — THE SAME
+      object the origin guard checks, so the contract follows if it changes;
+    - ``413`` on operations with a ``requestBody``.
+
+    Existing entries for those statuses are left untouched.
+    """
+    if not isinstance(operation, dict):
+        return
+    responses = operation.get("responses")
+    if not isinstance(responses, dict):
+        # Deliberate skip, not a fix-up: FastAPI always emits a
+        # ``responses`` dict, so this only fires on malformed or
+        # synthetic input, which the overlay declines to invent for.
+        return
+    if "400" not in responses:
+        responses["400"] = _error_detail_response(_HOST_GUARD_400)
+    if method.upper() in UNSAFE_METHODS and "403" not in responses:
+        responses["403"] = _error_detail_response(_ORIGIN_GUARD_403)
+    if "requestBody" in operation and "413" not in responses:
+        responses["413"] = _error_detail_response(_BODY_LIMIT_413)
+
+
 def overlay_middleware_responses(schema: dict[str, object]) -> dict[str, object]:
     """Add the guards' 400/403/413 to every operation, only where ABSENT.
 
@@ -90,27 +116,12 @@ def overlay_middleware_responses(schema: dict[str, object]) -> dict[str, object]
     _ensure_error_detail(components)
 
     paths = schema.get("paths")
-    if not isinstance(paths, dict):
-        return schema
-
-    for path_item in paths.values():
-        if not isinstance(path_item, dict):
-            continue
-        for method, operation in path_item.items():
-            if not isinstance(method, str) or method not in _HTTP_METHODS:
+    if isinstance(paths, dict):
+        for path_item in paths.values():
+            if not isinstance(path_item, dict):
                 continue
-            if not isinstance(operation, dict):
-                continue
-            responses = operation.get("responses")
-            if not isinstance(responses, dict):
-                # Deliberate skip, not a fix-up: FastAPI always emits a
-                # ``responses`` dict, so this only fires on malformed or
-                # synthetic input, which the overlay declines to invent for.
-                continue
-            if "400" not in responses:
-                responses["400"] = _error_detail_response(_HOST_GUARD_400)
-            if method.upper() in UNSAFE_METHODS and "403" not in responses:
-                responses["403"] = _error_detail_response(_ORIGIN_GUARD_403)
-            if "requestBody" in operation and "413" not in responses:
-                responses["413"] = _error_detail_response(_BODY_LIMIT_413)
+            for method, operation in path_item.items():
+                if not isinstance(method, str) or method not in _HTTP_METHODS:
+                    continue
+                _stamp_operation(method, operation)
     return schema

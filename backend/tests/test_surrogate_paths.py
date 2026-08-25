@@ -260,7 +260,7 @@ def test_trash_delete_refuses_when_two_folders_share_one_display_form(client: Te
 
 
 # U+FFFD is a perfectly legal filename character, so a folder can be GENUINELY
-# named "Caf� Album" and sit next to the damaged b"Caf\xe9 Album" that
+# named "Caf<U+FFFD> Album" and sit next to the damaged b"Caf\xe9 Album" that
 # displays the same way. Trusting the literal path first would silently operate
 # on the wrong one of the two.
 

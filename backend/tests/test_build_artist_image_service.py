@@ -57,7 +57,7 @@ def test_deezer_only_when_no_credentials(parts: Parts, monkeypatch: pytest.Monke
     monkeypatch.setattr(settings, "artist_image_spotify_client_id", "")
     monkeypatch.setattr(settings, "artist_image_spotify_client_secret", "")
     service = main_mod._build_artist_image_service(
-        client, cache, toggle.is_enabled, build_artist_image_sources(client, settings)
+        cache, toggle.is_enabled, build_artist_image_sources(client, settings)
     )
     assert _chain_types(service) == [DeezerArtistImageSource]
 
@@ -70,7 +70,7 @@ def test_full_chain_order_when_all_configured(
     monkeypatch.setattr(settings, "artist_image_spotify_client_id", "ID")
     monkeypatch.setattr(settings, "artist_image_spotify_client_secret", "SEC")
     service = main_mod._build_artist_image_service(
-        client, cache, toggle.is_enabled, build_artist_image_sources(client, settings)
+        cache, toggle.is_enabled, build_artist_image_sources(client, settings)
     )
     assert _chain_types(service) == [
         FanartTvArtistImageSource,
@@ -85,7 +85,7 @@ def test_spotify_skipped_without_both_creds(parts: Parts, monkeypatch: pytest.Mo
     monkeypatch.setattr(settings, "artist_image_spotify_client_id", "ID")
     monkeypatch.setattr(settings, "artist_image_spotify_client_secret", "")  # no secret
     service = main_mod._build_artist_image_service(
-        client, cache, toggle.is_enabled, build_artist_image_sources(client, settings)
+        cache, toggle.is_enabled, build_artist_image_sources(client, settings)
     )
     assert _chain_types(service) == [DeezerArtistImageSource]
 
@@ -100,7 +100,7 @@ def test_service_chain_holds_the_registry_instances(
     monkeypatch.setattr(settings, "artist_image_spotify_client_id", "ID")
     monkeypatch.setattr(settings, "artist_image_spotify_client_secret", "SEC")
     sources = build_artist_image_sources(client, settings)
-    service = main_mod._build_artist_image_service(client, cache, toggle.is_enabled, sources)
+    service = main_mod._build_artist_image_service(cache, toggle.is_enabled, sources)
     assert _chain_of(service)._sources[1] is sources.get("spotify")
 
 

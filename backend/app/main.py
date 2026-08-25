@@ -76,7 +76,6 @@ def _resolve_library() -> LibraryHandle:
 
 
 def _build_artist_image_service(
-    client: httpx.AsyncClient,
     cache: ArtistImageCache,
     is_enabled: Callable[[], bool],
     sources: ArtistImageSources,
@@ -214,7 +213,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The write toggle ALSO enables fetching (one switch): the engine resolves
     # portraits whenever EITHER the image toggle OR the write toggle is on.
     app.state.artist_image_service = _build_artist_image_service(
-        http_client,
         cache,
         lambda: toggle.is_enabled() or art_write_toggle.is_enabled(),
         artist_image_sources,

@@ -294,8 +294,6 @@ def test_per_album_fetch_409_during_backfill(
     edit_lib: Library, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A running backfill blocks the per-album fetch start op (409)."""
-    import asyncio
-
     from fastapi import HTTPException
 
     from app.beets.lyrics import start_album_lyrics_op
@@ -311,11 +309,8 @@ def test_per_album_fetch_409_during_backfill(
         app = _App()
 
     req = _Req()
-    # Calling the async op only CREATES the coroutine — nothing runs (and
-    # nothing can raise) until asyncio.run drives it inside the block.
-    op = start_album_lyrics_op(req, 1)
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(op)
+        start_album_lyrics_op(req, 1)
     assert ei.value.status_code == 409
     reset_lyrics_backfill()
 

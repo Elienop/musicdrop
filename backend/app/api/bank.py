@@ -36,6 +36,8 @@ from app.models.bank import (
 )
 from app.models.import_models import DuplicatesCheckResponse, ImportSearch, ParkedAlbum
 
+_BANK_ITEM_NOT_FOUND = "Bank item not found"
+
 router = APIRouter(tags=["bank"])
 
 
@@ -81,7 +83,7 @@ async def list_bank(
 async def get_bank_item(item_id: str) -> BankItem:
     item = await run_in_threadpool(store.get_item, get_bank_dir(), item_id)
     if item is None:
-        raise HTTPException(status_code=404, detail="Bank item not found")
+        raise HTTPException(status_code=404, detail=_BANK_ITEM_NOT_FOUND)
     return item
 
 
@@ -95,7 +97,7 @@ async def bank_item_duplicates(
     own duplicate query on the matched-release metadata (lazy, fresh)."""
     item = await run_in_threadpool(store.get_item, get_bank_dir(), item_id)
     if item is None:
-        raise HTTPException(status_code=404, detail="Bank item not found")
+        raise HTTPException(status_code=404, detail=_BANK_ITEM_NOT_FOUND)
     parked = item.parked
     if parked is None:
         return DuplicatesCheckResponse(existing=[])  # nothing to check (no_match)
@@ -126,7 +128,7 @@ async def search_bank_item(item_id: str, search: ImportSearch) -> BankSearchResp
     bank_dir = get_bank_dir()
     item = await run_in_threadpool(store.get_item, bank_dir, item_id)
     if item is None:
-        raise HTTPException(status_code=404, detail="Bank item not found")
+        raise HTTPException(status_code=404, detail=_BANK_ITEM_NOT_FOUND)
     # Fast-path pre-check only — the store's locked _SEARCHABLE re-check in
     # research_item is authoritative if this tuple ever drifts.
     if item.status not in ("needs_review", "failed") or item.reason == "needs_dup_resolution":
@@ -176,7 +178,7 @@ async def search_bank_item(item_id: str, search: ImportSearch) -> BankSearchResp
     except store.InvalidTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     if updated is None:
-        raise HTTPException(status_code=404, detail="Bank item not found")
+        raise HTTPException(status_code=404, detail=_BANK_ITEM_NOT_FOUND)
     return BankSearchResponse(item=updated, found=True)
 
 
@@ -193,7 +195,7 @@ async def rescan_bank_item(item_id: str) -> BankItem:
     bank_dir = get_bank_dir()
     item = await run_in_threadpool(store.get_item, bank_dir, item_id)
     if item is None:
-        raise HTTPException(status_code=404, detail="Bank item not found")
+        raise HTTPException(status_code=404, detail=_BANK_ITEM_NOT_FOUND)
     if item.status not in ("needs_review", "failed", "stale"):
         raise HTTPException(
             status_code=409,
@@ -256,7 +258,7 @@ async def rescan_bank_item(item_id: str) -> BankItem:
     except store.InvalidTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     if updated is None:
-        raise HTTPException(status_code=404, detail="Bank item not found")
+        raise HTTPException(status_code=404, detail=_BANK_ITEM_NOT_FOUND)
     return updated
 
 
@@ -267,7 +269,7 @@ async def decide_bank_item(item_id: str, decision: BankDecision, request: Reques
     except store.InvalidTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     if item is None:
-        raise HTTPException(status_code=404, detail="Bank item not found")
+        raise HTTPException(status_code=404, detail=_BANK_ITEM_NOT_FOUND)
     if item.status == "queued":
         # Best-effort wake of the apply runner so the apply starts promptly;
         # its periodic poll is the correctness mechanism (same getattr posture
@@ -286,7 +288,7 @@ async def delete_bank_item(item_id: str) -> Response:
     except store.InvalidTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     if not deleted:
-        raise HTTPException(status_code=404, detail="Bank item not found")
+        raise HTTPException(status_code=404, detail=_BANK_ITEM_NOT_FOUND)
     return Response(status_code=204)
 
 
