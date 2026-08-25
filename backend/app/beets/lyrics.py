@@ -275,22 +275,11 @@ def _store_lyrics(item: Any, lyrics: Lyrics, *, write: bool) -> bool:
     return written
 
 
-def fetch_item_lyrics(
-    plugin: Any, item: Any, *, force: bool, write: bool, recheck_misses: bool = False
-) -> ItemLyricsOutcome:
-    """Fetch one item's lyrics directly off the plugin's backends.
-
-    Skip-existing unless ``force``. A track previously searched with no result
-    carries a ``lyrics_checked`` flag and is skipped (``skipped_checked``) on bulk
-    runs unless ``recheck_misses``/``force`` — so obscure tracks aren't
-    re-searched every backfill. A clean ``not_found`` sets the flag; a network
-    error stays ``fetch_failed`` (transient) and is NOT marked. A track already
-    flagged instrumental is skipped by EVERY sweep (``recheck_misses`` included)
-    — an instrumental is an answer, not a miss; only ``force`` re-searches one.
-    """
-    from beetsplug.lyrics import search_pairs
-
-    item_id = int(item.id)
+def _early_skip_outcome(
+    item_id: int, item: Any, *, force: bool, recheck_misses: bool
+) -> ItemLyricsOutcome | None:
+    """The "already answered, don't search" outcome for this item, or None when
+    the item must actually be fetched."""
     # Answered already, definitively: beets (or a previous run of ours) flagged
     # this track as having no lyrics by nature. Deliberately NOT gated on
     # recheck_misses, and deliberately independent of lyrics_checked — beets'
@@ -318,6 +307,52 @@ def fetch_item_lyrics(
         return ItemLyricsOutcome(
             item_id=item_id, status="skipped_no_metadata", source=None, written=False
         )
+    return None
+
+
+def _apply_fetched_result(
+    item_id: int, item: Any, result: Any, *, write: bool
+) -> ItemLyricsOutcome | None:
+    """Apply one backend's result to the item; its outcome, or None when the
+    result carried no usable text (so the search keeps going to the next
+    pair/backend)."""
+    # Instrumental is DEFINITIVE: stop here, no further backends and
+    # no further search pairs. beets normalises the backend's
+    # "[Instrumental]" marker to text="" + instrumental=True, so this
+    # must be checked BEFORE the empty-text fall-through below.
+    if getattr(result, "instrumental", False):
+        _store_instrumental(item, result)
+        return ItemLyricsOutcome(
+            item_id=item_id,
+            status="instrumental",
+            source=result.backend,
+            written=False,
+        )
+    # beets 2.12's LRCLib can return a Lyrics whose ``.text`` is None
+    # (a best candidate with null plainLyrics and synced not selected);
+    # its own ``Lyrics.text_lines`` then does ``None.splitlines()`` and
+    # raises, which would abort the whole backfill on that one track.
+    # Treat empty/blank text as no usable match — fall through to the
+    # next pair/backend and ultimately ``not_found``.
+    if (result.text or "").strip():
+        written = _store_lyrics(item, result, write=write)
+        return ItemLyricsOutcome(
+            item_id=item_id, status="found", source=result.backend, written=written
+        )
+    return None
+
+
+def _search_for_lyrics(
+    plugin: Any, item: Any, *, item_id: int, write: bool
+) -> tuple[ItemLyricsOutcome | None, bool]:
+    """Try every search pair across the plugin's backends.
+
+    Returns ``(outcome, network_failed)``: the outcome of the first stored
+    result (or None when nothing usable was found) and whether any backend
+    hit a network error (``fetch_failed`` is transient and must NOT be
+    marked ``lyrics_checked``).
+    """
+    from beetsplug.lyrics import search_pairs
 
     album = str(item.album or "")
     length = int(item.length or 0)
@@ -342,29 +377,32 @@ def fetch_item_lyrics(
                     continue
                 if result is None:
                     continue
-                # Instrumental is DEFINITIVE: stop here, no further backends and
-                # no further search pairs. beets normalises the backend's
-                # "[Instrumental]" marker to text="" + instrumental=True, so this
-                # must be checked BEFORE the empty-text fall-through below.
-                if getattr(result, "instrumental", False):
-                    _store_instrumental(item, result)
-                    return ItemLyricsOutcome(
-                        item_id=item_id,
-                        status="instrumental",
-                        source=result.backend,
-                        written=False,
-                    )
-                # beets 2.12's LRCLib can return a Lyrics whose ``.text`` is None
-                # (a best candidate with null plainLyrics and synced not selected);
-                # its own ``Lyrics.text_lines`` then does ``None.splitlines()`` and
-                # raises, which would abort the whole backfill on that one track.
-                # Treat empty/blank text as no usable match — fall through to the
-                # next pair/backend and ultimately ``not_found``.
-                if (result.text or "").strip():
-                    written = _store_lyrics(item, result, write=write)
-                    return ItemLyricsOutcome(
-                        item_id=item_id, status="found", source=result.backend, written=written
-                    )
+                outcome = _apply_fetched_result(item_id, item, result, write=write)
+                if outcome is not None:
+                    return outcome, failed
+    return None, failed
+
+
+def fetch_item_lyrics(
+    plugin: Any, item: Any, *, force: bool, write: bool, recheck_misses: bool = False
+) -> ItemLyricsOutcome:
+    """Fetch one item's lyrics directly off the plugin's backends.
+
+    Skip-existing unless ``force``. A track previously searched with no result
+    carries a ``lyrics_checked`` flag and is skipped (``skipped_checked``) on bulk
+    runs unless ``recheck_misses``/``force`` — so obscure tracks aren't
+    re-searched every backfill. A clean ``not_found`` sets the flag; a network
+    error stays ``fetch_failed`` (transient) and is NOT marked. A track already
+    flagged instrumental is skipped by EVERY sweep (``recheck_misses`` included)
+    — an instrumental is an answer, not a miss; only ``force`` re-searches one.
+    """
+    item_id = int(item.id)
+    skip = _early_skip_outcome(item_id, item, force=force, recheck_misses=recheck_misses)
+    if skip is not None:
+        return skip
+    outcome, failed = _search_for_lyrics(plugin, item, item_id=item_id, write=write)
+    if outcome is not None:
+        return outcome
     if failed:
         status: ItemLyricsStatus = "fetch_failed"  # transient — do NOT mark
     else:

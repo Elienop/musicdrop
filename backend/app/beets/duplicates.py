@@ -158,6 +158,56 @@ def _grouping_signals(album: Any, mode: DuplicateMode) -> list[str]:
     return signals
 
 
+def _ufind(parent: list[int], x: int) -> int:
+    """Union-find root of ``x`` with path halving (mutates ``parent``)."""
+    while parent[x] != x:
+        parent[x] = parent[parent[x]]
+        x = parent[x]
+    return x
+
+
+def _union_find_link(albums: list[Any], mode: DuplicateMode) -> tuple[list[int], list[bool]]:
+    """Link albums that share any grouping signal; return ``(parent, has_signal)``.
+
+    ``parent`` is the union-find table after linking; ``has_signal`` marks each
+    album that contributed at least one signal (those without are later excluded
+    from grouping, mirroring beets ``_group_by`` null handling).
+    """
+    parent = list(range(len(albums)))
+    signal_owner: dict[str, int] = {}
+    has_signal: list[bool] = []
+    for idx, album in enumerate(albums):
+        signals = _grouping_signals(album, mode)
+        has_signal.append(bool(signals))
+        for sig in signals:
+            owner = signal_owner.setdefault(sig, idx)
+            if owner != idx:
+                ra, rb = _ufind(parent, idx), _ufind(parent, owner)
+                if ra != rb:
+                    parent[max(ra, rb)] = min(ra, rb)
+    return parent, has_signal
+
+
+def _components_to_groups(
+    albums: list[Any], parent: list[int], has_signal: list[bool]
+) -> list[tuple[list[Any], bool]]:
+    """Collapse each union-find root into its member list, drop singletons, and
+    tag each group with ``all_share_mb`` (every member carries the same MBID)."""
+    components: dict[int, list[Any]] = {}
+    for idx, album in enumerate(albums):
+        if has_signal[idx]:
+            components.setdefault(_ufind(parent, idx), []).append(album)
+
+    out: list[tuple[list[Any], bool]] = []
+    for members in components.values():
+        if len(members) < 2:
+            continue
+        mbids = {_coerce_optional_str(a.get("mb_albumid")) for a in members}
+        all_share_mb = len(mbids) == 1 and None not in mbids
+        out.append((members, all_share_mb))
+    return out
+
+
 def _group_by_shared_signal(albums: list[Any], mode: DuplicateMode) -> list[tuple[list[Any], bool]]:
     """Union albums that share any grouping signal into connected components.
 
@@ -168,42 +218,8 @@ def _group_by_shared_signal(albums: list[Any], mode: DuplicateMode) -> list[tupl
     artist+title match. Union-find keeps the grouping transitive — A~B via MBID,
     B~C via title folds all three together.
     """
-    parent = list(range(len(albums)))
-
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)
-
-    signal_owner: dict[str, int] = {}
-    has_signal: list[bool] = []
-    for idx, album in enumerate(albums):
-        signals = _grouping_signals(album, mode)
-        has_signal.append(bool(signals))
-        for sig in signals:
-            owner = signal_owner.setdefault(sig, idx)
-            if owner != idx:
-                union(idx, owner)
-
-    components: dict[int, list[Any]] = {}
-    for idx, album in enumerate(albums):
-        if has_signal[idx]:
-            components.setdefault(find(idx), []).append(album)
-
-    out: list[tuple[list[Any], bool]] = []
-    for members in components.values():
-        if len(members) < 2:
-            continue
-        mbids = {_coerce_optional_str(a.get("mb_albumid")) for a in members}
-        all_share_mb = len(mbids) == 1 and None not in mbids
-        out.append((members, all_share_mb))
-    return out
+    parent, has_signal = _union_find_link(albums, mode)
+    return _components_to_groups(albums, parent, has_signal)
 
 
 def _to_duplicate_album(lib: Library, album: Any, *, is_keeper: bool) -> DuplicateAlbum:

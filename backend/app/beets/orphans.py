@@ -186,6 +186,39 @@ def _seed_orphan(seed: str, root: str, excluded: Callable[[str], bool]) -> str |
     return candidate
 
 
+def _excluded_predicate(root: str, exclude_roots: tuple[str, ...]) -> Callable[[str], bool]:
+    """Whether a dir is outside the sweep: inside a trash/ignore root, or under a
+    dotdir / known NAS/OS housekeeping dir name (relative to ``root``)."""
+
+    def excluded(dp: str) -> bool:
+        for r in exclude_roots:
+            if dp == r or dp.startswith(r + os.sep):
+                return True
+        rel = os.path.relpath(dp, root)
+        return rel != os.curdir and any(_skip_name(seg) for seg in rel.split(os.sep))
+
+    return excluded
+
+
+def _seeded_orphans(seeds: list[Path], root: str, excluded: Callable[[str], bool]) -> list[str]:
+    """Each seed's top-most audio-empty ancestor below ``root``, deduped in
+    seed order (seeds mode of :func:`find_orphan_folders`)."""
+    seen: set[str] = set()
+    raw: list[str] = []
+    for seed in seeds:
+        hit = _seed_orphan(os.path.normpath(str(seed)), root, excluded)
+        if hit is not None and hit not in seen:
+            seen.add(hit)
+            raw.append(hit)
+    return raw
+
+
+def _top_most(paths: list[str]) -> list[str]:
+    """Keep only the top-most of the set."""
+    # Drop any path that is a descendant of another in the set (keep top-most).
+    return [p for p in paths if not any(p != q and _under(p, q) for q in paths)]
+
+
 def find_orphan_folders(
     music_dir: Path,
     *,
@@ -207,24 +240,10 @@ def find_orphan_folders(
     """
     root = os.path.normpath(str(music_dir))
     exclude_roots = tuple(os.path.normpath(str(d)) for d in (trash_dir, *ignore_dirs))
-
-    def excluded(dp: str) -> bool:
-        for r in exclude_roots:
-            if dp == r or dp.startswith(r + os.sep):
-                return True
-        rel = os.path.relpath(dp, root)
-        return rel != os.curdir and any(_skip_name(seg) for seg in rel.split(os.sep))
-
+    excluded = _excluded_predicate(root, exclude_roots)
     if seeds is None:
         raw = _library_orphans(root, excluded)
     else:
-        seen: set[str] = set()
-        raw = []
-        for seed in seeds:
-            hit = _seed_orphan(os.path.normpath(str(seed)), root, excluded)
-            if hit is not None and hit not in seen:
-                seen.add(hit)
-                raw.append(hit)
-    # Drop any path that is a descendant of another in the set (keep top-most).
-    kept = [p for p in raw if not any(p != q and _under(p, q) for q in raw)]
+        raw = _seeded_orphans(seeds, root, excluded)
+    kept = _top_most(raw)
     return sorted(Path(p) for p in kept)

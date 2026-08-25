@@ -35,6 +35,19 @@ def list_trashed_albums(trash_dir: Path) -> list[TrashedAlbum]:
     """
     if not trash_dir.exists():
         return []
+    groups = _walk_trash_groups(trash_dir)
+    albums = _albums_from_groups(groups)
+    albums.extend(_audio_free_entries(trash_dir, groups))
+    albums.sort(key=lambda a: ((a.album_artist or "").lower(), (a.album or "").lower()))
+    return albums
+
+
+def _walk_trash_groups(trash_dir: Path) -> dict[str, list[Any]]:
+    """Collect audio files under ``trash_dir`` grouped by their top-level entry.
+
+    Reads each file's tags via ``Item.from_path`` (no DB) and keys each item on
+    the entry directly under ``trash_dir`` (``top`` is the restore/empty key).
+    """
     # Group by the entry directly under trash_dir — each trashed album is its own
     # subdir there — NOT by tags, so same-tagged or untagged sibling folders stay
     # distinct and reachable (grouping by tags collapsed them onto folder=".",
@@ -50,6 +63,11 @@ def list_trashed_albums(trash_dir: Path) -> list[TrashedAlbum]:
                 continue
             top = os.path.relpath(path, trash_dir).split(os.sep, 1)[0]
             groups.setdefault(top, []).append(item)
+    return groups
+
+
+def _albums_from_groups(groups: dict[str, list[Any]]) -> list[TrashedAlbum]:
+    """Turn each tag group into a :class:`TrashedAlbum`, keyed on the raw name."""
     albums: list[TrashedAlbum] = []
     for folder, items in groups.items():
         first = items[0]
@@ -65,12 +83,18 @@ def list_trashed_albums(trash_dir: Path) -> list[TrashedAlbum]:
                 format=_coerce_optional_str(getattr(first, "format", None)),
             )
         )
+    return albums
+
+
+def _audio_free_entries(trash_dir: Path, groups: dict[str, list[Any]]) -> list[TrashedAlbum]:
+    """Zero-track entries for top-level trash dirs that produced no audio group."""
     # Audio-free trashed folders (art/sidecar husks the orphan sweep relocates here)
     # carry no Item rows, so the tag-grouping above never lists them. Surface each
     # top-level trash dir that produced no audio group as a zero-track entry —
     # otherwise it is invisible in the Trash UI, has no per-entry Restore/Empty
     # affordance, and Empty-all deletes it silently (the page under-reporting what
     # it destroys). Dirs only; hidden/system names skipped.
+    albums: list[TrashedAlbum] = []
     for entry in sorted(trash_dir.iterdir()):
         if entry.is_dir() and not entry.name.startswith(".") and entry.name not in groups:
             albums.append(
@@ -83,7 +107,6 @@ def list_trashed_albums(trash_dir: Path) -> list[TrashedAlbum]:
                     format=None,
                 )
             )
-    albums.sort(key=lambda a: ((a.album_artist or "").lower(), (a.album or "").lower()))
     return albums
 
 

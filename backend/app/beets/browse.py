@@ -18,9 +18,10 @@ from __future__ import annotations
 import os
 import threading
 from collections import Counter
+from collections.abc import Iterable
 from itertools import groupby
 from pathlib import Path
-from typing import Final, Literal, NamedTuple
+from typing import Any, Final, Literal, NamedTuple
 
 from beets import config
 from beets.library import Album as BeetsAlbum
@@ -219,6 +220,56 @@ _ITEM_FACTS_SQL = """
 _FLEX_SQL = "SELECT entity_id, value FROM item_attributes WHERE key = ?"
 
 
+def _lyrics_bucket(answered: int, track_count: int) -> str:
+    """Complete / Partial / Missing from an album's answered-track tally."""
+    if answered == 0:
+        return "Missing"
+    if answered == track_count:
+        return "Complete"
+    return "Partial"
+
+
+def _album_facts(rows: Iterable[Any], instrumental: set[int]) -> _AlbumFacts:
+    """Track facts for ONE album's rows (raw-SQL rows, play order)."""
+    track_count = 0
+    formats: list[str] = []
+    genre_fallback: tuple[str, ...] = ()
+    answered = 0
+    first_tracktotal = 0
+    per_disc_tracktotal = 0
+    seen_discs: set[int] = set()
+    for raw_id, _album_id, fmt, has_lyrics, disc, tracktotal, raw_genres in rows:
+        item_id = _coerce_int(raw_id)
+        track_count += 1
+        if (value := _coerce_optional_str(fmt)) is not None:
+            formats.append(value)
+        if not genre_fallback:
+            genre_fallback = tuple(_genre_values(raw_genres))
+        # A track is ANSWERED when it carries lyrics or beets flagged it
+        # instrumental: an instrumental has no lyrics BY NATURE, so counting
+        # it as missing left albums stuck at Partial with nothing to fetch.
+        # ``has_lyrics`` is SQL's 0/1 answer to the first half — see
+        # _ITEM_FACTS_SQL for why the text itself never comes back.
+        if _coerce_int(has_lyrics) or item_id in instrumental:
+            answered += 1
+        total = _coerce_int(tracktotal)
+        if track_count == 1:
+            first_tracktotal = total
+        if (disc_no := _coerce_int(disc)) not in seen_discs:
+            seen_discs.add(disc_no)
+            per_disc_tracktotal += total
+    return _AlbumFacts(
+        track_count=track_count,
+        # A mixed-format album takes its most common value (one per album);
+        # ``Counter`` breaks a tie on first appearance, i.e. play order.
+        format=Counter(formats).most_common(1)[0][0] if formats else "Unknown",
+        genre_fallback=genre_fallback,
+        lyrics=_lyrics_bucket(answered, track_count),
+        first_tracktotal=first_tracktotal,
+        per_disc_tracktotal=per_disc_tracktotal,
+    )
+
+
 def _collect_facts(lib: Library) -> dict[int, _AlbumFacts]:
     """Per-album track facts for the whole library, in two queries.
 
@@ -250,47 +301,7 @@ def _collect_facts(lib: Library) -> dict[int, _AlbumFacts]:
 
     facts: dict[int, _AlbumFacts] = {}
     for album_id, rows in groupby(item_rows, key=lambda row: _coerce_int(row["album_id"])):
-        track_count = 0
-        formats: list[str] = []
-        genre_fallback: tuple[str, ...] = ()
-        answered = 0
-        first_tracktotal = 0
-        per_disc_tracktotal = 0
-        seen_discs: set[int] = set()
-        for raw_id, _album_id, fmt, has_lyrics, disc, tracktotal, raw_genres in rows:
-            item_id = _coerce_int(raw_id)
-            track_count += 1
-            if (value := _coerce_optional_str(fmt)) is not None:
-                formats.append(value)
-            if not genre_fallback:
-                genre_fallback = tuple(_genre_values(raw_genres))
-            # A track is ANSWERED when it carries lyrics or beets flagged it
-            # instrumental: an instrumental has no lyrics BY NATURE, so counting
-            # it as missing left albums stuck at Partial with nothing to fetch.
-            # ``has_lyrics`` is SQL's 0/1 answer to the first half — see
-            # _ITEM_FACTS_SQL for why the text itself never comes back.
-            if _coerce_int(has_lyrics) or item_id in instrumental:
-                answered += 1
-            total = _coerce_int(tracktotal)
-            if track_count == 1:
-                first_tracktotal = total
-            if (disc_no := _coerce_int(disc)) not in seen_discs:
-                seen_discs.add(disc_no)
-                per_disc_tracktotal += total
-        facts[album_id] = _AlbumFacts(
-            track_count=track_count,
-            # A mixed-format album takes its most common value (one per album);
-            # ``Counter`` breaks a tie on first appearance, i.e. play order.
-            format=Counter(formats).most_common(1)[0][0] if formats else "Unknown",
-            genre_fallback=genre_fallback,
-            lyrics=(
-                "Missing"
-                if answered == 0
-                else ("Complete" if answered == track_count else "Partial")
-            ),
-            first_tracktotal=first_tracktotal,
-            per_disc_tracktotal=per_disc_tracktotal,
-        )
+        facts[album_id] = _album_facts(rows, instrumental)
     return facts
 
 

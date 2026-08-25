@@ -59,6 +59,40 @@ def _classify(lib: Any | None, imp: Any | None) -> DuplicateTrackState:
     return DuplicateTrackState.missing
 
 
+def _import_by_pos(match: Any) -> dict[int, Any]:
+    """Release position -> incoming item (from the AlbumMatch item->track mapping)."""
+    import_by_pos: dict[int, Any] = {}
+    for item, track_info in getattr(match, "mapping", {}).items():
+        idx = getattr(track_info, "index", None)
+        if idx is not None:
+            import_by_pos[int(idx)] = item
+    return import_by_pos
+
+
+def _library_indexes(
+    found_duplicates: Any,
+) -> tuple[dict[str, Any], dict[tuple[int, int], Any]]:
+    """Library items by release track id AND by (disc, track number).
+
+    The id index works when the matched release and the library copy share a
+    source; the position index rescues a CROSS-source duplicate (e.g. a Deezer
+    import dup'ing a MusicBrainz library album, where the release track_id and
+    the library mb_trackid are different id namespaces and never match). Union
+    across all duplicate albums.
+    """
+    lib_by_id: dict[str, Any] = {}
+    lib_by_pos: dict[tuple[int, int], Any] = {}
+    for album in found_duplicates:
+        for it in album.items():
+            tid = _norm_id(getattr(it, "mb_trackid", None))
+            if tid and tid not in lib_by_id:
+                lib_by_id[tid] = it
+            tnum = getattr(it, "track", None)
+            if tnum is not None:
+                lib_by_pos.setdefault((int(getattr(it, "disc", 1) or 1), int(tnum)), it)
+    return lib_by_id, lib_by_pos
+
+
 def build_merge_preview(task: Any, found_duplicates: Any) -> MergePreview | None:
     """Per-position library-vs-import comparison for a parked duplicate.
 
@@ -72,29 +106,8 @@ def build_merge_preview(task: Any, found_duplicates: Any) -> MergePreview | None
     if not tracks:
         return None
 
-    # release position -> incoming item (from the AlbumMatch item->track mapping)
-    import_by_pos: dict[int, Any] = {}
-    for item, track_info in getattr(match, "mapping", {}).items():
-        idx = getattr(track_info, "index", None)
-        if idx is not None:
-            import_by_pos[int(idx)] = item
-
-    # Library coverage by release track id (works when the matched release and
-    # the library copy share a source) AND by (disc, track number). The latter
-    # rescues a CROSS-source duplicate (e.g. a Deezer import dup'ing a
-    # MusicBrainz library album, where the release track_id and the library
-    # mb_trackid are different id namespaces and never match). Union across all
-    # duplicate albums.
-    lib_by_id: dict[str, Any] = {}
-    lib_by_pos: dict[tuple[int, int], Any] = {}
-    for album in found_duplicates:
-        for it in album.items():
-            tid = _norm_id(getattr(it, "mb_trackid", None))
-            if tid and tid not in lib_by_id:
-                lib_by_id[tid] = it
-            tnum = getattr(it, "track", None)
-            if tnum is not None:
-                lib_by_pos.setdefault((int(getattr(it, "disc", 1) or 1), int(tnum)), it)
+    import_by_pos = _import_by_pos(match)
+    lib_by_id, lib_by_pos = _library_indexes(found_duplicates)
 
     rows: list[DuplicateTrackRow] = []
     in_library = added = upgrade = missing = 0
