@@ -47,7 +47,10 @@ function pathInside(folder: string, path: string) {
 
 /** Which fetched section the current selection resolves to, mirroring the
  * backend's own rule (`app/plex/client.py: music_section`): a set title matches
- * case-insensitively, and a blank title ("Auto") resolves ONLY when the server
+ * case-insensitively (approximately — JS `toLowerCase` and Python `casefold`
+ * diverge on ß-class characters, so a "Straße" library saved as "STRASSE"
+ * resolves on the server but not here; the panel then merely claims nothing),
+ * and a blank title ("Auto") resolves ONLY when the server
  * has exactly one music library — with several the backend refuses to guess, so
  * neither may the panel. `undefined` means "nothing known", which is also what a
  * failed or unconfigured probe produces, and the panel then claims nothing. */

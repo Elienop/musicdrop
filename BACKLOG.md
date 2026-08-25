@@ -356,8 +356,10 @@ _Last groomed: 2026-08-25, with the #143-Minors triage._
   the unqualified all-zero rule; `mapping.py`'s docstring scopes the one-track-one-row
   claim to the fallback rungs. Seven new test pins (digit-veto pair, settings
   fill-on-exact-equality, relative-vs-absolute mismatch, section-title
-  case-insensitivity, mixed-tally announcement, singular tally, announcement re-fire) —
-  nine mutants run across them, each killed by exactly its intended test.
+  case-insensitivity, mixed-tally announcement, singular tally, announcement re-fire;
+  eight test functions, the digit-veto pair counting two) — the deep review ran 12
+  mutants across them (incl. its own three vacuity probes: constant token, ZWSP→plain
+  space, conditional region mount), every one killed.
   Browser-verified on all three UI surfaces with fixture interception. The UI review's
   two Importants were adopted in-branch: tally clauses joined with semicolons (the album
   rung's name carries its own comma — "22 by artist and title, 6 by album, title and
@@ -368,7 +370,14 @@ _Last groomed: 2026-08-25, with the #143-Minors triage._
   VoiceOver pass of the repeat-sync loop is still owed; JAWS's own dedupe of identical
   consecutive utterances can still eat a rapid repeat regardless of DOM state; ≥4
   identical announcements batched into ONE React commit would collide on the token cycle
-  (unreachable on this page today).
+  (unreachable on this page today; deep-review-confirmed on a replica — the airtight fix,
+  if ever wanted, is comparing against the previously-rendered token in a ref, since no
+  modulus survives an N-batch); "nothing matched by its tags" also covers a blank-
+  albumartist row the album rung REFUSED to compare (deliberate rung exclusion — the old
+  copy had the same gap and named fewer rungs); and the panel's `resolveSection` is
+  `toLowerCase` against the backend's `casefold`, so a ß-class section title ("Straße"
+  saved as "STRASSE") resolves on the server but shows no folders in the panel
+  (pre-existing, now noted at the function and scoped "(ASCII)" in its test name).
 
 - **Artist rename — shipped 2026-08-24 (PR # filled in at merge).** One action on the artist
   page that fans the existing album edit across every album of the artist: `album_artist`

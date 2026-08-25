@@ -636,7 +636,7 @@ describe("PlexSettingsPanel", () => {
     expect(screen.getByText(/doesn.t list this path/i)).toBeInTheDocument();
   });
 
-  test("resolves a saved section title case-insensitively, as the backend does", async () => {
+  test("resolves a saved section title case-insensitively (ASCII), like the backend", async () => {
     server.use(
       // Saved "musicdrop", Plex reports "MusicDrop": music_section compares
       // case-insensitively, so the panel must resolve to that same section and
