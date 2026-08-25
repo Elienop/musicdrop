@@ -437,7 +437,7 @@ function PathRow({
   value: string;
   onChange: (v: string) => void;
   rendered: RenderedRule | undefined;
-  focusedRef: React.MutableRefObject<HTMLInputElement | null>;
+  focusedRef: React.RefObject<HTMLInputElement | null>;
 }) {
   return (
     <div className="flex flex-col gap-1">

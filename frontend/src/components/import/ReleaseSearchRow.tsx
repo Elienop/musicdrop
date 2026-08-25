@@ -36,7 +36,7 @@ export function ReleaseSearchRow({
   const canSearch =
     id.length > 0 || (artist.trim().length > 0 && album.trim().length > 0);
 
-  function submit(e: React.FormEvent) {
+  function submit(e: React.SubmitEvent) {
     e.preventDefault();
     if (!canSearch || busy) return;
     // Release id wins (mirrors beets); otherwise the artist+album pair.
