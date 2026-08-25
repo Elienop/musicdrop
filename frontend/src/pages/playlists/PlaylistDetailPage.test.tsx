@@ -1,4 +1,10 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { delay, http, HttpResponse } from "msw";
 import { beforeEach, describe, expect, test, vi } from "vitest";
@@ -23,14 +29,18 @@ const toastSuccess = vi.mocked(toast.success);
 // onSuccess — letting both run against the same render, the concurrency a
 // single shared TanStack observer would otherwise collapse to the last call
 // (hiding the resurrection this fix targets).
-const removeOverride = vi.hoisted(() => ({ current: null as null | (() => unknown) }));
+const removeOverride = vi.hoisted(() => ({
+  current: null as null | (() => unknown),
+}));
 
 // Per-test override for the reorder mutation. Null (the default) passes through
 // to the real msw-backed hook. The same-snapshot test swaps in a fake whose
 // mutate() records each PUT body WITHOUT settling — no refetch reseeds the
 // optimistic tracklist, so the rendered order stays exactly what the optimistic
 // update produced when we compare it against the last recorded body.
-const reorderOverride = vi.hoisted(() => ({ current: null as null | (() => unknown) }));
+const reorderOverride = vi.hoisted(() => ({
+  current: null as null | (() => unknown),
+}));
 
 vi.mock("@/api/usePlaylists", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/usePlaylists")>();
@@ -98,7 +108,11 @@ function track(id: number, title: string, available = true) {
 }
 
 /** A pending (unmatched) entry: no library id, remembered metadata only. */
-function pendingTrack(uid: string, title: string, extra: Record<string, unknown> = {}) {
+function pendingTrack(
+  uid: string,
+  title: string,
+  extra: Record<string, unknown> = {},
+) {
   return {
     uid,
     id: null,
@@ -115,7 +129,9 @@ function pendingTrack(uid: string, title: string, extra: Record<string, unknown>
 /** A tiny image File for the artwork picker (PNG magic bytes; content is
  * irrelevant — the server sniffs the type, the client just ships the bytes). */
 function makeImageFile(name = "art.png", type = "image/png"): File {
-  return new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], name, { type });
+  return new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], name, {
+    type,
+  });
 }
 
 /** The words of a live-region text, with the page's repeat-announcement token
@@ -160,7 +176,11 @@ describe("PlaylistDetailPage", () => {
   });
 
   test("renders the tracklist", async () => {
-    server.use(http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))));
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")])),
+      ),
+    );
     renderWithProviders(<PlaylistDetailPage />, {
       route: `/playlists/${ID}`,
       path: "/playlists/:playlistId",
@@ -184,7 +204,9 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Late night");
-    const collage = document.querySelector('[data-slot="playlist-cover-collage"]');
+    const collage = document.querySelector(
+      '[data-slot="playlist-cover-collage"]',
+    );
     expect(collage).not.toBeNull();
     expect(collage?.querySelectorAll("img")).toHaveLength(4);
   });
@@ -193,7 +215,13 @@ describe("PlaylistDetailPage", () => {
     let removed = false;
     server.use(
       http.get(BASE, () =>
-        HttpResponse.json(detail(removed ? [track(2, "Beta")] : [track(1, "Alpha"), track(2, "Beta")])),
+        HttpResponse.json(
+          detail(
+            removed
+              ? [track(2, "Beta")]
+              : [track(1, "Alpha"), track(2, "Beta")],
+          ),
+        ),
       ),
       http.delete(`${BASE}/entries/u1`, () => {
         removed = true;
@@ -205,14 +233,20 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /remove alpha/i }));
-    await waitFor(() => expect(screen.queryByText("Alpha")).not.toBeInTheDocument());
+    await userEvent.click(
+      screen.getByRole("button", { name: /remove alpha/i }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("Alpha")).not.toBeInTheDocument(),
+    );
   });
 
   test("reorder posts entry uids", async () => {
     let body: string[] | null = null;
     server.use(
-      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
+      http.get(BASE, () =>
+        HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")])),
+      ),
       http.put(`${BASE}/tracks`, async ({ request }) => {
         body = ((await request.json()) as { entry_uids: string[] }).entry_uids;
         return HttpResponse.json(detail([track(2, "Beta"), track(1, "Alpha")]));
@@ -223,7 +257,9 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /move alpha down/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /move alpha down/i }),
+    );
     // The new order is Beta (u2) then Alpha (u1) — sent as the full uid list.
     await waitFor(() => expect(body).toEqual(["u2", "u1"]));
   });
@@ -235,7 +271,9 @@ describe("PlaylistDetailPage", () => {
     // thousands, which is what made the per-keystroke reconcile expensive).
     server.use(
       http.get(BASE, () =>
-        HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta"), track(3, "Gamma")])),
+        HttpResponse.json(
+          detail([track(1, "Alpha"), track(2, "Beta"), track(3, "Gamma")]),
+        ),
       ),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -278,7 +316,10 @@ describe("PlaylistDetailPage", () => {
       // Swap Alpha (pos 1) and Beta (pos 2). Gamma (pos 3) is untouched.
       fireEvent.click(screen.getByRole("button", { name: /move alpha down/i }));
       await waitFor(() => {
-        const order = screen.getAllByRole("row").slice(1).map((r) => r.textContent);
+        const order = screen
+          .getAllByRole("row")
+          .slice(1)
+          .map((r) => r.textContent);
         expect(order[0]).toContain("Beta");
       });
       const durations = formatDurationSpy.mock.calls.map((c) => c[0]);
@@ -295,7 +336,9 @@ describe("PlaylistDetailPage", () => {
   test("the reorder PUT body derives from the same snapshot as the optimistic order", async () => {
     server.use(
       http.get(BASE, () =>
-        HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta"), track(3, "Gamma")])),
+        HttpResponse.json(
+          detail([track(1, "Alpha"), track(2, "Beta"), track(3, "Gamma")]),
+        ),
       ),
     );
     const bodies: string[][] = [];
@@ -320,12 +363,18 @@ describe("PlaylistDetailPage", () => {
         down.click();
       });
       // Read the optimistic order off the DOM and map it back to uids.
-      const uidByTitle: Record<string, string> = { Alpha: "u1", Beta: "u2", Gamma: "u3" };
+      const uidByTitle: Record<string, string> = {
+        Alpha: "u1",
+        Beta: "u2",
+        Gamma: "u3",
+      };
       const rows = screen.getAllByRole("row").slice(1); // drop the header row
       const domOrder = rows.map(
         (row) =>
           uidByTitle[
-            (["Alpha", "Beta", "Gamma"].find((t) => within(row).queryByText(t)) ?? "") as string
+            (["Alpha", "Beta", "Gamma"].find((t) =>
+              within(row).queryByText(t),
+            ) ?? "") as string
           ],
       );
       // The order the server would persist must equal the order on screen.
@@ -337,7 +386,9 @@ describe("PlaylistDetailPage", () => {
 
   test("announces a reorder via the status region", async () => {
     server.use(
-      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
+      http.get(BASE, () =>
+        HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")])),
+      ),
       http.put(`${BASE}/tracks`, () =>
         HttpResponse.json(detail([track(2, "Beta"), track(1, "Alpha")])),
       ),
@@ -347,27 +398,39 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /move alpha down/i }));
-    expect(await screen.findByText(/moved alpha to position 2/i)).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: /move alpha down/i }),
+    );
+    expect(
+      await screen.findByText(/moved alpha to position 2/i),
+    ).toBeInTheDocument();
   });
 
   test("announces a removal via the status region", async () => {
     server.use(
-      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
-      http.delete(`${BASE}/entries/u1`, () => HttpResponse.json(detail([track(2, "Beta")]))),
+      http.get(BASE, () =>
+        HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")])),
+      ),
+      http.delete(`${BASE}/entries/u1`, () =>
+        HttpResponse.json(detail([track(2, "Beta")])),
+      ),
     );
     renderWithProviders(<PlaylistDetailPage />, {
       route: `/playlists/${ID}`,
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /remove alpha/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /remove alpha/i }),
+    );
     expect(await screen.findByText(/removed alpha/i)).toBeInTheDocument();
   });
 
   test("surfaces a reorder failure", async () => {
     server.use(
-      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
+      http.get(BASE, () =>
+        HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")])),
+      ),
       http.put(`${BASE}/tracks`, () => new HttpResponse(null, { status: 500 })),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -375,22 +438,35 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /move alpha down/i }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t save the new order/i);
+    await userEvent.click(
+      screen.getByRole("button", { name: /move alpha down/i }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /couldn.t save the new order/i,
+    );
   });
 
   test("surfaces a remove failure", async () => {
     server.use(
-      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
-      http.delete(`${BASE}/entries/u1`, () => new HttpResponse(null, { status: 500 })),
+      http.get(BASE, () =>
+        HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")])),
+      ),
+      http.delete(
+        `${BASE}/entries/u1`,
+        () => new HttpResponse(null, { status: 500 }),
+      ),
     );
     renderWithProviders(<PlaylistDetailPage />, {
       route: `/playlists/${ID}`,
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /remove alpha/i }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t remove the track/i);
+    await userEvent.click(
+      screen.getByRole("button", { name: /remove alpha/i }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /couldn.t remove the track/i,
+    );
   });
 
   test("two rapid removes drop both rows without resurrecting the first-removed", async () => {
@@ -430,7 +506,9 @@ describe("PlaylistDetailPage", () => {
 
   test("two rapid removes emptying the list focus the empty state, not a vanished survivor", async () => {
     server.use(
-      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
+      http.get(BASE, () =>
+        HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")])),
+      ),
     );
     // Defer both removes' onSuccess so they run against the SAME render — the
     // window where each afterRemoval snapshot (render list minus only its own
@@ -466,7 +544,11 @@ describe("PlaylistDetailPage", () => {
   });
 
   test("shows unavailable tracks as such", async () => {
-    server.use(http.get(BASE, () => HttpResponse.json(detail([track(9, "Gone", false)]))));
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json(detail([track(9, "Gone", false)])),
+      ),
+    );
     renderWithProviders(<PlaylistDetailPage />, {
       route: `/playlists/${ID}`,
       path: "/playlists/:playlistId",
@@ -480,7 +562,9 @@ describe("PlaylistDetailPage", () => {
     server.use(
       http.get(BASE, () =>
         HttpResponse.json(
-          detail([pendingTrack("u1", "Lost", { artist: "X", source: "Ghost - Lost" })]),
+          detail([
+            pendingTrack("u1", "Lost", { artist: "X", source: "Ghost - Lost" }),
+          ]),
         ),
       ),
     );
@@ -498,8 +582,12 @@ describe("PlaylistDetailPage", () => {
     expect(screen.getByText(/pending/i)).toBeInTheDocument();
     // …offering a Match action instead of a playable/linked title (there is no
     // library track behind it, so nothing links out).
-    expect(screen.getByRole("button", { name: /match lost/i })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /lost/i })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /match lost/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /lost/i }),
+    ).not.toBeInTheDocument();
     // The header counts it as unmatched.
     expect(screen.getByText(/1 unmatched/i)).toBeInTheDocument();
   });
@@ -545,14 +633,18 @@ describe("PlaylistDetailPage", () => {
     // The picker opens; searching surfaces a library track.
     const dialog = await screen.findByRole("dialog");
     await userEvent.type(within(dialog).getByRole("textbox"), "Found");
-    const pick = await within(dialog).findByRole("button", { name: /select found/i });
+    const pick = await within(dialog).findByRole("button", {
+      name: /select found/i,
+    });
     await userEvent.click(pick);
 
     // The entry is PATCHed to the picked library item id…
     await waitFor(() => expect(patchBody).toEqual({ item_id: 55 }));
     // …and the detail cache swaps to the resolved track.
     expect(await screen.findByText("Found")).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByText("Lost")).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByText("Lost")).not.toBeInTheDocument(),
+    );
   });
 
   test("syncs to plex, shows the synced state, and announces the real outcome", async () => {
@@ -571,11 +663,17 @@ describe("PlaylistDetailPage", () => {
     };
     server.use(
       http.get(BASE, () =>
-        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: synced ? okAdmin : {} }),
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: synced ? okAdmin : {},
+        }),
       ),
       http.post(`${BASE}/sync`, () => {
         synced = true;
-        return HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: okAdmin });
+        return HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: okAdmin,
+        });
       }),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -585,7 +683,9 @@ describe("PlaylistDetailPage", () => {
     await screen.findByText("Alpha");
     // Before syncing the status line reads "Not synced to Plex".
     expect(screen.getByText(/not synced to plex/i)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /sync to plex/i }),
+    );
     // The polite region announces the derived outcome — not a generic "complete"
     // and not the ambiguous "Not synced".
     expect(await screen.findByText(/plex sync: synced/i)).toBeInTheDocument();
@@ -605,7 +705,9 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /sync to plex/i }),
+    );
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(/connect plex in\s*settings\s*first/i);
     expect(screen.getByRole("link", { name: /settings/i })).toHaveAttribute(
@@ -618,14 +720,23 @@ describe("PlaylistDetailPage", () => {
     let targets: string[] = [];
     server.use(
       http.get(USERS, () =>
-        HttpResponse.json({ users: [{ id: "7", name: "Partner", home: true }] }),
+        HttpResponse.json({
+          users: [{ id: "7", name: "Partner", home: true }],
+        }),
       ),
       http.get(BASE, () =>
-        HttpResponse.json({ ...detail([track(1, "Alpha")]), target_plex_users: targets }),
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          target_plex_users: targets,
+        }),
       ),
       http.patch(BASE, async ({ request }) => {
-        targets = ((await request.json()) as { target_plex_users: string[] }).target_plex_users;
-        return HttpResponse.json({ ...detail([track(1, "Alpha")]), target_plex_users: targets });
+        targets = ((await request.json()) as { target_plex_users: string[] })
+          .target_plex_users;
+        return HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          target_plex_users: targets,
+        });
       }),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -640,10 +751,15 @@ describe("PlaylistDetailPage", () => {
   test("toggling a target is optimistic and keeps the checkbox enabled", async () => {
     server.use(
       http.get(USERS, () =>
-        HttpResponse.json({ users: [{ id: "7", name: "Partner", home: true }] }),
+        HttpResponse.json({
+          users: [{ id: "7", name: "Partner", home: true }],
+        }),
       ),
       http.get(BASE, () =>
-        HttpResponse.json({ ...detail([track(1, "Alpha")]), target_plex_users: [] }),
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          target_plex_users: [],
+        }),
       ),
       // The PATCH hangs so we observe the OPTIMISTIC state without a settle/refetch
       // reseeding the local target set.
@@ -681,13 +797,20 @@ describe("PlaylistDetailPage", () => {
         }),
       ),
       http.get(BASE, () =>
-        HttpResponse.json({ ...detail([track(1, "Alpha")]), target_plex_users: targets }),
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          target_plex_users: targets,
+        }),
       ),
       http.patch(BASE, async ({ request }) => {
         patchCount += 1;
-        lastBody = ((await request.json()) as { target_plex_users: string[] }).target_plex_users;
+        lastBody = ((await request.json()) as { target_plex_users: string[] })
+          .target_plex_users;
         targets = lastBody;
-        return HttpResponse.json({ ...detail([track(1, "Alpha")]), target_plex_users: targets });
+        return HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          target_plex_users: targets,
+        });
       }),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -734,7 +857,10 @@ describe("PlaylistDetailPage", () => {
         }),
       ),
       http.get(BASE, () =>
-        HttpResponse.json({ ...detail([track(1, "Alpha")]), target_plex_users: targets }),
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          target_plex_users: targets,
+        }),
       ),
       http.patch(BASE, async ({ request }) => {
         const body = ((await request.json()) as { target_plex_users: string[] })
@@ -744,7 +870,10 @@ describe("PlaylistDetailPage", () => {
         // Hold the response so the second toggle can land while this PATCH is in
         // flight — the out-of-order-race window that used to drop a target.
         await delay(1000);
-        return HttpResponse.json({ ...detail([track(1, "Alpha")]), target_plex_users: targets });
+        return HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          target_plex_users: targets,
+        });
       }),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -790,7 +919,9 @@ describe("PlaylistDetailPage", () => {
   test("a checked target with no sync state reads 'Not synced yet'", async () => {
     server.use(
       http.get(USERS, () =>
-        HttpResponse.json({ users: [{ id: "7", name: "Partner", home: true }] }),
+        HttpResponse.json({
+          users: [{ id: "7", name: "Partner", home: true }],
+        }),
       ),
       http.get(BASE, () =>
         HttpResponse.json({
@@ -804,7 +935,9 @@ describe("PlaylistDetailPage", () => {
       route: `/playlists/${ID}`,
       path: "/playlists/:playlistId",
     });
-    expect(await screen.findByRole("checkbox", { name: /partner/i })).toBeChecked();
+    expect(
+      await screen.findByRole("checkbox", { name: /partner/i }),
+    ).toBeChecked();
     expect(await screen.findByText(/not synced yet/i)).toBeInTheDocument();
   });
 
@@ -818,9 +951,13 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    expect(await screen.findByText(/choose who gets this playlist/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/choose who gets this playlist/i),
+    ).toBeInTheDocument();
     // The generic "couldn't load" copy is NOT shown for a 409.
-    expect(screen.queryByText(/couldn.t load plex accounts/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/couldn.t load plex accounts/i),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /settings/i })).toHaveAttribute(
       "href",
       "/settings/integrations",
@@ -834,7 +971,9 @@ describe("PlaylistDetailPage", () => {
         calls += 1;
         return calls === 1
           ? new HttpResponse(null, { status: 500 })
-          : HttpResponse.json({ users: [{ id: "7", name: "Partner", home: true }] });
+          : HttpResponse.json({
+              users: [{ id: "7", name: "Partner", home: true }],
+            });
       }),
       http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha")]))),
     );
@@ -842,17 +981,25 @@ describe("PlaylistDetailPage", () => {
       route: `/playlists/${ID}`,
       path: "/playlists/:playlistId",
     });
-    expect(await screen.findByText(/couldn.t load plex accounts/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/couldn.t load plex accounts/i),
+    ).toBeInTheDocument();
     // Not the 409 "configure Plex" copy.
-    expect(screen.queryByText(/choose who gets this playlist/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/choose who gets this playlist/i),
+    ).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /retry/i }));
-    expect(await screen.findByRole("checkbox", { name: /partner/i })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("checkbox", { name: /partner/i }),
+    ).toBeInTheDocument();
   });
 
   test("per-target sync status names admin and a user", async () => {
     server.use(
       http.get(USERS, () =>
-        HttpResponse.json({ users: [{ id: "7", name: "Partner", home: true }] }),
+        HttpResponse.json({
+          users: [{ id: "7", name: "Partner", home: true }],
+        }),
       ),
       http.get(BASE, () =>
         HttpResponse.json({
@@ -873,7 +1020,13 @@ describe("PlaylistDetailPage", () => {
               // The wire always carries this (Pydantic default), so the fixture
               // does too — the status label reads its length.
               missing_tracks: [
-                { item_id: 1, title: "Alpha", albumartist: "A", album: "B", reason: "not_found" },
+                {
+                  item_id: 1,
+                  title: "Alpha",
+                  albumartist: "A",
+                  album: "B",
+                  reason: "not_found",
+                },
               ],
               synced_at: "2026-06-07T01:00:00+00:00",
               error: null,
@@ -894,7 +1047,11 @@ describe("PlaylistDetailPage", () => {
     server.use(
       http.get(BASE, () =>
         HttpResponse.json({
-          ...detail([track(11, "Found"), track(12, "Lost"), track(13, "Twins")]),
+          ...detail([
+            track(11, "Found"),
+            track(12, "Lost"),
+            track(13, "Twins"),
+          ]),
           plex: {
             admin: {
               rating_key: "500",
@@ -956,7 +1113,9 @@ describe("PlaylistDetailPage", () => {
     ).toBeInTheDocument();
     // …and the row Plex DID place stays unmarked.
     expect(
-      within(screen.getByRole("row", { name: /Found/ })).queryByText("Not in Plex"),
+      within(screen.getByRole("row", { name: /Found/ })).queryByText(
+        "Not in Plex",
+      ),
     ).toBeNull();
   });
 
@@ -971,7 +1130,13 @@ describe("PlaylistDetailPage", () => {
               status: "partial",
               missing: 1,
               missing_tracks: [
-                { item_id: 12, title: "Lost", albumartist: "A", album: "B", reason: "not_found" },
+                {
+                  item_id: 12,
+                  title: "Lost",
+                  albumartist: "A",
+                  album: "B",
+                  reason: "not_found",
+                },
               ],
               synced_at: "2026-08-15T10:00:00+00:00",
               error: null,
@@ -1011,7 +1176,13 @@ describe("PlaylistDetailPage", () => {
               status: "partial",
               missing: 1,
               missing_tracks: [
-                { item_id: 12, title: "Lost", albumartist: "A", album: "B", reason: "not_found" },
+                {
+                  item_id: 12,
+                  title: "Lost",
+                  albumartist: "A",
+                  album: "B",
+                  reason: "not_found",
+                },
               ],
               synced_at: "2026-08-15T10:00:00+00:00",
               error: null,
@@ -1101,7 +1272,9 @@ describe("PlaylistDetailPage", () => {
       expect(carrier.textContent).toBe(`In Plex once: ${DUP_TITLE}`);
     }
     // The track Plex placed normally stays unmarked.
-    expect(within(screen.getByRole("row", { name: /Found/ })).queryByText(/plex/i)).toBeNull();
+    expect(
+      within(screen.getByRole("row", { name: /Found/ })).queryByText(/plex/i),
+    ).toBeNull();
   });
 
   test("offers Match… for a track Plex hasn't got, but not for a repeat it holds", async () => {
@@ -1126,7 +1299,9 @@ describe("PlaylistDetailPage", () => {
     });
 
     // Re-pointing the row is the remedy for a track Plex couldn't find…
-    expect(await screen.findByRole("button", { name: "Match Lost" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Match Lost" }),
+    ).toBeInTheDocument();
     // …and fixes nothing for a repeat: that row matched, and its track is on
     // Plex. Offering it there would advertise a remedy that cannot work — the
     // only thing that changes the report is removing the repeat, which every
@@ -1145,7 +1320,13 @@ describe("PlaylistDetailPage", () => {
               status: "partial",
               missing: 1,
               missing_tracks: [
-                { item_id: 12, title: "Lost", albumartist: "A", album: "B", reason: "not_found" },
+                {
+                  item_id: 12,
+                  title: "Lost",
+                  albumartist: "A",
+                  album: "B",
+                  reason: "not_found",
+                },
               ],
               synced_at: "2026-08-15T10:00:00+00:00",
               error: null,
@@ -1181,7 +1362,10 @@ describe("PlaylistDetailPage", () => {
   test("says how many misses are marked when the identity list is capped", async () => {
     server.use(
       http.get(BASE, () =>
-        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: partialAdmin(350, 200) }),
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: partialAdmin(350, 200),
+        }),
       ),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -1201,7 +1385,10 @@ describe("PlaylistDetailPage", () => {
 
   test("a capped list carrying a repeat still doesn't call the total absent", async () => {
     const misses = [
-      ...Array.from({ length: 199 }, (_, i) => ({ item_id: 1000 + i, reason: "not_found" })),
+      ...Array.from({ length: 199 }, (_, i) => ({
+        item_id: 1000 + i,
+        reason: "not_found",
+      })),
       { item_id: 2000, reason: "duplicate_collapsed" },
     ];
     server.use(
@@ -1228,7 +1415,10 @@ describe("PlaylistDetailPage", () => {
   test("keeps the plain count when every miss is marked", async () => {
     server.use(
       http.get(BASE, () =>
-        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: partialAdmin(2, 2) }),
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: partialAdmin(2, 2),
+        }),
       ),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -1242,7 +1432,10 @@ describe("PlaylistDetailPage", () => {
   test("says none are marked when the state carries no miss identities", async () => {
     server.use(
       http.get(BASE, () =>
-        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: partialAdmin(3, 0) }),
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: partialAdmin(3, 0),
+        }),
       ),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -1253,7 +1446,9 @@ describe("PlaylistDetailPage", () => {
     // truncates to 200, never to 0), and one re-sync is what fixes it. Such a
     // record predates collapsed duplicates as well — the sync that can report
     // one always writes identities — so this arm can still name absence.
-    expect(await screen.findByText("3 not in Plex; re-sync to see which")).toBeInTheDocument();
+    expect(
+      await screen.findByText("3 not in Plex; re-sync to see which"),
+    ).toBeInTheDocument();
   });
 
   test("a sync short only of repeats is not reported as tracks missing from Plex", async () => {
@@ -1300,7 +1495,9 @@ describe("PlaylistDetailPage", () => {
     // Two misses, two different pieces of news — one track to go and find, one
     // repeat to remove — so the total is never the number the user reads.
     expect(
-      await screen.findByText("1 not in Plex; 1 duplicate row; Plex keeps one of each"),
+      await screen.findByText(
+        "1 not in Plex; 1 duplicate row; Plex keeps one of each",
+      ),
     ).toBeInTheDocument();
   });
 
@@ -1356,7 +1553,9 @@ describe("PlaylistDetailPage", () => {
     // The worse of the two empty outcomes — the user pressed Sync and Plex got
     // nothing — so it must not read quieter than "copy left as is": same
     // warning tone, and the label says what actually happened.
-    const line = await screen.findByText("No matching tracks; nothing sent to Plex");
+    const line = await screen.findByText(
+      "No matching tracks; nothing sent to Plex",
+    );
     expect(line).toHaveClass("text-warning");
   });
 
@@ -1386,7 +1585,9 @@ describe("PlaylistDetailPage", () => {
     // wrong, so no warning tone; "nothing sent to Plex" is for a real miss.
     const line = await screen.findByText("Nothing to sync");
     expect(line).not.toHaveClass("text-warning");
-    expect(screen.queryByText("No matching tracks; nothing sent to Plex")).toBeNull();
+    expect(
+      screen.queryByText("No matching tracks; nothing sent to Plex"),
+    ).toBeNull();
   });
 
   // ——— How the tracks matched (PlexMatchCounts). The bug this exists for: a
@@ -1403,7 +1604,11 @@ describe("PlaylistDetailPage", () => {
 
   /** An admin target that pushed cleanly, carrying a per-rung tally. Unnamed
    * rungs default to 0 exactly as the server's model does. */
-  function adminMatched(counts: { path?: number; artist_title?: number; album_length?: number }) {
+  function adminMatched(counts: {
+    path?: number;
+    artist_title?: number;
+    album_length?: number;
+  }) {
     return {
       admin: {
         rating_key: "900",
@@ -1420,7 +1625,9 @@ describe("PlaylistDetailPage", () => {
   /** Render the detail page against one `plex` state map. */
   function renderWithPlex(plex: Record<string, unknown>) {
     server.use(
-      http.get(BASE, () => HttpResponse.json({ ...detail([track(1, "Alpha")]), plex })),
+      http.get(BASE, () =>
+        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex }),
+      ),
     );
     renderWithProviders(<PlaylistDetailPage />, {
       route: `/playlists/${ID}`,
@@ -1430,16 +1637,24 @@ describe("PlaylistDetailPage", () => {
 
   test("a sync that found every track by file says so, and says nothing else", async () => {
     renderWithPlex(adminMatched({ path: 28 }));
-    expect(await screen.findByText("Last sync matched 28 tracks by file.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Last sync matched 28 tracks by file."),
+    ).toBeInTheDocument();
     // The overwhelmingly common outcome: one muted line and no escalation —
     // neither the weak-match caveat nor the broken-path warning.
-    expect(screen.getByText("Last sync matched 28 tracks by file.")).toHaveClass("text-muted-foreground");
+    expect(
+      screen.getByText("Last sync matched 28 tracks by file."),
+    ).toHaveClass("text-muted-foreground");
     expect(screen.queryByText(WEAK_NOTE)).not.toBeInTheDocument();
-    expect(screen.queryByText(/nothing matched by file/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/nothing matched by file/i),
+    ).not.toBeInTheDocument();
   });
 
   test("a partly-weak sync counts each method and stays out of the warning box", async () => {
-    renderWithPlex(adminMatched({ path: 22, artist_title: 4, album_length: 2 }));
+    renderWithPlex(
+      adminMatched({ path: 22, artist_title: 4, album_length: 2 }),
+    );
     expect(
       await screen.findByText(
         "Last sync matched 28 tracks: 22 by file; 4 by artist and title; 2 by album, title and length.",
@@ -1449,7 +1664,9 @@ describe("PlaylistDetailPage", () => {
     // is muted body text, not the warning box. Escalating an ordinary handful
     // of tag matches would teach the user to ignore the box that matters.
     expect(screen.getByText(WEAK_NOTE)).toHaveClass("text-muted-foreground");
-    expect(screen.queryByText(/nothing matched by file/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/nothing matched by file/i),
+    ).not.toBeInTheDocument();
   });
 
   test("a sync where nothing matched by file warns, and names the setting to fix", async () => {
@@ -1476,7 +1693,9 @@ describe("PlaylistDetailPage", () => {
     renderWithPlex(adminMatched({ path: 1 }));
     // The singular branch of the counts sentence — a tally of one reads
     // "1 track", never "1 tracks".
-    expect(await screen.findByText("Last sync matched 1 track by file.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Last sync matched 1 track by file."),
+    ).toBeInTheDocument();
   });
 
   test("a failed target's all-zero tally is silence, not a 'none by file' alarm", async () => {
@@ -1495,9 +1714,13 @@ describe("PlaylistDetailPage", () => {
         error: "Couldn’t sync to this Plex account.",
       },
     });
-    expect(await screen.findByText("Couldn’t sync to this Plex account.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Couldn’t sync to this Plex account."),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/none by file/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/nothing matched by file/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/nothing matched by file/i),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText(/^Last sync matched \d/)).not.toBeInTheDocument();
   });
 
@@ -1521,7 +1744,9 @@ describe("PlaylistDetailPage", () => {
   test("the tally is reported once for the sync, not once per Plex account", async () => {
     server.use(
       http.get(USERS, () =>
-        HttpResponse.json({ users: [{ id: "7", name: "Partner", home: true }] }),
+        HttpResponse.json({
+          users: [{ id: "7", name: "Partner", home: true }],
+        }),
       ),
       http.get(BASE, () =>
         HttpResponse.json({
@@ -1541,14 +1766,20 @@ describe("PlaylistDetailPage", () => {
       route: `/playlists/${ID}`,
       path: "/playlists/:playlistId",
     });
-    expect(await screen.findByRole("checkbox", { name: /partner/i })).toBeChecked();
-    expect(screen.getAllByText("Last sync matched 28 tracks by file.")).toHaveLength(1);
+    expect(
+      await screen.findByRole("checkbox", { name: /partner/i }),
+    ).toBeChecked();
+    expect(
+      screen.getAllByText("Last sync matched 28 tracks by file."),
+    ).toHaveLength(1);
   });
 
   test("a failed admin push doesn't erase the tally a target that went through recorded", async () => {
     server.use(
       http.get(USERS, () =>
-        HttpResponse.json({ users: [{ id: "7", name: "Partner", home: true }] }),
+        HttpResponse.json({
+          users: [{ id: "7", name: "Partner", home: true }],
+        }),
       ),
       http.get(BASE, () =>
         HttpResponse.json({
@@ -1569,7 +1800,10 @@ describe("PlaylistDetailPage", () => {
               synced_at: "2026-08-16T10:00:00+00:00",
               error: "Couldn’t sync to this Plex account.",
             },
-            "7": { ...adminMatched({ artist_title: 28 }).admin, rating_key: "901" },
+            "7": {
+              ...adminMatched({ artist_title: 28 }).admin,
+              rating_key: "901",
+            },
           },
         }),
       ),
@@ -1584,13 +1818,17 @@ describe("PlaylistDetailPage", () => {
     // a sync whose library scan did run and matched every track by tags alone —
     // the exact signature of a wrong library path.
     expect(
-      await screen.findByText("Last sync matched 28 tracks: none by file; 28 by artist and title."),
+      await screen.findByText(
+        "Last sync matched 28 tracks: none by file; 28 by artist and title.",
+      ),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Nothing matched by file\./).closest("p")).toHaveClass(
-      "bg-warning/10",
-    );
+    expect(
+      screen.getByText(/Nothing matched by file\./).closest("p"),
+    ).toHaveClass("bg-warning/10");
     // …and it says so WITHOUT covering for the push that failed.
-    expect(screen.getByText("Couldn’t sync to this Plex account.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Couldn’t sync to this Plex account."),
+    ).toBeInTheDocument();
   });
 
   test("a failed admin push doesn't erase the row badges a target that went through recorded", async () => {
@@ -1602,7 +1840,9 @@ describe("PlaylistDetailPage", () => {
     // carried.
     server.use(
       http.get(USERS, () =>
-        HttpResponse.json({ users: [{ id: "7", name: "Partner", home: true }] }),
+        HttpResponse.json({
+          users: [{ id: "7", name: "Partner", home: true }],
+        }),
       ),
       http.get(BASE, () =>
         HttpResponse.json({
@@ -1654,7 +1894,9 @@ describe("PlaylistDetailPage", () => {
     // as a broken library path.
     expect(screen.queryByText(/^Last sync matched \d/)).not.toBeInTheDocument();
     expect(screen.queryByText(/none by file/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/nothing matched by file/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/nothing matched by file/i),
+    ).not.toBeInTheDocument();
   });
 
   test("a sync that matched nothing by file announces it in the live region", async () => {
@@ -1662,11 +1904,17 @@ describe("PlaylistDetailPage", () => {
     const after = adminMatched({ artist_title: 3 });
     server.use(
       http.get(BASE, () =>
-        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: synced ? after : {} }),
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: synced ? after : {},
+        }),
       ),
       http.post(`${BASE}/sync`, () => {
         synced = true;
-        return HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: after });
+        return HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: after,
+        });
       }),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -1680,7 +1928,9 @@ describe("PlaylistDetailPage", () => {
     const region = document.querySelector('p[aria-live="polite"]');
     expect(region).not.toBeNull();
     expect(region?.textContent).toBe("");
-    await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /sync to plex/i }),
+    );
     await waitFor(() =>
       expect(region).toHaveTextContent(
         "Plex sync: Synced. Last sync matched 3 tracks: none by file; 3 by artist and title. " +
@@ -1705,11 +1955,17 @@ describe("PlaylistDetailPage", () => {
     };
     server.use(
       http.get(BASE, () =>
-        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: synced ? after : {} }),
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: synced ? after : {},
+        }),
       ),
       http.post(`${BASE}/sync`, () => {
         synced = true;
-        return HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: after });
+        return HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: after,
+        });
       }),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -1718,7 +1974,9 @@ describe("PlaylistDetailPage", () => {
     });
     await screen.findByText("Alpha");
     const region = document.querySelector('p[aria-live="polite"]');
-    await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /sync to plex/i }),
+    );
 
     // Read aloud in one go, so the seam between the status and the tally has to
     // be one full stop: a server error label already ends in one, where
@@ -1738,11 +1996,17 @@ describe("PlaylistDetailPage", () => {
     const after = adminMatched({ path: 22, artist_title: 6 });
     server.use(
       http.get(BASE, () =>
-        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: synced ? after : {} }),
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: synced ? after : {},
+        }),
       ),
       http.post(`${BASE}/sync`, () => {
         synced = true;
-        return HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: after });
+        return HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: after,
+        });
       }),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -1751,7 +2015,9 @@ describe("PlaylistDetailPage", () => {
     });
     await screen.findByText("Alpha");
     const region = document.querySelector('p[aria-live="polite"]');
-    await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /sync to plex/i }),
+    );
     // The middle branch: BOTH the counts sentence and the weak-match caveat —
     // a matchAnnouncement that returns "" on a mixed tally leaves this silent
     // and the test fails.
@@ -1768,11 +2034,17 @@ describe("PlaylistDetailPage", () => {
     const after = adminMatched({ path: 3 });
     server.use(
       http.get(BASE, () =>
-        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: synced ? after : {} }),
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: synced ? after : {},
+        }),
       ),
       http.post(`${BASE}/sync`, () => {
         synced = true;
-        return HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: after });
+        return HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: after,
+        });
       }),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -1781,13 +2053,19 @@ describe("PlaylistDetailPage", () => {
     });
     await screen.findByText("Alpha");
     const region = document.querySelector('p[aria-live="polite"]');
-    await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /sync to plex/i }),
+    );
     // Exact equality of the WORDS is the point: everything-by-file is the
     // normal case, so the announcement gains not one word (the invisible
     // re-announcement token is stripped by `words`). The counts are still on
     // screen for anyone who goes looking.
-    await waitFor(() => expect(words(region?.textContent ?? "")).toBe("Plex sync: Synced"));
-    expect(await screen.findByText("Last sync matched 3 tracks by file.")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(words(region?.textContent ?? "")).toBe("Plex sync: Synced"),
+    );
+    expect(
+      await screen.findByText("Last sync matched 3 tracks by file."),
+    ).toBeInTheDocument();
   });
 
   test("a repeat sync outcome still re-announces, even when the words are identical", async () => {
@@ -1805,11 +2083,17 @@ describe("PlaylistDetailPage", () => {
       "Nothing matched by file — check the Plex library path in Settings.";
     server.use(
       http.get(BASE, () =>
-        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: synced ? after : {} }),
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: synced ? after : {},
+        }),
       ),
       http.post(`${BASE}/sync`, () => {
         synced = true;
-        return HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: after });
+        return HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: after,
+        });
       }),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -1820,15 +2104,21 @@ describe("PlaylistDetailPage", () => {
     const region = document.querySelector('p[aria-live="polite"]');
     expect(region?.textContent).toBe("");
 
-    await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
-    await waitFor(() => expect(words(region?.textContent ?? "")).toBe(sentence));
+    await userEvent.click(
+      screen.getByRole("button", { name: /sync to plex/i }),
+    );
+    await waitFor(() =>
+      expect(words(region?.textContent ?? "")).toBe(sentence),
+    );
     const first = region?.textContent;
     expect(first).not.toBe(sentence); // the token is present; the words are exact
 
     // Second sync, byte-identical outcome. (findByRole also re-gates on the
     // button having come back from "Syncing…", i.e. the first mutation
     // settled.)
-    await userEvent.click(await screen.findByRole("button", { name: /sync to plex/i }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: /sync to plex/i }),
+    );
     // Same words the user should hear again, but the region's rendered content
     // CHANGED between the two identical announcements.
     await waitFor(() => expect(region?.textContent).not.toBe(first));
@@ -1857,21 +2147,31 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /delete playlist/i }));
-    expect(await screen.findByText(/also removes it from Plex/i)).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: /delete playlist/i }),
+    );
+    expect(
+      await screen.findByText(/also removes it from Plex/i),
+    ).toBeInTheDocument();
   });
 
   test("delete dialog omits the Plex note when there are no Plex copies", async () => {
     server.use(
-      http.get(BASE, () => HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: {} })),
+      http.get(BASE, () =>
+        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: {} }),
+      ),
     );
     renderWithProviders(<PlaylistDetailPage />, {
       route: `/playlists/${ID}`,
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /delete playlist/i }));
-    expect(screen.queryByText(/also removes it from Plex/i)).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: /delete playlist/i }),
+    );
+    expect(
+      screen.queryByText(/also removes it from Plex/i),
+    ).not.toBeInTheDocument();
   });
 
   test("delete dialog counts the synced Plex copies that actually exist", async () => {
@@ -1903,9 +2203,13 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /delete playlist/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /delete playlist/i }),
+    );
     expect(
-      await screen.findByText(/Also removes its 2 synced Plex copies on Plex\./),
+      await screen.findByText(
+        /Also removes its 2 synced Plex copies on Plex\./,
+      ),
     ).toBeInTheDocument();
   });
 
@@ -1933,7 +2237,9 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /delete playlist/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /delete playlist/i }),
+    );
     expect(screen.queryByText(/synced Plex/)).not.toBeInTheDocument();
   });
 
@@ -1959,7 +2265,9 @@ describe("PlaylistDetailPage", () => {
     await userEvent.click(screen.getByRole("button", { name: /remove beta/i }));
     // Gamma slides up into Beta's slot — its Remove button takes focus.
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /remove gamma/i })).toHaveFocus(),
+      expect(
+        screen.getByRole("button", { name: /remove gamma/i }),
+      ).toHaveFocus(),
     );
   });
 
@@ -1979,7 +2287,9 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /remove alpha/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /remove alpha/i }),
+    );
     // Deliberately element-shape-agnostic (today a <p>, post-migration an
     // EmptyState wrapper): whatever holds focus must carry the empty copy.
     await waitFor(() => {
@@ -1990,7 +2300,9 @@ describe("PlaylistDetailPage", () => {
 
   test("moving a track to the end keeps focus on its enabled reorder button", async () => {
     server.use(
-      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
+      http.get(BASE, () =>
+        HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")])),
+      ),
       http.put(`${BASE}/tracks`, () =>
         HttpResponse.json(detail([track(2, "Beta"), track(1, "Alpha")])),
       ),
@@ -2000,29 +2312,40 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /move alpha down/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /move alpha down/i }),
+    );
     // Alpha is now last: its "down" button is disabled, so focus falls to the
     // sibling "up" button — never stranded on <body>.
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /move alpha up/i })).toHaveFocus(),
+      expect(
+        screen.getByRole("button", { name: /move alpha up/i }),
+      ).toHaveFocus(),
     );
   });
 
   // ——— Phase 3 redesign contract ———
 
   test("renders the playlist name as the page h1 (focusable for RouteAnnouncer)", async () => {
-    server.use(http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha")]))));
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha")]))),
+    );
     renderWithProviders(<PlaylistDetailPage />, {
       route: `/playlists/${ID}`,
       path: "/playlists/:playlistId",
     });
-    const h1 = await screen.findByRole("heading", { level: 1, name: "Late night" });
+    const h1 = await screen.findByRole("heading", {
+      level: 1,
+      name: "Late night",
+    });
     expect(h1).toHaveAttribute("tabindex", "-1");
   });
 
   test("a successful reorder also fires a visible toast", async () => {
     server.use(
-      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")]))),
+      http.get(BASE, () =>
+        HttpResponse.json(detail([track(1, "Alpha"), track(2, "Beta")])),
+      ),
       http.put(`${BASE}/tracks`, () =>
         HttpResponse.json(detail([track(2, "Beta"), track(1, "Alpha")])),
       ),
@@ -2032,7 +2355,9 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /move alpha down/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /move alpha down/i }),
+    );
     await waitFor(() =>
       expect(toastSuccess).toHaveBeenCalledWith("Moved Alpha to position 2"),
     );
@@ -2042,7 +2367,13 @@ describe("PlaylistDetailPage", () => {
     let removed = false;
     server.use(
       http.get(BASE, () =>
-        HttpResponse.json(detail(removed ? [track(2, "Beta")] : [track(1, "Alpha"), track(2, "Beta")])),
+        HttpResponse.json(
+          detail(
+            removed
+              ? [track(2, "Beta")]
+              : [track(1, "Alpha"), track(2, "Beta")],
+          ),
+        ),
       ),
       http.delete(`${BASE}/entries/u1`, () => {
         removed = true;
@@ -2054,8 +2385,12 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /remove alpha/i }));
-    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Removed Alpha"));
+    await userEvent.click(
+      screen.getByRole("button", { name: /remove alpha/i }),
+    );
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith("Removed Alpha"),
+    );
   });
 
   // ——— Artwork editor (Task 6) ———
@@ -2073,7 +2408,10 @@ describe("PlaylistDetailPage", () => {
       http.put(`${BASE}/artwork`, async ({ request }) => {
         bodyLen = (await request.arrayBuffer()).byteLength;
         uploaded = true;
-        return HttpResponse.json({ ...detail([track(1, "Alpha")]), artwork_hash: "newhash" });
+        return HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          artwork_hash: "newhash",
+        });
       }),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -2083,7 +2421,9 @@ describe("PlaylistDetailPage", () => {
     await screen.findByText("Alpha");
     // No custom artwork yet (no cover-art image in the header).
     expect(document.querySelector('[data-slot="cover-art"]')).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: /edit artwork/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /edit artwork/i }),
+    );
     fireEvent.change(screen.getByLabelText(/upload artwork image/i), {
       target: { files: [makeImageFile()] },
     });
@@ -2119,18 +2459,27 @@ describe("PlaylistDetailPage", () => {
     await screen.findByText("Alpha");
     // Custom artwork shows first (a single cover image, not the collage).
     expect(document.querySelector('[data-slot="cover-art"]')).not.toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: /edit artwork/i }));
-    await userEvent.click(screen.getByRole("button", { name: /remove artwork/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /edit artwork/i }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /remove artwork/i }),
+    );
     // With the custom art gone the album-cover collage takes over.
     await waitFor(() =>
-      expect(document.querySelector('[data-slot="playlist-cover-collage"]')).not.toBeNull(),
+      expect(
+        document.querySelector('[data-slot="playlist-cover-collage"]'),
+      ).not.toBeNull(),
     );
   });
 
   test("the Remove button is hidden when there is no custom artwork", async () => {
     server.use(
       http.get(BASE, () =>
-        HttpResponse.json({ ...detail([track(1, "Alpha")]), artwork_hash: null }),
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          artwork_hash: null,
+        }),
       ),
     );
     renderWithProviders(<PlaylistDetailPage />, {
@@ -2138,8 +2487,12 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /edit artwork/i }));
-    expect(screen.queryByRole("button", { name: /remove artwork/i })).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: /edit artwork/i }),
+    );
+    expect(
+      screen.queryByRole("button", { name: /remove artwork/i }),
+    ).not.toBeInTheDocument();
   });
 
   test("surfaces the server's message when the image type is rejected (415)", async () => {
@@ -2157,11 +2510,15 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Alpha");
-    await userEvent.click(screen.getByRole("button", { name: /edit artwork/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /edit artwork/i }),
+    );
     fireEvent.change(screen.getByLabelText(/upload artwork image/i), {
       target: { files: [makeImageFile("art.png", "image/png")] },
     });
-    expect(await screen.findByText(/unsupported image type/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/unsupported image type/i),
+    ).toBeInTheDocument();
   });
 
   test("Match is offered on pending, unavailable and not-in-Plex rows, not on a clean one", async () => {
@@ -2180,7 +2537,13 @@ describe("PlaylistDetailPage", () => {
               status: "partial",
               missing: 1,
               missing_tracks: [
-                { item_id: 2, title: "Missed", albumartist: "A", album: "B", reason: "not_found" },
+                {
+                  item_id: 2,
+                  title: "Missed",
+                  albumartist: "A",
+                  album: "B",
+                  reason: "not_found",
+                },
               ],
               synced_at: "2026-08-15T10:00:00+00:00",
               error: null,
@@ -2198,12 +2561,18 @@ describe("PlaylistDetailPage", () => {
     // healthy playlist is noise.
     expect(screen.queryByRole("button", { name: /match clean/i })).toBeNull();
     // Everything that needs attention gets one.
-    expect(screen.getByRole("button", { name: /match missed/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /match missed/i }),
+    ).toBeInTheDocument();
     // `track(3, "Gone", false)` is available:false with a non-empty title, so
     // `displayTitle` (PlaylistDetailPage.tsx:73-75) returns "Gone", not
     // "(removed track)" - that fallback only fires on an EMPTY title.
-    expect(screen.getByRole("button", { name: /match gone/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /match ghost/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /match gone/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /match ghost/i }),
+    ).toBeInTheDocument();
   });
 
   test("re-pointing a resolved row says it replaces the track and announces that", async () => {
@@ -2218,7 +2587,13 @@ describe("PlaylistDetailPage", () => {
               status: "partial",
               missing: 1,
               missing_tracks: [
-                { item_id: 2, title: "Missed", albumartist: "A", album: "B", reason: "not_found" },
+                {
+                  item_id: 2,
+                  title: "Missed",
+                  albumartist: "A",
+                  album: "B",
+                  reason: "not_found",
+                },
               ],
               synced_at: "2026-08-15T10:00:00+00:00",
               error: null,
@@ -2250,7 +2625,9 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     await screen.findByText("Missed");
-    await userEvent.click(screen.getByRole("button", { name: /match missed/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /match missed/i }),
+    );
 
     // The picker says what the pick will DO on a row that already has a track:
     // it replaces it and keeps the slot. It must not imply a row is added.
@@ -2262,18 +2639,18 @@ describe("PlaylistDetailPage", () => {
     ).toBeInTheDocument();
 
     await userEvent.type(within(dialog).getByRole("textbox"), "Other");
-    await userEvent.click(await within(dialog).findByRole("button", { name: /select other copy/i }));
+    await userEvent.click(
+      await within(dialog).findByRole("button", { name: /select other copy/i }),
+    );
 
     await waitFor(() => expect(patchBody).toEqual({ item_id: 77 }));
     // The live region announces a REPLACEMENT, not a first match.
-    await waitFor(() =>
-      expect(
-        screen.getByText(
-          (content) =>
-            words(content) === "Replaced the track; the row kept its position",
-        ),
-      ).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByText(
+        (content) =>
+          words(content) === "Replaced the track; the row kept its position",
+      ),
+    ).toBeInTheDocument();
   });
 
   // The mirror of the test above, and the one that pins `armedReplaces`'s OTHER
@@ -2283,7 +2660,11 @@ describe("PlaylistDetailPage", () => {
   test("a pending row is told it is being matched, not that a track is being replaced", async () => {
     let patchBody: unknown = null;
     server.use(
-      http.get(BASE, () => HttpResponse.json(detail([pendingTrack("u1", "Lost", { artist: "X" })]))),
+      http.get(BASE, () =>
+        HttpResponse.json(
+          detail([pendingTrack("u1", "Lost", { artist: "X" })]),
+        ),
+      ),
       http.get(SEARCH, () =>
         HttpResponse.json(
           trackSearchPage([
@@ -2313,25 +2694,34 @@ describe("PlaylistDetailPage", () => {
     // A pending row has no track behind it, so the picker must use the MATCH
     // wording: this slot gains a track, it does not swap one out.
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("Match to a library track")).toBeInTheDocument();
     expect(
-      within(dialog).getByText("Search your library and pick the track this entry should point to."),
+      within(dialog).getByText("Match to a library track"),
     ).toBeInTheDocument();
-    expect(within(dialog).queryByText(/replaces the current track/i)).not.toBeInTheDocument();
+    expect(
+      within(dialog).getByText(
+        "Search your library and pick the track this entry should point to.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).queryByText(/replaces the current track/i),
+    ).not.toBeInTheDocument();
 
     await userEvent.type(within(dialog).getByRole("textbox"), "Found");
-    await userEvent.click(await within(dialog).findByRole("button", { name: /select found/i }));
+    await userEvent.click(
+      await within(dialog).findByRole("button", { name: /select found/i }),
+    );
 
     await waitFor(() => expect(patchBody).toEqual({ item_id: 55 }));
     // …and the live region announces a MATCH, not a replacement.
-    await waitFor(() =>
-      expect(
-        screen.getByText((content) => words(content) === "Matched the track to your library"),
-      ).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByText(
+        (content) => words(content) === "Matched the track to your library",
+      ),
+    ).toBeInTheDocument();
     expect(
       screen.queryByText(
-        (content) => words(content) === "Replaced the track; the row kept its position",
+        (content) =>
+          words(content) === "Replaced the track; the row kept its position",
       ),
     ).not.toBeInTheDocument();
   });
@@ -2362,7 +2752,10 @@ describe("PlaylistDetailPage", () => {
     server.use(
       http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha")]))),
       http.get(LIST, () =>
-        HttpResponse.json([listed(ID, "Late night", 1), listed(SOURCE, "Road trip", 2)]),
+        HttpResponse.json([
+          listed(ID, "Late night", 1),
+          listed(SOURCE, "Road trip", 2),
+        ]),
       ),
       http.get(`${LIST}/${SOURCE}`, () =>
         HttpResponse.json({
@@ -2387,8 +2780,12 @@ describe("PlaylistDetailPage", () => {
     });
     await screen.findByText("Alpha");
 
-    await userEvent.click(screen.getByRole("button", { name: /merge another playlist/i }));
-    await userEvent.click(await screen.findByRole("button", { name: /road trip/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /merge another playlist/i }),
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: /road trip/i }),
+    );
     await userEvent.click(screen.getByRole("button", { name: /^merge$/i }));
   }
 
@@ -2397,15 +2794,13 @@ describe("PlaylistDetailPage", () => {
 
     await mergeRoadTrip();
 
-    await waitFor(() =>
-      expect(
-        screen.getByText(
-          (content) =>
-            words(content) ===
-            "Merged Road trip: added 4 tracks, skipped 2 already here. Sync to Plex to push the change.",
-        ),
-      ).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByText(
+        (content) =>
+          words(content) ===
+          "Merged Road trip: added 4 tracks, skipped 2 already here. Sync to Plex to push the change.",
+      ),
+    ).toBeInTheDocument();
     expect(await screen.findByText("Nine")).toBeInTheDocument();
   });
 
@@ -2417,14 +2812,12 @@ describe("PlaylistDetailPage", () => {
 
     await mergeRoadTrip();
 
-    await waitFor(() =>
-      expect(
-        screen.getByText(
-          (content) =>
-            words(content) ===
-            "Merged Road trip: added 1 track, and deleted Road trip. Sync to Plex to push the change.",
-        ),
-      ).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByText(
+        (content) =>
+          words(content) ===
+          "Merged Road trip: added 1 track, and deleted Road trip. Sync to Plex to push the change.",
+      ),
+    ).toBeInTheDocument();
   });
 });

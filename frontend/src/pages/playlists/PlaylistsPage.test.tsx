@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes } from "react-router";
@@ -44,11 +44,15 @@ describe("PlaylistsPage", () => {
 
   test("a playlist with album covers shows a collage on its row", async () => {
     server.use(
-      http.get(URL, () => HttpResponse.json([playlist({ cover_album_ids: [11, 22] })])),
+      http.get(URL, () =>
+        HttpResponse.json([playlist({ cover_album_ids: [11, 22] })]),
+      ),
     );
     renderWithProviders(<PlaylistsPage />);
     await screen.findByText("Late night");
-    const collage = document.querySelector('[data-slot="playlist-cover-collage"]');
+    const collage = document.querySelector(
+      '[data-slot="playlist-cover-collage"]',
+    );
     expect(collage).not.toBeNull();
     expect(collage?.querySelectorAll("img")).toHaveLength(2);
   });
@@ -78,7 +82,11 @@ describe("PlaylistsPage", () => {
   });
 
   test("creates a playlist via the dialog", async () => {
-    const created = playlist({ id: "b".repeat(32), name: "Workout", track_count: 0 });
+    const created = playlist({
+      id: "b".repeat(32),
+      name: "Workout",
+      track_count: 0,
+    });
     let posted = false;
     server.use(
       http.get(URL, () => HttpResponse.json(posted ? [created] : [])),
@@ -90,11 +98,13 @@ describe("PlaylistsPage", () => {
     renderWithProviders(<PlaylistsPage />);
     await screen.findByText(/no playlists yet/i);
 
-    await userEvent.click(screen.getByRole("button", { name: /new playlist/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /new playlist/i }),
+    );
     await userEvent.type(screen.getByLabelText(/name/i), "Workout");
     await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
 
-    await waitFor(() => expect(screen.getByText("Workout")).toBeInTheDocument());
+    expect(await screen.findByText("Workout")).toBeInTheDocument();
   });
 
   test("the Import button navigates to the import flow", async () => {
@@ -181,7 +191,9 @@ describe("PlaylistsPage", () => {
       ),
     );
     renderWithProviders(<PlaylistsPage />);
-    expect(await screen.findByText("2 not on the Plex copy")).toBeInTheDocument();
+    expect(
+      await screen.findByText("2 not on the Plex copy"),
+    ).toBeInTheDocument();
     // The detail-wire phrase is false here (opening the playlist shows the
     // misses; no re-sync needed), so it must never appear on a list row.
     expect(screen.queryByText(/re-sync to see which/i)).not.toBeInTheDocument();
@@ -220,7 +232,9 @@ describe("PlaylistsPage", () => {
       ),
     );
     renderWithProviders(<PlaylistsPage />);
-    expect((await screen.findAllByText(/tracks/i)).length).toBeGreaterThanOrEqual(1);
+    expect(
+      (await screen.findAllByText(/tracks/i)).length,
+    ).toBeGreaterThanOrEqual(1);
     // A muted "Not synced" on quiet rows would be noise — none of these may show.
     expect(screen.queryByText("Synced")).not.toBeInTheDocument();
     expect(screen.queryByText("Not synced")).not.toBeInTheDocument();

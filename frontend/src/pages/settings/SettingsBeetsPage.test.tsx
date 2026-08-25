@@ -872,14 +872,14 @@ describe("SettingsPage", () => {
         "page",
       ),
     );
-    // Re-query inside waitFor: the Loader's interim h2 carries the same name
-    // and detaches when the snapshot lands, so a one-shot findBy can resolve
-    // with a node the data swap then removes.
-    await waitFor(() =>
-      expect(
-        screen.getByRole("heading", { level: 2, name: "Beets configuration" }),
-      ).toBeInTheDocument(),
-    );
+    // The Loader's interim h2 carries the same accessible name and detaches
+    // when the snapshot lands, so a findBy on the heading could resolve a
+    // node the data swap removes. Wait on a loaded-only marker (the config
+    // file path) instead, then assert the settled heading directly.
+    await screen.findByText(/data\/beets\/config\.yaml/);
+    expect(
+      screen.getByRole("heading", { level: 2, name: "Beets configuration" }),
+    ).toBeInTheDocument();
   });
 
   test("the beets section hosts the Reorganize panel", async () => {

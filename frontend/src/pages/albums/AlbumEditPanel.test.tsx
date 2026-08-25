@@ -1,5 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AlbumEditPanel } from "@/pages/albums/AlbumEditPanel";
 import { client } from "@/api/client";
@@ -13,14 +19,32 @@ const album = {
   genre: "Alternative Rock",
   track_count: 2,
   tracks: [
-    { id: 1, title: "15 Step", track: 1, disc: 1, duration_seconds: 230, artist: "Radiohead" },
-    { id: 2, title: "Bodysnatchers", track: 2, disc: 1, duration_seconds: 242, artist: "Radiohead" },
+    {
+      id: 1,
+      title: "15 Step",
+      track: 1,
+      disc: 1,
+      duration_seconds: 230,
+      artist: "Radiohead",
+    },
+    {
+      id: 2,
+      title: "Bodysnatchers",
+      track: 2,
+      disc: 1,
+      duration_seconds: 242,
+      artist: "Radiohead",
+    },
   ],
 } as unknown as AlbumDetail;
 
 /** Wrap mock data as a 2xx openapi-fetch result (the hooks read `response.ok`). */
 function ok(data: unknown) {
-  return { data, error: undefined, response: { ok: true, status: 200 } } as never;
+  return {
+    data,
+    error: undefined,
+    response: { ok: true, status: 200 },
+  } as never;
 }
 
 function renderPanel() {
@@ -54,7 +78,9 @@ describe("AlbumEditPanel", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /preview/i }));
 
-    const diff = await screen.findByRole("region", { name: /pending changes/i });
+    const diff = await screen.findByRole("region", {
+      name: /pending changes/i,
+    });
     expect(within(diff).getByText("In Rainbows")).toBeInTheDocument();
     expect(within(diff).getByText("In Rainbows (R)")).toBeInTheDocument();
   });
@@ -67,7 +93,14 @@ describe("AlbumEditPanel", () => {
         album_after: { album_artist: "Radiohead (Live)" },
         tracks: [],
         move_enabled: true,
-        move_plan: [{ item_id: 1, track: 1, old_path: "/a/x.flac", new_path: "/b/x.flac" }],
+        move_plan: [
+          {
+            item_id: 1,
+            track: 1,
+            old_path: "/a/x.flac",
+            new_path: "/b/x.flac",
+          },
+        ],
         move_refusals: [],
       }),
     );
@@ -77,11 +110,15 @@ describe("AlbumEditPanel", () => {
       target: { value: "Radiohead (Live)" },
     });
     fireEvent.click(screen.getByRole("button", { name: /preview/i }));
-    await waitFor(() => expect(screen.getByText(/1 file will be moved/i)).toBeInTheDocument());
+    expect(
+      await screen.findByText(/1 file will be moved/i),
+    ).toBeInTheDocument();
 
     // Nothing refusal-related exists on a clean plan: no list, no count line, and
     // the notice does not trail a "0 others cannot be moved" clause.
-    expect(screen.queryByRole("list", { name: /cannot be moved/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("list", { name: /cannot be moved/i }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText(/cannot be moved/i)).not.toBeInTheDocument();
   });
 
@@ -116,7 +153,8 @@ describe("AlbumEditPanel", () => {
             item_id: 4,
             track: 4,
             old_path: "/music/Radiohead/In Rainbows/04 Reckoner.flac",
-            new_path: "/music/Radiohead/In Rainbows/04 Reckoner (remastered).flac",
+            new_path:
+              "/music/Radiohead/In Rainbows/04 Reckoner (remastered).flac",
           },
         ],
         move_refusals: [
@@ -144,9 +182,13 @@ describe("AlbumEditPanel", () => {
     expect(notice).toHaveTextContent(/1 other file cannot be moved/i);
 
     // The refused rename is named per-track, with the self-contained reason.
-    const refused = screen.getByRole("list", { name: /files that cannot be moved/i });
+    const refused = screen.getByRole("list", {
+      name: /files that cannot be moved/i,
+    });
     expect(refused).toHaveClass("text-destructive");
-    const row = within(refused).getByText(/02 Bodysnatchers\.flac → 01 15 Step\.flac/);
+    const row = within(refused).getByText(
+      /02 Bodysnatchers\.flac → 01 15 Step\.flac/,
+    );
     expect(row).toHaveTextContent(/^#2 /);
     expect(
       within(refused).getByText(/already exists on disk and holds 15 Step/),
@@ -196,7 +238,9 @@ describe("AlbumEditPanel", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /preview/i }));
 
-    const refused = await screen.findByRole("list", { name: /files that cannot be moved/i });
+    const refused = await screen.findByRole("list", {
+      name: /files that cannot be moved/i,
+    });
     const row = within(refused).getByText(/01 15 Step\.flac →/);
     expect(row).toHaveTextContent(
       "#1 In Rainbows/01 15 Step.flac → In Rainbows (Remaster)/01 15 Step.flac",
@@ -241,10 +285,16 @@ describe("AlbumEditPanel", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /preview/i }));
 
-    const refused = await screen.findByRole("list", { name: /files that cannot be moved/i });
-    expect(within(refused).getByText(/2 tracks resolve to this same name/)).toBeInTheDocument();
+    const refused = await screen.findByRole("list", {
+      name: /files that cannot be moved/i,
+    });
+    expect(
+      within(refused).getByText(/2 tracks resolve to this same name/),
+    ).toBeInTheDocument();
     // An empty move plan drops the notice entirely rather than promising 0 moves.
-    expect(screen.queryByText(/will be moved on disk/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/will be moved on disk/i),
+    ).not.toBeInTheDocument();
   });
 
   it("renders per-track before/after rows in the diff table", async () => {
@@ -276,7 +326,9 @@ describe("AlbumEditPanel", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /preview/i }));
 
-    const diff = await screen.findByRole("region", { name: /pending changes/i });
+    const diff = await screen.findByRole("region", {
+      name: /pending changes/i,
+    });
     // "Now" still shows the old title; "After" shows the new one.
     expect(within(diff).getByText(/15 Step/)).toBeInTheDocument();
     expect(within(diff).getByText(/16 Step/)).toBeInTheDocument();
@@ -297,7 +349,7 @@ describe("AlbumEditPanel", () => {
 
     renderPanel();
     fireEvent.click(screen.getByRole("button", { name: /preview/i }));
-    await waitFor(() => expect(screen.getByText(/no changes/i)).toBeInTheDocument());
+    expect(await screen.findByText(/no changes/i)).toBeInTheDocument();
   });
 
   it("clears the stale preview when an input is edited", async () => {
@@ -327,7 +379,9 @@ describe("AlbumEditPanel", () => {
     fireEvent.change(screen.getByLabelText("Genre"), {
       target: { value: "Rock" },
     });
-    expect(screen.queryByRole("region", { name: /pending changes/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: /pending changes/i }),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /apply/i })).toBeDisabled();
   });
 
@@ -349,7 +403,14 @@ describe("AlbumEditPanel", () => {
       ok({
         album,
         items: [
-          { item_id: 1, track: 1, title: "15 Step", written: true, moved: false, error: null },
+          {
+            item_id: 1,
+            track: 1,
+            title: "15 Step",
+            written: true,
+            moved: false,
+            error: null,
+          },
           {
             item_id: 2,
             track: 2,
@@ -372,7 +433,7 @@ describe("AlbumEditPanel", () => {
     await screen.findByRole("region", { name: /pending changes/i });
     fireEvent.click(screen.getByRole("button", { name: /apply/i }));
 
-    await waitFor(() => expect(screen.getByText(/wrote 1 tag/i)).toBeInTheDocument());
+    expect(await screen.findByText(/wrote 1 tag/i)).toBeInTheDocument();
     // The failed track is listed with its error, not hidden.
     expect(screen.getByText(/permission denied/i)).toBeInTheDocument();
     expect(screen.getByText(/Bodysnatchers/i)).toBeInTheDocument();
@@ -441,7 +502,14 @@ describe("AlbumEditPanel", () => {
       ok({
         album,
         items: [
-          { item_id: 1, track: 1, title: "15 Step", written: true, moved: false, error: null },
+          {
+            item_id: 1,
+            track: 1,
+            title: "15 Step",
+            written: true,
+            moved: false,
+            error: null,
+          },
         ],
         write_failures: 0,
         move_failures: 0,
@@ -457,15 +525,19 @@ describe("AlbumEditPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /apply/i }));
 
     // The success line appears after apply.
-    await waitFor(() => expect(screen.getByText(/^Updated/)).toBeInTheDocument());
+    expect(await screen.findByText(/^Updated/)).toBeInTheDocument();
     // ...and the close button reads "Done" — the edit is saved, nothing to cancel.
     expect(screen.getByRole("button", { name: /^done$/i })).toBeInTheDocument();
 
     // Starting a new edit clears the now-stale outcome banner.
-    fireEvent.change(screen.getByLabelText("Genre"), { target: { value: "Rock" } });
+    fireEvent.change(screen.getByLabelText("Genre"), {
+      target: { value: "Rock" },
+    });
     expect(screen.queryByText(/^Updated/)).not.toBeInTheDocument();
     // ...and the button reverts to "Cancel" now that there are edits to discard.
-    expect(screen.getByRole("button", { name: /^cancel$/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /^cancel$/i }),
+    ).toBeInTheDocument();
   });
 
   it("omits the tag count when nothing was written and there are no failures", async () => {
@@ -485,7 +557,14 @@ describe("AlbumEditPanel", () => {
       ok({
         album,
         items: [
-          { item_id: 1, track: 1, title: "15 Step", written: false, moved: false, error: null },
+          {
+            item_id: 1,
+            track: 1,
+            title: "15 Step",
+            written: false,
+            moved: false,
+            error: null,
+          },
         ],
         write_failures: 0,
         move_failures: 0,
@@ -521,7 +600,10 @@ describe("AlbumEditPanel", () => {
     // Apply never resolves during the assertion window.
     let resolveApply: (v: unknown) => void = () => {};
     post.mockImplementationOnce(
-      () => new Promise((res) => { resolveApply = res; }) as never,
+      () =>
+        new Promise((res) => {
+          resolveApply = res;
+        }) as never,
     );
 
     renderPanel();
@@ -532,7 +614,9 @@ describe("AlbumEditPanel", () => {
     await screen.findByRole("region", { name: /pending changes/i });
     fireEvent.click(screen.getByRole("button", { name: /apply/i }));
 
-    await waitFor(() => expect(screen.getByLabelText(/album title/i)).toBeDisabled());
+    await waitFor(() =>
+      expect(screen.getByLabelText(/album title/i)).toBeDisabled(),
+    );
     expect(screen.getByLabelText("Genre")).toBeDisabled();
     expect(screen.getByLabelText(/title of track 1/i)).toBeDisabled();
     expect(screen.getByRole("button", { name: /preview/i })).toBeDisabled();
@@ -541,12 +625,23 @@ describe("AlbumEditPanel", () => {
     resolveApply(
       ok({
         album,
-        items: [{ item_id: 1, track: 1, title: "15 Step", written: true, moved: false, error: null }],
+        items: [
+          {
+            item_id: 1,
+            track: 1,
+            title: "15 Step",
+            written: true,
+            moved: false,
+            error: null,
+          },
+        ],
         write_failures: 0,
         move_failures: 0,
       }),
     );
-    await waitFor(() => expect(screen.getByLabelText(/album title/i)).not.toBeDisabled());
+    await waitFor(() =>
+      expect(screen.getByLabelText(/album title/i)).not.toBeDisabled(),
+    );
   });
 
   it("builds a preview request that omits a live-added track absent from the draft", async () => {
@@ -562,7 +657,9 @@ describe("AlbumEditPanel", () => {
       }),
     );
 
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     const { rerender } = render(
       <QueryClientProvider client={qc}>
         <AlbumEditPanel album={album} onClose={() => {}} />
@@ -580,7 +677,14 @@ describe("AlbumEditPanel", () => {
       ...album,
       tracks: [
         ...album.tracks,
-        { id: 3, title: "Nude", track: 3, disc: 1, duration_seconds: 200, artist: "Radiohead" },
+        {
+          id: 3,
+          title: "Nude",
+          track: 3,
+          disc: 1,
+          duration_seconds: 200,
+          artist: "Radiohead",
+        },
       ],
     } as unknown as AlbumDetail;
     rerender(
@@ -594,14 +698,18 @@ describe("AlbumEditPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /preview/i }));
 
     await waitFor(() => expect(post).toHaveBeenCalled());
-    const body = (post.mock.calls[0][1] as { body: { tracks: { item_id: number }[] } }).body;
+    const body = (
+      post.mock.calls[0][1] as { body: { tracks: { item_id: number }[] } }
+    ).body;
     // The known edit survives; the un-drafted live-added track is omitted.
     expect(body.tracks).toEqual([{ item_id: 1, title: "16 Step" }]);
     expect(body.tracks.some((t) => t.item_id === 3)).toBe(false);
   });
 
   it("does not crash when a live refetch adds a track not in the seeded draft", () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     const { rerender } = render(
       <QueryClientProvider client={qc}>
         <AlbumEditPanel album={album} onClose={() => {}} />
@@ -616,7 +724,14 @@ describe("AlbumEditPanel", () => {
       ...album,
       tracks: [
         ...album.tracks,
-        { id: 3, title: "Nude", track: 3, disc: 1, duration_seconds: 200, artist: "Radiohead" },
+        {
+          id: 3,
+          title: "Nude",
+          track: 3,
+          disc: 1,
+          duration_seconds: 200,
+          artist: "Radiohead",
+        },
       ],
     } as unknown as AlbumDetail;
     expect(() =>
@@ -630,6 +745,8 @@ describe("AlbumEditPanel", () => {
     // The un-drafted row is skipped until the draft reseeds — the seeded rows
     // stay editable and nothing throws.
     expect(screen.getByLabelText(/title of track 1/i)).toBeInTheDocument();
-    expect(screen.queryByLabelText(/title of track 3/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText(/title of track 3/i),
+    ).not.toBeInTheDocument();
   });
 });
