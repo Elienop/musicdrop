@@ -12,10 +12,13 @@ from app.models.import_models import (
     AlbumOutcome,
     AlbumOutcomeStatus,
     Candidate,
+    DuplicatePrompt,
+    ExistingAlbum,
     ImportAction,
     ImportChoice,
     ImportOptions,
     ImportSearch,
+    IncomingAlbum,
     ParkedAlbum,
     Recommendation,
 )
@@ -981,3 +984,266 @@ def test_start_leaves_directive_astracks_false_for_apply_directive() -> None:
     job = reg.get(job_id)
     assert job is not None
     assert job.directive_astracks is False
+
+
+# ----- drain invariants pinned one mutant at a time --------------------------
+# Each test below exists to kill one specific mutation of
+# app/import_jobs/registry.py's _drain_locked passes that SURVIVED the full
+# 2363-test suite (adversarial mutation review). See each docstring for the
+# exact scenario and the mutant it kills.
+
+
+def _dup_prompt(index: int) -> DuplicatePrompt:
+    """A minimal parked duplicate prompt for index ``index``."""
+    return DuplicatePrompt(
+        album_index=index,
+        incoming=IncomingAlbum(
+            album_artist="Radiohead",
+            album="OK Computer",
+            year=1997,
+            track_count=1,
+            format=None,
+            bitrate_kbps=None,
+            folder=f"/music/incoming/album{index}",
+            has_current_art=False,
+        ),
+        existing=[
+            ExistingAlbum(
+                album_id=1,
+                album_artist="Radiohead",
+                album="OK Computer",
+                year=1997,
+                track_count=1,
+                format=None,
+                bitrate_kbps=None,
+                folder="/library/Radiohead/OK Computer",
+            )
+        ],
+    )
+
+
+def test_drain_replays_pending_parked_before_a_fresh_parked_overrides() -> None:
+    """Pending replay must run BEFORE the fresh-parked pass in a drain.
+
+    Scenario: drain #1 popped parked A before index 0's feed row existed and
+    buffered it into job.pending_parked. Between the drains the album's
+    outcome landed AND a FRESH parked B (different candidate content) reached
+    the queue. The pending-replay pass runs first (attaching stale A) and the
+    parked drain then overwrites with fresh B — the feed must show B, the
+    album the worker is actually parked on.
+    Kills: moving _drain_pending_locked AFTER _drain_parked_duplicate_locked
+    in _drain_locked (stale A would then clobber the fresh B).
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    bridge = ImportBridge()
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="stale-park", bridge=bridge, phase=ImportPhase.reviewing)
+    job = reg._job
+
+    stale_a = _parked(0, Recommendation.medium)
+    bridge._out.put(stale_a)  # popped before index 0's outcome exists -> buffered
+    reg.drain("stale-park")
+    assert job.albums.get(0) is None  # no row yet
+    assert job.pending_parked.get(0) is stale_a  # buffered, NOT discarded
+
+    bridge.note_outcome(_needs_review_outcome(0))  # the outcome finally lands
+    fresh_b = ParkedAlbum(
+        album_index=0,
+        folder="/music/incoming/album0-refetched",
+        candidate=_candidate(Recommendation.strong),
+    )
+    bridge._out.put(fresh_b)  # a FRESH park for the same index reaches the queue
+
+    reg.drain("stale-park")  # replay (stale A) must run BEFORE the parked pass
+    row = job.albums.get(0)
+    assert row is not None
+    assert row.parked is fresh_b  # the fresh park wins, not the stale buffer
+    assert 0 not in job.pending_parked
+
+
+def test_needs_review_refresh_preserves_attached_album_id() -> None:
+    """A needs_review re-park refresh must keep the attached album_id.
+
+    Scenario: a needs_review row that later received its beets album id
+    (the follow-up applied outcome's attach branch) receives a SECOND
+    needs_review outcome (a search re-park re-emits with the new match's
+    fields). The refresh must replace the row's outcome with the new match
+    AND keep the attached album_id.
+    Kills: the refresh line's model_copy(update={...}) reduced to a plain
+    ``row.outcome = outcome`` (the attached id would silently drop).
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    bridge = ImportBridge()
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="refresh-id", bridge=bridge, phase=ImportPhase.reviewing)
+    job = reg._job
+
+    bridge.note_outcome(_needs_review_outcome(0))  # creates the row
+    reg.drain("refresh-id")
+    row = job.albums.get(0)
+    assert row is not None
+    assert row.outcome.confidence == 75.5
+
+    bridge.note_outcome(_applied_follow_up(0, 42))  # the attach: the id lands
+    reg.drain("refresh-id")
+    assert row.outcome.album_id == 42
+
+    re_park = _needs_review_outcome(0).model_copy(
+        update={"recommendation": Recommendation.low, "confidence": 40.0}
+    )
+    bridge.note_outcome(re_park)  # search re-park re-emits a (worse) match
+    reg.drain("refresh-id")
+    assert row.outcome.recommendation is Recommendation.low  # new match landed
+    assert row.outcome.confidence == 40.0
+    assert row.outcome.album_id == 42  # AND the attached id survived the refresh
+
+
+def test_dup_resolution_outcome_upgrades_status_without_refreshing_outcome() -> None:
+    """The outcome refresh is scoped to needs_review only.
+
+    Scenario: an existing row receives a needs_dup_resolution outcome. Its
+    status must upgrade to needs_dup_resolution but the row must keep its
+    ORIGINAL outcome payload — the dup path renders from row.outcome plus
+    row.duplicate.
+    Kills: widening the needs_review refresh branch to also run for
+    needs_dup_resolution (the dup outcome would stomp the original payload).
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    bridge = ImportBridge()
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="dup-scope", bridge=bridge, phase=ImportPhase.reviewing)
+    job = reg._job
+
+    bridge.note_outcome(_needs_review_outcome(0))  # creates the row (artist "Radiohead")
+    reg.drain("dup-scope")
+    row = job.albums.get(0)
+    assert row is not None
+
+    dup = _needs_review_outcome(0).model_copy(
+        update={
+            "status": AlbumOutcomeStatus.needs_dup_resolution,
+            "artist": "Different Artist",
+            "confidence": 10.0,
+        }
+    )
+    bridge.note_outcome(dup)
+    reg.drain("dup-scope")
+    assert row.status is ImportAlbumStatus.needs_dup_resolution  # status upgraded
+    assert row.outcome.artist == "Radiohead"  # but the ORIGINAL outcome is kept
+    assert row.outcome.confidence == 75.5
+
+
+def test_album_id_attach_keeps_decided_status() -> None:
+    """The album-id attach never touches a decided row's status.
+
+    Scenario: a row the user already decided (record_choice marked it
+    decided) receives the follow-up applied outcome carrying beets' album
+    id. The attach branch must attach the id WITHOUT regressing
+    row.status to applied — the decision the feed/summary already reflects
+    stays the truth.
+    Kills: the attach branch also setting
+    ``row.status = ImportAlbumStatus.applied``.
+    """
+    import queue
+
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    bridge = ImportBridge()
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="attach-status", bridge=bridge, phase=ImportPhase.reviewing)
+    job = reg._job
+
+    bridge._replies[0] = queue.Queue(maxsize=1)  # park() registers the reply slot
+    bridge._out.put(_parked(0, Recommendation.medium))
+    bridge.note_outcome(_needs_review_outcome(0))
+    reg.drain("attach-status")
+    reg.record_choice("attach-status", 0, ImportChoice(action=ImportAction.apply))
+    row = job.albums.get(0)
+    assert row is not None
+    assert row.status is ImportAlbumStatus.decided
+    assert row.decided_action is ImportAction.apply
+
+    bridge.note_outcome(_applied_follow_up(0, 42))  # the id lands after the decision
+    reg.drain("attach-status")
+    assert row.outcome.album_id == 42  # attached
+    assert row.status is ImportAlbumStatus.decided  # ...without regressing the decision
+
+
+def test_drain_buffers_a_parked_duplicate_then_replays_it() -> None:
+    """A duplicate popped before its row exists is buffered, then replayed.
+
+    Scenario: a duplicate prompt reaches the bridge's duplicate channel with
+    NO feed row yet — drain #1 must buffer it into job.pending_duplicate
+    (never discard). Once the outcome lands, the next drain's replay must
+    attach row.duplicate, set row.art_source (from the bridge's park-time
+    record), and flip status to needs_dup_resolution — else the worker
+    blocks in park_duplicate() forever and the dup panel 404s, wedging the
+    single import slot.
+    Kills: (a) the missing-row duplicate branch discarding the prompt
+    instead of buffering; (b) dropping the needs_dup_resolution flip in
+    the replay.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    bridge = ImportBridge()
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="dup-race", bridge=bridge, phase=ImportPhase.reviewing)
+    job = reg._job
+
+    prompt = _dup_prompt(0)
+    art = "/music/incoming/album0/cover.jpg"
+    bridge._art_source[0] = art  # park_duplicate records the art source at park time
+    bridge._dup_out.put(prompt)  # prompt reaches the channel with no outcome yet
+    reg.drain("dup-race")
+    assert job.albums.get(0) is None  # no row yet
+    assert job.pending_duplicate.get(0) is prompt  # buffered, NOT discarded
+
+    bridge.note_outcome(_applied_outcome(0))  # the album's outcome finally lands
+    reg.drain("dup-race")  # replay: attach + art source + status flip
+    row = job.albums.get(0)
+    assert row is not None
+    assert row.duplicate is prompt
+    assert row.art_source == art
+    assert row.status is ImportAlbumStatus.needs_dup_resolution
+    assert 0 not in job.pending_duplicate
+
+
+def test_buffered_parked_replay_restores_art_source() -> None:
+    """The pending-parked replay must set row.art_source, not just row.parked.
+
+    Scenario: the parked was buffered (popped before its row existed) and NO
+    fresh park follows — the replay is the ONLY place the row's art source can
+    come from, and GET /cover serves from it. Distinct from the ordering test
+    above, whose fresh park overwrites art_source and would mask this line.
+    Kills: dropping the ``row.art_source = job.bridge.art_source(index)`` line
+    in the pending-parked replay.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    bridge = ImportBridge()
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="replay-art", bridge=bridge, phase=ImportPhase.reviewing)
+    job = reg._job
+
+    parked = _parked(0, Recommendation.medium)
+    art = "/music/incoming/album0/01.flac"
+    bridge._art_source[0] = art  # park() records the art source at park time
+    bridge._out.put(parked)  # popped before index 0's outcome exists -> buffered
+    reg.drain("replay-art")
+    assert job.pending_parked.get(0) is parked  # buffered, NOT discarded
+
+    bridge.note_outcome(_needs_review_outcome(0))  # the outcome finally lands
+    reg.drain("replay-art")  # the replay is the only attach path this time
+    row = job.albums.get(0)
+    assert row is not None
+    assert row.parked is parked
+    assert row.art_source == art
