@@ -14,11 +14,14 @@ from collections.abc import Iterator
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.openapi_overlay import overlay_middleware_responses
+from app.openapi_overlay import (
+    _BODY_LIMIT_413,
+    _ORIGIN_GUARD_403,
+    overlay_middleware_responses,
+)
 from app.origin_guard import UNSAFE_METHODS
 
 _ERROR_DETAIL_REF = "#/components/schemas/ErrorDetail"
-_HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
 
 
 def _as_dict(value: object) -> dict[str, object]:
@@ -40,11 +43,19 @@ def _spec() -> dict[str, object]:
 
 
 def _operations() -> Iterator[tuple[str, str, dict[str, object]]]:
-    """Every (method, path, operation) in the live spec, in schema order."""
+    """Every (method, path, operation) in the live spec, in schema order.
+
+    Selected by SHAPE (a dict carrying ``responses``), never by a method list:
+    a path item's non-operation keys (``parameters``, ``summary``) carry no
+    ``responses``, and a mirrored method list would share any blind spot the
+    overlay's own ``_HTTP_METHODS`` develops — the point of these pins is to
+    catch that, not inherit it.
+    """
     for path, path_item in _as_dict(_spec().get("paths")).items():
         for method, operation in _as_dict(path_item).items():
-            if method in _HTTP_METHODS:
-                yield method, path, _as_dict(operation)
+            op = _as_dict(operation)
+            if "responses" in op:
+                yield method, path, op
 
 
 def _assert_error_detail(operation: dict[str, object], method: str, path: str, status: str) -> None:
@@ -59,10 +70,17 @@ def test_every_write_operation_declares_403_with_error_detail() -> None:
     write_methods = {method.lower() for method in UNSAFE_METHODS}
     checked = 0
     for method, path, operation in _operations():
-        if method not in write_methods:
-            continue
-        checked += 1
-        _assert_error_detail(operation, method, path, "403")
+        if method in write_methods:
+            checked += 1
+            _assert_error_detail(operation, method, path, "403")
+        else:
+            # Negative pin, scoped to what the overlay owns: a read operation
+            # may declare its OWN 403 for a route-level reason, but never the
+            # origin guard's — the guard checks UNSAFE_METHODS only.
+            entry = _as_dict(_as_dict(operation.get("responses")).get("403"))
+            assert entry.get("description") != _ORIGIN_GUARD_403, (
+                f"{method.upper()} {path} carries the origin-guard 403 the guard never produces"
+            )
     assert checked > 0
 
 
@@ -82,11 +100,15 @@ def test_413_follows_the_request_body_and_nothing_else() -> None:
             with_body += 1
             _assert_error_detail(operation, method, path, "413")
         else:
-            # Negative pin, chosen programmatically (every bodyless op counts),
-            # not one hardcoded path that might later gain a body.
+            # Negative pin, chosen programmatically (every bodyless op counts)
+            # and scoped to the OVERLAY's entry: a raw-body route (e.g.
+            # PUT /api/playlists/{id}/artwork reads ``await request.body()``,
+            # so FastAPI emits no requestBody) really returns 413 and may one
+            # day declare its own — only the body-limit overlay text is banned.
             without_body += 1
-            assert "413" not in _as_dict(operation.get("responses")), (
-                f"{method.upper()} {path} declares 413 without a requestBody"
+            entry = _as_dict(_as_dict(operation.get("responses")).get("413"))
+            assert entry.get("description") != _BODY_LIMIT_413, (
+                f"{method.upper()} {path} carries the body-limit 413 without a requestBody"
             )
     assert with_body > 0, "expected at least one bodied operation"
     assert without_body > 0, "expected at least one bodyless operation"
