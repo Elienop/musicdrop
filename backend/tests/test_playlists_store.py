@@ -287,7 +287,8 @@ def test_legacy_uids_are_stable_across_reads(tmp_path: Path) -> None:
 
     first = store.get_playlist(tmp_path, record.id)
     second = store.get_playlist(tmp_path, record.id)
-    assert first is not None and second is not None
+    assert first is not None
+    assert second is not None
     assert [e.uid for e in first.entries] == [e.uid for e in second.entries]
 
 
@@ -395,7 +396,8 @@ def test_concurrent_mutations_do_not_lose_an_update(
     final = store.get_playlist(tmp_path, pid)
     assert final is not None
     ids = final.resolved_item_ids
-    assert 101 in ids and 202 in ids, f"a concurrent mutation was lost: {ids}"
+    assert 101 in ids, f"a concurrent mutation was lost: {ids}"
+    assert 202 in ids, f"a concurrent mutation was lost: {ids}"
 
 
 def test_set_artwork_round_trip(tmp_path: Path) -> None:

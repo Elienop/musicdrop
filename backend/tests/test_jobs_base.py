@@ -57,7 +57,9 @@ def test_start_marks_running_and_returns_id() -> None:
     job_id = reg.start()
     assert reg.is_running() is True
     snap = reg.snapshot()
-    assert snap is not None and snap.id == job_id and snap.phase == "running"
+    assert snap is not None
+    assert snap.id == job_id
+    assert snap.phase == "running"
 
 
 def test_double_start_raises() -> None:
@@ -86,7 +88,9 @@ def test_finish_transitions_and_clears_current() -> None:
     reg.set_current("in flight")
     reg.finish("done")
     snap = reg.snapshot()
-    assert snap is not None and snap.phase == "done" and snap.current is None
+    assert snap is not None
+    assert snap.phase == "done"
+    assert snap.current is None
     assert reg.is_running() is False
 
 
@@ -96,7 +100,8 @@ def test_finish_is_ignored_once_not_running() -> None:
     reg.finish("done")
     reg.finish("stopped")  # a second terminal call must not overwrite the phase
     snap = reg.snapshot()
-    assert snap is not None and snap.phase == "done"
+    assert snap is not None
+    assert snap.phase == "done"
 
 
 def test_fail_records_error_and_clears_current() -> None:
@@ -106,7 +111,9 @@ def test_fail_records_error_and_clears_current() -> None:
     reg.fail("kaboom")
     snap = reg.snapshot()
     assert snap is not None
-    assert snap.phase == "failed" and snap.error == "kaboom" and snap.current is None
+    assert snap.phase == "failed"
+    assert snap.error == "kaboom"
+    assert snap.current is None
 
 
 def test_fail_overrides_a_finished_job() -> None:
@@ -115,7 +122,9 @@ def test_fail_overrides_a_finished_job() -> None:
     reg.finish("done")
     reg.fail("late crash")  # fail is not gated on running, unlike finish
     snap = reg.snapshot()
-    assert snap is not None and snap.phase == "failed" and snap.error == "late crash"
+    assert snap is not None
+    assert snap.phase == "failed"
+    assert snap.error == "late crash"
 
 
 def test_stop_is_cooperative() -> None:
@@ -192,5 +201,7 @@ def test_spawn_worker_frees_the_slot_when_the_thread_refuses(
 
     assert reg.is_running() is False  # slot released — mutations not wedged
     snap = reg.snapshot()
-    assert snap is not None and snap.phase == "failed"
-    assert snap.error and "musicdrop-fake" in snap.error
+    assert snap is not None
+    assert snap.phase == "failed"
+    assert snap.error
+    assert "musicdrop-fake" in snap.error

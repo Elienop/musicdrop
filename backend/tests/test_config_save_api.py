@@ -137,7 +137,8 @@ def test_get_serves_raw_yaml_unredacted(
     assert "REAL_SECRET_123" in snap["yaml_text"]
     # The redacted merged view is a separate, distinct field (its masking is
     # unit-tested in test_config_snapshot).
-    assert isinstance(snap["effective_yaml"], str) and snap["effective_yaml"]
+    assert isinstance(snap["effective_yaml"], str)
+    assert snap["effective_yaml"]
     assert snap["effective_yaml"] != snap["yaml_text"]
 
 

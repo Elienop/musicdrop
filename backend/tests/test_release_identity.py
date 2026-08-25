@@ -63,7 +63,8 @@ def test_blank_fixed_fields_normalize_to_none() -> None:
     from app.beets.release_identity import release_identity
 
     ri = release_identity(_obj(data_source="", label="  ", country="US"), "")
-    assert ri.data_source is None and ri.label is None
+    assert ri.data_source is None
+    assert ri.label is None
     assert ri.country == "US"
     assert ri.release_url is None
 

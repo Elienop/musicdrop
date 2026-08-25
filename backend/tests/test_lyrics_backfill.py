@@ -73,7 +73,8 @@ def test_registry_counts_instrumental_apart_from_found_and_skipped() -> None:
 
     s = reg.state()
     assert (s.found, s.instrumental, s.skipped, s.processed) == (1, 1, 1, 3)
-    assert s.not_found == 0 and s.failed == 0
+    assert s.not_found == 0
+    assert s.failed == 0
 
 
 def test_registry_rejects_second_start() -> None:
@@ -136,7 +137,9 @@ def test_sweep_processes_all_items_and_finishes_done(edit_lib: Library, tmp_path
 
     s = reg.state()
     assert s.phase == "done"
-    assert s.total == 3 and s.processed == 3 and s.found == 3
+    assert s.total == 3
+    assert s.processed == 3
+    assert s.found == 3
     assert len(seen) == 3
 
 
@@ -348,13 +351,15 @@ def test_registry_album_scope_in_state() -> None:
     # library scope defaults
     reg.start(writes_enabled=True)
     s = reg.state()
-    assert s.album_id is None and s.scope_label == "library"
+    assert s.album_id is None
+    assert s.scope_label == "library"
     reg.finish("done")
 
     # album scope
     reg.start(writes_enabled=True, album_id=42, scope_label="Adele — 25")
     s = reg.state()
-    assert s.album_id == 42 and s.scope_label == "Adele — 25"
+    assert s.album_id == 42
+    assert s.scope_label == "Adele — 25"
 
 
 def test_sweep_album_scope_only_touches_that_album(edit_lib: Library, tmp_path: Path) -> None:
@@ -389,7 +394,8 @@ def test_sweep_album_scope_only_touches_that_album(edit_lib: Library, tmp_path: 
     )
     s = reg.state()
     assert s.phase == "done"
-    assert s.total == 3 and s.processed == 3  # only the Radiohead album, not the 4th item
+    assert s.total == 3  # only the Radiohead album, not the 4th item
+    assert s.processed == 3
 
 
 def test_lyrics_coverage_counts_checked_no_lyrics(edit_lib: Library) -> None:
@@ -430,7 +436,8 @@ def test_sweep_threads_recheck_misses(edit_lib: Library, tmp_path: Path) -> None
         fetch_one=fake_fetch_one,
         make_plugin=lambda **_: object(),
     )
-    assert seen and all(seen)  # every fetch saw recheck_misses=True
+    assert seen
+    assert all(seen)  # every fetch saw recheck_misses=True
 
 
 def test_sweep_logs_end_summary(

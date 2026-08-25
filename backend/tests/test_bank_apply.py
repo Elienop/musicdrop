@@ -369,7 +369,8 @@ def test_stale_fingerprint_applies_nothing(tmp_path: Path) -> None:
             lambda: store.get_item(bank, item_id),
             lambda i: i is not None and i.status == "stale",
         )
-        assert item is not None and item.error is not None
+        assert item is not None
+        assert item.error is not None
         assert "changed" in item.error
         assert fake.validate_calls == []  # the import was never started
     finally:
@@ -393,7 +394,8 @@ def test_missing_folder_goes_stale(tmp_path: Path) -> None:
             lambda: store.get_item(bank, item.id),
             lambda i: i is not None and i.status == "stale",
         )
-        assert got is not None and got.error is not None
+        assert got is not None
+        assert got.error is not None
         assert "no longer exists" in got.error
         assert fake.validate_calls == []
     finally:
@@ -416,14 +418,16 @@ def test_unanticipated_duplicate_fails_with_guidance(tmp_path: Path) -> None:
             lambda: store.get_item(bank, item_id),
             lambda i: i is not None and i.status == "failed",
         )
-        assert item is not None and item.error is not None
+        assert item is not None
+        assert item.error is not None
         assert "duplicate" in item.error
     finally:
         runner.stop()
     requeued = store.decide_item(
         bank, item_id, BankDecision(action="duplicate", duplicate_action=DuplicateAction.skip_new)
     )
-    assert requeued is not None and requeued.status == "queued"
+    assert requeued is not None
+    assert requeued.status == "queued"
 
 
 def test_duplicate_decision_resolves_done(tmp_path: Path) -> None:
@@ -473,12 +477,14 @@ def test_failed_import_is_recorded_retryable(tmp_path: Path) -> None:
             lambda: store.get_item(bank, item_id),
             lambda i: i is not None and i.status == "failed",
         )
-        assert item is not None and item.error == "boom"
+        assert item is not None
+        assert item.error == "boom"
     finally:
         runner.stop()
     # Retryable per the as-built store: a failed row accepts a new decision.
     requeued = store.decide_item(bank, item_id, BankDecision(action="asis"))
-    assert requeued is not None and requeued.status == "queued"
+    assert requeued is not None
+    assert requeued.status == "queued"
 
 
 def test_apply_without_album_id_fails_honestly(tmp_path: Path) -> None:
@@ -496,7 +502,8 @@ def test_apply_without_album_id_fails_honestly(tmp_path: Path) -> None:
             lambda: store.get_item(bank, item_id),
             lambda i: i is not None and i.status == "failed",
         )
-        assert item is not None and item.error is not None
+        assert item is not None
+        assert item.error is not None
         assert "no library album" in item.error
     finally:
         runner.stop()
@@ -530,15 +537,18 @@ def test_duplicate_decision_without_dup_evidence_fails(tmp_path: Path) -> None:
             lambda: store.get_item(bank, item.id),
             lambda i: i is not None and i.status == "failed",
         )
-        assert got is not None and got.status == "failed"
-        assert got.error is not None and "imported nothing" in got.error
+        assert got is not None
+        assert got.status == "failed"
+        assert got.error is not None
+        assert "imported nothing" in got.error
     finally:
         runner.stop()
     # Retryable: a failed row accepts a fresh duplicate decision.
     requeued = store.decide_item(
         bank, item.id, BankDecision(action="duplicate", duplicate_action=DuplicateAction.skip_new)
     )
-    assert requeued is not None and requeued.status == "queued"
+    assert requeued is not None
+    assert requeued.status == "queued"
 
 
 def test_duplicate_decision_done_when_album_landed_without_prompt(tmp_path: Path) -> None:
@@ -568,7 +578,8 @@ def test_duplicate_decision_done_when_album_landed_without_prompt(tmp_path: Path
             lambda: store.get_item(bank, item.id),
             lambda i: i is not None and i.status == "done",
         )
-        assert got is not None and got.status == "done"
+        assert got is not None
+        assert got.status == "done"
         assert got.album_id == 33
     finally:
         runner.stop()
@@ -590,8 +601,10 @@ def test_astracks_without_applied_outcome_fails(tmp_path: Path) -> None:
             lambda: store.get_item(bank, item_id),
             lambda i: i is not None and i.status == "failed",
         )
-        assert item is not None and item.status == "failed"
-        assert item.error is not None and "imported nothing" in item.error
+        assert item is not None
+        assert item.status == "failed"
+        assert item.error is not None
+        assert "imported nothing" in item.error
     finally:
         runner.stop()
 
@@ -610,7 +623,8 @@ def test_astracks_done_without_album_id(tmp_path: Path) -> None:
             lambda: store.get_item(bank, item_id),
             lambda i: i is not None and i.status == "done",
         )
-        assert item is not None and item.album_id is None
+        assert item is not None
+        assert item.album_id is None
     finally:
         runner.stop()
 
@@ -628,13 +642,15 @@ def test_defers_while_gate_blocked(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         time.sleep(0.2)
         assert fake.validate_calls == []  # never started while the gate is shut
         item = store.get_item(bank, item_id)
-        assert item is not None and item.status == "queued"  # not even claimed
+        assert item is not None
+        assert item.status == "queued"  # not even claimed
         monkeypatch.setattr("app.lyrics_jobs.registry.lyrics_backfill_active", lambda: False)
         done = _poll(
             lambda: store.get_item(bank, item_id),
             lambda i: i is not None and i.status == "done",
         )
-        assert done is not None and done.album_id == 5
+        assert done is not None
+        assert done.album_id == 5
     finally:
         runner.stop()
 
@@ -715,7 +731,8 @@ def test_claim_race_skips_rebanked_row(tmp_path: Path, monkeypatch: pytest.Monke
             lambda: store.get_item(bank, other_id),
             lambda i: i is not None and i.status == "done",
         )
-        assert done is not None and done.status == "done"  # the drain continued
+        assert done is not None
+        assert done.status == "done"  # the drain continued
         raced_row = store.get_item(bank, raced_id)
         assert raced_row is not None  # still readable - the row was never lost
         assert raced_row.status == "needs_review"  # the re-bank reset survived
@@ -753,7 +770,8 @@ def test_drain_survives_next_queued_raise(tmp_path: Path, monkeypatch: pytest.Mo
             lambda i: i is not None and i.status == "done",
         )
         assert raised["done"]  # the faulty pick actually fired
-        assert item is not None and item.status == "done"  # the drain survived it
+        assert item is not None
+        assert item.status == "done"  # the drain survived it
     finally:
         runner.stop()
 

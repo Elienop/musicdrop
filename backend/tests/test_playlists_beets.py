@@ -225,16 +225,23 @@ def test_resolve_entries_interleaves_pending_rows(tmp_path: Path) -> None:
     ]
     tracks = resolve_entries(lib, entries)
     assert [t.uid for t in tracks] == ["u1", "u2", "u3"]
-    assert tracks[0].id == ids[0] and tracks[0].available and not tracks[0].pending
-    assert tracks[1].id is None and tracks[1].pending and not tracks[1].available
-    assert tracks[1].title == "Lost" and tracks[1].artist == "X"
+    assert tracks[0].id == ids[0]
+    assert tracks[0].available
+    assert not tracks[0].pending
+    assert tracks[1].id is None
+    assert tracks[1].pending
+    assert not tracks[1].available
+    assert tracks[1].title == "Lost"
+    assert tracks[1].artist == "X"
     # The pending row carries the original source text (for a bare-path m3u
     # entry it's the only "it was this" identity); resolved/unavailable rows
     # have no source.
     assert tracks[1].source == "line"
     assert tracks[0].source is None
     assert tracks[2].source is None
-    assert tracks[2].id == 999999 and not tracks[2].available and not tracks[2].pending
+    assert tracks[2].id == 999999
+    assert not tracks[2].available
+    assert not tracks[2].pending
 
 
 def test_m3u_entries_relative_paths(tmp_path: Path) -> None:

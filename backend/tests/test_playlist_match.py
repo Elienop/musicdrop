@@ -42,14 +42,16 @@ def test_t1_unique_filename_matches(beets_library: LibraryHandle) -> None:
     )
     index = build_match_index(beets_library.lib)
     (result,) = match_entries(index, [_entry(path="D:\\Old\\01 Around the World.mp3")])
-    assert result.status == "matched" and result.item_id == item_id
+    assert result.status == "matched"
+    assert result.item_id == item_id
 
 
 def test_t2_normalized_artist_title_matches(beets_library: LibraryHandle) -> None:
     item_id = _seed(beets_library.lib, title="Song", artist="Blur")
     index = build_match_index(beets_library.lib)
     (result,) = match_entries(index, [_entry(artist="blur", title="Song (Remastered 2011)")])
-    assert result.status == "matched" and result.item_id == item_id
+    assert result.status == "matched"
+    assert result.item_id == item_id
 
 
 def test_duplicate_titles_need_duration_to_disambiguate(beets_library: LibraryHandle) -> None:
@@ -61,7 +63,8 @@ def test_duplicate_titles_need_duration_to_disambiguate(beets_library: LibraryHa
     (with_duration,) = match_entries(
         index, [_entry(artist="X", title="Intro", duration_seconds=61.0)]
     )
-    assert with_duration.status == "matched" and with_duration.item_id == short
+    assert with_duration.status == "matched"
+    assert with_duration.item_id == short
     (without,) = match_entries(index, [_entry(artist="X", title="Intro")])
     assert without.status == "ambiguous"
     assert len(without.suggestions) == 2
@@ -78,7 +81,8 @@ def test_unmatched_gets_title_suggestions(beets_library: LibraryHandle) -> None:
 def test_nothing_matches_nothing(beets_library: LibraryHandle) -> None:
     index = build_match_index(beets_library.lib)
     (result,) = match_entries(index, [_entry(title="Ghost Song", artist="Nobody")])
-    assert result.status == "unmatched" and result.suggestions == []
+    assert result.status == "unmatched"
+    assert result.suggestions == []
 
 
 def test_interlude_title_normalizing_to_empty_still_matches(beets_library: LibraryHandle) -> None:
@@ -89,4 +93,5 @@ def test_interlude_title_normalizing_to_empty_still_matches(beets_library: Libra
     item_id = _seed(beets_library.lib, title="(Intro)", artist="X", filename="00 intro")
     index = build_match_index(beets_library.lib)
     (result,) = match_entries(index, [_entry(artist="X", title="(Intro)")])
-    assert result.status == "matched" and result.item_id == item_id
+    assert result.status == "matched"
+    assert result.item_id == item_id

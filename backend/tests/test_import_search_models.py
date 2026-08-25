@@ -47,7 +47,8 @@ def test_import_choice_non_search_rejects_a_payload() -> None:
 
 def test_import_choice_search_round_trips() -> None:
     c = ImportChoice(action=ImportAction.search, search=ImportSearch(release_id="abc"))
-    assert c.search is not None and c.search.release_id == "abc"
+    assert c.search is not None
+    assert c.search.release_id == "abc"
 
 
 def test_rescan_choice_carries_no_payload() -> None:

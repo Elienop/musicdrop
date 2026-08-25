@@ -108,10 +108,13 @@ def test_same_tracks_higher_quality_is_upgrade() -> None:
         DuplicateTrackState.upgrade,
     ]
     assert preview.upgrade_count == 2
-    assert preview.added_count == 0 and preview.missing_count == 0
+    assert preview.added_count == 0
+    assert preview.missing_count == 0
     row = preview.rows[0]
-    assert row.library_format == "MP3" and row.library_bitrate_kbps == 320
-    assert row.import_format == "FLAC" and row.import_bitrate_kbps == 1000
+    assert row.library_format == "MP3"
+    assert row.library_bitrate_kbps == 320
+    assert row.import_format == "FLAC"
+    assert row.import_bitrate_kbps == 1000
 
 
 def test_same_tracks_lower_quality_is_downgrade() -> None:
@@ -154,7 +157,8 @@ def test_gap_leaves_missing_after_merge() -> None:
         DuplicateTrackState.added,
         DuplicateTrackState.added,
     ]
-    assert preview.missing_count == 2 and preview.added_count == 2
+    assert preview.missing_count == 2
+    assert preview.added_count == 2
     assert preview.in_library_count + preview.added_count + preview.missing_count == preview.total
 
 

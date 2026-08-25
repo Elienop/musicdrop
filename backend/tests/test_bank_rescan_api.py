@@ -127,7 +127,8 @@ def test_rescan_no_candidates_becomes_no_match_row(
     body = client.post(f"/api/bank/{item_id}/rescan").json()
     assert body["reason"] == "no_match"
     assert body["parked"] is None
-    assert body["artist"] == "CurA" and body["album"] == "CurB"
+    assert body["artist"] == "CurA"
+    assert body["album"] == "CurB"
     assert body["confidence"] == 0.0
 
 
@@ -177,7 +178,8 @@ def test_rescan_409_when_no_audio_remains(
     assert r.status_code == 409
     assert "no audio files remain" in r.json()["detail"]
     reread = store.get_item(bank_api.get_bank_dir(), item_id)
-    assert reread is not None and reread.status == "needs_review"  # untouched
+    assert reread is not None
+    assert reread.status == "needs_review"  # untouched
 
 
 def test_rescan_409_on_a_queued_row(client: TestClient, bank_dir: Path, tmp_path: Path) -> None:

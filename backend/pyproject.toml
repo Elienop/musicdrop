@@ -34,7 +34,10 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+# PT018 (single rule, not the PT family): composite asserts split in the
+# 2026-08-25 Sonar pass must not regrow. Requires preview for the autofix
+# only; selection alone works in stable mode.
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF", "PT018"]
 
 [tool.mypy]
 python_version = "3.11"

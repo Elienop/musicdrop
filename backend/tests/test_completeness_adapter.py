@@ -136,7 +136,8 @@ def test_no_mb_albumid(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_source(monkeypatch, lambda mbid: _release("t1"))
     report = release_missing_report(lib, _aid(lib))
     assert report.status == "no_musicbrainz_id"
-    assert report.total == 0 and report.missing == []
+    assert report.total == 0
+    assert report.missing == []
     assert calls["n"] == 0  # no fetch attempted
 
 
@@ -236,7 +237,8 @@ def test_caches_release_but_reclassifies(tmp_path: Any, monkeypatch: pytest.Monk
     calls = _patch_source(monkeypatch, lambda mbid: _release("t1", "t2"))
 
     first = release_missing_report(lib, _aid(lib))
-    assert first.present_count == 1 and [m.mb_trackid for m in first.missing] == ["t2"]
+    assert first.present_count == 1
+    assert [m.mb_trackid for m in first.missing] == ["t2"]
 
     # "Acquire" t2: add an item carrying mb_trackid t2.
     album = lib.get_album(_aid(lib))
@@ -259,7 +261,8 @@ def test_caches_release_but_reclassifies(tmp_path: Any, monkeypatch: pytest.Monk
     lib.add(it)
 
     second = release_missing_report(lib, _aid(lib))
-    assert second.present_count == 2 and second.missing == []
+    assert second.present_count == 2
+    assert second.missing == []
     assert calls["n"] == 1  # release fetched once; classification recomputed locally
 
 
@@ -272,7 +275,8 @@ def test_runs_from_worker_thread(tmp_path: Any, monkeypatch: pytest.MonkeyPatch)
     _patch_source(monkeypatch, lambda mbid: _release("t1", "t2"))
     with ThreadPoolExecutor(max_workers=1) as pool:
         report = pool.submit(release_missing_report, lib, _aid(lib)).result()
-    assert report.status == "ok" and report.present_count == 1
+    assert report.status == "ok"
+    assert report.present_count == 1
 
 
 def test_fetch_release_survives_a_raced_eviction_of_a_just_read_key(

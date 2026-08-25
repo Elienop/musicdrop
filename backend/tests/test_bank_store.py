@@ -116,7 +116,8 @@ def test_decide_apply_queues_row(tmp_path: Path) -> None:
     )
     assert item is not None
     assert item.status == "queued"
-    assert item.decided is not None and item.decided.candidate_index == 1
+    assert item.decided is not None
+    assert item.decided.candidate_index == 1
     assert item.decided_at is not None
 
 
@@ -139,7 +140,9 @@ def test_decide_failed_row_is_retryable(tmp_path: Path) -> None:
     item_id = _create(tmp_path)
     store.set_status(_bank(tmp_path), item_id, "failed", error="boom")
     item = store.decide_item(_bank(tmp_path), item_id, BankDecision(action="asis"))
-    assert item is not None and item.status == "queued" and item.error is None
+    assert item is not None
+    assert item.status == "queued"
+    assert item.error is None
 
 
 def test_delete_row(tmp_path: Path) -> None:
@@ -165,7 +168,8 @@ def test_bulk_ignore_skips_non_pending(tmp_path: Path) -> None:
     count = store.bulk_ignore(_bank(tmp_path), [pending, decided, "missing-id"])
     assert count == 1
     refreshed = store.get_item(_bank(tmp_path), pending)
-    assert refreshed is not None and refreshed.status == "ignored"
+    assert refreshed is not None
+    assert refreshed.status == "ignored"
 
 
 def test_bulk_delete_removes_deletable_skips_applying_and_missing(tmp_path: Path) -> None:
@@ -194,7 +198,8 @@ def test_bulk_delete_removes_deletable_skips_applying_and_missing(tmp_path: Path
     for gone in (needs_review, failed, done, ignored, stale):
         assert store.get_item(bank, gone) is None
     survivor = store.get_item(bank, applying)
-    assert survivor is not None and survivor.status == "applying"
+    assert survivor is not None
+    assert survivor.status == "applying"
 
 
 def test_upsert_refreshes_same_fingerprint(tmp_path: Path) -> None:
@@ -242,8 +247,10 @@ def test_upsert_replaces_changed_fingerprint(tmp_path: Path) -> None:
     assert replaced.id == first.id
     assert replaced.status == "needs_review"  # reset: the folder changed
     assert replaced.fingerprint == "f2"
-    assert replaced.source == "inbox" and replaced.artist == "New"
-    assert replaced.decided is None and replaced.resolved_at is None
+    assert replaced.source == "inbox"
+    assert replaced.artist == "New"
+    assert replaced.decided is None
+    assert replaced.resolved_at is None
 
 
 def test_next_queued_is_fifo_by_decided_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -275,7 +282,8 @@ def test_next_queued_ignores_everything_but_queued(tmp_path: Path) -> None:
     queued = _create(tmp_path, folder="/x/C")
     store.decide_item(bank, queued, BankDecision(action="asis"))
     head = store.next_queued(bank)
-    assert head is not None and head.id == queued
+    assert head is not None
+    assert head.id == queued
     store.set_status(bank, queued, "applying")
     assert store.next_queued(bank) is None  # applying rows are claimed, not queued
 
@@ -327,7 +335,8 @@ def test_set_status_cas_match_transitions(tmp_path: Path) -> None:
     assert claimed is not None
     assert claimed.status == "applying"
     persisted = store.get_item(bank, item_id)
-    assert persisted is not None and persisted.status == "applying"
+    assert persisted is not None
+    assert persisted.status == "applying"
 
 
 def test_summary_carries_album_id(tmp_path: Path) -> None:
@@ -495,8 +504,10 @@ def test_reconcile_interrupted_applying(tmp_path: Path) -> None:
     flipped = store.reconcile_interrupted(_bank(tmp_path))
     assert flipped == 1
     item = store.get_item(_bank(tmp_path), item_id)
-    assert item is not None and item.status == "needs_review"
-    assert item.error is not None and "interrupted" in item.error
+    assert item is not None
+    assert item.status == "needs_review"
+    assert item.error is not None
+    assert "interrupted" in item.error
     assert store.reconcile_interrupted(_bank(tmp_path)) == 0
 
 
@@ -545,7 +556,8 @@ def test_research_item_gives_a_no_match_row_its_first_payload(tmp_path: Path) ->
     assert updated.artist == "A"
     # persisted, not just returned
     reread = store.get_item(bank, row.id)
-    assert reread is not None and reread.reason == "needs_review"
+    assert reread is not None
+    assert reread.reason == "needs_review"
 
 
 def test_research_item_preserves_failed_status(tmp_path: Path) -> None:
@@ -655,7 +667,8 @@ def test_rescan_item_rescues_a_stale_row(tmp_path: Path) -> None:
     assert updated.status == "needs_review"
     assert updated.reason == "needs_review"
     assert updated.fingerprint == "a" * 64
-    assert updated.decided is None and updated.error is None
+    assert updated.decided is None
+    assert updated.error is None
     assert updated.parked is not None
 
 

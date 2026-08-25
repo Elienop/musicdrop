@@ -248,7 +248,8 @@ def test_trash_restore_resolves_the_listed_folder_to_the_real_directory(
     resp = client.post("/api/trash/restore", json={"folder": folder})
 
     assert resp.status_code == 200, resp.text
-    assert seen and os.fsencode(seen[0]) == os.path.realpath(made[0])
+    assert seen
+    assert os.fsencode(seen[0]) == os.path.realpath(made[0])
 
 
 def test_trash_delete_refuses_when_two_folders_share_one_display_form(client: TestClient) -> None:

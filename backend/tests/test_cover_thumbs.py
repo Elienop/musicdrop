@@ -26,9 +26,11 @@ def test_derives_stores_and_reuses(tmp_path: Path) -> None:
         return (_png(1200, 1200), "image/png")
 
     first = cache.get(7, '"100-5"', load)
-    assert first is not None and first.content_type == "image/webp"
+    assert first is not None
+    assert first.content_type == "image/webp"
     second = cache.get(7, '"100-5"', load)
-    assert second is not None and second.data == first.data
+    assert second is not None
+    assert second.data == first.data
     assert len(calls) == 1  # unchanged source never reloaded
 
 
@@ -36,7 +38,9 @@ def test_source_change_rederives(tmp_path: Path) -> None:
     cache = CoverThumbCache(tmp_path)
     a = cache.get(7, '"100-5"', lambda: (_png(1200, 1200, "red"), "image/png"))
     b = cache.get(7, '"200-9"', lambda: (_png(1200, 1200, "blue"), "image/png"))
-    assert a is not None and b is not None and a.data != b.data
+    assert a is not None
+    assert b is not None
+    assert a.data != b.data
 
 
 def test_missing_original_returns_none(tmp_path: Path) -> None:
@@ -45,7 +49,9 @@ def test_missing_original_returns_none(tmp_path: Path) -> None:
 
 def test_undecodable_original_degrades_to_original_bytes(tmp_path: Path) -> None:
     got = CoverThumbCache(tmp_path).get(7, '"1-1"', lambda: (b"garbage", "image/png"))
-    assert got is not None and got.data == b"garbage" and got.content_type == "image/png"
+    assert got is not None
+    assert got.data == b"garbage"
+    assert got.content_type == "image/png"
 
 
 def test_degrade_leaves_an_operator_visible_trace(
@@ -59,7 +65,9 @@ def test_degrade_leaves_an_operator_visible_trace(
     with caplog.at_level(logging.WARNING, logger="musicdrop.artwork"):
         got = CoverThumbCache(tmp_path).get(7, '"1-1"', lambda: (b"garbage", "image/png"))
 
-    assert got is not None and got.data == b"garbage" and got.content_type == "image/png"
+    assert got is not None
+    assert got.data == b"garbage"
+    assert got.content_type == "image/png"
     (record,) = [r for r in caplog.records if r.name == "musicdrop.artwork"]
     assert record.levelno == logging.WARNING
     assert "album 7" in record.getMessage()
@@ -80,7 +88,8 @@ def test_unsendable_stored_mime_rederives(tmp_path: Path) -> None:
 
     healed = cache.get(7, '"1-1"', lambda: (_png(400, 400), "image/png"))
 
-    assert healed is not None and healed.content_type == "image/webp"
+    assert healed is not None
+    assert healed.content_type == "image/webp"
 
 
 def test_stored_mime_with_a_control_char_rederives(tmp_path: Path) -> None:
@@ -93,7 +102,8 @@ def test_stored_mime_with_a_control_char_rederives(tmp_path: Path) -> None:
 
     healed = cache.get(7, '"1-1"', lambda: (_png(400, 400), "image/png"))
 
-    assert healed is not None and healed.content_type == "image/webp"
+    assert healed is not None
+    assert healed.content_type == "image/webp"
 
 
 def test_padded_stored_mime_is_served_trimmed(tmp_path: Path) -> None:
@@ -109,7 +119,8 @@ def test_padded_stored_mime_is_served_trimmed(tmp_path: Path) -> None:
 
     served = cache.get(7, '"1-1"', _boom)
 
-    assert served is not None and served.content_type == "image/webp"
+    assert served is not None
+    assert served.content_type == "image/webp"
 
 
 def test_degrade_sanitises_the_originals_mime(tmp_path: Path) -> None:
@@ -117,7 +128,8 @@ def test_degrade_sanitises_the_originals_mime(tmp_path: Path) -> None:
     ``.src``, so it has to clear the same bar a stored one does."""
     got = CoverThumbCache(tmp_path).get(7, '"1-1"', lambda: (b"garbage", "image/日本語"))
 
-    assert got is not None and got.data == b"garbage"
+    assert got is not None
+    assert got.data == b"garbage"
     assert got.content_type == "application/octet-stream"
     assert (tmp_path / "7.src").read_text(encoding="utf-8") == '"1-1" application/octet-stream'
 
@@ -135,7 +147,8 @@ def test_read_only_cache_dir_still_serves_the_thumb(tmp_path: Path) -> None:
     finally:
         os.chmod(cache_dir, 0o755)
 
-    assert got is not None and got.content_type == "image/webp"
+    assert got is not None
+    assert got.content_type == "image/webp"
     assert not list(cache_dir.glob("*.bin"))  # nothing was cached
 
 
@@ -150,4 +163,5 @@ def test_corrupt_src_sidecar_self_heals(tmp_path: Path) -> None:
     assert cache.get(7, '"1-1"', lambda: (_png(400, 400), "image/png")) is not None
     (tmp_path / "7.src").write_bytes(b"\xff\xfe not utf-8")
     healed = cache.get(7, '"1-1"', lambda: (_png(400, 400), "image/png"))
-    assert healed is not None and healed.content_type == "image/webp"
+    assert healed is not None
+    assert healed.content_type == "image/webp"

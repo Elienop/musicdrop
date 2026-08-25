@@ -70,7 +70,8 @@ def test_plain_lyrics_write_txt(tmp_path: Path) -> None:
     txt = tmp_path / "01 - Song.txt"
     assert out == str(txt)
     body = txt.read_text(encoding="utf-8")
-    assert "line one" in body and "line two" in body
+    assert "line one" in body
+    assert "line two" in body
     assert "[00:" not in body  # no timestamps in the plain sidecar
 
 
@@ -214,4 +215,4 @@ def test_sidecar_written_even_when_write_off(edit_lib: Library) -> None:
     assert out.written is False  # tag NOT written (write gate off)
     base, _ext = os.path.splitext(os.fsdecode(item.path))
     assert Path(base + ".txt").exists()  # sidecar independent of the write gate
-    assert not (MediaFile(os.fsdecode(item.path)).lyrics or "")  # file tag empty
+    assert not MediaFile(os.fsdecode(item.path)).lyrics  # file tag empty

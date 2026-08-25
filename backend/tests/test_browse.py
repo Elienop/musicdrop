@@ -357,7 +357,8 @@ def test_concurrent_cold_cache_calls_scan_once(
     for t in threads:
         t.join(timeout=5.0)
     assert calls["n"] == 2  # one scan of two albums — NOT four (duplicate scans)
-    assert len(results) == 2 and results[0] == results[1]
+    assert len(results) == 2
+    assert results[0] == results[1]
 
 
 def test_browse_tolerates_a_non_canonical_per_disc_numbering_value(tmp_path: Path) -> None:

@@ -67,7 +67,8 @@ def test_trash_album_folder_takes_whole_folder_incl_sidecars(
         dest = trash_album_folder(duplicates_lib, album, trash_dir=trash)
 
     assert duplicates_lib.get_album(album_id) is None  # dropped from the library
-    assert str(trash) in dest and os.path.isdir(dest)
+    assert str(trash) in dest
+    assert os.path.isdir(dest)
     assert (Path(dest) / "01 Track.lrc").is_file()  # the sidecar came along
     assert not os.path.exists(src_folder)  # no orphaned husk left behind
 

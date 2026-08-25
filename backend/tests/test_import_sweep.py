@@ -119,7 +119,8 @@ def test_sweep_banks_uncertain_match_then_skips(
     assert row.fingerprint == folder_fingerprint(folder)
     assert row.artist == "Radiohead"
     assert row.recommendation == "medium"
-    assert row.confidence is not None and row.confidence > 0.0
+    assert row.confidence is not None
+    assert row.confidence > 0.0
     # The banked payload IS the live review screen's payload.
     assert row.parked is not None
     assert row.parked.folder == str(folder)

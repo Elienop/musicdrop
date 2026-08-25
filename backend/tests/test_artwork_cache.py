@@ -235,7 +235,9 @@ def test_validator_none_when_uncached(cache: ArtistImageCache) -> None:
 def test_validator_tracks_positive_slot(cache: ArtistImageCache) -> None:
     cache.store_positive("ABBA", b"png-bytes", "image/png")
     tag = cache.validator("ABBA")
-    assert tag is not None and tag.startswith('"') and tag.endswith('"')
+    assert tag is not None
+    assert tag.startswith('"')
+    assert tag.endswith('"')
     # Unchanged file -> same tag; rewritten file -> different tag.
     assert cache.validator("ABBA") == tag
     cache.store_positive("ABBA", b"other-bytes-longer", "image/png")
@@ -297,13 +299,15 @@ def test_get_treats_unreadable_bytes_as_nothing_cached(
 def test_get_thumb_derives_and_reuses(cache: ArtistImageCache) -> None:
     cache.store_positive("ABBA", _png(1000, 1000), "image/png")
     thumb = cache.get_thumb("ABBA")
-    assert thumb is not None and thumb.content_type == "image/webp"
+    assert thumb is not None
+    assert thumb.content_type == "image/webp"
     assert Image.open(io.BytesIO(thumb.data)).size == (320, 320)
     # Second call serves the stored derivation (no re-encode): patching
     # make_thumb to explode proves it isn't called again.
     with unittest.mock.patch("app.artwork.degrade.make_thumb", side_effect=AssertionError):
         again = cache.get_thumb("ABBA")
-    assert again is not None and again.data == thumb.data
+    assert again is not None
+    assert again.data == thumb.data
 
 
 def test_get_thumb_regenerates_when_source_changes(cache: ArtistImageCache) -> None:
@@ -311,7 +315,9 @@ def test_get_thumb_regenerates_when_source_changes(cache: ArtistImageCache) -> N
     first = cache.get_thumb("ABBA")
     cache.write_override("ABBA", _png(900, 900, "blue"), "image/png")
     second = cache.get_thumb("ABBA")
-    assert second is not None and first is not None and second.data != first.data
+    assert second is not None
+    assert first is not None
+    assert second.data != first.data
 
 
 def test_get_thumb_none_when_uncached(cache: ArtistImageCache) -> None:
@@ -324,13 +330,15 @@ def test_get_thumb_falls_back_to_original_on_undecodable_source(
     cache.store_positive("ABBA", b"corrupt-not-an-image", "image/png")
     thumb = cache.get_thumb("ABBA")
     # Serve-or-degrade: a source Pillow can't read serves the original bytes.
-    assert thumb is not None and thumb.data == b"corrupt-not-an-image"
+    assert thumb is not None
+    assert thumb.data == b"corrupt-not-an-image"
     assert thumb.content_type == "image/png"
     # The degrade result is cached too (keyed to the source tag) — a second
     # call must not attempt make_thumb again either.
     with unittest.mock.patch("app.artwork.degrade.make_thumb", side_effect=AssertionError):
         again = cache.get_thumb("ABBA")
-    assert again is not None and again.data == b"corrupt-not-an-image"
+    assert again is not None
+    assert again.data == b"corrupt-not-an-image"
     assert again.content_type == "image/png"
 
 
@@ -381,10 +389,12 @@ def test_get_thumb_degrade_with_blank_mime_still_caches(
     monkeypatch.setattr(ArtistImageCache, "get", _blank_typed_source)
 
     thumb = cache.get_thumb("ABBA")
-    assert thumb is not None and thumb.content_type == "application/octet-stream"
+    assert thumb is not None
+    assert thumb.content_type == "application/octet-stream"
     with unittest.mock.patch("app.artwork.degrade.make_thumb", side_effect=AssertionError):
         again = cache.get_thumb("ABBA")
-    assert again is not None and again.data == b"corrupt-not-an-image"
+    assert again is not None
+    assert again.data == b"corrupt-not-an-image"
 
 
 def test_get_thumb_self_heals_from_corrupt_src_sidecar(
@@ -400,7 +410,8 @@ def test_get_thumb_self_heals_from_corrupt_src_sidecar(
     (src_path,) = tmp_path.glob("*.thumb.src")
     src_path.write_bytes(b"\xff\xfe not utf-8")
     healed = cache.get_thumb("ABBA")
-    assert healed is not None and healed.content_type == "image/webp"
+    assert healed is not None
+    assert healed.content_type == "image/webp"
 
 
 @pytest.mark.parametrize(
@@ -467,7 +478,8 @@ def test_get_thumb_rederives_from_an_unsendable_stored_thumb_mime(
 
     healed = cache.get_thumb("ABBA")
 
-    assert healed is not None and healed.content_type == "image/webp"
+    assert healed is not None
+    assert healed.content_type == "image/webp"
 
 
 @pytest.mark.parametrize(
@@ -496,7 +508,8 @@ def test_get_thumb_rederives_when_the_stored_mime_carries_a_control_char(
 
     healed = cache.get_thumb("ABBA")
 
-    assert healed is not None and healed.content_type == "image/webp"
+    assert healed is not None
+    assert healed.content_type == "image/webp"
 
 
 def test_get_thumb_serves_a_padded_stored_mime_trimmed_without_rederiving(
@@ -518,7 +531,8 @@ def test_get_thumb_serves_a_padded_stored_mime_trimmed_without_rederiving(
     with unittest.mock.patch("app.artwork.degrade.make_thumb", side_effect=AssertionError):
         served = cache.get_thumb("ABBA")
 
-    assert served is not None and served.content_type == "image/webp"
+    assert served is not None
+    assert served.content_type == "image/webp"
 
 
 def test_a_dropped_negative_marker_still_bounds_refetches(
@@ -570,7 +584,8 @@ def test_a_dropped_positive_is_served_from_memory(cache: ArtistImageCache, tmp_p
         os.chmod(tmp_path, 0o755)
 
     assert isinstance(got, CachedImage)
-    assert got.data == b"image-bytes" and got.content_type == "image/png"
+    assert got.data == b"image-bytes"
+    assert got.content_type == "image/png"
 
 
 def test_a_recovered_cache_dir_takes_authority_back_from_memory(
@@ -594,7 +609,8 @@ def test_a_recovered_cache_dir_takes_authority_back_from_memory(
 
     cache.store_positive("ABBA", b"from-disk", "image/png")
     got = cache.get("ABBA")
-    assert isinstance(got, CachedImage) and got.data == b"from-disk"
+    assert isinstance(got, CachedImage)
+    assert got.data == b"from-disk"
 
     for stored in tmp_path.iterdir():
         stored.unlink()
@@ -659,7 +675,8 @@ def test_get_thumb_still_serves_when_the_cache_dir_is_read_only(
     finally:
         os.chmod(tmp_path, 0o755)
 
-    assert thumb is not None and thumb.content_type == "image/webp"
+    assert thumb is not None
+    assert thumb.content_type == "image/webp"
     assert not list(tmp_path.glob("*.thumb.bin"))  # nothing was cached
 
 
@@ -670,7 +687,8 @@ def test_clear_auto_removes_the_positive_slot_and_the_marker(tmp_path: Path) -> 
     cache.store_positive("ABBA", b"auto-bytes", "image/png")
     cache.store_negative("ABBA", ttl_seconds=3600)
     key = cache._key("ABBA")
-    assert (tmp_path / f"{key}.bin").exists() and (tmp_path / f"{key}.miss").exists()
+    assert (tmp_path / f"{key}.bin").exists()
+    assert (tmp_path / f"{key}.miss").exists()
     assert cache.clear_auto("ABBA") is True
     assert cache.get("ABBA") is None
     assert not (tmp_path / f"{key}.bin").exists()
@@ -926,7 +944,8 @@ def test_rename_moves_every_slot_to_the_new_key(cache: ArtistImageCache, tmp_pat
     cache.store_positive("Fayrouz", b"portrait", "image/jpeg")
     assert cache.rename("Fayrouz", "Queen Fairuz") == "moved"
     got = cache.get("Queen Fairuz")
-    assert isinstance(got, CachedImage) and got.data == b"portrait"
+    assert isinstance(got, CachedImage)
+    assert got.data == b"portrait"
     assert got.content_type == "image/jpeg"
     assert cache.get("Fayrouz") is None
     # Nothing remains under the old key on disk.
@@ -938,7 +957,8 @@ def test_rename_moves_a_manual_override(cache: ArtistImageCache, tmp_path: Path)
     cache.write_override("Fayrouz", b"pinned", "image/png")
     assert cache.rename("Fayrouz", "Queen Fairuz") == "moved"
     got = cache.get("Queen Fairuz")
-    assert isinstance(got, CachedImage) and got.data == b"pinned"
+    assert isinstance(got, CachedImage)
+    assert got.data == b"pinned"
     # The mime sidecar moved too — a dropped one would serve the generic type.
     assert got.content_type == "image/png"
     old_key = cache._key("Fayrouz")
@@ -950,7 +970,8 @@ def test_rename_merge_keeps_the_targets_portrait(cache: ArtistImageCache, tmp_pa
     cache.store_positive("Fairuz", b"target", "image/jpeg")
     assert cache.rename("Fayrouz", "Fairuz") == "kept_target"
     got = cache.get("Fairuz")
-    assert isinstance(got, CachedImage) and got.data == b"target"
+    assert isinstance(got, CachedImage)
+    assert got.data == b"target"
     old_key = cache._key("Fayrouz")
     assert not any(name.startswith(old_key) for name in _slot_files(tmp_path))
 
@@ -965,7 +986,8 @@ def test_rename_a_stale_miss_on_the_target_loses_to_a_real_portrait(
     # since get() never reaches a .miss once a portrait exists.
     assert cache.has_fresh_negative("Fairuz") is False
     got = cache.get("Fairuz")
-    assert isinstance(got, CachedImage) and got.data == b"source"
+    assert isinstance(got, CachedImage)
+    assert got.data == b"source"
 
 
 def test_rename_never_carries_a_negative_marker(cache: ArtistImageCache) -> None:
@@ -980,7 +1002,8 @@ def test_rename_same_normalized_key_is_a_noop(cache: ArtistImageCache) -> None:
     cache.store_positive("Beyoncé", b"img", "image/jpeg")
     assert cache.rename("Beyoncé", "beyonce") == "moved"
     got = cache.get("beyonce")
-    assert isinstance(got, CachedImage) and got.data == b"img"
+    assert isinstance(got, CachedImage)
+    assert got.data == b"img"
 
 
 def test_rename_with_nothing_cached_reports_none(cache: ArtistImageCache) -> None:
@@ -993,7 +1016,8 @@ def test_rename_carries_the_memory_fallback_entry(cache: ArtistImageCache) -> No
     cache._memory.put(cache._key("Fayrouz"), CachedImage(data=b"mem", content_type="image/png"))
     assert cache.rename("Fayrouz", "Fairuz") == "moved"
     got = cache.get("Fairuz")
-    assert isinstance(got, CachedImage) and got.data == b"mem"
+    assert isinstance(got, CachedImage)
+    assert got.data == b"mem"
     assert cache.get("Fayrouz") is None
 
 
@@ -1005,12 +1029,14 @@ def test_rename_merge_source_override_outranks_target_auto(
     cache.store_positive("Fairuz", b"auto", "image/jpeg")
     assert cache.rename("Fayrouz", "Fairuz") == "moved"
     got = cache.get("Fairuz")
-    assert isinstance(got, CachedImage) and got.data == b"pinned"
+    assert isinstance(got, CachedImage)
+    assert got.data == b"pinned"
     assert got.content_type == "image/png"
     # Clearing the pin reveals the target's auto image again (it was kept beneath).
     assert cache.clear_override("Fairuz") is True
     got2 = cache.get("Fairuz")
-    assert isinstance(got2, CachedImage) and got2.data == b"auto"
+    assert isinstance(got2, CachedImage)
+    assert got2.data == b"auto"
     old_key = cache._key("Fayrouz")
     assert not any(name.startswith(old_key) for name in _slot_files(tmp_path))
 
@@ -1020,7 +1046,8 @@ def test_rename_merge_target_override_beats_source_override(cache: ArtistImageCa
     cache.write_override("Fairuz", b"target-pin", "image/png")
     assert cache.rename("Fayrouz", "Fairuz") == "kept_target"
     got = cache.get("Fairuz")
-    assert isinstance(got, CachedImage) and got.data == b"target-pin"
+    assert isinstance(got, CachedImage)
+    assert got.data == b"target-pin"
 
 
 def test_rename_never_raises_when_the_cache_dir_refuses(
@@ -1057,4 +1084,5 @@ def test_rename_move_failure_returns_kept_target(
     assert result == "kept_target"
     # The target's auto image is still available.
     got = cache.get("Fairuz")
-    assert isinstance(got, CachedImage) and got.data == b"auto"
+    assert isinstance(got, CachedImage)
+    assert got.data == b"auto"

@@ -108,7 +108,8 @@ def test_cover_stale_etag_after_change_returns_200(
     etag1 = cover_client.get(f"/api/albums/{aid}/cover").headers["etag"]
 
     album = edit_lib.get_album(aid)
-    assert album is not None and album.artpath is not None
+    assert album is not None
+    assert album.artpath is not None
     artpath = os.fsdecode(album.artpath)
     future = time.time() + 10
     os.utime(artpath, (future, future))  # simulate a cover replacement (new mtime)

@@ -354,7 +354,9 @@ def test_export_and_sync_feed_from_resolved_entries_only(
     with open(m3u, encoding="utf-8") as fh:
         body = fh.read()
     assert body.count("#EXTINF:") == 2
-    assert "Alpha" in body and "Gamma" in body and "Ghost" not in body
+    assert "Alpha" in body
+    assert "Gamma" in body
+    assert "Ghost" not in body
     # The Plex specs likewise resolve only the 2 real items.
     from app.api.playlists import _plex_specs_for
     from app.plex.config import PlexConfig

@@ -117,7 +117,8 @@ def test_pull_playlist_entries_maps_fields(monkeypatch: pytest.MonkeyPatch) -> N
     (parsed,) = playlists_pull.pull_playlist_entries(CONFIG, ["7"])
     assert parsed.name == "Road"  # display stays the TITLE, not the key
     (entry,) = parsed.entries
-    assert entry.artist == "Daft Punk" and entry.title == "Around the World"
+    assert entry.artist == "Daft Punk"
+    assert entry.title == "Around the World"
     assert entry.album == "Homework"
     assert entry.duration_seconds == 213.0
     assert entry.path == "/old/M/01 Around the World.mp3"
@@ -174,7 +175,8 @@ def test_pull_not_found_message_is_actionable_and_hides_rating_keys(
     with pytest.raises(PlexConnectionError) as ei:
         playlists_pull.pull_playlist_entries(CONFIG, ["999", "1000"])
     message = str(ei.value)
-    assert "999" not in message and "1000" not in message  # no opaque ids leaked
+    assert "999" not in message  # no opaque ids leaked
+    assert "1000" not in message  # no opaque ids leaked
     assert "2 selected Plex playlists" in message
     assert "refresh the list" in message
 
@@ -304,7 +306,8 @@ def test_download_poster_prefers_selected_custom_poster(
     assert result is not None
     data, fmt = result
     # The CUSTOM poster bytes (jpg) win over the composite mosaic (png).
-    assert data == _JPG and fmt == "jpg"
+    assert data == _JPG
+    assert fmt == "jpg"
     # The fetched URL was the selected poster key, token included, not the composite.
     assert server._session.requested is not None
     assert poster_key in server._session.requested
@@ -327,8 +330,10 @@ def test_download_poster_no_selected_poster_falls_back_to_composite(
     result = playlists_pull.download_poster(CONFIG, "1")
     assert result is not None
     data, fmt = result
-    assert data == _PNG and fmt == "png"
-    assert server._session.requested is not None and "/composite/" in server._session.requested
+    assert data == _PNG
+    assert fmt == "png"
+    assert server._session.requested is not None
+    assert "/composite/" in server._session.requested
 
 
 def test_download_poster_empty_posters_falls_back_to_composite(
@@ -338,7 +343,8 @@ def test_download_poster_empty_posters_falls_back_to_composite(
     server = _PosterServer([playlist], content=_JPG)
     _patch_poster(monkeypatch, server)
     result = playlists_pull.download_poster(CONFIG, "1")
-    assert result is not None and result[1] == "jpg"
+    assert result is not None
+    assert result[1] == "jpg"
 
 
 def test_download_poster_posters_raise_falls_back_to_composite(
@@ -356,7 +362,8 @@ def test_download_poster_posters_raise_falls_back_to_composite(
     result = playlists_pull.download_poster(CONFIG, "1")
     assert result is not None
     data, fmt = result
-    assert data == _PNG and fmt == "png"
+    assert data == _PNG
+    assert fmt == "png"
 
 
 def test_download_poster_custom_bytes_fail_sniff_falls_back_to_composite(
@@ -379,7 +386,8 @@ def test_download_poster_custom_bytes_fail_sniff_falls_back_to_composite(
     assert result is not None
     data, fmt = result
     # The webp custom poster was fetched first, then rejected; composite won.
-    assert data == _PNG and fmt == "png"
+    assert data == _PNG
+    assert fmt == "png"
     assert poster_key in server._session.requests[0]
     assert any("/composite/" in u for u in server._session.requests)
 
@@ -396,8 +404,10 @@ def test_download_poster_selected_poster_without_key_falls_back(
     server = _PosterServer([playlist], content=_PNG)
     _patch_poster(monkeypatch, server)
     result = playlists_pull.download_poster(CONFIG, "1")
-    assert result is not None and result[1] == "png"
-    assert server._session.requested is not None and "/composite/" in server._session.requested
+    assert result is not None
+    assert result[1] == "png"
+    assert server._session.requested is not None
+    assert "/composite/" in server._session.requested
 
 
 def test_download_poster_returns_bytes_and_sniffed_format(
@@ -410,16 +420,19 @@ def test_download_poster_returns_bytes_and_sniffed_format(
     result = playlists_pull.download_poster(CONFIG, "1")
     assert result is not None
     data, fmt = result
-    assert data == _PNG and fmt == "png"
+    assert data == _PNG
+    assert fmt == "png"
     # The thumb was fetched through the server's authed session (token-carrying url).
-    assert server._session.requested is not None and "token=t" in server._session.requested
+    assert server._session.requested is not None
+    assert "token=t" in server._session.requested
 
 
 def test_download_poster_sniffs_jpeg(monkeypatch: pytest.MonkeyPatch) -> None:
     server = _PosterServer([_PosterPlaylist("Road", "audio", "/thumb/1")], content=_JPG)
     _patch_poster(monkeypatch, server)
     result = playlists_pull.download_poster(CONFIG, "1")
-    assert result is not None and result[1] == "jpg"
+    assert result is not None
+    assert result[1] == "jpg"
 
 
 def test_download_poster_missing_playlist_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -459,7 +472,8 @@ def test_download_poster_resolves_duplicate_titles_by_rating_key(
     result = playlists_pull.download_poster(CONFIG, "22")
     assert result is not None
     data, fmt = result
-    assert data == _JPG and fmt == "jpg"  # the SECOND playlist's composite
+    assert data == _JPG
+    assert fmt == "jpg"  # the SECOND playlist's composite
     assert server._session.requested is not None
     assert "/metadata/22/" in server._session.requested
 
@@ -475,7 +489,8 @@ def test_download_poster_falls_back_to_title_without_a_rating_key(
     )
     _patch_poster(monkeypatch, server)
     result = playlists_pull.download_poster(CONFIG, None, "Road")
-    assert result is not None and result[1] == "png"
+    assert result is not None
+    assert result[1] == "png"
 
 
 def test_download_poster_prefers_the_key_over_the_title(
@@ -492,7 +507,8 @@ def test_download_poster_prefers_the_key_over_the_title(
     )
     _patch_poster(monkeypatch, server)
     result = playlists_pull.download_poster(CONFIG, "22", "Road")
-    assert result is not None and result[0] == _JPG
+    assert result is not None
+    assert result[0] == _JPG
 
 
 def test_download_poster_unknown_key_does_not_fall_back_to_the_title(

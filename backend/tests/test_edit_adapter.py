@@ -290,7 +290,8 @@ def test_apply_reports_per_item_write_failure(edit_lib: Library, tmp_path: Path)
 
     assert result.write_failures == 1
     failed = [r for r in result.items if not r.written]
-    assert len(failed) == 1 and failed[0].error is not None
+    assert len(failed) == 1
+    assert failed[0].error is not None
     # The other tracks still wrote — no total rollback.
     assert sum(1 for r in result.items if r.written) == 2
 
@@ -486,8 +487,10 @@ def test_apply_refuses_a_move_onto_a_settled_mates_name(edit_lib: Library) -> No
 
     rows = {r.item_id: r for r in result.items}
     assert result.move_failures == 1
-    assert rows[mover].moved is False and rows[mover].error is not None
-    assert rows[settled].error is None and rows[settled].moved is False
+    assert rows[mover].moved is False
+    assert rows[mover].error is not None
+    assert rows[settled].error is None
+    assert rows[settled].moved is False
     assert _names(base) == before
 
 
@@ -515,7 +518,8 @@ def test_apply_refuses_a_move_onto_a_refused_tracks_file(edit_lib: Library) -> N
 
     rows = {r.item_id: r for r in result.items}
     assert result.move_failures == 2
-    assert rows[blocked].moved is False and rows[blocked].error is not None
+    assert rows[blocked].moved is False
+    assert rows[blocked].error is not None
     assert rows[follower].moved is False
     assert "already exists on disk" in (rows[follower].error or "")
     assert _names(base) == before  # no `.1`, and the squatter is untouched
@@ -651,7 +655,8 @@ def test_apply_refused_move_carries_no_sidecars(edit_lib: Library) -> None:
     result = apply_album_edit(edit_lib, album_id=aid, request=req, write=True, move=True)
 
     row = next(r for r in result.items if r.item_id == tid)
-    assert row.moved is False and row.error is not None
+    assert row.moved is False
+    assert row.error is not None
     assert (base / "03 Nude.lrc").read_text(encoding="utf-8") == "nude-lyrics\n"
     assert not (base / "03 Nude (Live).lrc").exists()
 

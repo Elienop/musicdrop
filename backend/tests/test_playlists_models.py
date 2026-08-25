@@ -71,7 +71,8 @@ def test_create_request_strips_name() -> None:
 
 def test_update_request_allows_all_none() -> None:
     body = PlaylistUpdateRequest()
-    assert body.name is None and body.description is None
+    assert body.name is None
+    assert body.description is None
 
 
 def test_update_request_rejects_blank_name() -> None:

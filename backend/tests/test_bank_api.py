@@ -183,7 +183,8 @@ def test_bulk_delete(client: TestClient, bank_dir: Path) -> None:
     assert store.get_item(bank_dir, first) is None
     assert store.get_item(bank_dir, second) is None
     survivor = store.get_item(bank_dir, applying)
-    assert survivor is not None and survivor.status == "applying"
+    assert survivor is not None
+    assert survivor.status == "applying"
 
 
 def test_decision_pokes_apply_runner_when_wired(client: TestClient, bank_dir: Path) -> None:

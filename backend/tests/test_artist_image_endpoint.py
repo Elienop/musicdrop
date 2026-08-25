@@ -575,7 +575,8 @@ def test_unreadable_cache_bytes_self_heal_instead_of_500ing(
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "image/png"
         healed = cache.get("ABBA")
-        assert isinstance(healed, CachedImage) and healed.data != b"unreadable"
+        assert isinstance(healed, CachedImage)
+        assert healed.data != b"unreadable"
     finally:
         app.dependency_overrides.clear()
 
