@@ -49,8 +49,9 @@ async def test_all_miss_returns_none() -> None:
 
 @pytest.mark.anyio
 async def test_transient_and_no_success_raises() -> None:
+    source = ChainedArtistImageSource([_Transient(), _Miss()])
     with pytest.raises(TransientSourceError):
-        await ChainedArtistImageSource([_Transient(), _Miss()]).resolve("A")
+        await source.resolve("A")
 
 
 @pytest.mark.anyio

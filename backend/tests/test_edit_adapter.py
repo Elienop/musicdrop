@@ -91,10 +91,9 @@ def test_preview_unknown_album_raises(edit_lib: Library) -> None:
 
     from app.beets.edit import AlbumNotFoundError, preview_album_edit
 
+    request = AlbumEditRequest()
     with pytest.raises(AlbumNotFoundError):
-        preview_album_edit(
-            edit_lib, album_id=999999, request=AlbumEditRequest(), move_enabled=False
-        )
+        preview_album_edit(edit_lib, album_id=999999, request=request, move_enabled=False)
 
 
 def test_apply_writes_album_field_to_every_track(edit_lib: Library) -> None:
@@ -236,11 +235,12 @@ def test_apply_foreign_track_id_raises(edit_lib: Library) -> None:
     from app.beets.edit import ForeignTrackError, apply_album_edit
 
     aid = _album_id(edit_lib)
+    request = AlbumEditRequest(tracks=[TrackFieldEdits(item_id=424242, title="x")])
     with pytest.raises(ForeignTrackError):
         apply_album_edit(
             edit_lib,
             album_id=aid,
-            request=AlbumEditRequest(tracks=[TrackFieldEdits(item_id=424242, title="x")]),
+            request=request,
             write=True,
             move=False,
         )
@@ -253,11 +253,12 @@ def test_apply_foreign_track_id_with_no_fields_raises(edit_lib: Library) -> None
     from app.beets.edit import ForeignTrackError, apply_album_edit
 
     aid = _album_id(edit_lib)
+    request = AlbumEditRequest(tracks=[TrackFieldEdits(item_id=424242)])
     with pytest.raises(ForeignTrackError):
         apply_album_edit(
             edit_lib,
             album_id=aid,
-            request=AlbumEditRequest(tracks=[TrackFieldEdits(item_id=424242)]),
+            request=request,
             write=True,
             move=False,
         )
@@ -269,11 +270,12 @@ def test_preview_foreign_track_id_with_no_fields_raises(edit_lib: Library) -> No
     from app.beets.edit import ForeignTrackError, preview_album_edit
 
     aid = _album_id(edit_lib)
+    request = AlbumEditRequest(tracks=[TrackFieldEdits(item_id=424242)])
     with pytest.raises(ForeignTrackError):
         preview_album_edit(
             edit_lib,
             album_id=aid,
-            request=AlbumEditRequest(tracks=[TrackFieldEdits(item_id=424242)]),
+            request=request,
             move_enabled=False,
         )
 

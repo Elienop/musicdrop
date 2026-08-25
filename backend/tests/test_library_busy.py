@@ -169,8 +169,9 @@ def test_claim_lock_is_released_when_a_claim_refuses(monkeypatch: pytest.MonkeyP
     from app.library_busy import _CLAIM_LOCK, claim_slot
 
     monkeypatch.setattr("app.disk_sync_jobs.registry.disk_sync_active", lambda: True)
+    slot = claim_slot("import", message="nope")
     with pytest.raises(RuntimeError, match="nope"):
-        with claim_slot("import", message="nope"):
+        with slot:
             raise AssertionError("body must not run when the union is busy")
     assert _CLAIM_LOCK.locked() is False
 
@@ -180,8 +181,9 @@ def test_claim_lock_is_released_when_the_body_raises() -> None:
     # slot inside the with-body) must release it too.
     from app.library_busy import _CLAIM_LOCK, claim_slot
 
+    slot = claim_slot("import")
     with pytest.raises(ValueError):
-        with claim_slot("import"):
+        with slot:
             raise ValueError("own-slot refusal")
     assert _CLAIM_LOCK.locked() is False
 
@@ -272,8 +274,9 @@ def test_every_registry_job_type_is_a_known_key(registry_path: str, expected: st
 def test_claim_slot_rejects_an_unknown_job_type() -> None:
     from app.library_busy import claim_slot
 
+    slot = claim_slot("reorganise")  # a plausible typo
     with pytest.raises(ValueError, match="unknown job_type"):
-        with claim_slot("reorganise"):  # a plausible typo
+        with slot:
             raise AssertionError("must not reach the body")
 
 
@@ -290,8 +293,9 @@ def test_claim_slot_refuses_while_a_beets_swap_holds_the_library() -> None:
 
     register_swap_lock(_Held())
     try:
+        slot = claim_slot("import")
         with pytest.raises(RuntimeError, match="another library operation"):
-            with claim_slot("import"):
+            with slot:
                 raise AssertionError("must not claim while a swap is in progress")
     finally:
         register_swap_lock(None)

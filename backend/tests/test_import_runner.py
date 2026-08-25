@@ -305,8 +305,10 @@ def test_validate_refuses_when_ANY_list_member_is_in_library(tmp_path: Path) -> 
         directory = _os.fsencode(str(music))
 
     runner = BeetsImportRunner(lib=_Lib())
+    folders = [str(outside), str(inside)]
+    options = ImportOptions(operation="copy")
     with pytest.raises(InLibraryCopyError):
-        runner.validate([str(outside), str(inside)], ImportOptions(operation="copy"))
+        runner.validate(folders, options)
     # ...and an all-outside list still passes.
     runner.validate([str(outside)], ImportOptions(operation="copy"))
 
@@ -314,8 +316,10 @@ def test_validate_refuses_when_ANY_list_member_is_in_library(tmp_path: Path) -> 
 def test_validate_refuses_in_library_copy(tmp_path: Path) -> None:
     lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
     runner = BeetsImportRunner(lib)
+    folders = [str(tmp_path / "music" / "incoming")]
+    options = ImportOptions(operation="copy")
     with pytest.raises(InLibraryCopyError):
-        runner.validate([str(tmp_path / "music" / "incoming")], ImportOptions(operation="copy"))
+        runner.validate(folders, options)
 
 
 @pytest.mark.parametrize(

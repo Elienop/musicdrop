@@ -52,15 +52,17 @@ def test_install_cover_sets_artpath(edit_lib: Library) -> None:
 def test_install_cover_rejects_non_image(edit_lib: Library) -> None:
     from app.beets.cover import UnsupportedImageError, install_cover
 
+    aid = _album_id(edit_lib)
     with pytest.raises(UnsupportedImageError):
-        install_cover(edit_lib, album_id=_album_id(edit_lib), image_bytes=b"not an image")
+        install_cover(edit_lib, album_id=aid, image_bytes=b"not an image")
 
 
 def test_install_cover_unknown_album(edit_lib: Library) -> None:
     from app.beets.cover import AlbumNotFoundError, install_cover
 
+    png = PNG.read_bytes()
     with pytest.raises(AlbumNotFoundError):
-        install_cover(edit_lib, album_id=999999, image_bytes=PNG.read_bytes())
+        install_cover(edit_lib, album_id=999999, image_bytes=png)
 
 
 def test_install_cover_embed_gated_off_by_default(edit_lib: Library) -> None:

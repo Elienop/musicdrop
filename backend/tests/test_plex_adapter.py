@@ -75,8 +75,9 @@ def test_discover_users(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_discover_users_not_configured() -> None:
+    config = PlexConfig()
     with pytest.raises(PlexNotConfigured):
-        service.discover_users(PlexConfig())
+        service.discover_users(config)
 
 
 def test_discover_users_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -156,5 +157,6 @@ def test_list_music_sections_survives_a_section_that_reports_no_folders(
 
 
 def test_list_music_sections_requires_config() -> None:
+    config = PlexConfig()
     with pytest.raises(PlexNotConfigured):
-        service.list_music_sections(PlexConfig())
+        service.list_music_sections(config)

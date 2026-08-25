@@ -310,8 +310,9 @@ def test_per_album_fetch_409_during_backfill(
     class _Req:
         app = _App()
 
+    req = _Req()
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(start_album_lyrics_op(_Req(), 1))
+        asyncio.run(start_album_lyrics_op(req, 1))
     assert ei.value.status_code == 409
     reset_lyrics_backfill()
 

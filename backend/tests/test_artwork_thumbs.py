@@ -45,8 +45,9 @@ def test_decompression_bomb_raises_thumberror(monkeypatch: pytest.MonkeyPatch) -
     is how a bomb is reproduced without allocating one.
     """
     monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 10)
+    png = _png(100, 100)
     with pytest.raises(ThumbError):
-        make_thumb(_png(100, 100))
+        make_thumb(png)
 
 
 def test_no_exception_type_other_than_thumberror_escapes(
@@ -65,8 +66,9 @@ def test_no_exception_type_other_than_thumberror_escapes(
     # thumbs.py holds the same PIL.ImageOps module object and resolves the
     # attribute at call time, so patching it here reaches the call there.
     monkeypatch.setattr(ImageOps, "exif_transpose", _boom)
+    pixels = _png(400, 400)
     with pytest.raises(ThumbError):
-        make_thumb(_png(400, 400))
+        make_thumb(pixels)
 
 
 def test_thumb_is_smaller_than_a_real_photo_original() -> None:

@@ -94,8 +94,9 @@ def test_delete_album_op_409_during_backfill() -> None:
         app = _App()
 
     try:
+        req = _Req()
         with pytest.raises(HTTPException) as ei:
-            asyncio.run(delete_album_op(_Req(), 1))  # type: ignore[arg-type]
+            asyncio.run(delete_album_op(req, 1))  # type: ignore[arg-type]
         assert ei.value.status_code == 409
     finally:
         reset_lyrics_backfill()

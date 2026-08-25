@@ -53,16 +53,18 @@ def test_preview_move_disabled_reports_zero_moves(rename_lib: Library) -> None:
 def test_preview_unknown_artist_raises(rename_lib: Library) -> None:
     from app.beets.rename import ArtistNotFoundError, preview_artist_rename
 
+    request = _req(name="Nobody")
     with pytest.raises(ArtistNotFoundError):
-        preview_artist_rename(rename_lib, request=_req(name="Nobody"), move_enabled=False)
+        preview_artist_rename(rename_lib, request=request, move_enabled=False)
 
 
 def test_preview_selection_is_exact_and_case_sensitive(rename_lib: Library) -> None:
     """A case variant is a DIFFERENT artist; the fan-out must not catch it."""
     from app.beets.rename import ArtistNotFoundError, preview_artist_rename
 
+    request = _req(name="fayrouz")
     with pytest.raises(ArtistNotFoundError):
-        preview_artist_rename(rename_lib, request=_req(name="fayrouz"), move_enabled=False)
+        preview_artist_rename(rename_lib, request=request, move_enabled=False)
 
 
 def test_preview_persists_nothing(rename_lib: Library) -> None:
@@ -120,8 +122,9 @@ def test_padded_request_name_is_a_different_artist(rename_lib: Library) -> None:
     """The request's `name` is never stripped either — a padded name matches nothing."""
     from app.beets.rename import ArtistNotFoundError, preview_artist_rename
 
+    request = _req(name="Fayrouz ")
     with pytest.raises(ArtistNotFoundError):
-        preview_artist_rename(rename_lib, request=_req(name="Fayrouz "), move_enabled=False)
+        preview_artist_rename(rename_lib, request=request, move_enabled=False)
 
 
 def _paths(lib: Library) -> set[str]:
@@ -248,5 +251,6 @@ def test_apply_one_failure_does_not_abort_the_batch(rename_lib: Library) -> None
 def test_apply_unknown_artist_raises(rename_lib: Library) -> None:
     from app.beets.rename import ArtistNotFoundError, apply_artist_rename
 
+    request = _req(name="Nobody")
     with pytest.raises(ArtistNotFoundError):
-        apply_artist_rename(rename_lib, request=_req(name="Nobody"), write=False, move=False)
+        apply_artist_rename(rename_lib, request=request, write=False, move=False)

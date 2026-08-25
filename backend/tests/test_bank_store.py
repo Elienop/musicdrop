@@ -130,10 +130,12 @@ def test_decide_ignore_resolves_immediately(tmp_path: Path) -> None:
 
 
 def test_decide_rejects_wrong_state(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
     item_id = _create(tmp_path)
-    store.decide_item(_bank(tmp_path), item_id, BankDecision(action="ignore"))
+    store.decide_item(bank, item_id, BankDecision(action="ignore"))
+    decision = BankDecision(action="asis")
     with pytest.raises(store.InvalidTransitionError):
-        store.decide_item(_bank(tmp_path), item_id, BankDecision(action="asis"))
+        store.decide_item(bank, item_id, decision)
 
 
 def test_decide_failed_row_is_retryable(tmp_path: Path) -> None:
@@ -153,12 +155,13 @@ def test_delete_row(tmp_path: Path) -> None:
 
 
 def test_delete_refuses_applying(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
     item_id = _create(tmp_path)
     # An applying row carries the decision that got it there (model invariant).
-    store.decide_item(_bank(tmp_path), item_id, BankDecision(action="asis"))
-    store.set_status(_bank(tmp_path), item_id, "applying")
+    store.decide_item(bank, item_id, BankDecision(action="asis"))
+    store.set_status(bank, item_id, "applying")
     with pytest.raises(store.InvalidTransitionError):
-        store.delete_item(_bank(tmp_path), item_id)
+        store.delete_item(bank, item_id)
 
 
 def test_bulk_ignore_skips_non_pending(tmp_path: Path) -> None:
@@ -599,11 +602,12 @@ def test_research_item_rejects_undecidable_statuses(tmp_path: Path) -> None:
         parked=_parked_payload(),
     )
     store.decide_item(bank, row.id, BankDecision(action="asis"))  # -> queued
+    parked = _parked_payload()
     with pytest.raises(store.InvalidTransitionError):
         store.research_item(
             bank,
             row.id,
-            parked=_parked_payload(),
+            parked=parked,
             artist=None,
             album=None,
             recommendation=None,
@@ -621,11 +625,12 @@ def test_research_item_rejects_dup_resolution_rows(tmp_path: Path) -> None:
         fingerprint="f" * 64,
         duplicate=_dup_prompt(),
     )
+    parked = _parked_payload()
     with pytest.raises(store.InvalidTransitionError):
         store.research_item(
             bank,
             row.id,
-            parked=_parked_payload(),
+            parked=parked,
             artist=None,
             album=None,
             recommendation=None,

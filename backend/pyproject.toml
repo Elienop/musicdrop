@@ -34,10 +34,13 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-# PT018 (single rule, not the PT family): composite asserts split in the
-# 2026-08-25 Sonar pass must not regrow. Requires preview for the autofix
+# PT012/PT018 (single rules, not the PT family): families cleared in the
+# 2026-08-25 Sonar pass must not regrow — PT018 pins one-assert-per-statement,
+# PT012 pins single-statement pytest.raises blocks. PT012 is a PARTIAL lock
+# for Sonar S5778: Sonar also counts multiple invocations inside the one
+# statement, which ruff has no rule for. Preview is needed for autofixes
 # only; selection alone works in stable mode.
-select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF", "PT018"]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF", "PT012", "PT018"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -79,8 +79,9 @@ async def test_caps_concurrent_subscribers() -> None:
     broker = EventBroker(asyncio.get_running_loop())
     for _ in range(MAX_SUBSCRIBERS):
         broker.subscribe()
+    request = _request_with(broker)
     with pytest.raises(HTTPException) as ei:
-        await events_endpoint(_request_with(broker))
+        await events_endpoint(request)
     assert ei.value.status_code == 503
     assert broker.subscriber_count == MAX_SUBSCRIBERS  # the rejected one didn't subscribe
 

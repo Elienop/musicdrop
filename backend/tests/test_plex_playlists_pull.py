@@ -190,8 +190,9 @@ def test_pull_by_title_no_longer_resolves(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_pull_requires_config() -> None:
+    config = PlexConfig()
     with pytest.raises(PlexNotConfigured):
-        playlists_pull.list_audio_playlists(PlexConfig())
+        playlists_pull.list_audio_playlists(config)
 
 
 # --- download_poster (Task 3) -------------------------------------------------
@@ -453,8 +454,9 @@ def test_download_poster_unsupported_bytes_returns_none(monkeypatch: pytest.Monk
 
 
 def test_download_poster_requires_config() -> None:
+    config = PlexConfig()
     with pytest.raises(PlexNotConfigured):
-        playlists_pull.download_poster(PlexConfig(), "1")
+        playlists_pull.download_poster(config, "1")
 
 
 def test_download_poster_resolves_duplicate_titles_by_rating_key(

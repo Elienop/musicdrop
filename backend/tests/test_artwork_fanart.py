@@ -68,8 +68,9 @@ async def test_empty_artistthumb_returns_none(client: httpx.AsyncClient) -> None
 @respx.mock
 async def test_401_is_transient(client: httpx.AsyncClient) -> None:
     respx.get(ART_URL).mock(return_value=httpx.Response(401))
+    source = _source(client)
     with pytest.raises(TransientSourceError):
-        await _source(client).resolve("ABBA", mbid=MBID)
+        await source.resolve("ABBA", mbid=MBID)
 
 
 @pytest.mark.anyio

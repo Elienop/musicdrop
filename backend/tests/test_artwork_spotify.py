@@ -117,5 +117,6 @@ async def test_401_refreshes_token_and_retries(client: httpx.AsyncClient) -> Non
 async def test_429_is_transient(client: httpx.AsyncClient) -> None:
     respx.post(TOKEN_URL).mock(return_value=_token())
     respx.get(SEARCH_URL).mock(return_value=httpx.Response(429))
+    source = _source(client)
     with pytest.raises(TransientSourceError):
-        await _source(client).resolve("ABBA")
+        await source.resolve("ABBA")

@@ -45,8 +45,9 @@ async def test_token_bucket_serializes_to_rate() -> None:
 async def test_releases_concurrency_on_exception() -> None:
     limiter = TokenBucketLimiter(rate_per_sec=1000.0, max_concurrency=1)
 
+    slot = limiter.slot()  # creation only; the slot is acquired on enter, inside the block
     with pytest.raises(ValueError, match="boom"):
-        async with limiter.slot():
+        async with slot:
             raise ValueError("boom")
 
     # Slot must be free again after the exception.
