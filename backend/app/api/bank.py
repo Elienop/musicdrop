@@ -14,6 +14,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 
+from app.api.candidate_identity import selected_option_identity
 from app.bank import store
 from app.bank.apply_runner import _STALE_CHANGED_ERROR, _STALE_GONE_ERROR
 from app.bank.fingerprint import folder_fingerprint
@@ -98,28 +99,9 @@ async def bank_item_duplicates(
     parked = item.parked
     if parked is None:
         return DuplicatesCheckResponse(existing=[])  # nothing to check (no_match)
-    after = parked.candidate.album_after
-    options = parked.candidate.options
-    idx = candidate_index if 0 <= candidate_index < len(options) else 0
-    # Detect against the SELECTED option's own metadata so the up-front check
-    # equals what the apply does (the apply pins this option's release_id and
-    # beets runs find_duplicates on ITS albumartist/album). The album_after
-    # fallback is ONLY for the top option (idx == 0, where album_after IS the
-    # selection) and legacy rows with no options: a NON-TOP option must never
-    # borrow the top match's artist/album, or the heads-up would query the wrong
-    # release (top identity + a different option's release_id). A non-top option
-    # that lacks a field leaves it None — its release_id carries the identity.
-    opt = options[idx] if options else None
-    if opt is not None and idx != 0:
-        albumartist = opt.album_artist
-        album = opt.album
-        year = opt.year
-        mb_albumid = opt.release_id
-    else:
-        albumartist = opt.album_artist if opt and opt.album_artist is not None else after.artist
-        album = opt.album if opt and opt.album is not None else after.album
-        year = opt.year if opt and opt.year is not None else after.year
-        mb_albumid = opt.release_id if opt else None
+    albumartist, album, year, mb_albumid = selected_option_identity(
+        parked.candidate.options, candidate_index, parked.candidate.album_after
+    )
     handle: LibraryHandle = request.app.state.beets_library
     existing = await run_in_threadpool(
         find_import_duplicates,

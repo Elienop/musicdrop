@@ -454,32 +454,65 @@ class ArtistImageCache:
         if old_key == new_key:
             return "moved" if self._has_portrait(old_key) else "none"
         if self._has_override(new_key):
-            for suffix in _ALL_SLOT_SUFFIXES:
-                self._unlink(self._dir / f"{old_key}{suffix}")
-            self._memory.discard(old_key)
+            self._purge_old_key(old_key)
             return "kept_target"
         if self._has_portrait(new_key) and not self._has_override(old_key):
-            for suffix in _ALL_SLOT_SUFFIXES:
-                self._unlink(self._dir / f"{old_key}{suffix}")
-            self._memory.discard(old_key)
+            self._purge_old_key(old_key)
             return "kept_target"
         if self._has_portrait(new_key):
-            # A source MANUAL PIN outranks the target's auto image: move only
-            # the override pair (sidecar before bytes), delete the rest of the
-            # old key (the old artist is gone), and leave the target's auto
-            # slot beneath the pin — it resurfaces if the user clears it.
-            self._replace(
-                self._dir / f"{old_key}.override.mime", self._dir / f"{new_key}.override.mime"
-            )
-            moved_pin = self._replace(
-                self._dir / f"{old_key}.override", self._dir / f"{new_key}.override"
-            )
-            for suffix in _ALL_SLOT_SUFFIXES:
-                if suffix not in (".override", ".override.mime"):
-                    self._unlink(self._dir / f"{old_key}{suffix}")
-            self._unlink(self._dir / f"{new_key}.miss")
-            self._memory.discard(old_key)
+            moved_pin = self._rename_pin_onto_auto(old_key, new_key)
             return "moved" if moved_pin else "kept_target"
+        return "moved" if self._rename_move_all(old_key, new_key) else "none"
+
+    def _purge_old_key(self, old_key: str) -> None:
+        """Delete every old-key slot file and the memory fallback entry.
+
+        Used by the target-wins branches: the target's portrait stays, but the
+        old artist is gone, so nothing may remain under the old key — leaving
+        old-key files would recreate the forever-orphan :meth:`rename` exists
+        to prevent.
+        """
+        for suffix in _ALL_SLOT_SUFFIXES:
+            self._unlink(self._dir / f"{old_key}{suffix}")
+        self._memory.discard(old_key)
+
+    def _rename_pin_onto_auto(self, old_key: str, new_key: str) -> bool:
+        """Move a source MANUAL PIN onto the target's auto image.
+
+        A source manual pin outranks the target's auto image: move only the
+        override pair (sidecar before bytes — that order is load-bearing for a
+        concurrent ``get()``), delete the rest of the old key (the old artist
+        is gone), and leave the target's auto slot beneath the pin — it
+        resurfaces if the user clears it. Returns whether the pin BYTES
+        actually relocated.
+        """
+        self._replace(
+            self._dir / f"{old_key}.override.mime", self._dir / f"{new_key}.override.mime"
+        )
+        moved_pin = self._replace(
+            self._dir / f"{old_key}.override", self._dir / f"{new_key}.override"
+        )
+        for suffix in _ALL_SLOT_SUFFIXES:
+            if suffix not in (".override", ".override.mime"):
+                self._unlink(self._dir / f"{old_key}{suffix}")
+        self._unlink(self._dir / f"{new_key}.miss")
+        self._memory.discard(old_key)
+        return moved_pin
+
+    def _rename_move_all(self, old_key: str, new_key: str) -> bool:
+        """Move every old-key slot to the new key; True iff anything moved.
+
+        A negative ``.miss`` never travels in either direction: it recorded
+        "sources had no image for the OLD name", and the new name deserves a
+        fresh lookup — likewise a stale ``.miss`` on the target must not
+        outvote the real portrait arriving.
+
+        Slots move in :data:`_MOVE_ORDER` exactly: its ordering encodes
+        sidecar-before-bytes, mirroring the writers, so a concurrent ``get``
+        never pairs image bytes with a stale mime. A memory-fallback
+        :class:`CachedImage` re-put under the new key also counts as moved;
+        the old key is always discarded from memory.
+        """
         self._unlink(self._dir / f"{old_key}.miss")
         self._unlink(self._dir / f"{new_key}.miss")
         moved = False
@@ -494,7 +527,7 @@ class ArtistImageCache:
             self._memory.put(new_key, remembered)
             moved = True
         self._memory.discard(old_key)
-        return "moved" if moved else "none"
+        return moved
 
     def _has_override(self, key: str) -> bool:
         """Whether a MANUAL PIN (``.override``) exists under ``key``.

@@ -32,6 +32,40 @@ def _decode_path(line: str) -> str:
     return line
 
 
+def _parse_extinf(line: str) -> tuple[float | None, str | None, str | None] | None:
+    """Parse an ``#EXTINF`` line into ``(seconds, artist, title)``; ``None`` if
+    the line is not an ``#EXTINF`` (other directives/comments are skipped)."""
+    m = _EXTINF.match(line)
+    if m is None:
+        return None
+    secs_raw, text = m.group(1), m.group(2)
+    secs = float(secs_raw) if secs_raw is not None and float(secs_raw) > 0 else None
+    artist, title = _split_artist_title(text)
+    return secs, artist, title
+
+
+def _entry_for(
+    entries: list[SourceEntry],
+    line: str,
+    pending_extinf: tuple[float | None, str | None, str | None],
+) -> SourceEntry:
+    """Build the entry for a path line: the pending EXTINF (or empty) metadata,
+    the title falling back to the filename stem, at the running position."""
+    path = _decode_path(line)
+    secs, artist, title = pending_extinf
+    if title is None:
+        title = filename_stem(path, strip_track_number=True) or None
+    return SourceEntry(
+        position=len(entries),
+        path=path,
+        artist=artist,
+        title=title,
+        album=None,
+        duration_seconds=secs,
+        source=line,
+    )
+
+
 def parse_m3u(name: str, content: str) -> ParsedPlaylist:
     """Parse one playlist file. ``name`` is the file name (extension dropped)."""
     playlist_name = name.rsplit(".", 1)[0] if "." in name else name
@@ -42,27 +76,8 @@ def parse_m3u(name: str, content: str) -> ParsedPlaylist:
         if not line:
             continue
         if line.startswith("#"):
-            m = _EXTINF.match(line)
-            if m:
-                secs_raw, text = m.group(1), m.group(2)
-                secs = float(secs_raw) if secs_raw is not None and float(secs_raw) > 0 else None
-                artist, title = _split_artist_title(text)
-                pending_extinf = (secs, artist, title)
+            pending_extinf = _parse_extinf(line) or pending_extinf
             continue  # other directives/comments are skipped
-        path = _decode_path(line)
-        secs, artist, title = pending_extinf or (None, None, None)
-        if title is None:
-            title = filename_stem(path, strip_track_number=True) or None
-        entries.append(
-            SourceEntry(
-                position=len(entries),
-                path=path,
-                artist=artist,
-                title=title,
-                album=None,
-                duration_seconds=secs,
-                source=line,
-            )
-        )
+        entries.append(_entry_for(entries, line, pending_extinf or (None, None, None)))
         pending_extinf = None
     return ParsedPlaylist(name=playlist_name, entries=entries)

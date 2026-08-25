@@ -26,7 +26,7 @@ from pathlib import Path
 from app.acquisition.ledger import AcquisitionLedger
 from app.beets.library import LibraryHandle
 from app.config import Settings
-from app.models.acquisition import InboxItem, LedgerOutcome
+from app.models.acquisition import InboxItem, LedgerEntry, LedgerOutcome
 from app.wire import display_path
 
 # A leaf folder slskd fires a separate completion for: "CD1", "Disc 2",
@@ -246,6 +246,72 @@ def settled_folders(inbox_dir: Path, *, settle_seconds: float, now: float) -> li
     return settled
 
 
+def _entry_is_inbox_item(entry: os.DirEntry[str]) -> bool:
+    """True when an inbox entry is a plain top-level dir: not hidden/ledger/symlink."""
+    if entry.name.startswith(".") or entry.name == LEDGER_FILENAME:
+        return False
+    # Skip symlinked entries: the import path's contain() rejects symlink
+    # escapes, so the listing must not follow one out of the inbox either.
+    return entry.is_dir(follow_symlinks=False)
+
+
+def _entry_in_flight(entry: os.DirEntry[str], *, settle_seconds: float, now: float | None) -> bool:
+    """True while ``entry``'s folder is still receiving files (or unreadable)."""
+    if settle_seconds <= 0:
+        return False
+    newest = _newest_mtime(Path(entry.path))
+    reference = time.time() if now is None else now
+    # Unreadable (None) reads as in-flight, matching settled_folders:
+    # we cannot know it is finished, so we must not imply it is.
+    return newest is None or reference - min(newest, reference) < settle_seconds
+
+
+def _entry_outcome(folder: Path, rows: list[LedgerEntry]) -> LedgerOutcome | None:
+    """The first ``set_aside``/``failed`` row at or under ``folder`` (annotation only)."""
+    outcome: LedgerOutcome | None = None
+    for row in rows:
+        if row.outcome not in ("set_aside", "failed"):
+            continue
+        try:
+            row_path = Path(row.path).resolve()
+        except (OSError, ValueError):
+            continue  # a corrupt/NUL on-disk ledger path never 500s the list
+        if row_path == folder or folder in row_path.parents:
+            outcome = row.outcome
+            break
+    return outcome
+
+
+def _inbox_item_for_entry(
+    entry: os.DirEntry[str],
+    ledger_rows: list[LedgerEntry],
+    *,
+    settle_seconds: float,
+    now: float | None,
+) -> InboxItem | None:
+    """Build the ``InboxItem`` for one scandir entry, or ``None`` if it is skipped."""
+    if not _entry_is_inbox_item(entry):
+        return None
+    tracks, size = audio_stats(Path(entry.path))
+    if tracks == 0:
+        return None
+    try:
+        st = entry.stat()
+    except OSError:
+        return None
+    folder = Path(entry.path).resolve()
+    return InboxItem(
+        # Display-safe: the name is also the import key the client hands
+        # back, which ``resolve_display_path`` maps onto the real entry.
+        name=display_path(entry.name),
+        mtime=st.st_mtime,
+        size=size,
+        track_count=tracks,
+        outcome=_entry_outcome(folder, ledger_rows),
+        in_flight=_entry_in_flight(entry, settle_seconds=settle_seconds, now=now),
+    )
+
+
 def list_inbox(
     inbox_dir: Path,
     ledger: AcquisitionLedger | None,
@@ -268,49 +334,8 @@ def list_inbox(
         return items
     ledger_rows = ledger.entries() if ledger is not None else []
     for entry in entries:
-        if entry.name.startswith(".") or entry.name == LEDGER_FILENAME:
-            continue
-        # Skip symlinked entries: the import path's contain() rejects symlink
-        # escapes, so the listing must not follow one out of the inbox either.
-        if not entry.is_dir(follow_symlinks=False):
-            continue
-        tracks, size = audio_stats(Path(entry.path))
-        if tracks == 0:
-            continue
-        try:
-            st = entry.stat()
-        except OSError:
-            continue
-        folder = Path(entry.path).resolve()
-        in_flight = False
-        if settle_seconds > 0:
-            newest = _newest_mtime(Path(entry.path))
-            reference = time.time() if now is None else now
-            # Unreadable (None) reads as in-flight, matching settled_folders:
-            # we cannot know it is finished, so we must not imply it is.
-            in_flight = newest is None or reference - min(newest, reference) < settle_seconds
-        outcome: LedgerOutcome | None = None
-        for row in ledger_rows:
-            if row.outcome not in ("set_aside", "failed"):
-                continue
-            try:
-                row_path = Path(row.path).resolve()
-            except (OSError, ValueError):
-                continue  # a corrupt/NUL on-disk ledger path never 500s the list
-            if row_path == folder or folder in row_path.parents:
-                outcome = row.outcome
-                break
-        items.append(
-            InboxItem(
-                # Display-safe: the name is also the import key the client hands
-                # back, which ``resolve_display_path`` maps onto the real entry.
-                name=display_path(entry.name),
-                mtime=st.st_mtime,
-                size=size,
-                track_count=tracks,
-                outcome=outcome,
-                in_flight=in_flight,
-            )
-        )
+        item = _inbox_item_for_entry(entry, ledger_rows, settle_seconds=settle_seconds, now=now)
+        if item is not None:
+            items.append(item)
     items.sort(key=lambda i: i.mtime, reverse=True)
     return items
