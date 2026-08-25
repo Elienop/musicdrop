@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.acquisition.ledger import AcquisitionLedger
@@ -180,7 +181,9 @@ def test_import_inbox_item_rejects_overlong_name(tmp_path: Path) -> None:
         assert resp.status_code == 404
 
 
-def test_import_inbox_item_409_while_swap_lock_held(tmp_path: Path) -> None:
+def test_import_inbox_item_409_while_swap_lock_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     inbox = tmp_path / "inbox"
     _album(inbox, "Echoes 4412", tracks=1)
     fake = FakeImportRunner(parked=[])
@@ -190,18 +193,11 @@ def test_import_inbox_item_409_while_swap_lock_held(tmp_path: Path) -> None:
         def locked(self) -> bool:
             return True
 
-    prior = getattr(app.state, "beets_swap_lock", None)
-    app.state.beets_swap_lock = _LockedLock()
-    try:
-        with _state(inbox):
-            resp = TestClient(app).post(
-                "/api/acquisition/inbox/items/import", json={"name": "Echoes 4412"}
-            )
-    finally:
-        if prior is None:
-            del app.state.beets_swap_lock
-        else:
-            app.state.beets_swap_lock = prior
+    monkeypatch.setattr(app.state, "beets_swap_lock", _LockedLock(), raising=False)
+    with _state(inbox):
+        resp = TestClient(app).post(
+            "/api/acquisition/inbox/items/import", json={"name": "Echoes 4412"}
+        )
     assert resp.status_code == 409
     assert fake.received_options is None
 

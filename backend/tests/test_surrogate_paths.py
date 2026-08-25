@@ -323,7 +323,9 @@ def test_trash_error_detail_survives_an_undecodable_path(
 # ----- Inbox: listing renders, and the item name still round-trips -----
 
 
-def test_inbox_listing_and_per_item_import_round_trip(tmp_path: Path) -> None:
+def test_inbox_listing_and_per_item_import_round_trip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from app.import_jobs.fakes import FakeImportRunner
     from app.import_jobs.registry import reset_registry
 
@@ -335,29 +337,24 @@ def test_inbox_listing_and_per_item_import_round_trip(tmp_path: Path) -> None:
 
     fake = FakeImportRunner(parked=[])
     reset_registry(runner=fake)
-    prior = getattr(app.state, "inbox_dir", None)
-    app.state.inbox_dir = inbox
-    try:
-        client = TestClient(app)
-        listing = client.get("/api/acquisition/inbox/items")
-        assert listing.status_code == 200
-        names = [i["name"] for i in listing.json()["items"]]
-        assert names == [BAD_DISPLAY], names
+    monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
+    client = TestClient(app)
+    listing = client.get("/api/acquisition/inbox/items")
+    assert listing.status_code == 200
+    names = [i["name"] for i in listing.json()["items"]]
+    assert names == [BAD_DISPLAY], names
 
-        resp = client.post("/api/acquisition/inbox/items/import", json={"name": names[0]})
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["started"] is True
-    finally:
-        if prior is None:
-            del app.state.inbox_dir
-        else:
-            app.state.inbox_dir = prior
+    resp = client.post("/api/acquisition/inbox/items/import", json={"name": names[0]})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["started"] is True
     # The importer must have been pointed at the REAL bytes path, not a lossy one.
     assert fake.received_paths is not None
     assert os.fsencode(fake.received_paths[0]) == os.path.realpath(raw)
 
 
-def test_inbox_import_refuses_when_two_folders_share_one_display_form(tmp_path: Path) -> None:
+def test_inbox_import_refuses_when_two_folders_share_one_display_form(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from app.import_jobs.fakes import FakeImportRunner
     from app.import_jobs.registry import reset_registry
 
@@ -370,22 +367,15 @@ def test_inbox_import_refuses_when_two_folders_share_one_display_form(tmp_path: 
 
     fake = FakeImportRunner(parked=[])
     reset_registry(runner=fake)
-    prior = getattr(app.state, "inbox_dir", None)
-    app.state.inbox_dir = inbox
-    try:
-        resp = TestClient(app).post(
-            "/api/acquisition/inbox/items/import", json={"name": BAD_DISPLAY}
-        )
-    finally:
-        if prior is None:
-            del app.state.inbox_dir
-        else:
-            app.state.inbox_dir = prior
+    monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
+    resp = TestClient(app).post("/api/acquisition/inbox/items/import", json={"name": BAD_DISPLAY})
     assert resp.status_code == 409, resp.text
     assert fake.received_paths is None  # nothing was imported on a guess
 
 
-def test_inbox_import_rejects_a_nul_inside_a_placeholder_name(tmp_path: Path) -> None:
+def test_inbox_import_rejects_a_nul_inside_a_placeholder_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # The endpoint promises 404 for a malformed name. os.scandir raises
     # ValueError (NOT OSError) on an embedded NUL, so a NUL sitting behind a
     # placeholder component reached the scan as an unhandled 500.
@@ -396,18 +386,11 @@ def test_inbox_import_rejects_a_nul_inside_a_placeholder_name(tmp_path: Path) ->
     inbox.mkdir()
     fake = FakeImportRunner(parked=[])
     reset_registry(runner=fake)
-    prior = getattr(app.state, "inbox_dir", None)
-    app.state.inbox_dir = inbox
-    try:
-        resp = TestClient(app).post(
-            "/api/acquisition/inbox/items/import",
-            json={"name": f"{BAD_DISPLAY}\x00/{BAD_DISPLAY}"},
-        )
-    finally:
-        if prior is None:
-            del app.state.inbox_dir
-        else:
-            app.state.inbox_dir = prior
+    monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
+    resp = TestClient(app).post(
+        "/api/acquisition/inbox/items/import",
+        json={"name": f"{BAD_DISPLAY}\x00/{BAD_DISPLAY}"},
+    )
     assert resp.status_code == 404, resp.text
     assert fake.received_paths is None
 
