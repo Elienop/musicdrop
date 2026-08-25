@@ -208,6 +208,105 @@ def _shadow_album(lib: Library, album_id: int, album_edits: dict[str, Any]) -> A
     return shadow
 
 
+def _track_change_rows(
+    items: list[Any],
+    before_titles: dict[int, str],
+    before_tracknums: dict[int, int],
+    before_artists: dict[int, str],
+) -> list[EditTrackChange]:
+    """The per-track diff rows after the in-memory apply, in item order."""
+    rows: list[EditTrackChange] = []
+    for item in items:
+        iid = _require_id(item.id)
+        t_before, t_after = before_titles[iid], str(item.title)
+        n_before, n_after = before_tracknums[iid], int(item.track or 0)
+        a_before, a_after = before_artists[iid], str(item.artist)
+        if (t_before, n_before, a_before) != (t_after, n_after, a_after):
+            rows.append(
+                EditTrackChange(
+                    item_id=iid,
+                    title_before=t_before,
+                    title_after=t_after,
+                    track_before=n_before,
+                    track_after=n_after,
+                    artist_before=a_before,
+                    artist_after=a_after,
+                )
+            )
+    return rows
+
+
+def _plan_moves(
+    lib: Library,
+    album_id: int,
+    items: list[Any],
+    album_edits: dict[str, Any],
+    before_paths: dict[int, str],
+) -> tuple[list[TrackPathChange], list[TrackMoveRefusal]]:
+    """Split the inside-library tracks into the renames that will happen and the
+    ones the apply will refuse — the same pre-flight over the same input, so the
+    preview and the apply cannot drift apart."""
+    # ``item.destination()`` resolves album-level path fields (e.g.
+    # ``$albumartist``) from ``item._cached_album``, which beets reloads
+    # from the DB on access — discarding our in-memory album edits. Bind
+    # a clean, revision-aligned shadow album carrying the edited fields so
+    # the move plan reflects album-header changes (see beets 2.11
+    # ``Item._cached_album`` / ``Model.load`` early-exit semantics).
+    # The apply gets away without this because it has already STORED the
+    # edits before its move phase runs; the preview stores nothing.
+    shadow = _shadow_album(lib, album_id, album_edits)
+    if shadow is not None:
+        for item in items:
+            item._cached_album = shadow
+    # Destinations stay BYTES here — the shared collision predicate keys on
+    # them — and are computed once per item for both the pre-flight and the
+    # rows below. Filtered to INSIDE-library tracks up front: apply's move
+    # phase skips outside files entirely, so a plan row for one would
+    # promise a move that never happens.
+    dests = [
+        (it, bytes(it.destination(basedir=lib.directory)))
+        for it in items
+        if _inside_library(lib, it)
+    ]
+    # The same pre-flight the apply runs, over the same input: every
+    # inside-library track, including the ones whose path does not change,
+    # because a track sitting on its name is exactly what makes a mate's
+    # rename divert. Read-only — it stats paths and queries, nothing else.
+    refusals = _move_refusals(lib, dests)
+    move_plan: list[TrackPathChange] = []
+    move_refusals: list[TrackMoveRefusal] = []
+    for item, dest in dests:
+        iid = _require_id(item.id)
+        new_path = os.fsdecode(dest)
+        old_path = before_paths[iid]
+        # Ordered as the apply orders it: a track already sitting on its
+        # destination is not moving, so it is never refused either — even
+        # when it is the mate whose name a refused rename collides with.
+        if new_path == old_path:
+            continue
+        detail = refusals.get(iid)
+        if detail is None:
+            move_plan.append(
+                TrackPathChange(
+                    item_id=iid,
+                    track=int(item.track or 0),
+                    old_path=old_path,
+                    new_path=new_path,
+                )
+            )
+        else:
+            move_refusals.append(
+                TrackMoveRefusal(
+                    item_id=iid,
+                    track=int(item.track or 0),
+                    old_path=old_path,
+                    new_path=new_path,
+                    detail=detail,
+                )
+            )
+    return move_plan, move_refusals
+
+
 def preview_album_edit(
     lib: Library,
     *,
@@ -248,84 +347,12 @@ def preview_album_edit(
             if getattr(before_album, name) != getattr(after_album, name)
         ]
 
-        track_rows: list[EditTrackChange] = []
-        for item in items:
-            iid = _require_id(item.id)
-            t_before, t_after = before_titles[iid], str(item.title)
-            n_before, n_after = before_tracknums[iid], int(item.track or 0)
-            a_before, a_after = before_artists[iid], str(item.artist)
-            if (t_before, n_before, a_before) != (t_after, n_after, a_after):
-                track_rows.append(
-                    EditTrackChange(
-                        item_id=iid,
-                        title_before=t_before,
-                        title_after=t_after,
-                        track_before=n_before,
-                        track_after=n_after,
-                        artist_before=a_before,
-                        artist_after=a_after,
-                    )
-                )
+        track_rows = _track_change_rows(items, before_titles, before_tracknums, before_artists)
 
         move_plan: list[TrackPathChange] = []
         move_refusals: list[TrackMoveRefusal] = []
         if move_enabled:
-            # ``item.destination()`` resolves album-level path fields (e.g.
-            # ``$albumartist``) from ``item._cached_album``, which beets reloads
-            # from the DB on access — discarding our in-memory album edits. Bind
-            # a clean, revision-aligned shadow album carrying the edited fields so
-            # the move plan reflects album-header changes (see beets 2.11
-            # ``Item._cached_album`` / ``Model.load`` early-exit semantics).
-            # The apply gets away without this because it has already STORED the
-            # edits before its move phase runs; the preview stores nothing.
-            shadow = _shadow_album(lib, album_id, album_edits)
-            if shadow is not None:
-                for item in items:
-                    item._cached_album = shadow
-            # Destinations stay BYTES here — the shared collision predicate keys on
-            # them — and are computed once per item for both the pre-flight and the
-            # rows below. Filtered to INSIDE-library tracks up front: apply's move
-            # phase skips outside files entirely, so a plan row for one would
-            # promise a move that never happens.
-            dests = [
-                (it, bytes(it.destination(basedir=lib.directory)))
-                for it in items
-                if _inside_library(lib, it)
-            ]
-            # The same pre-flight the apply runs, over the same input: every
-            # inside-library track, including the ones whose path does not change,
-            # because a track sitting on its name is exactly what makes a mate's
-            # rename divert. Read-only — it stats paths and queries, nothing else.
-            refusals = _move_refusals(lib, dests)
-            for item, dest in dests:
-                iid = _require_id(item.id)
-                new_path = os.fsdecode(dest)
-                old_path = before_paths[iid]
-                # Ordered as the apply orders it: a track already sitting on its
-                # destination is not moving, so it is never refused either — even
-                # when it is the mate whose name a refused rename collides with.
-                if new_path == old_path:
-                    continue
-                detail = refusals.get(iid)
-                if detail is None:
-                    move_plan.append(
-                        TrackPathChange(
-                            item_id=iid,
-                            track=int(item.track or 0),
-                            old_path=old_path,
-                            new_path=new_path,
-                        )
-                    )
-                else:
-                    move_refusals.append(
-                        TrackMoveRefusal(
-                            item_id=iid,
-                            track=int(item.track or 0),
-                            old_path=old_path,
-                            new_path=new_path,
-                            detail=detail,
-                        )
-                    )
+            move_plan, move_refusals = _plan_moves(lib, album_id, items, album_edits, before_paths)
 
         return AlbumEditPreview(
             changed_fields=changed_fields,
@@ -416,6 +443,48 @@ def _move_item(lib: Library, item: Any, dest: bytes) -> str | None:
     return None
 
 
+def _move_pass(
+    lib: Library,
+    queue: list[Any],
+    inside: list[Any],
+    stuck: set[int],
+    moved: set[int],
+    problems: dict[int, str],
+) -> list[Any]:
+    """Run one move pass over the queue; return the tracks that diverted and
+    must be retried (empty when the pass settled)."""
+    active = [it for it in inside if _require_id(it.id) not in stuck]
+    dests = [(it, bytes(it.destination(basedir=lib.directory))) for it in active]
+    refusals = _move_refusals(lib, dests)
+    wanted = {_require_id(it.id): dest for it, dest in dests}
+    diverted: list[Any] = []
+    for item in queue:
+        iid = _require_id(item.id)
+        dest = wanted[iid]
+        if bytes(item.path) == dest:
+            continue  # already where it belongs; nothing to move, nothing to refuse
+        if iid in refusals:
+            # A file that already moved this batch was diverted doing so; its
+            # "landed at" problem is the truthful row — refusing the retry
+            # must not overwrite it with a contradictory "move refused".
+            if iid not in moved:
+                problems[iid] = f"move refused: {refusals[iid]}"
+            continue
+        try:
+            problem = _move_item(lib, item, dest)
+        except Exception as exc:  # report, do not abort the batch
+            problems[iid] = f"move failed: {exc}"
+            stuck.add(iid)
+            continue
+        moved.add(iid)
+        if problem is None:
+            problems.pop(iid, None)  # the retry settled the first pass's divert
+        else:
+            problems[iid] = problem
+            diverted.append(item)
+    return diverted
+
+
 def _move_items(lib: Library, items: list[Any]) -> tuple[set[int], dict[int, str]]:
     """Relocate every track whose destination differs. Returns the ids that moved
     and, per track, what went wrong — the caller turns those into per-track errors.
@@ -444,39 +513,80 @@ def _move_items(lib: Library, items: list[Any]) -> tuple[set[int], dict[int, str
     inside = [it for it in items if _inside_library(lib, it)]
     queue = inside
     for _attempt in (1, 2):
-        active = [it for it in inside if _require_id(it.id) not in stuck]
-        dests = [(it, bytes(it.destination(basedir=lib.directory))) for it in active]
-        refusals = _move_refusals(lib, dests)
-        wanted = {_require_id(it.id): dest for it, dest in dests}
-        diverted: list[Any] = []
-        for item in queue:
-            iid = _require_id(item.id)
-            dest = wanted[iid]
-            if bytes(item.path) == dest:
-                continue  # already where it belongs; nothing to move, nothing to refuse
-            if iid in refusals:
-                # A file that already moved this batch was diverted doing so; its
-                # "landed at" problem is the truthful row — refusing the retry
-                # must not overwrite it with a contradictory "move refused".
-                if iid not in moved:
-                    problems[iid] = f"move refused: {refusals[iid]}"
-                continue
-            try:
-                problem = _move_item(lib, item, dest)
-            except Exception as exc:  # report, do not abort the batch
-                problems[iid] = f"move failed: {exc}"
-                stuck.add(iid)
-                continue
-            moved.add(iid)
-            if problem is None:
-                problems.pop(iid, None)  # the retry settled the first pass's divert
-            else:
-                problems[iid] = problem
-                diverted.append(item)
-        queue = diverted
+        queue = _move_pass(lib, queue, inside, stuck, moved, problems)
         if not queue:
             break
     return moved, problems
+
+
+def _commit_edit(
+    lib: Library,
+    album: Any,
+    items: list[Any],
+    album_edits: dict[str, Any],
+    track_edits: dict[int, dict[str, Any]],
+    write: bool,
+    move: bool,
+    errors: dict[int, list[str]],
+) -> tuple[set[int], set[int], int, dict[int, str]]:
+    """The whole transaction: apply in memory, store the album, write tags,
+    optionally move, store the items, relocate the art. Returns the written
+    and moved ids, the write-failure count, and the per-track move problems."""
+    write_failures = 0
+    written: set[int] = set()
+    moved: set[int] = set()
+    move_problems: dict[int, str] = {}
+    with lib.transaction():
+        _apply_in_memory(album, items, album_edits, track_edits)
+        album.store(inherit=False)  # we fanned album fields to items manually
+        if write:
+            for item in items:
+                iid = _require_id(item.id)
+                if bool(item.try_write()):
+                    written.add(iid)
+                else:
+                    write_failures += 1
+                    errors[iid].append("tag write failed")
+        if move:
+            # Moves are their own phase, after every tag write: the collision
+            # pre-flight has to see the whole batch's destinations — and the
+            # names it is about to vacate — before the first file relocates.
+            moved, move_problems = _move_items(lib, items)
+            for iid, problem in move_problems.items():
+                errors[iid].append(problem)
+        for item in items:
+            item.store()
+        # Relocate the album art ONCE, after the items have moved+stored (so
+        # art_destination reads their new dir), then persist the new artpath.
+        # Per-item with_album=True would have moved the art but dropped the
+        # artpath update, stranding the cover at the pruned old folder.
+        if moved:
+            album.move_art(MoveOperation.MOVE)
+            album.store(inherit=False)
+    return written, moved, write_failures, move_problems
+
+
+def _write_results(
+    items: list[Any],
+    written: set[int],
+    moved: set[int],
+    errors: dict[int, list[str]],
+) -> list[ItemWriteResult]:
+    """Assemble the per-track results in item order, each with its errors."""
+    results: list[ItemWriteResult] = []
+    for item in items:
+        iid = _require_id(item.id)
+        results.append(
+            ItemWriteResult(
+                item_id=iid,
+                track=int(item.track or 0),
+                title=str(item.title),
+                written=iid in written,
+                moved=iid in moved,
+                error="; ".join(errors[iid]) or None,
+            )
+        )
+    return results
 
 
 def apply_album_edit(
@@ -508,55 +618,15 @@ def apply_album_edit(
         track_edits = _track_edits(request)
         _validate_track_ids(request, by_id)
 
-        write_failures = 0
-        written: set[int] = set()
-        moved: set[int] = set()
-        move_problems: dict[int, str] = {}
         # Collect every failure per item: write and move are independent, so a
         # track can fail both. A single error slot would let the move error
         # clobber the write error.
         errors: dict[int, list[str]] = {_require_id(it.id): [] for it in items}
-        with lib.transaction():
-            _apply_in_memory(album, items, album_edits, track_edits)
-            album.store(inherit=False)  # we fanned album fields to items manually
-            if write:
-                for item in items:
-                    iid = _require_id(item.id)
-                    if bool(item.try_write()):
-                        written.add(iid)
-                    else:
-                        write_failures += 1
-                        errors[iid].append("tag write failed")
-            if move:
-                # Moves are their own phase, after every tag write: the collision
-                # pre-flight has to see the whole batch's destinations — and the
-                # names it is about to vacate — before the first file relocates.
-                moved, move_problems = _move_items(lib, items)
-                for iid, problem in move_problems.items():
-                    errors[iid].append(problem)
-            for item in items:
-                item.store()
-            # Relocate the album art ONCE, after the items have moved+stored (so
-            # art_destination reads their new dir), then persist the new artpath.
-            # Per-item with_album=True would have moved the art but dropped the
-            # artpath update, stranding the cover at the pruned old folder.
-            if moved:
-                album.move_art(MoveOperation.MOVE)
-                album.store(inherit=False)
+        written, moved, write_failures, move_problems = _commit_edit(
+            lib, album, items, album_edits, track_edits, write, move, errors
+        )
 
-        results: list[ItemWriteResult] = []
-        for item in items:
-            iid = _require_id(item.id)
-            results.append(
-                ItemWriteResult(
-                    item_id=iid,
-                    track=int(item.track or 0),
-                    title=str(item.title),
-                    written=iid in written,
-                    moved=iid in moved,
-                    error="; ".join(errors[iid]) or None,
-                )
-            )
+        results = _write_results(items, written, moved, errors)
 
         detail = get_album_detail(lib, album_id)
         assert detail is not None  # the album still exists; we just edited it

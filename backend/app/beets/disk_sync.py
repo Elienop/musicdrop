@@ -119,81 +119,187 @@ def _probe_changed_fields(item: Any) -> list[str]:
     return sorted(changed)
 
 
+class _PlanAccumulator:
+    """Per-sweep running totals for a plan dry run (see ``plan_disk_sync``)."""
+
+    def __init__(self) -> None:
+        self.removals: list[DiskSyncRemoval] = []
+        self.changes: list[DiskSyncChange] = []
+        self.read_errors: list[DiskSyncReadError] = []
+        self.will_remove = 0
+        self.will_update = 0
+        self.album_totals: dict[int, int] = {}
+        self.album_missing: dict[int, int] = {}
+        self.album_dirs: dict[int, str] = {}
+
+
+def _scan_item(lib: Any, item: Any, acc: _PlanAccumulator) -> None:
+    """Classify one item (remove / update / skip) and fold it into ``acc``."""
+    album_id = item.album_id
+    if album_id is not None:
+        acc.album_totals[album_id] = acc.album_totals.get(album_id, 0) + 1
+        if album_id not in acc.album_dirs:
+            # First item's folder stands in for the row: a multi-disc
+            # layout shows its first disc dir, which still separates
+            # label twins — the list's whole purpose.
+            acc.album_dirs[album_id] = _rel_dir(lib, item)
+    if _file_missing(item):
+        acc.will_remove += 1
+        if album_id is not None:
+            acc.album_missing[album_id] = acc.album_missing.get(album_id, 0) + 1
+        if len(acc.removals) < PREVIEW_ROW_CAP:
+            acc.removals.append(DiskSyncRemoval(label=_item_label(item), path=_rel_path(lib, item)))
+        return
+    if item.current_mtime() <= item.mtime:
+        return
+    try:
+        fields = _probe_changed_fields(item)
+    except ReadError as exc:
+        if len(acc.read_errors) < PREVIEW_ROW_CAP:
+            acc.read_errors.append(DiskSyncReadError(label=_item_label(item), error=str(exc)))
+        return
+    if fields:
+        acc.will_update += 1
+        if len(acc.changes) < PREVIEW_ROW_CAP:
+            acc.changes.append(DiskSyncChange(label=_item_label(item), fields=fields))
+
+
+def _collect_emptied(
+    lib: Any, acc: _PlanAccumulator
+) -> tuple[list[int], list[DiskSyncEmptiedAlbum]]:
+    """Album ids whose every item is gone, plus their capped preview rows."""
+    emptied_ids = [
+        aid for aid, total in acc.album_totals.items() if acc.album_missing.get(aid, 0) == total
+    ]
+    emptied: list[DiskSyncEmptiedAlbum] = []
+    for aid in emptied_ids[:PREVIEW_ROW_CAP]:
+        album = lib.get_album(aid)
+        if album is not None:
+            # Count and folder come from THIS row's own items (album_totals /
+            # album_dirs are keyed by album_id), never from a same-named twin.
+            emptied.append(
+                DiskSyncEmptiedAlbum(
+                    label=_album_label(album),
+                    track_count=acc.album_totals[aid],
+                    path=acc.album_dirs[aid],
+                )
+            )
+    return emptied_ids, emptied
+
+
+def _build_plan(
+    total_items: int,
+    acc: _PlanAccumulator,
+    emptied_ids: list[int],
+    emptied: list[DiskSyncEmptiedAlbum],
+) -> DiskSyncPlan:
+    """Assemble the ``DiskSyncPlan`` from the accumulator and emptied rows."""
+    truncated = (
+        acc.will_remove > len(acc.removals)
+        or acc.will_update > len(acc.changes)
+        or len(emptied_ids) > len(emptied)
+    )
+    return DiskSyncPlan(
+        total_items=total_items,
+        will_remove=acc.will_remove,
+        will_update=acc.will_update,
+        emptied_albums=emptied,
+        emptied_total=len(emptied_ids),
+        removals=acc.removals,
+        changes=acc.changes,
+        read_errors=acc.read_errors,
+        truncated=truncated,
+    )
+
+
 def plan_disk_sync(lib: Any) -> DiskSyncPlan:
     """Read-only dry run: what a sync would remove/update. Mutates NOTHING."""
     with lib.music_dir_context():
         _require_root(lib)
         items = list(lib.items())
-        removals: list[DiskSyncRemoval] = []
-        changes: list[DiskSyncChange] = []
-        read_errors: list[DiskSyncReadError] = []
-        will_remove = 0
-        will_update = 0
-        album_totals: dict[int, int] = {}
-        album_missing: dict[int, int] = {}
-        album_dirs: dict[int, str] = {}
+        acc = _PlanAccumulator()
         for item in items:
-            album_id = item.album_id
-            if album_id is not None:
-                album_totals[album_id] = album_totals.get(album_id, 0) + 1
-                if album_id not in album_dirs:
-                    # First item's folder stands in for the row: a multi-disc
-                    # layout shows its first disc dir, which still separates
-                    # label twins — the list's whole purpose.
-                    album_dirs[album_id] = _rel_dir(lib, item)
-            if _file_missing(item):
-                will_remove += 1
-                if album_id is not None:
-                    album_missing[album_id] = album_missing.get(album_id, 0) + 1
-                if len(removals) < PREVIEW_ROW_CAP:
-                    removals.append(
-                        DiskSyncRemoval(label=_item_label(item), path=_rel_path(lib, item))
-                    )
-                continue
-            if item.current_mtime() <= item.mtime:
-                continue
-            try:
-                fields = _probe_changed_fields(item)
-            except ReadError as exc:
-                if len(read_errors) < PREVIEW_ROW_CAP:
-                    read_errors.append(DiskSyncReadError(label=_item_label(item), error=str(exc)))
-                continue
-            if fields:
-                will_update += 1
-                if len(changes) < PREVIEW_ROW_CAP:
-                    changes.append(DiskSyncChange(label=_item_label(item), fields=fields))
-        emptied_ids = [
-            aid for aid, total in album_totals.items() if album_missing.get(aid, 0) == total
-        ]
-        emptied: list[DiskSyncEmptiedAlbum] = []
-        for aid in emptied_ids[:PREVIEW_ROW_CAP]:
-            album = lib.get_album(aid)
-            if album is not None:
-                # Count and folder come from THIS row's own items (album_totals /
-                # album_dirs are keyed by album_id), never from a same-named twin.
-                emptied.append(
-                    DiskSyncEmptiedAlbum(
-                        label=_album_label(album),
-                        track_count=album_totals[aid],
-                        path=album_dirs[aid],
-                    )
-                )
-        truncated = (
-            will_remove > len(removals)
-            or will_update > len(changes)
-            or len(emptied_ids) > len(emptied)
-        )
-        return DiskSyncPlan(
-            total_items=len(items),
-            will_remove=will_remove,
-            will_update=will_update,
-            emptied_albums=emptied,
-            emptied_total=len(emptied_ids),
-            removals=removals,
-            changes=changes,
-            read_errors=read_errors,
-            truncated=truncated,
-        )
+            _scan_item(lib, item, acc)
+        emptied_ids, emptied = _collect_emptied(lib, acc)
+        return _build_plan(len(items), acc, emptied_ids, emptied)
+
+
+def _sync_item(
+    lib: Any,
+    item: Any,
+    media_fields: set[str],
+    store_fields: set[str],
+    affected: set[int],
+    on_item: Callable[[DiskSyncOutcome], None],
+) -> None:
+    """Apply the sync to one item and emit its ``DiskSyncOutcome``."""
+    label = _item_label(item)
+    if _file_missing(item):
+        # Re-verify the root before treating a missing file as a deletion.
+        # _require_root ran once at the start, but if the share unmounts
+        # mid-sweep EVERY remaining file looks gone and the loop would wipe
+        # thousands of DB rows in one pass. A dropped mount fails this check
+        # and aborts (raising past run_disk_sync) — genuine deletions on a
+        # still-mounted root fall through and remove as before.
+        _require_root(lib)
+        if item.album_id is not None:
+            affected.add(int(item.album_id))
+        item.remove(delete=False, with_album=True)
+        on_item(DiskSyncOutcome(status="removed", label=label))
+        return
+    if item.current_mtime() <= item.mtime:
+        on_item(DiskSyncOutcome(status="unchanged", label=label))
+        return
+    old_albumartist = item.albumartist
+    old_artist = item.artist
+    try:
+        item.read()
+    except ReadError as exc:
+        on_item(DiskSyncOutcome(status="read_error", label=label, error=str(exc)))
+        return
+    # beets' albumartist special case (update.py): an empty re-read
+    # albumartist is not a change when the old row had
+    # albumartist == artist and the artist itself is unchanged.
+    if not item.albumartist and old_albumartist == old_artist == item.artist:
+        item.albumartist = old_albumartist
+        item._dirty.discard("albumartist")
+    changed = sorted(f for f in item._dirty if f in media_fields)
+    # Store either way: even with no tag change this persists the new
+    # mtime (set by read()) so the item is not re-checked forever —
+    # exactly beets' no-change branch. mtime must be in store_fields; it
+    # is deliberately excluded from `changed` so it never counts as a
+    # tag change.
+    item.store(fields=store_fields)
+    if changed:
+        if item.album_id is not None:
+            affected.add(int(item.album_id))
+        on_item(DiskSyncOutcome(status="updated", label=label, fields=changed))
+    else:
+        on_item(DiskSyncOutcome(status="unchanged", label=label))
+
+
+def _realign_albums(lib: Any, affected: set[int]) -> int:
+    """Realign affected albums from their first remaining item; return pruned count."""
+    emptied = 0
+    for album_id in affected:
+        album = lib.get_album(album_id)
+        if album is None:
+            emptied += 1  # pruned by the last item.remove(with_album=True)
+            continue
+        first_item = album.items().get()
+        if first_item is None:
+            continue
+        for key in library.Album.item_keys:
+            album[key] = first_item[key]
+        # inherit=False — beets' default (inherit=True) would push these
+        # album-level values down onto EVERY track row, clobbering
+        # per-track values that legitimately differ file-to-file, and
+        # beets zeroes each touched track's mtime ("Reset mtime on
+        # dirty"), reopening the gate so the same tracks re-sync forever.
+        # Deliberate deviation from beets' update.py (which has this same
+        # churn): disk-sync promises each row mirrors ITS OWN file.
+        album.store(inherit=False)
+    return emptied
 
 
 def run_disk_sync(
@@ -225,66 +331,5 @@ def run_disk_sync(
         for item in items:
             if should_stop():
                 break
-            label = _item_label(item)
-            if _file_missing(item):
-                # Re-verify the root before treating a missing file as a deletion.
-                # _require_root ran once at the start, but if the share unmounts
-                # mid-sweep EVERY remaining file looks gone and the loop would wipe
-                # thousands of DB rows in one pass. A dropped mount fails this check
-                # and aborts (raising past run_disk_sync) — genuine deletions on a
-                # still-mounted root fall through and remove as before.
-                _require_root(lib)
-                if item.album_id is not None:
-                    affected.add(int(item.album_id))
-                item.remove(delete=False, with_album=True)
-                on_item(DiskSyncOutcome(status="removed", label=label))
-                continue
-            if item.current_mtime() <= item.mtime:
-                on_item(DiskSyncOutcome(status="unchanged", label=label))
-                continue
-            old_albumartist = item.albumartist
-            old_artist = item.artist
-            try:
-                item.read()
-            except ReadError as exc:
-                on_item(DiskSyncOutcome(status="read_error", label=label, error=str(exc)))
-                continue
-            # beets' albumartist special case (update.py): an empty re-read
-            # albumartist is not a change when the old row had
-            # albumartist == artist and the artist itself is unchanged.
-            if not item.albumartist and old_albumartist == old_artist == item.artist:
-                item.albumartist = old_albumartist
-                item._dirty.discard("albumartist")
-            changed = sorted(f for f in item._dirty if f in media_fields)
-            # Store either way: even with no tag change this persists the new
-            # mtime (set by read()) so the item is not re-checked forever —
-            # exactly beets' no-change branch. mtime must be in store_fields; it
-            # is deliberately excluded from `changed` so it never counts as a
-            # tag change.
-            item.store(fields=store_fields)
-            if changed:
-                if item.album_id is not None:
-                    affected.add(int(item.album_id))
-                on_item(DiskSyncOutcome(status="updated", label=label, fields=changed))
-            else:
-                on_item(DiskSyncOutcome(status="unchanged", label=label))
-        emptied = 0
-        for album_id in affected:
-            album = lib.get_album(album_id)
-            if album is None:
-                emptied += 1  # pruned by the last item.remove(with_album=True)
-                continue
-            first_item = album.items().get()
-            if first_item is None:
-                continue
-            for key in library.Album.item_keys:
-                album[key] = first_item[key]
-            # inherit=False — beets' default (inherit=True) would push these
-            # album-level values down onto EVERY track row, clobbering
-            # per-track values that legitimately differ file-to-file, and
-            # beets zeroes each touched track's mtime ("Reset mtime on
-            # dirty"), reopening the gate so the same tracks re-sync forever.
-            # Deliberate deviation from beets' update.py (which has this same
-            # churn): disk-sync promises each row mirrors ITS OWN file.
-            album.store(inherit=False)
-        return emptied
+            _sync_item(lib, item, media_fields, store_fields, affected, on_item)
+        return _realign_albums(lib, affected)
