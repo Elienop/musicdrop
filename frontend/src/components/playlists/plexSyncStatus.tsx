@@ -176,24 +176,21 @@ export function adminSyncStatus(playlist: PlexPlaylistView): SyncStatus {
  * the same badge markup. `label` stays the non-color carrier of meaning — it is
  * what gets queried on the list rows; the icon and tone are only emphasis.
  */
+/** Tone → (icon, text color class) for the badge surface: one lookup per
+ * tone instead of a chain of tone tests in the render. */
+const TONE_PRESENTATION: Record<
+  StatusTone,
+  { icon: typeof Success | null; colorClass: string }
+> = {
+  success: { icon: Success, colorClass: "text-success" },
+  warning: { icon: Warning, colorClass: "text-warning" },
+  destructive: { icon: ErrorIcon, colorClass: "text-destructive" },
+  muted: { icon: null, colorClass: "text-muted-foreground" },
+};
+
 export function StatusLine({ status }: Readonly<{ status: SyncStatus }>) {
   const { label, tone } = status;
-  const Icon =
-    tone === "success"
-      ? Success
-      : tone === "warning"
-        ? Warning
-        : tone === "destructive"
-          ? ErrorIcon
-          : null;
-  const colorClass =
-    tone === "success"
-      ? "text-success"
-      : tone === "warning"
-        ? "text-warning"
-        : tone === "destructive"
-          ? "text-destructive"
-          : "text-muted-foreground";
+  const { icon: Icon, colorClass } = TONE_PRESENTATION[tone];
   return (
     <span className={`inline-flex items-center gap-1 ${colorClass}`}>
       {Icon ? <Icon className="size-3.5 shrink-0" aria-hidden="true" /> : null}

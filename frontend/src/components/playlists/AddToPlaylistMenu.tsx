@@ -77,25 +77,9 @@ export function AddToPlaylistMenu({
     );
   }
 
-  const statusText =
-    feedback === "added"
-      ? `Added to ${addedName}`
-      : feedback === "error"
-        ? "Couldn't add. Try again"
-        : "";
-  const TriggerIcon =
-    feedback === "added"
-      ? Confirm
-      : feedback === "error"
-        ? ErrorIcon
-        : AddToPlaylist;
   const iconSize = large ? "size-10" : "size-4";
-  const triggerIconClass =
-    feedback === "added"
-      ? `${iconSize} text-success`
-      : feedback === "error"
-        ? `${iconSize} text-destructive`
-        : iconSize;
+  const { statusText, TriggerIcon, triggerIconClass } =
+    feedbackPresentation(feedback, addedName, iconSize);
 
   return (
     <>
@@ -157,6 +141,39 @@ export function AddToPlaylistMenu({
       />
     </>
   );
+}
+
+/** What the trigger announces and looks like for each feedback state: the
+ * live-region text, the swapped glyph, and its color class. `idle` keeps the
+ * default add-to-playlist icon with no color and an empty announcement. */
+function feedbackPresentation(
+  feedback: "idle" | "added" | "error",
+  addedName: string,
+  iconSize: string,
+): {
+  statusText: string;
+  TriggerIcon: typeof AddToPlaylist;
+  triggerIconClass: string;
+} {
+  if (feedback === "added") {
+    return {
+      statusText: `Added to ${addedName}`,
+      TriggerIcon: Confirm,
+      triggerIconClass: `${iconSize} text-success`,
+    };
+  }
+  if (feedback === "error") {
+    return {
+      statusText: "Couldn't add. Try again",
+      TriggerIcon: ErrorIcon,
+      triggerIconClass: `${iconSize} text-destructive`,
+    };
+  }
+  return {
+    statusText: "",
+    TriggerIcon: AddToPlaylist,
+    triggerIconClass: iconSize,
+  };
 }
 
 /** The existing-playlist rows. `usePlaylists` lives here (inside the dropdown

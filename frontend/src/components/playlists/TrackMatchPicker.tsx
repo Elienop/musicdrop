@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
 
 import type { SearchTrack } from "@/api/useSearch";
 import { useTypedSearch } from "@/api/useSearch";
@@ -82,6 +83,70 @@ export function TrackMatchPicker({
   const trimmed = debounced.trim();
   const results = search.data?.tracks ?? [];
 
+  /** The results pane: one early-return per state (empty query, failed
+   * search, no hits, hits) in the same priority order as the wire states. */
+  function renderResults(): ReactNode {
+    if (trimmed.length === 0) {
+      return (
+        <p className="text-muted-foreground py-6 text-center text-sm">
+          Start typing to search your library.
+        </p>
+      );
+    }
+    if (search.isError) {
+      return (
+        <p className="text-destructive py-6 text-center text-sm" role="alert">
+          Search failed. Try again.
+        </p>
+      );
+    }
+    if (results.length === 0 && !search.isPending) {
+      return (
+        <p className="text-muted-foreground py-6 text-center text-sm">
+          No tracks found.
+        </p>
+      );
+    }
+    return (
+      <ul className="flex flex-col">
+        {results.map((hit) => (
+          <li
+            key={hit.id}
+            className="flex items-center justify-between gap-3 border-b py-2 last:border-b-0"
+          >
+            <div className="flex min-w-0 flex-col">
+              <span className="truncate font-medium">{hit.title}</span>
+              <span className="text-muted-foreground truncate text-sm">
+                {hit.artist}
+                {hit.album && (
+                  <>
+                    <span aria-hidden="true"> &middot; </span>
+                    {hit.album}
+                  </>
+                )}
+                {hit.duration_seconds != null && (
+                  <>
+                    <span aria-hidden="true"> &middot; </span>
+                    {formatDuration(hit.duration_seconds)}
+                  </>
+                )}
+              </span>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="shrink-0"
+              aria-label={`Select ${hit.title}`}
+              onClick={() => pick(hit)}
+            >
+              Select
+            </Button>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
   return (
     <Dialog open={open} onOpenChange={close}>
       <DialogContent>
@@ -103,56 +168,7 @@ export function TrackMatchPicker({
           />
           {/* pr-2: a gutter so the scrollbar doesn't sit on the Select buttons. */}
           <div className="max-h-72 overflow-y-auto pr-2">
-            {trimmed.length === 0 ? (
-              <p className="text-muted-foreground py-6 text-center text-sm">
-                Start typing to search your library.
-              </p>
-            ) : search.isError ? (
-              <p className="text-destructive py-6 text-center text-sm" role="alert">
-                Search failed. Try again.
-              </p>
-            ) : results.length === 0 && !search.isPending ? (
-              <p className="text-muted-foreground py-6 text-center text-sm">
-                No tracks found.
-              </p>
-            ) : (
-              <ul className="flex flex-col">
-                {results.map((hit) => (
-                  <li
-                    key={hit.id}
-                    className="flex items-center justify-between gap-3 border-b py-2 last:border-b-0"
-                  >
-                    <div className="flex min-w-0 flex-col">
-                      <span className="truncate font-medium">{hit.title}</span>
-                      <span className="text-muted-foreground truncate text-sm">
-                        {hit.artist}
-                        {hit.album && (
-                          <>
-                            <span aria-hidden="true"> &middot; </span>
-                            {hit.album}
-                          </>
-                        )}
-                        {hit.duration_seconds != null && (
-                          <>
-                            <span aria-hidden="true"> &middot; </span>
-                            {formatDuration(hit.duration_seconds)}
-                          </>
-                        )}
-                      </span>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="shrink-0"
-                      aria-label={`Select ${hit.title}`}
-                      onClick={() => pick(hit)}
-                    >
-                      Select
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
+            {renderResults()}
           </div>
         </div>
       </DialogContent>

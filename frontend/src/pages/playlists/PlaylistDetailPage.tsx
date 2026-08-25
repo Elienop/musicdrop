@@ -374,6 +374,89 @@ function mergeSummary(result: PlaylistMergeResult, sourceName: string): string {
   return `Merged ${sourceName}: added ${added}${skipped}${deleted}. Sync to Plex to push the change.`;
 }
 
+/** The two error lines a failed Plex-user load can take: a 409 means Plex is
+ * not configured (point at Settings); anything else is a load failure (offer
+ * the retry the ErrorState ships). */
+function PlexUsersErrorLine({
+  error,
+  onRetry,
+}: Readonly<{ error: unknown; onRetry: () => void }>) {
+  if (isPlexNotConfigured(error)) {
+    return (
+      <li className="text-muted-foreground text-sm">
+        Connect Plex in{" "}
+        <Link to="/settings/integrations" className="focus-ring rounded-sm underline">
+          Settings
+        </Link>{" "}
+        to choose who gets this playlist.
+      </li>
+    );
+  }
+  return (
+    <li>
+      <ErrorState
+        variant="inline"
+        message="Couldn’t load Plex accounts."
+        onRetry={onRetry}
+      />
+    </li>
+  );
+}
+
+/** The "Plex sync" list: the owner's always-on row first, then each Plex
+ * account as a toggleable fan-out target with its own sync status — or the
+ * error line when the account list failed to load. */
+function PlexTargetList({
+  playlist,
+  plexUsers,
+  targetIds,
+  toggleTarget,
+}: Readonly<{
+  playlist: PlaylistDetail;
+  plexUsers: ReturnType<typeof usePlexUsers>;
+  targetIds: Set<string>;
+  toggleTarget: (user: { id: string; name: string }) => void;
+}>) {
+  return (
+    <ul className="flex flex-col gap-2">
+      {/* The owner always gets their own copy — shown first, no checkbox. */}
+      <li className="flex items-center justify-between gap-3 text-sm">
+        <span className="font-medium">You (admin)</span>
+        <StatusLine status={adminSyncStatus(playlist)} />
+      </li>
+      {plexUsers.isError ? (
+        <PlexUsersErrorLine
+          error={plexUsers.error}
+          onRetry={() => void plexUsers.refetch()}
+        />
+      ) : (
+        (plexUsers.data?.users ?? []).map((user) => {
+          const checked = targetIds.has(user.id);
+          const state = playlist.plex?.[user.id];
+          return (
+            <li key={user.id} className="flex items-center justify-between gap-3 text-sm">
+              <label className="flex items-center gap-2">
+                <Checkbox
+                  checked={checked}
+                  onCheckedChange={() => toggleTarget(user)}
+                  aria-label={user.name}
+                />
+                <span className="font-medium">{user.name}</span>
+              </label>
+              {/* Show a status for every checked target — even before its
+                  first sync (state undefined → "Not synced yet"), matching
+                  the admin row which always shows one. */}
+              {checked && (
+                <StatusLine status={syncStatus(state, playlist, "Not synced yet")} />
+              )}
+            </li>
+          );
+        })
+      )}
+    </ul>
+  );
+}
+
 export function PlaylistDetailPage() {
   const { playlistId } = useParams<{ playlistId: string }>();
   const id = playlistId ?? "";
@@ -981,55 +1064,12 @@ function PlaylistDetailView({ playlist }: Readonly<{ playlist: PlaylistDetail }>
         aria-label="Plex sync"
       >
         <SectionLabel>Plex sync</SectionLabel>
-        <ul className="flex flex-col gap-2">
-          {/* The owner always gets their own copy — shown first, no checkbox. */}
-          <li className="flex items-center justify-between gap-3 text-sm">
-            <span className="font-medium">You (admin)</span>
-            <StatusLine status={adminSyncStatus(playlist)} />
-          </li>
-          {plexUsers.isError ? (
-            isPlexNotConfigured(plexUsers.error) ? (
-              <li className="text-muted-foreground text-sm">
-                Connect Plex in{" "}
-                <Link to="/settings/integrations" className="focus-ring rounded-sm underline">
-                  Settings
-                </Link>{" "}
-                to choose who gets this playlist.
-              </li>
-            ) : (
-              <li>
-                <ErrorState
-                  variant="inline"
-                  message="Couldn’t load Plex accounts."
-                  onRetry={() => void plexUsers.refetch()}
-                />
-              </li>
-            )
-          ) : (
-            (plexUsers.data?.users ?? []).map((user) => {
-              const checked = targetIds.has(user.id);
-              const state = playlist.plex?.[user.id];
-              return (
-                <li key={user.id} className="flex items-center justify-between gap-3 text-sm">
-                  <label className="flex items-center gap-2">
-                    <Checkbox
-                      checked={checked}
-                      onCheckedChange={() => toggleTarget(user)}
-                      aria-label={user.name}
-                    />
-                    <span className="font-medium">{user.name}</span>
-                  </label>
-                  {/* Show a status for every checked target — even before its
-                      first sync (state undefined → "Not synced yet"), matching
-                      the admin row which always shows one. */}
-                  {checked && (
-                    <StatusLine status={syncStatus(state, playlist, "Not synced yet")} />
-                  )}
-                </li>
-              );
-            })
-          )}
-        </ul>
+        <PlexTargetList
+          playlist={playlist}
+          plexUsers={plexUsers}
+          targetIds={targetIds}
+          toggleTarget={toggleTarget}
+        />
         {/* Sits below the per-target list because it describes the one library
             lookup they all share, not any single account's push. */}
         <MatchSummary playlist={playlist} />

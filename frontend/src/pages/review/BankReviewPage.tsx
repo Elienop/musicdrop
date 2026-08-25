@@ -718,6 +718,22 @@ function RemoveRowButton({ itemId }: Readonly<{ itemId: string }>) {
  * needs the import slot, so it gates on the active probe with the visible
  * reason below (never a disabled-button title).
  */
+/** The one sentence a failed re-scan start can take: a running import names
+ * the conflict, a rejected start carries the server's own reason, and
+ * anything else is the generic backend failure. */
+function startErrorMessage(error: unknown, isError: boolean): string | null {
+  if (error instanceof ImportConflictError) {
+    return "An import is already running; try again when it finishes.";
+  }
+  if (error instanceof ImportStartRejectedError) {
+    return error.message;
+  }
+  if (isError) {
+    return "Couldn’t start the re-scan. Check the backend, then try again.";
+  }
+  return null;
+}
+
 function StaleScreen({ item }: Readonly<{ item: BankItem }>) {
   const navigate = useNavigate();
   const start = useStartImport();
@@ -741,14 +757,7 @@ function StaleScreen({ item }: Readonly<{ item: BankItem }>) {
     );
   }
 
-  const startError =
-    start.error instanceof ImportConflictError
-      ? "An import is already running; try again when it finishes."
-      : start.error instanceof ImportStartRejectedError
-        ? start.error.message
-        : start.isError
-          ? "Couldn’t start the re-scan. Check the backend, then try again."
-          : null;
+  const startError = startErrorMessage(start.error, start.isError);
 
   return (
     <Shell

@@ -374,6 +374,113 @@ function TrackDiff({ candidate }: Readonly<{ candidate: Candidate }>) {
       : row.kind === "missing"
         ? `m-${row.m.index ?? i}`
         : `u-${i}`;
+  // The NOW panel's cells per row kind: present files show their current
+  // values; a missing release slot is "-" + a flagged gap; an unmatched file
+  // shows its own values (it isn't on the release but still lists its data).
+  const nowCells = (row: Row) => {
+    if (row.kind === "track") {
+      return (
+        <>
+          <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+            {row.t.track_before ?? "-"}
+          </TableCell>
+          <TableCell className="text-muted-foreground">
+            <span className="block truncate">{row.t.title_before ?? "-"}</span>
+          </TableCell>
+          <TableCell className="text-muted-foreground">
+            {row.t.format ?? "-"}
+          </TableCell>
+        </>
+      );
+    }
+    if (row.kind === "missing") {
+      return (
+        <>
+          <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+            -
+          </TableCell>
+          <TableCell className="text-muted-foreground">
+            <span className="flex items-center gap-1">
+              <Missing className="size-3 shrink-0" aria-hidden="true" />
+              <span className="block truncate">missing</span>
+            </span>
+          </TableCell>
+          <TableCell aria-hidden="true" className="text-muted-foreground">
+            -
+          </TableCell>
+        </>
+      );
+    }
+    return (
+      <>
+        <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+          {row.u.track ?? "-"}
+        </TableCell>
+        <TableCell>
+          <span className="flex items-center gap-1">
+            <Add className="size-3 shrink-0" aria-hidden="true" />
+            <span className="block truncate">{row.u.title ?? "-"}</span>
+          </span>
+        </TableCell>
+        <TableCell className="text-muted-foreground">
+          {row.u.format ?? "-"}
+        </TableCell>
+      </>
+    );
+  };
+  // The AFTER panel's cells per row kind: present files show their imported
+  // values (tagged when changed); a missing slot keeps the release index;
+  // an unmatched file is dropped from the release.
+  const afterCells = (row: Row) => {
+    const changed = row.kind === "track" && row.t.status === "changed";
+    if (row.kind === "track") {
+      return (
+        <>
+          <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+            {row.t.track_after ?? "-"}
+          </TableCell>
+          <TableCell>
+            <span className="flex min-w-0 items-center gap-2">
+              <span className={cn("block truncate", changed && "font-medium")}>
+                {row.t.title_after ?? "-"}
+              </span>
+              {changed && (
+                <>
+                  <EditIcon
+                    className="text-muted-foreground size-3 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span className="sr-only">changed</span>
+                </>
+              )}
+            </span>
+          </TableCell>
+        </>
+      );
+    }
+    if (row.kind === "missing") {
+      return (
+        <>
+          <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+            {row.m.index ?? "-"}
+          </TableCell>
+          <TableCell className="text-muted-foreground">
+            <span className="block truncate">{row.m.title ?? "-"}</span>
+          </TableCell>
+        </>
+      );
+    }
+    return (
+      <>
+        <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
+          -
+        </TableCell>
+        <TableCell className="text-muted-foreground">
+          <span className="block truncate">not on release</span>
+        </TableCell>
+      </>
+    );
+  };
   return (
     <section aria-label="Track changes" className="flex flex-col gap-3">
       <SectionLabel>Tracklist · {candidate.tracks.length}</SectionLabel>
@@ -393,49 +500,7 @@ function TrackDiff({ candidate }: Readonly<{ candidate: Candidate }>) {
             <TableBody>
               {rows.map((row, i) => (
                 <TableRow key={rowKey(row, i)} className="hover:bg-transparent">
-                  {row.kind === "track" ? (
-                    <>
-                      <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
-                        {row.t.track_before ?? "-"}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        <span className="block truncate">{row.t.title_before ?? "-"}</span>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {row.t.format ?? "-"}
-                      </TableCell>
-                    </>
-                  ) : row.kind === "missing" ? (
-                    <>
-                      <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
-                        -
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        <span className="flex items-center gap-1">
-                          <Missing className="size-3 shrink-0" aria-hidden="true" />
-                          <span className="block truncate">missing</span>
-                        </span>
-                      </TableCell>
-                      <TableCell aria-hidden="true" className="text-muted-foreground">
-                        -
-                      </TableCell>
-                    </>
-                  ) : (
-                    <>
-                      <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
-                        {row.u.track ?? "-"}
-                      </TableCell>
-                      <TableCell>
-                        <span className="flex items-center gap-1">
-                          <Add className="size-3 shrink-0" aria-hidden="true" />
-                          <span className="block truncate">{row.u.title ?? "-"}</span>
-                        </span>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {row.u.format ?? "-"}
-                      </TableCell>
-                    </>
-                  )}
+                  {nowCells(row)}
                 </TableRow>
               ))}
             </TableBody>
@@ -453,57 +518,17 @@ function TrackDiff({ candidate }: Readonly<{ candidate: Candidate }>) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.map((row, i) => {
-                const changed = row.kind === "track" && row.t.status === "changed";
-                return (
-                  <TableRow
-                    key={rowKey(row, i)}
-                    className={cn("hover:bg-transparent", changed && "bg-primary/5")}
-                  >
-                    {row.kind === "track" ? (
-                      <>
-                        <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
-                          {row.t.track_after ?? "-"}
-                        </TableCell>
-                        <TableCell>
-                          <span className="flex min-w-0 items-center gap-2">
-                            <span className={cn("block truncate", changed && "font-medium")}>
-                              {row.t.title_after ?? "-"}
-                            </span>
-                            {changed && (
-                              <>
-                                <EditIcon
-                                  className="text-muted-foreground size-3 shrink-0"
-                                  aria-hidden="true"
-                                />
-                                <span className="sr-only">changed</span>
-                              </>
-                            )}
-                          </span>
-                        </TableCell>
-                      </>
-                    ) : row.kind === "missing" ? (
-                      <>
-                        <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
-                          {row.m.index ?? "-"}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          <span className="block truncate">{row.m.title ?? "-"}</span>
-                        </TableCell>
-                      </>
-                    ) : (
-                      <>
-                        <TableCell className="text-muted-foreground pr-4 text-right tabular-nums">
-                          -
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          <span className="block truncate">not on release</span>
-                        </TableCell>
-                      </>
-                    )}
-                  </TableRow>
-                );
-              })}
+              {rows.map((row, i) => (
+                <TableRow
+                  key={rowKey(row, i)}
+                  className={cn(
+                    "hover:bg-transparent",
+                    row.kind === "track" && row.t.status === "changed" && "bg-primary/5",
+                  )}
+                >
+                  {afterCells(row)}
+                </TableRow>
+              ))}
             </TableBody>
           </Table>
         </div>
