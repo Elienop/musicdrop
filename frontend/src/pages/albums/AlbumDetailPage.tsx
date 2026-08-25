@@ -75,7 +75,7 @@ export function AlbumDetailPage() {
   return <AlbumDetailView album={data} />;
 }
 
-function AlbumDetailView({ album }: { album: AlbumDetail }) {
+function AlbumDetailView({ album }: Readonly<{ album: AlbumDetail }>) {
   const missingQuery = useAlbumMissing(album.id, album.mb_albumid);
   const report = missingQuery.data;
   const missingTracks: MissingReleaseTrack[] =
@@ -348,10 +348,10 @@ function AlbumDetailView({ album }: { album: AlbumDetail }) {
 function TrackRow({
   track,
   albumArtist,
-}: {
+}: Readonly<{
   track: Track;
   albumArtist: string;
-}) {
+}> ) {
   const showArtist = track.artist !== albumArtist;
   // Real lyrics beat a stale flag (the backend resolves the same way), so a
   // track that has both is simply a track with lyrics.
@@ -433,7 +433,7 @@ function TrackRow({
   );
 }
 
-function MissingTrackRow({ track }: { track: MissingReleaseTrack }) {
+function MissingTrackRow({ track }: Readonly<{ track: MissingReleaseTrack }>) {
   // Convey "missing" through a subtle row tint + italic title + a labelled
   // badge — NOT row-level opacity, which would composite the title and the
   // already-muted #/duration cells below the WCAG AA 4.5:1 floor. Every cell
@@ -481,10 +481,10 @@ function MissingTrackRow({ track }: { track: MissingReleaseTrack }) {
 function TracklistStatus({
   query,
   report,
-}: {
+}: Readonly<{
   query: ReturnType<typeof useAlbumMissing>;
   report: ReturnType<typeof useAlbumMissing>["data"];
-}) {
+}> ) {
   if (query.fetchStatus === "fetching" && !report) {
     return (
       <p className="text-muted-foreground text-sm" role="status">
@@ -588,13 +588,13 @@ function LyricsStatus({
   withLyrics,
   instrumental,
   missing,
-}: {
+}: Readonly<{
   albumId: number;
   total: number;
   withLyrics: number;
   instrumental: number;
   missing: number;
-}) {
+}> ) {
   const queryClient = useQueryClient();
   const status = useLyricsBackfillStatus();
   const start = useStartAlbumLyricsFetch(albumId);
@@ -677,7 +677,7 @@ function LyricsStatus({
   );
 }
 
-function LoadErrorState({ onRetry }: { onRetry: () => void }) {
+function LoadErrorState({ onRetry }: Readonly<{ onRetry: () => void }>) {
   return (
     <div className="flex flex-col gap-6">
       {/* Artist unknown on error — the escape keeps the BackLink to the roster. */}

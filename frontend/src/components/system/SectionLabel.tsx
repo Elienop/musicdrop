@@ -9,11 +9,11 @@ import type { ReactNode } from "react";
 export function SectionLabel({
   children,
   id,
-}: {
+}: Readonly<{
   children: ReactNode;
   /** Optional anchor id (e.g. an aria-labelledby target). */
   id?: string;
-}) {
+}> ) {
   return (
     <h2
       id={id}

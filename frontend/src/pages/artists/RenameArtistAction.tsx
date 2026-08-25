@@ -44,7 +44,7 @@ function damagePhrase(a: ArtistRenameAlbumResult): string {
  * keystroke re-gates. Buttons never go `disabled` (focus would strand on
  * <body>); busy is a non-visual channel (aria-disabled/aria-busy + spinner).
  */
-export function RenameArtistAction({ name }: { name: string }) {
+export function RenameArtistAction({ name }: Readonly<{ name: string }>) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [newName, setNewName] = useState(name);

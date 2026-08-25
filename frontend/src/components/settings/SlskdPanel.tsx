@@ -61,7 +61,7 @@ export function SlskdPanel() {
   );
 }
 
-function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
+function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) {
   const save = useSaveSlskdSettings();
   const test = useTestSlskd();
 
@@ -365,7 +365,7 @@ function SlskdSettingsEditor({ initial }: { initial: SlskdSettings }) {
 
 /** Section shell: SettingsSection provides the section-scale h2 + the bordered
  * panel, so the old heading-over-Card sandwich collapses to one box. */
-function Panel({ children }: { children: React.ReactNode }) {
+function Panel({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <SettingsSection
       title="slskd"

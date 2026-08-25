@@ -21,13 +21,13 @@ export function EmptyState({
   body,
   action,
   bordered = false,
-}: {
+}: Readonly<{
   icon: AppIcon;
   title: string;
   body?: string;
   action?: ReactNode;
   bordered?: boolean;
-}) {
+}> ) {
   return (
     <div
       data-slot="empty-state"

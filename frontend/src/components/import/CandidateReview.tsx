@@ -41,12 +41,12 @@ export function CandidateReview({
   nowCoverUrl,
   selected,
   onSelect,
-}: {
+}: Readonly<{
   candidate: Candidate;
   nowCoverUrl: string | null;
   selected: number;
   onSelect: (index: number) => void;
-}) {
+}> ) {
   // The release the preview should reflect: the selected option's own diff
   // merged over the candidate (or the candidate itself for the top match /
   // legacy bare options). The NOW panel + switcher stay on `candidate`.
@@ -116,10 +116,10 @@ function resolveSelected(candidate: Candidate, selected: number): Candidate {
 function MatchHeader({
   candidate,
   showRecommendation,
-}: {
+}: Readonly<{
   candidate: Candidate;
   showRecommendation: boolean;
-}) {
+}> ) {
   const after = candidate.album_after;
   const sourceBits = [
     candidate.data_source,
@@ -177,11 +177,11 @@ function CandidateSwitcher({
   options,
   selected,
   onSelect,
-}: {
+}: Readonly<{
   options: Candidate["options"];
   selected: number;
   onSelect: (index: number) => void;
-}) {
+}> ) {
   return (
     <label className="flex flex-col gap-1.5">
       <span className="text-sm font-medium">Other candidates ({options.length})</span>
@@ -215,10 +215,10 @@ function CandidateSwitcher({
 function BeforeAfter({
   candidate,
   nowCoverUrl,
-}: {
+}: Readonly<{
   candidate: Candidate;
   nowCoverUrl: string | null;
-}) {
+}> ) {
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <AlbumPanel
@@ -248,13 +248,13 @@ function AlbumPanel({
   coverUrl,
   coverCaption,
   changedFields,
-}: {
+}: Readonly<{
   heading: string;
   change: Candidate["album_after"];
   coverUrl: string | null;
   coverCaption: string | null;
   changedFields: string[];
-}) {
+}> ) {
   const changed = new Set(changedFields);
   return (
     <div className="border-border flex flex-col gap-3 rounded-xl border p-4">
@@ -287,11 +287,11 @@ function Field({
   label,
   value,
   changed,
-}: {
+}: Readonly<{
   label: string;
   value: string | null;
   changed: boolean;
-}) {
+}> ) {
   return (
     <div className="flex items-baseline gap-2 text-sm">
       <span className="text-muted-foreground w-12 shrink-0">{label}</span>
@@ -308,7 +308,7 @@ function Field({
 }
 
 /** One-line chip set of what import will change. */
-function WhatChanges({ candidate }: { candidate: Candidate }) {
+function WhatChanges({ candidate }: Readonly<{ candidate: Candidate }>) {
   // Edits import will make (outline chips). Cover art is intentionally NOT
   // listed: with the default config (no fetchart/embedart) the import never
   // fetches or changes art — the after-panel shows the release's art for
@@ -358,7 +358,7 @@ function WhatChanges({ candidate }: { candidate: Candidate }) {
 /** Every track current→proposed as two mirrored panels; changed rows tagged,
     missing/unmatched flagged. Both panels render one row per entry of the same
     list, so the cards stay line-aligned. */
-function TrackDiff({ candidate }: { candidate: Candidate }) {
+function TrackDiff({ candidate }: Readonly<{ candidate: Candidate }>) {
   type Row =
     | { kind: "track"; t: Candidate["tracks"][number] }
     | { kind: "missing"; m: Candidate["missing"][number] }

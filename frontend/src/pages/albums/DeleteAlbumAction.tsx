@@ -24,7 +24,7 @@ import {
  * preventDefaults so the dialog stays open showing "Moving…" until the move
  * resolves, then closes on success.
  */
-export function DeleteAlbumAction({ album }: { album: AlbumDetail }) {
+export function DeleteAlbumAction({ album }: Readonly<{ album: AlbumDetail }>) {
   const navigate = useNavigate();
   const del = useDeleteAlbum();
   const [open, setOpen] = useState(false);

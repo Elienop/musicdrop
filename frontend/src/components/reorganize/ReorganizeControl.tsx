@@ -45,7 +45,7 @@ function confirmLabel(plan: ReorganizePlan): string | null {
   return null;
 }
 
-function MoveRow({ m }: { m: ReorganizeMove }) {
+function MoveRow({ m }: Readonly<{ m: ReorganizeMove }>) {
   const renameInPlace = m.from_path === m.to_path;
   return (
     <li className="flex flex-col gap-0.5 border-b py-1.5 last:border-b-0">
@@ -71,7 +71,7 @@ function MoveRow({ m }: { m: ReorganizeMove }) {
  * MoveRow one. No `role="alert"` though: that is reserved for a terminal job's
  * failures, which arrive unbidden, whereas this sits inside the preview the
  * user just opened and focus has already moved into. */
-function ConflictList({ plan }: { plan: ReorganizePlan }) {
+function ConflictList({ plan }: Readonly<{ plan: ReorganizePlan }>) {
   const hidden = plan.conflicts_total - plan.conflicts.length;
   return (
     <div className="flex flex-col gap-1">
@@ -125,12 +125,12 @@ function FailureList({
   finishedAt,
   onDismiss,
   dismissPending,
-}: {
+}: Readonly<{
   failures: ReorganizeUnitFailure[];
   finishedAt: string | null;
   onDismiss: () => void;
   dismissPending: boolean;
-}) {
+}> ) {
   return (
     <div className="flex max-w-prose flex-col gap-1">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -167,7 +167,7 @@ function FailureList({
   );
 }
 
-function PlanView({ plan }: { plan: ReorganizePlan }) {
+function PlanView({ plan }: Readonly<{ plan: ReorganizePlan }>) {
   return (
     <div className="flex flex-col gap-2" aria-label="Reorganize preview">
       {/* The three counts partition the scope:
@@ -237,7 +237,7 @@ export function ReorganizeControl({
   scope,
   variant = "inline",
   railActions,
-}: {
+}: Readonly<{
   scope: ReorganizeScope;
   /** "rail" renders the Koito-style large icon trigger in a centered row —
    * after the page's other IconActions, passed via `railActions` so the
@@ -246,7 +246,7 @@ export function ReorganizeControl({
    * the original wrap row of text buttons (settings panel). */
   variant?: "inline" | "rail";
   railActions?: ReactNode;
-}) {
+}> ) {
   const queryClient = useQueryClient();
   const status = useReorganizeStatus();
   const preview = usePreviewReorganize();

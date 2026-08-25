@@ -23,11 +23,11 @@ const MAX_BYTES = 10 * 1024 * 1024;
  * remembering it; the unmount cleanup releases the abandoned object URL.
  * Same invariant as ArtistImageEditPanel: a panel holding a pending write must
  * not outlive the entity it writes to. */
-export function CoverEditPanel(props: {
+export function CoverEditPanel(props: Readonly<{
   albumId: number;
   onInstalled: () => void;
   onClose: () => void;
-}) {
+}> ) {
   return <CoverEditPanelForAlbum key={props.albumId} {...props} />;
 }
 
@@ -35,11 +35,11 @@ function CoverEditPanelForAlbum({
   albumId,
   onInstalled,
   onClose,
-}: {
+}: Readonly<{
   albumId: number;
   onInstalled: () => void;
   onClose: () => void;
-}) {
+}> ) {
   const [pending, setPending] = useState<Pending | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
@@ -190,7 +190,7 @@ function CoverEditPanelForAlbum({
 
 /** Post-install confirmation: "Cover updated" plus any embed detail the backend
  * reports (embedded into files, or why embedding was skipped). */
-function InstallOutcome({ result }: { result: CoverInstallResult }) {
+function InstallOutcome({ result }: Readonly<{ result: CoverInstallResult }>) {
   const detail =
     result.embed_detail ?? (result.embedded ? "Also embedded into the album's files." : null);
   return (
@@ -217,7 +217,7 @@ function InstallOutcome({ result }: { result: CoverInstallResult }) {
 
 /** Inline error notice matching AlbumEditPanel's house recipe (rounded border +
  * p-3, semantic destructive tint, leading icon). */
-function Notice({ children }: { children: React.ReactNode }) {
+function Notice({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <div
       role="alert"

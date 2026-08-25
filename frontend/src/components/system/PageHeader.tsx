@@ -14,11 +14,11 @@ export function PageHeader({
   title,
   meta,
   actions,
-}: {
+}: Readonly<{
   title: string;
   meta?: ReactNode;
   actions?: ReactNode;
-}) {
+}> ) {
   return (
     <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
       <div className="flex min-w-0 flex-col gap-1">
@@ -55,10 +55,10 @@ export function PageHeader({
 export function PageBody({
   variant = "default",
   children,
-}: {
+}: Readonly<{
   variant?: "default" | "narrow";
   children: ReactNode;
-}) {
+}> ) {
   return (
     <div
       className={cn(

@@ -70,7 +70,7 @@ export function LibraryDashboard() {
   );
 }
 
-function DashboardBody({ data }: { data: LibraryStatsResponse }) {
+function DashboardBody({ data }: Readonly<{ data: LibraryStatsResponse }>) {
   const { stats, recently_added, size_is_estimate } = data;
   const tiles = [
     { icon: Track, label: "Tracks", value: stats.track_count.toLocaleString() },

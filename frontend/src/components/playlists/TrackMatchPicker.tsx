@@ -39,7 +39,7 @@ export function TrackMatchPicker({
   onPick,
   title = "Match a track",
   description = "Search your library and pick the track this entry should point to.",
-}: {
+}: Readonly<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onPick: (track: PickedTrack) => void;
@@ -48,7 +48,7 @@ export function TrackMatchPicker({
    * track); a caller re-pointing a row that already HAS one says so instead,
    * because the store replaces in place rather than adding a row. */
   description?: string;
-}) {
+}> ) {
   const [query, setQuery] = useState("");
   // Debounce keystrokes (~300ms) so a burst of typing fires one search, not one
   // per character. The visible input stays fully controlled; only the value we

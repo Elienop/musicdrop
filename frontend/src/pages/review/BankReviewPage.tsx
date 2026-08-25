@@ -110,10 +110,10 @@ export function BankReviewPage() {
 function Shell({
   toolbar,
   children,
-}: {
+}: Readonly<{
   toolbar?: React.ReactNode;
   children: React.ReactNode;
-}) {
+}> ) {
   return (
     <section className="flex flex-col gap-6" aria-label="Review banked album">
       <div className="flex items-start justify-between gap-4">
@@ -125,7 +125,7 @@ function Shell({
   );
 }
 
-function BankScreen({ item }: { item: BankItem }) {
+function BankScreen({ item }: Readonly<{ item: BankItem }>) {
   // Status first: rows the user cannot (or must not) decide render notices.
   if (item.status === "queued" || item.status === "applying") {
     return <PendingNotice item={item} />;
@@ -151,7 +151,7 @@ function BankScreen({ item }: { item: BankItem }) {
 
 /** Shared decision error line — surfaces the backend's transition reason
  * (BankConflictError carries the string detail) or a generic retry cue. */
-function DecisionError({ error }: { error: unknown }) {
+function DecisionError({ error }: Readonly<{ error: unknown }>) {
   if (!error) return null;
   const message =
     error instanceof BankConflictError
@@ -166,7 +166,7 @@ function DecisionError({ error }: { error: unknown }) {
 
 /** The search's conflict line — a 409's real detail (stale flip, status race).
  * Non-conflict transport errors render inside the panel instead. */
-function SearchConflict({ error }: { error: unknown }) {
+function SearchConflict({ error }: Readonly<{ error: unknown }>) {
   if (!(error instanceof BankConflictError)) return null;
   return (
     <p className="text-destructive text-sm" role="alert">
@@ -185,11 +185,11 @@ function RescanControl({
   rescan,
   disabled,
   variant = "outline",
-}: {
+}: Readonly<{
   rescan: ReturnType<typeof useBankRescan>;
   disabled: boolean;
   variant?: "outline" | "default";
-}) {
+}> ) {
   return (
     <div className="flex shrink-0 flex-col items-end gap-1.5">
       <Button
@@ -222,7 +222,7 @@ function RescanControl({
 const NO_HIT_FEEDBACK = "No release found. Showing your previous matches.";
 
 /** The failed-apply banner. role=alert via StatusBanner's destructive tone. */
-function FailedBanner({ error }: { error: string | null | undefined }) {
+function FailedBanner({ error }: Readonly<{ error: string | null | undefined }>) {
   return (
     <StatusBanner tone="destructive" icon={Warning}>
       <p className="font-medium">The apply failed. Decide again to retry.</p>
@@ -240,11 +240,11 @@ function FailedDuplicateStrip({
   busy,
   pending,
   onDecide,
-}: {
+}: Readonly<{
   busy: boolean;
   pending: DuplicateAction | null;
   onDecide: (action: DuplicateAction) => void;
-}) {
+}> ) {
   return (
     <section aria-label="Resolve as a duplicate" className="flex flex-col gap-3">
       <SectionLabel>Resolve as a duplicate</SectionLabel>
@@ -262,7 +262,7 @@ function FailedDuplicateStrip({
   );
 }
 
-function BankCandidateScreen({ item }: { item: BankItem }) {
+function BankCandidateScreen({ item }: Readonly<{ item: BankItem }>) {
   const navigate = useNavigate();
   const decide = useBankDecision(item.id);
   const [selected, setSelected] = useState(0);
@@ -445,7 +445,7 @@ function BankCandidateScreen({ item }: { item: BankItem }) {
   );
 }
 
-function BankDuplicateScreen({ item }: { item: BankItem }) {
+function BankDuplicateScreen({ item }: Readonly<{ item: BankItem }>) {
   const navigate = useNavigate();
   const decide = useBankDecision(item.id);
   const rescan = useBankRescan(item.id);
@@ -512,7 +512,7 @@ function BankDuplicateScreen({ item }: { item: BankItem }) {
   );
 }
 
-function NoMatchScreen({ item }: { item: BankItem }) {
+function NoMatchScreen({ item }: Readonly<{ item: BankItem }>) {
   const navigate = useNavigate();
   const decide = useBankDecision(item.id);
   const search = useBankSearch(item.id);
@@ -608,7 +608,7 @@ function NoMatchScreen({ item }: { item: BankItem }) {
 /** queued/applying: the apply runner owns the row; the hook polls (2s) so
  * this screen progresses to done/failed live. No actions — deciding 409s and
  * deleting an applying row 409s. */
-function PendingNotice({ item }: { item: BankItem }) {
+function PendingNotice({ item }: Readonly<{ item: BankItem }>) {
   const applying = item.status === "applying";
   return (
     <Shell>
@@ -626,7 +626,7 @@ function PendingNotice({ item }: { item: BankItem }) {
   );
 }
 
-function DoneNotice({ item }: { item: BankItem }) {
+function DoneNotice({ item }: Readonly<{ item: BankItem }>) {
   const { title, body } = doneOutcome(item);
   return (
     <Shell>
@@ -675,7 +675,7 @@ function doneOutcome(item: BankItem): { title: string; body: string } {
   return { title: "Imported", body: `${label} landed in your library.` };
 }
 
-function IgnoredNotice({ item }: { item: BankItem }) {
+function IgnoredNotice({ item }: Readonly<{ item: BankItem }>) {
   return (
     <Shell>
       <EmptyState
@@ -690,7 +690,7 @@ function IgnoredNotice({ item }: { item: BankItem }) {
 }
 
 /** Remove-the-row action shared by the settled notices. */
-function RemoveRowButton({ itemId }: { itemId: string }) {
+function RemoveRowButton({ itemId }: Readonly<{ itemId: string }>) {
   const navigate = useNavigate();
   const remove = useDeleteBankItem();
   return (
@@ -718,7 +718,7 @@ function RemoveRowButton({ itemId }: { itemId: string }) {
  * needs the import slot, so it gates on the active probe with the visible
  * reason below (never a disabled-button title).
  */
-function StaleScreen({ item }: { item: BankItem }) {
+function StaleScreen({ item }: Readonly<{ item: BankItem }>) {
   const navigate = useNavigate();
   const start = useStartImport();
   const remove = useDeleteBankItem();

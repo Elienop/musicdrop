@@ -7,7 +7,7 @@ import { External } from "@/components/icons";
  * meant to sit inside the album rail's stat stack. Renders nothing when the
  * identity is empty (an as-is or sparsely-tagged album).
  */
-export function ReleaseInfo({ release }: { release: ReleaseIdentity }) {
+export function ReleaseInfo({ release }: Readonly<{ release: ReleaseIdentity }>) {
   const edition = [release.media, release.country].filter(Boolean).join(" · ");
   const source = [release.data_source, edition].filter(Boolean).join(" · ");
   const label = [release.label, release.disambiguation].filter(Boolean).join(" · ");

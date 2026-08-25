@@ -94,11 +94,11 @@ function Shell({
   backTo,
   backLabel,
   children,
-}: {
+}: Readonly<{
   backTo: string;
   backLabel: string;
   children: React.ReactNode;
-}) {
+}> ) {
   return (
     <section className="flex flex-col gap-6" aria-label="Resolve duplicate">
       <BackLink to={backTo} label={backLabel} />
@@ -112,12 +112,12 @@ function DuplicateScreen({
   jobId,
   index,
   backTo,
-}: {
+}: Readonly<{
   prompt: DuplicatePrompt;
   jobId: string;
   index: number;
   backTo: string;
-}) {
+}> ) {
   const navigate = useNavigate();
   const resolve = useResolveImportDuplicate(jobId);
   const [pending, setPending] = useState<DuplicateAction | null>(null);
@@ -152,11 +152,11 @@ function Notice({
   title,
   body,
   onRetry,
-}: {
+}: Readonly<{
   title: string;
   body: string;
   onRetry?: () => void;
-}) {
+}> ) {
   return (
     <EmptyState
       bordered

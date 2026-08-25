@@ -23,7 +23,7 @@ export function AlbumRow({
   action,
   href,
   hrefState,
-}: {
+}: Readonly<{
   cover: string | null;
   /** Which library asset `cover` shows (e.g. `album:7`), when the caller knows
    * it — scopes cross-tab image remounts to that one album. See CoverArt. */
@@ -37,7 +37,7 @@ export function AlbumRow({
   /** Router state for `href` (e.g. an `{ from: AlbumOrigin }` payload) so list
    * rows can thread navigation origin without a second link slot. */
   hrefState?: unknown;
-}) {
+}> ) {
   return (
     <div className="flex min-w-0 items-center gap-3 px-4 py-3">
       {/* Decorative — the adjacent title text names the album, so alt

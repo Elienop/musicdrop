@@ -91,7 +91,7 @@ export function SettingsTrashPage() {
 }
 
 /** One trashed album: name + meta, a Restore button, and a destructive Empty. */
-function TrashRow({ album }: { album: TrashedAlbum }) {
+function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
   const restore = useRestoreTrash();
   const empty = useEmptyTrashAlbum();
   const [result, setResult] = useState<RestoreResult | null>(null);
@@ -164,7 +164,7 @@ function ConfirmAction({
   pending,
   error,
   onConfirm,
-}: {
+}: Readonly<{
   trigger: React.ReactNode;
   title: string;
   body: string;
@@ -172,7 +172,7 @@ function ConfirmAction({
   pending: boolean;
   error: string | null;
   onConfirm: (close: () => void) => void;
-}) {
+}> ) {
   const [open, setOpen] = useState(false);
   return (
     <AlertDialog open={open} onOpenChange={setOpen}>

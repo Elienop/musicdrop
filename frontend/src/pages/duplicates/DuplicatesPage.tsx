@@ -249,12 +249,12 @@ function GroupCard({
   mode,
   keeperId,
   onChoose,
-}: {
+}: Readonly<{
   group: DuplicateGroup;
   mode: DuplicateMode;
   keeperId: number;
   onChoose: (albumId: number) => void;
-}) {
+}> ) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const resolve = useResolveDuplicate();
   const queryClient = useQueryClient();
@@ -369,12 +369,12 @@ function MemberRow({
   name,
   checked,
   onChoose,
-}: {
+}: Readonly<{
   album: DuplicateAlbum;
   name: string;
   checked: boolean;
   onChoose: () => void;
-}) {
+}> ) {
   const quality = `${album.format ?? "-"}${album.bitrate_kbps ? ` · ${album.bitrate_kbps}k` : ""}`;
   return (
     <li className={cn("flex items-center gap-1", checked && "bg-primary/5")}>

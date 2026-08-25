@@ -43,7 +43,7 @@ function summarise(p: MergePreview): string {
  * — many `+ adds` favours Merge, `↑ upgrade` rows favour Replace, all-unchanged
  * favours Skip. Pure render over a MergePreview (rows pre-ordered by position).
  */
-export function MergePreviewTable({ preview }: { preview: MergePreview }) {
+export function MergePreviewTable({ preview }: Readonly<{ preview: MergePreview }>) {
   const multiDisc = new Set(preview.rows.map((r) => r.disc)).size > 1;
   return (
     <section aria-label="Track comparison" className="flex flex-col gap-3">

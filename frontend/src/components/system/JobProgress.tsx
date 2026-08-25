@@ -28,7 +28,7 @@ export function JobProgress({
   counts,
   onStop,
   href,
-}: {
+}: Readonly<{
   label: string;
   scope?: string;
   state: "running" | "failed" | "done";
@@ -36,7 +36,7 @@ export function JobProgress({
   counts?: ReactNode;
   onStop?: () => void;
   href?: string;
-}) {
+}> ) {
   const pct =
     progress && progress.total > 0
       ? Math.min(100, Math.round((progress.done / progress.total) * 100))
@@ -99,7 +99,7 @@ export function JobProgress({
 /** State chip: one glyph + the state WORD — text always carries it. The
  * chip is the row's live region (role=status), so transitions announce
  * without re-reading the surrounding controls. */
-function StateChip({ state }: { state: "running" | "failed" | "done" }) {
+function StateChip({ state }: Readonly<{ state: "running" | "failed" | "done" }>) {
   if (state === "running") {
     return (
       <span

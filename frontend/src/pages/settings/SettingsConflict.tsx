@@ -55,7 +55,7 @@ export function SettingsConflict({
   server,
   onReload,
   onOverwrite,
-}: SettingsConflictProps) {
+}: Readonly<SettingsConflictProps>) {
   const hostRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

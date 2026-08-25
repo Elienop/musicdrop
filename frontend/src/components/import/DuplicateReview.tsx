@@ -25,10 +25,10 @@ type ExistingAlbum = DuplicatePrompt["existing"][number];
 export function DuplicateComparison({
   prompt,
   incomingCoverUrl,
-}: {
+}: Readonly<{
   prompt: DuplicatePrompt;
   incomingCoverUrl: string | null;
-}) {
+}> ) {
   return (
     <>
       <div className="flex flex-col gap-1">
@@ -91,12 +91,12 @@ export function DuplicateActionRow({
   busy,
   onDecide,
   describedBy,
-}: {
+}: Readonly<{
   pending: DuplicateAction | null;
   busy: boolean;
   onDecide: (action: DuplicateAction) => void;
   describedBy?: string;
-}) {
+}> ) {
   return (
     <>
       {/* None of the four is the preferred choice — they sit as one neutral
@@ -161,12 +161,12 @@ export function DuplicateActions({
   busy,
   onDecide,
   context = "live",
-}: {
+}: Readonly<{
   pending: DuplicateAction | null;
   busy: boolean;
   onDecide: (action: DuplicateAction) => void;
   context?: "live" | "bank";
-}) {
+}> ) {
   return (
     <>
       <div className="bg-background/80 sticky bottom-0 z-10 -mx-2 flex flex-wrap items-center gap-2 border-t px-2 py-3 backdrop-blur">
@@ -193,11 +193,11 @@ function ActionIcon({
   action,
   pending,
   icon: Icon,
-}: {
+}: Readonly<{
   action: DuplicateAction;
   pending: DuplicateAction | null;
   icon: AppIcon;
-}) {
+}> ) {
   if (pending === action) {
     return <Spinner className="animate-spin" aria-hidden="true" />;
   }
@@ -211,7 +211,7 @@ export function Panel({
   coverUrl,
   coverAssetKey,
   accent = false,
-}: {
+}: Readonly<{
   id: string;
   heading: string;
   album: IncomingAlbum | ExistingAlbum;
@@ -221,7 +221,7 @@ export function Panel({
    * no library identity and therefore no scoped event to listen for. */
   coverAssetKey?: string;
   accent?: boolean;
-}) {
+}> ) {
   const headingId = `panel-heading-${id}`;
   const meta = [
     album.year?.toString() ?? null,

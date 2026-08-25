@@ -20,13 +20,13 @@ export function ReleaseSearchRow({
   feedback,
   error,
   formId,
-}: {
+}: Readonly<{
   onSearch: (search: ImportSearch) => void;
   busy: boolean;
   feedback: string | null;
   error: boolean;
   formId: string;
-}) {
+}> ) {
   const [releaseId, setReleaseId] = useState("");
   const [artist, setArtist] = useState("");
   const [album, setAlbum] = useState("");

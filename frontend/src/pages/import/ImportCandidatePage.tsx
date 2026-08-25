@@ -134,11 +134,11 @@ function Shell({
   backTo,
   backLabel,
   children,
-}: {
+}: Readonly<{
   backTo: string;
   backLabel: string;
   children: React.ReactNode;
-}) {
+}> ) {
   return (
     <section className="flex flex-col gap-6" aria-label="Review album">
       <BackLink to={backTo} label={backLabel} />
@@ -156,7 +156,7 @@ function ReviewScreen({
   searching,
   onSearchStart,
   onSearchError,
-}: {
+}: Readonly<{
   candidate: Candidate;
   jobId: string;
   index: number;
@@ -165,7 +165,7 @@ function ReviewScreen({
   searching: boolean;
   onSearchStart: (baseline: number) => void;
   onSearchError: () => void;
-}) {
+}> ) {
   const navigate = useNavigate();
   // The candidate index the user will Apply — defaults to the top match (0).
   const [selected, setSelected] = useState(0);
@@ -312,11 +312,11 @@ function Notice({
   title,
   body,
   onRetry,
-}: {
+}: Readonly<{
   title: string;
   body: string;
   onRetry?: () => void;
-}) {
+}> ) {
   return (
     <EmptyState
       bordered

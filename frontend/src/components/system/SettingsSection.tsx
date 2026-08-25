@@ -13,11 +13,11 @@ export function SettingsSection({
   title,
   description,
   children,
-}: {
+}: Readonly<{
   title: string;
   description?: string;
   children: ReactNode;
-}) {
+}> ) {
   return (
     <section
       aria-label={title}

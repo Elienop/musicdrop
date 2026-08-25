@@ -157,7 +157,7 @@ function formatVersion(version: string): string {
  * spinner), a short visible text label, and the dot color. The running
  * version trails on the right of the same row (expanded sidebar only).
  */
-export function HealthStatus({ compact = false }: { compact?: boolean }) {
+export function HealthStatus({ compact = false }: Readonly<{ compact?: boolean }>) {
   const { data, isPending, isError } = useQuery({
     queryKey: ["health"],
     queryFn: fetchHealth,
@@ -255,7 +255,7 @@ export interface AppTopbarProps {
   children?: ReactNode;
 }
 
-export function AppTopbar({ children }: AppTopbarProps) {
+export function AppTopbar({ children }: Readonly<AppTopbarProps>) {
   return (
     <header className="border-border bg-surface-raised/80 sticky top-0 z-10 border-b backdrop-blur">
       <div className="flex items-center gap-3 px-4 py-3 md:px-6">
