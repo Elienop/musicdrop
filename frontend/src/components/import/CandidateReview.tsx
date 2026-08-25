@@ -368,12 +368,11 @@ function TrackDiff({ candidate }: Readonly<{ candidate: Candidate }>) {
     ...candidate.missing.map((m) => ({ kind: "missing" as const, m })),
     ...candidate.unmatched.map((u) => ({ kind: "unmatched" as const, u })),
   ];
-  const rowKey = (row: Row, i: number) =>
-    row.kind === "track"
-      ? `t-${row.t.index ?? i}`
-      : row.kind === "missing"
-        ? `m-${row.m.index ?? i}`
-        : `u-${i}`;
+  const rowKey = (row: Row, i: number) => {
+    if (row.kind === "track") return `t-${row.t.index ?? i}`;
+    if (row.kind === "missing") return `m-${row.m.index ?? i}`;
+    return `u-${i}`;
+  };
   // The NOW panel's cells per row kind: present files show their current
   // values; a missing release slot is "-" + a flagged gap; an unmatched file
   // shows its own values (it isn't on the release but still lists its data).

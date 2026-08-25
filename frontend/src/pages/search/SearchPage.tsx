@@ -2,7 +2,7 @@ import { SectionLabel } from "@/components/system/SectionLabel";
 import { useRef } from "react";
 import { Link, useSearchParams } from "react-router";
 
-import type { SearchTrack, SearchType } from "@/api/useSearch";
+import type { SearchTrack, SearchType, TypedSearchPage } from "@/api/useSearch";
 import { parseSearchType, useSearch, useTypedSearch } from "@/api/useSearch";
 import {
   AlbumCard,
@@ -209,6 +209,61 @@ const TYPE_NOUN: Record<SearchType, string> = {
   tracks: "tracks",
 };
 
+/** How many items of the requested type THIS page carries. */
+function shownCountFor(type: SearchType, data: TypedSearchPage): number {
+  if (type === "artists") {
+    return data.artists.length;
+  }
+  if (type === "albums") {
+    return data.albums.length;
+  }
+  return data.tracks.length;
+}
+
+/** The paged result list for one type — grid for artists/albums, a flat row
+ * list for tracks. */
+function TypedResultsList({
+  type,
+  data,
+  from,
+}: Readonly<{
+  type: SearchType;
+  data: TypedSearchPage;
+  from: AlbumOrigin;
+}> ) {
+  if (type === "artists") {
+    return (
+      <ul className={GRID_CLASS}>
+        {data.artists.map((artist) => (
+          <li key={artist.name}>
+            <ArtistCard artist={artist} />
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  if (type === "albums") {
+    return (
+      <ul className={GRID_CLASS}>
+        {data.albums.map((album) => (
+          <li key={album.id}>
+            <AlbumCard album={album} from={from} />
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  return (
+    <ul className="border-border divide-border divide-y rounded-xl border">
+      {data.tracks.map((track) => (
+        <li key={track.id}>
+          <TrackRow track={track} from={from} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function TypedSearchView({ q, type }: Readonly<{ q: string; type: SearchType }>) {
   const [searchParams, setSearchParams] = useSearchParams();
   const offset = Math.max(0, Number(searchParams.get("offset") ?? "0") || 0);
@@ -267,12 +322,7 @@ function TypedSearchView({ q, type }: Readonly<{ q: string; type: SearchType }>)
     );
   } else {
     const total = data.total;
-    const shown =
-      type === "artists"
-        ? data.artists.length
-        : type === "albums"
-          ? data.albums.length
-          : data.tracks.length;
+    const shown = shownCountFor(type, data);
 
     if (total === 0) {
       body = (
@@ -306,31 +356,7 @@ function TypedSearchView({ q, type }: Readonly<{ q: string; type: SearchType }>)
             )}
             aria-busy={refining}
           >
-            {type === "artists" ? (
-              <ul className={GRID_CLASS}>
-                {data.artists.map((artist) => (
-                  <li key={artist.name}>
-                    <ArtistCard artist={artist} />
-                  </li>
-                ))}
-              </ul>
-            ) : type === "albums" ? (
-              <ul className={GRID_CLASS}>
-                {data.albums.map((album) => (
-                  <li key={album.id}>
-                    <AlbumCard album={album} from={from} />
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <ul className="border-border divide-border divide-y rounded-xl border">
-                {data.tracks.map((track) => (
-                  <li key={track.id}>
-                    <TrackRow track={track} from={from} />
-                  </li>
-                ))}
-              </ul>
-            )}
+            <TypedResultsList type={type} data={data} from={from} />
           </div>
           {total > PAGE_SIZE && (
             <Pagination

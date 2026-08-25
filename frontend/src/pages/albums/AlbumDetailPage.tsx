@@ -401,28 +401,7 @@ function TrackRow({
       <TableCell className="text-center">
         {/* sr-only state text (the MissingTrackRow idiom): aria-label on a
             bare <svg>/<span> isn't reliably announced. */}
-        {track.has_lyrics ? (
-          <>
-            <LyricsIcon
-              className="text-foreground inline size-4"
-              aria-hidden="true"
-            />
-            <span className="sr-only">Has lyrics</span>
-          </>
-        ) : instrumental ? (
-          // The badge beside the title already answers this cell; a second
-          // "No lyrics" here would announce the gap the badge just ruled out.
-          <span className="text-muted-foreground" aria-hidden="true">
-            -
-          </span>
-        ) : (
-          <>
-            <span className="text-muted-foreground" aria-hidden="true">
-              -
-            </span>
-            <span className="sr-only">No lyrics</span>
-          </>
-        )}
+        <LyricsCell track={track} instrumental={instrumental} />
       </TableCell>
       <TableCell className="text-center">
         <AddToPlaylistMenu
@@ -431,6 +410,42 @@ function TrackRow({
         />
       </TableCell>
     </TableRow>
+  );
+}
+
+/** The Lyrics-column cell for a present track: the has-lyrics glyph, a
+ * silent dash for instrumentals (the badge beside the title already answers
+ * this cell — a second "No lyrics" would announce the gap the badge just
+ * ruled out), or the open gap with its sr-only announcement. */
+function LyricsCell({
+  track,
+  instrumental,
+}: Readonly<{ track: Track; instrumental: boolean }> ) {
+  if (track.has_lyrics) {
+    return (
+      <>
+        <LyricsIcon
+          className="text-foreground inline size-4"
+          aria-hidden="true"
+        />
+        <span className="sr-only">Has lyrics</span>
+      </>
+    );
+  }
+  if (instrumental) {
+    return (
+      <span className="text-muted-foreground" aria-hidden="true">
+        -
+      </span>
+    );
+  }
+  return (
+    <>
+      <span className="text-muted-foreground" aria-hidden="true">
+        -
+      </span>
+      <span className="sr-only">No lyrics</span>
+    </>
   );
 }
 

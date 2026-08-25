@@ -41,6 +41,104 @@ export function ArtistsPage() {
     window.scrollTo({ top: 0 });
   };
 
+  // The loading/error/empty/content ladder as early returns instead of a
+  // chained ternary — same four states, same order, same markup.
+  const renderArtistsBody = () => {
+    if (isPending) {
+      return (
+        <PageSkeleton announce="Loading artists…">
+          <ArtistsGridSkeleton count={12} />
+        </PageSkeleton>
+      );
+    }
+    if (isError) {
+      return (
+        <ErrorState
+          message="Couldn’t load artists. Check the backend and try again."
+          onRetry={() => void refetch()}
+        />
+      );
+    }
+    if (artists.length === 0) {
+      return (
+        <EmptyState
+          bordered
+          icon={Artists}
+          title="No artists yet"
+          body="Your beets library is empty. Import some music and it’ll show up here."
+          action={
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/import">Add music from a folder</Link>
+            </Button>
+          }
+        />
+      );
+    }
+    if (pageArtists.length === 0) {
+      // Roster > 0 but this page is empty → the offset is past the end (the
+      // roster shrank under it). Offer a way back to page 1.
+      return (
+        <EmptyState
+          bordered
+          icon={Artists}
+          title="This page is empty; the roster changed under it."
+          action={
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => goToOffset(0)}
+            >
+              Back to first page
+            </Button>
+          }
+        />
+      );
+    }
+    return (
+      <>
+        {/* ONE band, not a toolbar row plus a letter row: the letters take
+            the empty space to the left, the pager stays right. Both appear
+            on the same condition — you can only need either once the roster
+            outgrows the current page — so this is one gate, not two.
+            LETTER ORDER IS LOAD-BEARING: letters first, pager last. */}
+        {artists.length > pageSize && (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <AlphabetIndex
+              artists={artists}
+              pageSize={pageSize}
+              offset={offset}
+              onJump={goToOffset}
+            />
+            <Pagination
+              compact
+              label="Pagination (top)"
+              total={artists.length}
+              offset={offset}
+              limit={pageSize}
+              onOffsetChange={goToOffset}
+            />
+          </div>
+        )}
+        <ul className={GRID_CLASS}>
+          {pageArtists.map((artist) => (
+            <li key={artist.name}>
+              <ArtistCard artist={artist} />
+            </li>
+          ))}
+        </ul>
+        {artists.length > pageSize && (
+          <Pagination
+            total={artists.length}
+            offset={offset}
+            limit={pageSize}
+            onOffsetChange={goToOffset}
+          />
+        )}
+      </>
+    );
+  };
+
   return (
     <PageBody>
       <PageHeader
@@ -60,87 +158,7 @@ export function ArtistsPage() {
           ) : undefined
         }
       />
-      {isPending ? (
-        <PageSkeleton announce="Loading artists…">
-          <ArtistsGridSkeleton count={12} />
-        </PageSkeleton>
-      ) : isError ? (
-        <ErrorState
-          message="Couldn’t load artists. Check the backend and try again."
-          onRetry={() => void refetch()}
-        />
-      ) : artists.length === 0 ? (
-        <EmptyState
-          bordered
-          icon={Artists}
-          title="No artists yet"
-          body="Your beets library is empty. Import some music and it’ll show up here."
-          action={
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/import">Add music from a folder</Link>
-            </Button>
-          }
-        />
-      ) : pageArtists.length === 0 ? (
-        // Roster > 0 but this page is empty → the offset is past the end (the
-        // roster shrank under it). Offer a way back to page 1.
-        <EmptyState
-          bordered
-          icon={Artists}
-          title="This page is empty; the roster changed under it."
-          action={
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => goToOffset(0)}
-            >
-              Back to first page
-            </Button>
-          }
-        />
-      ) : (
-        <>
-          {/* ONE band, not a toolbar row plus a letter row: the letters take
-              the empty space to the left, the pager stays right. Both appear
-              on the same condition — you can only need either once the roster
-              outgrows the current page — so this is one gate, not two.
-              LETTER ORDER IS LOAD-BEARING: letters first, pager last. */}
-          {artists.length > pageSize && (
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <AlphabetIndex
-                artists={artists}
-                pageSize={pageSize}
-                offset={offset}
-                onJump={goToOffset}
-              />
-              <Pagination
-                compact
-                label="Pagination (top)"
-                total={artists.length}
-                offset={offset}
-                limit={pageSize}
-                onOffsetChange={goToOffset}
-              />
-            </div>
-          )}
-          <ul className={GRID_CLASS}>
-            {pageArtists.map((artist) => (
-              <li key={artist.name}>
-                <ArtistCard artist={artist} />
-              </li>
-            ))}
-          </ul>
-          {artists.length > pageSize && (
-            <Pagination
-              total={artists.length}
-              offset={offset}
-              limit={pageSize}
-              onOffsetChange={goToOffset}
-            />
-          )}
-        </>
-      )}
+      {renderArtistsBody()}
     </PageBody>
   );
 }

@@ -55,22 +55,28 @@ export function detailMessage(body: unknown): string | null {
     return detail;
   }
   if (Array.isArray(detail)) {
-    if (detail.length > 0) {
-      const first: unknown = detail[0];
-      if (first !== null && typeof first === "object" && "msg" in first) {
-        const msg = (first as { msg: unknown }).msg;
-        if (typeof msg === "string") {
-          return msg;
-        }
-      }
-    }
+    return detail.length > 0 ? firstValidationMessage(detail) : null;
+  }
+  return structuredDetailMessage(detail);
+}
+
+/** First entry's `msg` of an HTTPValidationError detail array, when the first
+ * entry carries a string one — null otherwise (the caller then falls back). */
+function firstValidationMessage(detail: unknown[]): string | null {
+  const first: unknown = detail[0];
+  if (first === null || typeof first !== "object" || !("msg" in first)) {
     return null;
   }
-  if (detail !== null && typeof detail === "object" && "message" in detail) {
-    const message = (detail as { message: unknown }).message;
-    if (typeof message === "string") {
-      return message;
-    }
+  const msg = (first as { msg: unknown }).msg;
+  return typeof msg === "string" ? msg : null;
+}
+
+/** The structured guards' `{detail: {message, recovery}}` shape — the message
+ * carries the real cause. Null when the shape doesn't match. */
+function structuredDetailMessage(detail: unknown): string | null {
+  if (detail === null || typeof detail !== "object" || !("message" in detail)) {
+    return null;
   }
-  return null;
+  const message = (detail as { message: unknown }).message;
+  return typeof message === "string" ? message : null;
 }
