@@ -22,6 +22,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { plural } from "@/lib/format";
 
 /** Settings → Trash: list deleted albums, restore one as-is, or empty (forever). */
 export function SettingsTrashPage() {
@@ -98,7 +99,7 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
 
   const meta = [
     album.track_count
-      ? `${album.track_count} track${album.track_count === 1 ? "" : "s"}`
+      ? `${album.track_count} ${plural(album.track_count, "track")}`
       : null,
     album.format,
     album.year?.toString() ?? null,

@@ -29,6 +29,7 @@ import { SectionLabel } from "@/components/system/SectionLabel";
 import { StatusBanner } from "@/components/system/StatusBanner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { plural } from "@/lib/format";
 
 import { BankSection } from "./BankSection";
 import { lastSegment } from "./lastSegment";
@@ -290,7 +291,7 @@ function InboxSection({
     noOpInFlight === null
       ? ""
       : noOpInFlight > 0
-        ? `Still downloading — ${noOpInFlight} ${noOpInFlight === 1 ? "folder is" : "folders are"} ` +
+        ? `Still downloading — ${noOpInFlight} ${plural(noOpInFlight, "folder is", "folders are")} ` +
           "still receiving files. They'll be importable once they finish."
         : "Nothing left to import; the inbox just cleared.";
 

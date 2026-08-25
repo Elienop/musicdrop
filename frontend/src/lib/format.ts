@@ -30,6 +30,11 @@ export function formatBytes(bytes: number): string {
   return `${value.toFixed(1)} ${units[i]}`;
 }
 
+/** "3 tracks", "1 track" — the word alone; callers place the number. */
+export function plural(n: number, one: string, many = `${one}s`): string {
+  return n === 1 ? one : many;
+}
+
 /** A wire timestamp (UTC ISO 8601, e.g. "2026-08-02T13:53:00Z") as a local
  * date AND time: "Aug 2, 2026, 1:53 PM" in en-US. Both halves matter — a job
  * result is only readable as STALE next to the moment it was produced, and a

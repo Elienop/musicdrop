@@ -13,6 +13,7 @@ import { PageSkeleton } from "@/components/system/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { plural } from "@/lib/format";
 
 export function PlaylistsPage() {
   const navigate = useNavigate();
@@ -25,7 +26,7 @@ export function PlaylistsPage() {
         title="Playlists"
         meta={
           data
-            ? `${data.length} ${data.length === 1 ? "playlist" : "playlists"}`
+            ? `${data.length} ${plural(data.length, "playlist")}`
             : undefined
         }
         actions={

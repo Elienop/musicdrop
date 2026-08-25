@@ -72,7 +72,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatDuration } from "@/lib/format";
+import { formatDuration, plural } from "@/lib/format";
 import { useDeferredH1Focus } from "@/lib/useDeferredH1Focus";
 import { useFocusAfterMutation } from "@/lib/useFocusAfterMutation";
 
@@ -884,9 +884,7 @@ function PlaylistDetailView({ playlist }: Readonly<{ playlist: PlaylistDetail }>
                       slot but has no copy to remove. Built as one string so the
                       sentence reads exactly, uninterrupted by interpolation. */}
                   {syncedPlexCopies > 0
-                    ? ` Also removes its ${syncedPlexCopies} synced Plex ${
-                        syncedPlexCopies === 1 ? "copy" : "copies"
-                      } on Plex.`
+                    ? ` Also removes its ${syncedPlexCopies} synced Plex ${plural(syncedPlexCopies, "copy", "copies")} on Plex.`
                     : null}
                 </AlertDialogDescription>
               </AlertDialogHeader>

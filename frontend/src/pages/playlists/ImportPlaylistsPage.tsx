@@ -24,7 +24,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDuration } from "@/lib/format";
+import { formatDuration, plural } from "@/lib/format";
 
 /** Per playlist (keyed by INDEX in the preview — names aren't unique) → per
  * entry position → the chosen library `item_id` (or `null` when the entry
@@ -268,7 +268,7 @@ export function ImportPlaylistsPage() {
               <Button onClick={commit} disabled={commitMutation.isPending}>
                 {commitMutation.isPending
                   ? "Importing…"
-                  : `Import ${count} ${count === 1 ? "playlist" : "playlists"}`}
+                  : `Import ${count} ${plural(count, "playlist")}`}
               </Button>
             </>
           }

@@ -14,6 +14,7 @@ import {
 } from "@/api/useDiskSync";
 import { SettingsSection } from "@/components/system/SettingsSection";
 import { Button } from "@/components/ui/button";
+import { plural } from "@/lib/format";
 
 /** One clause of the plan headline; zero-count clauses are dropped so the
  * sentence only ever states what actually changed. */
@@ -280,7 +281,7 @@ function DiskSyncControl() {
               >
                 {start.isPending
                   ? "Starting…"
-                  : `Sync ${syncCount} item${syncCount === 1 ? "" : "s"}`}
+                  : `Sync ${syncCount} ${plural(syncCount, "item")}`}
               </Button>
             )}
             <Button
