@@ -93,7 +93,7 @@ function ImportEntry() {
   // A non-conflict, non-rejected error is a generic start failure.
   const genericError = start.isError && !conflict && rejected === null;
 
-  function onSubmit(e: React.FormEvent) {
+  function onSubmit(e: React.SubmitEvent) {
     e.preventDefault();
     if (trimmed.length === 0) {
       return; // Button is disabled too; guard the Enter key.

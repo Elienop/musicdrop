@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, type SubmitEvent } from "react";
 import { useNavigate } from "react-router";
 
 import type { components } from "@/api/schema";
@@ -80,7 +80,7 @@ export function RenameArtistAction({ name }: { name: string }) {
   const result = apply.data;
   const failures = result ? result.albums.filter((a) => !isClean(a)) : [];
 
-  function onSubmit(e: FormEvent<HTMLFormElement>) {
+  function onSubmit(e: SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!canPreview) return;
     preview.mutate({ name, new_name: trimmed });

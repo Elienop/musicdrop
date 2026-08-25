@@ -40,7 +40,7 @@ export function CreatePlaylistDialog({
     onOpenChange(next);
   }
 
-  function submit(e: React.FormEvent) {
+  function submit(e: React.SubmitEvent) {
     e.preventDefault();
     if (trimmed.length === 0 || create.isPending) {
       return;
