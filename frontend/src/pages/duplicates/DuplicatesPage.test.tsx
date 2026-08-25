@@ -87,7 +87,7 @@ describe("DuplicatesPage", () => {
     renderPage();
     expect(await screen.findByText(/Matched on/i)).toBeInTheDocument();
     expect(screen.getByText("most complete")).toBeInTheDocument();
-    expect(screen.getAllByText("In Rainbows").length).toBe(2);
+    expect(screen.getAllByText("In Rainbows")).toHaveLength(2);
   });
 
   test("empty report shows the clean-library state", async () => {

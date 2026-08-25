@@ -171,7 +171,7 @@ describe("useEventStream", () => {
     const { spy, es } = setup();
     // First connect: queries just loaded — nothing to catch up on.
     es().onopen?.(new Event("open"));
-    expect(spy.mock.calls.length).toBe(0);
+    expect(spy.mock.calls).toHaveLength(0);
     // Re-connect (after a drop/sleep): invalidate to catch up on what was missed.
     es().onopen?.(new Event("open"));
     expect(spy.mock.calls.length).toBeGreaterThan(0);
