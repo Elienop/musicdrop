@@ -134,6 +134,22 @@ def _poll_client(client, job_id, predicate, attempts: int = 200):  # type: ignor
     raise TimeoutError("condition not met")
 
 
+def _poll_dup_prompt(client, job_id, index, attempts: int = 200):  # type: ignore[no-untyped-def]  # test-local poll
+    """Poll the duplicate prompt itself until it is actionable.
+
+    The feed flips to needs_dup_resolution a beat before the prompt row is
+    parked (the registry drains outcomes first, parked rows second — the same
+    feed-vs-candidate race test_import_api.py's _poll_candidate guards), so
+    feed status alone is not a readiness signal for the duplicate endpoints.
+    """
+    for _ in range(attempts):
+        resp = client.get(f"/api/import/{job_id}/albums/{index}/duplicate")
+        if resp.status_code == 200:
+            return resp
+        threading.Event().wait(0.01)
+    raise TimeoutError("duplicate prompt never became actionable")
+
+
 def test_get_duplicate_returns_prompt_then_decision_204() -> None:
     client = _client([_prompt(0)])
     job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
@@ -141,7 +157,7 @@ def test_get_duplicate_returns_prompt_then_decision_204() -> None:
         client, job_id, lambda s: any(a["status"] == "needs_dup_resolution" for a in s["albums"])
     )
 
-    got = client.get(f"/api/import/{job_id}/albums/0/duplicate")
+    got = _poll_dup_prompt(client, job_id, 0)
     assert got.status_code == 200
     assert got.json()["existing"][0]["album_id"] == 1
 
@@ -171,6 +187,7 @@ def test_cover_streams_embedded_art_for_duplicate_row(monkeypatch: pytest.Monkey
     _poll_client(
         client, job_id, lambda s: any(a["status"] == "needs_dup_resolution" for a in s["albums"])
     )
+    _poll_dup_prompt(client, job_id, 0)
     r = client.get(f"/api/import/{job_id}/albums/0/cover")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("image/")
@@ -183,6 +200,7 @@ def test_post_duplicate_decision_409_on_second() -> None:
     _poll_client(
         client, job_id, lambda s: any(a["status"] == "needs_dup_resolution" for a in s["albums"])
     )
+    _poll_dup_prompt(client, job_id, 0)
     first = client.post(f"/api/import/{job_id}/albums/0/duplicate", json={"action": "skip_new"})
     assert first.status_code == 204
     second = client.post(f"/api/import/{job_id}/albums/0/duplicate", json={"action": "skip_new"})
