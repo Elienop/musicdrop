@@ -45,6 +45,7 @@ from app.models.playlist import (
 )
 from app.models.playlist_import import (
     PlaylistImportFailure,
+    PlaylistImportPlaylist,
     PlaylistImportPreview,
     PlaylistImportPreviewRequest,
     PlaylistImportPreviewResponse,
@@ -688,6 +689,60 @@ def _unique_name(name: str, taken: set[str]) -> str:
     return f"{name} ({n})"
 
 
+async def _import_one_playlist(
+    playlist: PlaylistImportPlaylist,
+    name: str,
+    playlists_dir: Path,
+    handle: LibraryHandle,
+    plex_store: PlexConfigStore,
+) -> Playlist | None:
+    """Create one imported playlist — entries, then best-effort poster — export
+    it and return its summary. Returns ``None`` (with a warning) if creation
+    itself fails, so the caller can record the failure and keep going."""
+    entries = [
+        StoredEntry(uid=uuid.uuid4().hex, item_id=e.item_id, pending=e.pending)
+        for e in playlist.entries
+    ]
+    try:
+        record = await run_in_threadpool(
+            store.create_playlist,
+            playlists_dir,
+            name=name,
+            description=playlist.description,
+            entries=entries,
+        )
+    except Exception:
+        # One playlist failing (e.g. a store write error) must not strand the
+        # ones already created nor 500 the request — report it and continue,
+        # so a retry doesn't re-mint "Name (2)" duplicates of the successes.
+        logger.warning("Playlist import failed for %r", name, exc_info=True)
+        return None
+    if playlist.plex_rating_key or playlist.plex_source:
+        try:
+            # The ratingKey identifies the source playlist; the title is only
+            # the fallback for a body minted before keys were carried.
+            poster = await run_in_threadpool(
+                playlists_pull.download_poster,
+                plex_store.get(),
+                playlist.plex_rating_key,
+                playlist.plex_source,
+            )
+            if poster is not None:
+                data, image_format = poster
+                updated = await run_in_threadpool(
+                    store.set_artwork, playlists_dir, record.id, data, image_format
+                )
+                if updated is not None:
+                    record = updated
+        except Exception:
+            # Best-effort poster seed: an artless import is still a successful
+            # import, so any Plex/network failure is logged and swallowed
+            # (mirrors the editSummary best-effort stamp in plex/sync.py).
+            logger.warning("Plex poster pull failed for %r", name, exc_info=True)
+    await _export_playlist(record, handle)
+    return await _summary(record, handle)
+
+
 @router.post("/playlists/import")
 async def import_commit_endpoint(
     body: PlaylistImportRequest,
@@ -718,47 +773,9 @@ async def import_commit_endpoint(
     for playlist in body.playlists:
         name = _unique_name(playlist.name.strip() or "Imported playlist", taken)
         taken.add(name)  # reserve the name even on failure so siblings stay distinct
-        entries = [
-            StoredEntry(uid=uuid.uuid4().hex, item_id=e.item_id, pending=e.pending)
-            for e in playlist.entries
-        ]
-        try:
-            record = await run_in_threadpool(
-                store.create_playlist,
-                playlists_dir,
-                name=name,
-                description=playlist.description,
-                entries=entries,
-            )
-        except Exception:
-            # One playlist failing (e.g. a store write error) must not strand the
-            # ones already created nor 500 the request — report it and continue,
-            # so a retry doesn't re-mint "Name (2)" duplicates of the successes.
-            logger.warning("Playlist import failed for %r", name, exc_info=True)
+        summary = await _import_one_playlist(playlist, name, playlists_dir, handle, plex_store)
+        if summary is None:
             failed.append(PlaylistImportFailure(name=name, error="Couldn't save this playlist."))
-            continue
-        if playlist.plex_rating_key or playlist.plex_source:
-            try:
-                # The ratingKey identifies the source playlist; the title is only
-                # the fallback for a body minted before keys were carried.
-                poster = await run_in_threadpool(
-                    playlists_pull.download_poster,
-                    plex_store.get(),
-                    playlist.plex_rating_key,
-                    playlist.plex_source,
-                )
-                if poster is not None:
-                    data, image_format = poster
-                    updated = await run_in_threadpool(
-                        store.set_artwork, playlists_dir, record.id, data, image_format
-                    )
-                    if updated is not None:
-                        record = updated
-            except Exception:
-                # Best-effort poster seed: an artless import is still a successful
-                # import, so any Plex/network failure is logged and swallowed
-                # (mirrors the editSummary best-effort stamp in plex/sync.py).
-                logger.warning("Plex poster pull failed for %r", name, exc_info=True)
-        await _export_playlist(record, handle)
-        created.append(await _summary(record, handle))
+        else:
+            created.append(summary)
     return PlaylistImportResponse(created=created, failed=failed)

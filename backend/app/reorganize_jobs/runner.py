@@ -9,6 +9,7 @@ import os
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from app.beets.library import LibraryHandle, library_paths_context
 from app.beets.orphans import find_orphan_folders
@@ -48,28 +49,17 @@ def sweep(
             )
             reg.set_total(len(albums) + len(singletons))
             vacated: list[Path] = []
-            for album in albums:
-                if reg.should_stop():
-                    reg.finish("stopped")
-                    return
-                outcome = reorg_album(handle.lib, album)
-                reg.record(outcome)
-                reg.set_current(outcome.label)
-                if outcome.source_dir:
-                    vacated.append(Path(outcome.source_dir))
-                if delay:
-                    time.sleep(delay)
-            for item in singletons:
-                if reg.should_stop():
-                    reg.finish("stopped")
-                    return
-                outcome = reorg_singleton(handle.lib, item)
-                reg.record(outcome)
-                reg.set_current(outcome.label)
-                if outcome.source_dir:
-                    vacated.append(Path(outcome.source_dir))
-                if delay:
-                    time.sleep(delay)
+            if _sweep_units(reg, handle.lib, albums, reorg_album, vacated=vacated, delay=delay):
+                return
+            if _sweep_units(
+                reg,
+                handle.lib,
+                singletons,
+                reorg_singleton,
+                vacated=vacated,
+                delay=delay,
+            ):
+                return
             stopped = False
             if trash_dir is not None:
                 stopped = _sweep_orphans(
@@ -86,6 +76,36 @@ def sweep(
     finally:
         if on_complete is not None:
             on_complete()
+
+
+def _sweep_units(
+    reg: ReorganizeRegistry,
+    lib: Any,  # beets library object (untyped, adapter boundary)
+    units: list[Any],  # beets albums/singletons (untyped, adapter boundary)
+    reorg: Callable[..., ReorganizeOutcome],
+    *,
+    vacated: list[Path],
+    delay: float,
+) -> bool:
+    """Sweep one unit list (albums or singletons), the runner's twin loops.
+
+    Per unit: the outcome is recorded via ``reg.record`` and then
+    ``reg.set_current(outcome.label)``; the vacated source dir (when set)
+    is appended to ``vacated``; the courtesy delay is honored. On a Stop
+    request, ``reg.finish("stopped")`` is called and ``True`` is returned, so
+    the caller must not fall through to the tail."""
+    for unit in units:
+        if reg.should_stop():
+            reg.finish("stopped")
+            return True
+        outcome = reorg(lib, unit)
+        reg.record(outcome)
+        reg.set_current(outcome.label)
+        if outcome.source_dir:
+            vacated.append(Path(outcome.source_dir))
+        if delay:
+            time.sleep(delay)
+    return False
 
 
 def _sweep_orphans(

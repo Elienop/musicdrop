@@ -70,30 +70,39 @@ def directive_for(item: BankItem) -> BankApplyDirective:
         # selected option's release_id so the apply imports exactly the chosen
         # release while resolving the collision. Sweep-banked dup rows (no
         # parked payload) stay unpinned, exactly as before.
-        dup_search_id: str | None = None
-        if item.parked is not None and item.parked.candidate.options:
-            options = item.parked.candidate.options
-            idx = decision.candidate_index or 0
-            chosen = options[idx] if 0 <= idx < len(options) else options[0]
-            dup_search_id = chosen.release_id
         return BankApplyDirective(
             action="duplicate",
-            search_id=dup_search_id,
+            search_id=_resolve_search_id(item, decision.candidate_index),
             duplicate_action=decision.duplicate_action,
         )
     if decision.action == "apply":
-        search_id: str | None = None
-        if item.parked is not None and item.parked.candidate.options:
-            options = item.parked.candidate.options
-            idx = decision.candidate_index or 0
-            chosen = options[idx] if 0 <= idx < len(options) else options[0]
-            search_id = chosen.release_id
-        return BankApplyDirective(action="apply", search_id=search_id)
+        return BankApplyDirective(
+            action="apply",
+            search_id=_resolve_search_id(item, decision.candidate_index),
+        )
     if decision.action == "asis":
         return BankApplyDirective(action="asis")
     if decision.action == "astracks":
         return BankApplyDirective(action="astracks")
     raise RuntimeError(f"a {decision.action} decision is never queued")
+
+
+def _resolve_search_id(item: BankItem, candidate_index: int | None) -> str | None:
+    """Resolve the chosen option's ``release_id`` as the search pin.
+
+    ``candidate_index`` is resolved against the BANKED options list
+    (None -> top; out-of-range falls back to top, mirroring _apply_choice).
+    No parked payload, or a payload with no options -> ``None``: the run
+    does an unpinned lookup and the session takes its top candidate
+    (documented caveat - the match is re-run rather than replayed).
+    """
+    parked = item.parked
+    if parked is None or not parked.candidate.options:
+        return None
+    options = parked.candidate.options
+    idx = candidate_index or 0
+    chosen = options[idx] if 0 <= idx < len(options) else options[0]
+    return chosen.release_id
 
 
 class BankApplyRunner:
