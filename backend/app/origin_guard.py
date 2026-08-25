@@ -31,7 +31,10 @@ from app.api.csrf import origin_allowed
 # resolve_extra_origins() returns.
 _DEV_FRONTEND_ORIGIN = "http://localhost:5173"
 
-_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# Exported so the OpenAPI overlay (app/openapi_overlay.py) declares 403 for
+# exactly the methods this guard checks — never a re-typed copy, so the
+# contract follows if the method set ever changes.
+UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
 def resolve_extra_origins(static_dir: str) -> tuple[str, ...]:
@@ -51,7 +54,7 @@ class OriginGuardMiddleware:
         self._extra = extra_origins
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and scope["method"] in _UNSAFE_METHODS:
+        if scope["type"] == "http" and scope["method"] in UNSAFE_METHODS:
             headers = Headers(scope=scope)
             if not origin_allowed(
                 headers.get("origin"),
