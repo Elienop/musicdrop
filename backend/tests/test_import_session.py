@@ -347,6 +347,54 @@ def test_search_with_no_results_keeps_previous_and_sets_feedback(
     assert task.match is match  # original candidate still applies
 
 
+def test_search_success_swaps_task_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A successful search re-park must swap task.candidates itself.
+
+    Pins the `task.candidates = candidates` assignment in `_park_search`: a
+    mutation review proved nothing else in the suite forces the task object to
+    hold the NEW candidate list after a successful relookup.
+    """
+    import app.beets.import_session as session_mod
+
+    match = _build_match(BeetsRec.medium)
+    other = _build_other_match()
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    monkeypatch.setattr(session_mod, "relookup", lambda t, s: ([other], BeetsRec.strong))
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    first = bridge.get_parked(timeout=2.0)
+    assert first is not None
+    assert first.candidate.search_revision == 0
+
+    bridge.push_choice(
+        first.album_index,
+        ImportChoice(action=ImportAction.search, search=ImportSearch(release_id="a9")),
+    )
+
+    second = bridge.get_parked(timeout=2.0)
+    assert second is not None
+    assert second.candidate.search_revision == 1
+    assert second.candidate.album_after.album == "Amnesiac"  # the re-looked-up release
+
+    # The TASK object itself must now carry the relookup's NEW candidate list,
+    # not the original lookup's one — that swap happens inside `_park_search`.
+    assert task.candidates == [other]
+
+    bridge.push_choice(second.album_index, ImportChoice(action=ImportAction.apply))
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+
+
 def test_uncertain_rec_skip_choice_skips(monkeypatch: pytest.MonkeyPatch) -> None:
     match = _build_match(BeetsRec.medium)
     bridge = ImportBridge()
@@ -2163,6 +2211,80 @@ def test_rescan_choice_rereads_swaps_items_and_reparks(
     t.join(timeout=2.0)
     assert task.match is other  # apply selects from the NEW candidate list
     assert original_items is not task.items
+
+
+def test_successful_rescan_redetects_embedded_art(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Pins the art re-detection tail of `_park_rescan`: on a successful rescan
+    # art_source + has_current_art are recomputed from the FRESH items (the
+    # rescan's whole point is that the user edited the folder, so the old file
+    # may have carried the cover and the new one may not — or vice versa).
+    # A mutation review proved this tail was unpinned. The re-parked
+    # candidate's has_current_art AND the art_source the bridge records for the
+    # re-park both have to reflect the new items.
+    import app.beets.import_session as session_mod
+
+    ORIG_PATH = "/music/album/orig.flac"  # original scan's first file: no embedded art
+    NEW_PATH = "/music/album/new.flac"  # rescanned first file: HAS embedded art
+
+    def fake_embedded_art(path: str) -> tuple[bytes, str] | None:
+        return (b"jpeg-bytes", "image/jpeg") if path == NEW_PATH else None
+
+    match = _build_match(BeetsRec.medium)
+    other = _build_other_match()
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    session.paths = [b"/music"]  # a real session always has toppaths; /music/album is under it
+    # Original scan's item has a path (so art_source is set) but no embedded art.
+    task.items[0].path = os.fsencode(ORIG_PATH)
+    new_items: list[Item] = [
+        Item(
+            artist="Radiohead",
+            album="Amnesiac",
+            title="Pyramid Song",
+            track=1,
+            length=200.0,
+            path=os.fsencode(NEW_PATH),
+        )
+    ]
+    monkeypatch.setattr(session_mod, "_read_items", lambda p: new_items)
+    monkeypatch.setattr(
+        session_mod,
+        "lookup_items",
+        lambda items, s: ("Radiohead", "Amnesiac", [other], BeetsRec.strong),
+    )
+    monkeypatch.setattr(session_mod, "embedded_art", fake_embedded_art)
+
+    done = threading.Event()
+
+    def worker() -> None:
+        task.choose_match(session)
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    first = bridge.get_parked(timeout=2.0)
+    assert first is not None
+    # Baseline: the original park saw NO embedded art on the original file.
+    assert first.candidate.has_current_art is False
+    assert session.bridge.art_source(first.album_index) == ORIG_PATH
+    bridge.push_choice(first.album_index, ImportChoice(action=ImportAction.rescan))
+
+    second = bridge.get_parked(timeout=2.0)
+    assert second is not None
+    assert second.candidate.search_revision == 1
+    assert second.candidate.search_feedback is None
+    # The invariant under test: the re-park reflects the NEW items' art state.
+    assert second.candidate.has_current_art is True
+    assert session.bridge.art_source(second.album_index) == NEW_PATH
+
+    bridge.push_choice(second.album_index, ImportChoice(action=ImportAction.apply))
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert task.match is other
 
 
 def test_rescan_with_no_audio_left_keeps_state_and_sets_feedback(

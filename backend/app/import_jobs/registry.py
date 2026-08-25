@@ -409,8 +409,12 @@ class ImportJobRegistry:
         if job.sweep is not None:
             self._drain_sweep_locked(job)
             return
-        # Pass order is load-bearing: it closes the documented consumer-
-        # interleaving races — see the per-pass helpers below.
+        # The load-bearing order is pending-replay BEFORE the two live drains:
+        # a buffered (stale) park/prompt must attach first so a fresh one from
+        # the queue overwrites it, never the reverse (a stale park rendering
+        # while the worker waits on the fresh one — pinned in the registry
+        # tests). Outcomes-first is convenience, not correctness: the buffer
+        # fallback absorbs either order there.
         self._drain_outcomes_locked(job)
         self._drain_pending_locked(job)
         self._drain_parked_locked(job)
