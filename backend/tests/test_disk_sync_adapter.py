@@ -368,7 +368,8 @@ def test_run_aborts_when_root_present_but_empty(edit_lib: Library) -> None:
     for entry in os.listdir(root):  # empty the mountpoint (files + artist/album dirs)
         p = os.path.join(root, entry)
         shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
-    assert os.path.isdir(root) and not os.listdir(root)  # present but empty
+    assert os.path.isdir(root)  # present but empty
+    assert not os.listdir(root)  # present but empty
     with pytest.raises(LibraryRootUnavailableError):
         run_disk_sync(
             edit_lib, on_total=lambda n: None, on_item=lambda o: None, should_stop=lambda: False

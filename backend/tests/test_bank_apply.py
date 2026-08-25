@@ -642,7 +642,8 @@ def test_defers_while_gate_blocked(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         time.sleep(0.2)
         assert fake.validate_calls == []  # never started while the gate is shut
         item = store.get_item(bank, item_id)
-        assert item is not None and item.status == "queued"  # not even claimed
+        assert item is not None
+        assert item.status == "queued"  # not even claimed
         monkeypatch.setattr("app.lyrics_jobs.registry.lyrics_backfill_active", lambda: False)
         done = _poll(
             lambda: store.get_item(bank, item_id),
@@ -730,7 +731,8 @@ def test_claim_race_skips_rebanked_row(tmp_path: Path, monkeypatch: pytest.Monke
             lambda: store.get_item(bank, other_id),
             lambda i: i is not None and i.status == "done",
         )
-        assert done is not None and done.status == "done"  # the drain continued
+        assert done is not None
+        assert done.status == "done"  # the drain continued
         raced_row = store.get_item(bank, raced_id)
         assert raced_row is not None  # still readable - the row was never lost
         assert raced_row.status == "needs_review"  # the re-bank reset survived
@@ -768,7 +770,8 @@ def test_drain_survives_next_queued_raise(tmp_path: Path, monkeypatch: pytest.Mo
             lambda i: i is not None and i.status == "done",
         )
         assert raised["done"]  # the faulty pick actually fired
-        assert item is not None and item.status == "done"  # the drain survived it
+        assert item is not None
+        assert item.status == "done"  # the drain survived it
     finally:
         runner.stop()
 

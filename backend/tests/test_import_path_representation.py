@@ -164,7 +164,8 @@ def test_trash_restore_stores_music_dir_relative_paths(tmp_path: Path) -> None:
     thread.start()
     thread.join(timeout=30.0)
     assert not thread.is_alive(), "restore worker did not finish in time"
-    assert result and getattr(result[0], "restored", False), f"restore failed: {result}"
+    assert result, f"restore failed: {result}"
+    assert getattr(result[0], "restored", False), f"restore failed: {result}"
 
     stored = _stored_paths(db_path)
     assert stored == [b"Artist/Album/01 A.flac", b"Artist/Album/02 B.flac"], (

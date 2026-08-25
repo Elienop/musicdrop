@@ -178,7 +178,8 @@ def test_rescan_409_when_no_audio_remains(
     assert r.status_code == 409
     assert "no audio files remain" in r.json()["detail"]
     reread = store.get_item(bank_api.get_bank_dir(), item_id)
-    assert reread is not None and reread.status == "needs_review"  # untouched
+    assert reread is not None
+    assert reread.status == "needs_review"  # untouched
 
 
 def test_rescan_409_on_a_queued_row(client: TestClient, bank_dir: Path, tmp_path: Path) -> None:

@@ -133,13 +133,19 @@ def test_422_entries_stay_fastapi_validation_and_are_never_invented() -> None:
             content = _as_dict(_as_dict(responses.get("422")).get("content"))
             media = _as_dict(content.get("application/json"))
             ref = _as_dict(media.get("schema")).get("$ref")
-            assert isinstance(ref, str) and ref.endswith("/HTTPValidationError"), (
+            assert isinstance(ref, str), (
+                f"{method.upper()} {path} 422 $ref is not a string: {ref!r}"
+            )
+            assert ref.endswith("/HTTPValidationError"), (
                 f"{method.upper()} {path} 422 no longer references HTTPValidationError: {ref!r}"
             )
         else:
             # FastAPI puts 422 exactly on operations with something to validate
             # (a body or parameters); the overlay must not add it anywhere else.
-            assert not ("requestBody" in operation or "parameters" in operation), (
+            assert "requestBody" not in operation, (
+                f"{method.upper()} {path} has a body/params but lost its 422"
+            )
+            assert "parameters" not in operation, (
                 f"{method.upper()} {path} has a body/params but lost its 422"
             )
     assert declared > 0

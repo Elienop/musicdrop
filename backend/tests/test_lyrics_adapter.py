@@ -82,7 +82,7 @@ def test_fetch_item_write_gated_off(edit_lib: Library) -> None:
     assert out.status == "found"
     assert out.written is False
     assert item.lyrics == "x"  # stored in DB
-    assert not (MediaFile(os.fsdecode(item.path)).lyrics or "")  # NOT written to file
+    assert not MediaFile(os.fsdecode(item.path)).lyrics  # NOT written to file
 
 
 class _WriteFailItem:
@@ -294,7 +294,8 @@ def _instrumental(backend: str = "lrclib") -> Lyrics:
     """What a backend really hands back for an instrumental: beets' Lyrics
     normalises the "[Instrumental]" marker to text="" + instrumental=True."""
     lyr = Lyrics(INSTRUMENTAL_LYRICS, backend, "https://lrclib.net/api/get/1")
-    assert lyr.text == "" and lyr.instrumental is True  # guards the beets contract
+    assert lyr.text == ""  # guards the beets contract
+    assert lyr.instrumental is True  # guards the beets contract
     return lyr
 
 
@@ -341,7 +342,8 @@ def test_fetch_item_instrumental_clears_stale_lyrics_and_sidecars(edit_lib: Libr
     assert out.status == "instrumental"
     assert item.lyrics == ""
     row = edit_lib.get_item(item.id)
-    assert row is not None and row.lyrics == ""  # persisted, not just in memory
+    assert row is not None
+    assert row.lyrics == ""  # persisted, not just in memory
     assert not Path(base + ".lrc").exists()
     assert not Path(base + ".txt").exists()
     assert INSTRUMENTAL_LYRICS in (MediaFile(os.fsdecode(item.path)).lyrics or "")

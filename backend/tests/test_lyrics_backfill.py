@@ -394,7 +394,8 @@ def test_sweep_album_scope_only_touches_that_album(edit_lib: Library, tmp_path: 
     )
     s = reg.state()
     assert s.phase == "done"
-    assert s.total == 3 and s.processed == 3  # only the Radiohead album, not the 4th item
+    assert s.total == 3  # only the Radiohead album, not the 4th item
+    assert s.processed == 3
 
 
 def test_lyrics_coverage_counts_checked_no_lyrics(edit_lib: Library) -> None:
@@ -435,7 +436,8 @@ def test_sweep_threads_recheck_misses(edit_lib: Library, tmp_path: Path) -> None
         fetch_one=fake_fetch_one,
         make_plugin=lambda **_: object(),
     )
-    assert seen and all(seen)  # every fetch saw recheck_misses=True
+    assert seen
+    assert all(seen)  # every fetch saw recheck_misses=True
 
 
 def test_sweep_logs_end_summary(

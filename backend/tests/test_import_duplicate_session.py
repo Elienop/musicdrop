@@ -349,4 +349,5 @@ def test_trash_replaced_albums_runs_from_a_worker_thread(
         pool.submit(_trash_replaced_albums, session).result()
 
     assert duplicates_lib.get_album(target_id) is None  # dropped from the library
-    assert trash.is_dir() and any(trash.iterdir())  # files relocated under Trash
+    assert trash.is_dir()  # files relocated under Trash
+    assert any(trash.iterdir())  # files relocated under Trash

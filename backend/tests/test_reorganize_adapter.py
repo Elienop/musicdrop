@@ -265,7 +265,8 @@ def test_reorganize_album_intra_unit_collision_refused_every_run(tmp_path: Path)
 
         assert outcome.status == "failed"
         error = outcome.error or ""
-        assert "01 Song other.mp3" in error and "'Song'" in error  # BOTH tracks named
+        assert "01 Song other.mp3" in error  # BOTH tracks named
+        assert "'Song'" in error  # BOTH tracks named
         assert "track number and title" not in error  # no hardcoded guess
         assert _tree(music) == before  # zero renames, zero new files
         assert not (music / "X").exists()  # the destination folder was never created

@@ -175,7 +175,8 @@ def test_pull_not_found_message_is_actionable_and_hides_rating_keys(
     with pytest.raises(PlexConnectionError) as ei:
         playlists_pull.pull_playlist_entries(CONFIG, ["999", "1000"])
     message = str(ei.value)
-    assert "999" not in message and "1000" not in message  # no opaque ids leaked
+    assert "999" not in message  # no opaque ids leaked
+    assert "1000" not in message  # no opaque ids leaked
     assert "2 selected Plex playlists" in message
     assert "refresh the list" in message
 
@@ -471,7 +472,8 @@ def test_download_poster_resolves_duplicate_titles_by_rating_key(
     result = playlists_pull.download_poster(CONFIG, "22")
     assert result is not None
     data, fmt = result
-    assert data == _JPG and fmt == "jpg"  # the SECOND playlist's composite
+    assert data == _JPG
+    assert fmt == "jpg"  # the SECOND playlist's composite
     assert server._session.requested is not None
     assert "/metadata/22/" in server._session.requested
 
