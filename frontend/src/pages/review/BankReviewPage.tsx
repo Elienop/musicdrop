@@ -302,6 +302,20 @@ function BankDuplicateCluster({
   );
 }
 
+/** Build the bar's cluster render-prop OUTSIDE any component, so screens pass
+ * a ready-made function instead of defining one inline (S6478). */
+function makeBankDuplicateCluster(
+  props: Readonly<{
+    pending: DuplicateAction | null;
+    busy: boolean;
+    onDecide: (action: DuplicateAction) => void;
+  }>,
+) {
+  return (hintId: string | undefined) => (
+    <BankDuplicateCluster hintId={hintId} {...props} />
+  );
+}
+
 function BankCandidateScreen({ item }: Readonly<{ item: BankItem }>) {
   const navigate = useNavigate();
   const decide = useBankDecision(item.id);
@@ -338,6 +352,15 @@ function BankCandidateScreen({ item }: Readonly<{ item: BankItem }>) {
   const showDupActions = hasCollision || (dups.isError && item.status === "failed");
 
   const submit = makeSubmit(decide, navigate, setPendingDup);
+
+  const onDecideDup = (action: DuplicateAction) => {
+    setPendingDup(action);
+    submit({
+      action: "duplicate",
+      candidate_index: selected,
+      duplicate_action: action,
+    });
+  };
 
   const busyAll = decide.isPending || search.isPending || rescan.isPending;
   const ignore: BarDecision = {
@@ -435,21 +458,11 @@ function BankCandidateScreen({ item }: Readonly<{ item: BankItem }>) {
           }}
           cluster={
             showDupActions
-              ? (hintId) => (
-                  <BankDuplicateCluster
-                    hintId={hintId}
-                    pending={pendingDup}
-                    busy={busyAll}
-                    onDecide={(action) => {
-                      setPendingDup(action);
-                      submit({
-                        action: "duplicate",
-                        candidate_index: selected,
-                        duplicate_action: action,
-                      });
-                    }}
-                  />
-                )
+              ? makeBankDuplicateCluster({
+                  pending: pendingDup,
+                  busy: busyAll,
+                  onDecide: onDecideDup,
+                })
               : undefined
           }
           checking={!showDupActions && checking}
@@ -523,14 +536,11 @@ function BankDuplicateScreen({ item }: Readonly<{ item: BankItem }>) {
             disabled: decide.isPending,
           }}
           hint={DUPLICATE_FOOTNOTE_BANK}
-          cluster={(hintId) => (
-            <BankDuplicateCluster
-              hintId={hintId}
-              pending={pending}
-              busy={decide.isPending || rescan.isPending}
-              onDecide={onDecide}
-            />
-          )}
+          cluster={makeBankDuplicateCluster({
+            pending,
+            busy: decide.isPending || rescan.isPending,
+            onDecide,
+          })}
           messages={
             <>
               <DecisionError error={decide.error} />
