@@ -359,7 +359,7 @@ function ArtistImageEditPanelForArtist({
             {url.trim() && (
               <img
                 src={url}
-                alt="Image link preview"
+                alt="Link preview"
                 className="bg-muted size-40 rounded-xl object-cover shadow-sm"
                 onError={(e) => {
                   e.currentTarget.style.display = "none";
@@ -393,7 +393,7 @@ function ArtistImageEditPanelForArtist({
         <div ref={previewRef} tabIndex={-1} className="flex flex-col gap-3 outline-none">
           <img
             src={pending.objectUrl}
-            alt="Artist image preview"
+            alt="Pending artist portrait"
             className="bg-muted size-40 rounded-xl object-cover shadow-sm"
           />
           {pending.source && (

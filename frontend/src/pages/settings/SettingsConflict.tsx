@@ -92,11 +92,15 @@ export function SettingsConflict({
   }, [local, server]);
 
   return (
-    <div
-      role="dialog"
-      aria-modal
+    // Native <dialog> rendered inline via `open` — the same non-modal reality
+    // the old role="dialog" div had (aria-modal was dropped: there was never a
+    // focus trap, so claiming modality misled AT). `m-0 w-full text-foreground`
+    // neutralize the UA dialog styles (auto margins, fit-content width,
+    // CanvasText color) so the card's layout is unchanged.
+    <dialog
+      open
       aria-label="File changed on disk"
-      className="border-destructive/40 bg-destructive/5 flex flex-col gap-3 rounded-xl border p-4"
+      className="border-destructive/40 bg-destructive/5 static m-0 flex w-full flex-col gap-3 rounded-xl border p-4 text-foreground"
     >
       <div className="flex flex-col gap-1">
         <p className="text-sm">
@@ -127,6 +131,6 @@ export function SettingsConflict({
           Overwrite anyway
         </Button>
       </div>
-    </div>
+    </dialog>
   );
 }

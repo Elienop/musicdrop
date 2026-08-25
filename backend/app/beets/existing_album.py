@@ -38,6 +38,7 @@ def _existing_tracks(items: list[Any]) -> list[ExistingTrack]:
         raw_bitrate = _coerce_int(getattr(item, "bitrate", 0))  # beets stores bps
         out.append(
             ExistingTrack(
+                item_id=_coerce_int(getattr(item, "id", 0)),
                 track=_coerce_int(getattr(item, "track", 0)) or None,
                 disc=_coerce_int(getattr(item, "disc", 0)) or None,
                 title=_coerce_optional_str(getattr(item, "title", None)),

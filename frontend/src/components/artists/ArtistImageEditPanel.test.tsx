@@ -258,7 +258,7 @@ describe("ArtistImageEditPanel", () => {
     render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /^fetch$/i }));
     expect(screen.getByText(/deezer has no portrait for abba/i)).toBeInTheDocument();
-    expect(screen.queryByAltText(/artist image preview/i)).toBeNull();
+    expect(screen.queryByAltText(/pending artist portrait/i)).toBeNull();
   });
 
   it("releases a rejected preview's object URL instead of leaking it", () => {
@@ -305,7 +305,7 @@ describe("ArtistImageEditPanel", () => {
     // Fetch unmounts the button that was just pressed; focus must not fall to
     // <body>, where the next Tab restarts from the top of the document.
     expect(document.body).not.toHaveFocus();
-    expect(screen.getByAltText(/artist image preview/i).closest("[tabindex]")).toHaveFocus();
+    expect(screen.getByAltText(/pending artist portrait/i).closest("[tabindex]")).toHaveFocus();
 
     fireEvent.click(screen.getByRole("button", { name: /discard/i }));
     expect(screen.getByRole("button", { name: /^fetch$/i })).toHaveFocus();
@@ -331,11 +331,11 @@ describe("ArtistImageEditPanel", () => {
     fetchReturnsPortrait(blob);
     const view = render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /^fetch$/i }));
-    expect(screen.getByAltText(/artist image preview/i)).toBeInTheDocument();
+    expect(screen.getByAltText(/pending artist portrait/i)).toBeInTheDocument();
 
     view.rerender(<ArtistImageEditPanel name="Blondie" onSaved={() => {}} onClose={() => {}} />);
     expect(screen.getByText(/choose the portrait for blondie/i)).toBeInTheDocument();
-    expect(screen.queryByAltText(/artist image preview/i)).toBeNull();
+    expect(screen.queryByAltText(/pending artist portrait/i)).toBeNull();
     expect(screen.queryByRole("button", { name: /use this image/i })).toBeNull();
     // ...and the abandoned candidate's URL goes with it.
     expect(revoked).toContain("blob:1");

@@ -309,8 +309,13 @@ class ImportChoice(BaseModel):
 
 
 class ExistingTrack(BaseModel):
-    """One track of an in-library duplicate copy — the up-front comparison row."""
+    """One track of an in-library duplicate copy — the up-front comparison row.
 
+    ``item_id`` is the beets library id: the row's stable identity (list keys,
+    future link-outs) — never index-derived.
+    """
+
+    item_id: int
     track: int | None
     disc: int | None
     title: str | None

@@ -3057,8 +3057,13 @@ export interface components {
         /**
          * ExistingTrack
          * @description One track of an in-library duplicate copy — the up-front comparison row.
+         *
+         *     ``item_id`` is the beets library id: the row's stable identity (list keys,
+         *     future link-outs) — never index-derived.
          */
         ExistingTrack: {
+            /** Item Id */
+            item_id: number;
             /** Track */
             track: number | null;
             /** Disc */
@@ -3828,6 +3833,8 @@ export interface components {
         };
         /** PlaylistImportPreview */
         PlaylistImportPreview: {
+            /** Preview Id */
+            preview_id: string;
             /** Name */
             name: string;
             /** Entries */

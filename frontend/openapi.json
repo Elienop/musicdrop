@@ -9656,6 +9656,10 @@
       },
       "ExistingTrack": {
         "properties": {
+          "item_id": {
+            "type": "integer",
+            "title": "Item Id"
+          },
           "track": {
             "anyOf": [
               {
@@ -9714,6 +9718,7 @@
         },
         "type": "object",
         "required": [
+          "item_id",
           "track",
           "disc",
           "title",
@@ -9721,7 +9726,7 @@
           "bitrate_kbps"
         ],
         "title": "ExistingTrack",
-        "description": "One track of an in-library duplicate copy \u2014 the up-front comparison row."
+        "description": "One track of an in-library duplicate copy \u2014 the up-front comparison row.\n\n``item_id`` is the beets library id: the row's stable identity (list keys,\nfuture link-outs) \u2014 never index-derived."
       },
       "FacetValue": {
         "properties": {
@@ -11471,6 +11476,10 @@
       },
       "PlaylistImportPreview": {
         "properties": {
+          "preview_id": {
+            "type": "string",
+            "title": "Preview Id"
+          },
           "name": {
             "type": "string",
             "title": "Name"
@@ -11497,6 +11506,7 @@
         },
         "type": "object",
         "required": [
+          "preview_id",
           "name",
           "entries",
           "matched_count",

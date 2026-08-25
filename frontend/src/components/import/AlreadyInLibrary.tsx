@@ -51,8 +51,8 @@ export function AlreadyInLibrary({
 function ExistingTracklist({ tracks }: Readonly<{ tracks: ExistingAlbum["tracks"] }>) {
   return (
     <ol className="border-border divide-border divide-y rounded-lg border text-sm">
-      {tracks.map((t, i) => (
-        <li key={i} className="flex items-center gap-3 px-3 py-1.5">
+      {tracks.map((t) => (
+        <li key={t.item_id} className="flex items-center gap-3 px-3 py-1.5">
           <span className="text-muted-foreground w-6 shrink-0 text-right font-mono text-xs">
             {t.track ?? "-"}
           </span>

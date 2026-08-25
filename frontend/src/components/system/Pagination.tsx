@@ -258,10 +258,12 @@ export function Pagination({
               <span> of </span>
               <span>{totalPages}</span>
             </span>
-            {pageWindow(page, totalPages).map((entry, i) =>
+            {pageWindow(page, totalPages).map((entry, i, entries) =>
               entry === "gap" ? (
                 <span
-                  key={`gap-${i}`}
+                  // A gap always follows a page number; that neighbor is its
+                  // stable identity (at most one gap per side).
+                  key={`gap-after-${entries[i - 1]}`}
                   aria-hidden="true"
                   className="text-muted-foreground px-1"
                 >
