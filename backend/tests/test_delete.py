@@ -95,8 +95,11 @@ def test_delete_album_op_409_during_backfill() -> None:
 
     try:
         req = _Req()
+        # Calling the async op only CREATES the coroutine — nothing runs (and
+        # nothing can raise) until asyncio.run drives it inside the block.
+        op = delete_album_op(req, 1)  # type: ignore[arg-type]
         with pytest.raises(HTTPException) as ei:
-            asyncio.run(delete_album_op(req, 1))  # type: ignore[arg-type]
+            asyncio.run(op)
         assert ei.value.status_code == 409
     finally:
         reset_lyrics_backfill()
