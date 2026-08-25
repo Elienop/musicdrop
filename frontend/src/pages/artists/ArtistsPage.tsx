@@ -16,6 +16,7 @@ import {
 } from "@/components/system/Pagination";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { plural } from "@/lib/format";
 import { usePageSize } from "@/lib/usePageSize";
 
 export function ArtistsPage() {
@@ -47,9 +48,7 @@ export function ArtistsPage() {
         meta={
           // Always the FULL roster count, not the current page's size.
           artists.length > 0
-            ? `${artists.length.toLocaleString()} ${
-                artists.length === 1 ? "artist" : "artists"
-              }`
+            ? `${artists.length.toLocaleString()} ${plural(artists.length, "artist")}`
             : undefined
         }
         // How much of the page you see is a property OF THE PAGE, so it sits

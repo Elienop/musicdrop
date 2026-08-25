@@ -17,6 +17,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { plural } from "@/lib/format";
 
 type ArtistRenameAlbumResult = components["schemas"]["ArtistRenameAlbumResult"];
 
@@ -79,6 +80,9 @@ export function RenameArtistAction({ name }: Readonly<{ name: string }>) {
 
   const result = apply.data;
   const failures = result ? result.albums.filter((a) => !isClean(a)) : [];
+  const mergeNote = preview.data?.merge
+    ? `, merges into ${preview.data.new_name}`
+    : "";
 
   function onSubmit(e: SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -146,7 +150,7 @@ export function RenameArtistAction({ name }: Readonly<{ name: string }>) {
         {/* Always mounted: fills on preview success, empties on reset. */}
         <span className="sr-only" role="status">
           {preview.data
-            ? `Preview ready: ${preview.data.albums.length} album${preview.data.albums.length === 1 ? "" : "s"}, ${totalMoves} file${totalMoves === 1 ? "" : "s"} will move${preview.data.merge ? `, merges into ${preview.data.new_name}` : ""}`
+            ? `Preview ready: ${preview.data.albums.length} ${plural(preview.data.albums.length, "album")}, ${totalMoves} ${plural(totalMoves, "file")} will move${preview.data.merge ? mergeNote : ""}`
             : ""}
         </span>
 

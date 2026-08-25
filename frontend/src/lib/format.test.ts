@@ -5,6 +5,7 @@ import {
   formatDuration,
   formatTimestamp,
   formatTotalDuration,
+  plural,
 } from "@/lib/format";
 
 describe("formatTotalDuration", () => {
@@ -55,6 +56,22 @@ describe("formatDuration", () => {
   });
   test("en-dash for a missing duration", () => {
     expect(formatDuration(null)).toBe("-");
+  });
+});
+
+describe("plural", () => {
+  test("singular for exactly 1", () => {
+    expect(plural(1, "track")).toBe("track");
+  });
+  test("default plural for > 1", () => {
+    expect(plural(3, "track")).toBe("tracks");
+  });
+  test("plural at 0", () => {
+    expect(plural(0, "group")).toBe("groups");
+  });
+  test("irregular via the third argument", () => {
+    expect(plural(1, "folder is", "folders are")).toBe("folder is");
+    expect(plural(2, "folder is", "folders are")).toBe("folders are");
   });
 });
 

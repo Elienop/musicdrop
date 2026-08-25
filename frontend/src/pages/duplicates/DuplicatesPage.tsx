@@ -29,6 +29,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SegmentedControl } from "@/components/ui/segmented-control";
+import { plural } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /** A group's chosen keeper, clamped to current membership. A background refetch
@@ -93,7 +94,7 @@ export function DuplicatesPage() {
         title="Duplicates"
         meta={
           data
-            ? `${data.group_count} ${data.group_count === 1 ? "group" : "groups"} · ${data.album_count} albums`
+            ? `${data.group_count} ${plural(data.group_count, "group")} · ${data.album_count} albums`
             : "Scanning your library…"
         }
         actions={
@@ -110,7 +111,7 @@ export function DuplicatesPage() {
                     Resolving&hellip;
                   </>
                 ) : (
-                  `Resolve all · ${moveCount} ${moveCount === 1 ? "copy" : "copies"}`
+                  `Resolve all · ${moveCount} ${plural(moveCount, "copy", "copies")}`
                 )}
               </Button>
             )}
@@ -375,7 +376,8 @@ function MemberRow({
   checked: boolean;
   onChoose: () => void;
 }> ) {
-  const quality = `${album.format ?? "-"}${album.bitrate_kbps ? ` · ${album.bitrate_kbps}k` : ""}`;
+  const bitrateNote = ` · ${album.bitrate_kbps}k`;
+  const quality = `${album.format ?? "-"}${album.bitrate_kbps ? bitrateNote : ""}`;
   return (
     <li className={cn("flex items-center gap-1", checked && "bg-primary/5")}>
       <input
