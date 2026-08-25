@@ -118,6 +118,15 @@ function makeImageFile(name = "art.png", type = "image/png"): File {
   return new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], name, { type });
 }
 
+/** The words of a live-region text, with the page's repeat-announcement token
+ * stripped. Every announcement appends a run of invisible zero-width spaces
+ * (a DOM change that forces even a byte-identical repeat to be announced —
+ * see the page's `announce`), so text assertions pin the words with that
+ * token removed. */
+function words(text: string): string {
+  return text.replace(/\u200B/g, "");
+}
+
 /** A `TypedSearchPage` (`type=tracks`) carrying the given track hits. */
 function trackSearchPage(
   hits: Array<{
@@ -927,22 +936,22 @@ describe("PlaylistDetailPage", () => {
     const twins = within(screen.getByRole("row", { name: /Twins/ }));
     expect(lost.getByText("Not in Plex")).toHaveAttribute(
       "title",
-      "Plex has no track with this file, and nothing matched by artist and title. Check the file is in your Plex library, then sync again.",
+      "Plex has no track with this file, and nothing matched by its tags. Check the file is in your Plex library, then sync again.",
     );
     expect(twins.getByText("Not in Plex")).toHaveAttribute(
       "title",
-      "Several Plex tracks share this artist and title, and none has this file, so MusicDrop won't guess which one. Sort out the copies in Plex, then sync again.",
+      "Several Plex tracks matched this track's tags, and none has its file, so MusicDrop won't guess which one. Sort out the copies in Plex, then sync again.",
     );
     // …and assistive tech gets the same reason as real text, because `title` on
     // a Badge's generic <span> is not reliably announced.
     expect(
       lost.getByText(
-        "Not in Plex: Plex has no track with this file, and nothing matched by artist and title. Check the file is in your Plex library, then sync again.",
+        "Not in Plex: Plex has no track with this file, and nothing matched by its tags. Check the file is in your Plex library, then sync again.",
       ),
     ).toBeInTheDocument();
     expect(
       twins.getByText(
-        "Not in Plex: Several Plex tracks share this artist and title, and none has this file, so MusicDrop won't guess which one. Sort out the copies in Plex, then sync again.",
+        "Not in Plex: Several Plex tracks matched this track's tags, and none has its file, so MusicDrop won't guess which one. Sort out the copies in Plex, then sync again.",
       ),
     ).toBeInTheDocument();
     // …and the row Plex DID place stays unmarked.
@@ -1421,10 +1430,10 @@ describe("PlaylistDetailPage", () => {
 
   test("a sync that found every track by file says so, and says nothing else", async () => {
     renderWithPlex(adminMatched({ path: 28 }));
-    expect(await screen.findByText("Matched 28 tracks by file.")).toBeInTheDocument();
+    expect(await screen.findByText("Last sync matched 28 tracks by file.")).toBeInTheDocument();
     // The overwhelmingly common outcome: one muted line and no escalation —
     // neither the weak-match caveat nor the broken-path warning.
-    expect(screen.getByText("Matched 28 tracks by file.")).toHaveClass("text-muted-foreground");
+    expect(screen.getByText("Last sync matched 28 tracks by file.")).toHaveClass("text-muted-foreground");
     expect(screen.queryByText(WEAK_NOTE)).not.toBeInTheDocument();
     expect(screen.queryByText(/nothing matched by file/i)).not.toBeInTheDocument();
   });
@@ -1433,7 +1442,7 @@ describe("PlaylistDetailPage", () => {
     renderWithPlex(adminMatched({ path: 22, artist_title: 4, album_length: 2 }));
     expect(
       await screen.findByText(
-        "Matched 28 tracks: 22 by file, 4 by artist and title, 2 by album and length.",
+        "Last sync matched 28 tracks: 22 by file; 4 by artist and title; 2 by album, title and length.",
       ),
     ).toBeInTheDocument();
     // Some tracks DID match by file, so the path config is working: the caveat
@@ -1449,7 +1458,7 @@ describe("PlaylistDetailPage", () => {
     // hide the one fact the owner needed for years.
     expect(
       await screen.findByText(
-        "Matched 28 tracks: none by file, 22 by artist and title, 6 by album and length.",
+        "Last sync matched 28 tracks: none by file; 22 by artist and title; 6 by album, title and length.",
       ),
     ).toBeInTheDocument();
     const warning = screen.getByText(/Nothing matched by file\./).closest("p");
@@ -1458,6 +1467,16 @@ describe("PlaylistDetailPage", () => {
       "href",
       "/settings/integrations",
     );
+    // …and names the action that REFRESHES the evidence: the sentence above
+    // describes the last sync, so it stays stale until the user syncs again.
+    expect(warning).toHaveTextContent(/then sync again to re-test/);
+  });
+
+  test("a one-track sync counts it in the singular", async () => {
+    renderWithPlex(adminMatched({ path: 1 }));
+    // The singular branch of the counts sentence — a tally of one reads
+    // "1 track", never "1 tracks".
+    expect(await screen.findByText("Last sync matched 1 track by file.")).toBeInTheDocument();
   });
 
   test("a failed target's all-zero tally is silence, not a 'none by file' alarm", async () => {
@@ -1479,7 +1498,7 @@ describe("PlaylistDetailPage", () => {
     expect(await screen.findByText("Couldn’t sync to this Plex account.")).toBeInTheDocument();
     expect(screen.queryByText(/none by file/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/nothing matched by file/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/^Matched \d/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Last sync matched \d/)).not.toBeInTheDocument();
   });
 
   test("a playlist synced before the tally existed says nothing about matching", async () => {
@@ -1523,7 +1542,7 @@ describe("PlaylistDetailPage", () => {
       path: "/playlists/:playlistId",
     });
     expect(await screen.findByRole("checkbox", { name: /partner/i })).toBeChecked();
-    expect(screen.getAllByText("Matched 28 tracks by file.")).toHaveLength(1);
+    expect(screen.getAllByText("Last sync matched 28 tracks by file.")).toHaveLength(1);
   });
 
   test("a failed admin push doesn't erase the tally a target that went through recorded", async () => {
@@ -1565,7 +1584,7 @@ describe("PlaylistDetailPage", () => {
     // a sync whose library scan did run and matched every track by tags alone —
     // the exact signature of a wrong library path.
     expect(
-      await screen.findByText("Matched 28 tracks: none by file, 28 by artist and title."),
+      await screen.findByText("Last sync matched 28 tracks: none by file; 28 by artist and title."),
     ).toBeInTheDocument();
     expect(screen.getByText(/Nothing matched by file\./).closest("p")).toHaveClass(
       "bg-warning/10",
@@ -1633,7 +1652,7 @@ describe("PlaylistDetailPage", () => {
     // Looking past admin for numbers must not turn "no target has any" into "0
     // by file": to a user whose sync never got far enough to look, that reads
     // as a broken library path.
-    expect(screen.queryByText(/^Matched \d/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Last sync matched \d/)).not.toBeInTheDocument();
     expect(screen.queryByText(/none by file/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/nothing matched by file/i)).not.toBeInTheDocument();
   });
@@ -1664,7 +1683,7 @@ describe("PlaylistDetailPage", () => {
     await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
     await waitFor(() =>
       expect(region).toHaveTextContent(
-        "Plex sync: Synced. Matched 3 tracks: none by file, 3 by artist and title. " +
+        "Plex sync: Synced. Last sync matched 3 tracks: none by file; 3 by artist and title. " +
           "Nothing matched by file — check the Plex library path in Settings.",
       ),
     );
@@ -1706,10 +1725,40 @@ describe("PlaylistDetailPage", () => {
     // "Synced" does not, and only a failed target with the numbers surviving
     // elsewhere puts the two together.
     await waitFor(() =>
-      expect(region?.textContent).toBe(
+      expect(words(region?.textContent ?? "")).toBe(
         "Plex sync: Couldn’t sync to this Plex account. " +
-          "Matched 3 tracks: none by file, 3 by artist and title. " +
+          "Last sync matched 3 tracks: none by file; 3 by artist and title. " +
           "Nothing matched by file — check the Plex library path in Settings.",
+      ),
+    );
+  });
+
+  test("a sync that leaned on weaker matches announces the counts AND the caveat", async () => {
+    let synced = false;
+    const after = adminMatched({ path: 22, artist_title: 6 });
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: synced ? after : {} }),
+      ),
+      http.post(`${BASE}/sync`, () => {
+        synced = true;
+        return HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: after });
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    const region = document.querySelector('p[aria-live="polite"]');
+    await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
+    // The middle branch: BOTH the counts sentence and the weak-match caveat —
+    // a matchAnnouncement that returns "" on a mixed tally leaves this silent
+    // and the test fails.
+    await waitFor(() =>
+      expect(words(region?.textContent ?? "")).toBe(
+        "Plex sync: Synced. Last sync matched 28 tracks: 22 by file; 6 by artist and title. " +
+          WEAK_NOTE,
       ),
     );
   });
@@ -1733,11 +1782,57 @@ describe("PlaylistDetailPage", () => {
     await screen.findByText("Alpha");
     const region = document.querySelector('p[aria-live="polite"]');
     await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
-    // Exact equality is the point: everything-by-file is the normal case, so
-    // the announcement gains not one word. The counts are still on screen for
-    // anyone who goes looking.
-    await waitFor(() => expect(region?.textContent).toBe("Plex sync: Synced"));
-    expect(await screen.findByText("Matched 3 tracks by file.")).toBeInTheDocument();
+    // Exact equality of the WORDS is the point: everything-by-file is the
+    // normal case, so the announcement gains not one word (the invisible
+    // re-announcement token is stripped by `words`). The counts are still on
+    // screen for anyone who goes looking.
+    await waitFor(() => expect(words(region?.textContent ?? "")).toBe("Plex sync: Synced"));
+    expect(await screen.findByText("Last sync matched 3 tracks by file.")).toBeInTheDocument();
+  });
+
+  test("a repeat sync outcome still re-announces, even when the words are identical", async () => {
+    // Every sync returns the SAME outcome: the exact case where a plain
+    // setStatusMsg(sameString) bails in React (identical text, no DOM
+    // mutation) and assistive tech hears nothing — the "still broken" step of
+    // the repair loop this region exists for (sync, hear the result, fix the
+    // cause, sync again). The region must announce it anyway: its rendered
+    // content has to differ between the two syncs (the page does that with an
+    // invisible re-announcement token; a revert to plain state loses it).
+    let synced = false;
+    const after = adminMatched({ artist_title: 3 });
+    const sentence =
+      "Plex sync: Synced. Last sync matched 3 tracks: none by file; 3 by artist and title. " +
+      "Nothing matched by file — check the Plex library path in Settings.";
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: synced ? after : {} }),
+      ),
+      http.post(`${BASE}/sync`, () => {
+        synced = true;
+        return HttpResponse.json({ ...detail([track(1, "Alpha")]), plex: after });
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    const region = document.querySelector('p[aria-live="polite"]');
+    expect(region?.textContent).toBe("");
+
+    await userEvent.click(screen.getByRole("button", { name: /sync to plex/i }));
+    await waitFor(() => expect(words(region?.textContent ?? "")).toBe(sentence));
+    const first = region?.textContent;
+    expect(first).not.toBe(sentence); // the token is present; the words are exact
+
+    // Second sync, byte-identical outcome. (findByRole also re-gates on the
+    // button having come back from "Syncing…", i.e. the first mutation
+    // settled.)
+    await userEvent.click(await screen.findByRole("button", { name: /sync to plex/i }));
+    // Same words the user should hear again, but the region's rendered content
+    // CHANGED between the two identical announcements.
+    await waitFor(() => expect(region?.textContent).not.toBe(first));
+    expect(words(region?.textContent ?? "")).toBe(sentence);
   });
 
   test("delete dialog notes Plex removal when the playlist has Plex copies", async () => {
@@ -2172,7 +2267,12 @@ describe("PlaylistDetailPage", () => {
     await waitFor(() => expect(patchBody).toEqual({ item_id: 77 }));
     // The live region announces a REPLACEMENT, not a first match.
     await waitFor(() =>
-      expect(screen.getByText("Replaced the track; the row kept its position")).toBeInTheDocument(),
+      expect(
+        screen.getByText(
+          (content) =>
+            words(content) === "Replaced the track; the row kept its position",
+        ),
+      ).toBeInTheDocument(),
     );
   });
 
@@ -2225,10 +2325,14 @@ describe("PlaylistDetailPage", () => {
     await waitFor(() => expect(patchBody).toEqual({ item_id: 55 }));
     // …and the live region announces a MATCH, not a replacement.
     await waitFor(() =>
-      expect(screen.getByText("Matched the track to your library")).toBeInTheDocument(),
+      expect(
+        screen.getByText((content) => words(content) === "Matched the track to your library"),
+      ).toBeInTheDocument(),
     );
     expect(
-      screen.queryByText("Replaced the track; the row kept its position"),
+      screen.queryByText(
+        (content) => words(content) === "Replaced the track; the row kept its position",
+      ),
     ).not.toBeInTheDocument();
   });
 
@@ -2296,7 +2400,9 @@ describe("PlaylistDetailPage", () => {
     await waitFor(() =>
       expect(
         screen.getByText(
-          "Merged Road trip: added 4 tracks, skipped 2 already here. Sync to Plex to push the change.",
+          (content) =>
+            words(content) ===
+            "Merged Road trip: added 4 tracks, skipped 2 already here. Sync to Plex to push the change.",
         ),
       ).toBeInTheDocument(),
     );
@@ -2314,7 +2420,9 @@ describe("PlaylistDetailPage", () => {
     await waitFor(() =>
       expect(
         screen.getByText(
-          "Merged Road trip: added 1 track, and deleted Road trip. Sync to Plex to push the change.",
+          (content) =>
+            words(content) ===
+            "Merged Road trip: added 1 track, and deleted Road trip. Sync to Plex to push the change.",
         ),
       ).toBeInTheDocument(),
     );

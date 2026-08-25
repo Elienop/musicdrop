@@ -100,9 +100,9 @@ type PlexMissReason = PlexTargetState["missing_tracks"][number]["reason"];
  * entry ends on the remedy that actually works. */
 const MISS_TITLES: Record<PlexMissReason, string> = {
   not_found:
-    "Plex has no track with this file, and nothing matched by artist and title. Check the file is in your Plex library, then sync again.",
+    "Plex has no track with this file, and nothing matched by its tags. Check the file is in your Plex library, then sync again.",
   ambiguous:
-    "Several Plex tracks share this artist and title, and none has this file, so MusicDrop won't guess which one. Sort out the copies in Plex, then sync again.",
+    "Several Plex tracks matched this track's tags, and none has its file, so MusicDrop won't guess which one. Sort out the copies in Plex, then sync again.",
   duplicate_collapsed:
     "This playlist lists this track more than once, and the Plex copy keeps a single row for it. MusicDrop can't make Plex hold a second row; remove the repeat from this playlist to stop it being reported.",
 };
@@ -130,7 +130,12 @@ const MISS_BADGES: Record<PlexMissReason, string> = {
  * ahead of "admin" in a JS object — carrying a non-zero tally. One library scan
  * serves every target, so every target that went through carries identical
  * numbers and identical misses; a FAILED target stores zeros and an empty miss
- * list, which must never overwrite the signal a succeeding target recorded.
+ * list, which must never overwrite the signal a succeeding target recorded —
+ * with one exception the backend makes deliberately: a SMART-playlist failure
+ * is reported failed while the resolution itself SUCCEEDED (Plex just refuses
+ * to apply it to a smart playlist), so that target keeps the real tally and
+ * misses instead of zeros — zeroing would say "nothing matched", a different
+ * diagnosis from the playlist being smart.
  * Null when nothing carries a tally: every target failed, or the record
  * predates the tally entirely. */
 function resolvedTargetState(playlist: PlaylistDetail) {
@@ -190,9 +195,12 @@ interface MatchBreakdown {
  *
  * Which target we read them off is therefore free — so we read the first that
  * HAS any, admin first. A target whose push failed records zeros even when the
- * resolution behind it succeeded, so reading admin alone would throw the whole
- * summary away (the "nothing matched by file" warning included) whenever the
- * owner's own push is the one that failed and a fan-out target went through.
+ * resolution behind it succeeded — except a SMART-playlist failure, where the
+ * resolution did succeed, Plex just refused to apply it to a smart playlist,
+ * and that target keeps the real tally and misses instead of zeros — so
+ * reading admin alone would throw the whole summary away (the "nothing matched
+ * by file" warning included) whenever the owner's own push is the one that
+ * failed and a fan-out target went through.
  *
  * All-zero EVERYWHERE means "nothing to say", NEVER "zero matched by file": a
  * record written before the server started tallying has no counts, and a sync
@@ -222,6 +230,11 @@ function hasWeakMatches(breakdown: MatchBreakdown): boolean {
  * MusicDrop matches. "by file" is the strong rung; the other two are named for
  * what they compared, not for their internal names.
  *
+ * It leads with "Last sync" because the words describe the LAST sync's
+ * evidence, not a live state: fixing the cause doesn't clear a stale sentence,
+ * and reading it as "now" would make a setup the user just fixed still read as
+ * broken until the next sync re-tests it.
+ *
  * A zero file count is stated OUT LOUD ("none by file") rather than dropped
  * from the list: the absence of that clause is precisely what went unnoticed
  * for years, and a reader cannot notice a clause that was never printed. */
@@ -232,13 +245,16 @@ function matchCountsSentence(breakdown: MatchBreakdown): string {
     weaker.push(`${breakdown.artistTitle} by artist and title`);
   }
   if (breakdown.albumLength > 0) {
-    weaker.push(`${breakdown.albumLength} by album and length`);
+    weaker.push(`${breakdown.albumLength} by album, title and length`);
   }
   if (weaker.length === 0) {
-    return `Matched ${tracks} by file.`;
+    return `Last sync matched ${tracks} by file.`;
   }
+  // Semicolons between clauses, not commas: the album rung's name carries its
+  // own comma, and "22 by artist and title, 6 by album, title and length" reads
+  // (and is read ALOUD) as four buckets. Same joiner plexSyncStatus uses.
   const byFile = breakdown.path === 0 ? "none by file" : `${breakdown.path} by file`;
-  return `Matched ${tracks}: ${byFile}, ${weaker.join(", ")}.`;
+  return `Last sync matched ${tracks}: ${byFile}; ${weaker.join("; ")}.`;
 }
 
 /** What a weaker match risks, in the user's terms: a tag match can land on a
@@ -295,7 +311,8 @@ function MatchSummary({ playlist }: { playlist: PlaylistDetail }) {
               Settings
             </Link>{" "}
             doesn’t point where Plex keeps your music, so MusicDrop fell back to matching
-            on tags — which can land on a different copy of a track.
+            on tags — which can land on a different copy of a track. Fix the path in
+            Settings, then sync again to re-test.
           </span>
         </p>
       ) : (
@@ -469,10 +486,28 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     };
   }, []);
 
-  // Single polite live region for reorder/remove announcements (kept alongside
+  // Single polite live region for action-outcome announcements (kept alongside
   // the sonner toasts — the toast layer is the sighted-user channel, this
   // region is the assistive-tech one).
   const [statusMsg, setStatusMsg] = useState("");
+  // How many announcements this region has made. A screen reader hears a live
+  // region only when its content CHANGES; two consecutive identical outcomes —
+  // the exact repair loop this region exists for (sync, hear the result, fix
+  // the cause, sync again — where the second sync still reports the same
+  // failure) — would set an identical string, React would bail, the DOM would
+  // never mutate, and assistive tech would hear nothing at all on "still
+  // broken". So every announcement also appends a run of zero-width spaces
+  // (invisible, unpronounced — the same trick React Native ships in its
+  // LiveRegion), and the run's LENGTH varies with the announcement count, so
+  // every announcement renders different text even when its visible words are
+  // byte-identical to the previous one. The region itself stays persistently
+  // mounted (repo a11y doctrine: never conditionally mount a live region — a
+  // region that arrives with its text is not announced).
+  const [announcementSeq, setAnnouncementSeq] = useState(0);
+  const announce = useCallback((message: string) => {
+    setStatusMsg(message);
+    setAnnouncementSeq((n) => n + 1);
+  }, []);
 
   // Focus restoration for the mutating tracklist — the shared hook generalizes
   // the page's old pendingFocus engine. Controls register as
@@ -488,8 +523,8 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
   // the mutations), refreshed each render, and hand the rows truly-stable
   // useCallback([]) handlers that read it. A rename keystroke then changes NO
   // row prop, so not one row re-renders.
-  const rowDeps = useRef({ tracks, reorder, removeEntry, requestFocus });
-  rowDeps.current = { tracks, reorder, removeEntry, requestFocus };
+  const rowDeps = useRef({ tracks, reorder, removeEntry, requestFocus, announce });
+  rowDeps.current = { tracks, reorder, removeEntry, requestFocus, announce };
 
   function saveName() {
     const next = draftName.trim();
@@ -551,7 +586,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     }
     desiredTargets.current = next;
     setTargetIds(next);
-    setStatusMsg(
+    announce(
       `${checked ? "Removed" : "Added"} ${user.name} ${checked ? "from" : "to"} Plex sync`,
     );
     scheduleTargetSave();
@@ -564,7 +599,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
    * reads the live tracklist/mutation off `rowDeps` and derives position from
    * `uid` rather than a captured index, so it never closes over the array. */
   const onMove = useCallback((uid: string, dir: -1 | 1) => {
-    const { tracks, reorder, requestFocus } = rowDeps.current;
+    const { tracks, reorder, requestFocus, announce } = rowDeps.current;
     const index = tracks.findIndex((t) => t.uid === uid);
     const target = index + dir;
     if (index < 0 || target < 0 || target >= tracks.length) {
@@ -572,7 +607,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     }
     const moved = tracks[index];
     const message = `Moved ${displayTitle(moved)} to position ${target + 1}`;
-    setStatusMsg(message);
+    announce(message);
     const dirKey = dir === -1 ? "up" : "down";
     const altKey = dir === -1 ? "down" : "up";
     requestFocus(`${moved.uid}:${dirKey}`, `${moved.uid}:${altKey}`);
@@ -615,7 +650,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
       { entryUid, itemId },
       {
         onSuccess: () =>
-          setStatusMsg(
+          announce(
             replaces
               ? "Replaced the track; the row kept its position"
               : "Matched the track to your library",
@@ -640,7 +675,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
    * []) and uid-keyed (reads the live tracklist off `rowDeps`) so it neither
    * defeats the row memo nor closes over a captured index/array. */
   const onRemove = useCallback((uid: string) => {
-    const { tracks, removeEntry } = rowDeps.current;
+    const { tracks, removeEntry, announce } = rowDeps.current;
     const removed = tracks.find((t) => t.uid === uid);
     if (!removed) {
       return;
@@ -648,7 +683,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
     removeEntry.mutate(removed.uid, {
       onSuccess: () => {
         const message = `Removed ${displayTitle(removed)}`;
-        setStatusMsg(message);
+        announce(message);
         toast.success(message);
         // Drop THIS uid from the LATEST state AND choose the focus target from
         // that same post-removal list. Two rapid removes each remove their own
@@ -696,6 +731,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
 
       <p className="sr-only" role="status" aria-live="polite">
         {statusMsg}
+        {statusMsg ? "\u200B".repeat((announcementSeq - 1) % 4 + 1) : ""}
       </p>
 
       <header className="flex flex-wrap items-start justify-between gap-3">
@@ -801,7 +837,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
                   // only a failed push whose tally survived on another target
                   // produces.
                   const head = label.endsWith(".") ? label : `${label}.`;
-                  setStatusMsg(note ? `Plex sync: ${head} ${note}` : `Plex sync: ${label}`);
+                  announce(note ? `Plex sync: ${head} ${note}` : `Plex sync: ${label}`);
                 },
               })
             }
@@ -1039,7 +1075,7 @@ function PlaylistDetailView({ playlist }: { playlist: PlaylistDetail }) {
           target={playlist}
           open
           onOpenChange={setMergeOpen}
-          onMerged={(result, sourceName) => setStatusMsg(mergeSummary(result, sourceName))}
+          onMerged={(result, sourceName) => announce(mergeSummary(result, sourceName))}
         />
       )}
 

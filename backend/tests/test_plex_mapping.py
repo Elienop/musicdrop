@@ -771,6 +771,72 @@ def test_a_contradicting_plex_artist_is_vetoed_not_tied() -> None:
     assert res.missing == []
 
 
+def test_a_digit_difference_in_the_artist_name_is_vetoed_not_matched() -> None:
+    # The rule ``_name_words`` cites: "Blink-182 must not read as Blink-183".
+    # Digits are what distinguish two otherwise-identical names, so a Plex track
+    # that differs ONLY in a digit is somebody else -- and the failure mode of
+    # dropping that digit is a silent WRONG MATCH (the row would still land a
+    # recording of the right album, title and length), not a mere miss.
+    #
+    # The pair is otherwise identical and the artist+title rung misses on the
+    # digit alone, so the album rung is the one under test: same album, same
+    # title, an agreeing duration -- and the veto is the only thing that knows
+    # better. It must refuse, and loudly: the row comes back missing.
+    section = _section(
+        [
+            _track(
+                60,
+                "/plex/blink183.flac",
+                artist="Blink-183",
+                album="Dude",
+                title="Whatever",
+                duration=254_000,
+            )
+        ]
+    )
+    spec = _spec(
+        "/beets/blink182.flac",
+        albumartist="Blink-182",
+        album="Dude",
+        title="Whatever",
+        length_seconds=254.0,
+    )
+    res = resolve_ordered_tracks(section, [spec])
+    assert res.tracks == []
+    assert [(m.item_id, m.reason) for m in res.missing] == [(1, "not_found")]
+
+
+def test_digits_agreeing_and_only_separator_and_case_differing_still_resolve() -> None:
+    # The control arm for the rule above: the same digits with only separator
+    # and case between the two spellings ("Blink-182" vs "blink 182") is ONE
+    # name, and the album rung must still bridge it -- the veto fires on a
+    # different name, not on a re-spelled one. The resolving rung is asserted,
+    # because the (album-artist, title) rung misses on the hyphen and hiding it
+    # in a plain tracks assertion would leave the bridge unproven.
+    section = _section(
+        [
+            _track(
+                61,
+                "/plex/blink182.flac",
+                artist="blink 182",
+                album="Dude",
+                title="Whatever",
+                duration=254_000,
+            )
+        ]
+    )
+    spec = _spec(
+        "/beets/gone.flac",
+        albumartist="Blink-182",
+        album="Dude",
+        title="Whatever",
+        length_seconds=254.0,
+    )
+    res = resolve_ordered_tracks(section, [spec])
+    assert [(m.track.ratingKey, m.method) for m in res.matches] == [(61, "album_length")]
+    assert res.missing == []
+
+
 def test_the_veto_still_allows_the_rewrites_plexs_agent_actually_makes() -> None:
     # What the veto must NOT do: refuse a name Plex merely re-spelled. Each pair
     # is (what beets holds, what Plex holds) and every one of them must still
