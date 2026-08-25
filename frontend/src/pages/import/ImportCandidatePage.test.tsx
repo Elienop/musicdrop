@@ -927,7 +927,7 @@ describe("ImportCandidatePage", () => {
       name: /rescan folder/i,
     });
     fireEvent.click(rescanButton);
-    await waitFor(() => expect(bodies.length).toBe(1));
+    await waitFor(() => expect(bodies).toHaveLength(1));
     expect(bodies[0]).toMatchObject({ action: "rescan", candidate_index: null });
     // In-flight: the decision buttons disable until the revision bumps.
     expect(screen.getByRole("button", { name: /apply/i })).toBeDisabled();

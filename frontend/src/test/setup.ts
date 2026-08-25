@@ -40,9 +40,15 @@ class NoopEventSource {
   constructor(url: string | URL) {
     this.url = url;
   }
-  close(): void {}
-  addEventListener(): void {}
-  removeEventListener(): void {}
+  close(): void {
+    /* jsdom lacks this; the test never observes it */
+  }
+  addEventListener(): void {
+    /* jsdom lacks this; the test never observes it */
+  }
+  removeEventListener(): void {
+    /* jsdom lacks this; the test never observes it */
+  }
 }
 vi.stubGlobal("EventSource", NoopEventSource);
 

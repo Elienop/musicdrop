@@ -33,27 +33,32 @@ describe("useRailMaxHeight", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.restoreAllMocks());
 
-  it("pre-pin: sizes the rail to end at the viewport bottom gap", () => {
-    stubViewport({ matches: true, height: 800 });
-    stubRailTop(180); // header still in view — rail starts low
+  it.each([
+    [
+      "pre-pin: sizes the rail to end at the viewport bottom gap",
+      true, // header still in view — rail starts low
+      180,
+      // 800 - 180 - 24 = 596
+      "596px",
+    ],
+    [
+      "never sizes past the pinned offset (top clamps at 96px)",
+      true, // transiently above the pin point — clamp
+      60,
+      // 800 - max(60, 96) - 24 = 680
+      "680px",
+    ],
+    [
+      "below md: leaves the inline style alone (mobile max-h-72 rules)",
+      false,
+      180,
+      "",
+    ],
+  ])("%s", (_name, matches, railTop, expected) => {
+    stubViewport({ matches, height: 800 });
+    stubRailTop(railTop);
     render(<Probe />);
-    // 800 - 180 - 24 = 596
-    expect(screen.getByTestId("rail").style.maxHeight).toBe("596px");
-  });
-
-  it("never sizes past the pinned offset (top clamps at 96px)", () => {
-    stubViewport({ matches: true, height: 800 });
-    stubRailTop(60); // transiently above the pin point — clamp
-    render(<Probe />);
-    // 800 - max(60, 96) - 24 = 680
-    expect(screen.getByTestId("rail").style.maxHeight).toBe("680px");
-  });
-
-  it("below md: leaves the inline style alone (mobile max-h-72 rules)", () => {
-    stubViewport({ matches: false, height: 800 });
-    stubRailTop(180);
-    render(<Probe />);
-    expect(screen.getByTestId("rail").style.maxHeight).toBe("");
+    expect(screen.getByTestId("rail").style.maxHeight).toBe(expected);
   });
 
   it("re-measures on window scroll", async () => {
