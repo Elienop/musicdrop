@@ -152,6 +152,50 @@ function formatVersion(version: string): string {
 }
 
 /**
+ * Derive the health row's presentation from the query state — ONE source
+ * for the label, accessible description, icon, and tone classes (icon +
+ * text). REACHABILITY decides the wording; the version is only decoration
+ * on top of it. Keying this off `version` instead made a reachable backend
+ * reporting an empty version (`settings.version` is a plain `str`,
+ * overridable at runtime via MUSICDROP_VERSION) render a green check
+ * labelled "Online" while its accessible name said "Backend
+ * unreachable". No version → no empty parens.
+ */
+function healthPresentation(
+  isPending: boolean,
+  reachable: boolean,
+  version: string | null,
+) {
+  if (isPending) {
+    return {
+      label: "Checking",
+      description: "Checking backend",
+      Icon: Spinner,
+      iconClass: "text-muted-foreground animate-spin",
+      textClass: "text-muted-foreground",
+    };
+  }
+  if (!reachable) {
+    return {
+      label: "Offline",
+      description: "Backend unreachable",
+      Icon: ErrorIcon,
+      iconClass: "text-destructive",
+      textClass: "text-destructive",
+    };
+  }
+  return {
+    label: "Online",
+    description: version
+      ? `Backend online (${version})`
+      : "Backend online",
+    Icon: Online,
+    iconClass: "text-success",
+    textClass: "text-success",
+  };
+}
+
+/**
  * Compact backend health indicator. Status is conveyed by THREE carriers,
  * not color alone (WCAG 1.4.1): a shape-distinct icon (check / x-circle /
  * spinner), a short visible text label, and the dot color. The running
@@ -164,22 +208,8 @@ export function HealthStatus({ compact = false }: Readonly<{ compact?: boolean }
   });
 
   const reachable = !isError && !isPending;
-  const label = isPending ? "Checking" : reachable ? "Online" : "Offline";
   const version = reachable && data ? formatVersion(data.version) : null;
-  // REACHABILITY decides the wording; the version is only decoration on top of
-  // it. Keying this off `version` instead made a reachable backend reporting an
-  // empty version (`settings.version` is a plain `str`, overridable at runtime
-  // via MUSICDROP_VERSION) render a green check labelled "Online" while its
-  // accessible name said "Backend unreachable". No version → no empty parens.
-  const description = isPending
-    ? "Checking backend"
-    : !reachable
-      ? "Backend unreachable"
-      : version
-        ? `Backend online (${version})`
-        : "Backend online";
-
-  const Icon = isPending ? Spinner : reachable ? Online : ErrorIcon;
+  const health = healthPresentation(isPending, reachable, version);
 
   return (
     // `w-full` (expanded only) so the version can sit at the right edge of the
@@ -193,20 +223,13 @@ export function HealthStatus({ compact = false }: Readonly<{ compact?: boolean }
           over-long version truncates alone instead of squeezing the label. */}
       <span
         className="flex shrink-0 items-center gap-3"
-        title={description}
-        aria-label={description}
+        title={health.description}
+        aria-label={health.description}
         role="status"
       >
-        <Icon
+        <health.Icon
           aria-hidden="true"
-          className={cn(
-            "size-5 shrink-0",
-            isPending
-              ? "text-muted-foreground animate-spin"
-              : reachable
-                ? "text-success"
-                : "text-destructive",
-          )}
+          className={cn("size-5 shrink-0", health.iconClass)}
         />
         {/* Visually icon-only when `compact` (the collapsed sidebar rail) —
             but sr-only, NOT hidden: live regions announce content changes, not
@@ -218,14 +241,10 @@ export function HealthStatus({ compact = false }: Readonly<{ compact?: boolean }
         <span
           className={cn(
             compact ? "sr-only" : "hidden sm:inline",
-            isPending
-              ? "text-muted-foreground"
-              : reachable
-                ? "text-success"
-                : "text-destructive",
+            health.textClass,
           )}
         >
-          {label}
+          {health.label}
         </span>
       </span>
       {/* Version: reference info, deliberately OUTSIDE the live region — it

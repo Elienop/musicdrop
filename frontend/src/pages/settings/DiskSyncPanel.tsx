@@ -240,6 +240,63 @@ function DiskSyncControl() {
     stop.mutate();
   };
 
+  // The trigger's three faces: Stop while running, Preview while closed,
+  // Confirm + Cancel while the plan is open.
+  function renderTriggerButton() {
+    if (running) {
+      return (
+        <Button
+          ref={triggerRef}
+          variant="outline"
+          size="sm"
+          aria-disabled={stop.isPending || undefined}
+          className="aria-disabled:opacity-50"
+          onClick={onStop}
+        >
+          Stop
+        </Button>
+      );
+    }
+    if (plan == null) {
+      return (
+        <Button
+          ref={triggerRef}
+          variant="outline"
+          size="sm"
+          aria-disabled={previewBlocked || undefined}
+          className="aria-disabled:opacity-50"
+          onClick={onTriggerPreview}
+        >
+          {preview.isPending ? "Building preview…" : "Preview sync…"}
+        </Button>
+      );
+    }
+    return (
+      <>
+        {syncCount > 0 && (
+          <Button
+            size="sm"
+            aria-disabled={start.isPending || running || undefined}
+            className="aria-disabled:opacity-50"
+            onClick={onConfirmStart}
+          >
+            {start.isPending
+              ? "Starting…"
+              : `Sync ${syncCount} ${plural(syncCount, "item")}`}
+          </Button>
+        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setPlan(null)}
+          disabled={start.isPending}
+        >
+          Cancel
+        </Button>
+      </>
+    );
+  }
+
   return (
     <div className="flex flex-col items-start gap-2">
       {plan != null && (
@@ -248,52 +305,7 @@ function DiskSyncControl() {
         </div>
       )}
       <div className="flex flex-wrap items-center gap-3">
-        {running ? (
-          <Button
-            ref={triggerRef}
-            variant="outline"
-            size="sm"
-            aria-disabled={stop.isPending || undefined}
-            className="aria-disabled:opacity-50"
-            onClick={onStop}
-          >
-            Stop
-          </Button>
-        ) : plan == null ? (
-          <Button
-            ref={triggerRef}
-            variant="outline"
-            size="sm"
-            aria-disabled={previewBlocked || undefined}
-            className="aria-disabled:opacity-50"
-            onClick={onTriggerPreview}
-          >
-            {preview.isPending ? "Building preview…" : "Preview sync…"}
-          </Button>
-        ) : (
-          <>
-            {syncCount > 0 && (
-              <Button
-                size="sm"
-                aria-disabled={start.isPending || running || undefined}
-                className="aria-disabled:opacity-50"
-                onClick={onConfirmStart}
-              >
-                {start.isPending
-                  ? "Starting…"
-                  : `Sync ${syncCount} ${plural(syncCount, "item")}`}
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setPlan(null)}
-              disabled={start.isPending}
-            >
-              Cancel
-            </Button>
-          </>
-        )}
+        {renderTriggerButton()}
         {message != null && (
           <span
             role={message.kind === "error" ? "alert" : "status"}

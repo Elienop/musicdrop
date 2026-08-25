@@ -97,6 +97,26 @@ function applyRecoveryHint(err: ConfigOpError | null | undefined): string | null
   return null;
 }
 
+/**
+ * Derive the page state from the in-flight mutation flags + the
+ * snapshot's `apply_pending` + local `dirty`. The mutation flags take
+ * priority because they describe an in-flight action — a `saving` state
+ * mid-Save should not flicker back to `dirty` if the user happens to keep
+ * typing during the round-trip.
+ */
+function derivePageState(
+  applying: boolean,
+  saving: boolean,
+  applyPending: boolean,
+  dirty: boolean,
+): PageState {
+  if (applying) return "applying";
+  if (saving) return "saving";
+  if (applyPending) return "apply_pending";
+  if (dirty) return "dirty";
+  return "clean";
+}
+
 export function SettingsBeetsPage() {
   const { data, isPending, isError, error } = useBeetsConfig();
   const save = useSaveConfig();
@@ -189,19 +209,12 @@ export function SettingsBeetsPage() {
   if (isError) return <ErrorBanner err={error} />;
   if (!data) return null;
 
-  // Derive the page state from React Query + local dirty + apply_pending. The
-  // mutation flags take priority because they describe an in-flight action —
-  // a `saving` state mid-Save should not flicker back to `dirty` if the user
-  // happens to keep typing during the round-trip.
-  const pageState: PageState = applyMutation.isPending
-    ? "applying"
-    : save.isPending
-      ? "saving"
-      : data.apply_pending
-        ? "apply_pending"
-        : dirty
-          ? "dirty"
-          : "clean";
+  const pageState = derivePageState(
+    applyMutation.isPending,
+    save.isPending,
+    data.apply_pending,
+    dirty,
+  );
 
   async function asyncSource(text: string): Promise<Diagnostic[]> {
     try {

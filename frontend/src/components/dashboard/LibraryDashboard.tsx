@@ -38,17 +38,18 @@ const TILE_GRID =
 export function LibraryDashboard() {
   const { data, isPending, isError, refetch } = useStats();
 
-  return (
-    <PageBody>
-      <PageHeader
-        title="Overview"
-        meta={
-          data !== undefined
-            ? `${data.stats.album_count.toLocaleString()} albums · ${data.stats.track_count.toLocaleString()} tracks`
-            : undefined
-        }
-      />
-      {isPending ? (
+  // Lifted out of the PageHeader so the pending/error branches below can keep
+  // it: a failed REFRESH still carries cached `data`, and the header must
+  // show its counts then too (meta is undefined only when there is no data).
+  const meta =
+    data !== undefined
+      ? `${data.stats.album_count.toLocaleString()} albums · ${data.stats.track_count.toLocaleString()} tracks`
+      : undefined;
+
+  if (isPending) {
+    return (
+      <PageBody>
+        <PageHeader title="Overview" meta={meta} />
         <PageSkeleton announce="Loading library stats…">
           <div className={TILE_GRID}>
             {/* h-14 = the cardless StatTile row height (its documented
@@ -58,14 +59,26 @@ export function LibraryDashboard() {
             ))}
           </div>
         </PageSkeleton>
-      ) : isError ? (
+      </PageBody>
+    );
+  }
+
+  if (isError) {
+    return (
+      <PageBody>
+        <PageHeader title="Overview" meta={meta} />
         <ErrorState
           message="Could not load library stats."
           onRetry={() => void refetch()}
         />
-      ) : (
-        <DashboardBody data={data} />
-      )}
+      </PageBody>
+    );
+  }
+
+  return (
+    <PageBody>
+      <PageHeader title="Overview" meta={meta} />
+      <DashboardBody data={data} />
     </PageBody>
   );
 }

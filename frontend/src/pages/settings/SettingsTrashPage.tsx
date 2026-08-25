@@ -91,6 +91,17 @@ export function SettingsTrashPage() {
   );
 }
 
+/** Maps a restore outcome to its status message. */
+function restoreResultMessage(result: RestoreResult): string {
+  if (result.restored) {
+    return "Restored to your library";
+  }
+  if (result.reason === "already_in_library") {
+    return "Already in your library; not restored";
+  }
+  return "Couldn’t restore";
+}
+
 /** One trashed album: name + meta, a Restore button, and a destructive Empty. */
 function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
   const restore = useRestoreTrash();
@@ -116,11 +127,7 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
         <span className="text-muted-foreground truncate text-xs">{meta || album.folder}</span>
         {result && (
           <span className="text-muted-foreground text-xs" role="status">
-            {result.restored
-              ? "Restored to your library"
-              : result.reason === "already_in_library"
-                ? "Already in your library; not restored"
-                : "Couldn’t restore"}
+            {restoreResultMessage(result)}
           </span>
         )}
       </div>

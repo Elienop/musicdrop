@@ -449,6 +449,63 @@ export function ReorganizeControl({
     );
   }
 
+  // The inline action cell: Stop while THIS scope's job runs, the Reorganize
+  // trigger while idle, and the Confirm/Cancel pair while a plan is open
+  // (Confirm only when the plan has something to actually run — an all-
+  // refusals preview is read-only with Cancel as its sole exit).
+  function renderInlineAction(): ReactNode {
+    if (runningThis) {
+      return (
+        <Button
+          ref={triggerRef}
+          variant="outline"
+          size="sm"
+          aria-disabled={stop.isPending || undefined}
+          className="aria-disabled:opacity-50"
+          onClick={onStop}
+        >
+          Stop
+        </Button>
+      );
+    }
+    if (plan == null) {
+      return (
+        <Button
+          ref={triggerRef}
+          variant="outline"
+          size="sm"
+          aria-disabled={previewBlocked || undefined}
+          className="aria-disabled:opacity-50"
+          onClick={onTriggerPreview}
+        >
+          {preview.isPending ? "Building preview…" : "Reorganize files…"}
+        </Button>
+      );
+    }
+    return (
+      <>
+        {confirmText != null && (
+          <Button
+            size="sm"
+            aria-disabled={start.isPending || otherRunning || undefined}
+            className="aria-disabled:opacity-50"
+            onClick={onConfirmStart}
+          >
+            {start.isPending ? "Starting…" : confirmText}
+          </Button>
+        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setPlan(null)}
+          disabled={start.isPending}
+        >
+          Cancel
+        </Button>
+      </>
+    );
+  }
+
   return (
     <div className="flex flex-col items-start gap-2">
       {plan != null && (
@@ -457,50 +514,7 @@ export function ReorganizeControl({
         </div>
       )}
       <div className="flex flex-wrap items-center gap-3">
-        {runningThis ? (
-          <Button
-            ref={triggerRef}
-            variant="outline"
-            size="sm"
-            aria-disabled={stop.isPending || undefined}
-            className="aria-disabled:opacity-50"
-            onClick={onStop}
-          >
-            Stop
-          </Button>
-        ) : plan == null ? (
-          <Button
-            ref={triggerRef}
-            variant="outline"
-            size="sm"
-            aria-disabled={previewBlocked || undefined}
-            className="aria-disabled:opacity-50"
-            onClick={onTriggerPreview}
-          >
-            {preview.isPending ? "Building preview…" : "Reorganize files…"}
-          </Button>
-        ) : (
-          <>
-            {confirmText != null && (
-              <Button
-                size="sm"
-                aria-disabled={start.isPending || otherRunning || undefined}
-                className="aria-disabled:opacity-50"
-                onClick={onConfirmStart}
-              >
-                {start.isPending ? "Starting…" : confirmText}
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setPlan(null)}
-              disabled={start.isPending}
-            >
-              Cancel
-            </Button>
-          </>
-        )}
+        {renderInlineAction()}
         {message != null && (
           <span
             role={message.kind === "error" ? "alert" : "status"}
