@@ -15,9 +15,8 @@ we roll it ourselves.
 Mode tests pin two regimes:
 
 * pre-existing dst -> ``copymode`` preserves the user's mode (e.g. 0o600).
-* no pre-existing dst -> first-write defensive fallback to 0o644
-  (``setup_beets()`` always ensures the file in production, so this
-  branch is belt-and-suspenders).
+* no pre-existing dst -> first write takes the ``open()`` default under
+  the process umask (typically 0o644 under the conventional umask 0o022).
 
 The tempfile-cleanup test pins the success-path invariant: the
 ``.config.yaml.tmp`` sidecar must not survive a successful write,
@@ -27,6 +26,7 @@ together imply it's already gone (replace consumes the tmpfile name).
 
 from __future__ import annotations
 
+import os
 import stat as stat_mod
 from pathlib import Path
 
@@ -56,14 +56,31 @@ def test_atomic_write_preserves_mode(tmp_path: Path) -> None:
     assert mode == 0o600
 
 
-def test_atomic_write_first_time_chmods_644(tmp_path: Path) -> None:
+def test_atomic_write_first_time_takes_umask_default(tmp_path: Path) -> None:
+    """No pre-existing dst -> the first write takes the ``open()`` default
+    under the process umask. Two scenarios (umask 0o022 -> 0o644, umask
+    0o077 -> 0o600) prove the umask now governs the first-write mode."""
+    data = parse_yaml("a: 1\n")
+
     cfg = tmp_path / "config.yaml"
     assert not cfg.exists()
-    data = parse_yaml("a: 1\n")
-    atomic_write(cfg, data, _yaml())
+    old_umask = os.umask(0o022)
+    try:
+        atomic_write(cfg, data, _yaml())
+    finally:
+        os.umask(old_umask)
     assert cfg.exists()
     mode = stat_mod.S_IMODE(cfg.stat().st_mode)
     assert mode == 0o644
+
+    cfg2 = tmp_path / "config2.yaml"
+    old_umask = os.umask(0o077)
+    try:
+        atomic_write(cfg2, data, _yaml())
+    finally:
+        os.umask(old_umask)
+    mode = stat_mod.S_IMODE(cfg2.stat().st_mode)
+    assert mode == 0o600
 
 
 def test_atomic_write_cleans_up_tmpfile_on_success(tmp_path: Path) -> None:
