@@ -39,9 +39,9 @@ export function SlskdPanel() {
   if (settings.isPending) {
     return (
       <Panel>
-        <p className="text-muted-foreground text-sm" role="status">
+        <output className="text-muted-foreground text-sm block">
           Loading slskd settings…
-        </p>
+        </output>
       </Panel>
     );
   }

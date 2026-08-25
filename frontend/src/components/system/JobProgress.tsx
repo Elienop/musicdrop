@@ -102,33 +102,30 @@ export function JobProgress({
 function StateChip({ state }: Readonly<{ state: "running" | "failed" | "done" }>) {
   if (state === "running") {
     return (
-      <span
-        role="status"
+      <output
         className="text-muted-foreground flex shrink-0 items-center gap-1 text-xs font-medium"
       >
         <Spinner className="size-4 animate-spin" aria-hidden="true" />
         Running
-      </span>
+      </output>
     );
   }
   if (state === "failed") {
     return (
-      <span
-        role="status"
+      <output
         className="text-destructive flex shrink-0 items-center gap-1 text-xs font-medium"
       >
         <ErrorIcon className="size-4" aria-hidden="true" />
         Failed
-      </span>
+      </output>
     );
   }
   return (
-    <span
-      role="status"
+    <output
       className="text-success flex shrink-0 items-center gap-1 text-xs font-medium"
     >
       <Success className="size-4" aria-hidden="true" />
       Done
-    </span>
+    </output>
   );
 }

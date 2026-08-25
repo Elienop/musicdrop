@@ -246,9 +246,9 @@ function ArtistImageEditPanelForArtist({
           as its text is not reliably announced — assistive tech monitors regions
           that already exist. `min-h-5` keeps the swap from shifting layout.
           Same idiom as the host page's album count (ArtistAlbumsPage.tsx). */}
-      <p role="status" className="text-muted-foreground min-h-5 text-sm">
+      <output className="text-muted-foreground min-h-5 text-sm block">
         {note}
-      </p>
+      </output>
 
       {!pending && (
         <div className="flex flex-col gap-4">

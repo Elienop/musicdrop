@@ -130,9 +130,9 @@ export function AddToPlaylistMenu({
           role="status" already implies a polite live region — we omit the
           explicit aria-live so this per-row menu doesn't multiply the page's
           count of explicit aria-live regions (e.g. SearchPage's announcer). */}
-      <span role="status" className="sr-only">
+      <output className="sr-only">
         {statusText}
-      </span>
+      </output>
 
       <CreatePlaylistDialog
         open={createOpen}

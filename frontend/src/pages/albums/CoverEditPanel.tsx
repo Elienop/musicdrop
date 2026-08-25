@@ -195,16 +195,15 @@ function InstallOutcome({ result }: Readonly<{ result: CoverInstallResult }>) {
     result.embed_detail ?? (result.embedded ? "Also embedded into the album's files." : null);
   return (
     <div className="flex flex-col gap-2 text-sm">
-      <div
-        role="status"
+      <output
         className="border-primary/30 bg-primary/5 text-foreground flex items-start gap-2 rounded-md border p-3"
       >
         <Success className="text-primary-light mt-0.5 size-4 shrink-0" aria-hidden="true" />
-        <div className="flex flex-col gap-1">
+        <span className="flex flex-col gap-1">
           <span className="font-medium">Cover updated</span>
           {result.message && <span className="text-muted-foreground">{result.message}</span>}
-        </div>
-      </div>
+        </span>
+      </output>
       {detail && (
         <div className="text-muted-foreground flex items-start gap-2 rounded-md border p-3">
           <Info className="mt-0.5 size-4 shrink-0" aria-hidden="true" />

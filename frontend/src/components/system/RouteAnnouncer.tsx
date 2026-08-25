@@ -96,8 +96,8 @@ export function RouteAnnouncer() {
   }, [pathname]);
 
   return (
-    <p className="sr-only" role="status">
+    <output className="sr-only block">
       {announcement}
-    </p>
+    </output>
   );
 }

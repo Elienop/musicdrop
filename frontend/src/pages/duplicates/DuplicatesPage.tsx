@@ -132,10 +132,10 @@ export function DuplicatesPage() {
       {allError && <ResolveAllErrorNote error={allError} />}
 
       {isPending && (
-        <p className="text-muted-foreground flex items-center gap-2 text-sm" role="status">
+        <output className="text-muted-foreground flex items-center gap-2 text-sm">
           <Spinner className="size-4 animate-spin" aria-hidden="true" />
           Scanning library for duplicates&hellip;
-        </p>
+        </output>
       )}
       {isError && (
         <ErrorState
@@ -241,19 +241,19 @@ function skippedSuffix(skipped: number): string {
 function BulkResolveNote({ summary }: Readonly<{ summary: ResolveAllResult }>) {
   const skipped = summary.skipped_stale.length;
   return summary.moved_count > 0 ? (
-    <p className="text-muted-foreground text-sm" role="status">
+    <output className="text-muted-foreground text-sm block">
       Moved {summary.moved_count} {summary.moved_count === 1 ? "copy" : "copies"} across{" "}
       {summary.group_count} {summary.group_count === 1 ? "group" : "groups"} to Trash.
       {skipped > 0 && skippedSuffix(skipped)}
-    </p>
+    </output>
   ) : (
     // All groups drifted since the scan (a normal 200 with nothing moved):
     // lead with the actionable part, not a "moved 0" that reads as a no-op.
-    <p className="text-sm" role="status">
+    <output className="text-sm block">
       Nothing moved; {skipped === 1 ? "the group" : `all ${skipped} groups`} changed
       since the scan and {skipped === 1 ? "was" : "were"} skipped. The report refreshed;
       re-check {skipped === 1 ? "it" : "them"}.
-    </p>
+    </output>
   );
 }
 

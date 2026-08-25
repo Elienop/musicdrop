@@ -71,9 +71,9 @@ export function ReviewControlBar({
         </div>
       )}
       {checking && (
-        <p className="text-muted-foreground text-sm" role="status">
+        <output className="text-muted-foreground text-sm block">
           Checking your library…
-        </p>
+        </output>
       )}
       {messages}
       <div className="flex flex-wrap items-center gap-2">

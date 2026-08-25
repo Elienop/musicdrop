@@ -474,9 +474,9 @@ function BankCandidateScreen({ item }: Readonly<{ item: BankItem }>) {
           messages={
             <>
               {hasCollision && (
-                <p className="text-muted-foreground text-sm" role="status">
+                <output className="text-muted-foreground text-sm block">
                   This album is already in your library.
-                </p>
+                </output>
               )}
               <DecisionError error={decide.error} />
               <SearchConflict error={search.error} />

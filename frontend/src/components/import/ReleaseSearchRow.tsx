@@ -124,9 +124,9 @@ export function ReleaseSearchRow({
           </PopoverContent>
         </Popover>
         {feedback && (
-          <p className="text-muted-foreground text-sm" role="status">
+          <output className="text-muted-foreground text-sm block">
             {feedback}
-          </p>
+          </output>
         )}
         {error && (
           <p className="text-destructive text-sm" role="alert">

@@ -57,8 +57,8 @@ export function ArtistArtPanel() {
       </div>
 
       {libraryRunning && job ? (
-        <div className="flex flex-col gap-2" role="status">
-          <div className="flex items-center gap-3 text-sm">
+        <output className="flex flex-col gap-2">
+          <span className="flex items-center gap-3 text-sm">
             <Spinner
               className="text-muted-foreground size-4 shrink-0 animate-spin"
               aria-hidden="true"
@@ -75,11 +75,11 @@ export function ArtistArtPanel() {
             >
               Stop
             </Button>
-          </div>
+          </span>
           {job.current && (
-            <p className="text-muted-foreground truncate text-xs">{job.current}</p>
+            <span className="text-muted-foreground truncate text-xs">{job.current}</span>
           )}
-        </div>
+        </output>
       ) : (
         <div className="flex flex-wrap items-center gap-3">
           <Button onClick={() => start.mutate()} disabled={!enabled || start.isPending}>
@@ -107,10 +107,10 @@ export function ArtistArtPanel() {
           {/* A finished or interrupted run shows its tally so the user knows what
               happened without watching the live feed. */}
           {libraryTerminal && job && (job.phase === "done" || job.phase === "stopped") && (
-            <span className="text-muted-foreground text-sm" role="status">
+            <output className="text-muted-foreground text-sm">
               {job.phase === "done" ? "Done" : "Stopped"}: written {job.written} · skipped{" "}
               {job.skipped} · failed {job.failed}
-            </span>
+            </output>
           )}
           {/* A failed job surfaces its error inline so a 409/library-locked run
               isn't a silent no-op. */}

@@ -221,11 +221,10 @@ export function HealthStatus({ compact = false }: Readonly<{ compact?: boolean }
           `shrink-0` fixes which half degrades when the row runs out of width:
           the status (icon + "Online") is the meaning and stays intact, so an
           over-long version truncates alone instead of squeezing the label. */}
-      <span
+      <output
         className="flex shrink-0 items-center gap-3"
         title={health.description}
         aria-label={health.description}
-        role="status"
       >
         <health.Icon
           aria-hidden="true"
@@ -246,7 +245,7 @@ export function HealthStatus({ compact = false }: Readonly<{ compact?: boolean }
         >
           {health.label}
         </span>
-      </span>
+      </output>
       {/* Version: reference info, deliberately OUTSIDE the live region — it
           never changes while the app runs, so putting a static string inside
           role="status" only risks it being re-announced on every
