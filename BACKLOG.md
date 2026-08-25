@@ -9,14 +9,41 @@ detail lives.
 *Recently shipped* with the PR number. When something new turns up (review finding, incident,
 parked idea), add it here in the same commit that discovers it.
 
-_Last groomed: 2026-08-24, with the artist rename._
+_Last groomed: 2026-08-25, with the #143-Minors triage._
 
 ## Next up
 
-- Pick from Open bugs / hardening below. The artist-rename fan-out shipped 2026-08-24
-  (see Recently shipped); real authentication remains the standing long-term security item.
+- Pick from Open bugs / hardening below; real authentication remains the standing
+  long-term security item. The 40 banked #143 Plex review Minors are now fully
+  adjudicated (2026-08-25, every item re-verified against v0.44.0): 12 shipped as the
+  triage fix slice (see Recently shipped), 12 recorded below (three under Open bugs, nine
+  under Deferred minors), 3 accepted as deliberate, 3 were already fixed. Dispositions
+  with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
+
+- **A claim-blocked playlist row is reported `not_found`, and the tooltip lies.** When
+  another row's claim empties the candidate pool, `mapping.py` returns reason `not_found`
+  (`MissReason` has no third value) and the frontend tooltip tells the user "Plex has no
+  track with this file… Check the file is in your Plex library" — false: Plex has it, a
+  sibling row took it. #146's `duplicate_collapsed` covers only the sync-level collapse,
+  not this resolution-level block. Fix is a wire-contract change (new `MissReason` value +
+  OpenAPI regen + FE copy). From the 2026-08-25 #143 triage.
+
+- **An `empty`-status sync with a real all-zero tally gets NO diagnosis.** The playlist
+  detail page's `resolvedTargetState` requires a non-zero tally sum, so the loudest
+  wrong-path case (every lookup missed; tally recorded all-zero with misses > 0) renders
+  no match summary and no library-path pointer — while legacy records (null tally) and
+  failed targets rightly stay silent. Discriminate by status + tally-nullability, pinned
+  by a test with `missing > 0`. From the 2026-08-25 #143 triage.
+
+- **`_shared_scripts` reads raw characters, so fullwidth Latin disables the artist veto.**
+  `mapping.py` derives per-character scripts before any compatibility folding, so an ASCII
+  vs fullwidth-Latin pair shares no script, `_artist_contradicts` cannot compare them, and
+  the album rung accepts — a silent wrong match, the direction the module's own contract
+  forbids. The one triage veto item that fails unsafe; the name shape is unlikely in this
+  library, which is why it sits here rather than in a slice. Fold compatibility (NFKD)
+  before deriving scripts. From the 2026-08-25 #143 triage.
 
 - **Album art can still be silently diverted.** The collision pre-flight covers item files
   only; `Album.move_art` goes through the same beets `unique_path`, so two album rows
@@ -136,6 +163,28 @@ _Last groomed: 2026-08-24, with the artist rename._
   not reproduced; end state is a refusal with an honest message, not damage.
 
 ## Deferred minors (cosmetic / self-healing — carried from earlier waves)
+
+- **From the 2026-08-25 #143-Minors triage** (all re-verified at v0.44.0; per-item evidence
+  in the vault note `plex-143-review-minors`): `PlexSettingsPanel`'s `pathParts`/`pathInside`
+  resolve no `.`/`..`, so a path that climbs back OUT of a reported folder gets the
+  all-clear (the backend's normpath rebases it elsewhere) and one that climbs back IN
+  false-warns; a saved section title differing from Plex's only by case shows the same
+  library twice in the dropdown (the fix must normalize the select value to the fetched
+  spelling — a case-insensitive `includes` alone breaks selection); the mismatch verdict
+  recomputes per keystroke inside a polite live region (churns AT and accuses a correct
+  path mid-typing — needs settled-value gating; M, several tests type-then-assert
+  synchronously today); the nothing-matched-by-file warning names only the library-path
+  cause, though after a reorganize the true cause can be "Plex hasn't rescanned yet";
+  `_name_words` keeps digits belonging to a script it discarded ("Би-2 (Bi-2)"
+  false-vetoes — safe direction, grey row); one shared noise word ("feat") forces
+  full-tuple equality and vetoes the transliteration population the album rung exists for
+  (loosening a safety veto — needs its own adversarial pass, never a drive-by); `_norm`
+  applies no Unicode normalization while `_name_words` in the same file does NFKD, so NFD
+  vs NFC metadata never collides in the resolve indexes; claim order is playlist order,
+  not match quality (a lone artist+title candidate locks a track away from a later exact
+  album match — worth a cross-row preference only if it ever bites live); and the "ONE
+  scan of the section" perf invariant is unpinned (`FakeSection.searchTracks` counts
+  nothing — three full-library pulls per sync would pass green).
 
 - Artwork degrade logging: three of the six log sites are pinned by no test — mutations that
   silence `cover_thumbs.py`'s thumb-cache-unwritable line, `cache.py`'s

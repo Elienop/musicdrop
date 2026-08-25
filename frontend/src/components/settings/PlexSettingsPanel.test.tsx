@@ -336,7 +336,10 @@ describe("PlexSettingsPanel", () => {
     // Warned, not blocked — and the warning names the consequence, because
     // "path matching silently fails" is exactly what nobody notices.
     expect(await screen.findByText(/doesn.t list this path/i)).toBeInTheDocument();
-    expect(screen.getByText(/artist and title/i)).toBeInTheDocument();
+    // The fallback is a tag-based ladder, and its real risk is a match that
+    // lands on a DIFFERENT COPY of a track — pin that consequence, not a
+    // passing word.
+    expect(screen.getByText(/different copy of it/i)).toBeInTheDocument();
   });
 
   test("warns about a mismatch the saved settings already carry", async () => {
@@ -591,6 +594,67 @@ describe("PlexSettingsPanel", () => {
     await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await waitFor(() => expect(sent).not.toBeNull());
     expect(sent!.library_path).toBe("/musicdrop");
+  });
+
+  test("keeps a LOADED path strictly inside the section's one folder — inside is a narrowing, not a leftover", async () => {
+    server.use(
+      // "/musicdrop/sub" is strictly inside MusicDrop's reported folder but
+      // not the folder itself. The fill rule is "leftover, not a decision": a
+      // loaded value only authorizes replacement when it IS the sole folder
+      // (samePath). A path UNDER that folder was narrowed by someone on
+      // purpose — a containment check would spend their narrowing on a guess.
+      http.get(SETTINGS, () =>
+        HttpResponse.json(settings({ library_section: "MusicDrop", library_path: "/musicdrop/sub" })),
+      ),
+      http.get(SECTIONS, () => HttpResponse.json({ sections: [SECTION_MUSIC, SECTION_DROP] })),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    const path = await screen.findByLabelText(/library path/i);
+    const select = await screen.findByLabelText(/library section/i);
+    await within(select).findByRole("option", { name: /^music$/i });
+    await userEvent.selectOptions(select, "Music");
+
+    expect(path).toHaveValue("/musicdrop/sub");
+  });
+
+  test("warns when the path is RELATIVE and Plex's folder is absolute, even with matching segments", async () => {
+    server.use(
+      http.get(SETTINGS, () =>
+        HttpResponse.json(settings({ library_section: "MusicDrop", library_path: "musicdrop" })),
+      ),
+      http.get(SECTIONS, () => HttpResponse.json({ sections: [SECTION_DROP] })),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    // "musicdrop" and "/musicdrop" agree segment for segment but are
+    // different roots — "musicdrop" is relative — and they rebase tracks onto
+    // different bases. Absoluteness is part of the match.
+    await screen.findByText("/musicdrop");
+    expect(screen.getByText(/doesn.t list this path/i)).toBeInTheDocument();
+  });
+
+  test("resolves a saved section title case-insensitively, as the backend does", async () => {
+    server.use(
+      // Saved "musicdrop", Plex reports "MusicDrop": music_section compares
+      // case-insensitively, so the panel must resolve to that same section and
+      // act on its folders — not miss it and claim nothing.
+      http.get(SETTINGS, () =>
+        HttpResponse.json(settings({ library_section: "musicdrop", library_path: "/music" })),
+      ),
+      http.get(SECTIONS, () => HttpResponse.json({ sections: [SECTION_MUSIC, SECTION_DROP] })),
+    );
+    renderWithProviders(<PlexSettingsPanel />);
+
+    // Assert the RESOLUTION's consequence — the MusicDrop section's folder is
+    // shown and used for the check — not the dropdown's option list, where the
+    // saved title rides along as a known separate quirk.
+    expect(await screen.findByText("/musicdrop")).toBeInTheDocument();
+    expect(screen.queryByText("/data/music")).not.toBeInTheDocument();
+    // "/music" is nowhere inside "/musicdrop", so the section's folder is
+    // actually in play — a case-sensitive resolution would show no folder and
+    // no warning at all.
+    expect(screen.getByText(/doesn.t list this path/i)).toBeInTheDocument();
   });
 
   test("saves a whitespace-only library path as blank, which is what it looks like", async () => {

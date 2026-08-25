@@ -22,9 +22,13 @@ lengths have to agree too and Plex's OWN artist name must not contradict the
 one we asked for -- and a row carrying no album-artist for Plex to contradict
 is refused this rung outright. See ``_album_match``.
 
-One Plex track answers at most one playlist row: a track a row already resolved
-to is off the table for every LATER row that isn't the same library item. See
-``_free``.
+For the FALLBACK rungs, one Plex track answers at most one playlist row: a
+track a row already resolved to is off the table for every LATER row that isn't
+the same library item. See ``_free``. The path rung is the deliberate exception:
+a track that Plex holds under TWO file locations answers two rows, because the
+path lookup consults no claims. That case belongs to the sync's duplicate
+machinery, which lands both rows faithfully or reports an honest
+``duplicate_collapsed`` miss -- not to this module.
 
 Every match records WHICH rung resolved it (``PlexMatch.method``) and every miss
 its identity and WHY it missed, so the UI can point at the row -- and so a sync

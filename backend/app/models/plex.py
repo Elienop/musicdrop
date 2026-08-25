@@ -157,7 +157,11 @@ class PlexTargetState(BaseModel):
     missing_tracks: list[PlexMissingTrack] = []  # first MISSING_TRACKS_CAP of them
     # All-zero on a target that never got as far as applying a resolution (a
     # per-target failure), which is why the counts sit beside `status` rather
-    # than standing in for it.
+    # than standing in for it. One deliberate exception: a SMART-playlist
+    # failure keeps the resolution's real tally and misses — the resolution
+    # succeeded and Plex merely refused to apply it, so zeroing would report
+    # "nothing matched", a different diagnosis (see test_plex_sync.py,
+    # test_smart_playlist_is_reported_failed_not_deleted).
     matched_by: PlexMatchCounts = Field(default_factory=PlexMatchCounts)
     artwork_hash: str | None = None
     synced_at: str | None = None

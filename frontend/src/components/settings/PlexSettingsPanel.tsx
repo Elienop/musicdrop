@@ -352,8 +352,8 @@ function PlexSettingsEditor({ initial }: { initial: PlexSettings }) {
                 <span>
                   Plex doesn’t list this path for that library, nor any folder that
                   contains it. Path matching will fail silently and every sync will fall
-                  back to matching on artist and title — which holds up until Plex spells
-                  a name differently.
+                  back to matching on tags — artist and title, then album, title and
+                  length — which can land a track on a different copy of it.
                 </span>
               </p>
             )}
