@@ -73,6 +73,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Generated API types match the tracked contract
+        run: npm run gen:api && git diff --exit-code -- src/api/schema.d.ts
+
       - name: Typecheck
         run: npm run typecheck
 

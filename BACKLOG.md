@@ -233,15 +233,14 @@ _Last groomed: 2026-08-25, with the #143-Minors triage._
   now that 304s are stat-cheap, but a scoped identity would need the normalized-name mapping.
 - Browse-side A-Z index would need a per-filter letter-to-offset endpoint (Artists-only
   shipped in the perf wave).
-- **No CI guard that `frontend/openapi.json` matches the live spec.** `grep openapi
-  .github/workflows/ci.yml` returns nothing, and `tests/test_config_validate_api.py:60` reads the
-  LIVE spec off a TestClient, so a stale tracked file fails nothing. An *added* path is
-  self-correcting (frontend code cannot compile against a type that was never generated) but a
-  *changed* one is not — a field flipping required→optional keeps generating old TS that still
-  compiles, and the contract is silently wrong. This repo has been bitten by exactly that between
-  #83 and #111. Shape: a backend pytest comparing PARSED DICTS (not serialized text — a byte
-  comparison fails on formatting drift and teaches people to distrust the guard); a missing file
-  must FAIL, not skip; the failure message spells out the two-step regen.
+- ~~No CI guard that `frontend/openapi.json` matches the live spec~~ — **PR #158 (awaiting
+  merge, CI green 2026-08-25).** Guards BOTH links: backend pytest pins live spec →
+  `openapi.json` (parsed dicts; missing/corrupt file fails loudly with the regen steps), a
+  frontend CI step pins `openapi.json` → `schema.d.ts` (`gen:api` + `git diff --exit-code`),
+  and `scripts/dump_openapi.py` is the now-committed step-1 command, byte-pinned by its own
+  test. Operational note: a FastAPI bump can change the spec (0.128 did — three Body_*
+  schemas), so Dependabot backend PRs may now legitimately go red until someone runs the
+  two-step regen; that is the guard working, not a flake.
 - **`download_image` validates only the FIRST and LAST redirect hop, and issues the intermediate
   request anyway.** Measured: `public → 127.0.0.1:9 → public` returns bytes and the internal GET
   happens. Its sibling `fetch_image_bytes` (the user-pasted-URL path) does it correctly with
