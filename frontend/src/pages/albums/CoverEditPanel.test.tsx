@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CoverEditPanel } from "@/pages/albums/CoverEditPanel";
 
@@ -25,7 +25,9 @@ function imageResponse(blob: Blob, source: string): Response {
   return {
     ok: true,
     status: 200,
-    headers: { get: (h: string) => (h.toLowerCase() === "x-art-source" ? source : null) },
+    headers: {
+      get: (h: string) => (h.toLowerCase() === "x-art-source" ? source : null),
+    },
     blob: async () => blob,
   } as unknown as Response;
 }
@@ -54,24 +56,30 @@ describe("CoverEditPanel", () => {
     revokeSpy = vi.fn();
     createSpy = vi.fn(() => "blob:preview");
     // jsdom lacks createObjectURL/revokeObjectURL
-    vi.stubGlobal("URL", { ...URL, createObjectURL: createSpy, revokeObjectURL: revokeSpy });
+    vi.stubGlobal("URL", {
+      ...URL,
+      createObjectURL: createSpy,
+      revokeObjectURL: revokeSpy,
+    });
   });
 
   it("fetches, previews, then installs on approve", async () => {
-    const png = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+    const png = new Blob([new Uint8Array([137, 80, 78, 71])], {
+      type: "image/png",
+    });
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(
-        imageResponse(png, "Cover Art Archive"),
-      )
+      .mockResolvedValueOnce(imageResponse(png, "Cover Art Archive"))
       .mockResolvedValueOnce(jsonResponse({ ok: true, embedded: false }, 200));
 
     const { onInstalled } = renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
-    await waitFor(() => expect(screen.getByText(/Cover Art Archive/i)).toBeInTheDocument());
+    fireEvent.click(
+      screen.getByRole("button", { name: /fetch from online sources/i }),
+    );
+    expect(await screen.findByText(/Cover Art Archive/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /use this cover/i }));
     // Surfaces an inline success note instead of auto-closing.
-    await waitFor(() => expect(screen.getByText(/cover updated/i)).toBeInTheDocument());
+    expect(await screen.findByText(/cover updated/i)).toBeInTheDocument();
     expect(onInstalled).toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -79,27 +87,40 @@ describe("CoverEditPanel", () => {
   it("shows 'no cover found' on 404", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(emptyResponse(404));
     renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
-    await waitFor(() => expect(screen.getByText(/no cover found/i)).toBeInTheDocument());
+    fireEvent.click(
+      screen.getByRole("button", { name: /fetch from online sources/i }),
+    );
+    expect(await screen.findByText(/no cover found/i)).toBeInTheDocument();
   });
 
   it("surfaces an embed-skip detail and keeps the panel open with a Done button", async () => {
-    const png = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+    const png = new Blob([new Uint8Array([137, 80, 78, 71])], {
+      type: "image/png",
+    });
     vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(imageResponse(png, "Cover Art Archive"))
       .mockResolvedValueOnce(
-        imageResponse(png, "Cover Art Archive"),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({ ok: true, embedded: false, embed_detail: "embedart on but image is webp" }, 200),
+        jsonResponse(
+          {
+            ok: true,
+            embedded: false,
+            embed_detail: "embedart on but image is webp",
+          },
+          200,
+        ),
       );
 
     const { onInstalled, onClose } = renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
-    await waitFor(() => expect(screen.getByText(/Cover Art Archive/i)).toBeInTheDocument());
+    fireEvent.click(
+      screen.getByRole("button", { name: /fetch from online sources/i }),
+    );
+    expect(await screen.findByText(/Cover Art Archive/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /use this cover/i }));
 
-    await waitFor(() => expect(screen.getByText(/cover updated/i)).toBeInTheDocument());
-    expect(screen.getByText(/embedart on but image is webp/i)).toBeInTheDocument();
+    expect(await screen.findByText(/cover updated/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/embedart on but image is webp/i),
+    ).toBeInTheDocument();
     expect(onInstalled).toHaveBeenCalled();
     // Did not auto-close; closes via Done.
     expect(onClose).not.toHaveBeenCalled();
@@ -108,26 +129,32 @@ describe("CoverEditPanel", () => {
   });
 
   it("surfaces the server's reason on a 422 install error", async () => {
-    const png = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+    const png = new Blob([new Uint8Array([137, 80, 78, 71])], {
+      type: "image/png",
+    });
     vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(imageResponse(png, "Cover Art Archive"))
       .mockResolvedValueOnce(
-        imageResponse(png, "Cover Art Archive"),
-      )
-      .mockResolvedValueOnce(jsonResponse({ detail: "Image is too large (max 10 MB)." }, 422));
+        jsonResponse({ detail: "Image is too large (max 10 MB)." }, 422),
+      );
 
     renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
-    await waitFor(() => expect(screen.getByText(/Cover Art Archive/i)).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /use this cover/i }));
-    await waitFor(() =>
-      expect(screen.getByText(/image is too large \(max 10 mb\)/i)).toBeInTheDocument(),
+    fireEvent.click(
+      screen.getByRole("button", { name: /fetch from online sources/i }),
     );
+    expect(await screen.findByText(/Cover Art Archive/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /use this cover/i }));
+    expect(
+      await screen.findByText(/image is too large \(max 10 mb\)/i),
+    ).toBeInTheDocument();
   });
 
   it("surfaces the message from a structured 500 install error", async () => {
     // Cover install guard raises {detail: {message, recovery}} on 500 — the
     // message carries the real cause (missing folder vs permission denied).
-    const png = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+    const png = new Blob([new Uint8Array([137, 80, 78, 71])], {
+      type: "image/png",
+    });
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(imageResponse(png, "Cover Art Archive"))
       .mockResolvedValueOnce(
@@ -143,12 +170,14 @@ describe("CoverEditPanel", () => {
       );
 
     renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
-    await waitFor(() => expect(screen.getByText(/Cover Art Archive/i)).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /use this cover/i }));
-    await waitFor(() =>
-      expect(screen.getByText(/errno 13\] permission denied/i)).toBeInTheDocument(),
+    fireEvent.click(
+      screen.getByRole("button", { name: /fetch from online sources/i }),
     );
+    expect(await screen.findByText(/Cover Art Archive/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /use this cover/i }));
+    expect(
+      await screen.findByText(/errno 13\] permission denied/i),
+    ).toBeInTheDocument();
   });
 
   it("rejects an oversize file before previewing", async () => {
@@ -169,7 +198,9 @@ describe("CoverEditPanel", () => {
     const bmp = makeFile("art.bmp", "image/bmp");
     fireEvent.change(input, { target: { files: [bmp] } });
 
-    expect(await screen.findByText(/png, jpeg, gif, or webp/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/png, jpeg, gif, or webp/i),
+    ).toBeInTheDocument();
     expect(screen.queryByAltText(/cover preview/i)).not.toBeInTheDocument();
   });
 
@@ -184,16 +215,24 @@ describe("CoverEditPanel", () => {
   it("previews an accepted file pick", async () => {
     renderPanel();
     const input = screen.getByLabelText(/upload cover image/i);
-    fireEvent.change(input, { target: { files: [makeFile("art.png", "image/png")] } });
+    fireEvent.change(input, {
+      target: { files: [makeFile("art.png", "image/png")] },
+    });
     expect(await screen.findByAltText(/cover preview/i)).toBeInTheDocument();
     expect(screen.getByText(/your file/i)).toBeInTheDocument();
   });
 
   it("creates an object URL for a fetched preview", async () => {
-    const png = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(imageResponse(png, "Cover Art Archive"));
+    const png = new Blob([new Uint8Array([137, 80, 78, 71])], {
+      type: "image/png",
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      imageResponse(png, "Cover Art Archive"),
+    );
     renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /fetch from online sources/i }),
+    );
     await screen.findByAltText(/cover preview/i);
     expect(createSpy).toHaveBeenCalled();
   });
@@ -203,15 +242,23 @@ describe("CoverEditPanel", () => {
     // albums re-renders this SAME instance with a new id. A candidate that
     // survived that would be installed against whichever album is now on
     // screen — bytes fetched for a different record.
-    const png = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(imageResponse(png, "Cover Art Archive"));
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const png = new Blob([new Uint8Array([137, 80, 78, 71])], {
+      type: "image/png",
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      imageResponse(png, "Cover Art Archive"),
+    );
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     const view = render(
       <QueryClientProvider client={qc}>
         <CoverEditPanel albumId={7} onInstalled={vi.fn()} onClose={vi.fn()} />
       </QueryClientProvider>,
     );
-    fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /fetch from online sources/i }),
+    );
     await screen.findByAltText(/cover preview/i);
     revokeSpy.mockClear();
 
@@ -222,7 +269,9 @@ describe("CoverEditPanel", () => {
       </QueryClientProvider>,
     );
     expect(screen.queryByAltText(/cover preview/i)).toBeNull();
-    expect(screen.queryByRole("button", { name: /use this cover/i })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /use this cover/i }),
+    ).toBeNull();
     // ...and the abandoned candidate's URL goes with it.
     expect(revokeSpy).toHaveBeenCalledWith("blob:preview");
   });
@@ -230,7 +279,9 @@ describe("CoverEditPanel", () => {
   it("revokes the pending preview URL on unmount", async () => {
     const { unmount } = renderPanel();
     const input = screen.getByLabelText(/upload cover image/i);
-    fireEvent.change(input, { target: { files: [makeFile("a.png", "image/png")] } });
+    fireEvent.change(input, {
+      target: { files: [makeFile("a.png", "image/png")] },
+    });
     await screen.findByAltText(/cover preview/i);
 
     revokeSpy.mockClear();
@@ -241,12 +292,20 @@ describe("CoverEditPanel", () => {
   it("clears a prior fetch error when picking a file", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(emptyResponse(500));
     renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: /fetch from online sources/i }));
-    await waitFor(() => expect(screen.getByText(/couldn’t fetch a cover/i)).toBeInTheDocument());
+    fireEvent.click(
+      screen.getByRole("button", { name: /fetch from online sources/i }),
+    );
+    expect(
+      await screen.findByText(/couldn’t fetch a cover/i),
+    ).toBeInTheDocument();
 
     const input = screen.getByLabelText(/upload cover image/i);
-    fireEvent.change(input, { target: { files: [makeFile("a.png", "image/png")] } });
+    fireEvent.change(input, {
+      target: { files: [makeFile("a.png", "image/png")] },
+    });
     await screen.findByAltText(/cover preview/i);
-    expect(screen.queryByText(/couldn’t fetch a cover/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/couldn’t fetch a cover/i),
+    ).not.toBeInTheDocument();
   });
 });
