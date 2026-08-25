@@ -58,12 +58,19 @@ _Last groomed: 2026-08-25, with the #143-Minors triage._
   under Recently shipped), but the gate itself may still want to key on the same `index.html`
   check `mount_static` uses, so the posture and the served SPA stay in agreement.
 
-- **OpenAPI under-declares 403 on 61 write routes.** 64 write routes can now return 403 from
-  the app-wide guard; `frontend/openapi.json` declares 403 on 3 (counted 2026-08-23). Per
-  CLAUDE.md rule 2 the schema is the contract and the TS types are generated from it, so the
-  generated client types 403 as impossible where it is reachable. Low impact today (the
-  frontend is same-origin); the guard widened this from 6 routes to 64. Either declare a
-  global 403 or record the acceptance.
+- ~~OpenAPI under-declares 403 on 61 write routes~~ — **FIXED in this PR**, widened to the
+  whole middleware class: `app/openapi_overlay.py` post-processes the schema so every
+  operation declares the host guard's 400, every write the origin guard's 403 (the guard's
+  own `UNSAFE_METHODS`), and every bodied operation the body limit's 413 — add-only-where-
+  absent, 422 and richer route declarations preserved, new routes covered automatically.
+
+- **`PUT /api/playlists/{playlist_id}/artwork` under-declares its OWN statuses.** The route
+  reads a raw JPEG/PNG body (`await request.body()`), so FastAPI emits no `requestBody` and
+  the middleware overlay rightly skips its 413 — but the route itself returns 404, 413
+  (its 8 MiB cap at `app/api/playlists.py:615-618`) and 415, and declares none of them.
+  Pre-existing (found by the overlay slice's deep review, 2026-08-25); the overlay tests'
+  negative 413 pin is deliberately scoped so a route-level `responses={413: ...}` fix
+  passes. Impact bounded: `usePlaylists.ts` bypasses the typed client for this upload.
 
 - **Cross-origin no-cors GET side effects are an accepted residual.** `GET
   /api/artists/image` (and its peer cache-fillers), plus the outbound-credential GETs like

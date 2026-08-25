@@ -2,6 +2,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx
 from fastapi import FastAPI
@@ -42,6 +43,7 @@ from app.body_limit import BodySizeLimitMiddleware
 from app.config import resolve_artist_image_cache_dir, resolve_cover_thumb_cache_dir, settings
 from app.events.emit import emit_art_changed
 from app.host_guard import HostGuardMiddleware, resolve_allowed_hosts
+from app.openapi_overlay import overlay_middleware_responses
 from app.origin_guard import OriginGuardMiddleware, resolve_extra_origins
 from app.security_headers import SecurityHeadersMiddleware
 from app.static_files import mount_static
@@ -265,7 +267,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         del app.state.artist_image_sources
 
 
-app = FastAPI(
+class App(FastAPI):
+    """FastAPI whose served OpenAPI schema also declares the ASGI guards' 400/403/413.
+
+    ``host_guard`` (400), ``origin_guard`` (403 on the UNSAFE_METHODS writes),
+    and ``body_limit`` (413 on bodied requests) reject requests before any route
+    runs, so no route's ``responses=`` can describe them; ``overlay_middleware_responses``
+    adds them to every operation instead. ``super().openapi()`` keeps FastAPI's
+    ``openapi_schema`` cache (the base schema is computed once); the overlay is
+    idempotent on repeat calls and never touches a declared entry or any 422.
+    """
+
+    # dict[str, Any], not dict[str, object]: this override keeps FastAPI's own
+    # signature, so existing consumers (tests subscript the schema directly)
+    # stay natural instead of isinstance-narrowing at every step.
+    def openapi(self) -> dict[str, Any]:
+        return overlay_middleware_responses(super().openapi())
+
+
+app = App(
     title=settings.app_name,
     version=settings.version,
     lifespan=lifespan,

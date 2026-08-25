@@ -314,7 +314,9 @@ def test_the_cover_fetch_declares_every_status_it_can_return() -> None:
     """
     operation = app.openapi()["paths"]["/api/albums/{album_id}/cover/fetch"]["post"]
     responses = operation["responses"]
-    assert sorted(responses) == ["200", "403", "404", "422"]
+    # 400 is the app-wide host guard (DNS-rebinding allowlist), declared by
+    # the OpenAPI overlay (app/openapi_overlay.py), not by this route.
+    assert sorted(responses) == ["200", "400", "403", "404", "422"]
     # The 200 is image bytes; before this it offered ONLY a JSON body.
     assert "image/*" in responses["200"]["content"]
     for code in ("403", "404"):

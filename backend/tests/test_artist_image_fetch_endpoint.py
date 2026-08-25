@@ -410,7 +410,9 @@ def test_every_declared_status_carries_the_body_it_actually_returns() -> None:
     """
     operation = app.openapi()["paths"]["/api/artists/image/fetch"]["post"]
     responses = operation["responses"]
-    assert sorted(responses) == ["200", "403", "404", "409", "422", "502"]
+    # 400 is the app-wide host guard (DNS-rebinding allowlist), declared by
+    # the OpenAPI overlay (app/openapi_overlay.py), not by this route.
+    assert sorted(responses) == ["200", "400", "403", "404", "409", "422", "502"]
 
     # The 200 offers the image. It also carries FastAPI's `application/json`
     # artifact from the app-level response class, which cannot be dropped
@@ -425,7 +427,7 @@ def test_every_declared_status_carries_the_body_it_actually_returns() -> None:
         schema_ref: str = content["application/json"]["schema"]["$ref"]
         return schema_ref
 
-    for code in ("403", "404", "409", "502"):
+    for code in ("400", "403", "404", "409", "502"):
         assert ref(code) == "#/components/schemas/ErrorDetail", code
     assert ref("422") == "#/components/schemas/HTTPValidationError"
 
