@@ -1,4 +1,4 @@
-import type { ImportJobState } from "@/api/useImport";
+import type { ImportJobState, SweepStatus } from "@/api/useImport";
 
 /** The single spoken status for the whole run. Verb-first and intentionally
  * worded differently from the visible cue/panels so it never substring-collides
@@ -18,12 +18,7 @@ export function announceMessage(args: {
   if (isPending || !data) return "Loading the import.";
   if (data.phase === "failed") return "The import failed.";
   if (data.origin === "sweep" && data.sweep) {
-    const s = data.sweep;
-    const counts = `Processed ${s.processed}, imported ${s.auto_applied}, banked ${s.banked}.`;
-    if (data.phase === "done") {
-      return s.paused ? `Sweep paused. ${counts}` : `Sweep complete. ${counts}`;
-    }
-    return `Sweeping. ${counts}`;
+    return sweepMessage(data.sweep, data.phase);
   }
   if (data.phase === "done") {
     const { applied, skipped } = data.progress;
@@ -32,6 +27,22 @@ export function announceMessage(args: {
   if (data.phase === "scanning" && data.albums.length === 0) {
     return "Scanning the folder for albums.";
   }
+  return progressMessage(data);
+}
+
+/** Sweep-origin jobs announce their monotone counters rather than the feed. */
+function sweepMessage(sweep: SweepStatus, phase: ImportJobState["phase"]): string {
+  const counts = `Processed ${sweep.processed}, imported ${sweep.auto_applied}, banked ${sweep.banked}.`;
+  if (phase === "done") {
+    return sweep.paused ? `Sweep paused. ${counts}` : `Sweep complete. ${counts}`;
+  }
+  return `Sweeping. ${counts}`;
+}
+
+/** Active (non-terminal) non-sweep runs: count what's applied + flag pending
+ * decisions (review, duplicate) so a screen-reader user hears the import is
+ * waiting on them. */
+function progressMessage(data: ImportJobState): string {
   const { applied, skipped, needs_review } = data.progress;
   // The backend `progress` has no duplicate counter, so derive the
   // duplicate-pending count from the feed rows. A parked duplicate BLOCKS the

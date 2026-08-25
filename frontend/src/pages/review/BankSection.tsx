@@ -107,6 +107,16 @@ function bankHeading(filter: BankFilter): string {
   return BANK_STATUS_LABEL[filter];
 }
 
+/** Tri-state for the header checkbox: all eligible rows ticked, some, or none. */
+function triState(
+  allSelected: boolean,
+  someSelected: boolean,
+): boolean | "indeterminate" {
+  if (allSelected) return true;
+  if (someSelected) return "indeterminate";
+  return false;
+}
+
 /**
  * "Waiting for review" — the durable bank backlog (spec §7), paginated from
  * day one. Default filter is "Needs attention" (`view=active`) so resolved
@@ -187,14 +197,9 @@ export function BankSection() {
     .filter((row) => selected.has(row.id) && row.status === "needs_review")
     .map((row) => row.id);
 
-  // Tri-state for the header checkbox: all eligible rows ticked, some, or none.
   const allSelected =
     selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
-  const headerChecked: boolean | "indeterminate" = allSelected
-    ? true
-    : visibleSelected.length > 0
-      ? "indeterminate"
-      : false;
+  const headerChecked = triState(allSelected, visibleSelected.length > 0);
   const toggleAll = (checked: boolean) => {
     setSelected(checked ? new Set(selectableIds) : new Set());
   };
@@ -223,6 +228,47 @@ export function BankSection() {
         ? error.message
         : "That didn’t go through; the row may have changed state. Try again.",
     );
+  };
+
+  // The empty-backlog view: which message/action depends on whether the
+  // offset overshot, the default view is pristine, or a filter matched
+  // nothing.
+  const renderEmptyBacklog = () => {
+    if (offset > 0) {
+      // The page is empty but the offset is past the end — the backlog
+      // shrank under a stale `bank_offset` (e.g. the last page's rows were
+      // bulk-ignored). The Pagination control hides once total fits one
+      // page, so this branch IS the way back (the BrowsePage recipe).
+      return (
+        <EmptyState
+          bordered
+          icon={Albums}
+          title="This page is empty; the backlog changed under it."
+          action={
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setParams({ filter, reason: reasonFilter, offset: 0 })}
+            >
+              Back to first page
+            </Button>
+          }
+        />
+      );
+    }
+    if (filter === "" && reasonFilter === "") {
+      // The pristine "Needs attention" view is empty but rows still exist
+      // (total_all > 0) — everything's resolved. Point at the filters so
+      // the Imported/Ignored history stays discoverable, not a dead end.
+      return (
+        <p className="text-muted-foreground text-sm">
+          Nothing needs attention. Switch the filter to see resolved history.
+        </p>
+      );
+    }
+    // An active status/reason filter matched nothing on this page.
+    return <p className="text-muted-foreground text-sm">No rows match this filter.</p>;
   };
 
   const toggle = (id: string, checked: boolean) => {
@@ -348,37 +394,7 @@ export function BankSection() {
       </div>
 
       {data.items.length === 0 ? (
-        offset > 0 ? (
-          // The page is empty but the offset is past the end — the backlog
-          // shrank under a stale `bank_offset` (e.g. the last page's rows were
-          // bulk-ignored). The Pagination control hides once total fits one
-          // page, so this branch IS the way back (the BrowsePage recipe).
-          <EmptyState
-            bordered
-            icon={Albums}
-            title="This page is empty; the backlog changed under it."
-            action={
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setParams({ filter, reason: reasonFilter, offset: 0 })}
-              >
-                Back to first page
-              </Button>
-            }
-          />
-        ) : filter === "" && reasonFilter === "" ? (
-          // The pristine "Needs attention" view is empty but rows still exist
-          // (total_all > 0) — everything's resolved. Point at the filters so
-          // the Imported/Ignored history stays discoverable, not a dead end.
-          <p className="text-muted-foreground text-sm">
-            Nothing needs attention. Switch the filter to see resolved history.
-          </p>
-        ) : (
-          // An active status/reason filter matched nothing on this page.
-          <p className="text-muted-foreground text-sm">No rows match this filter.</p>
-        )
+        renderEmptyBacklog()
       ) : (
         <ul className="border-border divide-border divide-y overflow-hidden rounded-xl border">
           {data.items.map((row) => (
@@ -415,6 +431,17 @@ export function BankSection() {
  * The status chip names the lifecycle for settled rows; needs_review rows
  * show the REASON instead (what kind of decision awaits). Failed rows carry
  * their error in the meta line. */
+
+/** Chip tone per status: the decision awaiting stands out, the attention
+ * states recede to an outline, and the settled/quiet ones recede furthest. */
+function bankBadgeVariant(
+  status: BankStatus,
+): "default" | "outline" | "secondary" {
+  if (status === "needs_review") return "default";
+  if (status === "failed" || status === "stale") return "outline";
+  return "secondary";
+}
+
 function BankRow({
   row,
   selected,
@@ -455,7 +482,7 @@ function BankRow({
           subtitle={row.artist ?? "Unknown artist"}
           meta={metaBits.join(" · ") || undefined}
           badge={
-            <Badge variant={row.status === "needs_review" ? "default" : row.status === "failed" || row.status === "stale" ? "outline" : "secondary"}>
+            <Badge variant={bankBadgeVariant(row.status)}>
               {row.status === "needs_review" ? BANK_REASON_LABEL[row.reason] : BANK_STATUS_LABEL[row.status]}
             </Badge>
           }

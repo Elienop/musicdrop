@@ -60,6 +60,25 @@ export function ImportPage() {
   return <ImportRun jobId={jobId} />;
 }
 
+/** Derive the resume-banner copy from the active job's origin + set-aside
+ * count. Returns the headline sentence (without the set-aside clause, which
+ * the JSX appends as a separate muted span). */
+function resumeBannerText(
+  origin: string | undefined,
+  needsReview: number,
+): string {
+  if (origin === "sweep") {
+    return "A sweep is running; uncertain albums are being banked for review.";
+  }
+  if (origin === "inbox") {
+    // The set-aside clause completes the sentence when there's a count.
+    return needsReview > 0
+      ? "An inbox import is running"
+      : "An inbox import is running.";
+  }
+  return "An import is already running.";
+}
+
 /** Entry: a server-path input + Start. Polls the active-import probe so a
  * running import the user navigated away from surfaces a Resume banner (and
  * Start is gated while one runs); the blank-path guard and the residual 409
@@ -153,13 +172,7 @@ function ImportEntry() {
               aria-hidden="true"
             />
             <span>
-              {origin === "sweep"
-                ? "A sweep is running; uncertain albums are being banked for review."
-                : origin === "inbox"
-                  ? needsReview > 0
-                    ? "An inbox import is running" // the set-aside clause completes the sentence
-                    : "An inbox import is running."
-                  : "An import is already running."}
+              {resumeBannerText(origin, needsReview)}
               {origin === "inbox" && needsReview > 0 && (
                 <span className="text-muted-foreground font-normal">
                   {" · "}
@@ -413,6 +426,16 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
  * stats dialect), the current folder, Pause, and the Review hand-off. Rides
  * the existing 1s job poll. A paused sweep finishes its current album, then
  * the job goes done with a "- paused" summary and `sweep.paused` stays true. */
+/** Derive the sweep's live-status line from paused / current-folder state. */
+function sweepStatusLabel(
+  paused: boolean,
+  currentFolder: string | null | undefined,
+): string {
+  if (paused) return "Pausing; finishing the current album…";
+  if (currentFolder) return `Sweeping ${folderName(currentFolder)}…`;
+  return "Sweeping your folder…";
+}
+
 function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: string }>) {
   const pause = usePauseSweep(jobId);
   const sweep = state.sweep;
@@ -442,11 +465,7 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
         <p className="text-muted-foreground flex min-h-5 items-center gap-2 text-sm">
           <Spinner className="size-4 animate-spin" aria-hidden="true" />
           <span>
-            {sweep.paused
-              ? "Pausing; finishing the current album…"
-              : sweep.current_folder
-                ? `Sweeping ${folderName(sweep.current_folder)}…`
-                : "Sweeping your folder…"}
+            {sweepStatusLabel(sweep.paused, sweep.current_folder)}
           </span>
         </p>
       )}
@@ -522,6 +541,41 @@ function FeedList({
   );
 }
 
+/** Derive the feed-row action button (Review / Resolve / none) from the
+ * album's status. */
+function feedRowAction(
+  status: ImportAlbumSummary["status"],
+  albumIndex: number,
+  jobId: string,
+  origin: { from: AlbumOrigin },
+): React.ReactNode {
+  if (status === "needs_review") {
+    return (
+      <Button size="sm" asChild>
+        {/* Carry the job id (`?job=`) AND the origin state across the
+            decision seam — the candidate page's back link + post-submit
+            navigation use them. */}
+        <Link to={`/import/albums/${albumIndex}?job=${jobId}`} state={origin}>
+          Review
+        </Link>
+      </Button>
+    );
+  }
+  if (status === "needs_dup_resolution") {
+    return (
+      <Button size="sm" asChild>
+        <Link
+          to={`/import/albums/${albumIndex}/duplicate?job=${jobId}`}
+          state={origin}
+        >
+          Resolve
+        </Link>
+      </Button>
+    );
+  }
+  return undefined;
+}
+
 /** One feed row on the shared AlbumRow. An `applied` album shows its library
  * cover and its title links to `/albums/{id}` (when the worker reported the
  * id); `skipped`/`decided` rows are calm; `needs_review` / parked-duplicate
@@ -566,30 +620,21 @@ function FeedRow({
         badge={<StatusBadge album={album} />}
         href={linked ? `/albums/${albumId}` : undefined}
         hrefState={linked ? origin : undefined}
-        action={
-          needsReview ? (
-            <Button size="sm" asChild>
-              {/* Carry the job id (`?job=`) AND the origin state across the
-                  decision seam — the candidate page's back link + post-submit
-                  navigation use them. */}
-              <Link to={`/import/albums/${album.index}?job=${jobId}`} state={origin}>
-                Review
-              </Link>
-            </Button>
-          ) : needsDup ? (
-            <Button size="sm" asChild>
-              <Link
-                to={`/import/albums/${album.index}/duplicate?job=${jobId}`}
-                state={origin}
-              >
-                Resolve
-              </Link>
-            </Button>
-          ) : undefined
-        }
+        action={feedRowAction(album.status, album.index, jobId, origin)}
       />
     </div>
   );
+}
+
+/** Derive the badge variant from the album's per-status label. */
+function badgeVariant(
+  status: ImportAlbumSummary["status"],
+): "default" | "outline" | "secondary" {
+  if (status === "needs_review" || status === "needs_dup_resolution") {
+    return "default";
+  }
+  if (status === "skipped") return "outline";
+  return "secondary";
 }
 
 /** The status chip. Color + the text label both carry the state (not color
@@ -624,14 +669,8 @@ function StatusBadge({ album }: Readonly<{ album: ImportAlbumSummary }>) {
     needs_review: "Needs review",
     needs_dup_resolution: "Already in library",
   };
-  const variant =
-    status === "needs_review" || status === "needs_dup_resolution"
-      ? "default"
-      : status === "skipped"
-        ? "outline"
-        : "secondary";
   return (
-    <Badge variant={variant} className="shrink-0">
+    <Badge variant={badgeVariant(status)} className="shrink-0">
       {label[status]}
     </Badge>
   );

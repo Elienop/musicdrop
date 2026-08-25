@@ -374,6 +374,166 @@ function mergeSummary(result: PlaylistMergeResult, sourceName: string): string {
   return `Merged ${sourceName}: added ${added}${skipped}${deleted}. Sync to Plex to push the change.`;
 }
 
+/** The two error lines a failed Plex-user load can take: a 409 means Plex is
+ * not configured (point at Settings); anything else is a load failure (offer
+ * the retry the ErrorState ships). */
+function PlexUsersErrorLine({
+  error,
+  onRetry,
+}: Readonly<{ error: unknown; onRetry: () => void }>) {
+  if (isPlexNotConfigured(error)) {
+    return (
+      <li className="text-muted-foreground text-sm">
+        Connect Plex in{" "}
+        <Link to="/settings/integrations" className="focus-ring rounded-sm underline">
+          Settings
+        </Link>{" "}
+        to choose who gets this playlist.
+      </li>
+    );
+  }
+  return (
+    <li>
+      <ErrorState
+        variant="inline"
+        message="Couldn’t load Plex accounts."
+        onRetry={onRetry}
+      />
+    </li>
+  );
+}
+
+/** The "Delete playlist" confirm dialog, self-contained: it owns its own
+ * useNavigate (to leave on success) and takes the page's delete mutation so
+ * the pending/error state stays the page's single source. */
+function DeletePlaylistDialog({
+  playlist,
+  remove,
+  syncedPlexCopies,
+}: Readonly<{
+  playlist: PlaylistDetail;
+  remove: ReturnType<typeof useDeletePlaylist>;
+  syncedPlexCopies: number;
+}>) {
+  const navigate = useNavigate();
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="outline" size="sm">
+          <Remove className="size-4" aria-hidden="true" /> Delete playlist
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete &ldquo;{playlist.name}&rdquo;?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This removes the playlist and its exported file. Your tracks stay in the
+            library.
+            {Object.keys(playlist.plex ?? {}).length > 0 ? (
+              <>
+                {" "}
+                This also removes it from Plex ({Object.keys(playlist.plex).length} account
+                {Object.keys(playlist.plex).length === 1 ? "" : "s"}).
+              </>
+            ) : null}
+            {/* Count only the copies that actually landed on Plex (have a
+                recorded rating_key) — a failed/empty target holds a plex
+                slot but has no copy to remove. Built as one string so the
+                sentence reads exactly, uninterrupted by interpolation. */}
+            {syncedPlexCopies > 0
+              ? ` Also removes its ${syncedPlexCopies} synced Plex ${plural(syncedPlexCopies, "copy", "copies")} on Plex.`
+              : null}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {remove.isError && (
+          <p className="text-destructive text-sm" role="alert">
+            Couldn&rsquo;t delete the playlist. Try again.
+          </p>
+        )}
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            disabled={remove.isPending}
+            onClick={(e) => {
+              // Keep the dialog mounted while the DELETE is in flight: it
+              // would otherwise auto-close on click, hiding the pending state
+              // and any error. We navigate away ourselves on success.
+              e.preventDefault();
+              remove.mutate(playlist.id, {
+                onSuccess: () => navigate("/playlists"),
+              });
+            }}
+          >
+            {remove.isPending ? (
+              <>
+                <Spinner className="size-4 animate-spin" aria-hidden="true" />
+                Deleting&hellip;
+              </>
+            ) : (
+              "Delete"
+            )}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+/** The "Plex sync" list: the owner's always-on row first, then each Plex
+ * account as a toggleable fan-out target with its own sync status — or the
+ * error line when the account list failed to load. */
+function PlexTargetList({
+  playlist,
+  plexUsers,
+  targetIds,
+  toggleTarget,
+}: Readonly<{
+  playlist: PlaylistDetail;
+  plexUsers: ReturnType<typeof usePlexUsers>;
+  targetIds: Set<string>;
+  toggleTarget: (user: { id: string; name: string }) => void;
+}>) {
+  return (
+    <ul className="flex flex-col gap-2">
+      {/* The owner always gets their own copy — shown first, no checkbox. */}
+      <li className="flex items-center justify-between gap-3 text-sm">
+        <span className="font-medium">You (admin)</span>
+        <StatusLine status={adminSyncStatus(playlist)} />
+      </li>
+      {plexUsers.isError ? (
+        <PlexUsersErrorLine
+          error={plexUsers.error}
+          onRetry={() => void plexUsers.refetch()}
+        />
+      ) : (
+        (plexUsers.data?.users ?? []).map((user) => {
+          const checked = targetIds.has(user.id);
+          const state = playlist.plex?.[user.id];
+          return (
+            <li key={user.id} className="flex items-center justify-between gap-3 text-sm">
+              <label className="flex items-center gap-2">
+                <Checkbox
+                  checked={checked}
+                  onCheckedChange={() => toggleTarget(user)}
+                  aria-label={user.name}
+                />
+                <span className="font-medium">{user.name}</span>
+              </label>
+              {/* Show a status for every checked target — even before its
+                  first sync (state undefined → "Not synced yet"), matching
+                  the admin row which always shows one. */}
+              {checked && (
+                <StatusLine status={syncStatus(state, playlist, "Not synced yet")} />
+              )}
+            </li>
+          );
+        })
+      )}
+    </ul>
+  );
+}
+
 export function PlaylistDetailPage() {
   const { playlistId } = useParams<{ playlistId: string }>();
   const id = playlistId ?? "";
@@ -403,7 +563,6 @@ export function PlaylistDetailPage() {
 }
 
 function PlaylistDetailView({ playlist }: Readonly<{ playlist: PlaylistDetail }>) {
-  const navigate = useNavigate();
   const rename = useRenamePlaylist(playlist.id);
   const remove = useDeletePlaylist();
   const reorder = useReorderTracks(playlist.id);
@@ -860,66 +1019,11 @@ function PlaylistDetailView({ playlist }: Readonly<{ playlist: PlaylistDetail }>
             one&hellip;
           </Button>
 
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button variant="outline" size="sm">
-                <Remove className="size-4" aria-hidden="true" /> Delete playlist
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete &ldquo;{playlist.name}&rdquo;?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  This removes the playlist and its exported file. Your tracks stay in the
-                  library.
-                  {Object.keys(playlist.plex ?? {}).length > 0 ? (
-                    <>
-                      {" "}
-                      This also removes it from Plex ({Object.keys(playlist.plex).length} account
-                      {Object.keys(playlist.plex).length === 1 ? "" : "s"}).
-                    </>
-                  ) : null}
-                  {/* Count only the copies that actually landed on Plex (have a
-                      recorded rating_key) — a failed/empty target holds a plex
-                      slot but has no copy to remove. Built as one string so the
-                      sentence reads exactly, uninterrupted by interpolation. */}
-                  {syncedPlexCopies > 0
-                    ? ` Also removes its ${syncedPlexCopies} synced Plex ${plural(syncedPlexCopies, "copy", "copies")} on Plex.`
-                    : null}
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              {remove.isError && (
-                <p className="text-destructive text-sm" role="alert">
-                  Couldn&rsquo;t delete the playlist. Try again.
-                </p>
-              )}
-              <AlertDialogFooter>
-                <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  variant="destructive"
-                  disabled={remove.isPending}
-                  onClick={(e) => {
-                    // Keep the dialog mounted while the DELETE is in flight: it
-                    // would otherwise auto-close on click, hiding the pending state
-                    // and any error. We navigate away ourselves on success.
-                    e.preventDefault();
-                    remove.mutate(playlist.id, {
-                      onSuccess: () => navigate("/playlists"),
-                    });
-                  }}
-                >
-                  {remove.isPending ? (
-                    <>
-                      <Spinner className="size-4 animate-spin" aria-hidden="true" />
-                      Deleting&hellip;
-                    </>
-                  ) : (
-                    "Delete"
-                  )}
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+          <DeletePlaylistDialog
+            playlist={playlist}
+            remove={remove}
+            syncedPlexCopies={syncedPlexCopies}
+          />
         </div>
       </header>
 
@@ -981,55 +1085,12 @@ function PlaylistDetailView({ playlist }: Readonly<{ playlist: PlaylistDetail }>
         aria-label="Plex sync"
       >
         <SectionLabel>Plex sync</SectionLabel>
-        <ul className="flex flex-col gap-2">
-          {/* The owner always gets their own copy — shown first, no checkbox. */}
-          <li className="flex items-center justify-between gap-3 text-sm">
-            <span className="font-medium">You (admin)</span>
-            <StatusLine status={adminSyncStatus(playlist)} />
-          </li>
-          {plexUsers.isError ? (
-            isPlexNotConfigured(plexUsers.error) ? (
-              <li className="text-muted-foreground text-sm">
-                Connect Plex in{" "}
-                <Link to="/settings/integrations" className="focus-ring rounded-sm underline">
-                  Settings
-                </Link>{" "}
-                to choose who gets this playlist.
-              </li>
-            ) : (
-              <li>
-                <ErrorState
-                  variant="inline"
-                  message="Couldn’t load Plex accounts."
-                  onRetry={() => void plexUsers.refetch()}
-                />
-              </li>
-            )
-          ) : (
-            (plexUsers.data?.users ?? []).map((user) => {
-              const checked = targetIds.has(user.id);
-              const state = playlist.plex?.[user.id];
-              return (
-                <li key={user.id} className="flex items-center justify-between gap-3 text-sm">
-                  <label className="flex items-center gap-2">
-                    <Checkbox
-                      checked={checked}
-                      onCheckedChange={() => toggleTarget(user)}
-                      aria-label={user.name}
-                    />
-                    <span className="font-medium">{user.name}</span>
-                  </label>
-                  {/* Show a status for every checked target — even before its
-                      first sync (state undefined → "Not synced yet"), matching
-                      the admin row which always shows one. */}
-                  {checked && (
-                    <StatusLine status={syncStatus(state, playlist, "Not synced yet")} />
-                  )}
-                </li>
-              );
-            })
-          )}
-        </ul>
+        <PlexTargetList
+          playlist={playlist}
+          plexUsers={plexUsers}
+          targetIds={targetIds}
+          toggleTarget={toggleTarget}
+        />
         {/* Sits below the per-target list because it describes the one library
             lookup they all share, not any single account's push. */}
         <MatchSummary playlist={playlist} />

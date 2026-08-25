@@ -251,6 +251,39 @@ function ImportingNowSection({ status }: Readonly<{ status: AcquisitionQueueStat
   );
 }
 
+/** The no-op start message from the skipped-still-arriving count: `null`
+ * = no attempt yet, 0 = the inbox really did clear, >0 = "not yet". */
+function noOpInFlightMessage(skipped: number | null): string {
+  if (skipped === null) return "";
+  if (skipped > 0) {
+    return (
+      `Still downloading — ${skipped} ${plural(skipped, "folder is", "folders are")} ` +
+      "still receiving files. They'll be importable once they finish."
+    );
+  }
+  return "Nothing left to import; the inbox just cleared.";
+}
+
+/** Row subtitle: the folder still receiving files says so FIRST ("Review
+ * all" skips it, and the per-row Review is an informed override), otherwise
+ * the honest outcome — set-aside or failed — and nothing for a fresh drop. */
+function inboxSubtitle(item: InboxItem): string | undefined {
+  if (item.in_flight) {
+    return "Still downloading — importing now may catch only part of it";
+  }
+  if (item.outcome === "set_aside") return "Set aside";
+  if (item.outcome === "failed") return "Import failed";
+  return undefined;
+}
+
+/** Row Review button label: the attempt state first, then the still-arriving
+ * override, then the plain action. */
+function inboxReviewLabel(starting: boolean, inFlight: boolean): string {
+  if (starting) return "Starting…";
+  if (inFlight) return "Review anyway";
+  return "Review";
+}
+
 /** "Waiting in the inbox" — the per-item set-aside backlog. Each row imports its
  * own folder; "Review all" imports the whole inbox. Both are disabled while an
  * import runs (the single slot is busy) — the visible helper line below carries
@@ -287,13 +320,7 @@ function InboxSection({
     setNoOpInFlight(null);
     run();
   };
-  const noOpMessage =
-    noOpInFlight === null
-      ? ""
-      : noOpInFlight > 0
-        ? `Still downloading — ${noOpInFlight} ${plural(noOpInFlight, "folder is", "folders are")} ` +
-          "still receiving files. They'll be importable once they finish."
-        : "Nothing left to import; the inbox just cleared.";
+  const noOpMessage = noOpInFlightMessage(noOpInFlight);
 
   return (
     <section aria-label="Waiting in the inbox" className="flex flex-col gap-3">
@@ -313,20 +340,7 @@ function InboxSection({
         {items.map((item) => {
           const starting =
             reviewOne.isPending && reviewOne.variables === item.name;
-          // The inbox doesn't track where a folder came from (it just lists a
-          // directory), so the only honest subtitle is its outcome — set-aside
-          // or failed — and nothing for a fresh drop.
-          // A folder still receiving files says so FIRST: "Review all" skips it,
-          // and the per-row Review below is an explicit override — importing a
-          // half-arrived album files a partial copy, so the choice must be
-          // informed rather than blind.
-          const subtitle = item.in_flight
-            ? "Still downloading — importing now may catch only part of it"
-            : item.outcome === "set_aside"
-              ? "Set aside"
-              : item.outcome === "failed"
-                ? "Import failed"
-                : undefined;
+          const subtitle = inboxSubtitle(item);
           return (
             <li key={item.name}>
               <AlbumRow
@@ -343,7 +357,7 @@ function InboxSection({
                       start(() => reviewOne.mutate(item.name, mutateOpts))
                     }
                   >
-                    {starting ? "Starting…" : item.in_flight ? "Review anyway" : "Review"}
+                    {inboxReviewLabel(starting, item.in_flight)}
                   </Button>
                 }
               />
