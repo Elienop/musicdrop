@@ -238,7 +238,10 @@ export function playlistSyncStatus(
   }
 
   const per = states.map((state) => syncStatus(state, playlist, "Not synced", "summary"));
-  const worst = per.reduce((a, b) => (TONE_RANK[b.tone] > TONE_RANK[a.tone] ? b : a));
+  const worst = per.reduce(
+    (a, b) => (TONE_RANK[b.tone] > TONE_RANK[a.tone] ? b : a),
+    per[0],
+  );
 
   // Only "nothing to sync" / "not synced" — quiet tier; surface the first.
   if (TONE_RANK[worst.tone] === 0) {

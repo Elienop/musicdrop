@@ -455,11 +455,11 @@ function failureLabel(item: ItemWriteResult): string {
 }
 
 /** A single before/after track-number cell (e.g. "1" or "1 → 2"). */
-function trackCell(before: number | null | undefined, after: number | null | undefined): string {
-  const b = before ?? null;
-  const a = after ?? null;
-  if (a !== null && a !== b) return b === null ? String(a) : `${b} → ${a}`;
-  return String(b ?? a ?? "-");
+function trackCell(before: number | null = null, after: number | null = null): string {
+  if (after !== null && after !== before) {
+    return before === null ? String(after) : `${before} → ${after}`;
+  }
+  return String(before ?? after ?? "-");
 }
 
 function diffValue(v: string | number | null | undefined): string {

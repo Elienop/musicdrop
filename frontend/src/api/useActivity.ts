@@ -119,7 +119,7 @@ function outcomeCounts(
 }
 
 function importRow(status: ActiveImportStatus | undefined): ActivityRow | null {
-  if (status === undefined || !status.active) {
+  if (!status?.active) {
     return null;
   }
   // An inbox-origin import is already represented by the acquisition row
@@ -164,7 +164,7 @@ function acquisitionRow(
 ): ActivityRow | null {
   // The phase enum is only "idle" | "running" — the durable set-aside/failed
   // totals are the Review page's surface, not activity rows.
-  if (status === undefined || status.phase !== "running") {
+  if (status?.phase !== "running") {
     return null;
   }
   return {

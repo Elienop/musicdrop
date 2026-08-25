@@ -2,5 +2,5 @@
  * importing-now line. */
 export function lastSegment(folder: string): string {
   const parts = folder.split("/").filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : folder;
+  return parts.at(-1) ?? folder;
 }

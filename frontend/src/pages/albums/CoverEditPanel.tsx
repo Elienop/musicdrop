@@ -10,7 +10,7 @@ type CoverInstallResult = components["schemas"]["CoverInstallResult"];
 type Pending = { objectUrl: string; blob: Blob; source: string | null };
 
 /** Image types the cover endpoint accepts (mirrors the picker's `accept`). */
-const ACCEPTED_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+const ACCEPTED_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const MAX_BYTES = 10 * 1024 * 1024;
 
 /** Keyed on `albumId`, and that is load-bearing rather than tidy. Every piece of
@@ -80,7 +80,7 @@ function CoverEditPanelForAlbum({
   const onPickFile = (file: File) => {
     setNotFound(false);
     fetchCover.reset();
-    if (!ACCEPTED_TYPES.includes(file.type)) {
+    if (!ACCEPTED_TYPES.has(file.type)) {
       setPickError("That file isn't an image we can use. Pick a PNG, JPEG, GIF, or WebP.");
       return;
     }

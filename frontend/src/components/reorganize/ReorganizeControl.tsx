@@ -24,7 +24,7 @@ function jobMatches(
   job: ReorganizeBackfillStatus | undefined,
   scope: ReorganizeScope,
 ): boolean {
-  if (!job || job.scope == null) return false;
+  if (job?.scope == null) return false;
   if (scope.scope === "album")
     return job.scope === "album" && job.album_id === scope.albumId;
   if (scope.scope === "artist")

@@ -134,7 +134,7 @@ export function AlphabetIndex({
     if (e.key === "ArrowRight") moveTo(filled[at + 1]);
     else if (e.key === "ArrowLeft") moveTo(filled[at - 1]);
     else if (e.key === "Home") moveTo(filled[0]);
-    else if (e.key === "End") moveTo(filled[filled.length - 1]);
+    else if (e.key === "End") moveTo(filled.at(-1));
     else return; // Up/Down and everything else keep their page behaviour
     e.preventDefault();
   };

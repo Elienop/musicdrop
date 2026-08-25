@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
+import type { NavigateFunction } from "react-router";
 
 import { useActiveImport } from "@/api/useActiveImport";
 import type { BankDecision, BankItem } from "@/api/useBank";
@@ -262,6 +263,45 @@ function FailedDuplicateStrip({
   );
 }
 
+/** One shared decision submitter: post the decision, return to Review on
+ * success, and clear any pinned duplicate action on error. */
+function makeSubmit(
+  decide: ReturnType<typeof useBankDecision>,
+  navigate: NavigateFunction,
+  setPendingDup: React.Dispatch<React.SetStateAction<DuplicateAction | null>>,
+) {
+  return (decision: BankDecision) =>
+    decide.mutate(decision, {
+      onSuccess: () => navigate("/review"),
+      onError: () => setPendingDup(null),
+    });
+}
+
+/** The bar's cluster slot, hoisted to module level so no component-shaped
+ * closure is defined inside a screen component. ReviewControlBar CALLS
+ * `cluster(hintId)` as a function, so this renders exactly where the row
+ * belongs; the DOM is identical to the former inline arrows. */
+function BankDuplicateCluster({
+  hintId,
+  pending,
+  busy,
+  onDecide,
+}: Readonly<{
+  hintId: string | undefined;
+  pending: DuplicateAction | null;
+  busy: boolean;
+  onDecide: (action: DuplicateAction) => void;
+}> ) {
+  return (
+    <DuplicateActionRow
+      pending={pending}
+      busy={busy}
+      describedBy={hintId}
+      onDecide={onDecide}
+    />
+  );
+}
+
 function BankCandidateScreen({ item }: Readonly<{ item: BankItem }>) {
   const navigate = useNavigate();
   const decide = useBankDecision(item.id);
@@ -297,11 +337,7 @@ function BankCandidateScreen({ item }: Readonly<{ item: BankItem }>) {
   // "decide again with a duplicate action" instruction stays followable.
   const showDupActions = hasCollision || (dups.isError && item.status === "failed");
 
-  const submit = (decision: BankDecision) =>
-    decide.mutate(decision, {
-      onSuccess: () => navigate("/review"),
-      onError: () => setPendingDup(null),
-    });
+  const submit = makeSubmit(decide, navigate, setPendingDup);
 
   const busyAll = decide.isPending || search.isPending || rescan.isPending;
   const ignore: BarDecision = {
@@ -400,10 +436,10 @@ function BankCandidateScreen({ item }: Readonly<{ item: BankItem }>) {
           cluster={
             showDupActions
               ? (hintId) => (
-                  <DuplicateActionRow
+                  <BankDuplicateCluster
+                    hintId={hintId}
                     pending={pendingDup}
                     busy={busyAll}
-                    describedBy={hintId}
                     onDecide={(action) => {
                       setPendingDup(action);
                       submit({
@@ -488,10 +524,10 @@ function BankDuplicateScreen({ item }: Readonly<{ item: BankItem }>) {
           }}
           hint={DUPLICATE_FOOTNOTE_BANK}
           cluster={(hintId) => (
-            <DuplicateActionRow
+            <BankDuplicateCluster
+              hintId={hintId}
               pending={pending}
               busy={decide.isPending || rescan.isPending}
-              describedBy={hintId}
               onDecide={onDecide}
             />
           )}
@@ -518,11 +554,7 @@ function NoMatchScreen({ item }: Readonly<{ item: BankItem }>) {
   const search = useBankSearch(item.id);
   const rescan = useBankRescan(item.id);
   const [pendingDup, setPendingDup] = useState<DuplicateAction | null>(null);
-  const submit = (decision: BankDecision) =>
-    decide.mutate(decision, {
-      onSuccess: () => navigate("/review"),
-      onError: () => setPendingDup(null),
-    });
+  const submit = makeSubmit(decide, navigate, setPendingDup);
   const busyAll = decide.isPending || search.isPending || rescan.isPending;
 
   return (

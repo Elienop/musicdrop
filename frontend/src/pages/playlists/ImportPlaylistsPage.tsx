@@ -183,7 +183,7 @@ export function ImportPlaylistsPage() {
   function chosenTrack(playlistIndex: number, entry: ImportEntryPreview) {
     const chosen = resolutionFor(playlistIndex, entry.position);
     if (chosen === null) return null;
-    if (entry.match && entry.match.item_id === chosen) return entry.match;
+    if (entry.match?.item_id === chosen) return entry.match;
     const suggestion = entry.suggestions.find((track) => track.item_id === chosen);
     if (suggestion) return suggestion;
     const fromPicker = picked.get(pickedKey(playlistIndex, entry.position));

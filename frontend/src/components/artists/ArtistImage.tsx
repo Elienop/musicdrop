@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
  * backend filters blanks). Uses a Unicode-aware match so accented/non-Latin
  * leading letters still surface. */
 function monogram(name: string): string {
-  const match = name.match(/[\p{L}\p{N}]/u);
+  const match = /[\p{L}\p{N}]/u.exec(name);
   return (match?.[0] ?? "?").toUpperCase();
 }
 

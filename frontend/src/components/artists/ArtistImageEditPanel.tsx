@@ -18,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
 
-const ACCEPTED_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+const ACCEPTED_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const MAX_BYTES = 10 * 1024 * 1024;
 
 type Pending = { objectUrl: string; blob: Blob; source: string | null };
@@ -148,7 +148,7 @@ function ArtistImageEditPanelForArtist({
 
   const onPickFile = (file: File) => {
     clearNotices();
-    if (!ACCEPTED_TYPES.includes(file.type)) {
+    if (!ACCEPTED_TYPES.has(file.type)) {
       setPickError("That file isn’t an image we can use. Pick a PNG, JPEG, GIF, or WebP.");
       return;
     }
