@@ -79,7 +79,9 @@ _PLAYLIST_ENTRY_NOT_FOUND = "Playlist entry not found"
 
 #: The OpenAPI entry for a route that 404s ONLY because the named playlist does
 #: not exist (see app/models/errors.py for why the model must be named). Named
-#: because six routes share this single cause and must not drift apart.
+#: because EIGHT routes share this single cause and must not drift apart - the
+#: artwork GET below is deliberately NOT one of them, because it has two further
+#: causes and needs its own sentence.
 _PLAYLIST_NOT_FOUND_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": "The playlist does not exist.",
@@ -650,9 +652,15 @@ async def merge_playlist_endpoint(
 @router.get(
     "/playlists/{playlist_id}/artwork",
     responses={
+        # THREE causes, not two: the first arm of the guard below is
+        # ``record is None``, i.e. the playlist itself does not exist - the same
+        # cause every other route on this router spells out.
         404: {
             "model": ErrorDetail,
-            "description": "The playlist has no cover artwork, or its file is missing.",
+            "description": (
+                "The playlist does not exist, it has no cover artwork, or the"
+                " artwork file could not be read."
+            ),
         },
     },
 )
@@ -681,7 +689,19 @@ async def get_playlist_artwork_endpoint(
     "/playlists/{playlist_id}/artwork",
     responses={
         404: _PLAYLIST_NOT_FOUND_RESPONSE,
-        413: {"model": ErrorDetail, "description": "The uploaded image exceeds the 8 MB limit."},
+        # Naming BOTH caps, like the album-cover and artist-portrait uploads.
+        # This route reads a RAW body, so the operation carries no
+        # ``requestBody`` and app/openapi_overlay.py never stamps the body-size
+        # guard's 413 on it - which makes this entry the only place that
+        # refusal can be documented at all. A sentence naming only the 8 MB
+        # route cap would leave the app-wide guard undescribed.
+        413: {
+            "model": ErrorDetail,
+            "description": (
+                "The uploaded image exceeds the 8 MB limit, or the request body"
+                " exceeds the app-wide size limit."
+            ),
+        },
         415: {"model": ErrorDetail, "description": "The uploaded image is not a JPEG or PNG."},
     },
 )

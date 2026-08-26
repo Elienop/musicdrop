@@ -138,7 +138,21 @@ async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> 
     return result
 
 
-@router.delete("/trash/all")
+@router.delete(
+    "/trash/all",
+    responses={
+        # NOT ``_TRASH_CONFLICT_RESPONSE``: this route never calls
+        # ``_child_or_404``, so the ambiguous-name arm of that sentence cannot
+        # happen here. Only the shared gate can refuse.
+        409: {
+            "model": ErrorDetail,
+            "description": (
+                "The operation was refused because a library operation is in"
+                " progress or the beets swap lock is held."
+            ),
+        },
+    },
+)
 async def empty_trash_all(request: Request) -> EmptyResult:
     """Permanently clear the whole Trash dir. 409 if busy."""
     app = request.app

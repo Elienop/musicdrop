@@ -5,7 +5,7 @@ The backfill is a single-slot background job (app/lyrics_jobs), mutually
 exclusive with imports and library writes.
 """
 
-from typing import Annotated
+from typing import Annotated, Final
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
@@ -18,9 +18,22 @@ from app.lyrics_jobs.registry import (
     get_lyrics_backfill,
 )
 from app.lyrics_jobs.runner import start_backfill
+from app.models.errors import ErrorDetail
 from app.models.lyrics import LyricsBackfillStatus, LyricsCoverage
 
 router = APIRouter(tags=["lyrics"])
+
+#: Six separate guards in ``start_lyrics_backfill`` answer with this one status,
+#: each spelled ``status.HTTP_409_CONFLICT`` - the spelling SonarQube
+#: python:S8415 cannot see, which is how the whole file went unflagged. The
+#: named model keeps the ``{detail: str}`` body typed (app/models/errors.py).
+_BACKFILL_BUSY_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": (
+        "A lyrics backfill is already running, or an import, an artist-art job,"
+        " a reorganize, a disk sync or a beets swap holds the library."
+    ),
+}
 
 
 @router.get("/lyrics/coverage")
@@ -30,7 +43,7 @@ async def get_lyrics_coverage(request: Request) -> LyricsCoverage:
     return await run_in_threadpool(lyrics_coverage, handle.lib)
 
 
-@router.post("/lyrics/backfill")
+@router.post("/lyrics/backfill", responses={409: _BACKFILL_BUSY_RESPONSE})
 async def start_lyrics_backfill(
     request: Request,
     reg: Annotated[LyricsBackfillRegistry, Depends(get_lyrics_backfill)],

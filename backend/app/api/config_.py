@@ -27,6 +27,7 @@ from app.models.config_editor import (
     ValidateResponse,
     ValidationErrorItem,
 )
+from app.models.errors import ErrorDetail, StructuredErrorDetail
 
 router = APIRouter(tags=["config"])
 
@@ -100,7 +101,33 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
     return save_naming(handle, req)
 
 
-@router.post("/config/apply")
+@router.post(
+    "/config/apply",
+    # Named models on both: a description-only entry drops the `content` block
+    # and openapi-typescript renders `content?: never` for a body the client
+    # must read (see app/models/errors.py). Both are raised inside
+    # apply_config_op (app/beets/config_editor.py), not here.
+    responses={
+        # The ONLY 409 reachable from this route is the `library_job_active()`
+        # gate in `apply` (config_editor.py). The CAS "file changed on disk"
+        # 409s live in `save` / `save_naming`, which this route never calls, so
+        # naming them here would document a cause Apply cannot produce.
+        409: {
+            "model": ErrorDetail,
+            "description": (
+                "A library job (an import or a lyrics backfill) is running, so the"
+                " reload is refused until it finishes."
+            ),
+        },
+        500: {
+            "model": StructuredErrorDetail,
+            "description": (
+                "The library rebuild failed during apply, but the saved config"
+                " is safe on disk and will load on the next start."
+            ),
+        },
+    },
+)
 async def apply_config(request: Request) -> BeetsConfigSnapshot:
     """Reload beets in-process after a Save, swapping ``app.state.beets_library``.
 

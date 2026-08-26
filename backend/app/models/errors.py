@@ -51,6 +51,39 @@ class ErrorDetail(BaseModel):
     detail: str
 
 
+class OperationFailure(BaseModel):
+    """What a long-running library op failed at, and what the user can do next.
+
+    ``message`` names the cause (it embeds the underlying exception's text);
+    ``recovery`` says what state the library is in and what to do about it.
+    ``message`` rather than ``detail`` for the inner key on purpose - Starlette
+    already wraps the payload in an outer ``detail``, so an inner ``detail``
+    would render the confusing ``{"detail": {"detail": ...}}``.
+    """
+
+    message: str
+    recovery: str
+
+
+class StructuredErrorDetail(BaseModel):
+    """The OTHER real error body in this API: ``{"detail": {message, recovery}}``.
+
+    Every blanket ``except Exception`` on a beets write op raises a 500 whose
+    ``detail`` is an OBJECT, not a sentence (cover install, album edit, artist
+    rename, duplicate resolve, delete, config Apply). The frontend unwraps it in
+    ``frontend/src/api/lib.ts::structuredDetailMessage``, so the shape is read,
+    not decorative.
+
+    Declaring such a 500 as ``ErrorDetail`` would be worse than leaving it out:
+    it swaps an UNDECLARED status for a WRONGLY-TYPED one, and the generated
+    client would parse an object as a string. Use this model instead, and only
+    on routes whose 500 really carries the nested shape - a route that can also
+    500 with a flat sentence needs an ``anyOf`` (none does today).
+    """
+
+    detail: OperationFailure
+
+
 def validation_or_detail_422(description: str) -> dict[str, object]:
     """A 422 entry documenting BOTH error bodies the route can return.
 

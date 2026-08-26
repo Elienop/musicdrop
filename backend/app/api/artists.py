@@ -60,7 +60,7 @@ from app.models.artist import (
 )
 from app.models.artist_art import ArtistArtBackfillStatus, ArtistArtWriteSettings
 from app.models.delete import DeleteResult
-from app.models.errors import ErrorDetail, validation_or_detail_422
+from app.models.errors import ErrorDetail, StructuredErrorDetail, validation_or_detail_422
 from app.models.rename import ArtistRenamePreview, ArtistRenameRequest, ArtistRenameResult
 
 router = APIRouter(tags=["artists"])
@@ -89,11 +89,25 @@ _ART_WRITE_DISABLED_RESPONSE: Final = {
         " request is cross-origin."
     ),
 }
+#: Both routes reach this through ``_gate_library_busy`` ->
+#: ``raise_if_library_busy``, which refuses for TWO reasons, not one: a library
+#: job holds the slot, OR the beets swap lock is held (a config Apply or a
+#: duplicate resolve, neither of which is a library job). The swap-lock arm is
+#: named here for the same reason trash.py's entry names it - a description
+#: that omits half its causes reads as a complete list.
 _ART_JOB_TAKEN_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
-        "A library job (an import, a backfill, or another artist-art run) already holds the slot."
+        "A library job (an import, a backfill, or another artist-art run) already"
+        " holds the slot, or the beets swap lock is held."
     ),
+}
+
+#: The artist-rename refusals, all raised inside ``app/beets/rename.py``'s ops
+#: rather than in the endpoint bodies - read the op, not just the endpoint.
+_ARTIST_NOT_FOUND_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "No album in the library has that album artist.",
 }
 
 
@@ -178,7 +192,10 @@ async def list_artists_endpoint(
     return await run_in_threadpool(list_artists, handle.lib)
 
 
-@router.post("/artists/rename/preview")
+@router.post(
+    "/artists/rename/preview",
+    responses={404: _ARTIST_NOT_FOUND_RESPONSE},
+)
 async def preview_artist_rename_endpoint(
     payload: ArtistRenameRequest,
     request: Request,
@@ -191,7 +208,28 @@ async def preview_artist_rename_endpoint(
     return await preview_artist_rename_op(request, payload)
 
 
-@router.post("/artists/rename")
+@router.post(
+    "/artists/rename",
+    responses={
+        404: _ARTIST_NOT_FOUND_RESPONSE,
+        409: {
+            "model": ErrorDetail,
+            "description": (
+                "A library operation is in progress, so the rename is refused until it finishes."
+            ),
+        },
+        # The blanket ``except Exception`` in ``apply_artist_rename_op``
+        # answers with a NESTED detail object, not a sentence;
+        # frontend/src/api/useArtistRename.ts reads it through lib.ts.
+        500: {
+            "model": StructuredErrorDetail,
+            "description": (
+                "The rename failed part-way through the batch; the body carries"
+                " the cause and a recovery hint."
+            ),
+        },
+    },
+)
 async def rename_artist_endpoint(
     payload: ArtistRenameRequest,
     request: Request,

@@ -18,7 +18,7 @@ from __future__ import annotations
 import time
 from functools import partial
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Final
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
@@ -35,10 +35,24 @@ from app.models.acquisition import (
     InboxListing,
     ReviewInboxResponse,
 )
+from app.models.errors import ErrorDetail
 from app.models.import_models import ImportOptions
 from app.wire import AmbiguousDisplayName, resolve_display_path
 
 router = APIRouter(tags=["acquisition"])
+
+#: Both import-starting routes below refuse with the SAME 409 for the same two
+#: reasons: ``ensure_import_can_start`` (a beets swap or a library backfill owns
+#: the library) and the registry's single-slot ``RuntimeError`` at ``reg.start``.
+#: Declared with a named model because a description-only entry would drop the
+#: ``content`` block - see app/models/errors.py.
+_IMPORT_SLOT_TAKEN_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": (
+        "An import is already running, or a beets swap (config Apply or"
+        " duplicate resolve) or a library backfill holds the library."
+    ),
+}
 
 
 @router.get("/acquisition/status")
@@ -64,7 +78,10 @@ async def get_acquisition_status(request: Request) -> AcquisitionQueueStatus:
     return snapshot
 
 
-@router.post("/acquisition/review-inbox")
+@router.post(
+    "/acquisition/review-inbox",
+    responses={409: _IMPORT_SLOT_TAKEN_RESPONSE},
+)
 async def review_inbox(
     request: Request,
     reg: Annotated[ImportJobRegistry, Depends(get_registry)],
@@ -140,7 +157,28 @@ async def list_inbox_items(request: Request) -> InboxListing:
     return InboxListing(items=items)
 
 
-@router.post("/acquisition/inbox/items/import")
+@router.post(
+    "/acquisition/inbox/items/import",
+    responses={
+        404: {
+            "model": ErrorDetail,
+            "description": (
+                "No inbox is configured, or that name does not resolve to a"
+                " folder sitting directly inside the inbox."
+            ),
+        },
+        # The shared refusal PLUS this route's own ambiguous-name guard, which
+        # answers with the same status.
+        409: {
+            "model": ErrorDetail,
+            "description": (
+                "An import is already running, or a beets swap (config Apply or"
+                " duplicate resolve) or a library backfill holds the library, or"
+                " two inbox folders display under the same name."
+            ),
+        },
+    },
+)
 async def import_inbox_item(
     body: ImportInboxItemRequest,
     request: Request,

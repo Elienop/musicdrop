@@ -9,7 +9,7 @@ registry/bridge exceptions to HTTP codes.
 No beets imports: the registry + models are the whole surface here.
 """
 
-from typing import Annotated
+from typing import Annotated, Final
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
@@ -21,7 +21,7 @@ from app.beets.duplicates import find_import_duplicates
 from app.beets.library import LibraryHandle
 from app.import_jobs.registry import ImportJobRegistry, get_registry
 from app.import_jobs.runner import InLibraryCopyError
-from app.models.errors import validation_or_detail_422
+from app.models.errors import ErrorDetail, validation_or_detail_422
 from app.models.import_api import (
     ActiveImportStatus,
     ImportJobState,
@@ -39,6 +39,30 @@ from app.models.import_models import (
 _IMPORT_ALBUM_NOT_FOUND = "Import album not found"
 
 router = APIRouter(tags=["import"])
+
+#: The OpenAPI entries this router's routes share. Every one carries a NAMED
+#: model: a description-only entry REPLACES FastAPI's generated response and
+#: drops the ``content`` block, so openapi-typescript emits ``content?: never``
+#: for a body the import screen actually reads (see app/models/errors.py).
+#:
+#: These statuses were invisible to SonarQube python:S8415 because they are
+#: spelled ``status.HTTP_404_NOT_FOUND`` rather than ``404`` - the rule only
+#: matches integer literals. tests/test_route_status_declarations.py resolves
+#: both spellings and is what keeps this list honest.
+_JOB_NOT_FOUND_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "No import job has that id.",
+}
+#: ``reg.candidate`` / ``parked_album`` raise KeyError for BOTH an unknown job
+#: and an index with nothing parked on it, and the route cannot tell them apart.
+_PARKED_ALBUM_NOT_FOUND_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "No import job has that id, or no album is parked at that index.",
+}
+_PARKED_DUPLICATE_NOT_FOUND_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "No import job has that id, or no duplicate is parked at that index.",
+}
 
 
 @router.get("/imports/active")
@@ -96,6 +120,18 @@ def ensure_import_can_start(request: Request) -> None:
     "/import",
     status_code=status.HTTP_202_ACCEPTED,
     responses={
+        # Three distinct refusals, one status: the swap-lock arm and the
+        # backfill arm of ``ensure_import_can_start`` above, plus the registry's
+        # single-slot RuntimeError below. The Import screen branches on this
+        # status (frontend/src/api/useImport.ts) to re-poll the active-import
+        # probe and offer Resume, so it needs a typed body.
+        409: {
+            "model": ErrorDetail,
+            "description": (
+                "An import is already running, or a beets swap (config Apply or"
+                " duplicate resolve) or a library backfill holds the library."
+            ),
+        },
         # The copy-in-library refusal is a well-formed request the importer
         # declines on its merits, so it stays 422 - which means this route
         # returns BOTH 422 bodies (see app/models/errors.py).
@@ -124,7 +160,7 @@ async def start_import(
     return StartImportResponse(job_id=job_id)
 
 
-@router.get("/import/{job_id}")
+@router.get("/import/{job_id}", responses={404: _JOB_NOT_FOUND_RESPONSE})
 async def get_import_state(
     job_id: str, reg: Annotated[ImportJobRegistry, Depends(get_registry)]
 ) -> ImportJobState:
@@ -136,7 +172,10 @@ async def get_import_state(
         ) from None
 
 
-@router.get("/import/{job_id}/albums/{index}")
+@router.get(
+    "/import/{job_id}/albums/{index}",
+    responses={404: _PARKED_ALBUM_NOT_FOUND_RESPONSE},
+)
 async def get_import_album(
     job_id: str,
     index: Annotated[int, Path(ge=0)],
@@ -151,7 +190,21 @@ async def get_import_album(
         ) from None
 
 
-@router.get("/import/{job_id}/albums/{index}/cover")
+@router.get(
+    "/import/{job_id}/albums/{index}/cover",
+    responses={
+        # Three arms end here, not two: the registry's KeyError (unknown job, or
+        # nothing parked at the index) AND a parked album whose first file
+        # carries no embedded picture, which returns None rather than raising.
+        404: {
+            "model": ErrorDetail,
+            "description": (
+                "No import job has that id, no album is parked at that index, or"
+                " the parked album has no embedded cover art."
+            ),
+        },
+    },
+)
 async def get_import_album_cover(
     job_id: str,
     index: Annotated[int, Path(ge=0)],
@@ -188,6 +241,7 @@ async def get_import_album_cover(
 
 @router.get(
     "/import/{job_id}/albums/{index}/duplicates",
+    responses={404: _PARKED_ALBUM_NOT_FOUND_RESPONSE},
 )
 async def get_import_album_duplicates(
     job_id: str,
@@ -225,7 +279,17 @@ async def get_import_album_duplicates(
     return DuplicatesCheckResponse(existing=existing)
 
 
-@router.post("/import/{job_id}/albums/{index}/choice", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/import/{job_id}/albums/{index}/choice",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        404: _PARKED_ALBUM_NOT_FOUND_RESPONSE,
+        409: {
+            "model": ErrorDetail,
+            "description": "A choice was already submitted for the album at that index.",
+        },
+    },
+)
 async def post_import_choice(
     job_id: str,
     index: Annotated[int, Path(ge=0)],
@@ -247,7 +311,10 @@ async def post_import_choice(
         ) from None
 
 
-@router.get("/import/{job_id}/albums/{index}/duplicate")
+@router.get(
+    "/import/{job_id}/albums/{index}/duplicate",
+    responses={404: _PARKED_DUPLICATE_NOT_FOUND_RESPONSE},
+)
 async def get_import_duplicate(
     job_id: str,
     index: Annotated[int, Path(ge=0)],
@@ -262,7 +329,17 @@ async def get_import_duplicate(
         ) from None
 
 
-@router.post("/import/{job_id}/albums/{index}/duplicate", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/import/{job_id}/albums/{index}/duplicate",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        404: _PARKED_DUPLICATE_NOT_FOUND_RESPONSE,
+        409: {
+            "model": ErrorDetail,
+            "description": "A decision was already submitted for the duplicate at that index.",
+        },
+    },
+)
 async def post_import_duplicate_decision(
     job_id: str,
     index: Annotated[int, Path(ge=0)],
@@ -281,7 +358,17 @@ async def post_import_duplicate_decision(
         ) from None
 
 
-@router.post("/import/{job_id}/pause", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/import/{job_id}/pause",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        404: _JOB_NOT_FOUND_RESPONSE,
+        409: {
+            "model": ErrorDetail,
+            "description": "That import is not a sweep, or the sweep is no longer running.",
+        },
+    },
+)
 async def pause_import(
     job_id: str, reg: Annotated[ImportJobRegistry, Depends(get_registry)]
 ) -> None:
