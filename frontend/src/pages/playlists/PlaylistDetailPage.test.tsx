@@ -134,6 +134,22 @@ function makeImageFile(name = "art.png", type = "image/png"): File {
   });
 }
 
+/** The playlist artwork cap, spelled out rather than imported from the page.
+ *
+ * Deliberately NOT shared with the component's `MAX_ARTWORK_BYTES`: importing it
+ * would make both sides move together and the boundary tests below could no
+ * longer fail if the constant drifted off the server's `_MAX_ARTWORK_BYTES`
+ * (backend/app/api/playlists.py). This literal is the oracle. */
+const ARTWORK_CAP_BYTES = 8 * 1024 * 1024;
+
+/** A PNG-typed File of exactly `bytes` bytes — really that many, no `size`
+ * stubbing, so `File.size` means what the browser would mean by it. */
+function makeImageFileOfSize(bytes: number, name = "big.png"): File {
+  const buf = new Uint8Array(bytes);
+  buf.set([137, 80, 78, 71, 13, 10, 26, 10]);
+  return new File([buf], name, { type: "image/png" });
+}
+
 /** The words of a live-region text, with the page's repeat-announcement token
  * stripped. Every announcement appends a run of invisible zero-width spaces
  * (a DOM change that forces even a byte-identical repeat to be announced —
@@ -2492,6 +2508,116 @@ describe("PlaylistDetailPage", () => {
     );
     expect(
       screen.queryByRole("button", { name: /remove artwork/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("refuses an over-8-MB pick without uploading, then recovers on a smaller one", async () => {
+    // The invariant: an oversize file is refused BEFORE the network, so this
+    // counter must still read 0 when the message is on screen. Asserting only
+    // the message would pass a version that uploaded the file anyway.
+    let puts = 0;
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha")]))),
+      http.put(`${BASE}/artwork`, () => {
+        puts += 1;
+        return HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          artwork_hash: "newhash",
+        });
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /edit artwork/i }));
+    fireEvent.change(screen.getByLabelText(/upload artwork image/i), {
+      target: { files: [makeImageFileOfSize(ARTWORK_CAP_BYTES + 1)] },
+    });
+
+    // The refusal names the limit, in an assertive region — the user has to be
+    // told WHICH limit or "pick a smaller file" is unactionable.
+    const notice = await screen.findByRole("alert");
+    expect(notice).toHaveTextContent(/over 8 MB/i);
+    expect(notice).toHaveTextContent(/pick a smaller file/i);
+    // Nothing left the browser, and nothing is pretending it succeeded.
+    expect(puts).toBe(0);
+    expect(screen.queryByText("Artwork updated.")).not.toBeInTheDocument();
+
+    // The banner is not sticky: a legal pick clears it and goes through.
+    fireEvent.change(screen.getByLabelText(/upload artwork image/i), {
+      target: { files: [makeImageFile()] },
+    });
+    await waitFor(() => expect(puts).toBe(1));
+    await waitFor(() =>
+      expect(screen.queryByText(/over 8 MB/i)).not.toBeInTheDocument(),
+    );
+  });
+
+  test("a pick of exactly 8 MB is accepted — the server refuses only ABOVE the cap", async () => {
+    // Boundary control for the test above. The route compares
+    // `len(data) > _MAX_ARTWORK_BYTES`, so a file AT the cap is legal; a client
+    // guard using `>=` would refuse an upload the server would have taken, and
+    // this is the only test that catches it. It also kills an "always refuse"
+    // mutant of the guard.
+    let puts = 0;
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha")]))),
+      http.put(`${BASE}/artwork`, () => {
+        puts += 1;
+        return HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          artwork_hash: "newhash",
+        });
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /edit artwork/i }));
+    fireEvent.change(screen.getByLabelText(/upload artwork image/i), {
+      target: { files: [makeImageFileOfSize(ARTWORK_CAP_BYTES, "exact.png")] },
+    });
+    await waitFor(() => expect(puts).toBe(1));
+    expect(screen.queryByText(/over 8 MB/i)).not.toBeInTheDocument();
+  });
+
+  test("a client refusal REPLACES a prior server error rather than stacking on it", async () => {
+    // Two red banners saying different things about the same picker is a
+    // worse answer than one. The pick handler resets the mutation, so exactly
+    // one alert is on screen at any moment — `getByRole` (singular) is the
+    // assertion: it throws if the 415 banner survived beside the new one.
+    server.use(
+      http.get(BASE, () => HttpResponse.json(detail([track(1, "Alpha")]))),
+      http.put(`${BASE}/artwork`, () =>
+        HttpResponse.json(
+          { detail: "Unsupported image type (JPEG or PNG only)" },
+          { status: 415 },
+        ),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    await userEvent.click(screen.getByRole("button", { name: /edit artwork/i }));
+    fireEvent.change(screen.getByLabelText(/upload artwork image/i), {
+      target: { files: [makeImageFile()] },
+    });
+    expect(await screen.findByText(/unsupported image type/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/upload artwork image/i), {
+      target: { files: [makeImageFileOfSize(ARTWORK_CAP_BYTES + 1)] },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(/over 8 MB/i),
+    );
+    expect(
+      screen.queryByText(/unsupported image type/i),
     ).not.toBeInTheDocument();
   });
 

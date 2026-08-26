@@ -1162,6 +1162,24 @@ function PlaylistDetailView({ playlist }: Readonly<{ playlist: PlaylistDetail }>
   );
 }
 
+/** Client-side cap on a picked playlist cover, mirroring the route's own guard.
+ * Keep in sync with `_MAX_ARTWORK_BYTES` in backend/app/api/playlists.py — this
+ * is 8 MB, NOT the 10 MB the album-cover and artist-portrait routes allow, and
+ * that difference is deliberate (playlist collages are modest). The number is
+ * copied rather than derived because the generated OpenAPI contract mentions
+ * "the 8 MB limit" only in prose, so there is nothing machine-readable to read;
+ * the backend symbol is named here so a grep for either side finds the other.
+ *
+ * Mirroring the SIZE predicate is exact: the server refuses on
+ * `len(data) > _MAX_ARTWORK_BYTES` and `file.size` is those same bytes. There is
+ * deliberately no matching TYPE guard, unlike CoverEditPanel and
+ * ArtistImageEditPanel — the server does not read the declared content type at
+ * all, it sniffs magic bytes (`_sniff_image_format`), so a check on `file.type`
+ * would be a LOSSY mirror that refuses a real PNG whose OS-guessed type came
+ * through empty. The 415 round-trip already answers that case in the server's
+ * own words; only the oversize case is worth spending a client refusal on. */
+const MAX_ARTWORK_BYTES = 8 * 1024 * 1024;
+
 /** Inline artwork editor (album CoverEditPanel idiom, trimmed to what a
  * playlist needs): upload a custom JPEG/PNG cover, or remove it to fall back to
  * the album-cover collage. The upload endpoint takes raw bytes; the picker ships
@@ -1181,6 +1199,10 @@ function ArtworkEditPanel({
   // What just succeeded, so the panel can confirm the outcome inline (cleared
   // when a new action starts).
   const [outcome, setOutcome] = useState<"uploaded" | "removed" | null>(null);
+  // Why a pick was refused before it ever reached the network (oversize file).
+  // Separate from `upload.error` so it survives no round-trip and is cleared by
+  // the next pick rather than by a mutation reset.
+  const [pickError, setPickError] = useState<string | null>(null);
   const busy = upload.isPending || removeArtwork.isPending;
 
   return (
@@ -1207,6 +1229,7 @@ function ArtworkEditPanel({
             aria-label="Remove artwork"
             onClick={() => {
               setOutcome(null);
+              setPickError(null);
               removeArtwork.mutate(undefined, {
                 onSuccess: () => setOutcome("removed"),
               });
@@ -1235,9 +1258,27 @@ function ArtworkEditPanel({
           e.target.value = ""; // allow re-picking the same file
           if (!file) return;
           setOutcome(null);
+          // One refusal on screen at a time (the album and artist pickers clear
+          // their notices the same way): without this, a prior 415 from the
+          // server would sit in a second red banner beside the new client one.
+          upload.reset();
+          // Refuse an oversize file HERE, before a byte leaves the browser: the
+          // route's 413 costs a full upload of a file it was always going to
+          // reject, and answers with a raw server string. Same shape as the
+          // album and artist pickers, at this route's own (lower) cap.
+          if (file.size > MAX_ARTWORK_BYTES) {
+            setPickError("That image is over 8 MB. Pick a smaller file.");
+            return;
+          }
+          setPickError(null);
           upload.mutate(file, { onSuccess: () => setOutcome("uploaded") });
         }}
       />
+      {pickError !== null && (
+        <StatusBanner tone="destructive" icon={ErrorIcon}>
+          {pickError}
+        </StatusBanner>
+      )}
       {upload.isError && (
         <StatusBanner tone="destructive" icon={ErrorIcon}>
           {upload.error.message}
