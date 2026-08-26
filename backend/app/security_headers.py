@@ -35,21 +35,28 @@ EXACTLY, never by prefix, so ``/openapi.json`` and any ``/docsx`` lookalike
 stay strict. The hardening directives (``frame-ancestors``, ``base-uri``,
 ``form-action``, ``object-src``) are identical in both.
 
-Added LAST in ``app.main`` so it wraps OUTERMOST (Starlette applies middleware
-in reverse add order). That position is load-bearing rather than cosmetic: the
-host guard's 400, the origin guard's 403 and the body limit's 413 are written
-straight to the transport and never reach the router, so only a wrapper
-outside all three can stamp them. It changes nothing else — it does not read
-the body, buffer, reorder or reject; it edits the ``http.response.start``
-message in flight and passes everything else through untouched.
+Added after the three guards in ``app.main`` so it wraps OUTSIDE ALL OF THEM
+(Starlette applies middleware in reverse add order). That position is
+load-bearing rather than cosmetic: the host guard's 400, the origin guard's
+403 and the body limit's 413 are written straight to the transport and never
+reach the router, so only a wrapper outside all three can stamp them. CORS is
+added last — OUTSIDE this stamper — to satisfy SonarQube's ``python:S8414``,
+which requires CORSMiddleware to sit outermost. It changes nothing else — it
+does not read the body, buffer, reorder or reject; it edits the
+``http.response.start`` message in flight and passes everything else through
+untouched.
 
-Known gaps, both benign (fixed text/plain bodies, no attacker content):
+Known gaps, all three benign:
 Starlette's ``ServerErrorMiddleware`` sits outside ALL user middleware, so the
 bare 500 it synthesises for an unhandled exception never reaches these headers
 — and registering a global ``Exception``/500 handler would PROMOTE that
 response to the same unstamped outer path, so don't. Likewise uvicorn answers
 a protocol-level malformed request (``Invalid HTTP request received.``) before
-the ASGI app runs at all.
+the ASGI app runs at all. Both of those are fixed text/plain bodies with no
+attacker content. The third: ``CORSMiddleware``, sitting outside this stamper,
+answers preflight OPTIONS itself, so those responses never reach it — but the
+five headers are inert on a bodiless OPTIONS anyway: nothing renders, nothing
+is framed or embedded, and there is no body to sniff.
 """
 
 from __future__ import annotations

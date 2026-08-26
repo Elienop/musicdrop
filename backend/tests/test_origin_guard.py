@@ -21,7 +21,6 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 
 from app.api.csrf import origin_allowed
-from app.body_limit import BodySizeLimitMiddleware
 from app.main import app as real_app
 from app.origin_guard import OriginGuardMiddleware, resolve_extra_origins
 
@@ -250,13 +249,13 @@ def test_prod_posture_rejects_the_dev_origin_write(tmp_path: Path) -> None:
     hardcode the dev tuple there and the guard accepts :5173 in prod, so this
     fails.
 
-    Status codes alone only see the GUARD. The child therefore also prints all
-    three resolved consumers, because hardcoding CORS's ``allow_origins`` or the
-    body-limit's ``allowed_origins`` leaves the guard's 403/200 untouched while
-    silently granting a foreign page credentialed cross-origin READ access to
-    the whole API in production. ``test_all_three_middlewares_read_one_resolved
-    _tuple`` cannot see it either: it compares the consumers to EACH OTHER, and
-    the suite runs in dev posture where the correct tuple and a hardcoded dev
+    Status codes alone only see the GUARD. The child therefore also prints both
+    resolved consumers, because hardcoding CORS's ``allow_origins`` leaves the
+    guard's 403/200 untouched while silently granting a foreign page credentialed
+    cross-origin READ access to the whole API in production.
+    ``test_both_middlewares_read_one_resolved_tuple`` cannot see it either: it
+    compares the consumers to EACH OTHER, and the suite runs in dev posture
+    where the correct tuple and a hardcoded dev
     tuple are identical.
     """
     dist = tmp_path / "dist"
@@ -274,10 +273,8 @@ def test_prod_posture_rejects_the_dev_origin_write(tmp_path: Path) -> None:
         " if m.cls.__name__ == 'OriginGuardMiddleware')\n"
         "cors = next(m.kwargs['allow_origins'] for m in app.user_middleware"
         " if m.cls.__name__ == 'CORSMiddleware')\n"
-        "b = next(m.kwargs['allowed_origins'] for m in app.user_middleware"
-        " if m.cls.__name__ == 'BodySizeLimitMiddleware')\n"
         "print(dev.status_code, same.status_code)\n"
-        "print(tuple(g), list(cors), tuple(b))\n"
+        "print(tuple(g), list(cors))\n"
     )
     # The child runs in PROD posture, where the host guard (outermost) rejects
     # the TestClient's `Host: testserver` before the origin guard runs; this
@@ -306,8 +303,10 @@ def test_prod_posture_rejects_the_dev_origin_write(tmp_path: Path) -> None:
     statuses, wiring = lines
     assert statuses == "403 200", f"stdout={out.stdout!r} stderr={out.stderr!r}"
     # ...and EVERY consumer resolved to the production tuple, not the dev one:
-    # guard `()`, CORS `[]`, body-limit `()`.
-    assert wiring == "() [] ()", f"stdout={out.stdout!r} stderr={out.stderr!r}"
+    # guard `()`, CORS `[]`. (The body limit was a third consumer until ede5001
+    # moved CORS outermost and its hand-rolled 413 echo became redundant; it no
+    # longer reads the tuple at all, so there is nothing left to hardcode there.)
+    assert wiring == "() []", f"stdout={out.stdout!r} stderr={out.stderr!r}"
 
 
 def _middleware_kwargs(cls: object) -> dict[str, object]:
@@ -317,13 +316,13 @@ def _middleware_kwargs(cls: object) -> dict[str, object]:
     raise AssertionError(f"middleware not registered: {cls!r}")
 
 
-def test_all_three_middlewares_read_one_resolved_tuple() -> None:
-    # The spec's consolidation invariant: the guard, the CORS allowlist, and
-    # the body-limit 413 echo all read the SAME resolved origin tuple.
+def test_both_middlewares_read_one_resolved_tuple() -> None:
+    # The spec's consolidation invariant: the guard and the CORS allowlist read
+    # the SAME resolved origin tuple. The body limit was a third consumer until
+    # ede5001 (see the docstring on the prod-posture test above).
     guard = _middleware_kwargs(OriginGuardMiddleware)["extra_origins"]
     assert isinstance(guard, tuple)
     assert _middleware_kwargs(CORSMiddleware)["allow_origins"] == list(guard)
-    assert _middleware_kwargs(BodySizeLimitMiddleware)["allowed_origins"] == guard
 
     cors = _middleware_kwargs(CORSMiddleware)
     # X-Forwarded-Host is guard-trusted, so any origin CORS approves could steer
@@ -335,7 +334,8 @@ def test_all_three_middlewares_read_one_resolved_tuple() -> None:
 
 
 def test_oversize_body_beats_the_origin_guard() -> None:
-    # Pins the middleware nesting: BodySizeLimit wraps OUTERMOST, so an
+    # Pins the middleware nesting: BodySizeLimit wraps outside the origin
+    # guard, so an
     # oversize foreign-origin write is refused 413 before the origin guard
     # sees it. Reordering the add_middleware calls in app.main breaks this.
     r = TestClient(real_app).post(

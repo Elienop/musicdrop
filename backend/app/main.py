@@ -315,16 +315,15 @@ allowed_hosts = resolve_allowed_hosts(settings.static_dir, settings.allowed_host
 # either — the rejection is opaque to a foreign page, which is fine.)
 app.add_middleware(OriginGuardMiddleware, extra_origins=extra_origins)
 # Added after the origin guard above so it wraps outside it: an oversize body
-# is refused before CORS or any route touches it.
-app.add_middleware(
-    BodySizeLimitMiddleware,
-    max_bytes=settings.max_body_bytes,
-    allowed_origins=extra_origins,
-)
+# is refused before any route touches it — CORS wraps outside it and sees the
+# request first, but it never reads the body, so the oversize bytes stop here.
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_body_bytes)
 
-# Added after BodySizeLimit so it wraps outside all three of those: a request
-# whose Host is not allowlisted (the DNS-rebinding guard) is refused before the
-# body limit, CORS, or the origin guard spend anything on it. Pinned by
+# Added after BodySizeLimit so it wraps outside those two: a request whose
+# Host is not allowlisted (the DNS-rebinding guard) is refused before the body
+# limit or the origin guard spend anything on it. CORS now sits outside it and
+# runs first on every request, but preflight OPTIONS never reach this guard —
+# CORSMiddleware answers them itself. Pinned by
 # test_disallowed_host_beats_the_body_limit.
 app.add_middleware(HostGuardMiddleware, allowed_hosts=allowed_hosts)
 

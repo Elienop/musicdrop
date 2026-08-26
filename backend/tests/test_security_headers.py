@@ -222,6 +222,66 @@ def test_cors_preflight_is_answered_by_cors_itself() -> None:
     assert "content-security-policy" not in r.headers
 
 
+def test_preflight_with_an_oversize_content_length_is_answered_not_413() -> None:
+    """The one shape where CORS short-circuits ahead of the body limit — and it is safe.
+
+    A preflight (OPTIONS + ``Access-Control-Request-Method``) declaring a body
+    far over the cap gets CORS's 200, not the body limit's 413, because CORS now
+    wraps outside it. That is a deliberate accept, not a DoS regression: the
+    order decides who ANSWERS, not who READS. ``CORSMiddleware`` passes
+    ``receive`` through untouched in every branch and ``Response.__call__``
+    never calls it (checked against the pinned starlette 1.1.0 source), so no
+    body is buffered in either order — the declared bytes are never taken off
+    the socket by the app. Nor does the preflight reach the router: no handler,
+    no parser and no upload sees it. And the request it authorises still faces
+    the body limit for real, because that one is not a preflight — see
+    ``test_non_preflight_options_with_an_oversize_body_is_still_413``.
+    """
+    r = _client().options(
+        "/api/config/validate",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+            "Content-Length": str(26 * 1024 * 1024),
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_non_preflight_options_still_reaches_the_router_and_is_stamped() -> None:
+    """Only true PREFLIGHTS bypass the stamper — not OPTIONS in general.
+
+    ``CORSMiddleware`` short-circuits on ``method == OPTIONS`` AND an
+    ``Access-Control-Request-Method`` header. Drop the second condition and the
+    request is an ordinary one: it falls all the way through the three guards to
+    the router (405 here — ``/api/config/validate`` is POST-only) and carries the
+    five stamped headers like any other response. The narrow fact is worth
+    pinning because the wider one — "an OPTIONS response no longer carries the
+    stamped headers" — is what the ede5001 commit message says, and a future
+    reader acting on it would think this response is uncovered.
+    """
+    r = _client().options("/api/config/validate", headers={"Origin": "http://localhost:5173"})
+    assert r.status_code == 405
+    _assert_stamped(r, csp=_STRICT)
+
+
+def test_non_preflight_options_with_an_oversize_body_is_still_413() -> None:
+    # The guards are not bypassed either: the same OPTIONS, minus the preflight
+    # header, is refused by the body limit and the refusal is stamped. So the
+    # 200 pinned above is scoped to the preflight shape alone, which is bodiless
+    # by definition.
+    r = _client().options(
+        "/api/config/validate",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Content-Length": str(26 * 1024 * 1024),
+        },
+    )
+    assert r.status_code == 413
+    _assert_stamped(r, csp=_STRICT)
+
+
 def test_a_route_cannot_weaken_the_headers_it_sets_itself() -> None:
     # The middleware OWNS these four: a handler that sets its own is replaced,
     # not appended to. Two X-Frame-Options values are ignored outright by some

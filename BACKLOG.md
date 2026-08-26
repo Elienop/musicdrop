@@ -417,8 +417,10 @@ _Last groomed: 2026-08-25, with the #143-Minors triage._
     failure, the older dialogs' plain-`disabled` buttons vs the new aria-disabled doctrine,
     and a typographic-twin warning on near-invisible rename targets (reuse the import gate's).
 
-- **Security response headers — shipped 2026-08-24 (PR # filled in at merge).** Outermost
-  pure-ASGI `SecurityHeadersMiddleware`: five headers on every response (`nosniff`,
+- **Security response headers — shipped 2026-08-24 (PR # filled in at merge).**
+  Pure-ASGI `SecurityHeadersMiddleware`, added after the three guards so it wraps
+  outside all of them (CORS is outermost, added last for python:S8414): five
+  headers on every response it passes through (`nosniff`,
   `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`,
   `Cross-Origin-Resource-Policy: same-origin` — closes the no-CORS `<img>` library-existence
   oracle the security audit found — and a CSP). Strict CSP everywhere (`script-src 'self'`;
@@ -435,7 +437,8 @@ _Last groomed: 2026-08-25, with the #143-Minors triage._
   No HSTS by design (TLS terminates at Caddy; plain-HTTP LAN access exists).
 
 - **Host allowlist (DNS-rebinding guard) — shipped 2026-08-23 (PR # filled in at merge).** All-method
-  `HostGuardMiddleware` (outermost): Host / X-Forwarded-Host must be a bare IP literal,
+  `HostGuardMiddleware` (wraps outside the body-limit and origin guards, below the
+  security-headers stamper and CORS): Host / X-Forwarded-Host must be a bare IP literal,
   `localhost`, or a name in `MUSICDROP_ALLOWED_HOSTS` (exact, case/port-insensitive match, no
   wildcards); everything else 400s. Dev posture additionally allows `testserver` (prod-pinned
   not to). Startup now logs the effective security posture (closes the silent-`static_dir`

@@ -14,10 +14,15 @@ origin guard's authority comparison, so it cannot stay untrusted. (Browsers
 cannot send it CORS-simply; validating it closes the coupling rather than
 arguing about reachability.)
 
-Added in ``app.main`` so it wraps outside every guard (Starlette applies
-middleware in reverse add order; only the security-headers stamper wraps it):
-a wrong-host request is refused before the body limit, CORS, or the origin
-guard spend anything on it. Dev/prod posture keys on
+Added in ``app.main`` after the origin guard and body limit, so it wraps
+outside both of them (Starlette applies middleware in reverse add order; the
+security-headers stamper and CORS both sit outside it): a wrong-host request
+is refused before the body limit or the origin guard spend anything on it.
+One class of request never reaches this guard at all: a preflight OPTIONS is
+answered by ``CORSMiddleware`` itself at the outermost layer, so a wrong-host
+preflight is answered by CORS, not refused 400 here — a real behavioural
+consequence of CORS sitting outside this guard, and an acceptable one (a
+preflight is bodiless and reads nothing). Dev/prod posture keys on
 ``settings.static_dir`` exactly like ``resolve_extra_origins``; dev
 additionally allows Starlette's TestClient default host (``testserver``),
 production rejects it (pinned by the prod-posture subprocess test).
