@@ -342,6 +342,16 @@
               }
             }
           },
+          "404": {
+            "description": "No album has that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -885,6 +895,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LyricsBackfillStatus"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No album has that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A lyrics fetch is already running, or an import, an artist-art job, a reorganize, a disk sync or a beets swap holds the library.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -3415,6 +3445,16 @@
               }
             }
           },
+          "409": {
+            "description": "config.yaml changed on disk since the editor loaded it, so the save was refused; the body carries the file's current text and hash.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigSaveConflictDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -3587,6 +3627,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BeetsConfigSnapshot"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "config.yaml changed on disk since the editor loaded it, so the save was refused; the body carries the file's current text and hash.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigSaveConflictDetail"
                 }
               }
             }
@@ -9815,6 +9865,43 @@
         "title": "CandidateOption",
         "description": "A ranked alternative release from ``task.candidates``.\n\nThe switcher in the review screen lists these; ``index`` is the position in\nthe beets candidate list and is what a choice references. ``release_id`` is\nthe metadata backend's id for the release (``AlbumInfo.album_id`` \u2014 an\nMBID for MusicBrainz, the deezer id for Deezer): the bank's apply runner\npins ``import.search_ids`` to it so the apply imports exactly the release\nthe user chose. None for sources without an id (the apply then falls back\nto an unpinned lookup's top candidate)."
       },
+      "ConfigSaveConflict": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          },
+          "current_yaml_text": {
+            "type": "string",
+            "title": "Current Yaml Text"
+          },
+          "current_sha256": {
+            "type": "string",
+            "title": "Current Sha256"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail",
+          "current_yaml_text",
+          "current_sha256"
+        ],
+        "title": "ConfigSaveConflict",
+        "description": "What the config editor sends back when its compare-and-swap loses.\n\n``POST /api/config/save`` and ``POST /api/config/naming/save`` hash the file\non disk and compare it with the ``base_sha256`` the editor loaded from\n(``app/beets/config_editor.py``). A mismatch means someone else wrote\n``config.yaml`` in between, so the save is refused with 409 and the client is\nhanded everything it needs to recover WITHOUT a second round trip:\n``current_yaml_text`` is the file as it now stands and ``current_sha256`` is\nthe CAS token to resubmit with if the user chooses to overwrite anyway.\n\n``detail`` is the human sentence (\"File changed on disk\"). Unlike\n:class:`OperationFailure`, the inner key really IS named ``detail`` here -\nthat is what the raise sends, and this model documents the wire, not the\nnaming we would pick today."
+      },
+      "ConfigSaveConflictDetail": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/ConfigSaveConflict"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ConfigSaveConflictDetail",
+        "description": "The THIRD real error body: ``{\"detail\": {detail, current_yaml_text, current_sha256}}``.\n\nStarlette wraps an ``HTTPException``'s ``detail`` verbatim, so the object the\nconfig editor raises with becomes the value of the outer ``detail`` key.\n\nNeither existing model describes it, and declaring it as either would be a\nlie the generated client cannot recover from:\n\n- :class:`ErrorDetail` types ``detail`` as a ``str``, so the two fields the\n  conflict UI reads would not exist in the contract at all;\n- :class:`StructuredErrorDetail` types ``detail`` as ``{message, recovery}``\n  - three keys wrong out of three, and it would promise a ``recovery``\n  sentence this body never carries.\n\nA wrongly-typed status is worse than an undeclared one (see\n:class:`StructuredErrorDetail`), which is why this shape got a model of its\nown rather than being folded into one of those two."
+      },
       "CoverInstallResult": {
         "properties": {
           "ok": {
@@ -14300,7 +14387,7 @@
           "detail"
         ],
         "title": "StructuredErrorDetail",
-        "description": "The OTHER real error body in this API: ``{\"detail\": {message, recovery}}``.\n\nEvery blanket ``except Exception`` on a beets write op raises a 500 whose\n``detail`` is an OBJECT, not a sentence (cover install, album edit, artist\nrename, duplicate resolve, delete, config Apply). The frontend unwraps it in\n``frontend/src/api/lib.ts::structuredDetailMessage``, so the shape is read,\nnot decorative.\n\nDeclaring such a 500 as ``ErrorDetail`` would be worse than leaving it out:\nit swaps an UNDECLARED status for a WRONGLY-TYPED one, and the generated\nclient would parse an object as a string. Use this model instead, and only\non routes whose 500 really carries the nested shape - a route that can also\n500 with a flat sentence needs an ``anyOf`` (none does today)."
+        "description": "The SECOND real error body in this API: ``{\"detail\": {message, recovery}}``.\n\nEvery blanket ``except Exception`` on a beets write op raises a 500 whose\n``detail`` is an OBJECT, not a sentence (cover install, album edit, artist\nrename, duplicate resolve, delete, config Apply). The frontend unwraps it in\n``frontend/src/api/lib.ts::structuredDetailMessage``, so the shape is read,\nnot decorative.\n\nDeclaring such a 500 as ``ErrorDetail`` would be worse than leaving it out:\nit swaps an UNDECLARED status for a WRONGLY-TYPED one, and the generated\nclient would parse an object as a string. Use this model instead, and only\non routes whose 500 really carries the nested shape - a route that can also\n500 with a flat sentence needs an ``anyOf`` (none does today)."
       },
       "SweepStatus": {
         "properties": {

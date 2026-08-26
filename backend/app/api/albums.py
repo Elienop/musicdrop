@@ -63,6 +63,30 @@ _EDIT_FOREIGN_TRACK_422 = (
     " request failed validation."
 )
 
+#: The album-scoped lyrics-fetch refusals. Both are raised inside
+#: ``start_album_lyrics_op`` (app/beets/lyrics.py), not in the endpoint body.
+_LYRICS_ALBUM_NOT_FOUND_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "No album has that id.",
+}
+#: TWO independent gates answer with this one status, and the sentence has to
+#: cover both unions, because a description that names a subset reads as a
+#: complete list:
+#:   - ``raise_if_library_busy`` - the whole FIVE-job union (import, lyrics,
+#:     artist-art, reorganize, disk-sync) with no exclusions, OR the beets swap
+#:     lock, which ELEVEN call sites take (config Apply, album edit, cover
+#:     install, artist rename, duplicate resolve x2, delete x2, trash
+#:     restore/empty x3) - hence "a beets swap", not a list that would go stale;
+#:   - then ``reg.start`` -> ``claim_slot``, which re-checks that union and
+#:     additionally refuses when the lyrics slot itself is already taken.
+_LYRICS_FETCH_BUSY_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": (
+        "A lyrics fetch is already running, or an import, an artist-art job, a"
+        " reorganize, a disk sync or a beets swap holds the library."
+    ),
+}
+
 
 def get_library(request: Request) -> LibraryHandle:
     """Return the process-wide beets library handle opened at startup.
@@ -124,7 +148,14 @@ async def get_album_detail_endpoint(
     return detail
 
 
-@router.get("/albums/{album_id}/missing")
+@router.get(
+    "/albums/{album_id}/missing",
+    # Raised inside ``missing_report_op`` (app/beets/completeness.py), which maps
+    # the adapter's ``AlbumNotFoundError`` onto 404. Every OTHER failure -
+    # including a provider that cannot be reached - is reported as a non-ok
+    # ``status`` field on a 200 body, so 404 is the route's only error status.
+    responses={404: {"model": ErrorDetail, "description": "No album has that id."}},
+)
 async def get_album_missing_endpoint(
     album_id: int,
     handle: Annotated[LibraryHandle, Depends(get_library)],
@@ -370,7 +401,13 @@ async def install_album_cover_endpoint(
     return result
 
 
-@router.post("/albums/{album_id}/lyrics/fetch")
+@router.post(
+    "/albums/{album_id}/lyrics/fetch",
+    responses={
+        404: _LYRICS_ALBUM_NOT_FOUND_RESPONSE,
+        409: _LYRICS_FETCH_BUSY_RESPONSE,
+    },
+)
 async def fetch_album_lyrics_endpoint(
     album_id: int,
     request: Request,

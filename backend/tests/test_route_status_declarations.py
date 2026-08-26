@@ -19,49 +19,48 @@ What this test resolves, and therefore what it can catch:
   raises are the ones most easily forgotten because they are not in the route
   file at all (``install_cover_op``, ``apply_album_edit_op``,
   ``resolve_duplicates_op``, ``apply_artist_rename_op``,
-  ``raise_if_library_busy``).
+  ``start_album_lyrics_op``, ``missing_report_op``, ``delete_album_op``,
+  ``config_editor.save``, ``raise_if_library_busy``).
 
 It is built against ``app.openapi()`` - the LIVE spec - not the tracked
 ``frontend/openapi.json``, so it cannot pass on a stale artefact.
 
-KNOWN BLIND SPOT, stated rather than hidden: the call graph is followed only
-into the route's own module and ``_FOLLOWED_MODULES``. FOUR beets-adapter
-modules raise ``HTTPException`` too and are NOT followed yet -
-``app/beets/delete.py``, ``app/beets/config_editor.py``, ``app/beets/lyrics.py``
-and ``app/beets/completeness.py``. Adding one to ``_FOLLOWED_MODULES`` is how
-this guard grows.
+COVERAGE, re-measured 2026-08-27 by running this test rather than by hand:
+``_FOLLOWED_MODULES`` now names EVERY module outside ``app/api`` that raises an
+``HTTPException`` on a route's behalf - the nine there plus the route modules
+themselves are the whole set that ``grep -rln 'raise HTTPException' app/``
+returns, with one exception noted below. Nothing is unresolvable, nothing is
+unscannable, and the gap list is EMPTY. There is no backlog of un-followed
+adapters left, so there is no allowlist and nothing deferred; the way to keep it
+that way is to add any NEW shared module that raises on a route's behalf to
+``_FOLLOWED_MODULES`` in the same commit that creates it.
 
-Re-measured 2026-08-26 by adding all four to ``_FOLLOWED_MODULES`` and running
-this test - the way to re-derive it, since a number written by hand rots: with
-all four followed nothing becomes unresolvable or unscannable, and exactly FIVE
-(operation, status) pairs are still undeclared - the backlog for the follow-up:
+The one grep hit that is not followed is ``app/static_files.py``: its two 404s
+sit on an ``include_in_schema=False`` route, which ``_schema_operations``
+excludes because a ``responses`` entry there never reaches the spec at all.
 
-    app/beets/lyrics.py         POST /api/albums/{album_id}/lyrics/fetch  404, 409
-    app/beets/config_editor.py  POST /api/config/naming/save              409
-    app/beets/config_editor.py  POST /api/config/save                     409
-    app/beets/completeness.py   GET  /api/albums/{album_id}/missing       404
+WHAT THE SCAN STILL STRUCTURALLY CANNOT SEE. These are not a backlog - no
+setting of ``_FOLLOWED_MODULES`` reaches them, because the scan reads
+``raise HTTPException(...)`` and nothing else. Both are declared in the contract
+today by hand; both would go silently undeclared if that hand-declaration were
+removed, so they are written down rather than trusted to memory:
 
-``app/beets/delete.py`` is in the un-followed list but contributes NO gap at
-that measurement: ``DELETE /api/albums/{album_id}`` (404, 409) and
-``DELETE /api/artists`` (409, 500) are both declared on this branch. Do not read
-that as "following it is free" - read it as "following it is the cheapest one
-left", and re-measure before believing the zero.
+- a helper that RETURNS an ``HTTPException`` for its caller to raise.
+  ``app/beets/delete.py::_failed`` (the delete routes' structured 500) is the
+  only one in the repo - a ``grep -rn`` over ``app/`` for both
+  ``return HTTPException`` and ``-> HTTPException`` finds nothing else - and
+  the walk sees only ``raise _failed(exc)``,
+  whose status is not a literal anywhere in the raise.
+- a bodiless response constructed and RETURNED rather than raised.
+  ``app/api/http_cache.py:64::not_modified`` builds the ``304`` that every
+  conditional image GET answers with; a returned ``Response`` is not a raise, so
+  no ``304`` can ever appear in this scan's status set.
 
-The two ``config_editor`` 409s are a different shape from the rest and cannot
-just be declared: the CAS conflict at ``config_editor.py:376`` and ``:556``
-sends ``{detail, current_yaml_text, current_sha256}``, a THIRD error body next
-to ``ErrorDetail`` and the nested ``{message, recovery}`` 500, and it has no
-model in ``app/models/errors.py`` yet. Declaring it with ``ErrorDetail`` would
-give the generated client a type that omits the two fields the editor's
-conflict UI reads - see the ``responses``-replaces-not-merges note there.
-A model has to come first.
-
-The backlog is left un-allowlisted on purpose: an ``_ALLOWLIST`` entry reads as
-a decision, and this is a backlog. Statuses raised by a ``Depends(...)``
-dependency, or by a helper that RETURNS an ``HTTPException`` for the caller to
-raise (``app/beets/delete.py::_failed``, the delete route's structured 500),
-are out of scope in any configuration - the scan only reads
-``raise HTTPException(...)``.
+A third shape is in scope but inert today: a status raised inside a
+``Depends(...)`` dependency would be missed, since the walk starts at the
+endpoint function and never enters its parameter defaults. Checked at the same
+measurement - none of the seventeen dependencies this app injects raises an
+``HTTPException``, so nothing is hiding there right now.
 
 This guard checks that a status is PRESENT, not that its body schema is right.
 A status declared with the wrong model (``ErrorDetail`` for a nested
@@ -91,6 +90,10 @@ _FOLLOWED_MODULES: Final = frozenset(
         "app.beets.edit",
         "app.beets.duplicates",
         "app.beets.rename",
+        "app.beets.lyrics",
+        "app.beets.completeness",
+        "app.beets.config_editor",
+        "app.beets.delete",
     }
 )
 

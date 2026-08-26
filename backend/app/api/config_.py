@@ -7,6 +7,8 @@ dependency override) because the snapshot builder needs the real
 via a ``get_library`` override.
 """
 
+from typing import Final
+
 from fastapi import APIRouter, Request
 from ruamel.yaml.error import YAMLError
 
@@ -27,9 +29,27 @@ from app.models.config_editor import (
     ValidateResponse,
     ValidationErrorItem,
 )
-from app.models.errors import ErrorDetail, StructuredErrorDetail
+from app.models.errors import ConfigSaveConflictDetail, ErrorDetail, StructuredErrorDetail
 
 router = APIRouter(tags=["config"])
+
+#: The OpenAPI entry for the compare-and-swap 409 that BOTH save routes raise
+#: (``config_editor.save`` and ``config_editor.save_naming`` run the same
+#: read-hash-compare step under ``_SAVE_LOCK``). It is the ONLY 409 either route
+#: can reach - neither consults the library-busy gate, so neither can refuse for
+#: a running job or a held swap lock - which is why the sentence names one cause
+#: and stops there.
+#:
+#: The model is NOT ``ErrorDetail``: this 409 answers with a three-field object
+#: under ``detail``, and typing it as a sentence would hide the two fields the
+#: editor's conflict UI reads (see app/models/errors.py).
+_SAVE_CAS_CONFLICT_RESPONSE: Final = {
+    "model": ConfigSaveConflictDetail,
+    "description": (
+        "config.yaml changed on disk since the editor loaded it, so the save was"
+        " refused; the body carries the file's current text and hash."
+    ),
+}
 
 
 @router.get("/config")
@@ -60,7 +80,7 @@ def validate_config(req: ValidateRequest) -> ValidateResponse:
     return ValidateResponse(errors=validate_known_keys(data))
 
 
-@router.post("/config/save")
+@router.post("/config/save", responses={409: _SAVE_CAS_CONFLICT_RESPONSE})
 def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
     """Persist the user-submitted YAML to disk after CAS + schema checks.
 
@@ -93,7 +113,7 @@ def preview_naming(req: NamingPreviewRequest, request: Request) -> NamingPreview
     return NamingPreviewResponse(rendered=rendered, replace_errors=replace_errors)
 
 
-@router.post("/config/naming/save")
+@router.post("/config/naming/save", responses={409: _SAVE_CAS_CONFLICT_RESPONSE})
 def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSnapshot:
     """Write ``paths:``/``replace:`` back into config.yaml (CAS, 409/422). Apply
     is the existing ``POST /api/config/apply``."""

@@ -66,7 +66,7 @@ class OperationFailure(BaseModel):
 
 
 class StructuredErrorDetail(BaseModel):
-    """The OTHER real error body in this API: ``{"detail": {message, recovery}}``.
+    """The SECOND real error body in this API: ``{"detail": {message, recovery}}``.
 
     Every blanket ``except Exception`` on a beets write op raises a 500 whose
     ``detail`` is an OBJECT, not a sentence (cover install, album edit, artist
@@ -82,6 +82,51 @@ class StructuredErrorDetail(BaseModel):
     """
 
     detail: OperationFailure
+
+
+class ConfigSaveConflict(BaseModel):
+    """What the config editor sends back when its compare-and-swap loses.
+
+    ``POST /api/config/save`` and ``POST /api/config/naming/save`` hash the file
+    on disk and compare it with the ``base_sha256`` the editor loaded from
+    (``app/beets/config_editor.py``). A mismatch means someone else wrote
+    ``config.yaml`` in between, so the save is refused with 409 and the client is
+    handed everything it needs to recover WITHOUT a second round trip:
+    ``current_yaml_text`` is the file as it now stands and ``current_sha256`` is
+    the CAS token to resubmit with if the user chooses to overwrite anyway.
+
+    ``detail`` is the human sentence ("File changed on disk"). Unlike
+    :class:`OperationFailure`, the inner key really IS named ``detail`` here -
+    that is what the raise sends, and this model documents the wire, not the
+    naming we would pick today.
+    """
+
+    detail: str
+    current_yaml_text: str
+    current_sha256: str
+
+
+class ConfigSaveConflictDetail(BaseModel):
+    """The THIRD real error body: ``{"detail": {detail, current_yaml_text, current_sha256}}``.
+
+    Starlette wraps an ``HTTPException``'s ``detail`` verbatim, so the object the
+    config editor raises with becomes the value of the outer ``detail`` key.
+
+    Neither existing model describes it, and declaring it as either would be a
+    lie the generated client cannot recover from:
+
+    - :class:`ErrorDetail` types ``detail`` as a ``str``, so the two fields the
+      conflict UI reads would not exist in the contract at all;
+    - :class:`StructuredErrorDetail` types ``detail`` as ``{message, recovery}``
+      - three keys wrong out of three, and it would promise a ``recovery``
+      sentence this body never carries.
+
+    A wrongly-typed status is worse than an undeclared one (see
+    :class:`StructuredErrorDetail`), which is why this shape got a model of its
+    own rather than being folded into one of those two.
+    """
+
+    detail: ConfigSaveConflict
 
 
 def validation_or_detail_422(description: str) -> dict[str, object]:
