@@ -967,9 +967,19 @@ describe("ImportPlaylistsPage", () => {
     // Pencil → input → save, the detail-page rename idiom.
     await userEvent.click(await screen.findByRole("button", { name: /rename road/i }));
     const input = screen.getByRole("textbox", { name: /playlist name/i });
+    // Renaming must not toggle the card. NOTE: this pins the structural
+    // invariant only — jsdom never toggles <details> for clicks on summary
+    // CHILDREN, so the summary's click guard is invisible here and this
+    // assertion cannot kill a neutered guard. The guard itself is proven by
+    // the real-browser pass, not this test.
+    const details = screen
+      .getByRole("textbox", { name: /playlist name/i })
+      .closest("details") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
     await userEvent.clear(input);
     await userEvent.type(input, "Highway");
     await userEvent.click(screen.getByRole("button", { name: /save name/i }));
+    expect(details.open).toBe(false);
 
     // The renamed title shows on the card…
     expect(await screen.findByText("Highway")).toBeInTheDocument();

@@ -524,7 +524,10 @@ function PlaylistReview({
           // Clicks on the inner controls (rename editor, pencil, filter) must
           // not toggle the <details>. The guard lives HERE — on the natively
           // interactive summary — so the marked regions below carry no click
-          // handlers of their own (S6848/S1082).
+          // handlers of their own (S6848/S1082). Nothing inside a data-no-toggle
+          // region may rely on click default behavior (no checkboxes, radios,
+          // labels, or links) — preventDefault would silently break them for
+          // mouse AND keyboard.
           onClick={(e) => {
             if ((e.target as HTMLElement).closest("[data-no-toggle]")) e.preventDefault();
           }}

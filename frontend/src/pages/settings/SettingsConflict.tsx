@@ -57,6 +57,15 @@ export function SettingsConflict({
   onOverwrite,
 }: Readonly<SettingsConflictProps>) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  // Focus-on-mount invariant: move keyboard/AT focus onto the dialog as soon
+  // as it mounts so its aria-label is announced — the panel appears silently,
+  // and without this an AT user may assume their save succeeded. Mount only
+  // (empty deps); focus must never move again on re-render.
+  useEffect(() => {
+    dialogRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -98,6 +107,8 @@ export function SettingsConflict({
     // neutralize the UA dialog styles (auto margins, fit-content width,
     // CanvasText color) so the card's layout is unchanged.
     <dialog
+      ref={dialogRef}
+      tabIndex={-1}
       open
       aria-label="File changed on disk"
       className="border-destructive/40 bg-destructive/5 static m-0 flex w-full flex-col gap-3 rounded-xl border p-4 text-foreground"

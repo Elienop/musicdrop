@@ -483,3 +483,6 @@ def test_upfront_duplicates_response_includes_tracks(
     assert set(first) == {"item_id", "track", "disc", "title", "format", "bitrate_kbps"}
     assert isinstance(first["item_id"], int)
     assert first["item_id"] > 0  # a real library id
+    ids = [t["item_id"] for t in existing[0]["tracks"]]
+    assert len(set(ids)) == 15
+    assert min(ids) > 0

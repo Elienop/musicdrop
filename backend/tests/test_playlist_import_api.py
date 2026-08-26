@@ -69,6 +69,23 @@ def test_preview_from_files_matches_and_counts(
     assert pl["entries"][1]["status"] == "unmatched"
 
 
+def test_preview_mints_distinct_preview_ids(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    body = {
+        "files": [
+            {"name": "Road.m3u8", "content": "#EXTM3U\nA - B\n"},
+            {"name": "Chill.m3u8", "content": "#EXTM3U\nA - B\n"},
+        ]
+    }
+    r = client.post("/api/playlists/import/preview", json=body)
+    assert r.status_code == 200
+    ids = [p["preview_id"] for p in r.json()["playlists"]]
+    assert len(ids) == 2
+    assert len(set(ids)) == 2
+    assert all(ids)
+
+
 def test_preview_requires_exactly_one_source(client: TestClient) -> None:
     assert client.post("/api/playlists/import/preview", json={}).status_code == 422
     assert (
