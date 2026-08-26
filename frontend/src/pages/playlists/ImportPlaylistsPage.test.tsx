@@ -52,6 +52,16 @@ function renderImport() {
   });
 }
 
+/** Dispatch a real, cancelable click on `el` and report whether the summary
+ * click guard cancelled its default action (what stops the <details> from
+ * collapsing). jsdom never toggles <details> for these clicks, so
+ * `details.open` cannot observe the guard — `defaultPrevented` can. */
+function clickDefaultPrevented(el: Element): boolean {
+  const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+  el.dispatchEvent(ev);
+  return ev.defaultPrevented;
+}
+
 describe("ImportPlaylistsPage", () => {
   // The page lists Plex playlists as one of the two sources; default to an
   // empty list so the file-upload tests don't hit an unhandled request.
@@ -967,11 +977,12 @@ describe("ImportPlaylistsPage", () => {
     // Pencil → input → save, the detail-page rename idiom.
     await userEvent.click(await screen.findByRole("button", { name: /rename road/i }));
     const input = screen.getByRole("textbox", { name: /playlist name/i });
-    // Renaming must not toggle the card. NOTE: this pins the structural
-    // invariant only — jsdom never toggles <details> for clicks on summary
-    // CHILDREN, so the summary's click guard is invisible here and this
-    // assertion cannot kill a neutered guard. The guard itself is proven by
-    // the real-browser pass, not this test.
+    // Renaming must not toggle the card. NOTE: these `details.open`
+    // assertions pin the structure only — jsdom never toggles <details> for
+    // clicks on summary CHILDREN, so they cannot kill a neutered guard. The
+    // guard itself (cancel vs. not-cancelling clicks) is pinned separately by
+    // the test "the summary guard cancels clicks from no-toggle regions but
+    // not the playlist name".
     const details = screen
       .getByRole("textbox", { name: /playlist name/i })
       .closest("details") as HTMLDetailsElement;
@@ -1173,5 +1184,113 @@ describe("ImportPlaylistsPage", () => {
     expect(details.open).toBe(true);
     // The old toolbar band between the summary and the list is gone.
     expect(container.querySelectorAll('[data-slot="segmented-control"]')).toHaveLength(1);
+  });
+
+  test("the summary guard cancels clicks from no-toggle regions but not the playlist name", async () => {
+    server.use(
+      http.post(PREVIEW_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            {
+              name: "Road",
+              preview_id: "pv-guard",
+              matched_count: 1,
+              ambiguous_count: 0,
+              unmatched_count: 0,
+              entries: [entry({ item_id: 7, match: summary({ item_id: 7 }) })],
+            },
+          ],
+        }),
+      ),
+    );
+    renderImport();
+
+    await userEvent.upload(
+      screen.getByLabelText(/upload playlist files/i),
+      new File(["#EXTM3U\nBand - Alpha\n"], "Road.m3u8"),
+    );
+
+    const nameEl = (await screen.findByText("Road", {
+      selector: ".font-medium",
+    })) as HTMLElement;
+    const summaryEl = nameEl.closest("summary") as HTMLElement;
+    const renameBtn = within(summaryEl).getByRole("button", { name: /rename road/i });
+    const filterBtn = within(summaryEl).getByRole("button", { name: /^all \(/i });
+
+    // The rename pencil and the filter both sit inside data-no-toggle regions,
+    // so the summary's guard cancels their clicks (defaultPrevented === true)...
+    expect(clickDefaultPrevented(renameBtn)).toBe(true);
+    expect(clickDefaultPrevented(filterBtn)).toBe(true);
+    // ...while a click on the playlist NAME is NOT in a no-toggle region, so the
+    // guard leaves it alone (defaultPrevented === false) and the name still
+    // toggles the card.
+    expect(clickDefaultPrevented(nameEl)).toBe(false);
+  });
+
+  // NOTE ON SCOPE: this pins the user-visible behaviour (a fresh preview never
+  // shows the previous run's open editor). It does NOT pin the `preview_id`
+  // list key: mutating that key to the array index leaves this test green,
+  // verified 2026-08-26. "Start over" sets `preview = null`, and the review
+  // section is an early-return subtree (`if (preview)`), so the whole list
+  // unmounts and every card's local state dies regardless of its key. There is
+  // no reachable path where a second preview lands on a still-mounted list —
+  // the upload input is disabled while a preview is in flight. The key is
+  // correct-by-construction, not test-enforced; do not add an assertion here
+  // claiming otherwise.
+  test("a new preview shows the new playlist with no stale rename editor open", async () => {
+    server.use(
+      http.post(PREVIEW_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            {
+              name: "Road",
+              preview_id: "pv-road",
+              matched_count: 1,
+              ambiguous_count: 0,
+              unmatched_count: 0,
+              entries: [entry({ item_id: 7, match: summary({ item_id: 7 }) })],
+            },
+          ],
+        }),
+      ),
+    );
+    renderImport();
+
+    await userEvent.upload(
+      screen.getByLabelText(/upload playlist files/i),
+      new File(["#EXTM3U\nBand - Alpha\n"], "Road.m3u8"),
+    );
+
+    // Open the rename editor on the "Road" card (its local `editingName` state).
+    await userEvent.click(await screen.findByRole("button", { name: /rename road/i }));
+    expect(screen.getByRole("textbox", { name: /playlist name/i })).toBeInTheDocument();
+
+    // Back to the source phase and a FRESH preview of a different playlist.
+    server.use(
+      http.post(PREVIEW_URL, () =>
+        HttpResponse.json({
+          playlists: [
+            {
+              name: "Chill",
+              preview_id: "pv-chill",
+              matched_count: 1,
+              ambiguous_count: 0,
+              unmatched_count: 0,
+              entries: [entry({ item_id: 8, match: summary({ item_id: 8, title: "Slow" }) })],
+            },
+          ],
+        }),
+      ),
+    );
+    await userEvent.click(screen.getByRole("button", { name: /start over/i }));
+    await userEvent.upload(
+      screen.getByLabelText(/upload playlist files/i),
+      new File(["#EXTM3U\nBand - Slow\n"], "Chill.m3u8"),
+    );
+
+    expect(await screen.findByText("Chill")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("textbox", { name: /playlist name/i }),
+    ).not.toBeInTheDocument();
   });
 });

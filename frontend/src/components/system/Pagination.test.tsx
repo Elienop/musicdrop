@@ -185,6 +185,32 @@ describe("Pagination", () => {
       within(numberedWindow as HTMLElement).getByText("Loading page…"),
     ).toBeInTheDocument();
   });
+
+  it("full: the two gap separators carry distinct React keys", () => {
+    // This window (page 30 of 48) renders BOTH a leading and a trailing gap,
+    // so the two gap <span>s must carry different keys. React reports duplicate
+    // keys via console.error, and this suite does not fail on that — assert it
+    // explicitly.
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      render(
+        <Pagination
+          total={48 * 48}
+          offset={48 * 29}
+          limit={48}
+          onOffsetChange={() => {}}
+        />,
+      );
+      const duplicateKeyCall = spy.mock.calls.find((call) =>
+        call.some((arg) =>
+          /duplicate key|two children with the same key/i.test(String(arg)),
+        ),
+      );
+      expect(duplicateKeyCall).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe("Pagination compact variant", () => {

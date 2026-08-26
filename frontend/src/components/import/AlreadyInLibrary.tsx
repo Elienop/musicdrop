@@ -52,6 +52,10 @@ function ExistingTracklist({ tracks }: Readonly<{ tracks: ExistingAlbum["tracks"
   return (
     <ol className="border-border divide-border divide-y rounded-lg border text-sm">
       {tracks.map((t) => (
+        // `item_id` is the beets library id — the row's real identity. These
+        // rows hold no local state and are never reordered, so no test can
+        // distinguish this from an index key (verified 2026-08-26); it is
+        // correct-by-construction rather than test-enforced.
         <li key={t.item_id} className="flex items-center gap-3 px-3 py-1.5">
           <span className="text-muted-foreground w-6 shrink-0 text-right font-mono text-xs">
             {t.track ?? "-"}
