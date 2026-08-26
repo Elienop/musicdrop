@@ -124,6 +124,22 @@ def test_preexisting_richer_403_is_preserved() -> None:
     _assert_error_detail(post, "post", "/api/artists/image/fetch", "403")
 
 
+def _schema_refs(schema: dict[str, object]) -> list[str]:
+    """The ``$ref`` targets a response schema offers: one, or an ``anyOf`` of them.
+
+    A route that raises its OWN ``HTTPException(422, "<sentence>")`` returns two
+    body shapes under that status and documents both as an ``anyOf`` (see
+    ``app/models/errors.py``); every other 422 is FastAPI's single generated ref.
+    """
+    ref = schema.get("$ref")
+    if isinstance(ref, str):
+        return [ref]
+    any_of = schema.get("anyOf")
+    if isinstance(any_of, list):
+        return [str(_as_dict(entry).get("$ref")) for entry in any_of]
+    return []
+
+
 def test_422_entries_stay_fastapi_validation_and_are_never_invented() -> None:
     declared = 0
     for method, path, operation in _operations():
@@ -132,12 +148,14 @@ def test_422_entries_stay_fastapi_validation_and_are_never_invented() -> None:
             declared += 1
             content = _as_dict(_as_dict(responses.get("422")).get("content"))
             media = _as_dict(content.get("application/json"))
-            ref = _as_dict(media.get("schema")).get("$ref")
-            assert isinstance(ref, str), (
-                f"{method.upper()} {path} 422 $ref is not a string: {ref!r}"
+            refs = _schema_refs(_as_dict(media.get("schema")))
+            # The validation shape is never traded away: a route may ADD its own
+            # sentence body to the 422, never replace FastAPI's with it.
+            assert any(ref.endswith("/HTTPValidationError") for ref in refs), (
+                f"{method.upper()} {path} 422 no longer references HTTPValidationError: {refs!r}"
             )
-            assert ref.endswith("/HTTPValidationError"), (
-                f"{method.upper()} {path} 422 no longer references HTTPValidationError: {ref!r}"
+            assert all(ref.endswith(("/HTTPValidationError", "/ErrorDetail")) for ref in refs), (
+                f"{method.upper()} {path} 422 references an unexpected schema: {refs!r}"
             )
         else:
             # FastAPI puts 422 exactly on operations with something to validate

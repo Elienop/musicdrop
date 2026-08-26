@@ -109,15 +109,19 @@ def test_cross_origin_upload_rejected(client: TestClient) -> None:
 
 
 def test_upload_rejects_non_image(client: TestClient) -> None:
+    """415, not 422: an unsupported media type has its own status (as the
+    playlist artwork upload already answered for the same refusal)."""
     resp = client.post(
         "/api/artists/image/override",
         params={"name": "ABBA"},
         files={"file": ("x.txt", b"not an image", "text/plain")},
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 415
 
 
 def test_upload_rejects_oversize_via_content_length(client: TestClient) -> None:
+    """413, not 422: an oversize payload has its own status, the same one the
+    app-wide body-size guard returns for the identical refusal."""
     from app.artwork.images import MAX_IMAGE_BYTES
 
     oversize = b"\xff\xd8\xff" + b"\x00" * MAX_IMAGE_BYTES
@@ -126,7 +130,7 @@ def test_upload_rejects_oversize_via_content_length(client: TestClient) -> None:
         params={"name": "ABBA"},
         files={"file": ("big.jpg", oversize, "image/jpeg")},
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 413
     assert "too large" in resp.json()["detail"].lower()
 
 

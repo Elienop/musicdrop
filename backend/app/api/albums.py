@@ -1,4 +1,4 @@
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -32,12 +32,20 @@ from app.models.completeness import AlbumMissingReport
 from app.models.cover import CoverInstallResult
 from app.models.delete import DeleteResult
 from app.models.edit import AlbumEditPreview, AlbumEditRequest, AlbumEditResult
-from app.models.errors import ErrorDetail
+from app.models.errors import ErrorDetail, validation_or_detail_422
 from app.models.lyrics import LyricsBackfillStatus
 
 router = APIRouter(tags=["albums"])
 
 _MAX_COVER_BYTES = 10 * 1024 * 1024
+
+#: The OpenAPI entry for the cover GET's two "no image to send" exits. Named
+#: because both the thumb and the full-size arm end there and must not drift
+#: apart (see app/models/errors.py for why the model must be named).
+_COVER_NOT_FOUND_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "No album with that id, or the album has no cover art.",
+}
 
 
 def get_library(request: Request) -> LibraryHandle:
@@ -84,7 +92,12 @@ async def list_albums_endpoint(
     return AlbumPage(items=items, total=total, limit=limit, offset=offset)
 
 
-@router.get("/albums/{album_id}")
+@router.get(
+    "/albums/{album_id}",
+    responses={
+        404: {"model": ErrorDetail, "description": "No album with that id."},
+    },
+)
 async def get_album_detail_endpoint(
     album_id: int,
     handle: Annotated[LibraryHandle, Depends(get_library)],
@@ -128,7 +141,10 @@ async def edit_album_endpoint(
     return result
 
 
-@router.get("/albums/{album_id}/cover")
+@router.get(
+    "/albums/{album_id}/cover",
+    responses={404: _COVER_NOT_FOUND_RESPONSE},
+)
 async def get_album_cover_endpoint(
     album_id: int,
     request: Request,
@@ -234,6 +250,46 @@ async def fetch_album_cover_endpoint(
 
 @router.post(
     "/albums/{album_id}/cover",
+    # Every status this route can answer, each with a NAMED model: a
+    # description-only entry drops the `content` block and openapi-typescript
+    # renders `content?: never` for a body the client must read (see
+    # app/models/errors.py). Most of these are raised inside install_cover_op
+    # (app/beets/cover.py), not in the body below, so they are just as real and
+    # just as easy to leave undeclared. 400/403 come from the guard overlay.
+    responses={
+        404: {"model": ErrorDetail, "description": "No album has that id."},
+        409: {
+            "model": ErrorDetail,
+            "description": (
+                "A library operation is in progress, so cover changes are refused"
+                " until it finishes."
+            ),
+        },
+        # 413 for an oversize payload, the same code (and reason) the playlist
+        # artwork upload and the app-wide body-size guard already use. Declared
+        # here rather than left to that guard's overlay entry: this route
+        # rejects at its OWN 10 MB cap, well under the app-wide limit, so its
+        # refusal is the one a client actually meets.
+        413: {
+            "model": ErrorDetail,
+            "description": (
+                "The uploaded cover exceeds the 10 MB limit, or the request body"
+                " exceeds the app-wide size limit."
+            ),
+        },
+        415: {
+            "model": ErrorDetail,
+            "description": "The uploaded bytes are not a PNG, JPEG, GIF or WebP image.",
+        },
+        # An empty album is a well-formed request the library cannot satisfy, so
+        # it stays 422 - which means this route returns BOTH 422 bodies (the
+        # multipart body and the path parameter can also fail validation, whose
+        # `detail` is a LIST). See app/models/errors.py.
+        422: validation_or_detail_422(
+            "The album has no tracks, so beets cannot place cover art for it; or"
+            " the request failed validation."
+        ),
+    },
 )
 async def install_album_cover_endpoint(
     album_id: int,
@@ -247,12 +303,12 @@ async def install_album_cover_endpoint(
     # (Content-Length is client-supplied and may be absent or wrong).
     declared = request.headers.get("content-length")
     if declared is not None and declared.isdigit() and int(declared) > _MAX_COVER_BYTES:
-        raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
+        raise HTTPException(status_code=413, detail="Image too large (max 10 MB)")
     # Bounded read: never buffer more than the cap (+1 to detect an exact-cap
     # overrun) even when Content-Length is absent or understated.
     image_bytes = await file.read(_MAX_COVER_BYTES + 1)
     if len(image_bytes) > _MAX_COVER_BYTES:
-        raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
+        raise HTTPException(status_code=413, detail="Image too large (max 10 MB)")
     result = await install_cover_op(request, album_id, image_bytes)
     emit_art_changed(request.app, f"album:{album_id}")
     return result

@@ -227,13 +227,54 @@ def test_cover_upload_read_is_size_bounded(
     assert _MAX_COVER_BYTES + 1 in sizes  # bounded read, not read-all (-1)
 
 
-def test_upload_rejects_non_image(cover_client: TestClient, edit_lib: Library) -> None:
+def test_upload_rejects_non_image_with_415(cover_client: TestClient, edit_lib: Library) -> None:
+    """An unsupported media type is 415, matching the artist-portrait and
+    playlist-artwork uploads. It used to answer 422, which conflated "wrong
+    image format" with "semantically invalid request"."""
     aid = _aid(edit_lib)
     r = cover_client.post(
         f"/api/albums/{aid}/cover",
         files={"file": ("x.txt", b"not an image", "text/plain")},
     )
+    assert r.status_code == 415
+
+
+def test_upload_to_album_with_no_items_returns_422(
+    cover_client: TestClient, edit_lib: Library
+) -> None:
+    """An album row with zero items is 422, NOT 415.
+
+    The image is a perfectly good PNG - what fails is the target: beets derives
+    the art destination from the album's items, so an album with none cannot
+    take any cover at all. That is well-formed but semantically impossible,
+    which is 422, and it is deliberately NOT the 415 its former except-clause
+    sibling ``UnsupportedImageError`` now answers.
+
+    The empty album is built with beets' own ``item.remove(with_album=False)``
+    (the same call ``Album.remove(with_items=True)`` makes internally), which
+    drops the item rows and leaves the album row behind - the stale state disk
+    sync exists to prune (see app/beets/disk_sync.py, where ``with_album=True``
+    auto-prunes instead) and that an external ``beet`` run, or a removal racing
+    this upload, can leave in the DB.
+    """
+    aid = _aid(edit_lib)
+    album = edit_lib.get_album(aid)
+    assert album is not None
+    with edit_lib.transaction():
+        for item in list(album.items()):
+            item.remove(delete=False, with_album=False)  # keep the album row itself
+    # Non-vacuity: the album must still EXIST, or this would be the 404 arm.
+    emptied = edit_lib.get_album(aid)
+    assert emptied is not None
+    assert list(emptied.items()) == []
+
+    r = cover_client.post(
+        f"/api/albums/{aid}/cover",
+        files={"file": ("cover.png", PNG.read_bytes(), "image/png")},
+    )
+
     assert r.status_code == 422
+    assert "no tracks" in r.json()["detail"]
 
 
 def test_upload_unknown_album_404(cover_client: TestClient) -> None:
@@ -329,6 +370,31 @@ def test_the_cover_fetch_declares_every_status_it_can_return() -> None:
     )
 
 
+def test_the_cover_install_declares_every_status_it_can_return() -> None:
+    """The generated client only knows what the spec says.
+
+    Most of these are raised inside ``install_cover_op`` rather than in the
+    route body (404 unknown album, 409 import running, 415 not an image, 422
+    empty album), which is exactly why they were easy to leave undeclared - and
+    an undeclared status generates ``content?: never`` for a body the UI reads
+    to show the user why the upload failed. 422 carries BOTH shapes: this route
+    raises its own sentence AND has a body/path parameter FastAPI validates.
+    """
+    operation = app.openapi()["paths"]["/api/albums/{album_id}/cover"]["post"]
+    responses = operation["responses"]
+    # 400 (host guard) and 403 (cross-origin write guard) are stamped on by the
+    # OpenAPI overlay (app/openapi_overlay.py), not by this route.
+    assert sorted(responses) == ["200", "400", "403", "404", "409", "413", "415", "422"]
+    for code in ("400", "403", "404", "409", "413", "415"):
+        schema = responses[code]["content"]["application/json"]["schema"]
+        assert schema["$ref"] == "#/components/schemas/ErrorDetail", code
+    assert responses["422"]["content"]["application/json"]["schema"]["anyOf"] == [
+        {"$ref": "#/components/schemas/ErrorDetail"},
+        {"$ref": "#/components/schemas/HTTPValidationError"},
+    ]
+    assert all(responses[code]["description"].isascii() for code in responses)
+
+
 def test_cross_origin_cover_fetch_is_rejected(cover_client: TestClient, edit_lib: Library) -> None:
     """A body-less POST is a CORS-simple request, so it reaches this route
     without a preflight. It writes nothing, but it still drives an outbound
@@ -359,7 +425,12 @@ def test_cross_origin_cover_fetch_is_rejected(cover_client: TestClient, edit_lib
 def test_upload_rejects_oversize_via_content_length(
     cover_client: TestClient, edit_lib: Library
 ) -> None:
-    """A body whose Content-Length exceeds the cap is rejected 422 before it is read."""
+    """A body whose Content-Length exceeds the cap is rejected 413 before it is read.
+
+    413, not 422: an oversize payload has its own status, and this endpoint now
+    answers the same one the playlist artwork upload and the app-wide body-size
+    guard already did for the identical refusal.
+    """
     from app.api.albums import _MAX_COVER_BYTES
 
     aid = _aid(edit_lib)
@@ -368,7 +439,7 @@ def test_upload_rejects_oversize_via_content_length(
         f"/api/albums/{aid}/cover",
         files={"file": ("big.jpg", oversize, "image/jpeg")},
     )
-    assert r.status_code == 422
+    assert r.status_code == 413
     assert "too large" in r.json()["detail"].lower()
 
 

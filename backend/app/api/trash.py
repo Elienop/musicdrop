@@ -11,7 +11,7 @@ either order) serialize instead of racing. Every folder argument flows through
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
@@ -28,10 +28,32 @@ from app.beets.trash_manage import (
 )
 from app.events.emit import emit_library_changed
 from app.library_busy import raise_if_library_busy
+from app.models.errors import ErrorDetail
 from app.models.trash import EmptyResult, RestoreRequest, RestoreResult, TrashListing
 from app.wire import AmbiguousDisplayName
 
 router = APIRouter(tags=["trash"])
+
+#: The OpenAPI entries for the two ``_child_or_404`` routes. The 409 covers
+#: both distinct refusals those routes can make: the shared gate (a library
+#: job running or the beets swap lock held) and the ambiguous-name guard in
+#: ``_child_or_404`` itself.
+_TRASH_CONFLICT_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": (
+        "The operation was refused because a library operation is in progress "
+        "or the beets swap lock is held, or two trashed folders display under "
+        "the same name."
+    ),
+}
+_TRASH_NOT_FOUND_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "The named folder is not in the Trash.",
+}
+_TRASH_RESTORE_FAILED_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "The restore failed because re-importing the trashed folder failed.",
+}
 
 
 def _gate(app: Any) -> None:
@@ -76,7 +98,14 @@ async def list_trash(request: Request) -> TrashListing:
     return TrashListing(albums=albums, trash_path=str(trash_dir))
 
 
-@router.post("/trash/restore")
+@router.post(
+    "/trash/restore",
+    responses={
+        409: _TRASH_CONFLICT_RESPONSE,
+        404: _TRASH_NOT_FOUND_RESPONSE,
+        500: _TRASH_RESTORE_FAILED_RESPONSE,
+    },
+)
 async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult:
     """Re-import a trashed folder as-is. 409 if busy, 404 if not in Trash."""
     app = request.app
@@ -94,7 +123,10 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
             raise HTTPException(status_code=500, detail=f"Restore failed: {exc}") from exc
 
 
-@router.delete("/trash")
+@router.delete(
+    "/trash",
+    responses={409: _TRASH_CONFLICT_RESPONSE, 404: _TRASH_NOT_FOUND_RESPONSE},
+)
 async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> EmptyResult:
     """Permanently remove one trashed album folder. 409 if busy, 404 if not in Trash."""
     app = request.app

@@ -23,6 +23,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.acquisition.inbox import coalesce_album_root, contain
 from app.config import settings
+from app.models.errors import ErrorDetail
 from app.models.slskd import (
     SlskdConnection,
     SlskdSettings,
@@ -91,7 +92,18 @@ async def test_slskd(
     return await run_in_threadpool(service.test_connection, store.get())
 
 
-@router.post("/slskd/webhook")
+@router.post(
+    "/slskd/webhook",
+    responses={
+        401: {
+            "model": ErrorDetail,
+            "description": (
+                "The webhook was rejected because no webhook secret is "
+                "configured or the provided API key does not match it."
+            ),
+        }
+    },
+)
 async def slskd_webhook(
     event: SlskdWebhookEvent,
     request: Request,

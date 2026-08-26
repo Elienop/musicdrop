@@ -21,6 +21,7 @@ from app.beets.duplicates import find_import_duplicates
 from app.beets.library import LibraryHandle
 from app.import_jobs.registry import ImportJobRegistry, get_registry
 from app.import_jobs.runner import InLibraryCopyError
+from app.models.errors import validation_or_detail_422
 from app.models.import_api import (
     ActiveImportStatus,
     ImportJobState,
@@ -91,7 +92,19 @@ def ensure_import_can_start(request: Request) -> None:
         )
 
 
-@router.post("/import", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/import",
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        # The copy-in-library refusal is a well-formed request the importer
+        # declines on its merits, so it stays 422 - which means this route
+        # returns BOTH 422 bodies (see app/models/errors.py).
+        422: validation_or_detail_422(
+            "A copy-mode import was asked for a folder inside the music library,"
+            " or the request failed validation."
+        ),
+    },
+)
 async def start_import(
     body: StartImportRequest,
     request: Request,

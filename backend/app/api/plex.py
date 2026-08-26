@@ -8,12 +8,13 @@ is write-only over the API — ``GET`` returns ``has_token``, never the value.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Final
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
 from app.config import settings
+from app.models.errors import ErrorDetail
 from app.models.plex import (
     PlexConnection,
     PlexPlaylistList,
@@ -27,6 +28,18 @@ from app.plex.config import PlexConfig, PlexConfigStore
 from app.plex.errors import PlexConnectionError, PlexNotConfigured
 
 router = APIRouter(tags=["plex"])
+
+#: The OpenAPI entries shared by all three Plex list routes: 409 when the
+#: Plex settings are incomplete, 502 when the Plex server itself fails. Named
+#: because the three routes share these single causes and must not drift apart.
+_PLEX_NOT_CONFIGURED_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "Plex is not configured because its base URL or admin token is not set.",
+}
+_PLEX_CONNECTION_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "The Plex server could not be reached or rejected the request.",
+}
 
 
 def get_plex_store() -> PlexConfigStore:
@@ -79,7 +92,10 @@ async def test_plex(
     return await run_in_threadpool(service.test_connection, store.get())
 
 
-@router.get("/plex/users")
+@router.get(
+    "/plex/users",
+    responses={409: _PLEX_NOT_CONFIGURED_RESPONSE, 502: _PLEX_CONNECTION_RESPONSE},
+)
 async def list_plex_users(
     store: Annotated[PlexConfigStore, Depends(get_plex_store)],
 ) -> PlexUserList:
@@ -92,7 +108,10 @@ async def list_plex_users(
     return PlexUserList(users=users)
 
 
-@router.get("/plex/sections")
+@router.get(
+    "/plex/sections",
+    responses={409: _PLEX_NOT_CONFIGURED_RESPONSE, 502: _PLEX_CONNECTION_RESPONSE},
+)
 async def list_plex_sections(
     store: Annotated[PlexConfigStore, Depends(get_plex_store)],
 ) -> PlexSectionList:
@@ -105,7 +124,10 @@ async def list_plex_sections(
     return PlexSectionList(sections=sections)
 
 
-@router.get("/plex/playlists")
+@router.get(
+    "/plex/playlists",
+    responses={409: _PLEX_NOT_CONFIGURED_RESPONSE, 502: _PLEX_CONNECTION_RESPONSE},
+)
 async def list_plex_playlists(
     store: Annotated[PlexConfigStore, Depends(get_plex_store)],
 ) -> PlexPlaylistList:

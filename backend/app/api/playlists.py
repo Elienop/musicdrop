@@ -31,7 +31,7 @@ from app.beets.playlists import (
     track_match_refs,
 )
 from app.config import settings
-from app.models.errors import ErrorDetail
+from app.models.errors import ErrorDetail, validation_or_detail_422
 from app.models.playlist import (
     Playlist,
     PlaylistAddTracksRequest,
@@ -338,14 +338,17 @@ async def remove_entry_endpoint(
 
 @router.patch(
     "/playlists/{playlist_id}/entries/{entry_uid}",
-    # 422 is deliberately absent (unknown item id): declaring it would replace
-    # FastAPI's HTTPValidationError, whose `detail` is a LIST (see
-    # app/models/errors.py).
     responses={
         404: {
             "model": ErrorDetail,
             "description": "The playlist does not exist, or one of its entries does not.",
         },
+        # An unknown item id is a well-formed request that is semantically
+        # wrong, so it stays 422 - which means this route returns BOTH 422
+        # bodies (see app/models/errors.py).
+        422: validation_or_detail_422(
+            "No library track has the requested item id, or the request failed validation."
+        ),
     },
 )
 async def resolve_entry_endpoint(
@@ -373,8 +376,14 @@ async def resolve_entry_endpoint(
 
 @router.put(
     "/playlists/{playlist_id}/tracks",
-    # 422 is deliberately absent (unknown entry uids): see resolve_entry above.
-    responses={404: _PLAYLIST_NOT_FOUND_RESPONSE},
+    responses={
+        404: _PLAYLIST_NOT_FOUND_RESPONSE,
+        # Unknown entry uids: see resolve_entry above for why this stays 422.
+        422: validation_or_detail_422(
+            "The new order names entry uids this playlist does not have, or the"
+            " request failed validation."
+        ),
+    },
 )
 async def reorder_tracks_endpoint(
     playlist_id: str,
@@ -838,7 +847,16 @@ async def _import_one_playlist(
     return await _summary(record, handle)
 
 
-@router.post("/playlists/import")
+@router.post(
+    "/playlists/import",
+    responses={
+        # Unknown item ids: see resolve_entry for why this stays 422.
+        422: validation_or_detail_422(
+            "One of the reviewed entries names an item id no library track has,"
+            " or the request failed validation."
+        ),
+    },
+)
 async def import_commit_endpoint(
     body: PlaylistImportRequest,
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
