@@ -6,10 +6,11 @@ FastAPI's ``HTTPValidationError`` - not by decision, but because an undeclared
 ``{loc: (string|integer)[], msg, type}``. What ``app/beets/config_editor.py``
 actually raises with, both for a ruamel parse failure and for a known-keys
 schema failure, is a LIST of ``ValidationErrorItem``: ``loc`` is a plain STRING
-and each row carries ``line`` and ``column``, which
-``frontend/src/pages/settings/SettingsBeetsPage.tsx`` reads to place the
-CodeMirror markers. So the client read two fields the contract said did not
-exist and a third with the wrong type - the exact wrongly-typed-status failure
+and each row carries ``line`` and ``column`` - the same row shape the editor's
+gutter already consumes from ``POST /api/config/validate``'s 200. No live client
+reads this save 422 body today (the save mutation's error handler covers 409 only
+and the 422 body is discarded), but declaring it as ``HTTPValidationError``
+mistypes the generated TypeScript - the exact wrongly-typed-status failure
 ``app/models/errors.py`` argues is worse than an undeclared one.
 
 ``POST /api/config/naming/save`` raises its own 422 too, and NOT with the same

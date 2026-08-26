@@ -20,8 +20,8 @@ So this file joins the two halves that a wrong model has to break:
 
 1. the schema the LIVE spec declares for 409 on each save route, with every
    ``$ref`` inlined, must equal the schema ``ConfigSaveConflictDetail`` itself
-   generates - a structural comparison, so a same-named model whose fields
-   drifted fails too;
+   generates - a pin on WHICH model the route names, so swapping models,
+   collapsing the anyOf, or dropping the content block fails it;
 2. a REAL 409, provoked from each route with a stale CAS token, must validate
    against that same model, with the key sets pinned exactly at both levels so
    an extra or missing wire field is a failure rather than a silently ignored
@@ -108,9 +108,11 @@ def _declared_409_schema(path: str) -> tuple[object, object]:
 def test_the_declared_409_schema_is_the_conflict_model(path: str) -> None:
     """Half 1: the contract's 409 body type is ``ConfigSaveConflictDetail``.
 
-    Compared structurally rather than by component name: a model that keeps the
-    name but loses ``current_sha256`` is the same defect as declaring the wrong
-    model, and the frontend cannot tell the two apart.
+    Compared against the model's own ``model_json_schema()`` rather than by
+    component name: this catches a swap to a different model, a collapsed anyOf,
+    or a dropped content block. It does NOT catch a same-named model losing a
+    field (both sides derive from the same schema and move together) - that is
+    the real-body half's job.
     """
     raw, declared = _declared_409_schema(path)
     assert declared == model_schema(ConfigSaveConflictDetail), (

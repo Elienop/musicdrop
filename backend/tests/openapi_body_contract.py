@@ -9,9 +9,12 @@ status undeclared.
 Closing that needs two halves per status, and both need the same two helpers:
 
 1. the schema the LIVE spec declares, with every ``$ref`` inlined, compared to
-   the schema the model generates for itself (also inlined) - a STRUCTURAL
-   comparison, so a same-named model that lost a field fails too;
-2. a REAL error body from that route, validated against the same model.
+   the schema the model generates for itself (also inlined) - a pin on WHICH
+   model the route names: swapping models, collapsing the anyOf, reversing the
+   arms, or dropping the content block all fail it;
+2. a REAL error body from that route, validated against the same model - the
+   half that catches field-level drift (both sides of (1) derive from
+   ``Model.model_json_schema()`` and would move together if a field were lost).
 
 Used by ``tests/test_config_conflict_body_contract.py`` (the CAS 409) and
 ``tests/test_config_validation_body_contract.py`` (both save routes' 422).

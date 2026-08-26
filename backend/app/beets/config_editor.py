@@ -339,6 +339,13 @@ def save(handle: LibraryHandle, req: SaveRequest) -> BeetsConfigSnapshot:
     """
     yaml = _yaml()
 
+    # NOTE: The 422 and 409 payloads below are built as literal dicts, deliberately
+    # NOT derived from the Pydantic models. The contract tests
+    # (test_config_validation_body_contract / test_config_conflict_body_contract)
+    # validate REAL response bodies against the models; if these raises were
+    # changed to build the payload from the model, both halves of the pin would
+    # become invariant and the check would silently go vacuous.
+
     # 1. Parse with ruamel.
     try:
         new_map = parse_yaml(req.yaml_text)
@@ -534,6 +541,10 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
        until Apply reloads beets).
     """
     yaml = _yaml()
+
+    # NOTE: Same as ``save`` above — the 422/409 payloads are literal dicts,
+    # deliberately not model-derived, so the contract tests' real-body half
+    # stays load-bearing.
 
     # 1. Regex validate.
     bad: list[dict[str, object]] = []

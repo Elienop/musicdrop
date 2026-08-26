@@ -154,10 +154,12 @@ class ConfigValidationErrorDetail(BaseModel):
 
     FastAPI's ``HTTPValidationError`` is not this shape and cannot stand in for
     it: its items carry ``loc`` as an ARRAY of path segments and have no ``line``
-    or ``column`` at all, while ``frontend/src/pages/settings/SettingsBeetsPage.tsx``
-    reads exactly those two fields to place the markers. Declaring this 422 as
-    that model leaves the client reading two fields the contract says do not
-    exist, and mis-types a third.
+    or ``column`` at all. The editor's CodeMirror gutter consumes the same row
+    shape from ``POST /api/config/validate``'s 200 body, where it is correctly
+    typed; no live client reads this save 422 body today (the save mutation's
+    error handler covers 409 only and the 422 body is discarded). Declaring this
+    422 as that model would still mistype the generated TypeScript - a
+    wrongly-typed status is worse than an undeclared one.
     """
 
     detail: list[ValidationErrorItem]

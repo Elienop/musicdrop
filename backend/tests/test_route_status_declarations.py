@@ -43,15 +43,16 @@ anything upstream of it, because both sides then lose the same operations
 together. Measured: patching that one generator to skip every ``/api/albums``
 route gives ``walked == in_spec == 100`` with an empty gap list - an entire
 router gone and this test green. A router deleted from ``app/main.py`` is the
-same shape, and no in-process enumeration can see it: the routes genuinely do
-not exist.
+same shape, and no IN-PROCESS ENUMERATION can see it: the routes genuinely do
+not exist. That is what THE SOURCE CENSUS below is for - it reads the
+filesystem, where the module is still sitting with its decorators on it.
 
 MEASURED BLAST RADIUS OF THAT COLLAPSE, per ROUTER (2026-08-29, by patching
 ``fastapi.routing.iter_route_contexts`` to drop every route whose endpoint is
 defined in one ``app/api`` module - the routes one ``include_router`` call
 registers - then clearing ``app.openapi_schema`` and re-running ``_gaps()``).
 Every one of the nineteen drops left ``walked == in_spec`` True and the gap list
-empty, so ``_MIN_ROUTES_WITH_RAISES`` really is the only assertion that can fire:
+empty, which is why a count of raising operations was tried here first:
 
     playlists 70->56, artists 60, albums 61, import_ 61, bank 64, reorganize 66,
     config_ 67, plex 67, trash 67, acquisition 68, disk_sync 68, duplicates 68,
@@ -63,7 +64,8 @@ The earlier note here claimed dropping ``/api/albums`` took 70 -> 59. That was a
 PATH-prefix drop, which is a different (larger) set than a router: several
 ``/api/albums/...`` paths are registered by the lyrics, completeness and cover
 routes' own routers. Per router the worst case is 56 and the best non-zero one
-is 69, which is what the floor is now set from.
+is 69, so a floor that fires for the smallest router had to sit at exactly
+today's count - and even there, four of the nineteen were uncoverable.
 
 Deriving one side from the tracked ``frontend/openapi.json`` was considered and
 rejected: that file is this same app's output (``scripts/dump_openapi.py``
@@ -75,10 +77,93 @@ signal ``test_openapi_spec_guard`` already owns, dying to the same command,
 while making THIS guard fail on every legitimate mid-work spec edit. It moves
 the coupling; it does not remove it.
 
-So ``_MIN_ROUTES_WITH_RAISES`` is the only backstop against a source-level
-collapse. It is now set to the measured count exactly (70), which is the only
-value that fires for the smallest router that raises at all - see the constant's
-own comment for why, and for the four routers no number can cover.
+THE SOURCE CENSUS is the backstop against a source-level collapse, and it
+replaced the count-based floor ``_MIN_ROUTES_WITH_RAISES = 70`` that used to
+stand here. ``_source_census()`` walks ``app/**/*.py`` ON DISK and classifies
+every module two ways - does it decorate a function ``@router.<method>(...)``,
+and does it raise an ``HTTPException`` that escapes - then two tests require the
+walk to reproduce each set exactly:
+
+- ``test_every_module_that_declares_routes_still_reaches_the_walk`` - every
+  route module on disk must contribute an operation to the schema. This is the
+  only assertion here that can see ``browse``, ``health``, ``search`` or
+  ``stats`` vanish; they raise nothing, so no count of raising operations moves
+  when they do.
+- ``test_every_module_that_raises_on_a_routes_behalf_is_still_in_scan_range`` -
+  every module that raises on disk must be a module some operation's call graph
+  actually REACHED a raise in.
+
+A filesystem listing is an independent oracle of the route walk in a way the
+spec is not: ``walked == in_spec`` compares two views of ONE generator, so a
+router lost inside that generator disappears from both sides at once, whereas it
+cannot disappear from a directory.
+
+WHY THE COUNT HAD TO GO. Its comment claimed the metric "moves only when an
+operation stops raising anything at all", so moving a raise between an endpoint
+and a helper could not disturb it. That is TRUE only while the helper is
+same-module or already in ``_FOLLOWED_MODULES``. MEASURED, by dropping each
+followed module from the scan's reach in turn - behaviourally identical to
+renaming that module, or extracting a raising helper into a NEW one, and
+forgetting to relist it - ``with_raises`` fell to 67-70 with an EMPTY gap list
+each time, and census 2 named the lost module in nine cases out of ten::
+
+    dropped from _FOLLOWED_MODULES   with_raises  gaps  old floor(70)  census 2
+    app.beets.config_editor                   67     0  RED (unnamed)  RED (named)
+    app.beets.delete/duplicates/edit/rename   68     0  RED (unnamed)  RED (named)
+    app.beets.completeness/cover/lyrics       69     0  RED (unnamed)  RED (named)
+    app.library_busy                          69     0  RED (unnamed)  RED (named)
+    app.api.import_                           70     0  GREEN          GREEN
+
+So renaming ``app/beets/completeness.py`` to ``missing.py`` - a pure module
+move, no contract change - turned the suite red at 69 with nothing in the gap
+list, and the floor's own message offered "an operation legitimately stopped
+raising, in which case re-measure and lower the constant deliberately". Taking
+that advice would have blinded this scan to every status that module raises on a
+route's behalf, silently and forever; for ``config_editor`` it was three
+operations at once. The census cannot be paid off that way - the renamed file is
+still on disk, still raising, and stays in the expected set until it is genuinely
+back in reach.
+
+WHAT THE CENSUS DELIBERATELY DOES NOT FAIL ON. Raises that move WITHIN reach:
+both sides use the same ``_status_of``/``_suppressed_raises`` rules, so a raise
+pushed from an endpoint into a same-module helper, or merged into a shared guard
+in ``app.library_busy`` or any other followed module, drops the module it left
+out of the expected set and the reached set together. MEASURED, by actually
+performing that refactor (``app/api/lyrics.py``'s six 409 guards merged into one
+``raise_if_lyrics_backfill_blocked`` in ``app.library_busy``, 35 lyrics tests
+still green): ``app.api.lyrics`` left BOTH sides of census 2 at once, 21 == 21,
+census 1 unchanged, gap list empty, and ``POST /api/lyrics/backfill`` still seen
+to raise 409 through the new helper. The count-based floor also survived that
+one, at 70 - it is only the OUT-of-reach moves above that it read as a contract
+change.
+
+ITS ONE GRANULARITY LIMIT, stated rather than hidden and measured rather than
+feared: the census is PER MODULE, so if a module's raises leave the scan's reach
+while the module keeps ONE reachable raise, both sides still list it and the
+census passes. The last row of the table above is exactly that case and it is
+the reason it is in the table: ``app.api.import_`` is a ROUTE module, so its own
+endpoints keep it reached even with the entry dropped, and what silently goes is
+the CROSS-MODULE edge into ``ensure_import_can_start`` from the two acquisition
+routes. No count saw that either (70, unchanged). It is covered instead by
+``test_the_scan_crosses_from_one_route_module_into_another``, which asserts that
+one ``_resolve_call`` edge directly - and that is the general remedy for this
+class: an edge the census cannot resolve to a whole module needs its own pin.
+
+The other instance of the same limit is the ``Depends(...)`` shape: an inline
+``raise HTTPException(...)`` turned into a shared dependency leaves the scan's
+reach, because the walk starts at the endpoint function and never reads its
+parameter defaults. MEASURED on ``app/api/events.py``, whose only two raises are
+its endpoint's two 503s::
+
+    both 503s moved into a Depends guard  -> census 2 RED, naming app.api.events
+                                             (old floor: RED at 69, blaming
+                                             "an operation stopped raising")
+    only ONE 503 moved, one left inline   -> census 2 GREEN (old floor: GREEN, 70)
+
+So the census converts the first case from a misattributed red into a red that
+names the module and the cause, and is exactly as blind as the count in the
+second. Closing the second needs the walk to enter parameter defaults, which is
+a change to ``_schema_operations``/``_raised_statuses``, not to this census.
 
 One more thing the equality does not pin today: the ``include_in_schema`` filter
 in ``_schema_operations``. There is no ``include_in_schema=False`` APIRoute in
@@ -100,7 +185,10 @@ with one exception noted below. Nothing is unresolvable, nothing is unscannable,
 and the gap list is EMPTY. There is no backlog of un-followed modules left, so
 there is no allowlist and nothing deferred; the way to keep it that way is to
 add any NEW module that raises on another module's route's behalf to
-``_FOLLOWED_MODULES`` in the same commit that creates it.
+``_FOLLOWED_MODULES`` in the same commit that creates it - which is now
+ENFORCED rather than requested: census 2 fails the day such a module exists
+unreached, and ``test_no_followed_module_entry_names_a_module_that_no_longer_exists``
+fails the day an entry here stops naming a file.
 
 A CALL FROM ONE ``app/api`` MODULE INTO ANOTHER is not a same-module call, so
 ``_resolve_call`` stops at it unless the target module is listed - the listing
@@ -122,11 +210,14 @@ Re-measure the whole class with::
     import pkgutil, app.api, tests.test_route_status_declarations as g
     g._FOLLOWED_MODULES |= {f"app.api.{m.name}" for m in pkgutil.iter_modules(app.api.__path__)}
     g._module_index.cache_clear()          # @cache on the AST parse
+    g._gaps.cache_clear()                  # @cache on the whole pass
     print(g._gaps().gaps)
 
 The one grep hit that is not followed is ``app/static_files.py``: its two 404s
 sit on an ``include_in_schema=False`` route, which ``_schema_operations``
-excludes because a ``responses`` entry there never reaches the spec at all.
+excludes because a ``responses`` entry there never reaches the spec at all. It
+is therefore also the single entry in ``_OUT_OF_SCHEMA_MODULES``, which excuses
+it from BOTH censuses for that one reason.
 
 WHAT THE SCAN STILL STRUCTURALLY CANNOT SEE. These are not a backlog - no
 setting of ``_FOLLOWED_MODULES`` reaches them, because the scan reads
@@ -149,16 +240,21 @@ A third shape is in scope but inert today: a status raised inside a
 ``Depends(...)`` dependency would be missed, since the walk starts at the
 endpoint function and never enters its parameter defaults. Checked at the same
 measurement - none of the seventeen dependencies this app injects raises an
-``HTTPException``, so nothing is hiding there right now.
+``HTTPException``, so nothing is hiding there right now. Census 2 covers this
+shape only at MODULE granularity: a dependency that is the sole raise in its
+module fails the census by name, one that joins a module already reached does
+not. See ITS ONE GRANULARITY LIMIT above.
 
 This guard checks that a status is PRESENT, not that its body schema is right:
 it reads response CODES out of the spec and nothing else. A status declared with
 the wrong model (``ErrorDetail`` for a nested ``{message, recovery}`` 500, say)
-passes here. ``app/models/errors.py`` is the rule for that half, and
-``tests/test_config_conflict_body_contract.py`` is the only place that half is
-currently ENFORCED - it joins the declared model for the config editor's CAS 409
-to the body the server really sends, which is what makes swapping that model
-fail a test.
+passes here. ``app/models/errors.py`` is the rule for that half, and two sibling
+tests ENFORCE it, both by joining a declared model to the body the server really
+sends (which is what makes swapping a model fail a test rather than a review):
+``tests/test_config_conflict_body_contract.py`` for the config editor's CAS 409,
+and ``tests/test_config_validation_body_contract.py`` for the 422 of BOTH config
+save routes. Every other status declared anywhere in the app still has only this
+file's presence check behind it.
 """
 
 from __future__ import annotations
@@ -168,11 +264,13 @@ import inspect
 import re
 import sys
 from functools import cache
+from pathlib import Path
 from typing import Final, NamedTuple
 
 from fastapi import routing
 from fastapi.routing import APIRoute
 
+from app import main as app_main
 from app.main import app
 
 #: Modules whose raises count as the raises of every route that calls into them.
@@ -220,35 +318,21 @@ _HTTP_METHODS: Final = frozenset(
     {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
 )
 
-#: Non-vacuity floor on how many operations the AST scan sees raise ANYTHING,
-#: and the ONLY assertion here that a source-level collapse (a router dropped
-#: from ``app/main.py``, or lost inside ``iter_route_contexts``) can trip - both
-#: sides of ``walked == in_spec`` lose such a router together, and the gap list
-#: goes empty rather than red. There is no external ground truth for it, so it
-#: is a minimum rather than an equality.
+#: The census's ONLY escape hatch: a module the source census finds on disk but
+#: which no operation in the generated schema can reach, with the reason it can
+#: never be on a route's path. An entry is a decision that has to survive review
+#: - never a way to quiet a module that has merely fallen out of the scan's
+#: reach, which is the failure the census exists to report.
 #:
-#: SET FROM MEASUREMENT, not from taste. Dropping each of the nineteen routers
-#: in turn (module docstring, MEASURED BLAST RADIUS) leaves between 56 and 70
-#: raising operations; the smallest real dent is ONE, from ``events``,
-#: ``lyrics`` or ``slskd``, each of which contributes a single raising
-#: operation. So the floor has to equal today's count, 70, or losing one of
-#: those three passes unnoticed - and at the old value of 50 every one of the
-#: nineteen did.
-#:
-#: Zero headroom is the price of that, and it is the right trade here because
-#: this number counts OPERATIONS THAT RAISE, not raises: moving a raise between
-#: an endpoint and a helper, adding one, or merging two into a single guard all
-#: leave it untouched. It moves only when an operation stops raising anything at
-#: all, which is a contract change worth a deliberate re-measure (print
-#: ``_gaps().with_raises``) rather than a silent pass.
-#:
-#: What no value can cover: ``health``, ``browse``, ``search`` and ``stats``
-#: have no raising operation between them, so dropping any of those four leaves
-#: the count at 70. Covering them needs a different assertion - a per-router
-#: census (every module that raises today still contributes a raising operation)
-#: would, and it would survive the app growing, which a single floor does not:
-#: five new raising routes and this one is slack again.
-_MIN_ROUTES_WITH_RAISES: Final = 70
+#: ``test_no_census_exemption_is_stale`` fails if an entry stops naming a module
+#: the census actually finds, so a rename cannot leave a rubber stamp behind.
+_OUT_OF_SCHEMA_MODULES: Final[dict[str, str]] = {
+    "app.static_files": (
+        "the SPA fallback route is registered with include_in_schema=False, so"
+        " neither it nor its two 404s can ever reach the generated spec;"
+        " _schema_operations excludes it rather than counting it as covered"
+    ),
+}
 
 
 class _ModuleIndex:
@@ -281,6 +365,102 @@ def _module_index(module_name: str) -> _ModuleIndex | None:
         return None
     with open(source_file, encoding="utf-8") as handle:
         return _ModuleIndex(module_name, ast.parse(handle.read()))
+
+
+class _SourceCensus(NamedTuple):
+    """What the ``app/`` SOURCE TREE says, enumerated independently of routing.
+
+    This is the census's ground truth, and it is deliberately read from the
+    FILESYSTEM rather than from ``sys.modules`` or from any route object: a
+    module that has been renamed, or that stopped being imported, still shows up
+    here under its new name. That independence is the whole point - both sides
+    of ``walked == in_spec`` come from one generator and lose a router together
+    (module docstring), whereas a directory listing cannot.
+    """
+
+    #: Every module under ``app/``, whatever it contains.
+    all_modules: frozenset[str]
+    #: Modules that decorate a function with ``@<something>.<http method>(...)``
+    #: - i.e. that declare route operations.
+    route_modules: frozenset[str]
+    #: Modules containing at least one ``raise HTTPException(...)`` that the
+    #: scan's own rules say escapes (same ``_status_of`` and ``_suppressed_raises``
+    #: the walk uses, so the two sides cannot disagree about what "raises" means).
+    raising_modules: frozenset[str]
+
+
+def _app_source_root() -> Path:
+    """The ``app/`` package directory, located from the imported package itself."""
+    source = app_main.__file__
+    assert source is not None, "app.main must have a source file for the census to read"
+    return Path(source).resolve().parent
+
+
+def _module_name_of(path: Path, root: Path) -> str:
+    """``app/beets/cover.py`` -> ``app.beets.cover`` (packages lose ``__init__``)."""
+    parts = path.relative_to(root).with_suffix("").parts
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join((root.name, *parts))
+
+
+def _declares_route_operations(tree: ast.Module) -> bool:
+    """True if some function in ``tree`` is decorated ``@router.get(...)`` & co.
+
+    Matches the ATTRIBUTE, so ``@router.post``, ``@app.get`` and any other
+    receiver all count; ``_HTTP_METHODS`` is the same set the spec side reads.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            called = decorator.func if isinstance(decorator, ast.Call) else decorator
+            if isinstance(called, ast.Attribute) and called.attr in _HTTP_METHODS:
+                return True
+    return False
+
+
+def _raises_a_tracked_status(tree: ast.Module) -> bool:
+    """True if some function in ``tree`` raises a status that escapes it.
+
+    Uses the walk's own predicates on purpose: a raise the walk would drop as
+    suppressed must not count here either, or the census would demand reach for
+    a status that never leaves the process.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        skip = _suppressed_raises(node)
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Raise) and inner.lineno not in skip:
+                if _status_of(inner) is not None:
+                    return True
+    return False
+
+
+@cache
+def _source_census() -> _SourceCensus:
+    """Walk ``app/**/*.py`` on disk and classify every module in it."""
+    root = _app_source_root()
+    all_modules: set[str] = set()
+    route_modules: set[str] = set()
+    raising_modules: set[str] = set()
+    for path in sorted(root.rglob("*.py")):
+        module_name = _module_name_of(path, root)
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        all_modules.add(module_name)
+        if _declares_route_operations(tree):
+            route_modules.add(module_name)
+        if _raises_a_tracked_status(tree):
+            raising_modules.add(module_name)
+    return _SourceCensus(
+        frozenset(all_modules), frozenset(route_modules), frozenset(raising_modules)
+    )
+
+
+def _expected_modules(modules: frozenset[str]) -> list[str]:
+    """A source-census set as the sorted list the walk is required to reproduce."""
+    return sorted(modules - set(_OUT_OF_SCHEMA_MODULES))
 
 
 def _called_names(node: ast.AST) -> set[str]:
@@ -399,11 +579,16 @@ class _ScanResult(NamedTuple):
     static int, ``unscannable`` is a function body the walk could not read at
     all - which would otherwise make the operation contribute zero raises and
     report zero gaps, silently.
+
+    ``raising_modules`` is where the statuses CAME FROM - the census side. An
+    entry means this operation's call graph really reached a raise in that
+    module, which is what the source census is compared against.
     """
 
     statuses: set[int]
     unresolved: list[str]
     unscannable: list[str]
+    raising_modules: set[str]
 
 
 def _raised_statuses(module_name: str, function_name: str) -> _ScanResult:
@@ -411,6 +596,7 @@ def _raised_statuses(module_name: str, function_name: str) -> _ScanResult:
     statuses: set[int] = set()
     unresolved: list[str] = []
     unscannable: list[str] = []
+    raising_modules: set[str] = set()
     entry = (module_name, function_name)
     seen: set[tuple[str, str]] = set()
     pending: list[tuple[str, str]] = [entry]
@@ -442,15 +628,21 @@ def _raised_statuses(module_name: str, function_name: str) -> _ScanResult:
             if not isinstance(node, ast.Raise) or node.lineno in skip:
                 continue
             status = _status_of(node)
+            if status is None:
+                continue
+            # Reached a raise this scan tracks - record the module, whether or
+            # not its status resolves, because reach is what the census asks
+            # about and an unresolved raise is still a raise the walk can see.
+            raising_modules.add(current[0])
             if isinstance(status, int):
                 statuses.add(status)
-            elif isinstance(status, str):
+            else:
                 unresolved.append(f"{current[0]}.{current[1]}: {status}")
         for name in _called_names(func):
             target = _resolve_call(index, name)
             if target is not None and target not in seen:
                 pending.append(target)
-    return _ScanResult(statuses, unresolved, unscannable)
+    return _ScanResult(statuses, unresolved, unscannable, raising_modules)
 
 
 class _Operation(NamedTuple):
@@ -527,21 +719,38 @@ class _GapReport(NamedTuple):
     #: ``(METHOD, path)`` the AST walk covered, and the same from the spec.
     walked: list[tuple[str, str]]
     in_spec: list[tuple[str, str]]
+    #: Operations seen to raise anything. NOT asserted on any more - it was the
+    #: old ``_MIN_ROUTES_WITH_RAISES`` floor's metric and is kept as the
+    #: diagnostic the module docstring's measurements are quoted from.
     with_raises: int
+    #: THE CENSUS, walk side. Modules that defined at least one operation the
+    #: schema exposes, and modules some operation's call graph reached a raise
+    #: in. Both are compared against ``_source_census()``, which reads the same
+    #: facts off the filesystem instead of off the router.
+    route_modules: list[str]
+    raising_modules: list[str]
 
 
+@cache
 def _gaps() -> _GapReport:
-    """Scan every operation in the app and join it to the live spec."""
+    """Scan every operation in the app and join it to the live spec.
+
+    Cached: three tests below assert on different parts of one pass, and the
+    walk is pure (AST off disk plus ``app.openapi()``, itself cached).
+    Monkeypatching anything it reads means ``_gaps.cache_clear()``.
+    """
     spec = app.openapi()
     gaps: list[str] = []
     unresolved: list[str] = []
     unscannable: list[str] = []
     operations = _schema_operations()
     with_raises = 0
+    raising_modules: set[str] = set()
     for method, path, module_name, function_name in operations:
         result = _raised_statuses(module_name, function_name)
         if result.statuses:
             with_raises += 1
+        raising_modules |= result.raising_modules
         unresolved.extend(f"{method} {path}: {line}" for line in result.unresolved)
         unscannable.extend(f"{method} {path}: {line}" for line in result.unscannable)
         declared = _declared_statuses(spec, path, method)
@@ -550,7 +759,16 @@ def _gaps() -> _GapReport:
                 continue
             gaps.append(f"{method} {path}: {status} raised but not declared")
     walked = sorted((operation.method, operation.path) for operation in operations)
-    return _GapReport(gaps, unresolved, unscannable, walked, _spec_operations(spec), with_raises)
+    return _GapReport(
+        gaps,
+        unresolved,
+        unscannable,
+        walked,
+        _spec_operations(spec),
+        with_raises,
+        sorted({operation.module for operation in operations}),
+        sorted(raising_modules),
+    )
 
 
 def test_every_status_a_route_can_raise_is_declared_in_the_live_spec() -> None:
@@ -561,21 +779,14 @@ def test_every_status_a_route_can_raise_is_declared_in_the_live_spec() -> None:
     # side (as every router did when FastAPI 0.141 turned ``app.routes`` into
     # ``_IncludedRouter`` objects) reports zero gaps for every route in it,
     # which is the failure mode a floor of "at least N" cannot see. A router
-    # that drops out of BOTH sides is invisible here by construction - the
-    # module docstring says what covers that and how weakly.
+    # that drops out of BOTH sides is invisible HERE by construction; the two
+    # census tests below are what cover that, from the filesystem.
     assert report.walked == report.in_spec, (
         "the AST walk and the live spec disagree about which operations exist,"
         " so some route is being checked against nothing:\n  walked but not in the spec: "
         + str(sorted(set(report.walked) - set(report.in_spec)))
         + "\n  in the spec but not walked: "
         + str(sorted(set(report.in_spec) - set(report.walked)))
-    )
-    assert report.with_raises >= _MIN_ROUTES_WITH_RAISES, (
-        f"only {report.with_raises} operations were seen to raise anything, against"
-        f" {_MIN_ROUTES_WITH_RAISES} expected: the AST scan is broken, or a router"
-        " stopped being included and took its raises out of both this walk and the"
-        " spec together, or an operation legitimately stopped raising - in which"
-        " case re-measure and lower the constant deliberately"
     )
     assert not report.unscannable, (
         "the scan could not read the body of a handler it was asked to walk, so that"
@@ -589,6 +800,153 @@ def test_every_status_a_route_can_raise_is_declared_in_the_live_spec() -> None:
     assert not report.gaps, (
         "these routes raise a status the generated client has no type for"
         " (see app/models/errors.py for how to declare it):\n  " + "\n  ".join(sorted(report.gaps))
+    )
+
+
+def test_every_module_that_declares_routes_still_reaches_the_walk() -> None:
+    """CENSUS 1 of 2: no router may vanish from the schema without a failure.
+
+    Every module under ``app/`` that decorates a function with an HTTP-method
+    decorator must contribute at least one operation to the walk. Drop an
+    ``include_router`` call from ``app/main.py``, rename a route module without
+    re-including it, or lose the routes inside ``iter_route_contexts``, and the
+    module is still on disk with its decorators while the walk no longer names
+    it - so this fails, by name.
+
+    This is the ONLY assertion in the file that can see ``browse``, ``health``,
+    ``search`` and ``stats`` disappear: they contain no raising operation, so no
+    count of raising operations - at any value - moves when they go (module
+    docstring, MEASURED BLAST RADIUS). It is also the half that survives growth:
+    a new router is added to the expected set by existing, not by anyone
+    remembering to raise a constant.
+    """
+    walked = _gaps().route_modules
+    expected = _expected_modules(_source_census().route_modules)
+    assert walked == expected, (
+        "COVERAGE MOVED OUT OF SCAN RANGE - suspect that FIRST. These modules declare"
+        " route operations in app/ but contribute none to the walk, so nothing in them"
+        " is checked against the contract at all:\n  "
+        + "\n  ".join(sorted(set(expected) - set(walked)))
+        + "\n  (and, the other way, walked but declaring no route on disk - which would"
+        " mean this census's own decorator rule is wrong: "
+        + str(sorted(set(walked) - set(expected)))
+        + ")\nLikeliest cause: an include_router call was dropped from app/main.py, or a"
+        " route module was renamed and not re-included. Fix the wiring. Deleting the"
+        " module from the census instead re-blinds this guard to every route in it."
+    )
+
+
+def test_every_module_that_raises_on_a_routes_behalf_is_still_in_scan_range() -> None:
+    """CENSUS 2 of 2: no raise may leave the scan's reach without a failure.
+
+    Every module under ``app/`` that raises an ``HTTPException`` the scan would
+    track must be a module some operation's call graph actually reaches. This is
+    what replaced ``_MIN_ROUTES_WITH_RAISES``, a floor pinned to the measured
+    count of raising operations. That constant's own comment claimed the count
+    "moves only when an operation stops raising anything at all". MEASURED, that
+    is false: reach depends on ``_FOLLOWED_MODULES``, so dropping each followed
+    module in turn (equivalently: renaming it, or extracting a raising helper
+    into a NEW module, and not relisting it) took the count to 67-70 with an
+    EMPTY gap list. Renaming ``app/beets/completeness.py`` alone - a pure module
+    move, no contract change - failed the floor at 69, and the failure message
+    invited the reader to "re-measure and lower the constant", which would have
+    blinded the scan to that module's 404 permanently. For ``config_editor`` it
+    would have blinded three operations at once.
+
+    The census cannot be paid off that way: the expected set is read off the
+    FILESYSTEM, so a renamed module reappears under its new name and stays
+    expected until it is genuinely back in reach.
+
+    And it stays quiet when raises merely MOVE within reach: a raise pushed from
+    an endpoint into a same-module helper, into ``app.library_busy``, or into any
+    other followed module leaves both sides equal - the module it left drops out
+    of the expected set and the reached set together, because both sides are
+    computed with the same ``_status_of``/``_suppressed_raises`` rules. Measured
+    on a real refactor of ``app/api/lyrics.py``; see the module docstring.
+
+    It is PER MODULE, so it cannot see coverage leave a module that keeps one
+    reachable raise - the module docstring's ITS ONE GRANULARITY LIMIT names the
+    two shapes that hit this (a cross-``app/api`` edge, and a ``Depends(...)``
+    guard sharing a module with other raises) and what pins each instead.
+    """
+    reached = _gaps().raising_modules
+    expected = _expected_modules(_source_census().raising_modules)
+    assert reached == expected, (
+        "COVERAGE MOVED OUT OF SCAN RANGE - suspect that FIRST. These modules raise an"
+        " HTTPException in app/ that the scan's own rules say escapes, but no route's"
+        " call-graph walk reaches them, so every status they raise is now invisible here"
+        " and can never be reported as an undeclared gap:\n  "
+        + "\n  ".join(sorted(set(expected) - set(reached)))
+        + "\n  (and, the other way, reached by the walk but not seen to raise on disk -"
+        " which would mean the two sides disagree about what a raise is: "
+        + str(sorted(set(reached) - set(expected)))
+        + ")\nLikeliest causes, in order: (1) a module in _FOLLOWED_MODULES was RENAMED or"
+        " MOVED and the set still names the old path; (2) a raising helper was extracted"
+        " into a NEW module nobody added to _FOLLOWED_MODULES; (3) an inline raise became"
+        " a Depends(...) guard, which the walk never enters because it starts at the"
+        " endpoint function and does not read its parameter defaults. Restore the reach."
+        " An _OUT_OF_SCHEMA_MODULES entry is for a module that can never be on a route's"
+        " path at all, and needs the reason written down."
+    )
+
+
+def test_no_followed_module_entry_names_a_module_that_no_longer_exists() -> None:
+    """The rename, caught from the other side: a stale ``_FOLLOWED_MODULES`` name.
+
+    ``_resolve_call`` compares an import's source module against this set by
+    STRING, so an entry that no longer names a file silently stops following
+    anything - no error, no gap, just a quieter scan. Census 2 catches the new
+    name being out of reach; this catches the old name still being listed, which
+    is the same edit and the more legible message.
+    """
+    missing = sorted(_FOLLOWED_MODULES - _source_census().all_modules)
+    assert not missing, (
+        "COVERAGE MOVED OUT OF SCAN RANGE - suspect that FIRST. _FOLLOWED_MODULES names"
+        " modules that are not in app/ any more, so _resolve_call stops at every call"
+        " into them and their raises are invisible:\n  " + "\n  ".join(missing)
+    )
+
+
+def test_no_census_exemption_is_stale() -> None:
+    """An exemption must keep naming a module the census would otherwise flag.
+
+    Otherwise the entry is a rubber stamp: it would go on excusing a name that
+    no longer exists while the module it used to describe, renamed, is excused
+    by nobody and flagged by nobody.
+    """
+    census = _source_census()
+    classified = census.route_modules | census.raising_modules
+    stale = sorted(set(_OUT_OF_SCHEMA_MODULES) - classified)
+    assert not stale, (
+        "these _OUT_OF_SCHEMA_MODULES entries no longer name a module that declares a"
+        " route or raises a status, so they excuse nothing - drop them, or repoint them"
+        " at whatever the module was renamed to:\n  " + "\n  ".join(stale)
+    )
+
+
+def test_the_source_census_discriminates() -> None:
+    """Anti-vacuity for both censuses, asserted on SHAPE so it cannot rot.
+
+    A census whose expected set is empty - ``rglob`` aimed at the wrong
+    directory, or a classifier that stopped matching - would turn both
+    equalities into a complaint about the WALK rather than about itself. A
+    classifier that matched everything would be just as useless in the other
+    direction. So: both sets non-empty, both PROPER subsets of the tree, at
+    least one raising module outside ``app/api`` (the shared adapters are the
+    ones a route file's own text cannot show), and at least one route module
+    that raises nothing (the browse/health/search/stats class, which is the
+    whole reason census 1 exists). No module is named, so a legitimate rename
+    moves this test's ground truth with it instead of failing it.
+    """
+    census = _source_census()
+    assert "app.main" in census.all_modules, "the census must be reading the app/ tree"
+    assert census.route_modules < census.all_modules, "the decorator rule must discriminate"
+    assert census.raising_modules < census.all_modules, "the raise rule must discriminate"
+    assert any(not name.startswith("app.api.") for name in census.raising_modules), (
+        "the raise rule must reach the shared adapters outside app/api"
+    )
+    assert census.route_modules - census.raising_modules, (
+        "a router that raises nothing is exactly what census 1 exists to cover"
     )
 
 

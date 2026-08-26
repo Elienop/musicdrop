@@ -62,8 +62,10 @@ _SAVE_CAS_CONFLICT_RESPONSE: Final = {
 #: which is what an undeclared 422 would document: ``config_editor.save`` raises
 #: with a LIST of ``ValidationErrorItem`` rows whose ``loc`` is a plain string
 #: and which carry ``line``/``column`` - two fields the validation shape does not
-#: have and the editor's CodeMirror gutter reads (SettingsBeetsPage.tsx). The
-#: entry is an anyOf because FastAPI's own shape is ALSO reachable here: the
+#: have. The editor's gutter consumes the same row shape from
+#: ``POST /api/config/validate``'s 200; no live client reads this 422 body today,
+#: but declaring it as the validation model would mistype the generated client.
+#: The entry is an anyOf because FastAPI's own shape is ALSO reachable here: the
 #: route takes a ``SaveRequest`` body, so a malformed request never reaches the
 #: adapter and answers with the validation shape instead.
 _SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
