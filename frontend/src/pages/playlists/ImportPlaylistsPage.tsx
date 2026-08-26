@@ -284,6 +284,12 @@ export function ImportPlaylistsPage() {
 
         <ul className="flex flex-col gap-3">
           {preview.playlists.map((playlist, index) => (
+            // `preview_id` (not the index) is the row identity. No test can
+            // observe this: the review list unmounts wholesale between
+            // previews, so an index key behaves identically today. It stays
+            // because the moment this list is ever filtered, sorted, or
+            // partially refreshed, an index key silently pairs one playlist's
+            // card state with another's data.
             <li key={playlist.preview_id}>
               <PlaylistReview
                 playlist={playlist}
