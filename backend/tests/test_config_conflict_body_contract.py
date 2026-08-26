@@ -189,5 +189,8 @@ def test_the_other_error_models_reject_the_conflict_body(
     response = client.post("/api/config/save", json=_save_request("/api/config/save", on_disk))
     assert response.status_code == 409, f"expected the CAS conflict, got {response.text}"
 
+    # `response.json()` is hoisted out so the block holds exactly one call that
+    # can throw - otherwise a decoding failure would read as a validation one.
+    body = response.json()
     with pytest.raises(ValidationError):
-        model.model_validate(response.json())
+        model.model_validate(body)
