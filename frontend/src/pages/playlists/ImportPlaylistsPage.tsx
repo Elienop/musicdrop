@@ -284,7 +284,7 @@ export function ImportPlaylistsPage() {
 
         <ul className="flex flex-col gap-3">
           {preview.playlists.map((playlist, index) => (
-            <li key={index}>
+            <li key={playlist.preview_id}>
               <PlaylistReview
                 playlist={playlist}
                 name={names.get(index) ?? playlist.name}
@@ -519,15 +519,24 @@ function PlaylistReview({
   return (
     <Card>
       <details>
-        <summary className="focus-ring flex cursor-pointer list-none items-center justify-between gap-3 rounded-xl px-4 py-3">
+        <summary
+          className="focus-ring flex cursor-pointer list-none items-center justify-between gap-3 rounded-xl px-4 py-3"
+          // Clicks on the inner controls (rename editor, pencil, filter) must
+          // not toggle the <details>. The guard lives HERE — on the natively
+          // interactive summary — so the marked regions below carry no click
+          // handlers of their own (S6848/S1082). Nothing inside a data-no-toggle
+          // region may rely on click default behavior (no checkboxes, radios,
+          // labels, or links) — preventDefault would silently break them for
+          // mouse AND keyboard.
+          onClick={(e) => {
+            if ((e.target as HTMLElement).closest("[data-no-toggle]")) e.preventDefault();
+          }}
+        >
           {editingName ? (
-            // The editor sits inside <summary>, so its clicks preventDefault —
-            // otherwise focusing the input or hitting save/cancel would toggle
-            // the <details> collapse.
-            <span
-              className="flex min-w-0 flex-1 items-center gap-2"
-              onClick={(e) => e.preventDefault()}
-            >
+            // The editor sits inside <summary>; the summary's click guard
+            // (data-no-toggle) keeps focusing the input or hitting save/cancel
+            // from toggling the <details> collapse.
+            <span className="flex min-w-0 flex-1 items-center gap-2" data-no-toggle="">
               <Input
                 value={draftName}
                 onChange={(e) => setDraftName(e.target.value)}
@@ -559,9 +568,10 @@ function PlaylistReview({
               <span className="min-w-0 truncate font-medium" title={name}>
                 {name}
               </span>
-              {/* The pencil preventDefaults too — a rename shouldn't toggle the
-                  card open/closed. The name text itself still toggles. */}
-              <span className="shrink-0" onClick={(e) => e.preventDefault()}>
+              {/* The pencil is a no-toggle region too — a rename shouldn't
+                  toggle the card open/closed. The name text itself still
+                  toggles. */}
+              <span className="shrink-0" data-no-toggle="">
                 <Button
                   size="icon-sm"
                   variant="ghost"
@@ -580,10 +590,10 @@ function PlaylistReview({
             <span className="text-muted-foreground text-sm tabular-nums">
               {matched} matched
             </span>
-            {/* The filter lives INSIDE <summary> now, wrapped so its clicks
-                preventDefault — otherwise activating an option would toggle the
-                <details> collapse instead of switching the view. */}
-            <span onClick={(e) => e.preventDefault()}>
+            {/* The filter lives INSIDE <summary>; the summary's click guard
+                keeps activating an option from toggling the <details> collapse
+                instead of switching the view. */}
+            <span data-no-toggle="">
               <SegmentedControl
                 aria-label="Filter entries"
                 value={view}

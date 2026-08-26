@@ -672,6 +672,7 @@ async def import_preview_endpoint(
             entries = match_entries(index, playlist.entries)
             previews.append(
                 PlaylistImportPreview(
+                    preview_id=uuid.uuid4().hex,
                     name=playlist.name,
                     entries=entries,
                     matched_count=sum(e.status == "matched" for e in entries),

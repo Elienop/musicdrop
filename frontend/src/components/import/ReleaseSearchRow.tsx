@@ -103,7 +103,7 @@ export function ReleaseSearchRow({
             disabled={busy}
             className="size-4"
           />
-          Not a compilation
+          <span>Not a compilation</span>
         </label>
         <Popover>
           <PopoverTrigger asChild>

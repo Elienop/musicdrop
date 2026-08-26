@@ -74,6 +74,7 @@ describe("tracklist rows", () => {
       makeExisting({
         tracks: [
           {
+            item_id: 1,
             track: 1,
             disc: null,
             title: "A Question of Live",
@@ -81,6 +82,7 @@ describe("tracklist rows", () => {
             bitrate_kbps: 1000,
           },
           {
+            item_id: 2,
             track: null,
             disc: null,
             title: null,

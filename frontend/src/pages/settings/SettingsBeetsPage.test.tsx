@@ -635,6 +635,7 @@ describe("SettingsPage", () => {
     const modal = await screen.findByRole("dialog", {
       name: /file changed on disk/i,
     });
+    expect(modal).toHaveFocus();
     expect(modal).toBeInTheDocument();
     expect(
       within(modal).getByRole("button", { name: /reload \(drop my edits\)/i }),

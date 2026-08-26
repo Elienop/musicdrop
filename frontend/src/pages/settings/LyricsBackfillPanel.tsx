@@ -90,7 +90,7 @@ export function LyricsBackfillPanel() {
               onChange={(e) => setRecheckMisses(e.target.checked)}
               className="size-4"
             />
-            Re-check tracks already found to have no lyrics
+            <span>Re-check tracks already found to have no lyrics</span>
           </label>
           {albumFetchRunning && (
             <span className="text-muted-foreground text-sm">A lyrics fetch is in progress.</span>

@@ -66,7 +66,7 @@ describe("ImportPlaylistsPage", () => {
       http.post(PREVIEW_URL, () =>
         HttpResponse.json({
           playlists: [
-            { name: "Road", matched_count: 1, ambiguous_count: 0, unmatched_count: 0, entries: [entry()] },
+            { name: "Road", preview_id: "pv-1", matched_count: 1, ambiguous_count: 0, unmatched_count: 0, entries: [entry()] },
           ],
         }),
       ),
@@ -94,6 +94,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "Road",
+              preview_id: "pv-2",
               matched_count: 1,
               ambiguous_count: 1,
               unmatched_count: 0,
@@ -148,6 +149,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "UK Pop Fever",
+              preview_id: "pv-3",
               matched_count: 0,
               ambiguous_count: 0,
               unmatched_count: 2,
@@ -204,6 +206,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "Road",
+              preview_id: "pv-4",
               matched_count: 0,
               ambiguous_count: 1,
               unmatched_count: 0,
@@ -251,6 +254,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "Road",
+              preview_id: "pv-5",
               matched_count: 0,
               ambiguous_count: 0,
               unmatched_count: 1,
@@ -316,6 +320,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "Road",
+              preview_id: "pv-6",
               matched_count: 0,
               ambiguous_count: 1,
               unmatched_count: 0,
@@ -333,6 +338,7 @@ describe("ImportPlaylistsPage", () => {
             },
             {
               name: "Road",
+              preview_id: "pv-7",
               matched_count: 0,
               ambiguous_count: 0,
               unmatched_count: 1,
@@ -444,6 +450,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "Road",
+              preview_id: "pv-8",
               matched_count: 1,
               ambiguous_count: 0,
               unmatched_count: 0,
@@ -598,6 +605,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "Road",
+              preview_id: "pv-9",
               matched_count: 1,
               ambiguous_count: 0,
               unmatched_count: 0,
@@ -650,6 +658,7 @@ describe("ImportPlaylistsPage", () => {
         return HttpResponse.json({
           playlists: ["Alpha", "Beta"].map((name) => ({
             name,
+            preview_id: `pv-${name}`,
             matched_count: 1,
             ambiguous_count: 0,
             unmatched_count: 0,
@@ -719,6 +728,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "Road",
+              preview_id: "pv-11",
               matched_count: 0,
               ambiguous_count: 0,
               unmatched_count: 1,
@@ -747,6 +757,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "Road",
+              preview_id: "pv-12",
               matched_count: 0,
               ambiguous_count: 1,
               unmatched_count: 0,
@@ -790,6 +801,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "Road",
+              preview_id: "pv-13",
               matched_count: 0,
               ambiguous_count: 1,
               unmatched_count: 1,
@@ -835,6 +847,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "Road",
+              preview_id: "pv-14",
               matched_count: 1,
               ambiguous_count: 0,
               unmatched_count: 1,
@@ -881,6 +894,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "Road",
+              preview_id: "pv-15",
               matched_count: 0,
               ambiguous_count: 1,
               unmatched_count: 0,
@@ -926,6 +940,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "Road",
+              preview_id: "pv-16",
               matched_count: 1,
               ambiguous_count: 0,
               unmatched_count: 0,
@@ -952,9 +967,19 @@ describe("ImportPlaylistsPage", () => {
     // Pencil → input → save, the detail-page rename idiom.
     await userEvent.click(await screen.findByRole("button", { name: /rename road/i }));
     const input = screen.getByRole("textbox", { name: /playlist name/i });
+    // Renaming must not toggle the card. NOTE: this pins the structural
+    // invariant only — jsdom never toggles <details> for clicks on summary
+    // CHILDREN, so the summary's click guard is invisible here and this
+    // assertion cannot kill a neutered guard. The guard itself is proven by
+    // the real-browser pass, not this test.
+    const details = screen
+      .getByRole("textbox", { name: /playlist name/i })
+      .closest("details") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
     await userEvent.clear(input);
     await userEvent.type(input, "Highway");
     await userEvent.click(screen.getByRole("button", { name: /save name/i }));
+    expect(details.open).toBe(false);
 
     // The renamed title shows on the card…
     expect(await screen.findByText("Highway")).toBeInTheDocument();
@@ -972,6 +997,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "Road",
+              preview_id: "pv-17",
               matched_count: 1,
               ambiguous_count: 0,
               unmatched_count: 0,
@@ -1019,6 +1045,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "UK Pop Fever",
+              preview_id: "pv-18",
               matched_count: 1,
               ambiguous_count: 0,
               unmatched_count: 0,
@@ -1067,6 +1094,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "Road",
+              preview_id: "pv-19",
               matched_count: 1,
               ambiguous_count: 0,
               unmatched_count: 0,
@@ -1105,6 +1133,7 @@ describe("ImportPlaylistsPage", () => {
           playlists: [
             {
               name: "Road",
+              preview_id: "pv-20",
               matched_count: 1,
               ambiguous_count: 0,
               unmatched_count: 1,

@@ -57,6 +57,9 @@ class ImportEntryPreview(BaseModel):
 
 
 class PlaylistImportPreview(BaseModel):
+    # A per-response client key (minted uuid): preview playlists have no stored
+    # identity and names can collide, so list rendering must not key on index.
+    preview_id: str
     name: str
     entries: list[ImportEntryPreview]
     matched_count: int
