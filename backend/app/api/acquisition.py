@@ -42,15 +42,17 @@ from app.wire import AmbiguousDisplayName, resolve_display_path
 router = APIRouter(tags=["acquisition"])
 
 #: Both import-starting routes below refuse with the SAME 409 for the same two
-#: reasons: ``ensure_import_can_start`` (a beets swap or a library backfill owns
-#: the library) and the registry's single-slot ``RuntimeError`` at ``reg.start``.
+#: reasons: ``ensure_import_can_start`` (a beets swap, a library backfill, or
+#: a disk sync owns the library) and the registry's single-slot ``RuntimeError``
+#: at ``reg.start``.
 #: Declared with a named model because a description-only entry would drop the
 #: ``content`` block - see app/models/errors.py.
 _IMPORT_SLOT_TAKEN_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
         "An import is already running, or a beets swap (such as a config Apply or"
-        " duplicate resolve) or a library backfill holds the library."
+        " duplicate resolve) or a lyrics backfill, an artist-art backfill, a"
+        " reorganize backfill, or a disk sync holds the library."
     ),
 }
 
@@ -173,7 +175,8 @@ async def list_inbox_items(request: Request) -> InboxListing:
             "model": ErrorDetail,
             "description": (
                 "An import is already running, or a beets swap (such as a config Apply or"
-                " duplicate resolve) or a library backfill holds the library, or"
+                " duplicate resolve) or a lyrics backfill, an artist-art backfill, a"
+                " reorganize backfill, or a disk sync holds the library, or"
                 " two inbox folders display under the same name."
             ),
         },

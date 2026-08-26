@@ -95,7 +95,7 @@ def ensure_import_can_start(request: Request) -> None:
     never two threads in beets at once — and the importer spawns its own worker
     thread that would otherwise race a resolve/Apply mutating the same Library +
     SQLite. Also refuses while a library backfill (lyrics / artist-art /
-    reorganize) holds the slot. Best-effort `asyncio.Lock.locked()`, the same
+    reorganize) or a disk sync holds the slot. Best-effort `asyncio.Lock.locked()`, the same
     single-user TOCTOU posture as config_editor.apply's import gate.
     """
     lock = getattr(request.app.state, "beets_swap_lock", None)
@@ -129,7 +129,8 @@ def ensure_import_can_start(request: Request) -> None:
             "model": ErrorDetail,
             "description": (
                 "An import is already running, or a beets swap (such as a config Apply or"
-                " duplicate resolve) or a library backfill holds the library."
+                " duplicate resolve) or a lyrics backfill, an artist-art backfill, a"
+                " reorganize backfill, or a disk sync holds the library."
             ),
         },
         # The copy-in-library refusal is a well-formed request the importer

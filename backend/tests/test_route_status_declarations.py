@@ -15,25 +15,96 @@ What this test resolves, and therefore what it can catch:
 - raises in the endpoint function itself, in same-module helper functions the
   endpoint calls (``_gate``, ``_child_or_404``, ``ensure_import_can_start``, ...),
   transitively;
-- raises in the shared adapter modules named in ``_FOLLOWED_MODULES``, whose
-  raises are the ones most easily forgotten because they are not in the route
-  file at all (``install_cover_op``, ``apply_album_edit_op``,
-  ``resolve_duplicates_op``, ``apply_artist_rename_op``,
-  ``start_album_lyrics_op``, ``missing_report_op``, ``delete_album_op``,
-  ``config_editor.save``, ``raise_if_library_busy``).
+- raises in the modules named in ``_FOLLOWED_MODULES``, whose raises are the
+  ones most easily forgotten because they are not in the route file at all
+  (``install_cover_op``, ``apply_album_edit_op``, ``resolve_duplicates_op``,
+  ``apply_artist_rename_op``, ``start_album_lyrics_op``, ``missing_report_op``,
+  ``delete_album_op``, ``config_editor.save``, ``raise_if_library_busy``, and
+  ``ensure_import_can_start`` - which is a same-module helper for
+  ``POST /api/import`` but a cross-module one for the acquisition routes).
 
 It is built against ``app.openapi()`` - the LIVE spec - not the tracked
 ``frontend/openapi.json``, so it cannot pass on a stale artefact.
 
-COVERAGE, re-measured 2026-08-27 by running this test rather than by hand:
-``_FOLLOWED_MODULES`` now names EVERY module outside ``app/api`` that raises an
-``HTTPException`` on a route's behalf - the nine there plus the route modules
-themselves are the whole set that ``grep -rln 'raise HTTPException' app/``
-returns, with one exception noted below. Nothing is unresolvable, nothing is
-unscannable, and the gap list is EMPTY. There is no backlog of un-followed
-adapters left, so there is no allowlist and nothing deferred; the way to keep it
-that way is to add any NEW shared module that raises on a route's behalf to
+WHAT ``walked == in_spec`` DOES AND DOES NOT PIN. Both sides of that equality
+come from the SAME generator: ``_schema_operations`` calls
+``routing.iter_route_contexts(app.routes)``, and so does FastAPI's
+``get_openapi``. So it is not an independent census of the app's routes - it is
+a check on THIS TEST'S OWN filtering of that generator's output. That is still
+the regression it was written for and it does catch it: FastAPI 0.141 turned
+``app.routes`` into ``_IncludedRouter`` objects, the old ``isinstance(...,
+APIRoute)`` filter matched nothing, and the walk silently went to zero while the
+spec stayed at 112. Measured on this tree: a mutant that drops the
+``/api/albums`` routes from ``_schema_operations`` alone fails with
+``walked 100 != in_spec 112``.
+
+What it CANNOT catch is a collapse in ``iter_route_contexts`` itself, or
+anything upstream of it, because both sides then lose the same operations
+together. Measured: patching that one generator to skip every ``/api/albums``
+route gives ``walked == in_spec == 100`` with an empty gap list - an entire
+router gone and this test green. A router deleted from ``app/main.py`` is the
+same shape, and no in-process enumeration can see it: the routes genuinely do
+not exist.
+
+Deriving one side from the tracked ``frontend/openapi.json`` was considered and
+rejected: that file is this same app's output (``scripts/dump_openapi.py``
+writes ``app.openapi()``), and ``tests/test_openapi_spec_guard.py`` already
+asserts it equals the live spec. It would flag a source-level collapse only
+until the mandatory regeneration step ran, after which the lost paths would be
+gone from the tracked file too and this test would go green again - the same
+signal ``test_openapi_spec_guard`` already owns, dying to the same command,
+while making THIS guard fail on every legitimate mid-work spec edit. It moves
+the coupling; it does not remove it.
+
+So ``_MIN_ROUTES_WITH_RAISES`` is the only backstop against a source-level
+collapse, and it is a weak one: in the measurement above, losing the twelve
+``/api/albums`` operations took the count from 70 to 59 - still over the floor
+of 50. Read it as a tripwire for a near-total collapse, not for a missing
+router.
+
+One more thing the equality does not pin today: the ``include_in_schema`` filter
+in ``_schema_operations``. There is no ``include_in_schema=False`` APIRoute in
+the test process at all - ``app/static_files.py``'s SPA fallback is registered
+only when ``mount_static`` finds a built ``index.html``, which the test
+environment does not have - so removing that filter changes nothing (measured:
+``walked == in_spec == 112`` either way). It becomes load-bearing the moment a
+built SPA is present when this test runs: the walk would then reach a fallback
+route the spec deliberately omits, and only that filter keeps the two sides
+equal.
+
+COVERAGE, re-measured 2026-08-28 by running this test rather than by hand:
+``_FOLLOWED_MODULES`` names EVERY module that raises an ``HTTPException`` on
+some route's behalf from outside that route's own module. Nine are shared
+adapters outside ``app/api``; the tenth, ``app.api.import_``, is a ROUTE module
+- see the cross-module note below. Together with the route modules themselves
+they are the whole set that ``grep -rln 'raise HTTPException' app/`` returns,
+with one exception noted below. Nothing is unresolvable, nothing is unscannable,
+and the gap list is EMPTY. There is no backlog of un-followed modules left, so
+there is no allowlist and nothing deferred; the way to keep it that way is to
+add any NEW module that raises on another module's route's behalf to
 ``_FOLLOWED_MODULES`` in the same commit that creates it.
+
+A CALL FROM ONE ``app/api`` MODULE INTO ANOTHER is not a same-module call, so
+``_resolve_call`` stops at it unless the target module is listed - the listing
+rule above is about ``app/api`` too, not only about shared adapters.
+``app/api/acquisition.py`` imports ``ensure_import_can_start`` from
+``app/api/import_.py``, and that helper's two 409s were invisible to the two
+acquisition routes that call it (inert only because both call sites also raise
+409 from their own ``except RuntimeError`` arm). Listing the module is the fix
+rather than documenting the shape, because the shape is reachable by
+configuration - it would have been a backlog entry, not a structural blind spot.
+Measured after listing it: 0 gaps, 0 unresolved, 0 unscannable. It changes no
+operation's status set, and neither does following ALL 22 ``app/api`` modules,
+so ``ensure_import_can_start`` is the only cross-``app/api`` target that raises
+today; ``test_the_scan_crosses_from_one_route_module_into_another`` below pins
+the edge itself rather than a status set, since a set-level assertion there
+would be vacuous while both call sites keep raising 409 locally too.
+Re-measure the whole class with::
+
+    import pkgutil, app.api, tests.test_route_status_declarations as g
+    g._FOLLOWED_MODULES |= {f"app.api.{m.name}" for m in pkgutil.iter_modules(app.api.__path__)}
+    g._module_index.cache_clear()          # @cache on the AST parse
+    print(g._gaps().gaps)
 
 The one grep hit that is not followed is ``app/static_files.py``: its two 404s
 sit on an ``include_in_schema=False`` route, which ``_schema_operations``
@@ -62,10 +133,14 @@ endpoint function and never enters its parameter defaults. Checked at the same
 measurement - none of the seventeen dependencies this app injects raises an
 ``HTTPException``, so nothing is hiding there right now.
 
-This guard checks that a status is PRESENT, not that its body schema is right.
-A status declared with the wrong model (``ErrorDetail`` for a nested
-``{message, recovery}`` 500, say) passes here; ``app/models/errors.py`` is the
-rule for that half.
+This guard checks that a status is PRESENT, not that its body schema is right:
+it reads response CODES out of the spec and nothing else. A status declared with
+the wrong model (``ErrorDetail`` for a nested ``{message, recovery}`` 500, say)
+passes here. ``app/models/errors.py`` is the rule for that half, and
+``tests/test_config_conflict_body_contract.py`` is the only place that half is
+currently ENFORCED - it joins the declared model for the config editor's CAS 409
+to the body the server really sends, which is what makes swapping that model
+fail a test.
 """
 
 from __future__ import annotations
@@ -82,9 +157,15 @@ from fastapi.routing import APIRoute
 
 from app.main import app
 
-#: Shared helper modules whose raises count as the calling route's raises.
+#: Modules whose raises count as the raises of every route that calls into them.
+#: Nine are shared adapters outside ``app/api``. ``app.api.import_`` is a route
+#: module and is here because ``app/api/acquisition.py`` imports
+#: ``ensure_import_can_start`` from it: a call from one ``app/api`` module into
+#: ANOTHER is not a same-module call, so ``_resolve_call`` stops at it unless the
+#: module is listed (see the docstring's cross-module note).
 _FOLLOWED_MODULES: Final = frozenset(
     {
+        "app.api.import_",
         "app.library_busy",
         "app.beets.cover",
         "app.beets.edit",
@@ -123,7 +204,11 @@ _HTTP_METHODS: Final = frozenset(
 
 #: Non-vacuity floor on how many operations the AST scan sees raise ANYTHING.
 #: There is no external ground truth for this one (unlike the operation set,
-#: which is checked against the spec itself), so it stays a minimum: 63 today.
+#: which is checked against the spec itself), so it stays a minimum: 70 today,
+#: re-measured 2026-08-28 by printing ``_gaps().with_raises``. It is also the
+#: ONLY assertion here that a source-level collapse can trip, and a blunt one -
+#: deleting the whole ``/api/albums`` router takes the count to 59, which still
+#: clears the floor. See the module docstring on ``walked == in_spec``.
 _MIN_ROUTES_WITH_RAISES: Final = 50
 
 
@@ -431,11 +516,14 @@ def _gaps() -> _GapReport:
 
 def test_every_status_a_route_can_raise_is_declared_in_the_live_spec() -> None:
     report = _gaps()
-    # Non-vacuity, and the tightest form available: the walk must cover exactly
-    # the operations the spec itself contains. A router that drops out of the
-    # walk (as every router did when FastAPI 0.141 turned ``app.routes`` into
+    # Non-vacuity for the test's OWN enumeration: its filtering of
+    # ``iter_route_contexts`` must yield exactly the operations FastAPI writes
+    # into the spec from that same generator. A router that drops out of THIS
+    # side (as every router did when FastAPI 0.141 turned ``app.routes`` into
     # ``_IncludedRouter`` objects) reports zero gaps for every route in it,
-    # which is the failure mode a floor of "at least N" cannot see.
+    # which is the failure mode a floor of "at least N" cannot see. A router
+    # that drops out of BOTH sides is invisible here by construction - the
+    # module docstring says what covers that and how weakly.
     assert report.walked == report.in_spec, (
         "the AST walk and the live spec disagree about which operations exist,"
         " so some route is being checked against nothing:\n  walked but not in the spec: "
@@ -568,3 +656,31 @@ def test_the_scan_follows_shared_helper_modules() -> None:
     assert not result.unresolved
     assert not result.unscannable
     assert 409 in result.statuses, "a raise two call hops away, in a shared module, must be seen"
+
+
+def test_the_scan_crosses_from_one_route_module_into_another() -> None:
+    """``app/api`` -> ``app/api`` is NOT a same-module call, so it needs listing.
+
+    ``app/api/acquisition.py`` imports ``ensure_import_can_start`` from
+    ``app/api/import_.py``; ``_resolve_call`` follows same-module defs and
+    ``_FOLLOWED_MODULES`` only, so without the entry that helper's two 409s are
+    invisible to ``POST /api/acquisition/review-inbox`` and
+    ``POST /api/acquisition/inbox/import-item``.
+
+    Asserted on the EDGE, not on those routes' status sets: both call sites also
+    raise 409 themselves (the ambiguous-name and ``RuntimeError`` arms), so
+    ``409 in statuses`` is true either way and would pin nothing. Drop
+    ``app.api.import_`` from ``_FOLLOWED_MODULES`` and ``_resolve_call`` returns
+    ``None`` here, which this catches and the main assertion above does not.
+    """
+    index = _module_index("app.api.acquisition")
+    assert index is not None
+    assert _resolve_call(index, "ensure_import_can_start") == (
+        "app.api.import_",
+        "ensure_import_can_start",
+    ), "a helper imported from another app/api module must be followed, not stopped at"
+    # ... and the target really is worth following: it raises a status of its own.
+    helper = _raised_statuses("app.api.import_", "ensure_import_can_start")
+    assert not helper.unresolved
+    assert not helper.unscannable
+    assert 409 in helper.statuses

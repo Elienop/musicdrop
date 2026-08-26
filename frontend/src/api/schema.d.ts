@@ -6900,7 +6900,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a library backfill holds the library. */
+            /** @description An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10203,7 +10203,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a library backfill holds the library. */
+            /** @description An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10292,7 +10292,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a library backfill holds the library, or two inbox folders display under the same name. */
+            /** @description An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library, or two inbox folders display under the same name. */
             409: {
                 headers: {
                     [name: string]: unknown;
