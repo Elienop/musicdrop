@@ -12,7 +12,7 @@ import os
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
@@ -76,6 +76,14 @@ _MAX_ARTWORK_BYTES = 8 * 1024 * 1024
 # 404 detail strings (matched verbatim by the API tests).
 _PLAYLIST_NOT_FOUND = "Playlist not found"
 _PLAYLIST_ENTRY_NOT_FOUND = "Playlist entry not found"
+
+#: The OpenAPI entry for a route that 404s ONLY because the named playlist does
+#: not exist (see app/models/errors.py for why the model must be named). Named
+#: because six routes share this single cause and must not drift apart.
+_PLAYLIST_NOT_FOUND_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "The playlist does not exist.",
+}
 
 
 def _sniff_image_format(data: bytes) -> Literal["jpg", "png"] | None:
@@ -265,7 +273,10 @@ async def create_playlist_endpoint(
     return await _summary(record, handle)
 
 
-@router.get("/playlists/{playlist_id}")
+@router.get(
+    "/playlists/{playlist_id}",
+    responses={404: _PLAYLIST_NOT_FOUND_RESPONSE},
+)
 async def get_playlist_endpoint(
     playlist_id: str,
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
@@ -277,7 +288,10 @@ async def get_playlist_endpoint(
     return await _detail_response(record, handle)
 
 
-@router.post("/playlists/{playlist_id}/tracks")
+@router.post(
+    "/playlists/{playlist_id}/tracks",
+    responses={404: _PLAYLIST_NOT_FOUND_RESPONSE},
+)
 async def add_tracks_endpoint(
     playlist_id: str,
     body: PlaylistAddTracksRequest,
@@ -297,7 +311,15 @@ async def add_tracks_endpoint(
     return await _detail_response(record, handle)
 
 
-@router.delete("/playlists/{playlist_id}/entries/{entry_uid}")
+@router.delete(
+    "/playlists/{playlist_id}/entries/{entry_uid}",
+    responses={
+        404: {
+            "model": ErrorDetail,
+            "description": "The playlist does not exist, or one of its entries does not.",
+        },
+    },
+)
 async def remove_entry_endpoint(
     playlist_id: str,
     entry_uid: str,
@@ -314,7 +336,18 @@ async def remove_entry_endpoint(
     return await _detail_response(record, handle)
 
 
-@router.patch("/playlists/{playlist_id}/entries/{entry_uid}")
+@router.patch(
+    "/playlists/{playlist_id}/entries/{entry_uid}",
+    # 422 is deliberately absent (unknown item id): declaring it would replace
+    # FastAPI's HTTPValidationError, whose `detail` is a LIST (see
+    # app/models/errors.py).
+    responses={
+        404: {
+            "model": ErrorDetail,
+            "description": "The playlist does not exist, or one of its entries does not.",
+        },
+    },
+)
 async def resolve_entry_endpoint(
     playlist_id: str,
     entry_uid: str,
@@ -338,7 +371,11 @@ async def resolve_entry_endpoint(
     return await _detail_response(record, handle)
 
 
-@router.put("/playlists/{playlist_id}/tracks")
+@router.put(
+    "/playlists/{playlist_id}/tracks",
+    # 422 is deliberately absent (unknown entry uids): see resolve_entry above.
+    responses={404: _PLAYLIST_NOT_FOUND_RESPONSE},
+)
 async def reorder_tracks_endpoint(
     playlist_id: str,
     body: PlaylistReorderRequest,
@@ -361,7 +398,24 @@ async def reorder_tracks_endpoint(
     return await _detail_response(record, handle)
 
 
-@router.post("/playlists/{playlist_id}/sync")
+@router.post(
+    "/playlists/{playlist_id}/sync",
+    responses={
+        404: _PLAYLIST_NOT_FOUND_RESPONSE,
+        409: {
+            "model": ErrorDetail,
+            "description": "Plex is not connected on this install, so the sync cannot run.",
+        },
+        502: {
+            "model": ErrorDetail,
+            "description": "Plex could not be reached, or the library files could not be read.",
+        },
+        500: {
+            "model": ErrorDetail,
+            "description": "The sync ran but its result could not be recorded.",
+        },
+    },
+)
 async def sync_playlist_endpoint(
     playlist_id: str,
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
@@ -466,7 +520,10 @@ def _plex_specs_for(
     ]
 
 
-@router.patch("/playlists/{playlist_id}")
+@router.patch(
+    "/playlists/{playlist_id}",
+    responses={404: _PLAYLIST_NOT_FOUND_RESPONSE},
+)
 async def update_playlist_endpoint(
     playlist_id: str,
     body: PlaylistUpdateRequest,
@@ -487,7 +544,11 @@ async def update_playlist_endpoint(
     return await _summary(record, handle)
 
 
-@router.delete("/playlists/{playlist_id}", status_code=204)
+@router.delete(
+    "/playlists/{playlist_id}",
+    status_code=204,
+    responses={404: _PLAYLIST_NOT_FOUND_RESPONSE},
+)
 async def delete_playlist_endpoint(
     playlist_id: str,
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
@@ -577,7 +638,15 @@ async def merge_playlist_endpoint(
     )
 
 
-@router.get("/playlists/{playlist_id}/artwork")
+@router.get(
+    "/playlists/{playlist_id}/artwork",
+    responses={
+        404: {
+            "model": ErrorDetail,
+            "description": "The playlist has no cover artwork, or its file is missing.",
+        },
+    },
+)
 async def get_playlist_artwork_endpoint(
     playlist_id: str,
     request: Request,
@@ -601,6 +670,11 @@ async def get_playlist_artwork_endpoint(
 
 @router.put(
     "/playlists/{playlist_id}/artwork",
+    responses={
+        404: _PLAYLIST_NOT_FOUND_RESPONSE,
+        413: {"model": ErrorDetail, "description": "The uploaded image exceeds the 8 MB limit."},
+        415: {"model": ErrorDetail, "description": "The uploaded image is not a JPEG or PNG."},
+    },
 )
 async def put_playlist_artwork_endpoint(
     playlist_id: str,
@@ -630,7 +704,11 @@ async def put_playlist_artwork_endpoint(
     return await _summary(record, handle)
 
 
-@router.delete("/playlists/{playlist_id}/artwork", status_code=204)
+@router.delete(
+    "/playlists/{playlist_id}/artwork",
+    status_code=204,
+    responses={404: _PLAYLIST_NOT_FOUND_RESPONSE},
+)
 async def delete_playlist_artwork_endpoint(
     playlist_id: str,
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
@@ -643,7 +721,19 @@ async def delete_playlist_artwork_endpoint(
     return Response(status_code=204)
 
 
-@router.post("/playlists/import/preview")
+@router.post(
+    "/playlists/import/preview",
+    responses={
+        409: {
+            "model": ErrorDetail,
+            "description": "Plex is not configured, so the requested playlists cannot be pulled.",
+        },
+        502: {
+            "model": ErrorDetail,
+            "description": "Plex could not be reached while pulling the playlists.",
+        },
+    },
+)
 async def import_preview_endpoint(
     body: PlaylistImportPreviewRequest,
     handle: Annotated[LibraryHandle, Depends(get_library)],

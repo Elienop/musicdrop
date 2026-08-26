@@ -9,7 +9,7 @@ whole dir, and the event loop never blocks on disk.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
@@ -34,9 +34,18 @@ from app.models.bank import (
     BankSearchResponse,
     BankStatus,
 )
+from app.models.errors import ErrorDetail
 from app.models.import_models import DuplicatesCheckResponse, ImportSearch, ParkedAlbum
 
 _BANK_ITEM_NOT_FOUND = "Bank item not found"
+
+#: The OpenAPI entry for a route that 404s ONLY because the named bank item does
+#: not exist (see app/models/errors.py for why the model must be named). Named
+#: because all six item routes share this single cause and must not drift apart.
+_BANK_NOT_FOUND_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "The bank item does not exist.",
+}
 
 router = APIRouter(tags=["bank"])
 
@@ -79,7 +88,7 @@ async def list_bank(
     )
 
 
-@router.get("/bank/{item_id}")
+@router.get("/bank/{item_id}", responses={404: _BANK_NOT_FOUND_RESPONSE})
 async def get_bank_item(item_id: str) -> BankItem:
     item = await run_in_threadpool(store.get_item, get_bank_dir(), item_id)
     if item is None:
@@ -87,7 +96,10 @@ async def get_bank_item(item_id: str) -> BankItem:
     return item
 
 
-@router.get("/bank/{item_id}/duplicates")
+@router.get(
+    "/bank/{item_id}/duplicates",
+    responses={404: _BANK_NOT_FOUND_RESPONSE},
+)
 async def bank_item_duplicates(
     item_id: str,
     request: Request,
@@ -117,7 +129,19 @@ async def bank_item_duplicates(
     return DuplicatesCheckResponse(existing=existing)
 
 
-@router.post("/bank/{item_id}/search")
+@router.post(
+    "/bank/{item_id}/search",
+    responses={
+        404: _BANK_NOT_FOUND_RESPONSE,
+        409: {
+            "model": ErrorDetail,
+            "description": (
+                "The row is not an undecided match row, so the search was refused"
+                " (it is already decided, or its folder went stale)."
+            ),
+        },
+    },
+)
 async def search_bank_item(item_id: str, search: ImportSearch) -> BankSearchResponse:
     """Re-look-up a banked folder against a release id/URL or a name search.
 
@@ -182,7 +206,19 @@ async def search_bank_item(item_id: str, search: ImportSearch) -> BankSearchResp
     return BankSearchResponse(item=updated, found=True)
 
 
-@router.post("/bank/{item_id}/rescan")
+@router.post(
+    "/bank/{item_id}/rescan",
+    responses={
+        404: _BANK_NOT_FOUND_RESPONSE,
+        409: {
+            "model": ErrorDetail,
+            "description": (
+                "The row cannot be rescanned (already decided, its folder is gone,"
+                " or it holds no audio files)."
+            ),
+        },
+    },
+)
 async def rescan_bank_item(item_id: str) -> BankItem:
     """Re-read the banked folder from disk and re-match it in place.
 
@@ -262,7 +298,16 @@ async def rescan_bank_item(item_id: str) -> BankItem:
     return updated
 
 
-@router.post("/bank/{item_id}/decision")
+@router.post(
+    "/bank/{item_id}/decision",
+    responses={
+        404: _BANK_NOT_FOUND_RESPONSE,
+        409: {
+            "model": ErrorDetail,
+            "description": "The row's state changed, so the decision is no longer valid.",
+        },
+    },
+)
 async def decide_bank_item(item_id: str, decision: BankDecision, request: Request) -> BankItem:
     try:
         item = await run_in_threadpool(store.decide_item, get_bank_dir(), item_id, decision)
@@ -281,7 +326,17 @@ async def decide_bank_item(item_id: str, decision: BankDecision, request: Reques
     return item
 
 
-@router.delete("/bank/{item_id}", status_code=204)
+@router.delete(
+    "/bank/{item_id}",
+    status_code=204,
+    responses={
+        404: _BANK_NOT_FOUND_RESPONSE,
+        409: {
+            "model": ErrorDetail,
+            "description": "The row's state changed, so it can no longer be deleted.",
+        },
+    },
+)
 async def delete_bank_item(item_id: str) -> Response:
     try:
         deleted = await run_in_threadpool(store.delete_item, get_bank_dir(), item_id)
