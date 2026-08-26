@@ -58,6 +58,7 @@ from app.models.errors import (
     ErrorDetail,
     StructuredErrorDetail,
 )
+from tests.openapi_body_contract import inline_refs, model_schema
 
 #: A ``base_sha256`` no real ``config.yaml`` can hash to, so the CAS step (and
 #: not the parse or schema-validate step before it) is what refuses the save.
@@ -83,36 +84,6 @@ def _save_request(path: str, yaml_text: str) -> dict[str, object]:
     return {"rules": [], "replace": [], "base_sha256": _STALE_CAS_TOKEN}
 
 
-def _inline(node: object, components: dict[str, object], stack: tuple[str, ...] = ()) -> object:
-    """``node`` with every local ``$ref`` replaced by the schema it names.
-
-    The live spec puts the nested model in ``components/schemas`` while
-    ``model_json_schema`` puts it in ``$defs``; inlining both sides removes that
-    difference so the comparison is about SHAPE, not about where each generator
-    parks its definitions. A dangling or recursive ref fails here rather than
-    quietly comparing two ``{"$ref": ...}`` stubs as equal.
-    """
-    if isinstance(node, list):
-        return [_inline(item, components, stack) for item in node]
-    if not isinstance(node, dict):
-        return node
-    ref = node.get("$ref")
-    if isinstance(ref, str):
-        name = ref.rsplit("/", 1)[-1]
-        assert name in components, f"the spec has no component for {ref}"
-        assert ref not in stack, f"recursive $ref {ref} - cannot be inlined"
-        return _inline(components[name], components, (*stack, ref))
-    return {key: _inline(value, components, stack) for key, value in node.items()}
-
-
-def _model_schema(model: type[BaseModel]) -> object:
-    """The fully inlined JSON schema ``model`` generates for itself."""
-    schema: dict[str, object] = model.model_json_schema(ref_template="#/$defs/{model}")
-    defs = schema.pop("$defs", {})
-    assert isinstance(defs, dict)
-    return _inline(schema, {str(key): value for key, value in defs.items()})
-
-
 def _declared_409_schema(path: str) -> tuple[object, object]:
     """The raw and the inlined 409 response schema the LIVE spec gives ``path``."""
     spec = app.openapi()
@@ -130,7 +101,7 @@ def _declared_409_schema(path: str) -> tuple[object, object]:
     )
     raw = content["application/json"]["schema"]
     components = spec["components"]["schemas"]
-    return raw, _inline(raw, {str(key): value for key, value in components.items()})
+    return raw, inline_refs(raw, {str(key): value for key, value in components.items()})
 
 
 @pytest.mark.parametrize("path", _SAVE_ROUTES)
@@ -142,7 +113,7 @@ def test_the_declared_409_schema_is_the_conflict_model(path: str) -> None:
     model, and the frontend cannot tell the two apart.
     """
     raw, declared = _declared_409_schema(path)
-    assert declared == _model_schema(ConfigSaveConflictDetail), (
+    assert declared == model_schema(ConfigSaveConflictDetail), (
         f"{path} declares its 409 as {raw}, which is not the"
         " ConfigSaveConflictDetail shape the route really sends; a wrongly-typed"
         " status is worse than an undeclared one (app/models/errors.py)"

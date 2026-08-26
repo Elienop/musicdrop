@@ -124,19 +124,46 @@ def test_preexisting_richer_403_is_preserved() -> None:
     _assert_error_detail(post, "post", "/api/artists/image/fetch", "403")
 
 
-def _schema_refs(schema: dict[str, object]) -> list[str]:
-    """The ``$ref`` targets a response schema offers: one, or an ``anyOf`` of them.
+#: What a 422 arm may name. ``HTTPValidationError`` is FastAPI's own; the other
+#: three are the bodies routes really raise with - a sentence (``ErrorDetail``)
+#: or, for the two config-editor saves, a LIST of per-error rows whose own model
+#: says which shape (``app/models/errors.py``).
+_ALLOWED_422_ARMS = frozenset(
+    {
+        "HTTPValidationError",
+        "ErrorDetail",
+        "ConfigValidationErrorDetail",
+        "NamingValidationErrorDetail",
+    }
+)
 
-    A route that raises its OWN ``HTTPException(422, "<sentence>")`` returns two
-    body shapes under that status and documents both as an ``anyOf`` (see
-    ``app/models/errors.py``); every other 422 is FastAPI's single generated ref.
+
+def _arm_name(schema: dict[str, object]) -> str:
+    """What one 422 arm names: its ``$ref`` target, or an inline schema's title.
+
+    Inline is not a defect here. A raw response entry registers no component, so
+    a model used ONLY by such an entry has to be inlined or its ``$ref`` would
+    dangle (``app/models/errors.py::_inlined_json_schema``); the title pydantic
+    writes is the model's name either way.
     """
     ref = schema.get("$ref")
     if isinstance(ref, str):
-        return [ref]
+        return ref.rsplit("/", 1)[-1]
+    return str(schema.get("title"))
+
+
+def _schema_arms(schema: dict[str, object]) -> list[str]:
+    """The body shapes a response schema offers: one, or an ``anyOf`` of them.
+
+    A route that raises its OWN 422 returns two body shapes under that status
+    and documents both as an ``anyOf`` (see ``app/models/errors.py``); every
+    other 422 is FastAPI's single generated ref.
+    """
+    if "$ref" in schema:
+        return [_arm_name(schema)]
     any_of = schema.get("anyOf")
     if isinstance(any_of, list):
-        return [str(_as_dict(entry).get("$ref")) for entry in any_of]
+        return [_arm_name(_as_dict(entry)) for entry in any_of]
     return []
 
 
@@ -148,14 +175,14 @@ def test_422_entries_stay_fastapi_validation_and_are_never_invented() -> None:
             declared += 1
             content = _as_dict(_as_dict(responses.get("422")).get("content"))
             media = _as_dict(content.get("application/json"))
-            refs = _schema_refs(_as_dict(media.get("schema")))
+            arms = _schema_arms(_as_dict(media.get("schema")))
             # The validation shape is never traded away: a route may ADD its own
-            # sentence body to the 422, never replace FastAPI's with it.
-            assert any(ref.endswith("/HTTPValidationError") for ref in refs), (
-                f"{method.upper()} {path} 422 no longer references HTTPValidationError: {refs!r}"
+            # body to the 422, never replace FastAPI's with it.
+            assert "HTTPValidationError" in arms, (
+                f"{method.upper()} {path} 422 no longer references HTTPValidationError: {arms!r}"
             )
-            assert all(ref.endswith(("/HTTPValidationError", "/ErrorDetail")) for ref in refs), (
-                f"{method.upper()} {path} 422 references an unexpected schema: {refs!r}"
+            assert set(arms) <= _ALLOWED_422_ARMS, (
+                f"{method.upper()} {path} 422 references an unexpected schema: {arms!r}"
             )
         else:
             # FastAPI puts 422 exactly on operations with something to validate

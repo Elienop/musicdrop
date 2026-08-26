@@ -7550,13 +7550,27 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The submitted YAML did not parse, or a key MusicDrop models has the wrong shape; the body lists one item per problem, with the 1-based line and 0-based column to mark where there is one. A malformed request body answers with FastAPI's validation shape instead. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": {
+                        /** Detail */
+                        detail: {
+                            /** Loc */
+                            loc: string;
+                            /** Msg */
+                            msg: string;
+                            /** Type */
+                            type: string;
+                            /** Line */
+                            line?: number | null;
+                            /** Column */
+                            column?: number | null;
+                        }[];
+                    } | components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -7708,13 +7722,23 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Validation Error */
+            /** @description A submitted replace: pattern is not a valid regular expression, so the save was refused before anything was written; the body names the offending row. A malformed request body answers with FastAPI's validation shape instead. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": {
+                        /** Detail */
+                        detail: {
+                            /** Loc */
+                            loc: string;
+                            /** Msg */
+                            msg: string;
+                            /** Type */
+                            type: string;
+                        }[];
+                    } | components["schemas"]["HTTPValidationError"];
                 };
             };
         };

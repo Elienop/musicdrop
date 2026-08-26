@@ -10,19 +10,30 @@ asserting the body cannot exist, for a status whose body the client must read.
 Declaring ``{"model": ErrorDetail}`` alongside the description is what closes
 that, for every status except 422.
 
-422 is the one status with TWO real body shapes, so it needs its own treatment.
-FastAPI generates a 422 documented as ``HTTPValidationError`` (whose ``detail``
-is a LIST of loc/msg objects) for every route with a body or parameters to
-validate. A route that ALSO raises ``HTTPException(422, "<sentence>")`` - for a
-well-formed request that is semantically invalid, e.g. an unknown item id -
-returns an ``ErrorDetail`` under that same status. Both bodies are real, so:
+422 is the status with more than one real body shape, so it needs its own
+treatment. FastAPI generates a 422 documented as ``HTTPValidationError`` (whose
+``detail`` is a LIST of ``{loc: (string|integer)[], msg, type}`` objects) for
+every route with a body or parameters to validate. A route that ALSO raises
+``HTTPException(422, ...)`` returns ITS OWN payload under that same status. Both
+bodies are real, so:
 
-- declaring ``{"model": ErrorDetail}`` REPLACES FastAPI's entry and drops the
+- declaring ``{"model": <anything>}`` REPLACES FastAPI's entry and drops the
   validation shape;
 - leaving 422 undeclared documents only the validation shape, so the generated
-  client parses a sentence body as a list of loc/msg objects;
-- ``validation_or_detail_422`` documents BOTH, as an ``anyOf`` over the two
-  components, and is what such a route should use.
+  client parses the route's own body as a list of FastAPI loc/msg objects;
+- ``validation_or_detail_422`` and ``validation_or_model_422`` document BOTH, as
+  an ``anyOf`` over the two shapes, and are what such a route should use.
+
+Which of those two to reach for depends on what the route's own raise sends:
+
+- ``HTTPException(422, "<sentence>")`` - a well-formed request that is
+  semantically impossible, e.g. an unknown item id - renders an ``ErrorDetail``,
+  so ``validation_or_detail_422``;
+- anything else needs a model of its own and ``validation_or_model_422``. The
+  config editor's two save routes are the case in the app today: they raise with
+  a LIST of per-error objects. Declaring those with ``validation_or_detail_422``
+  would type a list as a sentence, which is the wrongly-typed failure this
+  module argues is worse than an undeclared status.
 
 A route that never raises 422 itself leaves it undeclared - FastAPI's own entry
 is already the whole truth there.
@@ -38,7 +49,9 @@ from typing import Final
 
 from pydantic import BaseModel
 
-#: The two component paths the 422 entry below references. Spelled here rather
+from app.models.config_editor import ValidationErrorItem
+
+#: The two component paths the 422 entries below reference. Spelled here rather
 #: than derived, because they are what FastAPI names these components in the
 #: generated schema - see app/openapi_overlay.py for the same constant.
 _ERROR_DETAIL_REF: Final = "#/components/schemas/ErrorDetail"
@@ -129,24 +142,108 @@ class ConfigSaveConflictDetail(BaseModel):
     detail: ConfigSaveConflict
 
 
-def validation_or_detail_422(description: str) -> dict[str, object]:
-    """A 422 entry documenting BOTH error bodies the route can return.
+class ConfigValidationErrorDetail(BaseModel):
+    """The FOURTH real error body: ``POST /api/config/save``'s 422.
 
-    For a route that raises its own ``HTTPException(422, "<sentence>")`` on top
-    of FastAPI's request validation. Returns a raw response object rather than
-    ``{"model": ...}``: a model would replace FastAPI's generated entry and lose
-    the validation shape (see the module docstring).
+    Both of that route's own 422s - the ruamel parse failure and the known-keys
+    schema failure (``app/beets/config_editor.py::save``) - raise with a LIST of
+    :class:`~app.models.config_editor.ValidationErrorItem` payloads, which
+    Starlette renders verbatim under the outer ``detail`` key. The items are the
+    SAME rows ``POST /api/config/validate`` returns on a 200, which is what lets
+    the editor feed a rejected Save straight into its CodeMirror gutter.
+
+    FastAPI's ``HTTPValidationError`` is not this shape and cannot stand in for
+    it: its items carry ``loc`` as an ARRAY of path segments and have no ``line``
+    or ``column`` at all, while ``frontend/src/pages/settings/SettingsBeetsPage.tsx``
+    reads exactly those two fields to place the markers. Declaring this 422 as
+    that model leaves the client reading two fields the contract says do not
+    exist, and mis-types a third.
     """
+
+    detail: list[ValidationErrorItem]
+
+
+class NamingRuleError(BaseModel):
+    """One rejected ``replace:`` row of ``POST /api/config/naming/save``.
+
+    The same three keys as a :class:`~app.models.config_editor.ValidationErrorItem`
+    and DELIBERATELY not that model: the naming save builds these dicts by hand
+    (``app/beets/config_editor.py::save_naming``) with no ``line``/``column``,
+    because a bad regex comes from a form row rather than from a position in the
+    YAML document - ``loc`` is the row index (``"replace[0]"``), which is what
+    the panel would highlight. Reusing the five-field model here would promise a
+    line number this route can never send.
+    """
+
+    loc: str
+    """Which submitted row was rejected, as ``replace[<index>]``."""
+
+    msg: str
+    type: str
+
+
+class NamingValidationErrorDetail(BaseModel):
+    """The FIFTH real error body: ``POST /api/config/naming/save``'s 422."""
+
+    detail: list[NamingRuleError]
+
+
+def _inline_refs(node: object, defs: dict[str, object]) -> object:
+    """``node`` with every ``#/$defs/...`` reference replaced by what it names."""
+    if isinstance(node, list):
+        return [_inline_refs(item, defs) for item in node]
+    if not isinstance(node, dict):
+        return node
+    ref = node.get("$ref")
+    if isinstance(ref, str):
+        return _inline_refs(defs[ref.rsplit("/", 1)[-1]], defs)
+    return {key: _inline_refs(value, defs) for key, value in node.items()}
+
+
+def _inlined_json_schema(model: type[BaseModel]) -> dict[str, object]:
+    """``model``'s own JSON schema, with its nested definitions inlined.
+
+    Inlined rather than referenced, because a raw response object registers no
+    component: FastAPI writes ``components/schemas`` entries only for models it
+    builds a request or response FIELD from, and an ``anyOf`` 422 has to be raw
+    (a ``model`` key would replace FastAPI's entry). A ``$ref`` from here into
+    ``#/components/schemas`` would therefore dangle for any model no route's
+    body or 200 also uses - the failure ``tests/test_openapi_refs.py`` exists
+    for. Inlining keeps each arm self-contained and derived from the model, so
+    it can neither dangle nor drift.
+    """
+    schema = model.model_json_schema(ref_template="#/$defs/{model}")
+    defs = schema.pop("$defs", {})
+    return {key: _inline_refs(value, defs) for key, value in schema.items()}
+
+
+def _either_shape_422(description: str, own_body: dict[str, object]) -> dict[str, object]:
+    """A raw 422 response object over ``own_body`` and FastAPI's validation shape.
+
+    Raw rather than ``{"model": ...}`` on purpose: a model would replace
+    FastAPI's generated entry and lose the validation shape (module docstring).
+    """
+    schema = {"anyOf": [own_body, {"$ref": _VALIDATION_ERROR_REF}]}
     return {
         "description": description,
-        "content": {
-            "application/json": {
-                "schema": {
-                    "anyOf": [
-                        {"$ref": _ERROR_DETAIL_REF},
-                        {"$ref": _VALIDATION_ERROR_REF},
-                    ]
-                }
-            }
-        },
+        "content": {"application/json": {"schema": schema}},
     }
+
+
+def validation_or_detail_422(description: str) -> dict[str, object]:
+    """A 422 entry for a route whose own 422 is a plain ``{"detail": "..."}``.
+
+    For a route that raises its own ``HTTPException(422, "<sentence>")`` on top
+    of FastAPI's request validation.
+    """
+    return _either_shape_422(description, {"$ref": _ERROR_DETAIL_REF})
+
+
+def validation_or_model_422(model: type[BaseModel], description: str) -> dict[str, object]:
+    """A 422 entry for a route whose own 422 body is ``model``, not a sentence.
+
+    Same ``anyOf`` treatment as :func:`validation_or_detail_422`, with ``model``
+    standing in for ``ErrorDetail`` because that route answers with something
+    else - see :class:`ConfigValidationErrorDetail` for the case this exists for.
+    """
+    return _either_shape_422(description, _inlined_json_schema(model))

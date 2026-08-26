@@ -3456,11 +3456,75 @@
             }
           },
           "422": {
-            "description": "Validation Error",
+            "description": "The submitted YAML did not parse, or a key MusicDrop models has the wrong shape; the body lists one item per problem, with the 1-based line and 0-based column to mark where there is one. A malformed request body answers with FastAPI's validation shape instead.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "anyOf": [
+                    {
+                      "properties": {
+                        "detail": {
+                          "items": {
+                            "properties": {
+                              "loc": {
+                                "type": "string",
+                                "title": "Loc"
+                              },
+                              "msg": {
+                                "type": "string",
+                                "title": "Msg"
+                              },
+                              "type": {
+                                "type": "string",
+                                "title": "Type"
+                              },
+                              "line": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "title": "Line"
+                              },
+                              "column": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "title": "Column"
+                              }
+                            },
+                            "type": "object",
+                            "required": [
+                              "loc",
+                              "msg",
+                              "type"
+                            ],
+                            "title": "ValidationErrorItem",
+                            "description": "One row of the ``POST /api/config/validate`` and ``POST /api/config/save``\nerror responses. ``line`` is 1-based for CodeMirror's ``state.doc.line(n)``\n(CodeMirror reference manual)."
+                          },
+                          "type": "array",
+                          "title": "Detail"
+                        }
+                      },
+                      "type": "object",
+                      "required": [
+                        "detail"
+                      ],
+                      "title": "ConfigValidationErrorDetail",
+                      "description": "The FOURTH real error body: ``POST /api/config/save``'s 422.\n\nBoth of that route's own 422s - the ruamel parse failure and the known-keys\nschema failure (``app/beets/config_editor.py::save``) - raise with a LIST of\n:class:`~app.models.config_editor.ValidationErrorItem` payloads, which\nStarlette renders verbatim under the outer ``detail`` key. The items are the\nSAME rows ``POST /api/config/validate`` returns on a 200, which is what lets\nthe editor feed a rejected Save straight into its CodeMirror gutter.\n\nFastAPI's ``HTTPValidationError`` is not this shape and cannot stand in for\nit: its items carry ``loc`` as an ARRAY of path segments and have no ``line``\nor ``column`` at all, while ``frontend/src/pages/settings/SettingsBeetsPage.tsx``\nreads exactly those two fields to place the markers. Declaring this 422 as\nthat model leaves the client reading two fields the contract says do not\nexist, and mis-types a third."
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
                 }
               }
             }
@@ -3642,11 +3706,53 @@
             }
           },
           "422": {
-            "description": "Validation Error",
+            "description": "A submitted replace: pattern is not a valid regular expression, so the save was refused before anything was written; the body names the offending row. A malformed request body answers with FastAPI's validation shape instead.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "anyOf": [
+                    {
+                      "properties": {
+                        "detail": {
+                          "items": {
+                            "properties": {
+                              "loc": {
+                                "type": "string",
+                                "title": "Loc"
+                              },
+                              "msg": {
+                                "type": "string",
+                                "title": "Msg"
+                              },
+                              "type": {
+                                "type": "string",
+                                "title": "Type"
+                              }
+                            },
+                            "type": "object",
+                            "required": [
+                              "loc",
+                              "msg",
+                              "type"
+                            ],
+                            "title": "NamingRuleError",
+                            "description": "One rejected ``replace:`` row of ``POST /api/config/naming/save``.\n\nThe same three keys as a :class:`~app.models.config_editor.ValidationErrorItem`\nand DELIBERATELY not that model: the naming save builds these dicts by hand\n(``app/beets/config_editor.py::save_naming``) with no ``line``/``column``,\nbecause a bad regex comes from a form row rather than from a position in the\nYAML document - ``loc`` is the row index (``\"replace[0]\"``), which is what\nthe panel would highlight. Reusing the five-field model here would promise a\nline number this route can never send."
+                          },
+                          "type": "array",
+                          "title": "Detail"
+                        }
+                      },
+                      "type": "object",
+                      "required": [
+                        "detail"
+                      ],
+                      "title": "NamingValidationErrorDetail",
+                      "description": "The FIFTH real error body: ``POST /api/config/naming/save``'s 422."
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
                 }
               }
             }

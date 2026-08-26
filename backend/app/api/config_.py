@@ -29,7 +29,14 @@ from app.models.config_editor import (
     ValidateResponse,
     ValidationErrorItem,
 )
-from app.models.errors import ConfigSaveConflictDetail, ErrorDetail, StructuredErrorDetail
+from app.models.errors import (
+    ConfigSaveConflictDetail,
+    ConfigValidationErrorDetail,
+    ErrorDetail,
+    NamingValidationErrorDetail,
+    StructuredErrorDetail,
+    validation_or_model_422,
+)
 
 router = APIRouter(tags=["config"])
 
@@ -50,6 +57,40 @@ _SAVE_CAS_CONFLICT_RESPONSE: Final = {
         " refused; the body carries the file's current text and hash."
     ),
 }
+
+#: The 422 of ``POST /api/config/save``. NOT FastAPI's ``HTTPValidationError``,
+#: which is what an undeclared 422 would document: ``config_editor.save`` raises
+#: with a LIST of ``ValidationErrorItem`` rows whose ``loc`` is a plain string
+#: and which carry ``line``/``column`` - two fields the validation shape does not
+#: have and the editor's CodeMirror gutter reads (SettingsBeetsPage.tsx). The
+#: entry is an anyOf because FastAPI's own shape is ALSO reachable here: the
+#: route takes a ``SaveRequest`` body, so a malformed request never reaches the
+#: adapter and answers with the validation shape instead.
+_SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
+    ConfigValidationErrorDetail,
+    (
+        "The submitted YAML did not parse, or a key MusicDrop models has the wrong"
+        " shape; the body lists one item per problem, with the 1-based line and"
+        " 0-based column to mark where there is one. A malformed request body"
+        " answers with FastAPI's validation shape instead."
+    ),
+)
+
+#: The 422 of ``POST /api/config/naming/save``, which is a DIFFERENT shape from
+#: the one above: ``config_editor.save_naming`` builds its items by hand with
+#: three keys and no ``line``/``column``, because a bad regex comes from a form
+#: row (``loc`` is ``replace[<index>]``) rather than from a position in the YAML
+#: document. Sharing one model would promise a line number this route can never
+#: send - see app/models/errors.py::NamingRuleError.
+_NAMING_SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
+    NamingValidationErrorDetail,
+    (
+        "A submitted replace: pattern is not a valid regular expression, so the"
+        " save was refused before anything was written; the body names the"
+        " offending row. A malformed request body answers with FastAPI's"
+        " validation shape instead."
+    ),
+)
 
 
 @router.get("/config")
@@ -80,7 +121,10 @@ def validate_config(req: ValidateRequest) -> ValidateResponse:
     return ValidateResponse(errors=validate_known_keys(data))
 
 
-@router.post("/config/save", responses={409: _SAVE_CAS_CONFLICT_RESPONSE})
+@router.post(
+    "/config/save",
+    responses={409: _SAVE_CAS_CONFLICT_RESPONSE, 422: _SAVE_VALIDATION_RESPONSE},
+)
 def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
     """Persist the user-submitted YAML to disk after CAS + schema checks.
 
@@ -113,7 +157,10 @@ def preview_naming(req: NamingPreviewRequest, request: Request) -> NamingPreview
     return NamingPreviewResponse(rendered=rendered, replace_errors=replace_errors)
 
 
-@router.post("/config/naming/save", responses={409: _SAVE_CAS_CONFLICT_RESPONSE})
+@router.post(
+    "/config/naming/save",
+    responses={409: _SAVE_CAS_CONFLICT_RESPONSE, 422: _NAMING_SAVE_VALIDATION_RESPONSE},
+)
 def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSnapshot:
     """Write ``paths:``/``replace:`` back into config.yaml (CAS, 409/422). Apply
     is the existing ``POST /api/config/apply``."""

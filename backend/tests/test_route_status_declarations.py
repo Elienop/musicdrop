@@ -46,6 +46,25 @@ router gone and this test green. A router deleted from ``app/main.py`` is the
 same shape, and no in-process enumeration can see it: the routes genuinely do
 not exist.
 
+MEASURED BLAST RADIUS OF THAT COLLAPSE, per ROUTER (2026-08-29, by patching
+``fastapi.routing.iter_route_contexts`` to drop every route whose endpoint is
+defined in one ``app/api`` module - the routes one ``include_router`` call
+registers - then clearing ``app.openapi_schema`` and re-running ``_gaps()``).
+Every one of the nineteen drops left ``walked == in_spec`` True and the gap list
+empty, so ``_MIN_ROUTES_WITH_RAISES`` really is the only assertion that can fire:
+
+    playlists 70->56, artists 60, albums 61, import_ 61, bank 64, reorganize 66,
+    config_ 67, plex 67, trash 67, acquisition 68, disk_sync 68, duplicates 68,
+    events 69, lyrics 69, slskd 69,
+    browse 70, health 70, search 70, stats 70 (no operation in these four raises
+    anything, so no count can notice them going missing).
+
+The earlier note here claimed dropping ``/api/albums`` took 70 -> 59. That was a
+PATH-prefix drop, which is a different (larger) set than a router: several
+``/api/albums/...`` paths are registered by the lyrics, completeness and cover
+routes' own routers. Per router the worst case is 56 and the best non-zero one
+is 69, which is what the floor is now set from.
+
 Deriving one side from the tracked ``frontend/openapi.json`` was considered and
 rejected: that file is this same app's output (``scripts/dump_openapi.py``
 writes ``app.openapi()``), and ``tests/test_openapi_spec_guard.py`` already
@@ -57,10 +76,9 @@ while making THIS guard fail on every legitimate mid-work spec edit. It moves
 the coupling; it does not remove it.
 
 So ``_MIN_ROUTES_WITH_RAISES`` is the only backstop against a source-level
-collapse, and it is a weak one: in the measurement above, losing the twelve
-``/api/albums`` operations took the count from 70 to 59 - still over the floor
-of 50. Read it as a tripwire for a near-total collapse, not for a missing
-router.
+collapse. It is now set to the measured count exactly (70), which is the only
+value that fires for the smallest router that raises at all - see the constant's
+own comment for why, and for the four routers no number can cover.
 
 One more thing the equality does not pin today: the ``include_in_schema`` filter
 in ``_schema_operations``. There is no ``include_in_schema=False`` APIRoute in
@@ -202,14 +220,35 @@ _HTTP_METHODS: Final = frozenset(
     {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
 )
 
-#: Non-vacuity floor on how many operations the AST scan sees raise ANYTHING.
-#: There is no external ground truth for this one (unlike the operation set,
-#: which is checked against the spec itself), so it stays a minimum: 70 today,
-#: re-measured 2026-08-28 by printing ``_gaps().with_raises``. It is also the
-#: ONLY assertion here that a source-level collapse can trip, and a blunt one -
-#: deleting the whole ``/api/albums`` router takes the count to 59, which still
-#: clears the floor. See the module docstring on ``walked == in_spec``.
-_MIN_ROUTES_WITH_RAISES: Final = 50
+#: Non-vacuity floor on how many operations the AST scan sees raise ANYTHING,
+#: and the ONLY assertion here that a source-level collapse (a router dropped
+#: from ``app/main.py``, or lost inside ``iter_route_contexts``) can trip - both
+#: sides of ``walked == in_spec`` lose such a router together, and the gap list
+#: goes empty rather than red. There is no external ground truth for it, so it
+#: is a minimum rather than an equality.
+#:
+#: SET FROM MEASUREMENT, not from taste. Dropping each of the nineteen routers
+#: in turn (module docstring, MEASURED BLAST RADIUS) leaves between 56 and 70
+#: raising operations; the smallest real dent is ONE, from ``events``,
+#: ``lyrics`` or ``slskd``, each of which contributes a single raising
+#: operation. So the floor has to equal today's count, 70, or losing one of
+#: those three passes unnoticed - and at the old value of 50 every one of the
+#: nineteen did.
+#:
+#: Zero headroom is the price of that, and it is the right trade here because
+#: this number counts OPERATIONS THAT RAISE, not raises: moving a raise between
+#: an endpoint and a helper, adding one, or merging two into a single guard all
+#: leave it untouched. It moves only when an operation stops raising anything at
+#: all, which is a contract change worth a deliberate re-measure (print
+#: ``_gaps().with_raises``) rather than a silent pass.
+#:
+#: What no value can cover: ``health``, ``browse``, ``search`` and ``stats``
+#: have no raising operation between them, so dropping any of those four leaves
+#: the count at 70. Covering them needs a different assertion - a per-router
+#: census (every module that raises today still contributes a raising operation)
+#: would, and it would survive the app growing, which a single floor does not:
+#: five new raising routes and this one is slack again.
+_MIN_ROUTES_WITH_RAISES: Final = 70
 
 
 class _ModuleIndex:
@@ -532,7 +571,11 @@ def test_every_status_a_route_can_raise_is_declared_in_the_live_spec() -> None:
         + str(sorted(set(report.in_spec) - set(report.walked)))
     )
     assert report.with_raises >= _MIN_ROUTES_WITH_RAISES, (
-        f"only {report.with_raises} operations were seen to raise anything; the AST scan is broken"
+        f"only {report.with_raises} operations were seen to raise anything, against"
+        f" {_MIN_ROUTES_WITH_RAISES} expected: the AST scan is broken, or a router"
+        " stopped being included and took its raises out of both this walk and the"
+        " spec together, or an operation legitimately stopped raising - in which"
+        " case re-measure and lower the constant deliberately"
     )
     assert not report.unscannable, (
         "the scan could not read the body of a handler it was asked to walk, so that"
