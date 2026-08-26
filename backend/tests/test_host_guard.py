@@ -213,9 +213,12 @@ def test_healthcheck_shape_passes() -> None:
 
 
 def test_disallowed_host_beats_the_body_limit() -> None:
-    # Ordering pin: HostGuard wraps OUTERMOST, so a wrong-host oversize body
-    # gets the host 400, not the body-limit 413. (The oversize-vs-ORIGIN-guard
-    # precedence pin lives in test_body_limit.py and is unchanged.)
+    # Ordering pin: HostGuard wraps outside the body limit, so a wrong-host
+    # oversize body gets the host 400, not the body-limit 413. (It is no longer
+    # outermost - CORS and the security-headers stamper wrap outside it since
+    # ede5001 - but neither of those rejects an ordinary request, so this
+    # precedence is unchanged. The oversize-vs-ORIGIN-guard pin lives in
+    # test_body_limit.py and is likewise unchanged.)
     big = b"x" * (25 * 1024 * 1024 + 1)
     r = _client().post(
         "/api/config/validate",

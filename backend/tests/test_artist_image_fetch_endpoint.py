@@ -291,13 +291,14 @@ def test_a_format_the_install_would_reject_never_reaches_the_preview() -> None:
         assert "PNG, JPEG, GIF or WebP" in detail
         assert detail.isascii()
 
-        # ...and this is what the refusal is FOR: the same bytes on the install.
+        # ...and this is what the refusal is FOR: the same bytes on the install
+        # (415 there: the upload route names an unsupported media type as one).
         install = client.post(
             "/api/artists/image/override",
             params={"name": "ABBA"},
             files={"file": ("p.bmp", bmp, "image/bmp")},
         )
-        assert install.status_code == 422
+        assert install.status_code == 415
 
 
 def test_a_source_lying_about_the_format_is_refused_too() -> None:

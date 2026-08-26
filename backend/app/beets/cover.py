@@ -50,11 +50,17 @@ class AlbumNotFoundError(Exception):
 
 
 class EmptyAlbumError(Exception):
-    """Album has no items, so beets cannot compute an art destination. Maps to 422."""
+    """Album has no items, so beets cannot compute an art destination.
+
+    Maps to 422: the image is fine, the target cannot take it.
+    """
 
 
 class UnsupportedImageError(Exception):
-    """The bytes are not a supported image (png/jpeg/gif/webp). Maps to 422."""
+    """The bytes are not a supported image (png/jpeg/gif/webp).
+
+    Maps to 415, matching every other image upload in this API.
+    """
 
 
 def _embed_enabled() -> bool:
@@ -214,7 +220,12 @@ async def install_cover_op(
             )
         except AlbumNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except (EmptyAlbumError, UnsupportedImageError) as exc:
+        except UnsupportedImageError as exc:
+            # Unsupported MEDIA TYPE, like the artist-portrait and playlist-artwork
+            # uploads. Distinct from EmptyAlbumError below, which is a supported
+            # image the album simply cannot accept.
+            raise HTTPException(status_code=415, detail=str(exc)) from exc
+        except EmptyAlbumError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:  # structured 500 like config Apply / edit
             raise HTTPException(

@@ -54,6 +54,16 @@
               }
             }
           },
+          "503": {
+            "description": "The event stream is unavailable because the event broker is not running or the maximum number of subscribers has been reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
             "content": {
@@ -178,6 +188,16 @@
               }
             }
           },
+          "404": {
+            "description": "No album with that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -225,6 +245,36 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeleteResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No album has that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A library operation is in progress, so the delete is refused until it finishes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Deleting the album failed, but its files are recoverable in the Trash folder.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredErrorDetail"
                 }
               }
             }
@@ -292,6 +342,16 @@
               }
             }
           },
+          "404": {
+            "description": "No album has that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -355,12 +415,29 @@
               }
             }
           },
-          "422": {
-            "description": "Validation Error",
+          "404": {
+            "description": "No album has that id.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One of the submitted track ids does not belong to that album, or the request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
                 }
               }
             }
@@ -438,12 +515,49 @@
               }
             }
           },
-          "422": {
-            "description": "Validation Error",
+          "404": {
+            "description": "No album has that id.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A library operation is in progress, so the edit is refused until it finishes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One of the submitted track ids does not belong to that album, or the request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The edit failed part-way through writing tags or moving files; the body carries the cause and a recovery hint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredErrorDetail"
                 }
               }
             }
@@ -522,6 +636,16 @@
               }
             }
           },
+          "404": {
+            "description": "No album with that id, or the album has no cover art.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -583,12 +707,69 @@
               }
             }
           },
-          "422": {
-            "description": "Validation Error",
+          "404": {
+            "description": "No album has that id.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A library operation is in progress, so cover changes are refused until it finishes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The uploaded cover exceeds the 10 MB limit, or the request body exceeds the app-wide size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The uploaded bytes are not a PNG, JPEG, GIF or WebP image.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The album has no tracks, so beets cannot place cover art for it; or the request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Writing the cover into the album folder failed (a full disk or a read-only album directory); the body carries the cause and a recovery hint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredErrorDetail"
                 }
               }
             }
@@ -605,16 +786,6 @@
           },
           "403": {
             "description": "Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorDetail"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit.",
             "content": {
               "application/json": {
                 "schema": {
@@ -728,6 +899,26 @@
               }
             }
           },
+          "404": {
+            "description": "No album has that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A lyrics fetch is already running, or an import, an artist-art job, a reorganize, a disk sync or a beets swap holds the library.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -825,6 +1016,26 @@
               }
             }
           },
+          "409": {
+            "description": "A library operation is in progress, so the delete is refused until it finishes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Deleting the artist failed, but its files are recoverable in the Trash folder.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -883,6 +1094,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ArtistRenamePreview"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No album in the library has that album artist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -955,6 +1176,36 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ArtistRenameResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No album in the library has that album artist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A library operation is in progress, so the rename is refused until it finishes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The rename failed part-way through the batch; the body carries the cause and a recovery hint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredErrorDetail"
                 }
               }
             }
@@ -1390,6 +1641,26 @@
               }
             }
           },
+          "413": {
+            "description": "The uploaded image exceeds the 10 MB limit, or the request body exceeds the app-wide size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The uploaded bytes are not a PNG, JPEG, GIF or WebP image.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -1412,16 +1683,6 @@
           },
           "403": {
             "description": "Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorDetail"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1484,11 +1745,18 @@
             }
           },
           "422": {
-            "description": "Validation Error",
+            "description": "The link could not be fetched, or what it returned is not a PNG, JPEG, GIF or WebP image; or the request failed validation.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
                 }
               }
             }
@@ -1730,6 +1998,26 @@
               }
             }
           },
+          "403": {
+            "description": "Writing artist art to the library is turned off in settings, or the request is cross-origin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A library job (an import, a backfill, or another artist-art run) already holds the slot, or the beets swap lock is held.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -1742,16 +2030,6 @@
           },
           "400": {
             "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorDetail"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1810,8 +2088,8 @@
               }
             }
           },
-          "400": {
-            "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
+          "403": {
+            "description": "Writing artist art to the library is turned off in settings, or the request is cross-origin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1820,8 +2098,18 @@
               }
             }
           },
-          "403": {
-            "description": "Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass).",
+          "409": {
+            "description": "A library job (an import, a backfill, or another artist-art run) already holds the slot, or the beets swap lock is held.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2321,12 +2609,29 @@
               }
             }
           },
-          "422": {
-            "description": "Validation Error",
+          "409": {
+            "description": "An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A copy-mode import was asked for a folder inside the music library, or the request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
                 }
               }
             }
@@ -2393,6 +2698,16 @@
               }
             }
           },
+          "404": {
+            "description": "No import job has that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -2455,6 +2770,16 @@
               }
             }
           },
+          "404": {
+            "description": "No import job has that id, or no album is parked at that index.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -2512,6 +2837,16 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "404": {
+            "description": "No import job has that id, no album is parked at that index, or the parked album has no embedded cover art.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
               }
             }
           },
@@ -2589,6 +2924,16 @@
               }
             }
           },
+          "404": {
+            "description": "No import job has that id, or no album is parked at that index.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -2653,6 +2998,26 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "404": {
+            "description": "No import job has that id, or no album is parked at that index.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A choice was already submitted for the album at that index.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -2736,6 +3101,16 @@
               }
             }
           },
+          "404": {
+            "description": "No import job has that id, or no duplicate is parked at that index.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -2798,6 +3173,26 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "404": {
+            "description": "No import job has that id, or no duplicate is parked at that index.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A decision was already submitted for the duplicate at that index.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -2864,6 +3259,26 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "404": {
+            "description": "No import job has that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "That import is not a sweep, or the sweep is no longer running.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -3030,12 +3445,86 @@
               }
             }
           },
-          "422": {
-            "description": "Validation Error",
+          "409": {
+            "description": "config.yaml changed on disk since the editor loaded it, so the save was refused; the body carries the file's current text and hash.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ConfigSaveConflictDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The submitted YAML did not parse, or a key MusicDrop models has the wrong shape; the body lists one item per problem, with the 1-based line and 0-based column to mark where there is one. A malformed request body answers with FastAPI's validation shape instead.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "properties": {
+                        "detail": {
+                          "items": {
+                            "properties": {
+                              "loc": {
+                                "type": "string",
+                                "title": "Loc"
+                              },
+                              "msg": {
+                                "type": "string",
+                                "title": "Msg"
+                              },
+                              "type": {
+                                "type": "string",
+                                "title": "Type"
+                              },
+                              "line": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "title": "Line"
+                              },
+                              "column": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "title": "Column"
+                              }
+                            },
+                            "type": "object",
+                            "required": [
+                              "loc",
+                              "msg",
+                              "type"
+                            ],
+                            "title": "ValidationErrorItem",
+                            "description": "One row of the ``POST /api/config/validate`` and ``POST /api/config/save``\nerror responses. ``line`` is 1-based for CodeMirror's ``state.doc.line(n)``\n(CodeMirror reference manual)."
+                          },
+                          "type": "array",
+                          "title": "Detail"
+                        }
+                      },
+                      "type": "object",
+                      "required": [
+                        "detail"
+                      ],
+                      "title": "ConfigValidationErrorDetail",
+                      "description": "The FOURTH real error body: ``POST /api/config/save``'s 422.\n\nBoth of that route's own 422s - the ruamel parse failure and the known-keys\nschema failure (``app/beets/config_editor.py::save``) - raise with a LIST of\n:class:`~app.models.config_editor.ValidationErrorItem` payloads, which\nStarlette renders verbatim under the outer ``detail`` key. The items are the\nSAME rows ``POST /api/config/validate`` returns on a 200, which is what lets\nthe editor feed a rejected Save straight into its CodeMirror gutter.\n\nFastAPI's ``HTTPValidationError`` is not this shape and cannot stand in for\nit: its items carry ``loc`` as an ARRAY of path segments and have no ``line``\nor ``column`` at all. The editor's CodeMirror gutter consumes the same row\nshape from ``POST /api/config/validate``'s 200 body, where it is correctly\ntyped; no live client reads this save 422 body today (the save mutation's\nerror handler covers 409 only and the 422 body is discarded). Declaring this\n422 as that model would still mistype the generated TypeScript - a\nwrongly-typed status is worse than an undeclared one."
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
                 }
               }
             }
@@ -3206,12 +3695,64 @@
               }
             }
           },
-          "422": {
-            "description": "Validation Error",
+          "409": {
+            "description": "config.yaml changed on disk since the editor loaded it, so the save was refused; the body carries the file's current text and hash.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ConfigSaveConflictDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A submitted replace: pattern is not a valid regular expression, so the save was refused before anything was written; the body names the offending row. A malformed request body answers with FastAPI's validation shape instead.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "properties": {
+                        "detail": {
+                          "items": {
+                            "properties": {
+                              "loc": {
+                                "type": "string",
+                                "title": "Loc"
+                              },
+                              "msg": {
+                                "type": "string",
+                                "title": "Msg"
+                              },
+                              "type": {
+                                "type": "string",
+                                "title": "Type"
+                              }
+                            },
+                            "type": "object",
+                            "required": [
+                              "loc",
+                              "msg",
+                              "type"
+                            ],
+                            "title": "NamingRuleError",
+                            "description": "One rejected ``replace:`` row of ``POST /api/config/naming/save``.\n\nThe same three keys as a :class:`~app.models.config_editor.ValidationErrorItem`\nand DELIBERATELY not that model: the naming save builds these dicts by hand\n(``app/beets/config_editor.py::save_naming``) with no ``line``/``column``,\nbecause a bad regex comes from a form row rather than from a position in the\nYAML document - ``loc`` is the row index (``\"replace[0]\"``), which is what\nthe panel would highlight. Reusing the five-field model here would promise a\nline number this route can never send."
+                          },
+                          "type": "array",
+                          "title": "Detail"
+                        }
+                      },
+                      "type": "object",
+                      "required": [
+                        "detail"
+                      ],
+                      "title": "NamingValidationErrorDetail",
+                      "description": "The FIFTH real error body: ``POST /api/config/naming/save``'s 422."
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
                 }
               }
             }
@@ -3264,6 +3805,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BeetsConfigSnapshot"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A library job (an import, a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync) is running, so the reload is refused until it finishes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library rebuild failed during apply, but the saved config is safe on disk and will load on the next start.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredErrorDetail"
                 }
               }
             }
@@ -3371,6 +3932,36 @@
               }
             }
           },
+          "404": {
+            "description": "One of the referenced album ids is no longer in the library.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A library job (an import or a backfill) is in progress, or the duplicate group changed since the report was generated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The resolve failed part-way through moving copies to the Trash; the body carries the cause and a recovery hint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -3438,6 +4029,36 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ResolveAllResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "One of the referenced album ids is no longer in the library.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A library job (an import or a backfill) is in progress, so the batch resolve is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The resolve failed part-way through moving copies to the Trash; the body carries the cause and a recovery hint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredErrorDetail"
                 }
               }
             }
@@ -3544,6 +4165,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LyricsBackfillStatus"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A lyrics backfill is already running, or an import, an artist-art job, a reorganize, a disk sync or a beets swap holds the library.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -3743,6 +4374,16 @@
               }
             }
           },
+          "404": {
+            "description": "No album has that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -3799,6 +4440,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReorganizeBackfillStatus"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A reorganize is already running, or another library job or a beets swap holds the library.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -3861,6 +4512,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReorganizeBackfillStatus"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No album has that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A reorganize is already running, or another library job or a beets swap holds the library.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -3989,6 +4660,16 @@
               }
             }
           },
+          "409": {
+            "description": "A reorganize is still running; stop it before dismissing its result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
             "content": {
@@ -4031,6 +4712,16 @@
               }
             }
           },
+          "503": {
+            "description": "The music library root is missing, empty or unreadable, so no plan is computed (the guard against an unmounted share).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
             "content": {
@@ -4058,6 +4749,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DiskSyncStatus"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A disk sync is already running, or another library job or a beets swap holds the library.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -4322,6 +5023,16 @@
               }
             }
           },
+          "404": {
+            "description": "The playlist does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -4378,6 +5089,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Playlist"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The playlist does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -4444,6 +5165,16 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "404": {
+            "description": "The playlist does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -4513,6 +5244,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PlaylistDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The playlist does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -4597,12 +5338,29 @@
               }
             }
           },
-          "422": {
-            "description": "Validation Error",
+          "404": {
+            "description": "The playlist does not exist.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The new order names entry uids this playlist does not have, or the request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
                 }
               }
             }
@@ -4674,6 +5432,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PlaylistDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The playlist does not exist, or one of its entries does not.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -4758,12 +5526,29 @@
               }
             }
           },
-          "422": {
-            "description": "Validation Error",
+          "404": {
+            "description": "The playlist does not exist, or one of its entries does not.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "No library track has the requested item id, or the request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
                 }
               }
             }
@@ -4826,6 +5611,46 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PlaylistDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The playlist does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Plex is not connected on this install, so the sync cannot run.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Plex could not be reached, or the library files could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The sync ran but its result could not be recorded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -4994,6 +5819,16 @@
               }
             }
           },
+          "404": {
+            "description": "The playlist does not exist, it has no cover artwork, or the artwork file could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -5041,6 +5876,36 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Playlist"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The playlist does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The uploaded image exceeds the 8 MB limit, or the request body exceeds the app-wide size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The uploaded image is not a JPEG or PNG.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -5098,6 +5963,16 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "404": {
+            "description": "The playlist does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -5157,6 +6032,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PlaylistImportPreviewResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Plex is not configured, so the requested playlists cannot be pulled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Plex could not be reached while pulling the playlists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -5234,11 +6129,18 @@
             }
           },
           "422": {
-            "description": "Validation Error",
+            "description": "One of the reviewed entries names an item id no library track has, or the request failed validation.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
                 }
               }
             }
@@ -5435,6 +6337,26 @@
               }
             }
           },
+          "409": {
+            "description": "Plex is not configured because its base URL or admin token is not set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The Plex server could not be reached or rejected the request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
             "content": {
@@ -5466,6 +6388,26 @@
               }
             }
           },
+          "409": {
+            "description": "Plex is not configured because its base URL or admin token is not set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The Plex server could not be reached or rejected the request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
             "content": {
@@ -5493,6 +6435,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PlexPlaylistList"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Plex is not configured because its base URL or admin token is not set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The Plex server could not be reached or rejected the request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -5679,6 +6641,16 @@
               }
             }
           },
+          "401": {
+            "description": "The webhook was rejected because no webhook secret is configured or the provided API key does not match it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -5772,6 +6744,16 @@
               }
             }
           },
+          "409": {
+            "description": "An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
             "content": {
@@ -5852,6 +6834,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReviewInboxResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No inbox is configured, or that name does not resolve to a folder sitting directly inside the inbox.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library, or two inbox folders display under the same name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -6054,6 +7056,16 @@
               }
             }
           },
+          "404": {
+            "description": "The bank item does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -6096,6 +7108,26 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "404": {
+            "description": "The bank item does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The row's state changed, so it can no longer be deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -6171,6 +7203,16 @@
               }
             }
           },
+          "404": {
+            "description": "The bank item does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -6230,6 +7272,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BankSearchResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The bank item does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The row is not an undecided match row, so the search was refused (it is already decided, or its folder went stale).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -6307,6 +7369,26 @@
               }
             }
           },
+          "404": {
+            "description": "The bank item does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The row cannot be rescanned (already decided, its folder is gone, or it holds no audio files).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -6375,6 +7457,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BankItem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The bank item does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The row's state changed, so the decision is no longer valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -6624,6 +7726,26 @@
               }
             }
           },
+          "409": {
+            "description": "The operation was refused because a library operation is in progress or the beets swap lock is held, or two trashed folders display under the same name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The named folder is not in the Trash.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -6686,6 +7808,36 @@
               }
             }
           },
+          "409": {
+            "description": "The operation was refused because a library operation is in progress or the beets swap lock is held, or two trashed folders display under the same name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The named folder is not in the Trash.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The restore failed because re-importing the trashed folder failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -6744,6 +7896,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EmptyResult"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The operation was refused because a library operation is in progress or the beets swap lock is held.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -8808,6 +9970,43 @@
         ],
         "title": "CandidateOption",
         "description": "A ranked alternative release from ``task.candidates``.\n\nThe switcher in the review screen lists these; ``index`` is the position in\nthe beets candidate list and is what a choice references. ``release_id`` is\nthe metadata backend's id for the release (``AlbumInfo.album_id`` \u2014 an\nMBID for MusicBrainz, the deezer id for Deezer): the bank's apply runner\npins ``import.search_ids`` to it so the apply imports exactly the release\nthe user chose. None for sources without an id (the apply then falls back\nto an unpinned lookup's top candidate)."
+      },
+      "ConfigSaveConflict": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          },
+          "current_yaml_text": {
+            "type": "string",
+            "title": "Current Yaml Text"
+          },
+          "current_sha256": {
+            "type": "string",
+            "title": "Current Sha256"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail",
+          "current_yaml_text",
+          "current_sha256"
+        ],
+        "title": "ConfigSaveConflict",
+        "description": "What the config editor sends back when its compare-and-swap loses.\n\n``POST /api/config/save`` and ``POST /api/config/naming/save`` hash the file\non disk and compare it with the ``base_sha256`` the editor loaded from\n(``app/beets/config_editor.py``). A mismatch means someone else wrote\n``config.yaml`` in between, so the save is refused with 409 and the client is\nhanded everything it needs to recover WITHOUT a second round trip:\n``current_yaml_text`` is the file as it now stands and ``current_sha256`` is\nthe CAS token to resubmit with if the user chooses to overwrite anyway.\n\n``detail`` is the human sentence (\"File changed on disk\"). Unlike\n:class:`OperationFailure`, the inner key really IS named ``detail`` here -\nthat is what the raise sends, and this model documents the wire, not the\nnaming we would pick today."
+      },
+      "ConfigSaveConflictDetail": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/ConfigSaveConflict"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ConfigSaveConflictDetail",
+        "description": "The THIRD real error body: ``{\"detail\": {detail, current_yaml_text, current_sha256}}``.\n\nStarlette wraps an ``HTTPException``'s ``detail`` verbatim, so the object the\nconfig editor raises with becomes the value of the outer ``detail`` key.\n\nNeither existing model describes it, and declaring it as either would be a\nlie the generated client cannot recover from:\n\n- :class:`ErrorDetail` types ``detail`` as a ``str``, so the two fields the\n  conflict UI reads would not exist in the contract at all;\n- :class:`StructuredErrorDetail` types ``detail`` as ``{message, recovery}``\n  - three keys wrong out of three, and it would promise a ``recovery``\n  sentence this body never carries.\n\nA wrongly-typed status is worse than an undeclared one (see\n:class:`StructuredErrorDetail`), which is why this shape got a model of its\nown rather than being folded into one of those two."
       },
       "CoverInstallResult": {
         "properties": {
@@ -11074,6 +12273,25 @@
         "title": "NamingRuleInput",
         "description": "One ``paths:`` entry as the panel sees it: a beets query key (``default`` /\n``comp`` / ``singleton`` / any query like ``albumtype:soundtrack``) and its\npath-format template string."
       },
+      "OperationFailure": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "recovery": {
+            "type": "string",
+            "title": "Recovery"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message",
+          "recovery"
+        ],
+        "title": "OperationFailure",
+        "description": "What a long-running library op failed at, and what the user can do next.\n\n``message`` names the cause (it embeds the underlying exception's text);\n``recovery`` says what state the library is in and what to do about it.\n``message`` rather than ``detail`` for the inner key on purpose - Starlette\nalready wraps the payload in an outer ``detail``, so an inner ``detail``\nwould render the confusing ``{\"detail\": {\"detail\": ...}}``."
+      },
       "OrphanFolder": {
         "properties": {
           "name": {
@@ -13263,6 +14481,19 @@
         ],
         "title": "StartImportResponse",
         "description": "Response of a successful ``POST /api/import``: the new job's id."
+      },
+      "StructuredErrorDetail": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/OperationFailure"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "StructuredErrorDetail",
+        "description": "The SECOND real error body in this API: ``{\"detail\": {message, recovery}}``.\n\nEvery blanket ``except Exception`` on a beets write op raises a 500 whose\n``detail`` is an OBJECT, not a sentence (cover install, album edit, artist\nrename, duplicate resolve, delete, config Apply). The frontend unwraps it in\n``frontend/src/api/lib.ts::structuredDetailMessage``, so the shape is read,\nnot decorative.\n\nDeclaring such a 500 as ``ErrorDetail`` would be worse than leaving it out:\nit swaps an UNDECLARED status for a WRONGLY-TYPED one, and the generated\nclient would parse an object as a string. Use this model instead, and only\non routes whose 500 really carries the nested shape - a route that can also\n500 with a flat sentence needs an ``anyOf`` (none does today)."
       },
       "SweepStatus": {
         "properties": {

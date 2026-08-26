@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Request
 from starlette.responses import StreamingResponse
 
 from app.events.broker import MAX_SUBSCRIBERS, EventBroker
+from app.models.errors import ErrorDetail
 from app.models.events import LibraryChangedEvent
 
 router = APIRouter(tags=["events"])
@@ -25,7 +26,14 @@ HEARTBEAT_SECONDS = 20.0  # < a typical nginx proxy_read_timeout (60s)
 @router.get(
     "/events",
     responses={
-        200: {"model": LibraryChangedEvent, "description": "SSE stream of library-change events."}
+        200: {"model": LibraryChangedEvent, "description": "SSE stream of library-change events."},
+        503: {
+            "model": ErrorDetail,
+            "description": (
+                "The event stream is unavailable because the event broker is not "
+                "running or the maximum number of subscribers has been reached."
+            ),
+        },
     },
 )
 async def events_endpoint(request: Request) -> StreamingResponse:

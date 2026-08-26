@@ -8,11 +8,13 @@ assertion below is against a literal; the directive-level tests then say WHY
 each token is in the string, so a future edit that drops one fails with a
 readable reason instead of a byte diff.
 
-Placement is the other load-bearing thing: the middleware is added LAST in
-``app.main`` so it wraps OUTERMOST (Starlette applies middleware in reverse add
-order), which is the only position from which it can stamp the host guard's
-400, the origin guard's 403 and the body limit's 413 — those never reach the
-router. The rejection tests below are the behavioral proof of that placement.
+Placement is the other load-bearing thing: the middleware is added AFTER THE
+THREE GUARDS in ``app.main`` so it wraps outside all of them (Starlette applies
+middleware in reverse add order) — the only position from which it can stamp
+the host guard's 400, the origin guard's 403 and the body limit's 413 — those
+never reach the router. CORS is added last and sits outermost, as
+python:S8414 requires. The rejection tests below are the behavioral proof of
+that placement.
 """
 
 from __future__ import annotations
@@ -23,13 +25,16 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 from starlette.responses import PlainTextResponse
 from starlette.types import Message, Receive, Scope, Send
 
+from app.body_limit import BodySizeLimitMiddleware
 from app.events.broker import EventBroker
 from app.host_guard import HostGuardMiddleware
 from app.main import app as real_app
+from app.origin_guard import OriginGuardMiddleware
 from app.security_headers import SecurityHeadersMiddleware, csp_for_path
 from app.static_files import mount_static
 
@@ -139,12 +144,22 @@ def _middleware_index(cls: object) -> int:
     raise AssertionError(f"middleware not registered: {cls!r}")
 
 
-def test_security_headers_wrap_outermost() -> None:
+def test_security_headers_wrap_outside_the_guards() -> None:
     # Starlette's add_middleware inserts at index 0, so user_middleware[0] is the
-    # OUTERMOST wrapper. Anything added after us would hide its own rejections
-    # from the stamping.
-    assert _middleware_index(SecurityHeadersMiddleware) == 0
-    assert _middleware_index(HostGuardMiddleware) == 1
+    # OUTERMOST wrapper. The invariant that matters is not "outermost" per se
+    # but OUTSIDE all three guards: their rejections (400/413/403) never reach
+    # the router, so only a wrapper outside them can stamp them. CORS may sit
+    # outside the stamper — it must, added last per python:S8414 — because it
+    # never rejects an ordinary request. The FULL order is asserted so a future
+    # reshuffle that slips the stamper inside a guard fails here, not quietly.
+    expected = (
+        CORSMiddleware,
+        SecurityHeadersMiddleware,
+        HostGuardMiddleware,
+        BodySizeLimitMiddleware,
+        OriginGuardMiddleware,
+    )
+    assert [_middleware_index(c) for c in expected] == list(range(len(expected)))
 
 
 def test_host_guard_rejection_carries_the_headers() -> None:
@@ -175,8 +190,20 @@ def test_body_limit_rejection_carries_the_headers() -> None:
     _assert_stamped(r, csp=_STRICT)
 
 
-def test_cors_preflight_carries_the_headers() -> None:
-    # CORSMiddleware answers preflights itself, inside our wrapper.
+def test_cors_preflight_is_answered_by_cors_itself() -> None:
+    """Preflight: 200 + the CORS headers, and deliberately NO security headers.
+
+    CORSMiddleware is now outermost (added last per python:S8414), so it
+    answers the preflight itself, before the stamper ever runs. That absence
+    is the accepted trade, not a bug: a preflight is a bodiless OPTIONS
+    response, and every stamped header is inert on it — nothing renders
+    (content-security-policy), nothing is framed (x-frame-options), nothing is
+    embedded (cross-origin-resource-policy), there is no body to sniff
+    (x-content-type-options), and it carries no navigation intent to govern
+    (referrer-policy). Pinning the absence deliberately is better than deleting
+    the test: it stops a later "restore" of the old order from landing without
+    anyone having understood the trade.
+    """
     r = _client().options(
         "/api/config/validate",
         headers={
@@ -186,6 +213,72 @@ def test_cors_preflight_carries_the_headers() -> None:
     )
     assert r.status_code == 200
     assert r.headers["access-control-allow-origin"] == "http://localhost:5173"
+    # The five stamped headers are ABSENT on the preflight — the S8414 trade,
+    # pinned here so it is never silently "fixed" away.
+    assert "x-content-type-options" not in r.headers
+    assert "x-frame-options" not in r.headers
+    assert "referrer-policy" not in r.headers
+    assert "cross-origin-resource-policy" not in r.headers
+    assert "content-security-policy" not in r.headers
+
+
+def test_preflight_with_an_oversize_content_length_is_answered_not_413() -> None:
+    """The one shape where CORS short-circuits ahead of the body limit — and it is safe.
+
+    A preflight (OPTIONS + ``Access-Control-Request-Method``) declaring a body
+    far over the cap gets CORS's 200, not the body limit's 413, because CORS now
+    wraps outside it. That is a deliberate accept, not a DoS regression: the
+    order decides who ANSWERS, not who READS. ``CORSMiddleware`` passes
+    ``receive`` through untouched in every branch and ``Response.__call__``
+    never calls it (checked against the pinned starlette 1.1.0 source), so no
+    body is buffered in either order — the declared bytes are never taken off
+    the socket by the app. Nor does the preflight reach the router: no handler,
+    no parser and no upload sees it. And the request it authorises still faces
+    the body limit for real, because that one is not a preflight — see
+    ``test_non_preflight_options_with_an_oversize_body_is_still_413``.
+    """
+    r = _client().options(
+        "/api/config/validate",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+            "Content-Length": str(26 * 1024 * 1024),
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_non_preflight_options_still_reaches_the_router_and_is_stamped() -> None:
+    """Only true PREFLIGHTS bypass the stamper — not OPTIONS in general.
+
+    ``CORSMiddleware`` short-circuits on ``method == OPTIONS`` AND an
+    ``Access-Control-Request-Method`` header. Drop the second condition and the
+    request is an ordinary one: it falls all the way through the three guards to
+    the router (405 here — ``/api/config/validate`` is POST-only) and carries the
+    five stamped headers like any other response. The narrow fact is worth
+    pinning because the wider one — "an OPTIONS response no longer carries the
+    stamped headers" — is what the ede5001 commit message says, and a future
+    reader acting on it would think this response is uncovered.
+    """
+    r = _client().options("/api/config/validate", headers={"Origin": "http://localhost:5173"})
+    assert r.status_code == 405
+    _assert_stamped(r, csp=_STRICT)
+
+
+def test_non_preflight_options_with_an_oversize_body_is_still_413() -> None:
+    # The guards are not bypassed either: the same OPTIONS, minus the preflight
+    # header, is refused by the body limit and the refusal is stamped. So the
+    # 200 pinned above is scoped to the preflight shape alone, which is bodiless
+    # by definition.
+    r = _client().options(
+        "/api/config/validate",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Content-Length": str(26 * 1024 * 1024),
+        },
+    )
+    assert r.status_code == 413
     _assert_stamped(r, csp=_STRICT)
 
 

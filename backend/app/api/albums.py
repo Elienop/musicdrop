@@ -1,4 +1,4 @@
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -32,12 +32,60 @@ from app.models.completeness import AlbumMissingReport
 from app.models.cover import CoverInstallResult
 from app.models.delete import DeleteResult
 from app.models.edit import AlbumEditPreview, AlbumEditRequest, AlbumEditResult
-from app.models.errors import ErrorDetail
+from app.models.errors import ErrorDetail, StructuredErrorDetail, validation_or_detail_422
 from app.models.lyrics import LyricsBackfillStatus
 
 router = APIRouter(tags=["albums"])
 
 _MAX_COVER_BYTES = 10 * 1024 * 1024
+
+#: The OpenAPI entry for the cover GET's two "no image to send" exits. Named
+#: because both the thumb and the full-size arm end there and must not drift
+#: apart (see app/models/errors.py for why the model must be named).
+_COVER_NOT_FOUND_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "No album with that id, or the album has no cover art.",
+}
+
+#: The album-edit refusals, all raised inside ``app/beets/edit.py``'s ops rather
+#: than in the endpoint bodies below - which is exactly why they were easy to
+#: leave undeclared. Read the op, not just the endpoint.
+_EDIT_ALBUM_NOT_FOUND_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "No album has that id.",
+}
+#: A submitted track id that belongs to a different album is well-formed but
+#: semantically impossible, so it shares 422 with FastAPI's own validation
+#: failures - hence ``validation_or_detail_422`` rather than a bare model, which
+#: would REPLACE the validation shape (see app/models/errors.py).
+_EDIT_FOREIGN_TRACK_422 = (
+    "One of the submitted track ids does not belong to that album, or the"
+    " request failed validation."
+)
+
+#: The album-scoped lyrics-fetch refusals. Both are raised inside
+#: ``start_album_lyrics_op`` (app/beets/lyrics.py), not in the endpoint body.
+_LYRICS_ALBUM_NOT_FOUND_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "No album has that id.",
+}
+#: TWO independent gates answer with this one status, and the sentence has to
+#: cover both unions, because a description that names a subset reads as a
+#: complete list:
+#:   - ``raise_if_library_busy`` - the whole FIVE-job union (import, lyrics,
+#:     artist-art, reorganize, disk-sync) with no exclusions, OR the beets swap
+#:     lock, which ELEVEN call sites take (config Apply, album edit, cover
+#:     install, artist rename, duplicate resolve x2, delete x2, trash
+#:     restore/empty x3) - hence "a beets swap", not a list that would go stale;
+#:   - then ``reg.start`` -> ``claim_slot``, which re-checks that union and
+#:     additionally refuses when the lyrics slot itself is already taken.
+_LYRICS_FETCH_BUSY_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": (
+        "A lyrics fetch is already running, or an import, an artist-art job, a"
+        " reorganize, a disk sync or a beets swap holds the library."
+    ),
+}
 
 
 def get_library(request: Request) -> LibraryHandle:
@@ -84,7 +132,12 @@ async def list_albums_endpoint(
     return AlbumPage(items=items, total=total, limit=limit, offset=offset)
 
 
-@router.get("/albums/{album_id}")
+@router.get(
+    "/albums/{album_id}",
+    responses={
+        404: {"model": ErrorDetail, "description": "No album with that id."},
+    },
+)
 async def get_album_detail_endpoint(
     album_id: int,
     handle: Annotated[LibraryHandle, Depends(get_library)],
@@ -95,7 +148,14 @@ async def get_album_detail_endpoint(
     return detail
 
 
-@router.get("/albums/{album_id}/missing")
+@router.get(
+    "/albums/{album_id}/missing",
+    # Raised inside ``missing_report_op`` (app/beets/completeness.py), which maps
+    # the adapter's ``AlbumNotFoundError`` onto 404. Every OTHER failure -
+    # including a provider that cannot be reached - is reported as a non-ok
+    # ``status`` field on a 200 body, so 404 is the route's only error status.
+    responses={404: {"model": ErrorDetail, "description": "No album has that id."}},
+)
 async def get_album_missing_endpoint(
     album_id: int,
     handle: Annotated[LibraryHandle, Depends(get_library)],
@@ -104,7 +164,13 @@ async def get_album_missing_endpoint(
     return await missing_report_op(handle.lib, album_id)
 
 
-@router.post("/albums/{album_id}/edit/preview")
+@router.post(
+    "/albums/{album_id}/edit/preview",
+    responses={
+        404: _EDIT_ALBUM_NOT_FOUND_RESPONSE,
+        422: validation_or_detail_422(_EDIT_FOREIGN_TRACK_422),
+    },
+)
 async def preview_album_edit_endpoint(
     album_id: int,
     payload: AlbumEditRequest,
@@ -115,7 +181,29 @@ async def preview_album_edit_endpoint(
     return await preview_album_edit_op(request, album_id, payload)
 
 
-@router.post("/albums/{album_id}/edit")
+@router.post(
+    "/albums/{album_id}/edit",
+    responses={
+        404: _EDIT_ALBUM_NOT_FOUND_RESPONSE,
+        409: {
+            "model": ErrorDetail,
+            "description": (
+                "A library operation is in progress, so the edit is refused until it finishes."
+            ),
+        },
+        422: validation_or_detail_422(_EDIT_FOREIGN_TRACK_422),
+        # The blanket ``except Exception`` in ``apply_album_edit_op`` answers
+        # with a NESTED detail, not a sentence - declaring it as ErrorDetail
+        # would swap an undeclared status for a wrongly-typed one.
+        500: {
+            "model": StructuredErrorDetail,
+            "description": (
+                "The edit failed part-way through writing tags or moving files;"
+                " the body carries the cause and a recovery hint."
+            ),
+        },
+    },
+)
 async def edit_album_endpoint(
     album_id: int,
     payload: AlbumEditRequest,
@@ -128,7 +216,10 @@ async def edit_album_endpoint(
     return result
 
 
-@router.get("/albums/{album_id}/cover")
+@router.get(
+    "/albums/{album_id}/cover",
+    responses={404: _COVER_NOT_FOUND_RESPONSE},
+)
 async def get_album_cover_endpoint(
     album_id: int,
     request: Request,
@@ -234,6 +325,58 @@ async def fetch_album_cover_endpoint(
 
 @router.post(
     "/albums/{album_id}/cover",
+    # Every status this route can answer, each with a NAMED model: a
+    # description-only entry drops the `content` block and openapi-typescript
+    # renders `content?: never` for a body the client must read (see
+    # app/models/errors.py). Most of these are raised inside install_cover_op
+    # (app/beets/cover.py), not in the body below, so they are just as real and
+    # just as easy to leave undeclared. 400/403 come from the guard overlay.
+    responses={
+        404: {"model": ErrorDetail, "description": "No album has that id."},
+        409: {
+            "model": ErrorDetail,
+            "description": (
+                "A library operation is in progress, so cover changes are refused"
+                " until it finishes."
+            ),
+        },
+        # 413 for an oversize payload, the same code (and reason) the playlist
+        # artwork upload and the app-wide body-size guard already use. Declared
+        # here rather than left to that guard's overlay entry: this route
+        # rejects at its OWN 10 MB cap, well under the app-wide limit, so its
+        # refusal is the one a client actually meets.
+        413: {
+            "model": ErrorDetail,
+            "description": (
+                "The uploaded cover exceeds the 10 MB limit, or the request body"
+                " exceeds the app-wide size limit."
+            ),
+        },
+        415: {
+            "model": ErrorDetail,
+            "description": "The uploaded bytes are not a PNG, JPEG, GIF or WebP image.",
+        },
+        # An empty album is a well-formed request the library cannot satisfy, so
+        # it stays 422 - which means this route returns BOTH 422 bodies (the
+        # multipart body and the path parameter can also fail validation, whose
+        # `detail` is a LIST). See app/models/errors.py.
+        422: validation_or_detail_422(
+            "The album has no tracks, so beets cannot place cover art for it; or"
+            " the request failed validation."
+        ),
+        # The blanket ``except Exception`` at the end of ``install_cover_op``
+        # answers with a NESTED detail object, not a sentence, and
+        # frontend/src/api/lib.ts unwraps exactly that shape. ErrorDetail here
+        # would trade an undeclared status for a wrongly-typed one.
+        500: {
+            "model": StructuredErrorDetail,
+            "description": (
+                "Writing the cover into the album folder failed (a full disk or"
+                " a read-only album directory); the body carries the cause and a"
+                " recovery hint."
+            ),
+        },
+    },
 )
 async def install_album_cover_endpoint(
     album_id: int,
@@ -247,18 +390,24 @@ async def install_album_cover_endpoint(
     # (Content-Length is client-supplied and may be absent or wrong).
     declared = request.headers.get("content-length")
     if declared is not None and declared.isdigit() and int(declared) > _MAX_COVER_BYTES:
-        raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
+        raise HTTPException(status_code=413, detail="Image too large (max 10 MB)")
     # Bounded read: never buffer more than the cap (+1 to detect an exact-cap
     # overrun) even when Content-Length is absent or understated.
     image_bytes = await file.read(_MAX_COVER_BYTES + 1)
     if len(image_bytes) > _MAX_COVER_BYTES:
-        raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
+        raise HTTPException(status_code=413, detail="Image too large (max 10 MB)")
     result = await install_cover_op(request, album_id, image_bytes)
     emit_art_changed(request.app, f"album:{album_id}")
     return result
 
 
-@router.post("/albums/{album_id}/lyrics/fetch")
+@router.post(
+    "/albums/{album_id}/lyrics/fetch",
+    responses={
+        404: _LYRICS_ALBUM_NOT_FOUND_RESPONSE,
+        409: _LYRICS_FETCH_BUSY_RESPONSE,
+    },
+)
 async def fetch_album_lyrics_endpoint(
     album_id: int,
     request: Request,
@@ -271,7 +420,28 @@ async def fetch_album_lyrics_endpoint(
     )
 
 
-@router.delete("/albums/{album_id}")
+@router.delete(
+    "/albums/{album_id}",
+    # Named models on all three: a description-only entry drops the `content`
+    # block and openapi-typescript renders `content?: never` for a body the
+    # client must read (see app/models/errors.py). All three are raised inside
+    # delete_album_op (app/beets/delete.py), not here.
+    responses={
+        404: {"model": ErrorDetail, "description": "No album has that id."},
+        409: {
+            "model": ErrorDetail,
+            "description": (
+                "A library operation is in progress, so the delete is refused until it finishes."
+            ),
+        },
+        500: {
+            "model": StructuredErrorDetail,
+            "description": (
+                "Deleting the album failed, but its files are recoverable in the Trash folder."
+            ),
+        },
+    },
+)
 async def delete_album_endpoint(album_id: int, request: Request) -> DeleteResult:
     """Move the album's whole folder to Trash (reversible) and drop it from the
     library. 404 unknown album; 409 while a library job is running."""

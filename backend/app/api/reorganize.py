@@ -9,7 +9,7 @@ duplicates/import/lyrics/artists)."""
 
 import os
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Final
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
@@ -21,6 +21,7 @@ from app.beets.reorganize import album_scope_label, plan_reorganize
 from app.beets.trash import resolve_trash_dir
 from app.events.emit import emit_library_changed
 from app.library_busy import raise_if_library_busy
+from app.models.errors import ErrorDetail
 from app.models.reorganize import ReorganizeBackfillStatus, ReorganizePlan, ReorganizeScope
 from app.reorganize_jobs.registry import (
     ReorganizeRegistry,
@@ -31,6 +32,21 @@ from app.reorganize_jobs.runner import start_backfill
 router = APIRouter(tags=["reorganize"])
 
 _BUSY = "A library operation is in progress; reorganize available when it finishes"
+
+#: Every status in this file is spelled ``status.HTTP_*``, which is why
+#: SonarQube python:S8415 (integer literals only) never flagged the router.
+#: Each entry names a model so the ``{detail: str}`` body keeps a generated
+#: type - see app/models/errors.py.
+_REORGANIZE_BUSY_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": (
+        "A reorganize is already running, or another library job or a beets swap holds the library."
+    ),
+}
+_ALBUM_NOT_FOUND_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "No album has that id.",
+}
 
 
 def _gate_busy(app: object) -> None:
@@ -76,7 +92,10 @@ async def preview_reorganize(
     )
 
 
-@router.get("/albums/{album_id}/reorganize/preview")
+@router.get(
+    "/albums/{album_id}/reorganize/preview",
+    responses={404: _ALBUM_NOT_FOUND_RESPONSE},
+)
 async def preview_album_reorganize(
     album_id: int,
     request: Request,
@@ -96,7 +115,7 @@ async def preview_album_reorganize(
     )
 
 
-@router.post("/reorganize")
+@router.post("/reorganize", responses={409: _REORGANIZE_BUSY_RESPONSE})
 async def start_reorganize(
     request: Request,
     reg: Annotated[ReorganizeRegistry, Depends(get_reorganize_backfill)],
@@ -124,7 +143,10 @@ async def start_reorganize(
     return reg.state()
 
 
-@router.post("/albums/{album_id}/reorganize")
+@router.post(
+    "/albums/{album_id}/reorganize",
+    responses={404: _ALBUM_NOT_FOUND_RESPONSE, 409: _REORGANIZE_BUSY_RESPONSE},
+)
 async def start_album_reorganize(
     album_id: int,
     request: Request,
@@ -168,7 +190,18 @@ async def stop_reorganize(
     return reg.state()
 
 
-@router.post("/reorganize/dismiss")
+@router.post(
+    "/reorganize/dismiss",
+    responses={
+        # NOT the shared busy entry: this route has no ``_gate_busy``, so its
+        # only 409 is the registry refusing to clear a slot that is still
+        # running.
+        409: {
+            "model": ErrorDetail,
+            "description": "A reorganize is still running; stop it before dismissing its result.",
+        },
+    },
+)
 async def dismiss_reorganize(
     reg: Annotated[ReorganizeRegistry, Depends(get_reorganize_backfill)],
 ) -> ReorganizeBackfillStatus:

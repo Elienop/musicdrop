@@ -60,7 +60,7 @@ from app.models.artist import (
 )
 from app.models.artist_art import ArtistArtBackfillStatus, ArtistArtWriteSettings
 from app.models.delete import DeleteResult
-from app.models.errors import ErrorDetail
+from app.models.errors import ErrorDetail, StructuredErrorDetail, validation_or_detail_422
 from app.models.rename import ArtistRenamePreview, ArtistRenameRequest, ArtistRenameResult
 
 router = APIRouter(tags=["artists"])
@@ -77,6 +77,37 @@ _IMAGE_NOT_FOUND = "Artist image not found"
 _ART_BUSY_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": "An artist-art job is running, so image changes are refused until it finishes.",
+}
+
+#: The OpenAPI entries for the two art-WRITE job starters (apply + backfill),
+#: which refuse identically: the write toggle is off (403), or some library job
+#: already holds the slot (409). Named because both routes carry both.
+_ART_WRITE_DISABLED_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": (
+        "Writing artist art to the library is turned off in settings, or the"
+        " request is cross-origin."
+    ),
+}
+#: Both routes reach this through ``_gate_library_busy`` ->
+#: ``raise_if_library_busy``, which refuses for TWO reasons, not one: a library
+#: job holds the slot, OR the beets swap lock is held (a config Apply or a
+#: duplicate resolve, neither of which is a library job). The swap-lock arm is
+#: named here for the same reason trash.py's entry names it - a description
+#: that omits half its causes reads as a complete list.
+_ART_JOB_TAKEN_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": (
+        "A library job (an import, a backfill, or another artist-art run) already"
+        " holds the slot, or the beets swap lock is held."
+    ),
+}
+
+#: The artist-rename refusals, all raised inside ``app/beets/rename.py``'s ops
+#: rather than in the endpoint bodies - read the op, not just the endpoint.
+_ARTIST_NOT_FOUND_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "No album in the library has that album artist.",
 }
 
 
@@ -161,7 +192,10 @@ async def list_artists_endpoint(
     return await run_in_threadpool(list_artists, handle.lib)
 
 
-@router.post("/artists/rename/preview")
+@router.post(
+    "/artists/rename/preview",
+    responses={404: _ARTIST_NOT_FOUND_RESPONSE},
+)
 async def preview_artist_rename_endpoint(
     payload: ArtistRenameRequest,
     request: Request,
@@ -174,7 +208,28 @@ async def preview_artist_rename_endpoint(
     return await preview_artist_rename_op(request, payload)
 
 
-@router.post("/artists/rename")
+@router.post(
+    "/artists/rename",
+    responses={
+        404: _ARTIST_NOT_FOUND_RESPONSE,
+        409: {
+            "model": ErrorDetail,
+            "description": (
+                "A library operation is in progress, so the rename is refused until it finishes."
+            ),
+        },
+        # The blanket ``except Exception`` in ``apply_artist_rename_op``
+        # answers with a NESTED detail object, not a sentence;
+        # frontend/src/api/useArtistRename.ts reads it through lib.ts.
+        500: {
+            "model": StructuredErrorDetail,
+            "description": (
+                "The rename failed part-way through the batch; the body carries"
+                " the cause and a recovery hint."
+            ),
+        },
+    },
+)
 async def rename_artist_endpoint(
     payload: ArtistRenameRequest,
     request: Request,
@@ -630,7 +685,23 @@ async def fetch_artist_image_endpoint(
 
 @router.post(
     "/artists/image/override",
-    responses={409: _ART_BUSY_RESPONSE},
+    responses={
+        409: _ART_BUSY_RESPONSE,
+        # 413/415 rather than 422, matching the playlist artwork upload: an
+        # oversize payload and an unsupported media type each have their own
+        # status, and 422 is left to mean "well-formed but semantically wrong".
+        413: {
+            "model": ErrorDetail,
+            "description": (
+                "The uploaded image exceeds the 10 MB limit, or the request body"
+                " exceeds the app-wide size limit."
+            ),
+        },
+        415: {
+            "model": ErrorDetail,
+            "description": "The uploaded bytes are not a PNG, JPEG, GIF or WebP image.",
+        },
+    },
 )
 async def upload_artist_image_override_endpoint(
     request: Request,
@@ -643,15 +714,15 @@ async def upload_artist_image_override_endpoint(
     # its size; the post-read length check below is the authoritative guard.
     declared = request.headers.get("content-length")
     if declared is not None and declared.isdigit() and int(declared) > MAX_IMAGE_BYTES:
-        raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
+        raise HTTPException(status_code=413, detail="Image too large (max 10 MB)")
     # Bounded read: never buffer more than the cap (+1 to detect an exact-cap
     # overrun) even when Content-Length is absent or understated.
     image_bytes = await file.read(MAX_IMAGE_BYTES + 1)
     if len(image_bytes) > MAX_IMAGE_BYTES:
-        raise HTTPException(status_code=422, detail="Image too large (max 10 MB)")
+        raise HTTPException(status_code=413, detail="Image too large (max 10 MB)")
     mime = sniff_image_mime(image_bytes)
     if mime is None:
-        raise HTTPException(status_code=422, detail="not a supported image (png/jpeg/gif/webp)")
+        raise HTTPException(status_code=415, detail="not a supported image (png/jpeg/gif/webp)")
     # Offload the blocking mkdir + up-to-10MB cache write (dir may be on slow
     # HDD/NAS) so it never stalls the event loop, mirroring the cache read.
     await run_in_threadpool(cache.write_override, name, image_bytes, mime)
@@ -668,7 +739,16 @@ async def upload_artist_image_override_endpoint(
 
 @router.post(
     "/artists/image/override/from-url",
-    responses={409: _ART_BUSY_RESPONSE},
+    responses={
+        409: _ART_BUSY_RESPONSE,
+        # A reachable-but-useless link is a semantic failure of a well-formed
+        # request, so it stays 422 - and the route therefore returns BOTH 422
+        # bodies (see app/models/errors.py).
+        422: validation_or_detail_422(
+            "The link could not be fetched, or what it returned is not a PNG,"
+            " JPEG, GIF or WebP image; or the request failed validation."
+        ),
+    },
 )
 async def set_artist_image_override_from_url_endpoint(
     request: Request,
@@ -835,7 +915,10 @@ async def set_artist_art_settings(
     return ArtistArtWriteSettings(enabled=toggle.set_enabled(body.enabled))
 
 
-@router.post("/artists/art/apply")
+@router.post(
+    "/artists/art/apply",
+    responses={403: _ART_WRITE_DISABLED_RESPONSE, 409: _ART_JOB_TAKEN_RESPONSE},
+)
 async def apply_artist_art(
     request: Request,
     name: Annotated[str, Query(min_length=1)],
@@ -856,7 +939,10 @@ async def apply_artist_art(
     return reg.state()
 
 
-@router.post("/artists/art/backfill")
+@router.post(
+    "/artists/art/backfill",
+    responses={403: _ART_WRITE_DISABLED_RESPONSE, 409: _ART_JOB_TAKEN_RESPONSE},
+)
 async def start_artist_art_backfill(
     request: Request,
     toggle: Annotated[ArtistArtWriteToggle, Depends(get_artist_art_write_toggle)],
@@ -919,7 +1005,29 @@ def _start(
     )
 
 
-@router.delete("/artists")
+@router.delete(
+    "/artists",
+    # Named models on both: a description-only entry drops the `content`
+    # block and openapi-typescript renders `content?: never` for a body the
+    # client must read (see app/models/errors.py). Both are raised inside
+    # delete_artist_op (app/beets/delete.py), not here. No 404: deleting an
+    # unknown artist is a no-op on this route - delete_artist_op never raises
+    # AlbumNotFoundError, only its album twin does.
+    responses={
+        409: {
+            "model": ErrorDetail,
+            "description": (
+                "A library operation is in progress, so the delete is refused until it finishes."
+            ),
+        },
+        500: {
+            "model": StructuredErrorDetail,
+            "description": (
+                "Deleting the artist failed, but its files are recoverable in the Trash folder."
+            ),
+        },
+    },
+)
 async def delete_artist_endpoint(
     request: Request,
     name: Annotated[str, Query(min_length=1)],

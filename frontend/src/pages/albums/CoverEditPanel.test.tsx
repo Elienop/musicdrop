@@ -128,14 +128,16 @@ describe("CoverEditPanel", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("surfaces the server's reason on a 422 install error", async () => {
+  it("surfaces the server's reason on a 413 oversize install error", async () => {
     const png = new Blob([new Uint8Array([137, 80, 78, 71])], {
       type: "image/png",
     });
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(imageResponse(png, "Cover Art Archive"))
       .mockResolvedValueOnce(
-        jsonResponse({ detail: "Image is too large (max 10 MB)." }, 422),
+        // 413, not 422: an oversize cover is Payload Too Large, matching the
+        // artist-portrait and playlist-artwork uploads.
+        jsonResponse({ detail: "Image is too large (max 10 MB)." }, 413),
       );
 
     renderPanel();

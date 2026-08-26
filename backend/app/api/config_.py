@@ -7,6 +7,8 @@ dependency override) because the snapshot builder needs the real
 via a ``get_library`` override.
 """
 
+from typing import Final
+
 from fastapi import APIRouter, Request
 from ruamel.yaml.error import YAMLError
 
@@ -27,8 +29,70 @@ from app.models.config_editor import (
     ValidateResponse,
     ValidationErrorItem,
 )
+from app.models.errors import (
+    ConfigSaveConflictDetail,
+    ConfigValidationErrorDetail,
+    ErrorDetail,
+    NamingValidationErrorDetail,
+    StructuredErrorDetail,
+    validation_or_model_422,
+)
 
 router = APIRouter(tags=["config"])
+
+#: The OpenAPI entry for the compare-and-swap 409 that BOTH save routes raise
+#: (``config_editor.save`` and ``config_editor.save_naming`` run the same
+#: read-hash-compare step under ``_SAVE_LOCK``). It is the ONLY 409 either route
+#: can reach - neither consults the library-busy gate, so neither can refuse for
+#: a running job or a held swap lock - which is why the sentence names one cause
+#: and stops there.
+#:
+#: The model is NOT ``ErrorDetail``: this 409 answers with a three-field object
+#: under ``detail``, and typing it as a sentence would hide the two fields the
+#: editor's conflict UI reads (see app/models/errors.py).
+_SAVE_CAS_CONFLICT_RESPONSE: Final = {
+    "model": ConfigSaveConflictDetail,
+    "description": (
+        "config.yaml changed on disk since the editor loaded it, so the save was"
+        " refused; the body carries the file's current text and hash."
+    ),
+}
+
+#: The 422 of ``POST /api/config/save``. NOT FastAPI's ``HTTPValidationError``,
+#: which is what an undeclared 422 would document: ``config_editor.save`` raises
+#: with a LIST of ``ValidationErrorItem`` rows whose ``loc`` is a plain string
+#: and which carry ``line``/``column`` - two fields the validation shape does not
+#: have. The editor's gutter consumes the same row shape from
+#: ``POST /api/config/validate``'s 200; no live client reads this 422 body today,
+#: but declaring it as the validation model would mistype the generated client.
+#: The entry is an anyOf because FastAPI's own shape is ALSO reachable here: the
+#: route takes a ``SaveRequest`` body, so a malformed request never reaches the
+#: adapter and answers with the validation shape instead.
+_SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
+    ConfigValidationErrorDetail,
+    (
+        "The submitted YAML did not parse, or a key MusicDrop models has the wrong"
+        " shape; the body lists one item per problem, with the 1-based line and"
+        " 0-based column to mark where there is one. A malformed request body"
+        " answers with FastAPI's validation shape instead."
+    ),
+)
+
+#: The 422 of ``POST /api/config/naming/save``, which is a DIFFERENT shape from
+#: the one above: ``config_editor.save_naming`` builds its items by hand with
+#: three keys and no ``line``/``column``, because a bad regex comes from a form
+#: row (``loc`` is ``replace[<index>]``) rather than from a position in the YAML
+#: document. Sharing one model would promise a line number this route can never
+#: send - see app/models/errors.py::NamingRuleError.
+_NAMING_SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
+    NamingValidationErrorDetail,
+    (
+        "A submitted replace: pattern is not a valid regular expression, so the"
+        " save was refused before anything was written; the body names the"
+        " offending row. A malformed request body answers with FastAPI's"
+        " validation shape instead."
+    ),
+)
 
 
 @router.get("/config")
@@ -59,7 +123,10 @@ def validate_config(req: ValidateRequest) -> ValidateResponse:
     return ValidateResponse(errors=validate_known_keys(data))
 
 
-@router.post("/config/save")
+@router.post(
+    "/config/save",
+    responses={409: _SAVE_CAS_CONFLICT_RESPONSE, 422: _SAVE_VALIDATION_RESPONSE},
+)
 def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
     """Persist the user-submitted YAML to disk after CAS + schema checks.
 
@@ -92,7 +159,10 @@ def preview_naming(req: NamingPreviewRequest, request: Request) -> NamingPreview
     return NamingPreviewResponse(rendered=rendered, replace_errors=replace_errors)
 
 
-@router.post("/config/naming/save")
+@router.post(
+    "/config/naming/save",
+    responses={409: _SAVE_CAS_CONFLICT_RESPONSE, 422: _NAMING_SAVE_VALIDATION_RESPONSE},
+)
 def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSnapshot:
     """Write ``paths:``/``replace:`` back into config.yaml (CAS, 409/422). Apply
     is the existing ``POST /api/config/apply``."""
@@ -100,7 +170,34 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
     return save_naming(handle, req)
 
 
-@router.post("/config/apply")
+@router.post(
+    "/config/apply",
+    # Named models on both: a description-only entry drops the `content` block
+    # and openapi-typescript renders `content?: never` for a body the client
+    # must read (see app/models/errors.py). Both are raised inside
+    # apply_config_op (app/beets/config_editor.py), not here.
+    responses={
+        # The ONLY 409 reachable from this route is the `library_job_active()`
+        # gate in `apply` (config_editor.py). The CAS "file changed on disk"
+        # 409s live in `save` / `save_naming`, which this route never calls, so
+        # naming them here would document a cause Apply cannot produce.
+        409: {
+            "model": ErrorDetail,
+            "description": (
+                "A library job (an import, a lyrics backfill, an artist-art backfill, a"
+                " reorganize backfill, or a disk sync) is running, so the reload is refused"
+                " until it finishes."
+            ),
+        },
+        500: {
+            "model": StructuredErrorDetail,
+            "description": (
+                "The library rebuild failed during apply, but the saved config"
+                " is safe on disk and will load on the next start."
+            ),
+        },
+    },
+)
 async def apply_config(request: Request) -> BeetsConfigSnapshot:
     """Reload beets in-process after a Save, swapping ``app.state.beets_library``.
 

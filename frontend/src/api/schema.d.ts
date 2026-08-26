@@ -2718,6 +2718,54 @@ export interface components {
             data_url?: string | null;
         };
         /**
+         * ConfigSaveConflict
+         * @description What the config editor sends back when its compare-and-swap loses.
+         *
+         *     ``POST /api/config/save`` and ``POST /api/config/naming/save`` hash the file
+         *     on disk and compare it with the ``base_sha256`` the editor loaded from
+         *     (``app/beets/config_editor.py``). A mismatch means someone else wrote
+         *     ``config.yaml`` in between, so the save is refused with 409 and the client is
+         *     handed everything it needs to recover WITHOUT a second round trip:
+         *     ``current_yaml_text`` is the file as it now stands and ``current_sha256`` is
+         *     the CAS token to resubmit with if the user chooses to overwrite anyway.
+         *
+         *     ``detail`` is the human sentence ("File changed on disk"). Unlike
+         *     :class:`OperationFailure`, the inner key really IS named ``detail`` here -
+         *     that is what the raise sends, and this model documents the wire, not the
+         *     naming we would pick today.
+         */
+        ConfigSaveConflict: {
+            /** Detail */
+            detail: string;
+            /** Current Yaml Text */
+            current_yaml_text: string;
+            /** Current Sha256 */
+            current_sha256: string;
+        };
+        /**
+         * ConfigSaveConflictDetail
+         * @description The THIRD real error body: ``{"detail": {detail, current_yaml_text, current_sha256}}``.
+         *
+         *     Starlette wraps an ``HTTPException``'s ``detail`` verbatim, so the object the
+         *     config editor raises with becomes the value of the outer ``detail`` key.
+         *
+         *     Neither existing model describes it, and declaring it as either would be a
+         *     lie the generated client cannot recover from:
+         *
+         *     - :class:`ErrorDetail` types ``detail`` as a ``str``, so the two fields the
+         *       conflict UI reads would not exist in the contract at all;
+         *     - :class:`StructuredErrorDetail` types ``detail`` as ``{message, recovery}``
+         *       - three keys wrong out of three, and it would promise a ``recovery``
+         *       sentence this body never carries.
+         *
+         *     A wrongly-typed status is worse than an undeclared one (see
+         *     :class:`StructuredErrorDetail`), which is why this shape got a model of its
+         *     own rather than being folded into one of those two.
+         */
+        ConfigSaveConflictDetail: {
+            detail: components["schemas"]["ConfigSaveConflict"];
+        };
+        /**
          * CoverInstallResult
          * @description Outcome of installing an album cover (set artpath + optional embed).
          *
@@ -3663,6 +3711,22 @@ export interface components {
             query: string;
             /** Template */
             template: string;
+        };
+        /**
+         * OperationFailure
+         * @description What a long-running library op failed at, and what the user can do next.
+         *
+         *     ``message`` names the cause (it embeds the underlying exception's text);
+         *     ``recovery`` says what state the library is in and what to do about it.
+         *     ``message`` rather than ``detail`` for the inner key on purpose - Starlette
+         *     already wraps the payload in an outer ``detail``, so an inner ``detail``
+         *     would render the confusing ``{"detail": {"detail": ...}}``.
+         */
+        OperationFailure: {
+            /** Message */
+            message: string;
+            /** Recovery */
+            recovery: string;
         };
         /** OrphanFolder */
         OrphanFolder: {
@@ -4616,6 +4680,25 @@ export interface components {
             job_id: string;
         };
         /**
+         * StructuredErrorDetail
+         * @description The SECOND real error body in this API: ``{"detail": {message, recovery}}``.
+         *
+         *     Every blanket ``except Exception`` on a beets write op raises a 500 whose
+         *     ``detail`` is an OBJECT, not a sentence (cover install, album edit, artist
+         *     rename, duplicate resolve, delete, config Apply). The frontend unwraps it in
+         *     ``frontend/src/api/lib.ts::structuredDetailMessage``, so the shape is read,
+         *     not decorative.
+         *
+         *     Declaring such a 500 as ``ErrorDetail`` would be worse than leaving it out:
+         *     it swaps an UNDECLARED status for a WRONGLY-TYPED one, and the generated
+         *     client would parse an object as a string. Use this model instead, and only
+         *     on routes whose 500 really carries the nested shape - a route that can also
+         *     500 with a flat sentence needs an ``anyOf`` (none does today).
+         */
+        StructuredErrorDetail: {
+            detail: components["schemas"]["OperationFailure"];
+        };
+        /**
          * SweepStatus
          * @description Live counters for a sweep-origin import job.
          *
@@ -4983,6 +5066,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The event stream is unavailable because the event broker is not running or the maximum number of subscribers has been reached. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
         };
     };
     list_albums_endpoint_api_albums_get: {
@@ -5056,6 +5148,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description No album with that id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -5105,6 +5206,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description No album has that id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A library operation is in progress, so the delete is refused until it finishes. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -5112,6 +5231,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Deleting the album failed, but its files are recoverable in the Trash folder. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
         };
@@ -5138,6 +5266,15 @@ export interface operations {
             };
             /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description No album has that id. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5198,6 +5335,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description No album has that id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
             413: {
                 headers: {
@@ -5207,13 +5353,13 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Validation Error */
+            /** @description One of the submitted track ids does not belong to that album, or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -5260,6 +5406,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description No album has that id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A library operation is in progress, so the edit is refused until it finishes. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
             413: {
                 headers: {
@@ -5269,13 +5433,22 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Validation Error */
+            /** @description One of the submitted track ids does not belong to that album, or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The edit failed part-way through writing tags or moving files; the body carries the cause and a recovery hint. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
         };
@@ -5304,6 +5477,15 @@ export interface operations {
             };
             /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description No album with that id, or the album has no cover art. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5364,7 +5546,25 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
+            /** @description No album has that id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A library operation is in progress, so cover changes are refused until it finishes. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The uploaded cover exceeds the 10 MB limit, or the request body exceeds the app-wide size limit. */
             413: {
                 headers: {
                     [name: string]: unknown;
@@ -5373,13 +5573,31 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The uploaded bytes are not a PNG, JPEG, GIF or WebP image. */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The album has no tracks, so beets cannot place cover art for it; or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Writing the cover into the album folder failed (a full disk or a read-only album directory); the body carries the cause and a recovery hint. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
         };
@@ -5481,6 +5699,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description No album has that id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A lyrics fetch is already running, or an import, an artist-art job, a reorganize, a disk sync or a beets swap holds the library. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -5559,6 +5795,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description A library operation is in progress, so the delete is refused until it finishes. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -5566,6 +5811,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Deleting the artist failed, but its files are recoverable in the Trash folder. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
         };
@@ -5603,6 +5857,15 @@ export interface operations {
             };
             /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description No album in the library has that album artist. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5670,6 +5933,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description No album in the library has that album artist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A library operation is in progress, so the rename is refused until it finishes. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
             413: {
                 headers: {
@@ -5686,6 +5967,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The rename failed part-way through the batch; the body carries the cause and a recovery hint. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
         };
@@ -5999,8 +6289,17 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
+            /** @description The uploaded image exceeds the 10 MB limit, or the request body exceeds the app-wide size limit. */
             413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The uploaded bytes are not a PNG, JPEG, GIF or WebP image. */
+            415: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6079,13 +6378,13 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The link could not be fetched, or what it returned is not a PNG, JPEG, GIF or WebP image; or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -6266,8 +6565,17 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
+            /** @description Writing artist art to the library is turned off in settings, or the request is cross-origin. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A library job (an import, a backfill, or another artist-art run) already holds the slot, or the beets swap lock is held. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6342,8 +6650,17 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
+            /** @description Writing artist art to the library is turned off in settings, or the request is cross-origin. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A library job (an import, a backfill, or another artist-art run) already holds the slot, or the beets swap lock is held. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6583,6 +6900,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
             413: {
                 headers: {
@@ -6592,13 +6918,13 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Validation Error */
+            /** @description A copy-mode import was asked for a folder inside the music library, or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -6625,6 +6951,15 @@ export interface operations {
             };
             /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description No import job has that id. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6673,6 +7008,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description No import job has that id, or no album is parked at that index. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -6707,6 +7051,15 @@ export interface operations {
             };
             /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description No import job has that id, no album is parked at that index, or the parked album has no embedded cover art. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6750,6 +7103,15 @@ export interface operations {
             };
             /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description No import job has that id, or no album is parked at that index. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6809,6 +7171,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description No import job has that id, or no album is parked at that index. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A choice was already submitted for the album at that index. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
             413: {
                 headers: {
@@ -6852,6 +7232,15 @@ export interface operations {
             };
             /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description No import job has that id, or no duplicate is parked at that index. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6911,6 +7300,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description No import job has that id, or no duplicate is parked at that index. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A decision was already submitted for the duplicate at that index. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
             413: {
                 headers: {
@@ -6960,6 +7367,24 @@ export interface operations {
             };
             /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description No import job has that id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description That import is not a sweep, or the sweep is no longer running. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7107,6 +7532,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description config.yaml changed on disk since the editor loaded it, so the save was refused; the body carries the file's current text and hash. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigSaveConflictDetail"];
+                };
+            };
             /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
             413: {
                 headers: {
@@ -7116,13 +7550,27 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The submitted YAML did not parse, or a key MusicDrop models has the wrong shape; the body lists one item per problem, with the 1-based line and 0-based column to mark where there is one. A malformed request body answers with FastAPI's validation shape instead. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": {
+                        /** Detail */
+                        detail: {
+                            /** Loc */
+                            loc: string;
+                            /** Msg */
+                            msg: string;
+                            /** Type */
+                            type: string;
+                            /** Line */
+                            line?: number | null;
+                            /** Column */
+                            column?: number | null;
+                        }[];
+                    } | components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -7256,6 +7704,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description config.yaml changed on disk since the editor loaded it, so the save was refused; the body carries the file's current text and hash. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigSaveConflictDetail"];
+                };
+            };
             /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
             413: {
                 headers: {
@@ -7265,13 +7722,23 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Validation Error */
+            /** @description A submitted replace: pattern is not a valid regular expression, so the save was refused before anything was written; the body names the offending row. A malformed request body answers with FastAPI's validation shape instead. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": {
+                        /** Detail */
+                        detail: {
+                            /** Loc */
+                            loc: string;
+                            /** Msg */
+                            msg: string;
+                            /** Type */
+                            type: string;
+                        }[];
+                    } | components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -7310,6 +7777,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A library job (an import, a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync) is running, so the reload is refused until it finishes. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The library rebuild failed during apply, but the saved config is safe on disk and will load on the next start. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
         };
@@ -7394,6 +7879,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description One of the referenced album ids is no longer in the library. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A library job (an import or a backfill) is in progress, or the duplicate group changed since the report was generated. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
             413: {
                 headers: {
@@ -7410,6 +7913,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The resolve failed part-way through moving copies to the Trash; the body carries the cause and a recovery hint. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
         };
@@ -7454,6 +7966,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description One of the referenced album ids is no longer in the library. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A library job (an import or a backfill) is in progress, so the batch resolve is refused. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
             413: {
                 headers: {
@@ -7470,6 +8000,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The resolve failed part-way through moving copies to the Trash; the body carries the cause and a recovery hint. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
         };
@@ -7563,6 +8102,15 @@ export interface operations {
             };
             /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A lyrics backfill is already running, or an import, an artist-art job, a reorganize, a disk sync or a beets swap holds the library. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7688,6 +8236,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description No album has that id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -7737,6 +8294,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description A reorganize is already running, or another library job or a beets swap holds the library. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -7779,6 +8345,24 @@ export interface operations {
             };
             /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description No album has that id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A reorganize is already running, or another library job or a beets swap holds the library. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7900,6 +8484,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description A reorganize is still running; stop it before dismissing its result. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
         };
     };
     preview_disk_sync_api_disk_sync_preview_get: {
@@ -7922,6 +8515,15 @@ export interface operations {
             };
             /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The music library root is missing, empty or unreadable, so no plan is computed (the guard against an unmounted share). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7960,6 +8562,15 @@ export interface operations {
             };
             /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A disk sync is already running, or another library job or a beets swap holds the library. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8183,6 +8794,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The playlist does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -8223,6 +8843,15 @@ export interface operations {
             };
             /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The playlist does not exist. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8276,6 +8905,15 @@ export interface operations {
             };
             /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The playlist does not exist. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8345,6 +8983,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The playlist does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
             413: {
                 headers: {
@@ -8354,13 +9001,13 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The new order names entry uids this playlist does not have, or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -8400,6 +9047,15 @@ export interface operations {
             };
             /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The playlist does not exist. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8466,6 +9122,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The playlist does not exist, or one of its entries does not. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -8520,6 +9185,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The playlist does not exist, or one of its entries does not. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
             413: {
                 headers: {
@@ -8529,13 +9203,13 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Validation Error */
+            /** @description No library track has the requested item id, or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -8578,6 +9252,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The playlist does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Plex is not connected on this install, so the sync cannot run. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -8585,6 +9277,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The sync ran but its result could not be recorded. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Plex could not be reached, or the library files could not be read. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
         };
@@ -8698,6 +9408,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The playlist does not exist, it has no cover artwork, or the artwork file could not be read. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -8747,6 +9466,33 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The playlist does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The uploaded image exceeds the 8 MB limit, or the request body exceeds the app-wide size limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The uploaded image is not a JPEG or PNG. */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -8787,6 +9533,15 @@ export interface operations {
             };
             /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The playlist does not exist. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8845,6 +9600,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description Plex is not configured, so the requested playlists cannot be pulled. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
             413: {
                 headers: {
@@ -8861,6 +9625,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Plex could not be reached while pulling the playlists. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
         };
@@ -8914,13 +9687,13 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Validation Error */
+            /** @description One of the reviewed entries names an item id no library track has, or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -9079,6 +9852,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description Plex is not configured because its base URL or admin token is not set. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The Plex server could not be reached or rejected the request. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
         };
     };
     list_plex_sections_api_plex_sections_get: {
@@ -9108,6 +9899,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description Plex is not configured because its base URL or admin token is not set. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The Plex server could not be reached or rejected the request. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
         };
     };
     list_plex_playlists_api_plex_playlists_get: {
@@ -9130,6 +9939,24 @@ export interface operations {
             };
             /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Plex is not configured because its base URL or admin token is not set. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The Plex server could not be reached or rejected the request. */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9297,6 +10124,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The webhook was rejected because no webhook secret is configured or the provided API key does not match it. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
             403: {
                 headers: {
@@ -9391,6 +10227,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
         };
     };
     list_inbox_items_api_acquisition_inbox_items_get: {
@@ -9455,6 +10300,24 @@ export interface operations {
             };
             /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description No inbox is configured, or that name does not resolve to a folder sitting directly inside the inbox. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library, or two inbox folders display under the same name. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9555,6 +10418,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The bank item does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -9602,6 +10474,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The bank item does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The row's state changed, so it can no longer be deleted. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -9637,6 +10527,15 @@ export interface operations {
             };
             /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The bank item does not exist. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9690,6 +10589,24 @@ export interface operations {
             };
             /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The bank item does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The row is not an undecided match row, so the search was refused (it is already decided, or its folder went stale). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9755,6 +10672,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The bank item does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The row cannot be rescanned (already decided, its folder is gone, or it holds no audio files). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -9801,6 +10736,24 @@ export interface operations {
             };
             /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The bank item does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The row's state changed, so the decision is no longer valid. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10015,6 +10968,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The named folder is not in the Trash. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The operation was refused because a library operation is in progress or the beets swap lock is held, or two trashed folders display under the same name. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -10066,6 +11037,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The named folder is not in the Trash. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The operation was refused because a library operation is in progress or the beets swap lock is held, or two trashed folders display under the same name. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
             413: {
                 headers: {
@@ -10082,6 +11071,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The restore failed because re-importing the trashed folder failed. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
         };
@@ -10115,6 +11113,15 @@ export interface operations {
             };
             /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The operation was refused because a library operation is in progress or the beets swap lock is held. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

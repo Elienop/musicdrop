@@ -15,6 +15,8 @@ from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
+from app.models.errors import ErrorDetail
+
 
 class ImmutableStaticFiles(StaticFiles):
     """StaticFiles for hashed filenames: cache forever, revalidate never."""
@@ -46,7 +48,19 @@ def mount_static(app: FastAPI, static_dir: str) -> None:
     if assets.is_dir():
         app.mount("/assets", ImmutableStaticFiles(directory=assets), name="assets")
 
-    @app.get("/{path:path}", include_in_schema=False)
+    @app.get(
+        "/{path:path}",
+        include_in_schema=False,
+        responses={
+            404: {
+                "model": ErrorDetail,
+                "description": (
+                    "The path is an unmatched API path or a malformed URL, "
+                    "so no static file is served."
+                ),
+            }
+        },
+    )
     async def spa_fallback(path: str) -> FileResponse:
         # /api is API territory — unmatched API paths must stay JSON 404s.
         if path == "api" or path.startswith("api/"):
