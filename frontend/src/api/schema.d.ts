@@ -5720,6 +5720,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description A library operation is in progress, so the delete is refused until it finishes. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -5727,6 +5736,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Deleting the artist failed, but its files are recoverable in the Trash folder. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
         };
@@ -6807,7 +6825,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description An import is already running, or a beets swap (config Apply or duplicate resolve) or a library backfill holds the library. */
+            /** @description An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a library backfill holds the library. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -7644,7 +7662,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description A library job (an import or a lyrics backfill) is running, so the reload is refused until it finishes. */
+            /** @description A library job (an import, a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync) is running, so the reload is refused until it finishes. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10092,7 +10110,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description An import is already running, or a beets swap (config Apply or duplicate resolve) or a library backfill holds the library. */
+            /** @description An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a library backfill holds the library. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10181,7 +10199,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description An import is already running, or a beets swap (config Apply or duplicate resolve) or a library backfill holds the library, or two inbox folders display under the same name. */
+            /** @description An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a library backfill holds the library, or two inbox folders display under the same name. */
             409: {
                 headers: {
                     [name: string]: unknown;

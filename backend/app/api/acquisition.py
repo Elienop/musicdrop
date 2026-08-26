@@ -49,7 +49,7 @@ router = APIRouter(tags=["acquisition"])
 _IMPORT_SLOT_TAKEN_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
-        "An import is already running, or a beets swap (config Apply or"
+        "An import is already running, or a beets swap (such as a config Apply or"
         " duplicate resolve) or a library backfill holds the library."
     ),
 }
@@ -172,7 +172,7 @@ async def list_inbox_items(request: Request) -> InboxListing:
         409: {
             "model": ErrorDetail,
             "description": (
-                "An import is already running, or a beets swap (config Apply or"
+                "An import is already running, or a beets swap (such as a config Apply or"
                 " duplicate resolve) or a library backfill holds the library, or"
                 " two inbox folders display under the same name."
             ),

@@ -115,8 +115,9 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
         409: {
             "model": ErrorDetail,
             "description": (
-                "A library job (an import or a lyrics backfill) is running, so the"
-                " reload is refused until it finishes."
+                "A library job (an import, a lyrics backfill, an artist-art backfill, a"
+                " reorganize backfill, or a disk sync) is running, so the reload is refused"
+                " until it finishes."
             ),
         },
         500: {

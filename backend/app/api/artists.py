@@ -1005,7 +1005,29 @@ def _start(
     )
 
 
-@router.delete("/artists")
+@router.delete(
+    "/artists",
+    # Named models on both: a description-only entry drops the `content`
+    # block and openapi-typescript renders `content?: never` for a body the
+    # client must read (see app/models/errors.py). Both are raised inside
+    # delete_artist_op (app/beets/delete.py), not here. No 404: deleting an
+    # unknown artist is a no-op on this route - delete_artist_op never raises
+    # AlbumNotFoundError, only its album twin does.
+    responses={
+        409: {
+            "model": ErrorDetail,
+            "description": (
+                "A library operation is in progress, so the delete is refused until it finishes."
+            ),
+        },
+        500: {
+            "model": StructuredErrorDetail,
+            "description": (
+                "Deleting the artist failed, but its files are recoverable in the Trash folder."
+            ),
+        },
+    },
+)
 async def delete_artist_endpoint(
     request: Request,
     name: Annotated[str, Query(min_length=1)],

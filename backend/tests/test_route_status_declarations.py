@@ -25,26 +25,43 @@ It is built against ``app.openapi()`` - the LIVE spec - not the tracked
 ``frontend/openapi.json``, so it cannot pass on a stale artefact.
 
 KNOWN BLIND SPOT, stated rather than hidden: the call graph is followed only
-into the route's own module and ``_FOLLOWED_MODULES``. These beets-adapter
+into the route's own module and ``_FOLLOWED_MODULES``. FOUR beets-adapter
 modules raise ``HTTPException`` too and are NOT followed yet -
-``app/beets/delete.py``, ``app/beets/config_editor.py``, ``app/beets/lyrics.py``.
-Adding one to ``_FOLLOWED_MODULES`` is how this guard grows. Measured with all
-of them added, exactly NINE (operation, status) pairs are still undeclared, and
-nothing becomes unresolvable:
+``app/beets/delete.py``, ``app/beets/config_editor.py``, ``app/beets/lyrics.py``
+and ``app/beets/completeness.py``. Adding one to ``_FOLLOWED_MODULES`` is how
+this guard grows.
 
-    DELETE /api/albums/{album_id}          404, 409
-    DELETE /api/artists                    409
-    POST   /api/albums/{album_id}/lyrics/fetch  404, 409
-    POST   /api/config/apply               409, 500 (the nested shape)
-    POST   /api/config/naming/save         409
-    POST   /api/config/save                409
+Re-measured 2026-08-26 by adding all four to ``_FOLLOWED_MODULES`` and running
+this test - the way to re-derive it, since a number written by hand rots: with
+all four followed nothing becomes unresolvable or unscannable, and exactly FIVE
+(operation, status) pairs are still undeclared - the backlog for the follow-up:
 
-They are left for the follow-up that declares them rather than pre-emptively
-allowlisted, because an allowlist entry reads as a decision and this is a
-backlog. Statuses raised by a ``Depends(...)`` dependency, or by a helper that
-RETURNS an ``HTTPException`` for the caller to raise
-(``app/beets/delete.py::_failed``, the delete route's structured 500), are out
-of scope in any configuration - the scan only reads ``raise HTTPException(...)``.
+    app/beets/lyrics.py         POST /api/albums/{album_id}/lyrics/fetch  404, 409
+    app/beets/config_editor.py  POST /api/config/naming/save              409
+    app/beets/config_editor.py  POST /api/config/save                     409
+    app/beets/completeness.py   GET  /api/albums/{album_id}/missing       404
+
+``app/beets/delete.py`` is in the un-followed list but contributes NO gap at
+that measurement: ``DELETE /api/albums/{album_id}`` (404, 409) and
+``DELETE /api/artists`` (409, 500) are both declared on this branch. Do not read
+that as "following it is free" - read it as "following it is the cheapest one
+left", and re-measure before believing the zero.
+
+The two ``config_editor`` 409s are a different shape from the rest and cannot
+just be declared: the CAS conflict at ``config_editor.py:376`` and ``:556``
+sends ``{detail, current_yaml_text, current_sha256}``, a THIRD error body next
+to ``ErrorDetail`` and the nested ``{message, recovery}`` 500, and it has no
+model in ``app/models/errors.py`` yet. Declaring it with ``ErrorDetail`` would
+give the generated client a type that omits the two fields the editor's
+conflict UI reads - see the ``responses``-replaces-not-merges note there.
+A model has to come first.
+
+The backlog is left un-allowlisted on purpose: an ``_ALLOWLIST`` entry reads as
+a decision, and this is a backlog. Statuses raised by a ``Depends(...)``
+dependency, or by a helper that RETURNS an ``HTTPException`` for the caller to
+raise (``app/beets/delete.py::_failed``, the delete route's structured 500),
+are out of scope in any configuration - the scan only reads
+``raise HTTPException(...)``.
 
 This guard checks that a status is PRESENT, not that its body schema is right.
 A status declared with the wrong model (``ErrorDetail`` for a nested
@@ -92,9 +109,18 @@ _SWALLOWING_HANDLERS: Final = frozenset({"HTTPException", "Exception", "BaseExce
 #: empty unless a case is genuinely undecidable, and always carry the reason.
 _ALLOWLIST: Final[dict[tuple[str, str, int], str]] = {}
 
-#: Non-vacuity floors: a scan that walks nothing would pass every assertion
-#: below for the wrong reason. Bumped only downward-safely (these are minima).
-_MIN_ROUTES_SCANNED: Final = 100
+#: The keys of an OpenAPI path item that name an operation. Everything else a
+#: path item may legally carry (``parameters``, ``summary``, ``servers``,
+#: ``$ref``) is not an operation and must not be read as one. FastAPI writes
+#: only ``route.methods`` lowercased today, but the filter is what makes the
+#: walk-vs-spec comparison below sound rather than lucky.
+_HTTP_METHODS: Final = frozenset(
+    {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+)
+
+#: Non-vacuity floor on how many operations the AST scan sees raise ANYTHING.
+#: There is no external ground truth for this one (unlike the operation set,
+#: which is checked against the spec itself), so it stays a minimum: 63 today.
 _MIN_ROUTES_WITH_RAISES: Final = 50
 
 
@@ -238,12 +264,29 @@ def _suppressed_raises(func: ast.FunctionDef | ast.AsyncFunctionDef) -> set[int]
     return suppressed
 
 
-def _raised_statuses(module_name: str, function_name: str) -> tuple[set[int], list[str]]:
-    """Every status reachable from ``module.function``, plus undecidable raises."""
+class _ScanResult(NamedTuple):
+    """What one call-graph walk found.
+
+    ``unresolved`` and ``unscannable`` are both FAILURES, kept apart only so the
+    report says which kind: ``unresolved`` is a raise whose status is not a
+    static int, ``unscannable`` is a function body the walk could not read at
+    all - which would otherwise make the operation contribute zero raises and
+    report zero gaps, silently.
+    """
+
+    statuses: set[int]
+    unresolved: list[str]
+    unscannable: list[str]
+
+
+def _raised_statuses(module_name: str, function_name: str) -> _ScanResult:
+    """Every status reachable from ``module.function``, plus what it could not read."""
     statuses: set[int] = set()
     unresolved: list[str] = []
+    unscannable: list[str] = []
+    entry = (module_name, function_name)
     seen: set[tuple[str, str]] = set()
-    pending: list[tuple[str, str]] = [(module_name, function_name)]
+    pending: list[tuple[str, str]] = [entry]
     while pending:
         current = pending.pop()
         if current in seen:
@@ -251,9 +294,21 @@ def _raised_statuses(module_name: str, function_name: str) -> tuple[set[int], li
         seen.add(current)
         index = _module_index(current[0])
         if index is None:
+            # The module is absent from ``sys.modules`` or has no source file,
+            # so every raise in it is invisible. Several ``app/beets/*``
+            # modules are imported lazily inside functions, which is exactly
+            # how a followed module could stop being loaded at collection time.
+            unscannable.append(f"{current[0]}.{current[1]}: module has no readable source")
             continue
         func = index.functions.get(current[1])
         if func is None:
+            if current == entry:
+                unscannable.append(
+                    f"{current[0]}.{current[1]}: the handler is not a def in that module"
+                )
+            # Otherwise: a followed import that names a class or a constant
+            # rather than a function. There is no body to walk and nothing was
+            # lost, so this is not a resolution failure.
             continue
         skip = _suppressed_raises(func)
         for node in ast.walk(func):
@@ -268,7 +323,7 @@ def _raised_statuses(module_name: str, function_name: str) -> tuple[set[int], li
             target = _resolve_call(index, name)
             if target is not None and target not in seen:
                 pending.append(target)
-    return statuses, unresolved
+    return _ScanResult(statuses, unresolved, unscannable)
 
 
 class _Operation(NamedTuple):
@@ -318,41 +373,88 @@ def _declared_statuses(spec: dict[str, object], path: str, method: str) -> set[i
     return {int(code) for code in responses if str(code).isdigit()}
 
 
-def _gaps() -> tuple[list[str], list[str], int, int]:
-    """``(gap lines, unresolved lines, operations scanned, ones that raise)``."""
+def _spec_operations(spec: dict[str, object]) -> list[tuple[str, str]]:
+    """Every ``(METHOD, path)`` the LIVE spec exposes, from the spec itself.
+
+    This is the ground truth the walk is measured against. ``get_openapi``
+    writes one key per entry in ``route.methods`` (lowercased) under each
+    ``path_format``, so a walk that sees the same routes must produce exactly
+    this set - no hand-picked minimum, which both rots and under-protects.
+    """
+    paths = spec.get("paths")
+    assert isinstance(paths, dict), "the live spec must carry a paths object"
+    return sorted(
+        (method.upper(), path)
+        for path, item in paths.items()
+        for method in item
+        if method in _HTTP_METHODS
+    )
+
+
+class _GapReport(NamedTuple):
+    """Everything one full pass over the app found, ready to assert on."""
+
+    gaps: list[str]
+    unresolved: list[str]
+    unscannable: list[str]
+    #: ``(METHOD, path)`` the AST walk covered, and the same from the spec.
+    walked: list[tuple[str, str]]
+    in_spec: list[tuple[str, str]]
+    with_raises: int
+
+
+def _gaps() -> _GapReport:
+    """Scan every operation in the app and join it to the live spec."""
     spec = app.openapi()
     gaps: list[str] = []
     unresolved: list[str] = []
+    unscannable: list[str] = []
     operations = _schema_operations()
     with_raises = 0
     for method, path, module_name, function_name in operations:
-        raised, route_unresolved = _raised_statuses(module_name, function_name)
-        if raised:
+        result = _raised_statuses(module_name, function_name)
+        if result.statuses:
             with_raises += 1
-        unresolved.extend(f"{method} {path}: {line}" for line in route_unresolved)
+        unresolved.extend(f"{method} {path}: {line}" for line in result.unresolved)
+        unscannable.extend(f"{method} {path}: {line}" for line in result.unscannable)
         declared = _declared_statuses(spec, path, method)
-        for status in sorted(raised - declared):
+        for status in sorted(result.statuses - declared):
             if (method, path, status) in _ALLOWLIST:
                 continue
             gaps.append(f"{method} {path}: {status} raised but not declared")
-    return gaps, unresolved, len(operations), with_raises
+    walked = sorted((operation.method, operation.path) for operation in operations)
+    return _GapReport(gaps, unresolved, unscannable, walked, _spec_operations(spec), with_raises)
 
 
 def test_every_status_a_route_can_raise_is_declared_in_the_live_spec() -> None:
-    gaps, unresolved, scanned, with_raises = _gaps()
-    assert scanned >= _MIN_ROUTES_SCANNED, (
-        f"only {scanned} operations were scanned; the walk found nothing to check"
+    report = _gaps()
+    # Non-vacuity, and the tightest form available: the walk must cover exactly
+    # the operations the spec itself contains. A router that drops out of the
+    # walk (as every router did when FastAPI 0.141 turned ``app.routes`` into
+    # ``_IncludedRouter`` objects) reports zero gaps for every route in it,
+    # which is the failure mode a floor of "at least N" cannot see.
+    assert report.walked == report.in_spec, (
+        "the AST walk and the live spec disagree about which operations exist,"
+        " so some route is being checked against nothing:\n  walked but not in the spec: "
+        + str(sorted(set(report.walked) - set(report.in_spec)))
+        + "\n  in the spec but not walked: "
+        + str(sorted(set(report.in_spec) - set(report.walked)))
     )
-    assert with_raises >= _MIN_ROUTES_WITH_RAISES, (
-        f"only {with_raises} operations were seen to raise anything; the AST scan is broken"
+    assert report.with_raises >= _MIN_ROUTES_WITH_RAISES, (
+        f"only {report.with_raises} operations were seen to raise anything; the AST scan is broken"
     )
-    assert not unresolved, (
+    assert not report.unscannable, (
+        "the scan could not read the body of a handler it was asked to walk, so that"
+        " operation contributed no raises and would report no gaps - resolve it or"
+        " import the module eagerly:\n  " + "\n  ".join(sorted(report.unscannable))
+    )
+    assert not report.unresolved, (
         "a raise whose status cannot be resolved statically - give it an int or a"
-        " status.HTTP_* attribute, or add an _ALLOWLIST entry:\n  " + "\n  ".join(unresolved)
+        " status.HTTP_* attribute, or add an _ALLOWLIST entry:\n  " + "\n  ".join(report.unresolved)
     )
-    assert not gaps, (
+    assert not report.gaps, (
         "these routes raise a status the generated client has no type for"
-        " (see app/models/errors.py for how to declare it):\n  " + "\n  ".join(sorted(gaps))
+        " (see app/models/errors.py for how to declare it):\n  " + "\n  ".join(sorted(report.gaps))
     )
 
 
@@ -364,10 +466,11 @@ def test_the_scan_resolves_the_attribute_spelling_sonar_cannot_see() -> None:
     If the resolver ever regresses to integer literals only, the guard above
     goes quietly green; this fails instead.
     """
-    raised, unresolved = _raised_statuses("app.api.import_", "start_import")
-    assert not unresolved
-    assert 409 in raised, "the attribute spelling of a status must resolve"
-    assert 422 in raised, "the integer spelling of a status must still resolve"
+    result = _raised_statuses("app.api.import_", "start_import")
+    assert not result.unresolved
+    assert not result.unscannable
+    assert 409 in result.statuses, "the attribute spelling of a status must resolve"
+    assert 422 in result.statuses, "the integer spelling of a status must still resolve"
 
 
 def _suppressed_statuses(source: str) -> set[int]:
@@ -401,12 +504,27 @@ def test_a_raise_the_surrounding_try_always_catches_is_not_reported() -> None:
 
 
 def test_a_raise_inside_an_except_clause_is_still_reported() -> None:
-    """The other half of the rule, and the one the app really depends on.
+    """The other half of the rule: only ``body``/``orelse`` are guarded.
 
-    ``install_cover_op`` maps four adapter errors onto four statuses from four
-    ``except`` clauses of ONE ``try`` whose last handler is ``except Exception``.
-    Treating that handler as swallowing its siblings would erase 404/415/422/500
-    from the contract in a single stroke.
+    ``_suppressed_raises`` is a TWO-condition guard - some handler must swallow
+    (``_handler_swallows``) AND the raise must sit in the try's body/orelse. A
+    fixture whose only swallowing-looking handler re-raises fails the first
+    condition, so the walk never reaches the second and the rule under test is
+    not exercised at all: the previous version of this test passed unchanged
+    when ``guarded`` was widened to include handler bodies. So the fixture below
+    satisfies the OTHER condition on purpose - ``except Exception: return None``
+    swallows and does not re-raise - leaving the body/orelse rule as the only
+    thing deciding the outcome. Widen ``guarded`` to include handler bodies and
+    this returns ``{404}``.
+
+    Blast radius, measured rather than asserted: this bug ALONE does not erase
+    ``install_cover_op``'s 404/415/422/500. All four live in ``except`` clauses
+    of a ``try`` whose last handler re-raises, so ``_handler_swallows`` is False
+    for every handler and the statement is skipped before ``guarded`` is built.
+    Erasing them needs this bug AND a broken re-raise check together. The rule
+    still has to hold on its own: sibling handlers do not catch each other, and
+    the day a swallowing handler joins that ``try``, this is what keeps the four
+    statuses in the contract.
     """
     assert (
         _suppressed_statuses(
@@ -415,8 +533,8 @@ def test_a_raise_inside_an_except_clause_is_still_reported() -> None:
             "        work()\n"
             "    except KeyError as exc:\n"
             "        raise HTTPException(status_code=404, detail=str(exc)) from exc\n"
-            "    except Exception as exc:\n"
-            "        raise HTTPException(status_code=500, detail=str(exc)) from exc\n"
+            "    except Exception:\n"
+            "        return None\n"
         )
         == set()
     )
@@ -443,6 +561,7 @@ def test_the_scan_follows_shared_helper_modules() -> None:
     two modules away. A scan that stopped at the endpoint function would see an
     empty set and pass.
     """
-    raised, unresolved = _raised_statuses("app.api.trash", "empty_trash_all")
-    assert not unresolved
-    assert 409 in raised, "a raise two call hops away, in a shared module, must be seen"
+    result = _raised_statuses("app.api.trash", "empty_trash_all")
+    assert not result.unresolved
+    assert not result.unscannable
+    assert 409 in result.statuses, "a raise two call hops away, in a shared module, must be seen"

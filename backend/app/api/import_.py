@@ -128,7 +128,7 @@ def ensure_import_can_start(request: Request) -> None:
         409: {
             "model": ErrorDetail,
             "description": (
-                "An import is already running, or a beets swap (config Apply or"
+                "An import is already running, or a beets swap (such as a config Apply or"
                 " duplicate resolve) or a library backfill holds the library."
             ),
         },
