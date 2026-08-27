@@ -917,9 +917,13 @@ def test_a_fullwidth_different_name_is_vetoed_not_waved_through() -> None:
 
 
 def test_a_fullwidth_latin_name_against_arabic_still_shares_no_alphabet() -> None:
-    # The case the rung exists for must survive the fold: the spec is fullwidth
-    # Latin, Plex is Arabic, the two share no alphabet once the widths are
-    # drawn the same way, and the veto stays out of the way.
+    # A no-collateral-damage guard, NOT proof the fold works: NFKC leaves
+    # Arabic as Arabic, so these two names share no alphabet with OR without
+    # the fold, and this test passes under a full revert of the fix. It pins
+    # the other direction — that the veto stays out of the way when the names
+    # genuinely cannot be read against each other (spec fullwidth Latin,
+    # Plex Arabic) — so a later change to the fold or the script reading
+    # cannot turn the cross-script case the rung exists for into a veto.
     section = _section([_habibi_in_plex(99, 254_000, _ARABIC_WAEL)])
     spec = _spec(
         "/music/gone.flac",
@@ -931,6 +935,98 @@ def test_a_fullwidth_latin_name_against_arabic_still_shares_no_alphabet() -> Non
     res = resolve_ordered_tracks(section, [spec])
     assert [t.ratingKey for t in res.tracks] == [99]
     assert res.missing == []
+
+
+def test_a_fullwidth_spec_artist_is_folded_too_before_the_veto_reads_it() -> None:
+    # The MIRROR of test_a_fullwidth_different_name_is_vetoed_not_waved_through:
+    # there the exotic spelling sits on the PLEX side, here on the SPEC side.
+    # Without the spec-side fold the veto compares a fullwidth name to "Nancy
+    # Ajram", finds no alphabet in common, and switches itself off — a
+    # different artist at the right length then resolves happily, the silent
+    # wrong match this module exists to refuse.
+    section = _section([_habibi_in_plex(101, 254_000, "Nancy Ajram")])
+    spec = _spec(
+        "/music/gone.flac",
+        albumartist=_fullwidth("Wael Kfoury"),
+        album="Habibi",
+        title="Habibi",
+        length_seconds=254.0,
+    )
+    res = resolve_ordered_tracks(section, [spec])
+    assert res.tracks == []
+    assert [(m.item_id, m.reason) for m in res.missing] == [(1, "not_found")]
+
+
+def test_a_claimed_candidate_the_evidence_would_have_refused_is_not_a_claim() -> None:
+    # Item 1's "Hello" legitimately takes the only Adele "Hello" in Plex. Item 2
+    # is a DIFFERENT "Hello" — different artist, a wildly different length. The
+    # album key (album+title only) does find the Adele copy under its key, and
+    # the copy is claimed — but that copy would have FAILED item 2's length
+    # check and artist veto anyway. A candidate the evidence refuses is not
+    # evidence of a claim: Plex holds nothing resembling item 2's tags, so it
+    # must hear "not_found", not "every matching candidate was already taken".
+    section = _section(
+        [
+            _track(
+                130,
+                "/plex/hello.flac",
+                artist="Adele",
+                album="Hello",
+                title="Hello",
+                duration=200_000,
+            )
+        ]
+    )
+    res = resolve_ordered_tracks(
+        section,
+        [
+            _spec("/music/h1.flac", item_id=1, albumartist="Adele", album="Hello", title="Hello"),
+            _spec(
+                "/music/h2.flac",
+                item_id=2,
+                albumartist="Nancy Ajram",
+                album="Hello",
+                title="Hello",
+                length_seconds=500.0,
+            ),
+        ],
+    )
+    assert [t.ratingKey for t in res.tracks] == [130]
+    assert [(m.item_id, m.reason) for m in res.missing] == [(2, "not_found")]
+
+
+def test_a_wider_key_with_free_tied_copies_still_reports_ambiguous() -> None:
+    # Item 1 takes track A through the artist-title key. Item 2 finds only the
+    # CLAIMED A under its own artist-title key, while the WIDER album key holds
+    # two OTHER free candidates tied at length — two diacritic re-spellings of
+    # the same artist, so both pass the veto, and no single one of them.
+    # "ambiguous" is the true news: the copies are there, they are tied, the
+    # user should sort them out in Plex. Letting the meta rung's
+    # "claimed_by_other_track" win would tell the user every candidate was
+    # taken, which the wider key just contradicted.
+    section = _section(
+        [
+            _track(131, "/plex/a.flac", artist="Adele", album="A", title="T", duration=200_000),
+            _track(132, "/plex/b.flac", artist="Adèle", album="Z", title="T", duration=200_000),
+            _track(133, "/plex/c.flac", artist="Adéle", album="Z", title="T", duration=200_000),
+        ]
+    )
+    res = resolve_ordered_tracks(
+        section,
+        [
+            _spec("/music/a1.flac", item_id=1, albumartist="Adele", album="A", title="T"),
+            _spec(
+                "/music/a2.flac",
+                item_id=2,
+                albumartist="Adele",
+                album="Z",
+                title="T",
+                length_seconds=200.0,
+            ),
+        ],
+    )
+    assert [t.ratingKey for t in res.tracks] == [131]
+    assert [(m.item_id, m.reason) for m in res.missing] == [(2, "ambiguous")]
 
 
 def test_a_blank_albumartist_is_refused_by_the_album_rung_outright() -> None:

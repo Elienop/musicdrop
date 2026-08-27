@@ -369,8 +369,9 @@ def _album_match(
 
     Returns ``(track, None)`` on the one surviving candidate;
     ``(None, "ambiguous")`` when several survive — the caller leaves the row
-    missing rather than picking one; ``(None, "claimed_by_other_track")`` when
-    the key found candidates and the CLAIMS took every one; and
+    missing rather than picking one; ``(None, "claimed_by_other_track")`` only
+    when at least one candidate would have matched this spec had it been FREE
+    — it agrees on length and is not vetoed by ``_artist_contradicts``; and
     ``(None, "not_found")`` when the key is incomplete, the album-artist is
     blank, the length is unknown, or nothing survives on the evidence.
     """
@@ -379,21 +380,22 @@ def _album_match(
     if not all(key) or not _norm(spec.albumartist) or length is None:
         return None, "not_found"
     candidates = by_album_title.get(key, ())
-    free = _free(candidates, spec, claimed)
-    pool = [
+    # Evidence FIRST, claims second: only a candidate that agrees on length and
+    # is not vetoed is a VOUCH for this spec, and only its being claimed is
+    # news about a sibling taking it. A claimed candidate the evidence would
+    # have refused is not evidence of a claim — saying "claimed" then would
+    # point the user at the wrong thing just as surely.
+    vouched = [
         cand
-        for cand in free
+        for cand in candidates
         if _lengths_agree(_plex_seconds(cand), length) and not _artist_contradicts(spec, cand)
     ]
-    if len(pool) == 1:
-        return pool[0], None
-    if pool:
+    free = _free(vouched, spec, claimed)
+    if len(free) == 1:
+        return free[0], None
+    if free:
         return None, "ambiguous"
-    # Only a pool the CLAIMS emptied earns the sharper reason. Where candidates
-    # survived the claim filter and then lost on length or the artist veto, this
-    # row's miss is about the evidence, not about a sibling taking it — and
-    # saying otherwise would point the user at the wrong thing just as surely.
-    return (None, "claimed_by_other_track") if candidates and not free else (None, "not_found")
+    return None, ("claimed_by_other_track" if vouched else "not_found")
 
 
 def _path_claims(by_path: dict[str, Any], specs: list[PlexTrackSpec]) -> dict[Any, int]:

@@ -118,8 +118,8 @@ class PlexMissingTrack(BaseModel):
     about two of its tracks being indistinguishable to Plex.
 
     ``item_id`` is the beets library item, so two rows for one item report under
-    one id — which is exactly right for the first two reasons (both rows are
-    missing) and is what makes the third readable: the item is there, the
+    one id — which is exactly right for the first three reasons (both rows are
+    missing) and is what makes the fourth readable: the item is there, the
     second listing of it is not.
     """
 
