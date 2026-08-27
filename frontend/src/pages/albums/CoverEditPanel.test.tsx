@@ -18,6 +18,10 @@ function makeFile(name: string, type: string, bytes = 4): File {
   return new File([new Uint8Array(bytes)], name, { type });
 }
 
+/** The PNG signature `sniff_image_mime` matches on, spelled out so a file with
+ * an untypeable name is still genuinely the thing the server would accept. */
+const PNG_MAGIC = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+
 // Hand-rolled Response-likes: a real `new Response(jsdomBlob)` calls `.stream()`
 // on the body when consumed, which the jsdom Blob lacks on Node 22 (undici) ->
 // "object.stream is not a function". These expose exactly what the hooks read.
@@ -204,6 +208,51 @@ describe("CoverEditPanel", () => {
       await screen.findByText(/png, jpeg, gif, or webp/i),
     ).toBeInTheDocument();
     expect(screen.queryByAltText(/cover preview/i)).not.toBeInTheDocument();
+  });
+
+  // The route never reads the declared content type — it sniffs magic bytes
+  // (`sniff_image_mime`, backend/app/artwork/images.py). A file the browser
+  // could not type therefore has to reach the server, which would accept it.
+  // Refusing it here left the user with no way to proceed at all.
+  it("previews a PNG whose declared type came through blank", async () => {
+    renderPanel();
+    const input = screen.getByLabelText(/upload cover image/i);
+    // Real PNG magic bytes, and no extension for the OS to guess from — the
+    // exact pair the old `ACCEPTED_TYPES.has(file.type)` gate refused.
+    const png = new File([PNG_MAGIC], "artwork", { type: "" });
+    expect(png.type).toBe("");
+    fireEvent.change(input, { target: { files: [png] } });
+
+    expect(await screen.findByAltText(/cover preview/i)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("previews a PNG declared as application/octet-stream", async () => {
+    renderPanel();
+    const input = screen.getByLabelText(/upload cover image/i);
+    const png = new File([PNG_MAGIC], "artwork.bin", {
+      type: "application/octet-stream",
+    });
+    fireEvent.change(input, { target: { files: [png] } });
+
+    expect(await screen.findByAltText(/cover preview/i)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  // Leniency about the TYPE must not leak into the SIZE guard, which mirrors
+  // `len(data) > cap` exactly and stays unconditional.
+  it("still rejects an oversize file whose declared type is blank", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    renderPanel();
+    const input = screen.getByLabelText(/upload cover image/i);
+    const big = new File([new Uint8Array(10 * 1024 * 1024 + 1)], "artwork", {
+      type: "",
+    });
+    fireEvent.change(input, { target: { files: [big] } });
+
+    expect(await screen.findByText(/10 MB/i)).toBeInTheDocument();
+    expect(screen.queryByAltText(/cover preview/i)).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("opens the native file picker when 'Upload an image…' is clicked", () => {
