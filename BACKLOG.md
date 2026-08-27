@@ -9,9 +9,7 @@ detail lives.
 *Recently shipped* with the PR number. When something new turns up (review finding, incident,
 parked idea), add it here in the same commit that discovers it.
 
-_Last groomed: 2026-08-27 (stale-reference sweep). NOTE: the 2026-08-25/26 SonarQube
-programme — #160-#182, 1,281 issues to zero — is NOT yet recorded below; its entries are
-still to be written._
+_Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping triage._
 
 ## Next up
 
@@ -111,6 +109,16 @@ still to be written._
   directory. Related: the two guard design specs under `docs/superpowers/specs/` still
   describe the PRE-#181 middleware order; supersession notes were written locally but
   cannot be committed, because the directory is ignored.
+
+- **A smart playlist that resolves to zero gets no library-path diagnosis, deliberately.**
+  `sync.py:657` records `status="failed"` for a smart playlist WITH the real tally (Plex refuses
+  to apply track lists to smart playlists; the resolution itself succeeded). The detail page's
+  all-zero diagnosis, added in #184, keys on `status == "empty"`, so this case stays silent. That
+  is the intended trade: the smart-playlist error is the actionable one, and loosening the
+  condition to accept `failed` is exactly the mutation that made a REJECTED push wrongly blame
+  the user's library path — the false alarm two regression tests exist to prevent. Consequence
+  worth knowing: a smart playlist with BOTH problems only reveals the path issue after the first
+  is fixed. Untested in either direction. From the #184 deep review, 2026-08-27.
 
 - **Six more stale factual claims in comments, found but NOT fixed.** Surfaced 2026-08-27
   by a local-LLM sweep, each re-verified by hand before recording:
@@ -400,6 +408,62 @@ still to be written._
   inside it); the placeholder scandir path widens that pre-existing TOCTOU window slightly.
 
 ## Recently shipped
+
+- **SonarQube compliance programme — 1,281 issues to 0, shipped 2026-08-25/26 across 22 PRs
+  (#160-#181).** Recorded as ONE entry because the wave structure, not the individual PRs, is
+  what a future reader needs; per-PR detail is in the git log and the vault note
+  `musicdrop-sonarqube`. Quality gate OK; the zero was AUDITED rather than trusted — analysis
+  revision matched `main`, the project carries a single branch so no feature scan could have
+  overwritten it, quality profiles were stock and unedited, and `sonar-project.properties` has
+  one commit in its entire history, so no exclusion was ever widened. **1,280 fixed, 1 accepted,
+  0 classified false-positive** — the owner's standing rule is that a true finding is never
+  filed as a false positive.
+  - *Wave 1 (#160-#163)* — Phosphor `*Icon` exports and current React event/ref types; composite
+    assertions split (PT018 selected); component props `Readonly<>`; `response_model=` kwargs
+    dropped where the return annotation already says it (regenerated contract byte-identical).
+  - *Wave 2 (#164-#167)* — test hygiene: one raising invocation per `pytest.raises` (PT012),
+    `monkeypatch` over hand-rolled save/restore (PT001), `findBy` replacing `waitFor`+`getBy`,
+    specific matchers and documented jsdom stubs.
+  - *Wave 3 (#168-#174)* — a `plural()` helper un-nesting count ternaries; derived render states
+    across shell, settings, import, review, playlists, browse, artists and search; and three
+    complexity passes (`beets` adapter, service layer, import review loop) that brought every
+    module under the threshold by extracting named phases.
+  - *Wave 4 (#175-#181)* — security (`usedforsecurity=False` on a non-security hash, writes
+    adopting the neighbour's mode via `copymode`, loopback placeholders), the remaining smells,
+    a TS idiom sweep, three a11y PRs (native `<output>` live regions, real semantics on
+    interactive controls, vacuous pins replaced), and the S8415 error-status sweep.
+  - **Lock-on-clear:** each family driven to zero also gained its lint twin in the SAME PR,
+    mutation-tested — ruff `select` now carries PT018, PT012, PT001 and S324. The `S2612` chmod
+    family has NO ruff twin (S103's threshold ignores o+r bits), so the server scan is its only
+    net. Full lessons: auto-memory `sonar-lessons-standing` and `sonar-wave4-lessons`.
+  - **The one accepted finding is `docker:S6471`** (the image's declared default user is root) —
+    now recorded in `Dockerfile` and under Open bugs above, so it no longer lives only in the
+    vault. It was declined on a reproduced upgrade cost, NOT on the rule being wrong.
+  - **A green gate is not contract completeness.** S8415 read 0 while `POST /api/import` still
+    had no 409 in the contract, because the rule matched integer literals only and that status
+    was written `status.HTTP_409_CONFLICT`. #181 replaced the audit with a test that resolves the
+    constant spelling and checks the LIVE spec, and it found 39 further gaps. Do not read a
+    zeroed rule as proof of the property it approximates.
+
+- **Stale-reference sweep — #183, shipped 2026-08-27.** Three classes of reference that resolved
+  on one machine only: six dead commit shas (branch-local commits destroyed by their own
+  squash-merge — one was gone from the repository entirely), two comments still calling the host
+  guard "outermost" after #181 moved CORS outermost, and `library.py` claiming to be the only
+  module importing beets when 25 do (the boundary is the PACKAGE). Added
+  `tests/test_cited_shas.py`, which resolves every sha cited in a comment against `origin/main`
+  — not `HEAD`, because a branch-local sha IS an ancestor of its own branch and a HEAD check
+  would redden the wrong PR. CI gained `fetch-depth: 0` for it.
+
+- **#143 playlist-mapping triage — #184, shipped 2026-08-27.** A claim-blocked row reported
+  `not_found`, whose tooltip sent the user to check a file that was never the problem; it now
+  reports `claimed_by_other_track`, returned only where the claims are what emptied a pool of
+  candidates that would genuinely have matched. An all-zero-but-real tally rendered nothing while
+  a PARTIAL miss got a warning box — the loudest failure was the quietest — now diagnosed by
+  discriminating on status plus tally-nullability. And the artist veto could be switched OFF by a
+  Unicode width, since fullwidth Latin shares no "script" with ASCII; both names are NFKC-folded
+  before the scripts are read. That last one failed UNSAFE, accepting a silent wrong match.
+  An isolated mutation review caught a real correctness bug in the first attempt while CI was
+  fully green — see auto-memory `coverage-regressions-and-diagnosis-claims`.
 
 - **#143-Minors triage fix slice — shipped 2026-08-25 (PR # filled in at merge).** The
   fix-now portion of the banked-Minors adjudication (see Next up). Copy honesty: the
