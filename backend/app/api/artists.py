@@ -663,8 +663,7 @@ async def fetch_artist_image_endpoint(
                 " (needs PNG, JPEG, GIF or WebP)"
             ),
         )
-    # The third content-type sink header_safe_content_type's docstring counts,
-    # and the only one where the value is a source's OWN answer rather than a
+    # A content-type sink whose value is a source's OWN answer rather than a
     # cache sidecar. Every source in the tree routes its download through
     # app/artwork/download.py, which already guards this - but the source
     # contract is a Protocol, so nothing stops a future one from returning a

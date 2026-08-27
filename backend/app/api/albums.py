@@ -267,8 +267,10 @@ async def get_album_cover_endpoint(
     # extension map is fixed, and mediafile re-derives an embedded picture's
     # type from its magic bytes. Defence in depth, then: a value that cannot be
     # a header 500s this endpoint (non-ASCII) or drops the connection with no
-    # response at all (a control character), and header_safe_content_type's
-    # docstring enumerates the sinks — which is only true if this one is in.
+    # response at all (a control character). The invariant is a predicate, not
+    # a list: an external content-type reaching a response header must pass
+    # through header_safe_content_type — a reader checks each site by grepping
+    # that name, and a guard with one site missing is not a guard.
     mime = header_safe_content_type(mime) or FALLBACK_CONTENT_TYPE
     if validator is not None:
         return image_response(image_bytes, mime, validator)

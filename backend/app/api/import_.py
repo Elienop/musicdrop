@@ -228,9 +228,9 @@ async def get_import_album_cover(
         content=image_bytes,
         # Same provenance as the album-cover sink: a media file's embedded
         # picture MIME. Safe today (mediafile re-derives it from magic bytes),
-        # guarded anyway so header_safe_content_type's enumeration of the sinks
-        # stays true — a comment claiming completeness is how the next reviewer
-        # stops looking.
+        # guarded anyway: an external content-type reaching a response header
+        # must be guarded, and a guard with one site missing is not a guard.
+        # A comment claiming completeness is how the next reviewer stops looking.
         media_type=header_safe_content_type(mime) or FALLBACK_CONTENT_TYPE,
         # The only image response in the app that reaches neither the http_cache
         # constructors nor the artwork routes -
