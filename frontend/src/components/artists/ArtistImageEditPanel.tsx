@@ -17,8 +17,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
+import { isConfidentlyUnsupportedImageType } from "@/lib/imageFileTypes";
 
-const ACCEPTED_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const MAX_BYTES = 10 * 1024 * 1024;
 
 type Pending = { objectUrl: string; blob: Blob; source: string | null };
@@ -148,7 +148,11 @@ function ArtistImageEditPanelForArtist({
 
   const onPickFile = (file: File) => {
     clearNotices();
-    if (!ACCEPTED_TYPES.has(file.type)) {
+    // Refuse only what the declared type CONFIDENTLY rules out. `file.type` is
+    // the browser's guess from the extension, while the route sniffs magic
+    // bytes, so a blank or generic type must fall through to the server rather
+    // than be refused here — see lib/imageFileTypes.ts.
+    if (isConfidentlyUnsupportedImageType(file.type)) {
       setPickError("That file isn’t an image we can use. Pick a PNG, JPEG, GIF, or WebP.");
       return;
     }

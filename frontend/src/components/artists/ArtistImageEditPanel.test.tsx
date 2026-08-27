@@ -167,6 +167,27 @@ describe("ArtistImageEditPanel", () => {
     expect(uploadMutate).not.toHaveBeenCalled();
   });
 
+  // The upload route never reads the declared content type — it sniffs magic
+  // bytes (`sniff_image_mime`, backend/app/artwork/images.py). An
+  // extensionless file reports `type: ""`, which says nothing about the bytes,
+  // so refusing it here blocked a portrait the server would have installed.
+  it("previews and uploads a PNG whose declared type came through blank", async () => {
+    render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
+    const input = screen.getByLabelText(/upload artist image/i);
+    // Real PNG magic bytes, and no extension for the OS to guess from — the
+    // exact pair the old `ACCEPTED_TYPES.has(file.type)` gate refused.
+    const file = new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], "portrait", {
+      type: "",
+    });
+    expect(file.type).toBe("");
+    fireEvent.change(input, { target: { files: [file] } });
+
+    expect(await screen.findByAltText(/pending artist portrait/i)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /use this image/i }));
+    expect(uploadMutate).toHaveBeenCalledWith(file, expect.anything());
+  });
+
   it("resets to auto", () => {
     render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /reset to auto/i }));

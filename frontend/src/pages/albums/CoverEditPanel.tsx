@@ -3,14 +3,13 @@ import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { useFetchAlbumCover, useInstallAlbumCover, type FetchedCover } from "@/api/useAlbumCover";
+import { isConfidentlyUnsupportedImageType } from "@/lib/imageFileTypes";
 import type { components } from "@/api/schema";
 
 type CoverInstallResult = components["schemas"]["CoverInstallResult"];
 
 type Pending = { objectUrl: string; blob: Blob; source: string | null };
 
-/** Image types the cover endpoint accepts (mirrors the picker's `accept`). */
-const ACCEPTED_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const MAX_BYTES = 10 * 1024 * 1024;
 
 /** Keyed on `albumId`, and that is load-bearing rather than tidy. Every piece of
@@ -80,7 +79,11 @@ function CoverEditPanelForAlbum({
   const onPickFile = (file: File) => {
     setNotFound(false);
     fetchCover.reset();
-    if (!ACCEPTED_TYPES.has(file.type)) {
+    // Refuse only what the declared type CONFIDENTLY rules out. `file.type` is
+    // the browser's guess from the extension, while the route sniffs magic
+    // bytes, so a blank or generic type must fall through to the server rather
+    // than be refused here — see lib/imageFileTypes.ts.
+    if (isConfidentlyUnsupportedImageType(file.type)) {
       setPickError("That file isn't an image we can use. Pick a PNG, JPEG, GIF, or WebP.");
       return;
     }
