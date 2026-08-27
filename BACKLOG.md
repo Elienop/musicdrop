@@ -9,7 +9,9 @@ detail lives.
 *Recently shipped* with the PR number. When something new turns up (review finding, incident,
 parked idea), add it here in the same commit that discovers it.
 
-_Last groomed: 2026-08-25, with the #143-Minors triage._
+_Last groomed: 2026-08-27 (stale-reference sweep). NOTE: the 2026-08-25/26 SonarQube
+programme — #160-#182, 1,281 issues to zero — is NOT yet recorded below; its entries are
+still to be written._
 
 ## Next up
 
@@ -64,19 +66,70 @@ _Last groomed: 2026-08-25, with the #143-Minors triage._
   own `UNSAFE_METHODS`), and every bodied operation the body limit's 413 — add-only-where-
   absent, 422 and richer route declarations preserved, new routes covered automatically.
 
-- **`PUT /api/playlists/{playlist_id}/artwork` under-declares its OWN statuses.** The route
-  reads a raw JPEG/PNG body (`await request.body()`), so FastAPI emits no `requestBody` and
-  the middleware overlay rightly skips its 413 — but the route itself returns 404, 413
-  (its 8 MiB cap at `app/api/playlists.py:615-618`) and 415, and declares none of them.
-  Pre-existing (found by the overlay slice's deep review, 2026-08-25); the overlay tests'
-  negative 413 pin is deliberately scoped so a route-level `responses={413: ...}` fix
-  passes. Impact bounded: `usePlaylists.ts` bypasses the typed client for this upload.
+- ~~**`PUT /api/playlists/{playlist_id}/artwork` under-declares its OWN statuses.**~~ —
+  **FIXED in #181** (`8eda506`), which added the route's entire `responses=` block. The
+  route reads a raw JPEG/PNG body (`await request.body()`), so FastAPI emits no
+  `requestBody` and the middleware overlay rightly skips its 413 — which is precisely why
+  the route has to name that refusal itself. It now declares 404, 413 (naming both its own
+  8 MiB cap and the app-wide body limit) and 415, so the shipped contract carries
+  `200/400/403/404/413/415/422`.
 
 - **Cross-origin no-cors GET side effects are an accepted residual.** `GET
   /api/artists/image` (and its peer cache-fillers), plus the outbound-credential GETs like
   `/api/plex/*`, still fire for a foreign page — GETs are structurally outside an
   unsafe-method guard, so the 2026-08-23 slice's "not in this slice" note stands as an
   accepted risk, not an oversight.
+
+- **The image's declared default user is root, and that is an accepted residual.**
+  SonarQube `docker:S6471` — the ONLY finding accepted out of the 1,281 cleared in the
+  2026-08-25/26 compliance pass, and the reason `Dockerfile` carries no `USER`. The
+  serving process is not root: `entrypoint.sh` ends with `exec gosu musicdrop "$@"`, so
+  root exists only long enough to remap the `musicdrop` user to the operator's PUID/PGID
+  and `chown /data`. The rule is followable — a compliant image was built and verified
+  across four deployment scenarios: the `musicdrop` user baked at BUILD time (uid 911) with
+  `USER musicdrop`, plus an entrypoint that remaps only when started as root. Note a bare
+  `USER musicdrop` would not work at all — nothing creates that user until `entrypoint.sh`
+  runs — so the fix is a build-time `useradd`, not one line. This is therefore a cost
+  decision, not an impossibility. What carries it: an operator whose PUID differs from that
+  baked 911 (unRAID's convention is 99, and `entrypoint.sh` exists precisely because
+  operators set it) pulls, restarts without editing their compose, and gets a container
+  running as 911 against a `/data` still owned by their old PUID — `Permission denied` on
+  start. Breaking a pull-and-restart upgrade for the sake of one compose line was judged
+  the worse trade. Revisit if `/data` ownership ever stops being
+  operator-set. Full record: the SonarQube issue comment and the vault note
+  `musicdrop-sonarqube`; `Dockerfile` carries a pointer at the decision site.
+
+- **Source comments point at gitignored files, so those pointers dangle for every clone.**
+  Two families, found by the 2026-08-27 stale-reference sweep. `docs/superpowers/`
+  (`.gitignore:51`) is cited 5 times from 4 tracked files, two of them shipped source
+  (`app/host_guard.py:30`, `app/playlists/store.py:491`); `CLAUDE.md` (`.gitignore:48`) is
+  cited 30 times across 22 tracked files, mostly "CLAUDE.md rule 3" under `app/beets/`.
+  Both resolve on the maintainer's machine and nowhere else — the same class as the dead
+  commit shas that sweep removed. Left alone deliberately (owner's call, 2026-08-27): the
+  ignores are intentional and rewriting 26 files is its own decision. If revisited, the
+  cheap fix is to mark each pointer as a local untracked doc rather than to track the
+  directory. Related: the two guard design specs under `docs/superpowers/specs/` still
+  describe the PRE-#181 middleware order; supersession notes were written locally but
+  cannot be committed, because the directory is ignored.
+
+- **Six more stale factual claims in comments, found but NOT fixed.** Surfaced 2026-08-27
+  by a local-LLM sweep, each re-verified by hand before recording:
+  - `app/api/albums.py:271`, `app/api/artists.py:666` and `app/api/import_.py:231` all pin
+    a defence-in-depth completeness argument to "`header_safe_content_type`'s docstring
+    enumerates/counts the sinks". That docstring (`app/artwork/images.py:19-74`) enumerates
+    PROVENANCE (three sources) and FAILURE SHAPES (four) — it has never enumerated the
+    sinks. `artists.py:666` also calls itself "the third content-type sink", but there are
+    ~9 invocations across 6 modules, so no consistent counting makes it third. Fixing needs
+    a decision rather than a reword: either add a real sink enumeration (a new list that
+    can itself go stale) or drop the completeness claim and keep the argument. Note
+    `import_.py:231` warns that "a comment claiming completeness is how the next reviewer
+    stops looking" — which is precisely what this cluster produced.
+  - `app/api/disk_sync.py:5` says "the same 8-gate set"; the predicate is 5 job types plus
+    the swap lock (6), across 11 call sites — 8 matches neither count.
+  - `app/api/http_cache.py:33` says `GET /api/artists/image` "alone has six exits"; it has
+    7 today and had 8 when the comment was written.
+  - `app/api/import_.py:235` says "the fourth and last image response in the app"; five
+    routes answer with image bodies, and two of them post-date that comment.
 
 - **Bank store sink has the same inf/NaN shape the playlists store just fixed.**
   `app/bank/store.py:174` (`json.dumps(model_dump(mode="json"), ensure_ascii=True)`) writes

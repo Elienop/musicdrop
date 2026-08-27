@@ -44,6 +44,17 @@ EXPOSE 3030
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3030/api/health', timeout=4).status==200 else 1)"
 
+# No USER directive, so the image's declared default user stays root — SonarQube
+# docker:S6471, accepted (the one finding accepted in the 2026-08 compliance
+# pass). The SERVING process is not root: entrypoint.sh remaps musicdrop to the
+# operator's PUID/PGID, chowns /data, then drops via `exec gosu musicdrop`.
+# A compliant image was built and verified, so this is a cost decision and not
+# an impossibility: bake the user at build time (useradd at 911, then USER
+# musicdrop) and remap only when started as root. A BARE `USER musicdrop` would
+# not work — the user is created at runtime by entrypoint.sh, so the container
+# would fail to start. It was declined because it breaks pull-and-restart
+# upgrades for any operator whose PUID differs from that baked 911 (unRAID's
+# convention is 99): /data would then refuse the new uid. See BACKLOG.md.
 ENTRYPOINT ["/entrypoint.sh"]
 # One worker by design: beets runs in-process and serial; extra workers
 # would each open the library and duplicate the embedded beets state.
