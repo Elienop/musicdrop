@@ -33,6 +33,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # tests/test_cited_shas.py resolves every sha cited in a comment
+          # against origin/main, which a shallow clone cannot do. Cheap here:
+          # the whole history is under 10 MB.
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0

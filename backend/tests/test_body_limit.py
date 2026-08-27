@@ -69,12 +69,12 @@ def test_the_413_carries_no_cors_headers_of_its_own() -> None:
 
     It used to echo Allow-Origin/Allow-Credentials itself, on the premise that
     it wrapped outside CORSMiddleware and the rejection would otherwise skip it.
-    That premise died when CORS moved outermost (ede5001); the echo would now be
-    a second, differently-keyed answer to a question CORS already answers. The
-    synthetic stack here has no CORS in it, so an echo would be the only possible
-    source of these headers — which is exactly why this is the test that can see
-    it. The keyword that fed the old echo is gone from the signature entirely,
-    so there is nothing left to key one off.
+    That premise died when CORS moved outermost (8eda506, #181); the echo would
+    now be a second, differently-keyed answer to a question CORS already answers.
+    The synthetic stack here has no CORS in it, so an echo would be the only
+    possible source of these headers — which is exactly why this is the test that
+    can see it. The keyword that fed the old echo is gone from the signature
+    entirely, so there is nothing left to key one off.
     """
     client = TestClient(_app(max_bytes=10))
     r = client.post("/", content=b"x" * 50, headers={"Origin": _DEV_ORIGIN})

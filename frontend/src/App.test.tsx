@@ -190,7 +190,8 @@ describe("App shell", () => {
   });
 
   test("the topbar slot mounts ActivityButton + HealthStatus, and the toast region exists", async () => {
-    // Pins the slot wiring that regressed once mid-build (commit 5a55a10):
+    // Pins the slot wiring that regressed once mid-build during the redesign
+    // (#29 — the sha it regressed on was squashed away at merge):
     // deleting <ActivityButton/>, <HealthStatus/>, or <AppToaster/> from
     // App.tsx must fail a test, not just a walkthrough.
     server.use(...idleShellHandlers());

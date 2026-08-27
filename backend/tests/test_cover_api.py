@@ -541,9 +541,10 @@ def test_proxy_forwarded_host_upload_allowed(cover_client: TestClient, edit_lib:
     # Behind a reverse proxy that rewrites Host to the upstream, the public host
     # the browser used arrives in X-Forwarded-Host. A same-origin upload (Origin
     # authority == X-Forwarded-Host) must be allowed even though it != Host.
-    # The host guard (outermost) screens X-Forwarded-Host too, so the public
-    # host here is an IP literal (always allowlisted); the NAME-based proxy flow
-    # (MUSICDROP_ALLOWED_HOSTS) is pinned by test_host_guard.py's prod-posture test.
+    # The host guard (which wraps outside the origin guard) screens
+    # X-Forwarded-Host too, so the public host here is an IP literal (always
+    # allowlisted); the NAME-based proxy flow (MUSICDROP_ALLOWED_HOSTS) is
+    # pinned by test_host_guard.py's prod-posture test.
     aid = _aid(edit_lib)
     r = cover_client.post(
         f"/api/albums/{aid}/cover",

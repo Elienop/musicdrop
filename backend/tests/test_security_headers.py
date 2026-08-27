@@ -258,8 +258,8 @@ def test_non_preflight_options_still_reaches_the_router_and_is_stamped() -> None
     the router (405 here — ``/api/config/validate`` is POST-only) and carries the
     five stamped headers like any other response. The narrow fact is worth
     pinning because the wider one — "an OPTIONS response no longer carries the
-    stamped headers" — is what the ede5001 commit message says, and a future
-    reader acting on it would think this response is uncovered.
+    five stamped headers" — is what the 8eda506 (#181) commit message says, and a
+    future reader acting on it would think this response is uncovered.
     """
     r = _client().options("/api/config/validate", headers={"Origin": "http://localhost:5173"})
     assert r.status_code == 405

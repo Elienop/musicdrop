@@ -1,8 +1,14 @@
 """The beets-adapter boundary.
 
-This is the ONLY module in the codebase that imports beets. Everything beyond
-this file works in terms of our own Pydantic models, so beets' untyped surface,
-global config singletons, and version quirks stay isolated here.
+``app/beets/`` is the only PACKAGE in the codebase that imports beets, and the
+boundary is the package rather than this module — the adapter outgrew a single
+file long ago, and many of its siblings import beets too. What holds is that
+nothing OUTSIDE ``app/beets/`` does (CLAUDE.md rule 3). That is a convention
+today, not a machine-checked one: no test or lint rule pins it.
+
+Everything beyond the package works in terms of our own Pydantic models, so
+beets' untyped surface, global config singletons, and version quirks stay
+isolated here.
 """
 
 import os

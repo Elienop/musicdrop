@@ -276,9 +276,10 @@ def test_prod_posture_rejects_the_dev_origin_write(tmp_path: Path) -> None:
         "print(dev.status_code, same.status_code)\n"
         "print(tuple(g), list(cors))\n"
     )
-    # The child runs in PROD posture, where the host guard (outermost) rejects
-    # the TestClient's `Host: testserver` before the origin guard runs; this
-    # test is about ORIGIN posture, so allowlist the test host explicitly.
+    # The child runs in PROD posture, where the host guard (which wraps outside
+    # the origin guard) rejects the TestClient's `Host: testserver` before the
+    # origin guard runs; this test is about ORIGIN posture, so allowlist the
+    # test host explicitly.
     # Prod host-guard behavior has its own subprocess test in test_host_guard.py.
     env = {
         **os.environ,
@@ -303,9 +304,10 @@ def test_prod_posture_rejects_the_dev_origin_write(tmp_path: Path) -> None:
     statuses, wiring = lines
     assert statuses == "403 200", f"stdout={out.stdout!r} stderr={out.stderr!r}"
     # ...and EVERY consumer resolved to the production tuple, not the dev one:
-    # guard `()`, CORS `[]`. (The body limit was a third consumer until ede5001
-    # moved CORS outermost and its hand-rolled 413 echo became redundant; it no
-    # longer reads the tuple at all, so there is nothing left to hardcode there.)
+    # guard `()`, CORS `[]`. (The body limit was a third consumer until 8eda506
+    # (#181) moved CORS outermost and its hand-rolled 413 echo became redundant;
+    # it no longer reads the tuple at all, so there is nothing left to hardcode
+    # there.)
     assert wiring == "() []", f"stdout={out.stdout!r} stderr={out.stderr!r}"
 
 
@@ -319,7 +321,7 @@ def _middleware_kwargs(cls: object) -> dict[str, object]:
 def test_both_middlewares_read_one_resolved_tuple() -> None:
     # The spec's consolidation invariant: the guard and the CORS allowlist read
     # the SAME resolved origin tuple. The body limit was a third consumer until
-    # ede5001 (see the docstring on the prod-posture test above).
+    # 8eda506, #181 (see the docstring on the prod-posture test above).
     guard = _middleware_kwargs(OriginGuardMiddleware)["extra_origins"]
     assert isinstance(guard, tuple)
     assert _middleware_kwargs(CORSMiddleware)["allow_origins"] == list(guard)
