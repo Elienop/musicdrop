@@ -1,7 +1,8 @@
 """Shared HTTP revalidation for the binary image endpoints.
 
-Both the artist portrait (``api.artists``) and the album cover (``api.albums``)
-are served with a content-hash ``ETag`` and ``Cache-Control: no-cache`` so a
+The routes that call these constructors — the artist portrait (``api.artists``),
+the album cover (``api.albums``), and the playlist artwork (``api.playlists``)
+— are served with a content-hash ``ETag`` and ``Cache-Control: no-cache`` so a
 freshly-edited image shows up without a hard refresh, while an unchanged one
 stays cheap — the browser revalidates and gets a bodiless ``304``.
 
@@ -29,9 +30,11 @@ from fastapi import Request, Response
 #: ``application/octet-stream`` - what a content-type that cannot legally be a
 #: header degrades to - back into something renderable.
 #:
-#: It lives on the two response CONSTRUCTORS rather than at each ``return``:
-#: ``GET /api/artists/image`` alone has six exits, and a header that has to be
-#: remembered six times is a header that will be missed once.
+#: It lives on the response CONSTRUCTORS rather than at each ``return``:
+#: ``GET /api/artists/image`` alone leaves through more exits than fit on one
+#: screen, spread over the endpoint and its ``_serve_*`` helpers in
+#: ``api.artists`` — and a header that has to be remembered at every one of
+#: them is a header that will be missed once.
 NO_SNIFF: Final[dict[str, str]] = {"X-Content-Type-Options": "nosniff"}
 
 

@@ -134,8 +134,8 @@ class SingleSlotRegistry(Generic[JobT]):
         ``Thread.start()`` can raise under resource exhaustion; without this
         guard the just-claimed slot would stay stuck at ``phase="running"``
         forever (no worker will ever run to finish it), and since
-        ``library_job_active()`` unions these four slots that wedges EVERY
-        library mutation until restart. On failure, fail the job — releasing the
+        ``library_job_active()`` unions every single-slot job type, that stuck slot
+        wedges EVERY library mutation until restart. On failure, fail the job — releasing the
         slot and surfacing the error — before re-raising, mirroring the import
         registry's own Thread.start guard. Call AFTER ``start`` has claimed the
         slot; the API's 500 then rides the re-raise.

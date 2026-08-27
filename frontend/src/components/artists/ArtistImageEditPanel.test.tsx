@@ -433,10 +433,14 @@ describe("ArtistImageEditPanel", () => {
     expect(screen.getByRole("status")).toHaveTextContent("");
   });
 
-  it("does not call a both-false reset a no-op", () => {
+  it("a both-false reset promises the lookup WITHOUT claiming anything was cleared", () => {
     // An unwritable cache dir swallows the unlink while the in-memory entry is
-    // dropped, so `false, false` can still mean what is served changed. The
-    // copy must not read as "already clear".
+    // dropped, so `false, false` can still mean what is served changed — the
+    // copy may not read as "already clear". The overclaim production can
+    // actually emit is the SIBLING branch of the same ternary, which prefixes
+    // "Cleared." — so this pins the both-false sentence verbatim (the
+    // apostrophe is U+2019) rather than a wording blocklist, and any leak of
+    // the cleared branch fails on both the equality and the prefix.
     resetMutate.mockImplementation(
       (_v: undefined, opts: { onSuccess: (r: unknown) => void }) =>
         opts.onSuccess({ ok: true, cleared_override: false, cleared_auto: false }),
@@ -444,8 +448,8 @@ describe("ArtistImageEditPanel", () => {
     render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /reset to auto/i }));
     const note = screen.getByRole("status");
-    expect(note).toHaveTextContent(/looked up again/i);
-    expect(note.textContent).not.toMatch(/nothing|already|no-op/i);
+    expect(note.textContent).toBe("This artist’s portrait will be looked up again.");
+    expect(note.textContent).not.toMatch(/^Cleared\./);
   });
 
   it("offers no fetch at all when both artist-image toggles are off", () => {

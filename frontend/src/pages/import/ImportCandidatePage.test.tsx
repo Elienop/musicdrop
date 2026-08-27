@@ -202,8 +202,18 @@ describe("ImportCandidatePage", () => {
     ).toBeInTheDocument();
     // what-changes chips. Cover art is NOT claimed as a change — with the
     // default config the import never fetches/changes art (the after-panel
-    // shows the release's art for reference only), so "+ cover art" is absent.
-    expect(screen.queryByText("+ cover art")).not.toBeInTheDocument();
+    // shows the release's art for reference only), so NO chip may mention it.
+    // The chip renders its change string verbatim, so pin the SHAPE (any
+    // art-ish wording inside a Badge) instead of one literal production never
+    // emits. Scoping to `data-slot=badge` is what keeps the reference-only
+    // caption <p> ("Release art · not applied") out of the count; the plural
+    // query because the singular form throws when several chips match.
+    const artChips = screen.queryAllByText(
+      (_content, el) =>
+        el?.getAttribute("data-slot") === "badge" &&
+        /\bart(work)?\b/i.test(el.textContent ?? ""),
+    );
+    expect(artChips).toHaveLength(0);
     expect(screen.getByText(/not applied/i)).toBeInTheDocument();
     expect(screen.getByText("1 of 2 titles")).toBeInTheDocument();
     // before vs after album title both present
@@ -289,14 +299,21 @@ describe("ImportCandidatePage", () => {
     expect(within(afterTable).getByText("19")).toBeInTheDocument();
   });
 
-  test("does not show a number delta when only the title changed", async () => {
-    // The default fixture's changed track keeps its number (2 → 2); the # cell
-    // must show the single position, never a no-op "2 → 2" arrow.
+  test("a title-only change still shows the number as a plain position in each panel", async () => {
+    // The mirrored-cell design (#112 replaced the old combined
+    // `before → after` cell): each panel owns ONE bare number per row. The
+    // default fixture's changed track keeps its number (2 in both), which is
+    // the case a delta cell would spoil — it would render "2 → 2" and leave
+    // neither table with a plain "2". The sibling test above covers the
+    // renumbered case (1 → 19); this one covers the identical-number case.
     server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
     renderAt();
 
     await screen.findByText("Paranoid Android");
-    expect(screen.queryByText("2 → 2")).not.toBeInTheDocument();
+    const nowTable = screen.getByRole("table", { name: "Current files" });
+    const afterTable = screen.getByRole("table", { name: "After import" });
+    expect(within(nowTable).getAllByText("2")).toHaveLength(1);
+    expect(within(afterTable).getAllByText("2")).toHaveLength(1);
   });
 
   test("labels the covers honestly — yours kept, release art is reference", async () => {

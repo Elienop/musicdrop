@@ -314,9 +314,9 @@ async def fetch_album_cover_endpoint(
     return Response(
         content=image_bytes,
         media_type=mime,
-        # The last image response in the app that does not go through the two
-        # http_cache constructors, so it needs nosniff spelled out. This mime is
-        # already one of four literals from sniff_image_mime's magic-byte check,
+        # An image response that does not go through the http_cache constructors,
+        # so it needs nosniff spelled out. This mime is already one of the four
+        # literals from sniff_image_mime's magic-byte check,
         # never a CDN's word - the header is the backstop, and a backstop with
         # one response missing is not one.
         headers={**NO_SNIFF, "Cache-Control": "no-store", "X-Art-Source": source},
