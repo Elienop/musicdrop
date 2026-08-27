@@ -13097,6 +13097,7 @@
             "enum": [
               "not_found",
               "ambiguous",
+              "claimed_by_other_track",
               "duplicate_collapsed"
             ],
             "title": "Reason"
@@ -13111,7 +13112,7 @@
           "reason"
         ],
         "title": "PlexMissingTrack",
-        "description": "One playlist track the last sync could not fully place on Plex.\n\n``reason``: ``not_found`` \u2014 no Plex track at that path and no metadata\ncandidate; ``ambiguous`` \u2014 several Plex tracks matched the metadata and\nalbum/track-number could not single one out (never guessed);\n``duplicate_collapsed`` \u2014 the track is on Plex and in the playlist, but this\nplaylist lists it more than once and Plex kept a single row.\n\n``item_id`` is the beets library item, so two rows for one item report under\none id \u2014 which is exactly right for the first two reasons (both rows are\nmissing) and is what makes the third readable: the item is there, the\nsecond listing of it is not."
+        "description": "One playlist track the last sync could not fully place on Plex.\n\n``reason``: ``not_found`` \u2014 no Plex track at that path and no metadata\ncandidate; ``ambiguous`` \u2014 several Plex tracks matched the metadata and\nalbum/track-number could not single one out (never guessed);\n``claimed_by_other_track`` \u2014 candidates existed but every one was already\nmatched to a DIFFERENT library track in this playlist, and reusing one would\nput a single Plex recording in the playlist twice (see ``_free`` in\n``app/plex/mapping.py``); ``duplicate_collapsed`` \u2014 the track is on Plex and\nin the playlist, but this playlist lists it more than once and Plex kept a\nsingle row.\n\nThe third and fourth are easy to confuse and are not the same event.\n``duplicate_collapsed`` is ONE library track the playlist lists twice;\n``claimed_by_other_track`` is TWO library tracks whose tags lead to one Plex\nrecording. The first is about this playlist repeating itself, the second\nabout two of its tracks being indistinguishable to Plex.\n\n``item_id`` is the beets library item, so two rows for one item report under\none id \u2014 which is exactly right for the first three reasons (both rows are\nmissing) and is what makes the fourth readable: the item is there, the\nsecond listing of it is not."
       },
       "PlexPlaylistInfo": {
         "properties": {

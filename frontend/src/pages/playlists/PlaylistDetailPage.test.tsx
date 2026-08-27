@@ -1325,6 +1325,61 @@ describe("PlaylistDetailPage", () => {
     expect(screen.queryByRole("button", { name: "Match Twice" })).toBeNull();
   });
 
+  /** The tooltip/sr-only sentence for a row whose only Plex candidates were
+   * already taken by a sibling row. It names the CLAIM and sends the user to
+   * add the missing file — never to "check the file is in your Plex library",
+   * which is the one place the answer cannot be: Plex HAS the recording. */
+  const CLAIMED_TITLE =
+    "Every Plex track matching this track's tags was already matched to a " +
+    "different track in this playlist, and reusing one would put the same " +
+    "recording in twice. Add this track's own file to your Plex library, then " +
+    "sync again.";
+
+  test("a claimed-away row reads as absent, and its reason names the claim", async () => {
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(11, "Taken"), track(12, "Twice")]),
+          plex: partialAdminWith(2, [
+            { item_id: 11, title: "Taken", reason: "claimed_by_other_track" },
+            { item_id: 12, title: "Twice", reason: "duplicate_collapsed" },
+          ]),
+        }),
+      ),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+
+    const taken = within(await screen.findByRole("row", { name: /Taken/ }));
+    // A LOOKALIKE is on Plex; this track still isn't — so the badge states the
+    // absence and only the reason explains why it happened. `Record<
+    // PlexMissReason, string>` makes the compiler demand the KEY and say
+    // nothing at all about the VALUE, so the words are pinned here or nowhere:
+    // "In Plex once" on this row would be the badge lying about a track the
+    // user cannot play.
+    expect(taken.getByText("Not in Plex")).toHaveAttribute(
+      "title",
+      CLAIMED_TITLE,
+    );
+    expect(taken.queryByText(/in plex once/i)).toBeNull();
+    // The same reason as real text, because `title` on a Badge's generic <span>
+    // is not reliably announced. Read exactly, not through the query's
+    // whitespace normalizer, so a doubled or missing space at the label/reason
+    // seam still fails.
+    const carrier = taken.getByText(`Not in Plex: ${CLAIMED_TITLE}`);
+    expect(carrier.textContent).toBe(`Not in Plex: ${CLAIMED_TITLE}`);
+    // …and it is treated as an ABSENCE end to end, not as the repeat Plex
+    // holds: re-pointing this row at the right Plex track is a remedy that can
+    // work, which is exactly why the collapsed-duplicate row beside it — the
+    // one branch that reads a miss as present — is offered nothing.
+    expect(
+      screen.getByRole("button", { name: "Match Taken" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Match Twice" })).toBeNull();
+  });
+
   test("does not stack the Plex badge on a row whose library item is gone", async () => {
     server.use(
       http.get(BASE, () =>
@@ -1651,6 +1706,35 @@ describe("PlaylistDetailPage", () => {
     });
   }
 
+  /** The match summary in every shape it has, asserted absent wholesale — for
+   * the records that must stay SILENT (a failed push's zeros, a pre-tally
+   * record) rather than read as "nothing matched", which is a wrong library
+   * path.
+   *
+   * The first pin is the load-bearing one: `MatchSummary` opens with the tally
+   * sentence unconditionally, so if the block renders at all this line is on
+   * the page. It pins the words that OPEN that sentence, which no wording of it
+   * can drop — an earlier `/^Last sync matched \d/` stopped matching the moment
+   * the all-zero case started saying "no tracks" instead of a digit, and both
+   * of these tests went on passing with the alarm fully rendered.
+   *
+   * The rest name the alarm's own wordings, one per line of copy that exists,
+   * so a failure says WHICH one leaked rather than only that something did. */
+  function expectNoMatchSummary() {
+    expect(screen.queryByText(/^Last sync matched/)).not.toBeInTheDocument();
+    // "Nothing matched at all — not by file, and not by tags." (every rung
+    // missed)…
+    expect(
+      screen.queryByText(/nothing matched at all/i),
+    ).not.toBeInTheDocument();
+    // …"Nothing matched by file." (the tags found tracks, the files didn't)…
+    expect(
+      screen.queryByText(/nothing matched by file/i),
+    ).not.toBeInTheDocument();
+    // …and the clause the mixed tally sentence spells out.
+    expect(screen.queryByText(/none by file/i)).not.toBeInTheDocument();
+  }
+
   test("a sync that found every track by file says so, and says nothing else", async () => {
     renderWithPlex(adminMatched({ path: 28 }));
     expect(
@@ -1733,11 +1817,99 @@ describe("PlaylistDetailPage", () => {
     expect(
       await screen.findByText("Couldn’t sync to this Plex account."),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/none by file/i)).not.toBeInTheDocument();
+    // Not one word about matching, in any wording: the alarm here would sit
+    // beside "Couldn’t sync to this Plex account." and blame the library path
+    // for a push that never got as far as looking.
+    expectNoMatchSummary();
+  });
+
+  test("an 'empty' sync's REAL all-zero tally is the loudest diagnosis, not silence", async () => {
+    renderWithPlex({
+      admin: {
+        rating_key: "900",
+        status: "empty",
+        missing: 1,
+        missing_tracks: [
+          {
+            item_id: 1,
+            title: "Alpha",
+            albumartist: "A",
+            album: "B",
+            reason: "not_found",
+          },
+        ],
+        // Zeros the RESOLVE produced: every rung missed. That is a different
+        // fact from a failed push's zeros (no news) and from a pre-tally record
+        // (no field at all), and both of those keep their silence above.
+        matched_by: { path: 0, artist_title: 0, album_length: 0 },
+        synced_at: "2026-08-16T10:00:00+00:00",
+        error: null,
+      },
+    });
+    // Never "matched 0 tracks by file": no rung found anything, so naming the
+    // file rung would report the strongest evidence as merely the one that lost.
     expect(
-      screen.queryByText(/nothing matched by file/i),
+      await screen.findByText("Last sync matched no tracks."),
+    ).toBeInTheDocument();
+    const warning = screen.getByText(/Nothing matched at all/).closest("p");
+    expect(warning).toHaveTextContent(/not by file, and not by tags/);
+    // The pointer at the likely cause is the entire reason to surface this.
+    expect(warning?.querySelector("a")).toHaveAttribute(
+      "href",
+      "/settings/integrations",
+    );
+    // NOT the partial-case wording: it describes a tag fallback that, here,
+    // rescued nothing.
+    expect(
+      screen.queryByText(/fell back to matching/i),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText(/^Last sync matched \d/)).not.toBeInTheDocument();
+  });
+
+  test("a sync that matched nothing at all announces the path pointer", async () => {
+    let synced = false;
+    const after = {
+      admin: {
+        rating_key: "900",
+        status: "empty",
+        missing: 1,
+        missing_tracks: [],
+        matched_by: { path: 0, artist_title: 0, album_length: 0 },
+        synced_at: "2026-08-16T10:00:00+00:00",
+        error: null,
+      },
+    };
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: synced ? after : {},
+        }),
+      ),
+      http.post(`${BASE}/sync`, () => {
+        synced = true;
+        return HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: after,
+        });
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    const region = document.querySelector('p[aria-live="polite"]');
+    expect(region?.textContent).toBe("");
+    await userEvent.click(
+      screen.getByRole("button", { name: /sync to plex/i }),
+    );
+    // `hasWeakMatches` is `path < total`, false when everything is zero — so
+    // this outcome used to be announced as nothing at all.
+    await waitFor(() =>
+      expect(region).toHaveTextContent(
+        "Last sync matched no tracks — check the Plex library path in Settings.",
+      ),
+    );
   });
 
   test("a playlist synced before the tally existed says nothing about matching", async () => {
@@ -1908,11 +2080,7 @@ describe("PlaylistDetailPage", () => {
     // Looking past admin for numbers must not turn "no target has any" into "0
     // by file": to a user whose sync never got far enough to look, that reads
     // as a broken library path.
-    expect(screen.queryByText(/^Last sync matched \d/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/none by file/i)).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/nothing matched by file/i),
-    ).not.toBeInTheDocument();
+    expectNoMatchSummary();
   });
 
   test("a sync that matched nothing by file announces it in the live region", async () => {
