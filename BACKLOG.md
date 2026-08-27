@@ -5,9 +5,11 @@ the project (or a whole investigation) to know what still needs attention. One l
 context per item is not enough: each entry says what it is, why it matters, and where the
 detail lives.
 
-**How to use:** work the *Next up* section first. When something ships, move its entry to
-*Recently shipped* with the PR number. When something new turns up (review finding, incident,
-parked idea), add it here in the same commit that discovers it.
+**How to use:** work the *Next up* section first. Everything under *Open bugs / hardening* is
+work someone could pick up; anything already decided against lives under *Accepted residuals
+and deliberate decisions* instead, so it never reads as an open task. When something ships,
+move its entry to *Recently shipped* with the PR number. When something new turns up (review
+finding, incident, parked idea), add it here in the same commit that discovers it.
 
 _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping triage._
 
@@ -23,18 +25,49 @@ _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping tri
 
 ## Open bugs / hardening
 
-- **Album art can still be silently diverted.** The collision pre-flight covers item files
-  only; `Album.move_art` goes through the same beets `unique_path`, so two album rows
-  resolving to one folder with disjoint track names would land `cover.1.jpg` silently.
-  One-shot (no churn — the unit is item-settled next run), which is why it was descoped.
+- **Album art can still be silently diverted — and on the tag-edit path it churns.** The
+  collision pre-flight covers item files only: `collisions_by_dest` is fed by `_unit_dests`
+  (`app/beets/reorganize.py`), which computes one destination per ITEM, and nothing anywhere
+  computes an art destination — `grep -rn "art_destination\|move_art" backend/app/` finds one
+  comment and one call, no guard and no test. `Album.move_art` goes through the same beets
+  `unique_path`, which diverts with no return value and no signal, so the move reports full
+  success (`status='moved'` / `move_failures=0`, every row `error=None`) while the art lands
+  at `cover.1.jpg`.
+  **Scope correction (2026-08-27 re-verification):** this entry used to state the trigger as
+  "two album rows resolving to one folder with disjoint track names". That is one instance,
+  not the condition. The real trigger is far weaker — ANY pre-existing file at the album's art
+  destination. A stray `cover.jpg` the library knows nothing about, sitting in the target
+  folder, diverts the incoming art identically, with no second album row anywhere
+  (reproduced).
+  **Correction that may change this item's priority:** the line that used to follow —
+  "One-shot (no churn — the unit is item-settled next run), which is why it was descoped" —
+  is the sentence that justified descoping, and it is only half true. It holds for reorganize
+  (a second `reorganize_album` on a settled unit returns `status='skipped'`, so `move_art`
+  never re-runs). It is FALSE for the tag-edit path, which gates the call on `if moved:`
+  (`app/beets/edit.py`) — on whether any FILE moved, not on whether the art is settled — so
+  every later album edit that relocates anything re-diverts the art. Verified oscillation
+  across three successive edits: `cover.1.jpg` → `cover.2.jpg` → `cover.1.jpg`, because
+  `unique_path` restarts its scan at `.1` once `.2` vacates. It renames rather than
+  accumulates, but `artpath` is rewritten and re-stored every time, busting
+  `cover_validator`'s ETag. Re-triage rather than assuming the old descope still stands.
 
-- **`static_dir` gate mismatch (residual of the logged-posture fix).**
-  `resolve_extra_origins` keys on the truthiness of `MUSICDROP_STATIC_DIR`, but `mount_static`
-  (`app/static_files.py:42`) no-ops unless `index.html` exists — so a stale or invalid path
-  still yields the production posture (every dev write 403s) with NO SPA served. The silent
-  half is closed (the effective posture is logged at startup — see the Host-allowlist entry
-  under Recently shipped), but the gate itself may still want to key on the same `index.html`
-  check `mount_static` uses, so the posture and the served SPA stay in agreement.
+- **`static_dir` gate mismatch (residual of the logged-posture fix).** The security gates key
+  on the truthiness of `MUSICDROP_STATIC_DIR`, but `mount_static` (`app/static_files.py`)
+  no-ops unless the directory holds an `index.html` — so a stale or invalid path still yields
+  the production posture (every dev write 403s) with NO SPA served. The silent half is closed
+  (the effective posture is logged at startup — see the Host-allowlist entry under Recently
+  shipped), but the gate itself may still want to key on the same `index.html` check
+  `mount_static` uses, so the posture and the served SPA stay in agreement.
+  **Consumer correction (2026-08-27 re-verification): this entry named only
+  `resolve_extra_origins`, and there are TWO gates.** `resolve_extra_origins`
+  (`app/origin_guard.py`) returns the dev write/CORS origin on falsy `static_dir`;
+  `resolve_allowed_hosts` (`app/host_guard.py`) appends the TestClient host on the same test,
+  and its module docstring says outright that it keys on `settings.static_dir` "exactly like
+  ``resolve_extra_origins``". Both are built from `settings.static_dir` in `app/main.py`.
+  Enumerate the keyed-on-truthiness sites with `grep -rn static_dir backend/app/` rather than
+  trusting a count written here. **A fix must move BOTH**, or the CSRF posture and the host
+  allowlist will disagree with each other — strictly worse than today, where they are at
+  least consistently wrong together.
 
 - ~~OpenAPI under-declares 403 on 61 write routes~~ — **FIXED in #159**, widened to the
   whole middleware class: `app/openapi_overlay.py` post-processes the schema so every
@@ -49,6 +82,133 @@ _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping tri
   the route has to name that refusal itself. It now declares 404, 413 (naming both its own
   8 MiB cap and the app-wide body limit) and 415, so the shipped contract carries
   `200/400/403/404/413/415/422`.
+
+- **Bank store sink has the same inf/NaN shape the playlists store just fixed.** `_row_text`
+  in `app/bank/store.py` (`json.dumps(model_dump(mode="json"), ensure_ascii=True)`) writes
+  a bare `Infinity` token for a non-finite float — not legal JSON.
+  `grep -n "_finite_only\|allow_nan" backend/app/bank/store.py` returns nothing, while the
+  same grep against `app/playlists/store.py` shows both halves of the fix already in place,
+  so this is a straight port of a tested pattern.
+  **Scope correction (2026-08-27 re-verification): this entry cited a single
+  `confidence: float | None`, and there are TWO.** `app/models/bank.py` declares the field on
+  `BankItem` and again on `BankItemSummary`, and `_summary_of` copies the item's value
+  straight across — so ONE non-finite value reaches two different sinks: the disk row via
+  `_row_text`, and the list/search responses, which Starlette renders with `allow_nan=False`
+  and which therefore 500. Guarding `_row_text` alone sanitises the file and leaves the wire
+  path open. Enumerate the fields with `grep -n float backend/app/models/bank.py` rather than
+  trusting a count written here. Reachability is low (confidence is set internally by the
+  beets matcher, not from a client body), which is why it wasn't fixed in the 2026-08-23
+  playlists slice — apply the same `_finite_only` + `allow_nan=False` treatment when the
+  bank store is next touched.
+
+- **`get_playlist` propagates `UnicodeDecodeError` on a non-UTF-8 record file** while
+  `list_playlists` skips it (its guard is `except (OSError, ValueError)`; get's `read_text`
+  sits under `except OSError` only). Pre-existing, unreachable via the store's own sink
+  (`ensure_ascii=True` output is pure ASCII) — needs external file corruption. Align the
+  two sites' posture when next in the file. Two omissions the 2026-08-27 re-verification
+  adds, neither contradicting the above (this entry's wording was found accurate):
+  the blast radius is not reads-only — every mutator in `app/playlists/store.py` reads
+  through `get_playlist` (`grep -n 'get_playlist(' backend/app/playlists/store.py` shows the
+  call sites), so PATCH/PUT/tracks/artwork/merge 500 on the same file and only
+  `delete_playlist` survives, since it never reads the record; and `app/bank/store.py`
+  carries the identical mismatch, its single-row read guarded by `except OSError` while
+  `_all_items` uses `except (OSError, ValueError)`, so a fix should cover both stores.
+  Confirmed end-to-end: `GET /api/playlists` returns 200 `[]` (skipped) while
+  `GET /api/playlists/{id}` returns 500 on the same file.
+
+- **Config editor accepts `import.autotag` that MusicDrop-driven imports cannot honour — the
+  open defect is EDITOR-side, not worker-side.** `run_import_worker` force-enables autotag
+  (with snapshot/restore) because beets swaps out the `user_query` stage under `autotag: no`
+  — the only stage that fires `choose_match`, the sole hook MusicDrop's outcome tracking
+  hangs on (restore reported `could_not_restore` after a SUCCESSFUL import).
+  **Framing correction (2026-08-27 re-verification): this entry read as "the worker fails to
+  honour the value". It does not.** The override is deliberate, unconditional, documented in
+  `run_import_worker`'s own docstring, pinned by a regression test, and is itself the FIX for
+  that silent-loss bug (shipped in #126). Do not remove it. The open work is that nothing
+  tells the user the setting is inert here: `ImportSection.autotag` in
+  `app/models/config_editor.py` is a plain settable bool, validation raises nothing (and
+  `ValidationErrorItem` is an error-only channel — the config editor has no advisory channel
+  at all), the frontend never mentions the key, and `app/beets/config.starter.yaml` ships
+  `autotag: yes        # show candidates for human review`, which implies it is honoured.
+  The setting is still accepted silently; the editor should say it has no effect on
+  MusicDrop-driven imports. Note the value is not globally inert — it is beets' own config
+  file, so a `beet import` run from the CLI outside MusicDrop still honours `autotag: no`.
+  Note also: sweep/bank breakage under `autotag: no` was reasoned from the stage list,
+  demonstrated only for restore.
+
+- **Untested defensive lines** (deep-review survivors, all currently benign — pin when
+  touched next): broken-symlink sidecar carry (`sidecars.py` `lexists`), singleton
+  crash-path sidecar carry, `edit.py` `_inside_library` guard (pre-existing from main),
+  disk-sync emptied-row first-dir-wins and `"."`-fallback, dismiss double-click swallow,
+  the aria-disabled-not-disabled focus rule (the "Pagination rule" is convention, not test).
+  From the 2026-08-23 m3u8 deep review, on the shared atomic recipe (`atomic.py`): the
+  final `chmod` is umask-blind in tests (deleting it survives under the usual umask 022 —
+  only visible under 077; a mode test should set the umask itself), the same-directory tmp
+  placement is unpinned (a `/tmp`-located tmp survives because pytest's tmp shares the
+  device; on a NAS-mounted `.playlists` it would EXDEV every export), the `.m3u8` export's
+  0o644 mode is unpinned, and the fsync durability lines rest on review alone (untestable
+  without crash injection). From the 2026-08-23 playlist-name review: the store sink's
+  `mode="json"` is equivalent-but-forward-fragile (a future `datetime`/`enum`/`Decimal`
+  field would make `json.dumps` raise `TypeError` on every mutation — nothing guards it);
+  the export's in-window-surrogate name degradation (raw byte → U+FFFD vs #151's direct
+  `write_m3u` behavior) is intended but untested; a surrogate-named Plex sync degrades to
+  a generic `failed` target state (reasoned from `_safe_reconcile`'s broad except, never
+  executed against a real encoder).
+
+- **Disk-sync emptied-row path shows the first item's folder,** not the album root — a
+  multi-disc emptied album reads `Artist/Album/CD1`. Still separates label twins (the
+  feature's purpose); commonpath would be nicer.
+  **Location, because the obvious guess is wrong (added 2026-08-27):** the row is built in
+  the ADAPTER — `app/beets/disk_sync.py`, where `_scan_item` records the first item's
+  `_rel_dir` per album id and never revisits it, and `_collect_emptied` copies that verbatim
+  onto `DiskSyncEmptiedAlbum.path`. It is NOT built in `app/api/disk_sync.py`, which
+  constructs no row at all and only calls `plan_disk_sync`; a reader sent there finds
+  nothing. Scope: this is a divergence only for an album whose items span more than one
+  directory (a multi-disc layout, a user-edited `paths:` template, or files beets never moved
+  with `import.copy` off) — for a one-folder album the first item's folder IS the album root,
+  and the shipped starter config declares no `paths:` block, so stock installs do not produce
+  the case. Adjacent case from the same accumulator: items sitting at the library root yield
+  `path == "."`. Impact is display-only — `app/models/disk_sync.py` annotates the field so,
+  and nothing keys off it but a React list key. The fix already exists next door as
+  `_commonpath_of_dirs` in `app/beets/reorganize.py` (added by the same commit that gave
+  disk-sync first-dir-wins): accumulate a running commonpath per album id instead of a single
+  dir. No existing test pins the current behaviour — both adapter assertions use
+  single-folder albums — so the change needs its own regression test.
+
+- **Artist-image cache: after a broken cache dir is repaired, affected artists never return
+  to disk.** Read "to disk" literally — the portraits keep SERVING, correct bytes and correct
+  content-type, on every request, out of the in-memory stand-in. What never recovers is
+  persistence: the on-disk slot stays absent for the process lifetime. Nothing user-visible
+  breaks. The stand-in (`ArtistImageCache._MemoryFallback`, added in the perf/images wave) is
+  dropped by `_or_remember`'s success branch, which runs only when a write is ATTEMPTED and
+  succeeds — and `store_positive`/`store_negative` are reached only after `cache.get()`
+  misses, so a memory HIT satisfies the request without ever calling either. For those keys
+  the write never happens and the discard never fires. Measured: 5 decode+resizes for 5
+  post-repair requests vs 1 for a healthy control, with the artist's slot still absent from
+  disk (`validator()` stats disk only, so `get_thumb` bails and every request re-derives).
+  **Which state actually survives (2026-08-27 re-verification):** a stranded SUCCESSFUL
+  `CachedImage` whose write failed — not a negative marker. The negative half self-heals:
+  `_NegativeUntil` carries an absolute expiry, `get()` discards it once stale and
+  `has_fresh_negative` reports False, so the key re-resolves and the now-succeeding write
+  both repopulates disk and drops the entry. Read the `store_positive`/`store_negative`
+  phrasing above as describing the positive slot only. Bounded (the map is capped) and off
+  the event loop, so this is a silent CPU/latency regression, not a correctness one — but it
+  persists for the process lifetime and there is no log after repair, because the writes
+  stopped failing; it also costs a restart's worth of upstream re-fetches, since the disk
+  cache stays empty. The paths that DO clear it: the Reset endpoint (`clear_auto`), an artist
+  rename, or eviction by the map's own bound. Note that `cache.py`'s
+  `_or_remember` docstring ("hands authority back to disk without a restart") is true only for
+  keys that get written again, which these never are. **Needs a design call before anyone
+  codes it:** re-write to disk on a memory hit (simple, but puts a write on the read path), or
+  periodically re-probe the dir and flush (more moving parts, keeps reads read-only). Do not
+  assume either.
+
+## Accepted residuals and deliberate decisions (not work)
+
+Nothing in this section is a task. Each item was decided, with its reasoning, and is kept
+because a recorded decision is what stops the question being reopened from scratch. Do not
+scan here for something to pick up — scan *Open bugs / hardening*. Revisit an item only if
+the condition it names has changed.
 
 - **Cross-origin no-cors GET side effects are an accepted residual.** `GET
   /api/artists/image` (and its peer cache-fillers), plus the outbound-credential GETs like
@@ -98,72 +258,10 @@ _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping tri
   worth knowing: a smart playlist with BOTH problems only reveals the path issue after the first
   is fixed. Untested in either direction. From the #184 deep review, 2026-08-27.
 
-- **Bank store sink has the same inf/NaN shape the playlists store just fixed.**
-  `app/bank/store.py:174` (`json.dumps(model_dump(mode="json"), ensure_ascii=True)`) writes
-  a bare `Infinity` token for a non-finite float — `app/models/bank.py` carries
-  `confidence: float | None`. Reachability is low (confidence is set internally by the
-  beets matcher, not from a client body), which is why it wasn't fixed in the 2026-08-23
-  playlists slice — apply the same `_finite_only` + `allow_nan=False` treatment when the
-  bank store is next touched.
-
-- **`get_playlist` propagates `UnicodeDecodeError` on a non-UTF-8 record file** while
-  `list_playlists` skips it (its guard is `except (OSError, ValueError)`; get's `read_text`
-  sits under `except OSError` only). Pre-existing, unreachable via the store's own sink
-  (`ensure_ascii=True` output is pure ASCII) — needs external file corruption. Align the
-  two sites' posture when next in the file.
-
-- **Config editor accepts `import.autotag` that MusicDrop now ignores.** `run_import_worker`
-  force-enables autotag (with snapshot/restore) because beets swaps out the `user_query`
-  stage under `autotag: no` — the only stage that fires `choose_match`, the sole hook
-  MusicDrop's outcome tracking hangs on (restore reported `could_not_restore` after a
-  SUCCESSFUL import). The setting is still accepted silently; the editor should say it has
-  no effect on MusicDrop-driven imports. Note: sweep/bank breakage under `autotag: no` was
-  reasoned from the stage list, demonstrated only for restore.
-
-
 - **Wire-safety net coverage caveats** (by design, recorded so nobody assumes otherwise):
   SSE `/api/events` bypasses the response class (scopes are tag-derived today, never paths);
   any future route-level `response_class=` or hand-built `JSONResponse` bypasses both halves
   of the net.
-
-
-- **Untested defensive lines** (deep-review survivors, all currently benign — pin when
-  touched next): broken-symlink sidecar carry (`sidecars.py` `lexists`), singleton
-  crash-path sidecar carry, `edit.py` `_inside_library` guard (pre-existing from main),
-  disk-sync emptied-row first-dir-wins and `"."`-fallback, dismiss double-click swallow,
-  the aria-disabled-not-disabled focus rule (the "Pagination rule" is convention, not test).
-  From the 2026-08-23 m3u8 deep review, on the shared atomic recipe (`atomic.py`): the
-  final `chmod` is umask-blind in tests (deleting it survives under the usual umask 022 —
-  only visible under 077; a mode test should set the umask itself), the same-directory tmp
-  placement is unpinned (a `/tmp`-located tmp survives because pytest's tmp shares the
-  device; on a NAS-mounted `.playlists` it would EXDEV every export), the `.m3u8` export's
-  0o644 mode is unpinned, and the fsync durability lines rest on review alone (untestable
-  without crash injection). From the 2026-08-23 playlist-name review: the store sink's
-  `mode="json"` is equivalent-but-forward-fragile (a future `datetime`/`enum`/`Decimal`
-  field would make `json.dumps` raise `TypeError` on every mutation — nothing guards it);
-  the export's in-window-surrogate name degradation (raw byte → U+FFFD vs #151's direct
-  `write_m3u` behavior) is intended but untested; a surrogate-named Plex sync degrades to
-  a generic `failed` target state (reasoned from `_safe_reconcile`'s broad except, never
-  executed against a real encoder).
-
-- **Disk-sync emptied-row path shows the first item's folder,** not the album root — a
-  multi-disc emptied album reads `Artist/Album/CD1`. Still separates label twins (the
-  feature's purpose); commonpath would be nicer.
-
-- **Artist-image cache: after a broken cache dir is repaired, affected artists never return
-  to disk.** The in-memory stand-in (`ArtistImageCache._MemoryFallback`, added in the
-  perf/images wave) is dropped by `store_positive`/`store_negative` on a write that succeeds —
-  but a memory HIT satisfies the request without ever calling either, so for those keys the
-  write never happens and the discard never fires. Measured: 5 decode+resizes for 5
-  post-repair requests vs 1 for a healthy control, with the artist's slot still absent from
-  disk. Bounded (the map is capped) and off the event loop, so this is a silent CPU/latency
-  regression, not a correctness one — but it persists for the process lifetime and there is no
-  log after repair, because the writes stopped failing. Note that `cache.py`'s
-  `_or_remember` docstring ("hands authority back to disk without a restart") is true only for
-  keys that get written again, which these never are. **Needs a design call before anyone
-  codes it:** re-write to disk on a memory hit (simple, but puts a write on the read path), or
-  periodically re-probe the dir and flush (more moving parts, keeps reads read-only). Do not
-  assume either.
 
 ## Open questions
 
@@ -396,7 +494,7 @@ _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping tri
     family has NO ruff twin (S103's threshold ignores o+r bits), so the server scan is its only
     net. Full lessons: auto-memory `sonar-lessons-standing` and `sonar-wave4-lessons`.
   - **The one accepted finding is `docker:S6471`** (the image's declared default user is root) —
-    now recorded in `Dockerfile` and under Open bugs above, so it no longer lives only in the
+    now recorded in `Dockerfile` and under Accepted residuals above, so it no longer lives only in the
     vault. It was declined on a reproduced upgrade cost, NOT on the rule being wrong.
   - **A green gate is not contract completeness.** S8415 read 0 while `POST /api/import` still
     had no 409 in the contract, because the rule matched integer literals only and that status
