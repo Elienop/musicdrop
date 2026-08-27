@@ -1017,7 +1017,11 @@ describe("ReviewPage", () => {
       expect(await screen.findByText(/sweep finished/i)).toBeInTheDocument();
     });
 
-    test("while a sweep RUNS the live banner owns the slot — no recap", async () => {
+    test("while a sweep RUNS the live banner owns the slot — the predecessor's recap stays hidden", async () => {
+      // The probe carries BOTH: a live sweep and the previous run's recap still
+      // parked in the registry slot. Only the live banner may render — a leaked
+      // recap would show the PREDECESSOR's counters (20/14/6/4) beside the live
+      // 7/5/2, so the fixture keeps the two sets disjoint to make a leak visible.
       server.use(
         http.get(ACTIVE, () =>
           HttpResponse.json({
@@ -1033,12 +1037,23 @@ describe("ReviewPage", () => {
               current_folder: null,
               paused: false,
             },
+            last_sweep: {
+              job_id: "s0",
+              processed: 20,
+              auto_applied: 14,
+              banked: 6,
+              skipped_known: 4,
+              paused: true,
+            },
           }),
         ),
       );
       renderWithProviders(<ReviewPage />);
       await screen.findByText(/7 processed/);
-      expect(screen.queryByText(/sweep finished/i)).not.toBeInTheDocument();
+      // Both recap dialects — the ternary emits "Sweep finished" or, for a
+      // paused predecessor like this one, "Sweep paused".
+      expect(screen.queryByText(/sweep (finished|paused)/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/20 processed/)).not.toBeInTheDocument();
     });
   });
 });

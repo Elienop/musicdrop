@@ -2,7 +2,7 @@
 """Sync-with-disk endpoints: dry-run preview + the single-slot job.
 
 Library-wide only. Mutually exclusive with every other library writer (the
-same 8-gate set — see _gate_busy) in BOTH directions."""
+shared ``app.library_busy`` union — see _gate_busy) in BOTH directions."""
 
 from typing import Annotated, Final
 
