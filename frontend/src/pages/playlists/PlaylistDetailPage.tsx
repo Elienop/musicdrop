@@ -88,9 +88,13 @@ type PlexTargetState = PlaylistDetail["plex"][string];
 type PlexMissReason = PlexTargetState["missing_tracks"][number]["reason"];
 
 /** The tooltip for each miss reason — they're different remedies (nothing
- * matched at all vs. several matched and we refuse to guess vs. a repeat the
- * Plex copy holds once), so each row says which one it hit rather than a
- * generic "not found".
+ * matched at all vs. several matched and we refuse to guess vs. every match
+ * already spoken for by another track here vs. a repeat the Plex copy holds
+ * once), so each row says which one it hit rather than a generic "not found".
+ *
+ * The third is why this list grew: a claimed-away candidate used to report
+ * `not_found`, whose remedy sends the user to check their Plex library for a
+ * file that is not the problem — the pool was not empty, it was taken.
  *
  * `duplicate_collapsed` says only what happened, never why: the server answers
  * 200 whether it refused the second row or silently swallowed it, so no client
@@ -103,6 +107,8 @@ const MISS_TITLES: Record<PlexMissReason, string> = {
     "Plex has no track with this file, and nothing matched by its tags. Check the file is in your Plex library, then sync again.",
   ambiguous:
     "Several Plex tracks matched this track's tags, and none has its file, so MusicDrop won't guess which one. Sort out the copies in Plex, then sync again.",
+  claimed_by_other_track:
+    "Every Plex track matching this track's tags was already matched to a different track in this playlist, and reusing one would put the same recording in twice. Add this track's own file to your Plex library, then sync again.",
   duplicate_collapsed:
     "This playlist lists this track more than once, and the Plex copy keeps a single row for it. MusicDrop can't make Plex hold a second row; remove the repeat from this playlist to stop it being reported.",
 };
@@ -110,10 +116,13 @@ const MISS_TITLES: Record<PlexMissReason, string> = {
 /** The row badge for each miss reason: the words a sighted user reads on the
  * chip AND the phrase assistive tech is handed (the sr-only carrier below).
  *
- * Two of the three are absences and share one label. The third is NOT: that
- * track is on Plex and playable, so labelling it "Not in Plex" would be a plain
- * falsehood on a row the user can play — and a badge caught lying once is a
- * badge nobody reads on the rows where it is true.
+ * Three of the four are absences and share one label — including
+ * `claimed_by_other_track`, where a LOOKALIKE is on Plex but THIS track still
+ * is not, so the badge stays true and only the tooltip has to explain why. The
+ * fourth is NOT an absence: that track is on Plex and playable, so labelling it
+ * "Not in Plex" would be a plain falsehood on a row the user can play — and a
+ * badge caught lying once is a badge nobody reads on the rows where it is
+ * true.
  *
  * The label speaks about the TRACK, not the row, because both rows of a doubled
  * item are marked (the misses are keyed by library item) — including the one
@@ -122,6 +131,7 @@ const MISS_TITLES: Record<PlexMissReason, string> = {
 const MISS_BADGES: Record<PlexMissReason, string> = {
   not_found: "Not in Plex",
   ambiguous: "Not in Plex",
+  claimed_by_other_track: "Not in Plex",
   duplicate_collapsed: "In Plex once",
 };
 
@@ -147,6 +157,19 @@ function resolvedTargetState(playlist: PlaylistDetail) {
   for (const [, state] of ordered) {
     const counts = state.matched_by;
     if (counts && counts.path + counts.artist_title + counts.album_length > 0) {
+      return state;
+    }
+  }
+  // Nothing carries a NON-ZERO tally. Usually that is genuinely no news — a
+  // failed push zeroes the tally, and a pre-tally record has none at all — but
+  // there is one case where the zeros ARE the result: `empty` means the resolve
+  // ran and matched nothing. For a whole playlist that is a wrong
+  // `library_path`, the loudest diagnosis this surface has. Treating it as no
+  // news is what kept the worst case invisible while a PARTIAL miss warned.
+  // Both other silences survive because this pass demands a tally that EXISTS
+  // (a pre-tally record has none) and a status that is not `failed`.
+  for (const [, state] of ordered) {
+    if (state.matched_by && state.status === "empty") {
       return state;
     }
   }
@@ -247,6 +270,14 @@ function matchCountsSentence(breakdown: MatchBreakdown): string {
   if (breakdown.albumLength > 0) {
     weaker.push(`${breakdown.albumLength} by album, title and length`);
   }
+  if (breakdown.total === 0) {
+    // NEVER "matched 0 tracks by file": every rung missed, so naming the file
+    // rung would report the strongest evidence as the one that was tried and
+    // failed, when in fact none of the three found anything. "no tracks" also
+    // keeps the `Last sync matched \d` negative pins meaningful for the
+    // silences above.
+    return "Last sync matched no tracks.";
+  }
   if (weaker.length === 0) {
     return `Last sync matched ${tracks} by file.`;
   }
@@ -269,7 +300,15 @@ const WEAK_MATCH_NOTE =
  * go, so it flags the problem and names where to fix it instead of reciting the
  * whole explanation the section already shows on screen. */
 function matchAnnouncement(breakdown: MatchBreakdown | null): string {
-  if (breakdown === null || !hasWeakMatches(breakdown)) {
+  if (breakdown === null) {
+    return "";
+  }
+  // `hasWeakMatches` is `path < total`, which is FALSE when everything is zero
+  // — so gating on it alone silenced the one outcome most worth announcing.
+  if (breakdown.total === 0) {
+    return "Last sync matched no tracks — check the Plex library path in Settings.";
+  }
+  if (!hasWeakMatches(breakdown)) {
     return "";
   }
   const counts = matchCountsSentence(breakdown);
@@ -292,6 +331,17 @@ function matchAnnouncement(breakdown: MatchBreakdown | null): string {
  *    A partial (some by file, some by tags) stays in the muted tier: a handful
  *    of tracks Plex holds under a different copy is ordinary, so escalating it
  *    would train the user to ignore the box that matters. */
+/** The inline-warning shell both library-path wordings share, so the two can
+ * never drift apart in appearance — only in the sentence they carry. */
+function PathWarning({ children }: Readonly<{ children: React.ReactNode }>) {
+  return (
+    <p className="border-warning/50 bg-warning/10 text-foreground flex items-start gap-2 rounded-md border p-2">
+      <Warning className="text-warning mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <span>{children}</span>
+    </p>
+  );
+}
+
 function MatchSummary({ playlist }: Readonly<{ playlist: PlaylistDetail }>) {
   const breakdown = matchBreakdown(playlist);
   if (breakdown === null) {
@@ -303,18 +353,35 @@ function MatchSummary({ playlist }: Readonly<{ playlist: PlaylistDetail }>) {
       {breakdown.path === 0 ? (
         // The settings panel's inline-warning idiom: the icon is decoration,
         // the sentence carries the meaning, so nothing here is color-only.
-        <p className="border-warning/50 bg-warning/10 text-foreground flex items-start gap-2 rounded-md border p-2">
-          <Warning className="text-warning mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          <span>
-            Nothing matched by file. That usually means the Plex library path in{" "}
-            <Link to="/settings/integrations" className="focus-ring rounded-sm underline">
-              Settings
-            </Link>{" "}
-            doesn’t point where Plex keeps your music, so MusicDrop fell back to matching
-            on tags — which can land on a different copy of a track. Fix the path in
-            Settings, then sync again to re-test.
-          </span>
-        </p>
+        //
+        // Two wordings, because the two cases are different news. When the tags
+        // DID find tracks, the fallback is the risk worth naming. When nothing
+        // matched at all, saying MusicDrop "fell back to matching on tags"
+        // would describe a rescue that did not happen — and that is the case
+        // where the path is most certainly wrong, so the copy must not soften.
+        <PathWarning>
+          {breakdown.total === 0 ? (
+            <>
+              Nothing matched at all — not by file, and not by tags. That almost always
+              means the Plex library path in{" "}
+              <Link to="/settings/integrations" className="focus-ring rounded-sm underline">
+                Settings
+              </Link>{" "}
+              doesn’t point where Plex keeps your music, so no lookup could find anything.
+              Fix the path in Settings, then sync again to re-test.
+            </>
+          ) : (
+            <>
+              Nothing matched by file. That usually means the Plex library path in{" "}
+              <Link to="/settings/integrations" className="focus-ring rounded-sm underline">
+                Settings
+              </Link>{" "}
+              doesn’t point where Plex keeps your music, so MusicDrop fell back to matching
+              on tags — which can land on a different copy of a track. Fix the path in
+              Settings, then sync again to re-test.
+            </>
+          )}
+        </PathWarning>
       ) : (
         hasWeakMatches(breakdown) && <p className="text-muted-foreground">{WEAK_MATCH_NOTE}</p>
       )}

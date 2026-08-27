@@ -875,6 +875,64 @@ def test_the_veto_still_allows_the_rewrites_plexs_agent_actually_makes() -> None
         assert [t.ratingKey for t in res.tracks] == [70], plex_name
 
 
+def _fullwidth(name: str) -> str:
+    """The fullwidth twin of ``name``: the same letters in the WIDER GLYPH.
+
+    Built by the Unicode offset rather than typed by hand, so the test data
+    cannot drift from the characters this module is tested against, and the
+    source stays unambiguous-unicode clean."""
+    return "".join("\u3000" if c == " " else chr(ord(c) + 0xFEE0) for c in name)
+
+
+def test_a_fullwidth_spelling_is_the_same_name_the_veto_reads() -> None:
+    # Fullwidth is the same name in a wider glyph, not a different alphabet:
+    # "Wael Kfoury" in fullwidth must compare against the Latin spelling and
+    # be found to agree, so the veto reads the name and does not fire. The
+    # rival is a DIFFERENT name in the same fullwidth style, and only the
+    # veto excludes it: before the fold, neither candidate shared an alphabet
+    # with the spec, both survived, and the row stayed ambiguous — the unsafe
+    # "nothing contradicts" outcome again.
+    section = _section(
+        [
+            _habibi_in_plex(96, 254_000, _fullwidth("Wael Kfoury")),
+            _habibi_in_plex(97, 254_500, _fullwidth("Nancy Ajram")),
+        ]
+    )
+    res = resolve_ordered_tracks(section, [_habibi_spec()])
+    assert [t.ratingKey for t in res.tracks] == [96]
+    assert res.missing == []
+
+
+def test_a_fullwidth_different_name_is_vetoed_not_waved_through() -> None:
+    # The UNSAFE direction of the same fold: Plex holding "Nancy Ajram" in
+    # fullwidth for a row we asked for under "Wael Kfoury" is a contradiction
+    # in a name we can read, and it must be refused. The scripts must be read
+    # from the SAME text the letters are filtered with, or every fullwidth
+    # letter drops out, the two empty names compare equal, and the veto
+    # switches off in a new way.
+    section = _section([_habibi_in_plex(98, 254_000, _fullwidth("Nancy Ajram"))])
+    res = resolve_ordered_tracks(section, [_habibi_spec()])
+    assert res.tracks == []
+    assert [(m.item_id, m.reason) for m in res.missing] == [(1, "not_found")]
+
+
+def test_a_fullwidth_latin_name_against_arabic_still_shares_no_alphabet() -> None:
+    # The case the rung exists for must survive the fold: the spec is fullwidth
+    # Latin, Plex is Arabic, the two share no alphabet once the widths are
+    # drawn the same way, and the veto stays out of the way.
+    section = _section([_habibi_in_plex(99, 254_000, _ARABIC_WAEL)])
+    spec = _spec(
+        "/music/gone.flac",
+        albumartist=_fullwidth("Wael Kfoury"),
+        album="Habibi",
+        title="Habibi",
+        length_seconds=254.0,
+    )
+    res = resolve_ordered_tracks(section, [spec])
+    assert [t.ratingKey for t in res.tracks] == [99]
+    assert res.missing == []
+
+
 def test_a_blank_albumartist_is_refused_by_the_album_rung_outright() -> None:
     # The hole the veto could not see, reproduced through the real API: beets
     # stores "" for an untagged singleton and nothing back-fills it, so the veto
@@ -946,7 +1004,31 @@ def test_two_playlist_rows_never_resolve_to_the_same_plex_track() -> None:
         ],
     )
     assert [t.ratingKey for t in res.tracks] == [3]
-    assert [(m.item_id, m.reason) for m in res.missing] == [(10, "not_found")]
+    # The blocked row says WHY it is blocked. It used to say "not_found", which
+    # told the user Plex held nothing like this and sent them to check the file
+    # — while Plex held it and a sibling row had taken it.
+    assert [(m.item_id, m.reason) for m in res.missing] == [(10, "claimed_by_other_track")]
+
+
+def test_a_claimed_miss_and_an_absent_one_do_not_report_the_same_reason() -> None:
+    # The distinction itself, as one test, because collapsing the two is the
+    # regression that cost the user a wrong remedy. SAME spec both times; the
+    # only thing that differs is whether Plex holds a candidate at all.
+    #
+    # Arm 1 — Plex holds a "Habibi" and a sibling item has claimed it.
+    section = _section([_habibi_in_plex(3, 212_000)])
+    blocked = resolve_ordered_tracks(
+        section,
+        [
+            _habibi_spec(item_id=9, length_seconds=212.0),
+            _habibi_spec(item_id=10, length_seconds=212.5),
+        ],
+    )
+    assert [m.reason for m in blocked.missing] == ["claimed_by_other_track"]
+
+    # Arm 2 — Plex holds nothing of the sort, so the pool really is empty.
+    absent = resolve_ordered_tracks(_section([]), [_habibi_spec(item_id=9, length_seconds=212.0)])
+    assert [m.reason for m in absent.missing] == ["not_found"]
 
 
 def test_one_library_item_listed_twice_still_resolves_twice() -> None:
@@ -977,7 +1059,7 @@ def test_an_exact_path_owns_its_track_even_from_a_later_row() -> None:
         section, [_habibi_spec(item_id=9, length_seconds=212.0), holds_the_file]
     )
     assert [t.ratingKey for t in res.tracks] == [3]
-    assert [(m.item_id, m.reason) for m in res.missing] == [(9, "not_found")]
+    assert [(m.item_id, m.reason) for m in res.missing] == [(9, "claimed_by_other_track")]
 
 
 def test_the_album_artist_rung_locks_its_track_too() -> None:
@@ -994,7 +1076,7 @@ def test_the_album_artist_rung_locks_its_track_too() -> None:
         ],
     )
     assert [t.ratingKey for t in res.tracks] == [12]
-    assert [(m.item_id, m.reason) for m in res.missing] == [(2, "not_found")]
+    assert [(m.item_id, m.reason) for m in res.missing] == [(2, "claimed_by_other_track")]
 
 
 # --- which rung did the work --------------------------------------------------

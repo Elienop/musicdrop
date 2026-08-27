@@ -1740,6 +1740,95 @@ describe("PlaylistDetailPage", () => {
     expect(screen.queryByText(/^Last sync matched \d/)).not.toBeInTheDocument();
   });
 
+  test("an 'empty' sync's REAL all-zero tally is the loudest diagnosis, not silence", async () => {
+    renderWithPlex({
+      admin: {
+        rating_key: "900",
+        status: "empty",
+        missing: 1,
+        missing_tracks: [
+          {
+            item_id: 1,
+            title: "Alpha",
+            albumartist: "A",
+            album: "B",
+            reason: "not_found",
+          },
+        ],
+        // Zeros the RESOLVE produced: every rung missed. That is a different
+        // fact from a failed push's zeros (no news) and from a pre-tally record
+        // (no field at all), and both of those keep their silence above.
+        matched_by: { path: 0, artist_title: 0, album_length: 0 },
+        synced_at: "2026-08-16T10:00:00+00:00",
+        error: null,
+      },
+    });
+    // Never "matched 0 tracks by file": no rung found anything, so naming the
+    // file rung would report the strongest evidence as merely the one that lost.
+    expect(
+      await screen.findByText("Last sync matched no tracks."),
+    ).toBeInTheDocument();
+    const warning = screen.getByText(/Nothing matched at all/).closest("p");
+    expect(warning).toHaveTextContent(/not by file, and not by tags/);
+    // The pointer at the likely cause is the entire reason to surface this.
+    expect(warning?.querySelector("a")).toHaveAttribute(
+      "href",
+      "/settings/integrations",
+    );
+    // NOT the partial-case wording: it describes a tag fallback that, here,
+    // rescued nothing.
+    expect(
+      screen.queryByText(/fell back to matching/i),
+    ).not.toBeInTheDocument();
+  });
+
+  test("a sync that matched nothing at all announces the path pointer", async () => {
+    let synced = false;
+    const after = {
+      admin: {
+        rating_key: "900",
+        status: "empty",
+        missing: 1,
+        missing_tracks: [],
+        matched_by: { path: 0, artist_title: 0, album_length: 0 },
+        synced_at: "2026-08-16T10:00:00+00:00",
+        error: null,
+      },
+    };
+    server.use(
+      http.get(BASE, () =>
+        HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: synced ? after : {},
+        }),
+      ),
+      http.post(`${BASE}/sync`, () => {
+        synced = true;
+        return HttpResponse.json({
+          ...detail([track(1, "Alpha")]),
+          plex: after,
+        });
+      }),
+    );
+    renderWithProviders(<PlaylistDetailPage />, {
+      route: `/playlists/${ID}`,
+      path: "/playlists/:playlistId",
+    });
+    await screen.findByText("Alpha");
+    const region = document.querySelector('p[aria-live="polite"]');
+    expect(region?.textContent).toBe("");
+    await userEvent.click(
+      screen.getByRole("button", { name: /sync to plex/i }),
+    );
+    // `hasWeakMatches` is `path < total`, false when everything is zero — so
+    // this outcome used to be announced as nothing at all.
+    await waitFor(() =>
+      expect(region).toHaveTextContent(
+        "Last sync matched no tracks — check the Plex library path in Settings.",
+      ),
+    );
+  });
+
   test("a playlist synced before the tally existed says nothing about matching", async () => {
     renderWithPlex({
       // No `matched_by` at all: the field is optional on the wire, and every

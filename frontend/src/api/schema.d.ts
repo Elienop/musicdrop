@@ -4085,8 +4085,18 @@ export interface components {
          *     ``reason``: ``not_found`` — no Plex track at that path and no metadata
          *     candidate; ``ambiguous`` — several Plex tracks matched the metadata and
          *     album/track-number could not single one out (never guessed);
-         *     ``duplicate_collapsed`` — the track is on Plex and in the playlist, but this
-         *     playlist lists it more than once and Plex kept a single row.
+         *     ``claimed_by_other_track`` — candidates existed but every one was already
+         *     matched to a DIFFERENT library track in this playlist, and reusing one would
+         *     put a single Plex recording in the playlist twice (see ``_free`` in
+         *     ``app/plex/mapping.py``); ``duplicate_collapsed`` — the track is on Plex and
+         *     in the playlist, but this playlist lists it more than once and Plex kept a
+         *     single row.
+         *
+         *     The third and fourth are easy to confuse and are not the same event.
+         *     ``duplicate_collapsed`` is ONE library track the playlist lists twice;
+         *     ``claimed_by_other_track`` is TWO library tracks whose tags lead to one Plex
+         *     recording. The first is about this playlist repeating itself, the second
+         *     about two of its tracks being indistinguishable to Plex.
          *
          *     ``item_id`` is the beets library item, so two rows for one item report under
          *     one id — which is exactly right for the first two reasons (both rows are
@@ -4106,7 +4116,7 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "not_found" | "ambiguous" | "duplicate_collapsed";
+            reason: "not_found" | "ambiguous" | "claimed_by_other_track" | "duplicate_collapsed";
         };
         /**
          * PlexPlaylistInfo

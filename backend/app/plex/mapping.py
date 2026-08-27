@@ -48,7 +48,7 @@ from app.models.plex import PlexMatchCounts, PlexMatchMethod, PlexMissingTrack, 
 
 # Why THIS module gave up on a row. The wire's ``PlexMissReason`` is wider: the
 # sync reports one more kind of miss, about a track that resolved perfectly well.
-MissReason = Literal["not_found", "ambiguous"]
+MissReason = Literal["not_found", "ambiguous", "claimed_by_other_track"]
 
 
 @dataclass(frozen=True)
@@ -241,10 +241,19 @@ def _artist_contradicts(spec: PlexTrackSpec, candidate: Any) -> bool:
     reported "ok".
     """
     plex_artist = _attr(candidate, "grandparentTitle")
-    scripts = _shared_scripts(spec.albumartist, plex_artist)
+    # Draw the widths the same way BEFORE the scripts are read: a fullwidth
+    # letter's Unicode NAME starts with "FULLWIDTH", a script that shares
+    # nothing with LATIN, so an ASCII name and its fullwidth twin would
+    # "share no alphabet" and the veto would switch off. NFKC folds each to
+    # the letter it draws, and because BOTH the scripts and the letter filter
+    # in ``_name_words`` then read this same folded text, a name cannot
+    # collapse to empty and compare equal to everything.
+    spec_artist = unicodedata.normalize("NFKC", spec.albumartist)
+    plex_artist = unicodedata.normalize("NFKC", plex_artist)
+    scripts = _shared_scripts(spec_artist, plex_artist)
     if not scripts:
         return False
-    return _name_words(spec.albumartist, scripts) != _name_words(plex_artist, scripts)
+    return _name_words(spec_artist, scripts) != _name_words(plex_artist, scripts)
 
 
 @dataclass(frozen=True)
@@ -297,14 +306,21 @@ def _meta_match(
 
     Returns ``(track, None)`` on a match; ``(None, "not_found")`` when the key is
     incomplete (a title-only match is a guess) or no unclaimed candidate exists;
-    and ``(None, "ambiguous")`` when candidates exist but album, then track
-    number, cannot single one out."""
+    ``(None, "ambiguous")`` when candidates exist but album, then track number,
+    cannot single one out; and ``(None, "claimed_by_other_track")`` when the key
+    DID find candidates and every one was already taken."""
     key = (_norm(spec.albumartist), _norm(spec.title))
     if not all(key):
         return None, "not_found"
-    cands = _free(by_meta.get(key, ()), spec, claimed)
+    candidates = by_meta.get(key, ())
+    cands = _free(candidates, spec, claimed)
     if not cands:
-        return None, "not_found"
+        # A pool that was EMPTY and a pool the claims emptied are different
+        # news. The first says Plex holds nothing like this; the second says it
+        # does, and another library track reached it first. Reporting both as
+        # "not_found" sent the user to check whether the file was in their Plex
+        # library — the one place the answer could not be.
+        return None, "claimed_by_other_track" if candidates else "not_found"
     if len(cands) == 1:
         return cands[0], None
     album_pool = [c for c in cands if _norm(_attr(c, "parentTitle")) == _norm(spec.album)]
@@ -353,22 +369,31 @@ def _album_match(
 
     Returns ``(track, None)`` on the one surviving candidate;
     ``(None, "ambiguous")`` when several survive — the caller leaves the row
-    missing rather than picking one; ``(None, "not_found")`` when the key is
-    incomplete, the album-artist is blank, the length is unknown, or nothing
-    survives.
+    missing rather than picking one; ``(None, "claimed_by_other_track")`` when
+    the key found candidates and the CLAIMS took every one; and
+    ``(None, "not_found")`` when the key is incomplete, the album-artist is
+    blank, the length is unknown, or nothing survives on the evidence.
     """
     key = (_norm(spec.album), _norm(spec.title))
     length = _measured_length(spec.length_seconds)
     if not all(key) or not _norm(spec.albumartist) or length is None:
         return None, "not_found"
+    candidates = by_album_title.get(key, ())
+    free = _free(candidates, spec, claimed)
     pool = [
         cand
-        for cand in _free(by_album_title.get(key, ()), spec, claimed)
+        for cand in free
         if _lengths_agree(_plex_seconds(cand), length) and not _artist_contradicts(spec, cand)
     ]
     if len(pool) == 1:
         return pool[0], None
-    return (None, "ambiguous") if pool else (None, "not_found")
+    if pool:
+        return None, "ambiguous"
+    # Only a pool the CLAIMS emptied earns the sharper reason. Where candidates
+    # survived the claim filter and then lost on length or the artist veto, this
+    # row's miss is about the evidence, not about a sibling taking it — and
+    # saying otherwise would point the user at the wrong thing just as surely.
+    return (None, "claimed_by_other_track") if candidates and not free else (None, "not_found")
 
 
 def _path_claims(by_path: dict[str, Any], specs: list[PlexTrackSpec]) -> dict[Any, int]:
@@ -423,9 +448,17 @@ def _resolve_one(
         # stronger one declined. It would also downgrade an honest "found it
         # twice" into "not found" whenever the lengths were unknown.
         return None, reason
+    meta_reason = reason
     track, reason = _album_match(indexes.by_album_title, spec, claimed)
     if track is not None:
         return PlexMatch(track=track, method="album_length", spec=spec), None
+    # The wider key finding nothing must not ERASE what the artist-title key
+    # already knew. If that key had candidates and the claims took every one,
+    # the claim is the true news about this row: the album key looking somewhere
+    # else and coming back empty does not contradict it, and letting its plain
+    # "not_found" win would put back the very message this reason replaced.
+    if reason == "not_found" and meta_reason == "claimed_by_other_track":
+        return None, meta_reason
     return None, reason
 
 

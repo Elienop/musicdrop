@@ -84,12 +84,18 @@ SyncStatus = Literal["ok", "partial", "empty", "failed", "pending"]
 MISSING_TRACKS_CAP = 200
 
 
-# Why one playlist row is not on Plex after a sync. The first two are the
-# MATCHER's verdicts about a track it could not find at all (``app/plex/mapping.py``);
-# the third is the SYNC's, and is a different kind of news — the track resolved
-# and IS in the Plex playlist, once, but the playlist lists it twice and this
-# server would not hold a second row of it (``app/plex/sync.py``).
-PlexMissReason = Literal["not_found", "ambiguous", "duplicate_collapsed"]
+# Why one playlist row is not on Plex after a sync. The first three are the
+# MATCHER's verdicts (``app/plex/mapping.py``); the fourth is the SYNC's, and is
+# a different kind of news — the track resolved and IS in the Plex playlist,
+# once, but the playlist lists it twice and this server would not hold a second
+# row of it (``app/plex/sync.py``).
+#
+# ``claimed_by_other_track`` exists because the matcher cannot otherwise tell
+# "Plex has nothing like this" apart from "Plex had a candidate and another
+# library track already took it". Both used to report ``not_found``, which sent
+# the user to check whether the file was in their Plex library — the wrong place
+# to look, since the pool was not empty, it was spoken for.
+PlexMissReason = Literal["not_found", "ambiguous", "claimed_by_other_track", "duplicate_collapsed"]
 
 
 class PlexMissingTrack(BaseModel):
@@ -98,8 +104,18 @@ class PlexMissingTrack(BaseModel):
     ``reason``: ``not_found`` — no Plex track at that path and no metadata
     candidate; ``ambiguous`` — several Plex tracks matched the metadata and
     album/track-number could not single one out (never guessed);
-    ``duplicate_collapsed`` — the track is on Plex and in the playlist, but this
-    playlist lists it more than once and Plex kept a single row.
+    ``claimed_by_other_track`` — candidates existed but every one was already
+    matched to a DIFFERENT library track in this playlist, and reusing one would
+    put a single Plex recording in the playlist twice (see ``_free`` in
+    ``app/plex/mapping.py``); ``duplicate_collapsed`` — the track is on Plex and
+    in the playlist, but this playlist lists it more than once and Plex kept a
+    single row.
+
+    The third and fourth are easy to confuse and are not the same event.
+    ``duplicate_collapsed`` is ONE library track the playlist lists twice;
+    ``claimed_by_other_track`` is TWO library tracks whose tags lead to one Plex
+    recording. The first is about this playlist repeating itself, the second
+    about two of its tracks being indistinguishable to Plex.
 
     ``item_id`` is the beets library item, so two rows for one item report under
     one id — which is exactly right for the first two reasons (both rows are
