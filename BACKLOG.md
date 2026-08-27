@@ -16,34 +16,12 @@ _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping tri
 - Pick from Open bugs / hardening below; real authentication remains the standing
   long-term security item. The 40 banked #143 Plex review Minors are now fully
   adjudicated (2026-08-25, every item re-verified against v0.44.0): 12 shipped as the
-  triage fix slice (see Recently shipped), 12 recorded below (three under Open bugs, nine
-  under Deferred minors), 3 accepted as deliberate, 3 were already fixed. Dispositions
+  triage fix slice (see Recently shipped), 12 recorded below, 3 accepted as deliberate, 3
+  were already fixed. Of the 12 recorded, the three that sat under Open bugs all shipped in
+  #184; the nine under Deferred minors remain open. Dispositions
   with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
-
-- **A claim-blocked playlist row is reported `not_found`, and the tooltip lies.** When
-  another row's claim empties the candidate pool, `mapping.py` returns reason `not_found`
-  (`MissReason` has no third value) and the frontend tooltip tells the user "Plex has no
-  track with this file… Check the file is in your Plex library" — false: Plex has it, a
-  sibling row took it. #146's `duplicate_collapsed` covers only the sync-level collapse,
-  not this resolution-level block. Fix is a wire-contract change (new `MissReason` value +
-  OpenAPI regen + FE copy). From the 2026-08-25 #143 triage.
-
-- **An `empty`-status sync with a real all-zero tally gets NO diagnosis.** The playlist
-  detail page's `resolvedTargetState` requires a non-zero tally sum, so the loudest
-  wrong-path case (every lookup missed; tally recorded all-zero with misses > 0) renders
-  no match summary and no library-path pointer — while legacy records (null tally) and
-  failed targets rightly stay silent. Discriminate by status + tally-nullability, pinned
-  by a test with `missing > 0`. From the 2026-08-25 #143 triage.
-
-- **`_shared_scripts` reads raw characters, so fullwidth Latin disables the artist veto.**
-  `mapping.py` derives per-character scripts before any compatibility folding, so an ASCII
-  vs fullwidth-Latin pair shares no script, `_artist_contradicts` cannot compare them, and
-  the album rung accepts — a silent wrong match, the direction the module's own contract
-  forbids. The one triage veto item that fails unsafe; the name shape is unlikely in this
-  library, which is why it sits here rather than in a slice. Fold compatibility (NFKD)
-  before deriving scripts. From the 2026-08-25 #143 triage.
 
 - **Album art can still be silently diverted.** The collision pre-flight covers item files
   only; `Album.move_art` goes through the same beets `unique_path`, so two album rows
@@ -58,7 +36,7 @@ _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping tri
   under Recently shipped), but the gate itself may still want to key on the same `index.html`
   check `mount_static` uses, so the posture and the served SPA stay in agreement.
 
-- ~~OpenAPI under-declares 403 on 61 write routes~~ — **FIXED in this PR**, widened to the
+- ~~OpenAPI under-declares 403 on 61 write routes~~ — **FIXED in #159**, widened to the
   whole middleware class: `app/openapi_overlay.py` post-processes the schema so every
   operation declares the host guard's 400, every write the origin guard's 403 (the guard's
   own `UNSAFE_METHODS`), and every bodied operation the body limit's 413 — add-only-where-
@@ -99,7 +77,7 @@ _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping tri
 
 - **Source comments point at gitignored files, so those pointers dangle for every clone.**
   Two families, found by the 2026-08-27 stale-reference sweep. `docs/superpowers/`
-  (`.gitignore:51`) is cited 5 times from 4 tracked files, two of them shipped source
+  (`.gitignore:51`) is cited 3 times from 3 tracked files, two of them shipped source
   (`app/host_guard.py:30`, `app/playlists/store.py:491`); `CLAUDE.md` (`.gitignore:48`) is
   cited 30 times across 22 tracked files, mostly "CLAUDE.md rule 3" under `app/beets/`.
   Both resolve on the maintainer's machine and nowhere else — the same class as the dead
@@ -119,25 +97,6 @@ _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping tri
   the user's library path — the false alarm two regression tests exist to prevent. Consequence
   worth knowing: a smart playlist with BOTH problems only reveals the path issue after the first
   is fixed. Untested in either direction. From the #184 deep review, 2026-08-27.
-
-- **Six more stale factual claims in comments, found but NOT fixed.** Surfaced 2026-08-27
-  by a local-LLM sweep, each re-verified by hand before recording:
-  - `app/api/albums.py:271`, `app/api/artists.py:666` and `app/api/import_.py:231` all pin
-    a defence-in-depth completeness argument to "`header_safe_content_type`'s docstring
-    enumerates/counts the sinks". That docstring (`app/artwork/images.py:19-74`) enumerates
-    PROVENANCE (three sources) and FAILURE SHAPES (four) — it has never enumerated the
-    sinks. `artists.py:666` also calls itself "the third content-type sink", but there are
-    ~9 invocations across 6 modules, so no consistent counting makes it third. Fixing needs
-    a decision rather than a reword: either add a real sink enumeration (a new list that
-    can itself go stale) or drop the completeness claim and keep the argument. Note
-    `import_.py:231` warns that "a comment claiming completeness is how the next reviewer
-    stops looking" — which is precisely what this cluster produced.
-  - `app/api/disk_sync.py:5` says "the same 8-gate set"; the predicate is 5 job types plus
-    the swap lock (6), across 11 call sites — 8 matches neither count.
-  - `app/api/http_cache.py:33` says `GET /api/artists/image` "alone has six exits"; it has
-    7 today and had 8 when the comment was written.
-  - `app/api/import_.py:235` says "the fourth and last image response in the app"; five
-    routes answer with image bodies, and two of them post-date that comment.
 
 - **Bank store sink has the same inf/NaN shape the playlists store just fixed.**
   `app/bank/store.py:174` (`json.dumps(model_dump(mode="json"), ensure_ascii=True)`) writes
@@ -464,6 +423,50 @@ _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping tri
   before the scripts are read. That last one failed UNSAFE, accepting a silent wrong match.
   An isolated mutation review caught a real correctness bug in the first attempt while CI was
   fully green — see auto-memory `coverage-regressions-and-diagnosis-claims`.
+  - **A claim-blocked row reported `not_found`, and the tooltip lied.** When another row's claim
+    emptied the candidate pool, `mapping.py` returned `not_found` (`MissReason` had no third
+    value) and the tooltip told the user "Plex has no track with this file… Check the file is in
+    your Plex library" — false: Plex had it, a sibling row took it. #146's `duplicate_collapsed`
+    covers only the sync-level collapse, not this resolution-level block. Closed as the
+    wire-contract change it needed: the new `MissReason`/`PlexMissReason` value, returned by BOTH
+    fallback rungs, the regenerated contract, and its own tooltip copy (the badge stays "Not in
+    Plex" — a lookalike is on Plex, this track still is not).
+  - **An `empty`-status sync with a real all-zero tally got NO diagnosis.** The playlist detail
+    page's `resolvedTargetState` required a non-zero tally sum, so the loudest wrong-path case
+    (every lookup missed; tally recorded all-zero with misses > 0) rendered no match summary and
+    no library-path pointer, while a PARTIAL miss got a warning box. A second pass now accepts a
+    tally that EXISTS on a target whose status is `empty`; legacy records (null tally) and failed
+    targets stay silent as before, and the case is pinned by a test with `missing > 0`.
+  - **`_shared_scripts` read raw characters, so fullwidth Latin disabled the artist veto.**
+    Per-character scripts were derived before any compatibility folding, so an ASCII vs
+    fullwidth-Latin pair shared no script, `_artist_contradicts` could not compare the names, and
+    the album rung accepted — a silent wrong match, the direction the module's own contract
+    forbids. Both names are now folded before the scripts are read — NFKC rather than the NFKD
+    the open entry proposed, because the same folded text then feeds `_name_words`' letter
+    filter, so a name cannot collapse to empty and compare equal to everything.
+
+- **Stale comment-claims cluster — #185, shipped 2026-08-27.** The six factual claims the #183
+  sweep recorded as "found but NOT fixed" are closed. Every one was replaced by a predicate a
+  reader can check with one grep, never by a corrected number that would simply re-stale.
+  - Three comments (`app/api/albums.py`, `app/api/artists.py`, `app/api/import_.py`) pinned a
+    defence-in-depth completeness argument to "`header_safe_content_type`'s docstring
+    enumerates/counts the sinks" — a register that docstring has never held (it enumerates
+    PROVENANCE and FAILURE SHAPES). The argument is kept verbatim and only the appeal goes,
+    deliberately NOT by writing the register: a hand-maintained list of sinks is exactly the
+    artefact that goes stale in silence. What replaces it is the invariant itself — an external
+    content-type reaching a response header must pass through `header_safe_content_type`, so
+    grep the name and every site is visible. `artists.py` also called itself "the third
+    content-type sink" (no ordering makes it third) and claimed to be the only site reading a
+    source's OWN answer rather than a cache sidecar, which the earlier call in the same handler
+    already refuted; both claims are gone with no number in their place.
+  - `app/api/disk_sync.py` said "the same 8-gate set" — a number matching neither the job types
+    nor the call sites. It now names the shared `app.library_busy` union and its `_gate_busy`.
+  - `app/api/http_cache.py` said `GET /api/artists/image` "alone has six exits"; it now says the
+    exits do not fit on one screen, which stays true across the next extraction.
+  - `app/api/import_.py` said "the fourth and last image response in the app"; it now names the
+    predicate — the only image response reaching neither the `http_cache` constructors nor the
+    artwork routes. `albums.py` had claimed the same "last" title, so the two contradicted each
+    other outright; that claim went with them.
 
 - **#143-Minors triage fix slice — shipped 2026-08-25 (PR # filled in at merge).** The
   fix-now portion of the banked-Minors adjudication (see Next up). Copy honesty: the
