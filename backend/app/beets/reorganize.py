@@ -245,9 +245,10 @@ def art_preflight(lib: Any, album: Any, dests: list[tuple[Any, bytes]]) -> ArtPr
     predicted destination is what ``Album.move`` will hand ``move_art``: the dir
     of the FIRST item that relocates (``move_art`` receives ``os.path.dirname``
     of the moved item's path, and beets moves items in order) — more precisely,
-    the first item whose move CHANGED its path: an item whose source file is
-    missing is skipped and shifts the art dir to the next mover, so the
-    prediction can name a sibling dir in that corner; the backstop covers it.
+    the first item whose move CHANGED its path — and, since beets'
+    ``Item.move`` silently SKIPS a mover whose source file is missing
+    (``beets/library/models.py:1179``), really the first mover that exists on
+    disk, which is exactly whom the prediction below starts from.
     Must be called
     under ``lib.music_dir_context()`` — the same requirement as the item
     pre-flight, since ``album.art_destination`` renders paths the same way.
@@ -268,7 +269,17 @@ def art_preflight(lib: Any, album: Any, dests: list[tuple[Any, bytes]]) -> ArtPr
     moving = [(i, d) for i, d in dests if bytes(i.path) != d]
     if not moving:
         return ArtPreflight(None, None)
-    item_dir = os.path.dirname(os.path.normpath(moving[0][1]))
+    # Item.move silently SKIPS a mover whose source file is missing
+    # (beets/library/models.py:1179), so Album.move's "first item whose path
+    # changed" is really the first mover that exists on disk — predict from
+    # exactly that one.
+    present = next(
+        (d for i, d in moving if os.path.exists(syspath(os.path.normpath(bytes(i.path))))),
+        None,
+    )
+    if present is None:
+        return ArtPreflight(None, None)
+    item_dir = os.path.dirname(os.path.normpath(present))
     try:
         new_art = album.art_destination(old, item_dir=item_dir)
     except Exception:  # a template that cannot render must not fail the sweep
@@ -785,7 +796,11 @@ def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
             problems = _verify_moves(pending, after)
             if art.expected_dest is not None and album.artpath:
                 landed = os.path.normpath(bytes(album.artpath))
-                if landed != art.expected_dest:
+                # A unique_path divert always changes the BASENAME (.N) and
+                # never the directory; a dir-only difference is a misprediction
+                # (beets skipped or refused the predicted mover), not a taken
+                # name — reporting it would be a false "already taken".
+                if os.path.basename(landed) != os.path.basename(art.expected_dest):
                     problems.append(
                         f"{_rel_to_music(lib, art.expected_dest)!r}: the album art's"
                         " computed name was already taken on disk, so the art landed at"

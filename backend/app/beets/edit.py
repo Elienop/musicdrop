@@ -309,7 +309,12 @@ def _plan_moves(
             )
     art_album = shadow if shadow is not None else lib.get_album(album_id)
     if art_album is not None:
-        art = art_preflight(lib, art_album, dests)
+        # The same survivor filter the apply runs: a track the refusal
+        # predicate already refused will never move, so its dir is not where
+        # beets will point the art — predicting from it refuses moves whose
+        # art target is actually free.
+        survivors = [(it, dest) for it, dest in dests if refusals.get(_require_id(it.id)) is None]
+        art = art_preflight(lib, art_album, survivors)
         if art.collision is not None:
             # The apply refuses its whole move phase on an art collision, so
             # the preview promises no move rows either — every planned move
@@ -577,7 +582,15 @@ def _commit_edit(
                 for it in items
                 if _inside_library(lib, it)
             ]
-            art = art_preflight(lib, album, dests)
+            # The art dir must be predicted from the tracks that will actually
+            # move: beets picks it from the first item whose move CHANGED its
+            # path, and a track _move_refusals refuses never moves. On the
+            # clean path the same predicate runs again inside _move_items —
+            # bounded (a stat per destination), the price of the two phases
+            # agreeing.
+            refusals = _move_refusals(lib, dests)
+            survivors = [(it, dest) for it, dest in dests if _require_id(it.id) not in refusals]
+            art = art_preflight(lib, album, survivors)
             if art.collision is not None:
                 # Refuse the WHOLE move phase: moving the audio while the art
                 # cannot follow would strand the cover in the vacated dir (a
@@ -585,7 +598,6 @@ def _commit_edit(
                 # files keep their names. A track that ALSO holds its own
                 # collision keeps its OWN detail — the same per-track predicate
                 # the preview consults — and the rest carry the art detail.
-                refusals = _move_refusals(lib, dests)
                 move_problems = {}
                 for it, dest in dests:
                     if bytes(it.path) == dest:

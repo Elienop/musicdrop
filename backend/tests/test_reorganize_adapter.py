@@ -1156,3 +1156,251 @@ def test_reorganize_album_collision_refusal_leaves_sidecars_in_place(tmp_path: P
     assert outcome.status == "failed"
     assert _tree(music) == before  # audio AND lyrics untouched
     assert not (music / "X").exists()
+
+
+def test_art_preflight_reports_the_expected_destination_on_a_free_name(
+    reorganize_lib: Library,
+) -> None:
+    """The free-name branch must still return expected_dest — it is what arms
+    the post-move backstops; (None, None) here would disarm them silently."""
+    lib = reorganize_lib
+    music = Path(os.fsdecode(lib.directory))
+    with lib.music_dir_context():
+        album = _album(lib, "In Rainbows")
+        art = music / "junk" / "ir" / "cover.jpg"
+        art.parent.mkdir(parents=True, exist_ok=True)
+        art.write_bytes(b"real art")
+        album.artpath = os.fsencode(str(art))
+        album.store()
+        dests = reorg._unit_dests(lib, list(album.items()))
+        result = reorg.art_preflight(lib, album, dests)
+    assert result.collision is None
+    assert result.expected_dest is not None
+    assert os.path.basename(result.expected_dest) == b"cover.jpg"
+    assert os.fsdecode(result.expected_dest).startswith(str(music / "Radiohead" / "In Rainbows"))
+
+
+def test_reorganize_art_prediction_skips_a_missing_first_mover(tmp_path: Path) -> None:
+    """A two-disc album whose FIRST mover's source file is missing: beets'
+    Item.move silently skips it, so Album.move's "first item whose path changed"
+    is the disc-2 track and the art follows disc 2.
+
+    The prediction must skip the missing-source mover too — predicting disc 1's
+    dir (a dir the art never visits) would make the post-move backstop report a
+    false "the album art's computed name was already taken" for a CLEAN landing.
+    The missing file itself is still reported (truthfully); the art message is
+    not."""
+    import os
+
+    from beets.library import Item
+
+    music = tmp_path / "music"
+    lib = build_library(
+        str(tmp_path / "library.db"),
+        str(music),
+        path_format="$albumartist/$album/Disc $disc/$track $title",
+    )
+    base = music / "old"
+    base.mkdir(parents=True)
+    items = []
+    for disc in (1, 2):
+        f = base / f"{disc} T.mp3"
+        f.write_bytes(b"\x00")
+        it = Item(album="Boxset", albumartist="Ann", artist="Ann", title="T", track=1, disc=disc)
+        it.path = os.fsencode(str(f))
+        items.append(it)
+    album = lib.add_album(items)
+    art = base / "cover.jpg"
+    art.write_bytes(b"art")
+    album.artpath = os.fsencode(str(art))
+    album.store()
+    # The FIRST mover's source is gone — beets skips it at move time.
+    os.remove(os.fsdecode(bytes(items[0].path)))
+
+    with lib.music_dir_context():
+        outcome = reorg.reorganize_album(lib, album)
+
+    assert outcome.status == "failed"  # the missing file is reported
+    assert "file not found" in (outcome.error or "")
+    # THE point: no false art divert — the landing was clean at the real target.
+    assert "album art" not in (outcome.error or "")
+    refetched = lib.get_album(_require_id(album.id))
+    assert refetched is not None
+    assert refetched.artpath is not None
+    assert os.path.dirname(os.fsdecode(refetched.artpath)) == str(
+        music / "Ann" / "Boxset" / "Disc 02"
+    )
+
+
+def test_reorganize_refuses_when_the_real_art_target_is_taken_and_first_mover_missing(
+    tmp_path: Path,
+) -> None:
+    """First mover's source missing AND a stray holding the art name at the
+    REAL target (disc 2, where the surviving mover lands the art): the
+    prediction must skip the missing-source mover and find the collision,
+    REFUSING the unit before anything moves — not predict disc 1 (free), let
+    the move through, and only report the divert after the art has been
+    silently renamed."""
+    import os
+
+    from beets.library import Item
+
+    music = tmp_path / "music"
+    lib = build_library(
+        str(tmp_path / "library.db"),
+        str(music),
+        path_format="$albumartist/$album/Disc $disc/$track $title",
+    )
+    base = music / "old"
+    base.mkdir(parents=True)
+    items = []
+    for disc in (1, 2):
+        f = base / f"{disc} T.mp3"
+        f.write_bytes(b"\x00")
+        it = Item(album="Boxset", albumartist="Ann", artist="Ann", title="T", track=1, disc=disc)
+        it.path = os.fsencode(str(f))
+        items.append(it)
+    album = lib.add_album(items)
+    art = base / "cover.jpg"
+    art.write_bytes(b"art")
+    album.artpath = os.fsencode(str(art))
+    album.store()
+    os.remove(os.fsdecode(bytes(items[0].path)))  # first mover gone
+    disc2 = music / "Ann" / "Boxset" / "Disc 02"
+    disc2.mkdir(parents=True)
+    (disc2 / "cover.jpg").write_bytes(b"stray")
+
+    with lib.music_dir_context():
+        outcome = reorg.reorganize_album(lib, album)
+
+    assert outcome.status == "failed"  # refused — not "moved with a divert"
+    assert "album art" in (outcome.error or "")
+    # THE point: the refusal happened BEFORE the move — the stray still holds
+    # the name, no `.1` sibling was minted, and disc 2 never moved.
+    assert (disc2 / "cover.jpg").read_bytes() == b"stray"
+    assert not (disc2 / "cover.1.jpg").exists()
+    refetched = lib.get_album(_require_id(album.id))
+    assert refetched is not None
+    assert refetched.artpath is not None
+    assert os.path.dirname(os.fsdecode(refetched.artpath)) == str(base)
+
+
+def test_reorganize_backstop_ignores_a_dir_only_art_misprediction(
+    monkeypatch: pytest.MonkeyPatch, reorganize_lib: Library
+) -> None:
+    """If a residual misprediction ever leaves the art in a DIFFERENT DIR under
+    the SAME name (basename unchanged — a unique_path divert always renames),
+    that is a misprediction, not a taken name: the backstop must not report
+    'the computed name was already taken' for a clean landing. Simulated by
+    monkeypatching the pre-flight to a same-basename sibling dir (the same
+    lever as test_art_divert_that_slips_past_the_preflight_is_reported, whose
+    basename DOES differ)."""
+    lib = reorganize_lib
+    music = Path(os.fsdecode(lib.directory))
+    with lib.music_dir_context():
+        album = _album(lib, "In Rainbows")
+        art = music / "junk" / "ir" / "cover.jpg"
+        art.write_bytes(b"real art")
+        album.artpath = os.fsencode(str(art))
+        album.store()
+    # Same basename (cover.jpg), different dir than the real landing.
+    mispredicted = os.path.normpath(
+        os.fsencode(str(music / "Radiohead" / "In Rainbows (old)" / "cover.jpg"))
+    )
+    monkeypatch.setattr(
+        reorg, "art_preflight", lambda *a, **k: reorg.ArtPreflight(None, mispredicted)
+    )
+    outcome = reorg.reorganize_album(lib, _album(lib, "In Rainbows"))
+    assert outcome.status == "moved"
+    assert "album art" not in (outcome.error or "")
+
+
+def _two_disc_lib(tmp_path: Path) -> tuple[Library, int, list[Item], Path]:
+    """The D1 two-disc library (disc 1 = 'One', disc 2 = 'Two', art in
+    music/old/). The callers settle disc 1 themselves, under
+    ``lib.music_dir_context()`` — destination rendering needs it."""
+    music = tmp_path / "music"
+    lib = build_library(
+        str(tmp_path / "library.db"),
+        str(music),
+        path_format="$albumartist/$album/Disc $disc/$track $title",
+    )
+    base = music / "old"
+    base.mkdir(parents=True)
+    items = []
+    for disc, title in ((1, "One"), (2, "Two")):
+        f = base / f"{disc} {title}.mp3"
+        f.write_bytes(b"\x00")
+        it = Item(
+            album="Boxset",
+            albumartist="Ann",
+            artist="Ann",
+            title=title,
+            track=1,
+            disc=disc,
+        )
+        it.path = os.fsencode(str(f))
+        items.append(it)
+    album = lib.add_album(items)
+    art = base / "cover.jpg"
+    art.write_bytes(b"art")
+    album.artpath = os.fsencode(str(art))
+    album.store()
+    return lib, _require_id(album.id), items, music
+
+
+def _settle_disc1(lib: Library, items: list[Item]) -> None:
+    """Physically settle disc 1 at its destination: rename the file, update
+    and store ``item.path``. Caller is under ``lib.music_dir_context()``."""
+    settled = bytes(items[0].destination(basedir=lib.directory))
+    os.makedirs(os.path.dirname(settled), exist_ok=True)
+    os.rename(os.fsdecode(bytes(items[0].path)), os.fsdecode(settled))
+    items[0].path = settled
+    items[0].store()
+
+
+def test_reorganize_art_follows_the_settled_albums_actual_mover(tmp_path: Path) -> None:
+    """Disc 1 already sits at its destination; only disc 2 moves, so the art
+    targets DISC 2's dir. A stray cover.jpg there must refuse the unit BEFORE
+    anything moves — and a prediction read from the raw first dest (disc 1)
+    would miss it, move the files, and divert the art."""
+    lib, aid, items, music = _two_disc_lib(tmp_path)
+    with lib.music_dir_context():
+        _settle_disc1(lib, items)  # disc 1 is already at its destination
+        disc2 = music / "Ann" / "Boxset" / "Disc 02"
+        disc2.mkdir(parents=True)
+        (disc2 / "cover.jpg").write_bytes(b"stray")  # holds the art's real target
+        before = _tree(music)
+        album = lib.get_album(aid)
+        assert album is not None
+        outcome = reorg.reorganize_album(lib, album)
+
+    assert outcome.status == "failed"  # refused — not "moved with a divert"
+    assert "cover.jpg" in (outcome.error or "")
+    # THE point: the refusal happened BEFORE the move — the whole tree, the
+    # stray and the settled disc-1 file included, is byte-identical.
+    assert _tree(music) == before
+    assert not (disc2 / "cover.1.jpg").exists()  # no divert was minted
+
+
+def test_reorganize_ignores_a_stray_in_a_dir_the_art_never_visits(tmp_path: Path) -> None:
+    """Mirror: the stray sits in DISC 1's dir — settled, not receiving the art.
+    The unit must move; the art lands beside disc 2. A prediction read from
+    the raw first dest (disc 1) would find the stray and REFUSE a clean move."""
+    lib, aid, items, music = _two_disc_lib(tmp_path)
+    with lib.music_dir_context():
+        _settle_disc1(lib, items)  # disc 1 is already at its destination
+        disc1 = music / "Ann" / "Boxset" / "Disc 01"
+        (disc1 / "cover.jpg").write_bytes(b"stray")  # dir the art never visits
+        album = lib.get_album(aid)
+        assert album is not None
+        outcome = reorg.reorganize_album(lib, album)
+
+    assert outcome.status == "moved"
+    assert "album art" not in (outcome.error or "")  # no false art detail
+    refetched = lib.get_album(aid)
+    assert refetched is not None
+    assert refetched.artpath is not None
+    assert os.path.dirname(os.fsdecode(refetched.artpath)) == str(
+        music / "Ann" / "Boxset" / "Disc 02"
+    )

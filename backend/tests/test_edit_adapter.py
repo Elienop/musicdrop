@@ -955,12 +955,21 @@ def test_art_follows_the_moved_items_when_the_first_mover_is_refused(
     )
 
 
-def test_edit_reports_an_art_divert_that_slips_past_the_preflight(
+def test_edit_refuses_when_the_stray_sits_at_the_movers_art_dir(
     tmp_path: Path,
 ) -> None:
-    """Same shape as above, plus a stray cover.jpg at Disc 2 — the pre-flight
-    checked Disc 1 (the predicted first mover) and found it free, so the divert
-    happens at Disc 2 and must be reported on the moved rows."""
+    """Stranger at disc 1's track destination AND a stray cover.jpg at disc 2 —
+    the dir the art REALLY targets, because disc 1 is refused and disc 2 is the
+    first mover that survives.
+
+    Behaviour change (2026-08-28, survivor-based prediction): pre-fix this test
+    pinned the OLD path — the pre-flight checked disc 1 (the predicted first
+    mover, which was free), let the move through, the divert happened at disc
+    2 and was reported on the moved rows ('cover.1.jpg'). Now the prediction
+    sees the survivors, finds the stray at disc 2, and REFUSES the whole move
+    phase before anything is touched: no divert, no moved rows, stray and art
+    both untouched. (Detail attribution on the refused rows is pinned by
+    test_edit_art_refusal_keeps_a_tracks_own_collision_detail.)"""
     from app.beets.edit import apply_album_edit
 
     lib, aid, music = _two_disc_lib(tmp_path)
@@ -972,7 +981,113 @@ def test_edit_reports_an_art_divert_that_slips_past_the_preflight(
     (disc2 / "cover.jpg").write_bytes(b"stray")
     req = AlbumEditRequest(album=AlbumFieldEdits(album_artist="Bea"))
     result = apply_album_edit(lib, album_id=aid, request=req, write=False, move=True)
+    assert result.move_failures == 2
+    assert not any(r.moved for r in result.items)
+    # Disc 1's row keeps its OWN track collision; disc 2's carries the art's
+    # (attribution itself is pinned by the own-detail test next door).
+    own = next(r for r in result.items if "01 One.mp3" in (r.error or ""))
+    art_row = next(r for r in result.items if r is not own)
+    assert "album art" not in (own.error or "")
+    assert "cover.jpg" in (art_row.error or "")
+    assert "album art" in (art_row.error or "")
+    assert (disc2 / "cover.jpg").read_bytes() == b"stray"  # never overwritten
+    assert not (disc2 / "cover.1.jpg").exists()  # no divert at all
+    refetched = lib.get_album(aid)
+    assert refetched is not None
+    assert refetched.artpath is not None
+    assert os.path.dirname(os.fsdecode(refetched.artpath)) == str(music / "old")
+
+
+def test_edit_art_refusal_keeps_a_tracks_own_collision_detail(tmp_path: Path) -> None:
+    """Stranger at disc 1's track destination AND a stray cover at disc 2 (the
+    dir the art really targets): the whole move phase is refused — disc 1's row
+    carries its OWN detail, disc 2's row carries the art detail."""
+    from app.beets.edit import apply_album_edit
+
+    lib, aid, music = _two_disc_lib(tmp_path)
+    blocker = music / "Bea" / "Boxset" / "Disc 01"
+    blocker.mkdir(parents=True)
+    (blocker / "01 One.mp3").write_bytes(b"stranger")
+    disc2 = music / "Bea" / "Boxset" / "Disc 02"
+    disc2.mkdir(parents=True)
+    (disc2 / "cover.jpg").write_bytes(b"stray")
+    req = AlbumEditRequest(album=AlbumFieldEdits(album_artist="Bea"))
+    result = apply_album_edit(lib, album_id=aid, request=req, write=False, move=True)
+    assert all(not r.moved for r in result.items)
+    d1 = next(r for r in result.items if "01 One.mp3" in (r.error or ""))
+    d2 = next(r for r in result.items if r is not d1)
+    assert "album art" not in (d1.error or "")
+    assert "cover.jpg" in (d2.error or "")
+    assert "album art" in (d2.error or "")
+    assert (disc2 / "cover.jpg").read_bytes() == b"stray"
+
+
+def test_edit_moves_disc2_when_the_predicted_first_mover_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Disc 1's destination holds a stranger AND a stray cover.jpg — but the art
+    follows the first track that actually MOVES (disc 2), so the disc-1 stray is
+    in a folder the art never visits. Disc 2 must move and the art must follow
+    it; only disc 1 is refused, with its OWN collision detail.
+
+    Pre-fix (2026-08-28): move_failures == 2 — the WHOLE move phase was
+    refused: both rows (disc 1 and disc 2) moved=False with the art detail
+    "Bea/Boxset/Disc 01/cover.jpg: the album art's computed name already
+    exists on disk and is not a file in the library". Nothing moved and the
+    art stayed at music/old/cover.jpg — the prediction pointed at disc 1's
+    dir, which the art never visits because disc 1 is refused.
+    """
+    from app.beets.edit import apply_album_edit
+
+    lib, aid, music = _two_disc_lib(tmp_path)
+    blocker = music / "Bea" / "Boxset" / "Disc 01"
+    blocker.mkdir(parents=True)
+    (blocker / "01 One.mp3").write_bytes(b"stranger")
+    (blocker / "cover.jpg").write_bytes(b"stray")
+    req = AlbumEditRequest(album=AlbumFieldEdits(album_artist="Bea"))
+    result = apply_album_edit(lib, album_id=aid, request=req, write=False, move=True)
+    moved_rows = [r for r in result.items if r.moved]
+    refused_rows = [r for r in result.items if not r.moved]
+    assert len(moved_rows) == 1
+    assert len(refused_rows) == 1
+    assert "01 One.mp3" in (refused_rows[0].error or "")
+    assert "album art" not in (refused_rows[0].error or "")
+    disc2 = music / "Bea" / "Boxset" / "Disc 02"
+    assert (disc2 / "cover.jpg").exists()  # the art followed the real mover
+    refetched = lib.get_album(aid)
+    assert refetched is not None
+    assert refetched.artpath is not None
+    assert os.path.dirname(os.fsdecode(refetched.artpath)) == str(disc2)
+
+
+def test_edit_backstop_reports_a_divert_the_preflight_missed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Simulates the pre-flight-to-move race: the pre-flight is silenced, a
+    stray sits at the art's real destination, the move proceeds and beets
+    diverts the cover — the moved rows must carry the landed-at error.
+
+    With the pre-flight silenced BOTH discs move, so the art follows the
+    FIRST moved item — disc 1 — hence the stray sits in DISC 1's destination
+    dir. Without _commit_edit's backstop the rows would move silently and
+    this test fails on their clean errors (mutation-verified)."""
+    from app.beets import edit as edit_mod
+    from app.beets.edit import apply_album_edit
+    from app.beets.reorganize import ArtPreflight
+
+    lib, aid, music = _two_disc_lib(tmp_path)
+    disc2 = music / "Bea" / "Boxset" / "Disc 02"
+    disc1 = music / "Bea" / "Boxset" / "Disc 01"
+    for d in (disc1, disc2):
+        d.mkdir(parents=True)
+    (disc1 / "cover.jpg").write_bytes(b"stray")  # blocks the art's real target
+    monkeypatch.setattr(edit_mod, "art_preflight", lambda *a, **k: ArtPreflight(None, None))
+    req = AlbumEditRequest(album=AlbumFieldEdits(album_artist="Bea"))
+    result = apply_album_edit(lib, album_id=aid, request=req, write=False, move=True)
     moved_rows = [r for r in result.items if r.moved]
     assert moved_rows
     assert all("cover.1.jpg" in (r.error or "") for r in moved_rows)
-    assert (disc2 / "cover.jpg").read_bytes() == b"stray"
+    # The divert really happened where predicted: the stray kept the name,
+    # the real art was renamed beside it.
+    assert (disc1 / "cover.jpg").read_bytes() == b"stray"
+    assert (disc1 / "cover.1.jpg").read_bytes() == b"art"
