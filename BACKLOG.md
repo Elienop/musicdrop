@@ -276,7 +276,13 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `orphans._excluded_predicate`); the trash root has none. Small: refuse at startup when
   trash resolves inside or equal to the music dir or the beets dir.
 
-- **Vacuous-pin audit: sized, with first confirmed results (2026-08-28).** Population:
+- **Vacuous-pin audit: sized 2026-08-28; the four confirmed pins FIXED in #190** (two dead
+  absence needles in the reorganize adapter replaced with positive pins on the exact
+  emitted strings — the divert message is pinned verbatim — and three frontend absence
+  pins on never-existing copy deleted with the reason). #190 also converted the three
+  `vi.mock` + `await import()` no-op files (the third lives at
+  `pages/settings/LyricsBackfillPanel.test.tsx` — the `components/lyrics/` path earlier
+  records carried was stale). Remaining audit population below, unchanged.** Population:
   5,975 backend `assert` statements (ast-counted, not grepped) and 2,522 frontend
   `expect(` calls; the absence-shaped frontend subset is 291, of which 133 are
   copy-bearing. A needle-absent-from-source filter cut those 133 to 11 candidates;

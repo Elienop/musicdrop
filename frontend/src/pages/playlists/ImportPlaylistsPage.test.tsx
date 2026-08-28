@@ -837,10 +837,10 @@ describe("ImportPlaylistsPage", () => {
       new File(["#EXTM3U\nBand - Alpha\nGhost - Gone\n"], "Road.m3u8"),
     );
 
-    // The bare unmatched row: no "No library match" filler, no ↳ chips line —
-    // just its identity, an inline Search escape, and the badge.
+    // The bare unmatched row: no ↳ chips line — just its identity, an inline
+    // Search escape, and the badge. ("no library match" appears nowhere in
+    // production copy, so its absence here proved nothing — no filler pin.)
     const bare = (await screen.findByText("Alpha")).closest("li") as HTMLElement;
-    expect(within(bare).queryByText(/no library match/i)).not.toBeInTheDocument();
     expect(within(bare).queryByText("↳")).not.toBeInTheDocument();
     expect(within(bare).getByRole("button", { name: /search/i })).toBeInTheDocument();
 

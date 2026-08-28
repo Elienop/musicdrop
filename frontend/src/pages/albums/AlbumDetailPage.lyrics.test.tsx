@@ -1,9 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AlbumDetail, Track } from "@/api/useAlbum";
 import type { LyricsBackfillStatus } from "@/api/useLyricsBackfill";
+import { AlbumDetailPage } from "@/pages/albums/AlbumDetailPage";
 
 /** A tracklist row at the wire shape — every field the contract requires. */
 function track(id: number, title: string, overrides: Partial<Track> = {}): Track {
@@ -70,8 +72,7 @@ vi.mock("@/api/useLyricsBackfill", () => ({
   useStopLyricsBackfill: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
-async function renderPage() {
-  const { AlbumDetailPage } = await import("@/pages/albums/AlbumDetailPage");
+function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
@@ -104,7 +105,7 @@ describe("AlbumDetailPage lyrics", () => {
   });
 
   it("fires the per-album fetch when the button is clicked", async () => {
-    const user = (await import("@testing-library/user-event")).default.setup();
+    const user = userEvent.setup();
     await renderPage();
     await user.click(screen.getByRole("button", { name: /fetch missing lyrics/i }));
     expect(mutateMock).toHaveBeenCalledTimes(1);
