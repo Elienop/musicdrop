@@ -34,7 +34,9 @@ class ReorganizeMove(BaseModel):
 #: ``cross_unit`` = the destination already exists on disk and is held by
 #: something that is not one of this unit's own files (another album's track, a
 #: singleton, or a file the library does not know about).
-ReorganizeCollisionKind = Literal["intra_unit", "cross_unit"]
+#: ``art`` = the album art's computed destination is already held by something
+#: that is not the album's own art file.
+ReorganizeCollisionKind = Literal["intra_unit", "cross_unit", "art"]
 
 
 class ReorganizeCollision(BaseModel):

@@ -13,7 +13,10 @@ A tag edit RENAMES files, so it can manufacture a filename collision the user
 never asked for — and beets answers a taken destination by diverting the file to
 a ``.N`` sibling in silence. The move phase therefore refuses a track whose
 destination would divert (``reorganize.collisions_by_dest``, reused verbatim) and
-reports that on the track's own row, leaving its tag write standing; and every
+reports that on the track's own row, leaving its tag write standing. An ART
+collision refuses the whole move phase at once — the cover cannot follow, and
+moving the audio without it would strand or silently rename it — reported on
+every would-move row. And every
 move that does happen carries the track's ``.lrc``/``.txt`` lyric sidecars, which
 beets itself knows nothing about.
 
@@ -42,7 +45,7 @@ from app.beets.library import _album_genre, _genre_values, _require_id
 # An edit that renames a file performs the SAME move reorganize does, under a
 # different trigger — so it reuses reorganize's divert prediction and its sidecar
 # carry rather than growing second copies that would drift apart.
-from app.beets.reorganize import carry_sidecars, collisions_by_dest
+from app.beets.reorganize import art_preflight, carry_sidecars, collisions_by_dest
 from app.models.edit import (
     AlbumDiffSide,
     AlbumEditPreview,
@@ -304,6 +307,29 @@ def _plan_moves(
                     detail=detail,
                 )
             )
+    art_album = shadow if shadow is not None else lib.get_album(album_id)
+    if art_album is not None:
+        # The same survivor filter the apply runs: a track the refusal
+        # predicate already refused will never move, so its dir is not where
+        # beets will point the art — predicting from it refuses moves whose
+        # art target is actually free.
+        survivors = [(it, dest) for it, dest in dests if refusals.get(_require_id(it.id)) is None]
+        art = art_preflight(lib, art_album, survivors)
+        if art.collision is not None:
+            # The apply refuses its whole move phase on an art collision, so
+            # the preview promises no move rows either — every planned move
+            # becomes a refusal carrying the art detail.
+            for row in move_plan:
+                move_refusals.append(
+                    TrackMoveRefusal(
+                        item_id=row.item_id,
+                        track=row.track,
+                        old_path=row.old_path,
+                        new_path=row.new_path,
+                        detail=art.collision.detail,
+                    )
+                )
+            move_plan = []
     return move_plan, move_refusals
 
 
@@ -551,17 +577,81 @@ def _commit_edit(
             # Moves are their own phase, after every tag write: the collision
             # pre-flight has to see the whole batch's destinations — and the
             # names it is about to vacate — before the first file relocates.
-            moved, move_problems = _move_items(lib, items)
+            dests = [
+                (it, bytes(it.destination(basedir=lib.directory)))
+                for it in items
+                if _inside_library(lib, it)
+            ]
+            # The art dir must be predicted from the tracks that will actually
+            # move: beets picks it from the first item whose move CHANGED its
+            # path, and a track _move_refusals refuses never moves. On the
+            # clean path the same predicate runs again inside _move_items —
+            # bounded (a stat per destination), the price of the two phases
+            # agreeing.
+            refusals = _move_refusals(lib, dests)
+            survivors = [(it, dest) for it, dest in dests if _require_id(it.id) not in refusals]
+            art = art_preflight(lib, album, survivors)
+            if art.collision is not None:
+                # Refuse the WHOLE move phase: moving the audio while the art
+                # cannot follow would strand the cover in the vacated dir (a
+                # sweepable husk) or silently rename it. Tags still write;
+                # files keep their names. A track that ALSO holds its own
+                # collision keeps its OWN detail — the same per-track predicate
+                # the preview consults — and the rest carry the art detail.
+                move_problems = {}
+                for it, dest in dests:
+                    if bytes(it.path) == dest:
+                        continue
+                    iid = _require_id(it.id)
+                    move_problems[iid] = f"move refused: {refusals.get(iid, art.collision.detail)}"
+            else:
+                moved, move_problems = _move_items(lib, items)
             for iid, problem in move_problems.items():
                 errors[iid].append(problem)
         for item in items:
             item.store()
-        # Relocate the album art ONCE, after the items have moved+stored (so
-        # art_destination reads their new dir), then persist the new artpath.
+        # Relocate the album art ONCE, after the items have moved+stored, into
+        # the dir of the first item that actually moved, then persist the new
+        # artpath (the dir is passed to move_art explicitly).
         # Per-item with_album=True would have moved the art but dropped the
         # artpath update, stranding the cover at the pruned old folder.
+        # The dir now mirrors Album.move's own choice — the first item that
+        # actually moved — so the art follows the audio and matches what the
+        # pre-flight predicted.
         if moved:
-            album.move_art(MoveOperation.MOVE)
+            moved_dir = next(
+                (
+                    os.path.dirname(os.path.normpath(bytes(it.path)))
+                    for it in items
+                    if _require_id(it.id) in moved
+                ),
+                None,
+            )
+            album.move_art(MoveOperation.MOVE, item_dir=moved_dir)
+            # Backstop, same doctrine as reorganize_album's: a divert that
+            # slipped past the pre-flight (e.g. the predicted first mover was
+            # refused and the art followed a DIFFERENT dir where a stray sits)
+            # is reported on the moved rows. Recompute against moved_dir — the
+            # dir the art actually targeted — NOT the pre-flight's dir. Not
+            # move_problems: move_failures counts track moves, and the rows did
+            # move — the error text on the moved rows is the honest channel.
+            if moved_dir is not None and album.artpath:
+                landed = os.path.normpath(bytes(album.artpath))
+                # art_destination(landed, ...) only reads the EXTENSION from its
+                # first argument — the template rebuilds the base name.
+                try:
+                    expected = os.path.normpath(
+                        bytes(album.art_destination(landed, item_dir=moved_dir))
+                    )
+                except Exception:  # same degrade posture as the pre-flight
+                    expected = None
+                if expected is not None and landed != expected:
+                    for iid in moved:
+                        errors[iid].append(
+                            "album art: the computed name was already taken in the"
+                            " destination folder, so the art landed at"
+                            f" {os.path.basename(os.fsdecode(landed))!r}"
+                        )
             album.store(inherit=False)
     return written, moved, write_failures, move_problems
 
@@ -602,8 +692,10 @@ def apply_album_edit(
     Album fields fan to every track (beets ``inherit``); per-track fields
     override. Each track's write and move are isolated and reported, so one
     failure neither silently rolls back the album nor hides which file failed —
-    including the track whose tags were written while its move was refused
-    (``_move_items``), which is a partial success and says so on its own row.
+    including the track whose tags were written while its move was refused, which
+    is a partial success and says so on its own row: either its OWN collision
+    (``_move_items``) or the art collision that refuses the whole move phase,
+    in which case every would-move row carries the art detail.
     """
     from app.beets.library import get_album_detail
 
