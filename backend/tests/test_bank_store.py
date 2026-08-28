@@ -1,6 +1,7 @@
 """Bank store tests — pure filesystem, no beets, payloads kept None
 (ParkedAlbum construction is exercised by its own model/mapping tests)."""
 
+import json
 import logging
 import os
 from collections.abc import Iterator
@@ -14,6 +15,7 @@ from app.models.bank import BankDecision, BankItem
 from app.models.import_models import (
     AlbumChange,
     Candidate,
+    CandidateOption,
     DuplicatePrompt,
     IncomingAlbum,
     ParkedAlbum,
@@ -52,6 +54,127 @@ def test_get_rejects_traversal_ids(tmp_path: Path) -> None:
     _create(tmp_path)
     assert store.get_item(_bank(tmp_path), "../../etc/passwd") is None
     assert store.get_item(_bank(tmp_path), "nope") is None
+
+
+def _candidate(confidence: float) -> Candidate:
+    after = AlbumChange(
+        artist="Artist", album="Album", year=2000, label=None, country=None, media=None
+    )
+    return Candidate(
+        confidence=confidence,
+        recommendation=Recommendation.medium,
+        data_source="MusicBrainz",
+        data_url="https://mb/a1",
+        cover_after_url=None,
+        has_current_art=False,
+        changed_fields=[],
+        album_before=after,
+        album_after=after,
+        tracks=[],
+        missing=[],
+        unmatched=[],
+        options=[
+            CandidateOption(
+                index=0,
+                confidence=confidence,
+                data_source="MusicBrainz",
+                disambiguation=None,
+            )
+        ],
+    )
+
+
+def _create_parked(tmp_path: Path, *, confidence: float = 75.5) -> str:
+    item = store.create_item(
+        _bank(tmp_path),
+        folder="/library/A/B",
+        source="sweep",
+        reason="needs_review",
+        fingerprint="f" * 64,
+        artist="Artist",
+        album="Album",
+        recommendation="medium",
+        confidence=confidence,
+        parked=ParkedAlbum(album_index=0, folder="/library/A/B", candidate=_candidate(confidence)),
+    )
+    return item.id
+
+
+def test_poisoned_non_finite_row_loads_lists_and_rewrites_strict(tmp_path: Path) -> None:
+    """A row on disk with non-finite floats must load, list, and re-write clean.
+
+    Written by a pre-clamp producer (or hand-poisoned): NaN top-level, Infinity in the
+    required nested candidate, -Infinity in options[0]. Healing to 0.0 — not to None:
+    a null in a REQUIRED nested float would be a ValidationError, and this store's
+    corrupt-rows-read-as-absent posture would then drop the row from every listing —
+    the list is the only source of ids, so a vanished row is unreachable forever.
+    """
+    bank = _bank(tmp_path)
+    item_id = _create_parked(tmp_path)
+    raw_path = bank / f"{item_id}.json"
+    obj = json.loads(raw_path.read_text(encoding="utf-8"))
+    obj["confidence"] = float("nan")
+    obj["parked"]["candidate"]["confidence"] = float("inf")
+    obj["parked"]["candidate"]["options"][0]["confidence"] = float("-inf")
+    raw_path.write_text(json.dumps(obj), encoding="utf-8")
+    poisoned = raw_path.read_text(encoding="utf-8")
+    # All THREE non-finite tokens present on disk ("-Infinity" also satisfies a
+    # bare "Infinity" substring check, so each token is pinned by its full form).
+    assert '"confidence": NaN' in poisoned
+    assert '"confidence": Infinity' in poisoned
+    assert '"confidence": -Infinity' in poisoned
+
+    # LOADS with every poisoned float healed to the same 0.0 clamp.
+    healed = store.get_item(bank, item_id)
+    assert healed is not None
+    assert healed.confidence == 0.0
+    assert healed.parked is not None
+    assert healed.parked.candidate.confidence == 0.0
+    assert healed.parked.candidate.options[0].confidence == 0.0
+
+    # LISTS — the row did not vanish into the corrupt-row skip.
+    listed = [s.id for s in store.list_items(bank, offset=0, limit=50)]
+    assert item_id in listed
+
+    # And a re-write through the sink is strict RFC-JSON: healed 0.0s, no tokens.
+    updated = store.decide_item(bank, item_id, BankDecision(action="ignore"))
+    assert updated is not None
+    rewritten = raw_path.read_text(encoding="utf-8")
+    json.loads(
+        rewritten,
+        parse_constant=lambda token: pytest.fail(f"non-JSON token {token!r} in re-written row"),
+    )
+
+
+def test_sink_refuses_a_non_finite_confidence(tmp_path: Path) -> None:
+    """The disk sink fails loud: a non-finite float reaching it is a bug.
+
+    It must raise, not write a bare NaN token that no strict JSON parser reads
+    back — the clamp lives at the producer, the heal at the read path.
+    """
+    with pytest.raises(ValueError, match="Out of range float"):
+        store.create_item(
+            _bank(tmp_path),
+            folder="/library/A/B",
+            source="sweep",
+            reason="no_match",
+            fingerprint="f" * 64,
+            confidence=float("nan"),
+        )
+
+
+def test_sink_refuses_a_nested_non_finite_candidate_confidence(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Out of range float"):
+        store.create_item(
+            _bank(tmp_path),
+            folder="/library/A/B",
+            source="sweep",
+            reason="needs_review",
+            fingerprint="f" * 64,
+            parked=ParkedAlbum(
+                album_index=0, folder="/library/A/B", candidate=_candidate(float("inf"))
+            ),
+        )
 
 
 def test_list_paginates_and_filters(tmp_path: Path) -> None:

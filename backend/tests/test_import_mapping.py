@@ -3,8 +3,26 @@ from beets.autotag.distance import distance
 from beets.autotag.match import assign_items
 from beets.library import Item
 
+import app.beets.import_mapping as import_mapping
 from app.beets.import_mapping import coverartarchive_front_url, map_album_match
 from app.models.import_models import TrackChangeStatus
+
+
+def test_confidence_clamps_non_finite_distance_to_zero() -> None:
+    """A non-finite distance is an unusable distance — 0.0, never a token.
+
+    beets' Distance arithmetic yields ``nan`` on non-finite weight routes
+    (``match.distance_weights: {album: .nan}`` survives ``POST /api/config/save``
+    straight to beets) and a contrived overflow can still yield ``±inf``. A bare
+    NaN/Infinity token would be invalid JSON on the wire and in the bank row.
+    """
+    assert import_mapping._confidence(float("nan")) == 0.0
+    assert import_mapping._confidence(float("inf")) == 0.0
+    assert import_mapping._confidence(float("-inf")) == 0.0
+    # normal distances are unchanged
+    assert import_mapping._confidence(0.0) == 100.0
+    assert import_mapping._confidence(0.5) == 50.0
+    assert import_mapping._confidence(1.0) == 0.0
 
 
 def test_caa_url_for_musicbrainz_release() -> None:

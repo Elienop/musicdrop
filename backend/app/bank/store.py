@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import threading
 import uuid
@@ -185,14 +186,44 @@ def _row_text(item: BankItem) -> str:
     Stdlib ``json`` (not pydantic's Rust serde) because ``model_dump_json``
     rejects lone surrogates a legal ``os.fsdecode`` folder can carry, and
     ``ensure_ascii`` keeps the output pure ASCII — UTF-8-safe for the writer.
+
+    ``allow_nan=False`` makes the sink FAIL LOUD: with the producer clamping
+    (``_confidence``) and the read path healing (``_parse_row``), any non-finite
+    reaching here is a bug and must raise rather than write a bare NaN/Infinity
+    token that no strict JSON parser reads back.
     """
-    return json.dumps(item.model_dump(mode="json"), ensure_ascii=True, indent=2)
+    return json.dumps(item.model_dump(mode="json"), ensure_ascii=True, indent=2, allow_nan=False)
+
+
+def _finite_payload(value: object) -> object:
+    """Heal non-finite floats in a parsed row to 0.0, recursively.
+
+    ONE policy for every float in a row — the Optional top-level ``confidence``
+    included: a non-finite VALUE becomes 0.0 ("no confidence"), the same clamp
+    the producer applies. ``None`` stays ``None`` — healing never invents a
+    value. Deliberately not None: a ``null`` in a REQUIRED nested candidate
+    float would be a ValidationError, and this store's corrupt-rows-read-as-
+    absent posture would then drop the row from every listing — and the list
+    is the only source of ids, so a vanished row is unreachable forever.
+    """
+    if isinstance(value, dict):
+        return {key: _finite_payload(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_finite_payload(child) for child in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return 0.0
+    return value
 
 
 def _parse_row(raw: str) -> BankItem:
     """Lossless row parse: stdlib ``json.loads`` restores lone surrogates that
-    ``model_dump_json``-era files and current rows both escape as ``\\uXXXX``."""
-    return BankItem.model_validate(json.loads(raw))
+    ``model_dump_json``-era files and current rows both escape as ``\\uXXXX``.
+
+    A row poisoned with non-finite floats (written by a pre-clamp producer)
+    still LOADS and LISTS: ``json.loads`` admits the NaN/Infinity/-Infinity
+    tokens and :func:`_finite_payload` clamps them to 0.0 before validation.
+    """
+    return BankItem.model_validate(_finite_payload(json.loads(raw)))
 
 
 def _write(bank_dir: Path, item: BankItem) -> None:
