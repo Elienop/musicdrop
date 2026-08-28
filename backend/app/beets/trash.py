@@ -186,7 +186,10 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path) -> str:
     # ``moved[0]``, not ``items[0]``: with a skipped first item the latter still
     # points into the music dir, so the returned "Trash folder" would name the
     # place the album was never moved from.
-    first = moved[0] if moved else (items[0] if items else None)
+    if moved:
+        first = moved[0]
+    else:
+        first = items[0] if items else None
     trash_path = (
         os.path.dirname(_abs_path(lib, first.path)) if first is not None else str(container)
     )

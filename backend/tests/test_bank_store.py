@@ -152,9 +152,10 @@ def test_sink_refuses_a_non_finite_confidence(tmp_path: Path) -> None:
     It must raise, not write a bare NaN token that no strict JSON parser reads
     back — the clamp lives at the producer, the heal at the read path.
     """
+    bank = _bank(tmp_path)
     with pytest.raises(ValueError, match="Out of range float"):
         store.create_item(
-            _bank(tmp_path),
+            bank,
             folder="/library/A/B",
             source="sweep",
             reason="no_match",
@@ -164,16 +165,16 @@ def test_sink_refuses_a_non_finite_confidence(tmp_path: Path) -> None:
 
 
 def test_sink_refuses_a_nested_non_finite_candidate_confidence(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    parked = ParkedAlbum(album_index=0, folder="/library/A/B", candidate=_candidate(float("inf")))
     with pytest.raises(ValueError, match="Out of range float"):
         store.create_item(
-            _bank(tmp_path),
+            bank,
             folder="/library/A/B",
             source="sweep",
             reason="needs_review",
             fingerprint="f" * 64,
-            parked=ParkedAlbum(
-                album_index=0, folder="/library/A/B", candidate=_candidate(float("inf"))
-            ),
+            parked=parked,
         )
 
 
@@ -1050,13 +1051,14 @@ def test_delete_refuses_corrupt_row_the_runner_is_applying(tmp_path: Path) -> No
     so 'actively applying' is derived from the QUEUE's own state (the
     write-through index the runner's queued->applying claim wrote), never
     from the row."""
+    bank = _bank(tmp_path)
     item_id = _create(tmp_path)
-    store.decide_item(_bank(tmp_path), item_id, BankDecision(action="asis"))
-    store.set_status(_bank(tmp_path), item_id, "applying")  # the runner's claim
-    (_bank(tmp_path) / f"{item_id}.json").write_bytes(_NON_UTF8)
+    store.decide_item(bank, item_id, BankDecision(action="asis"))
+    store.set_status(bank, item_id, "applying")  # the runner's claim
+    (bank / f"{item_id}.json").write_bytes(_NON_UTF8)
     with pytest.raises(store.InvalidTransitionError):
-        store.delete_item(_bank(tmp_path), item_id)
-    assert (_bank(tmp_path) / f"{item_id}.json").exists()  # still there, not purged
+        store.delete_item(bank, item_id)
+    assert (bank / f"{item_id}.json").exists()  # still there, not purged
 
 
 def test_bulk_delete_skips_corrupt_and_completes_the_rest(tmp_path: Path) -> None:

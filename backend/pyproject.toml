@@ -43,7 +43,7 @@ target-version = "py311"
 # S324 locks Sonar S4790 (weak hash without usedforsecurity=False). The
 # S2612 chmod family has NO ruff twin (S103's threshold ignores o+r bits) —
 # the server scan is the only net for that one.
-select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF", "PT001", "PT012", "PT018", "S324"]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF", "PT001", "PT012", "PT018", "PIE790", "S324"]
 
 [tool.mypy]
 python_version = "3.11"

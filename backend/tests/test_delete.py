@@ -180,8 +180,9 @@ def test_delete_album_op_503_root_unavailable(duplicates_lib: Library, tmp_path:
         app = _App()
 
     req = _Req()
+    coro = delete_album_op(req, album_id)  # type: ignore[arg-type]  # duck-typed stub
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(delete_album_op(req, album_id))  # type: ignore[arg-type]  # duck-typed stub
+        asyncio.run(coro)
 
     assert ei.value.status_code == 503
     assert ei.value.detail == "Library folder unavailable. Is the music share mounted?"
@@ -207,8 +208,9 @@ def test_delete_artist_op_503_root_unavailable(duplicates_lib: Library, tmp_path
         app = _App()
 
     req = _Req()
+    coro = delete_artist_op(req, "Radiohead")  # type: ignore[arg-type]  # duck-typed stub
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(delete_artist_op(req, "Radiohead"))  # type: ignore[arg-type]  # duck-typed stub
+        asyncio.run(coro)
 
     assert ei.value.status_code == 503
     assert ei.value.detail == "Library folder unavailable. Is the music share mounted?"
@@ -279,8 +281,9 @@ def test_delete_artist_op_mid_flight_drop_reports_partial_progress(
         app = _App()
 
     req = _Req()
+    coro = delete_artist_op(req, "Radiohead")  # type: ignore[arg-type]  # duck-typed stub
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(delete_artist_op(req, "Radiohead"))  # type: ignore[arg-type]  # duck-typed stub
+        asyncio.run(coro)
 
     assert ei.value.status_code == 500  # NOT the nothing-was-dropped 503
     detail = ei.value.detail
