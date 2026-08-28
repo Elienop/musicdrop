@@ -1331,3 +1331,24 @@ def test_patch_rename_with_lone_surrogate_name_is_2xx(client: TestClient) -> Non
     loaded = store.get_playlist(_dir(), pid)
     assert loaded is not None
     assert loaded.name == "New\udce9"
+
+
+def test_delete_a_corrupt_playlist_is_204_and_removes_the_file(client: TestClient) -> None:
+    """A present-but-corrupt record is still removable (not a 500): the
+    read-before-delete tolerates an unreadable record (skips the Plex
+    cascade) and the unlink lands. Non-UTF-8 bytes: the exact 500 class."""
+    pid = client.post("/api/playlists", json={"name": "Corrupt"}).json()["id"]
+    (_dir() / f"{pid}.json").write_bytes(b"\x00\xe9\xff")
+    response = client.delete(f"/api/playlists/{pid}")
+    assert response.status_code == 204
+    assert not (_dir() / f"{pid}.json").exists()
+
+
+def test_routes_on_a_corrupt_playlist_404_not_500(client: TestClient) -> None:
+    """A corrupt record reads as absent: every route that reads through
+    get_playlist 404s instead of 500ing."""
+    pid = client.post("/api/playlists", json={"name": "Corrupt"}).json()["id"]
+    (_dir() / f"{pid}.json").write_bytes(b"\x00\xe9\xff")
+    assert client.get(f"/api/playlists/{pid}").status_code == 404
+    assert client.patch(f"/api/playlists/{pid}", json={"name": "X"}).status_code == 404
+    assert client.post(f"/api/playlists/{pid}/tracks", json={"track_ids": [1]}).status_code == 404

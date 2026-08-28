@@ -28,6 +28,7 @@ from app.models.config_editor import (
     ValidateRequest,
     ValidateResponse,
     ValidationErrorItem,
+    import_advisories,
 )
 from app.models.errors import (
     ConfigSaveConflictDetail,
@@ -118,9 +119,20 @@ def validate_config(req: ValidateRequest) -> ValidateResponse:
                     line=(mark.line + 1) if mark else None,
                     column=mark.column if mark else None,
                 )
-            ]
+            ],
+            # Nothing parsed, so there is no config to advise on. The key is
+            # still sent: ``advisories`` is a required field, and a client that
+            # had to test for its presence would be defending against a shape
+            # this route never produces.
+            advisories=[],
         )
-    return ValidateResponse(errors=validate_known_keys(data))
+    # Two independent channels: an advisory is a valid setting MusicDrop
+    # overrides, so it is computed from the same document but never merged into
+    # ``errors`` (the editor paints that list red).
+    return ValidateResponse(
+        errors=validate_known_keys(data),
+        advisories=import_advisories(data),
+    )
 
 
 @router.post(

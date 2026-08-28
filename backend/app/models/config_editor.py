@@ -13,10 +13,11 @@ re-emit. Unknown beets / plugin keys survive on disk in the ruamel
 from __future__ import annotations
 
 import os
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
 
 
 def loc_to_dot_sep(loc: tuple[str | int, ...]) -> str:
@@ -139,6 +140,134 @@ class ValidationErrorItem(BaseModel):
     column: int | None = None
 
 
+class ConfigAdvisory(BaseModel):
+    """One row of the config editor's ADVISORY channel — a valid setting that
+    MusicDrop-driven imports force or discard.
+
+    Deliberately NOT a :class:`ValidationErrorItem`: the editor paints the error
+    list red in CodeMirror's lint gutter, and every config an advisory fires on
+    is valid YAML that both this app and beets accept. Merging the two channels
+    would make a correct config look broken.
+
+    No ``line``/``column``: resolving those needs the ruamel ``CommentedMap``
+    accessor that lives behind the beets adapter (``_line_col_for_path``), and
+    this module is import-clean of beets. ``key`` is the dotted path in the same
+    shape as ``ValidationErrorItem.loc`` (e.g. ``"import.autotag"``), which is
+    enough for the panel to name the setting.
+    """
+
+    key: str
+    """Dotted path of the setting the advisory is about, e.g. ``"import.autotag"``."""
+
+    message: str
+    """One-or-two-sentence explanation: what MusicDrop forces, and that a CLI
+    ``beet import`` outside MusicDrop still honours the value."""
+
+
+def _autotag_advisory(section: ImportSection) -> str | None:
+    if section.autotag:
+        return None
+    return (
+        "MusicDrop forces import.autotag on for every import it runs: with autotag off"
+        " beets drops the only stage that reports an album's outcome, so imports would"
+        " finish with nothing recorded. This value has no effect in the app —"
+        " `beet import` from the command line still honours it."
+    )
+
+
+def _duplicate_action_advisory(section: ImportSection) -> str | None:
+    if section.duplicate_action == "ask":
+        return None
+    return (
+        'MusicDrop forces import.duplicate_action to "ask" for every import it runs, so'
+        " duplicates come back to the review queue instead of being resolved unattended."
+        f' Your "{section.duplicate_action}" is discarded in the app — `beet import` from'
+        " the command line still honours it."
+    )
+
+
+def _singletons_advisory(section: ImportSection) -> str | None:
+    if not section.singletons:
+        return None
+    return (
+        "MusicDrop forces import.singletons off on every import path it runs, review"
+        " imports included: only album-shaped tasks can be reviewed, banked or tracked."
+        " This value has no effect in the app — `beet import` from the command line"
+        " still honours it."
+    )
+
+
+def _incremental_advisory(section: ImportSection) -> str | None:
+    if not section.incremental:
+        return None
+    return (
+        "MusicDrop honours import.incremental, and that is the trap: beets' taghistory"
+        " records every folder a sweep finished OR skipped, so re-importing one of those"
+        " folders from MusicDrop is skipped before anything runs and reports nothing."
+        " (A sweep forces it on and a bank apply forces it off, whatever this says.)"
+        " `beet import` from the command line behaves the same way."
+    )
+
+
+#: The advisory rules, in the order they are reported. Each entry is a key under
+#: ``import:`` plus a predicate over the parsed section that returns the message
+#: or ``None``.
+#:
+#: These are DELIBERATE semantic rules, not tightened types. ``validate_known_keys``
+#: already raises for an invalid value on any modeled key; nothing fires for
+#: ``autotag: false`` because ``false`` is a perfectly valid bool. What the user
+#: has no way to learn is that MusicDrop overrides it (``run_import_worker``
+#: snapshots, forces and restores these keys around every session —
+#: ``incremental`` excepted: it is honoured on the default review path and
+#: forced only for sweep/bank-apply runs, which is what its advisory says).
+_IMPORT_ADVISORY_RULES: Final[tuple[tuple[str, Callable[[ImportSection], str | None]], ...]] = (
+    ("autotag", _autotag_advisory),
+    ("duplicate_action", _duplicate_action_advisory),
+    ("singletons", _singletons_advisory),
+    ("incremental", _incremental_advisory),
+)
+
+
+def import_advisories(data: object) -> list[ConfigAdvisory]:
+    """Collect advisories for ``import:`` keys MusicDrop overrides.
+
+    ``data`` is the parsed YAML root — typed ``object`` rather than
+    ``CommentedMap`` on purpose: ``parse_yaml("")`` returns ``None`` for a
+    cleared editor buffer, and a document whose root is a list or a scalar
+    parses fine too. Every non-mapping shape simply has no ``import:`` section
+    to advise on, and the errors channel is what tells the user about it.
+
+    Two rules about when this stays silent:
+
+    * **Only keys the config actually SETS.** An omitted key is not an opinion,
+      so a config that never mentions these four gets zero advisories. Presence
+      is read from the raw mapping — ``ImportSection``'s defaults would make
+      every config look like it had set all seven.
+    * **Only VALID values.** Each key is validated on its own through
+      ``ImportSection`` (which coerces YAML 1.1 ``no``/``yes`` the same way the
+      schema pass does). A value that fails is left alone: ``validate_known_keys``
+      is already reporting it on the errors channel, and one bad key must not
+      mute the rules for its siblings.
+    """
+    if not isinstance(data, Mapping):
+        return []
+    section = data.get("import")
+    if not isinstance(section, Mapping):
+        return []
+    out: list[ConfigAdvisory] = []
+    for key, rule in _IMPORT_ADVISORY_RULES:
+        if key not in section:
+            continue
+        try:
+            parsed = ImportSection.model_validate({key: section[key]})
+        except ValidationError:
+            continue
+        message = rule(parsed)
+        if message is not None:
+            out.append(ConfigAdvisory(key=f"import.{key}", message=message))
+    return out
+
+
 class SaveRequest(BaseModel):
     """Body of ``POST /api/config/save``. ``base_sha256`` is the CAS token —
     echoed back from whatever snapshot the client loaded; mismatch -> 409
@@ -167,9 +296,20 @@ class ValidateResponse(BaseModel):
     frontend codegen (T10's openapi-typescript pass) then produces a clean
     ``{errors: ValidationErrorItem[]}`` TS type instead of a generic
     ``Record<string, ValidationErrorItem[]>``.
+
+    TWO channels, and the split is the point. ``errors`` is what CodeMirror
+    paints red; ``advisories`` is what it must not. A config that only trips an
+    advisory is VALID and saves cleanly.
     """
 
     errors: list[ValidationErrorItem]
+
+    advisories: list[ConfigAdvisory]
+    """Valid settings MusicDrop-driven imports override. Required rather than
+    defaulted so the generated TypeScript is ``advisories:`` and not
+    ``advisories?:`` — the route always sends the key, including on the YAML
+    parse-error path, so an optional type would make readers defend against an
+    absence that cannot happen."""
 
 
 class NamingRuleInput(BaseModel):

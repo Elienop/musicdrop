@@ -12,6 +12,14 @@ export type SaveRequest = components["schemas"]["SaveRequest"];
 export type ValidateRequest = components["schemas"]["ValidateRequest"];
 /** One row of the lint output (generated; the editor's gutter consumes it). */
 export type ValidationErrorItem = components["schemas"]["ValidationErrorItem"];
+/** Both channels of `POST /api/config/validate` (generated contract). */
+export type ValidateResponse = components["schemas"]["ValidateResponse"];
+/**
+ * One row of the ADVISORY channel (generated): a VALID setting that
+ * MusicDrop-driven imports force or discard. `key` is the dotted config path
+ * ("import.autotag"); `message` is the backend's copy, rendered verbatim.
+ */
+export type ConfigAdvisory = components["schemas"]["ConfigAdvisory"];
 
 /** A structured error for the editor's mutation failures.
  *
@@ -125,18 +133,26 @@ export function useApplyConfig() {
 /**
  * Lint the working YAML (`POST /api/config/validate`).
  *
- * Returns the `errors` array directly (never the wrapping `ValidateResponse`)
- * because the only caller — CodeMirror's async `linter()` source — needs a
- * flat list keyed off `line`/`column` for the gutter. A clean validate is the
- * empty array, NOT a thrown error: the backend always 200s on a successful
- * parse, leaving lint failures as a data shape rather than an exception. Hard
- * transport errors (network down, 5xx) still throw so React Query reports them.
+ * Returns the WHOLE {@link ValidateResponse}, because the endpoint answers on
+ * two independent channels and they have different destinations. `errors` is
+ * what CodeMirror's async `linter()` source turns into gutter diagnostics;
+ * `advisories` is what it must NOT — an advisory fires on a perfectly valid
+ * setting that MusicDrop-driven imports force or discard, so painting one red
+ * would make a correct config look broken. The page lifts advisories into
+ * React state and renders them beside the editor instead.
+ *
+ * (This hook used to narrow to `data.errors` on the grounds that the linter
+ * was the only caller. That is no longer true, and narrowing here would
+ * discard the advisory channel before any caller could reach it.)
+ *
+ * A clean validate is two empty arrays, NOT a thrown error: the backend always
+ * 200s on a successful parse, leaving lint failures as a data shape rather
+ * than an exception. Hard transport errors (network down, 5xx) still throw so
+ * React Query reports them.
  */
 export function useValidateConfig() {
   return useMutation({
-    mutationFn: async (
-      req: ValidateRequest,
-    ): Promise<ValidationErrorItem[]> => {
+    mutationFn: async (req: ValidateRequest): Promise<ValidateResponse> => {
       const { data, error, response } = await client.POST(
         "/api/config/validate",
         {
@@ -146,7 +162,7 @@ export function useValidateConfig() {
       if (!response.ok || !data) {
         throw configOpError("Validate failed", response.status, error);
       }
-      return data.errors;
+      return data;
     },
   });
 }

@@ -2718,6 +2718,28 @@ export interface components {
             data_url?: string | null;
         };
         /**
+         * ConfigAdvisory
+         * @description One row of the config editor's ADVISORY channel — a valid setting that
+         *     MusicDrop-driven imports force or discard.
+         *
+         *     Deliberately NOT a :class:`ValidationErrorItem`: the editor paints the error
+         *     list red in CodeMirror's lint gutter, and every config an advisory fires on
+         *     is valid YAML that both this app and beets accept. Merging the two channels
+         *     would make a correct config look broken.
+         *
+         *     No ``line``/``column``: resolving those needs the ruamel ``CommentedMap``
+         *     accessor that lives behind the beets adapter (``_line_col_for_path``), and
+         *     this module is import-clean of beets. ``key`` is the dotted path in the same
+         *     shape as ``ValidationErrorItem.loc`` (e.g. ``"import.autotag"``), which is
+         *     enough for the panel to name the setting.
+         */
+        ConfigAdvisory: {
+            /** Key */
+            key: string;
+            /** Message */
+            message: string;
+        };
+        /**
          * ConfigSaveConflict
          * @description What the config editor sends back when its compare-and-swap loses.
          *
@@ -4964,10 +4986,16 @@ export interface components {
          *     frontend codegen (T10's openapi-typescript pass) then produces a clean
          *     ``{errors: ValidationErrorItem[]}`` TS type instead of a generic
          *     ``Record<string, ValidationErrorItem[]>``.
+         *
+         *     TWO channels, and the split is the point. ``errors`` is what CodeMirror
+         *     paints red; ``advisories`` is what it must not. A config that only trips an
+         *     advisory is VALID and saves cleanly.
          */
         ValidateResponse: {
             /** Errors */
             errors: components["schemas"]["ValidationErrorItem"][];
+            /** Advisories */
+            advisories: components["schemas"]["ConfigAdvisory"][];
         };
         /** ValidationError */
         ValidationError: {

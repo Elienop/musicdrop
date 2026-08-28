@@ -76,6 +76,22 @@ def _rel_dir(lib: Any, item: Any) -> str:
     return os.path.dirname(_rel_path(lib, item)) or "."
 
 
+def _common_rel_dir(first: str, other: str) -> str:
+    """Deepest folder shared by two item dirs (the album root for multi-disc).
+
+    commonpath over the REL dirs — not full paths — so the result stays a
+    display-relative path. POSIX commonpath treats "." (a file at the library
+    root) as the root itself and yields ``""`` for it; ``or "."`` keeps the
+    "." display. An escaping relpath (a file outside the music dir) may
+    render as-is; the rare ValueError (mixed roots) falls back to the dir
+    seen first.
+    """
+    try:
+        return os.path.commonpath([first, other]) or "."
+    except ValueError:
+        return first
+
+
 def _file_missing(item: Any) -> bool:
     return not item.path or not os.path.exists(item.path)
 
@@ -119,11 +135,14 @@ def _scan_item(lib: Any, item: Any, acc: _PlanAccumulator) -> None:
     album_id = item.album_id
     if album_id is not None:
         acc.album_totals[album_id] = acc.album_totals.get(album_id, 0) + 1
-        if album_id not in acc.album_dirs:
-            # First item's folder stands in for the row: a multi-disc
-            # layout shows its first disc dir, which still separates
-            # label twins — the list's whole purpose.
-            acc.album_dirs[album_id] = _rel_dir(lib, item)
+        rel_dir = _rel_dir(lib, item)
+        if album_id in acc.album_dirs:
+            # Items can span folders (a disc-bearing ``paths:`` template or a
+            # mid-reorganize crash split): fold toward the deepest common
+            # dir so the row shows the album ROOT, not the first disc's.
+            acc.album_dirs[album_id] = _common_rel_dir(acc.album_dirs[album_id], rel_dir)
+        else:
+            acc.album_dirs[album_id] = rel_dir
     if _file_missing(item):
         acc.will_remove += 1
         if album_id is not None:

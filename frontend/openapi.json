@@ -9991,6 +9991,25 @@
         "title": "CandidateOption",
         "description": "A ranked alternative release from ``task.candidates``.\n\nThe switcher in the review screen lists these; ``index`` is the position in\nthe beets candidate list and is what a choice references. ``release_id`` is\nthe metadata backend's id for the release (``AlbumInfo.album_id`` \u2014 an\nMBID for MusicBrainz, the deezer id for Deezer): the bank's apply runner\npins ``import.search_ids`` to it so the apply imports exactly the release\nthe user chose. None for sources without an id (the apply then falls back\nto an unpinned lookup's top candidate)."
       },
+      "ConfigAdvisory": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "message"
+        ],
+        "title": "ConfigAdvisory",
+        "description": "One row of the config editor's ADVISORY channel \u2014 a valid setting that\nMusicDrop-driven imports force or discard.\n\nDeliberately NOT a :class:`ValidationErrorItem`: the editor paints the error\nlist red in CodeMirror's lint gutter, and every config an advisory fires on\nis valid YAML that both this app and beets accept. Merging the two channels\nwould make a correct config look broken.\n\nNo ``line``/``column``: resolving those needs the ruamel ``CommentedMap``\naccessor that lives behind the beets adapter (``_line_col_for_path``), and\nthis module is import-clean of beets. ``key`` is the dotted path in the same\nshape as ``ValidationErrorItem.loc`` (e.g. ``\"import.autotag\"``), which is\nenough for the panel to name the setting."
+      },
       "ConfigSaveConflict": {
         "properties": {
           "detail": {
@@ -15109,14 +15128,22 @@
             },
             "type": "array",
             "title": "Errors"
+          },
+          "advisories": {
+            "items": {
+              "$ref": "#/components/schemas/ConfigAdvisory"
+            },
+            "type": "array",
+            "title": "Advisories"
           }
         },
         "type": "object",
         "required": [
-          "errors"
+          "errors",
+          "advisories"
         ],
         "title": "ValidateResponse",
-        "description": "Response of ``POST /api/config/validate``.\n\nA named model rather than the looser ``dict[str, list[ValidationErrorItem]]``\nso OpenAPI emits a ``$ref`` to a concrete ``ValidateResponse`` schema. The\nfrontend codegen (T10's openapi-typescript pass) then produces a clean\n``{errors: ValidationErrorItem[]}`` TS type instead of a generic\n``Record<string, ValidationErrorItem[]>``."
+        "description": "Response of ``POST /api/config/validate``.\n\nA named model rather than the looser ``dict[str, list[ValidationErrorItem]]``\nso OpenAPI emits a ``$ref`` to a concrete ``ValidateResponse`` schema. The\nfrontend codegen (T10's openapi-typescript pass) then produces a clean\n``{errors: ValidationErrorItem[]}`` TS type instead of a generic\n``Record<string, ValidationErrorItem[]>``.\n\nTWO channels, and the split is the point. ``errors`` is what CodeMirror\npaints red; ``advisories`` is what it must not. A config that only trips an\nadvisory is VALID and saves cleanly."
       },
       "ValidationError": {
         "properties": {

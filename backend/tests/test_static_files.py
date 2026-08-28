@@ -6,8 +6,10 @@ checks the real app: with static_dir unset (the test default), no SPA
 catch-all is registered.
 """
 
+import logging
 from pathlib import Path
 
+import pytest
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 
@@ -78,6 +80,33 @@ def test_missing_dir_is_a_noop(tmp_path: Path) -> None:
     mount_static(app, str(tmp_path / "absent"))
     client = TestClient(app)
     assert client.get("/").status_code == 404
+
+
+def test_dir_without_index_warns_naming_path_and_cure(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A truthy static_dir already flipped the app to the production posture
+    # (dev origins refused) — an empty dist dir must not stay silent about
+    # the consequence (no SPA served). One WARNING naming the configured
+    # path and the realistic stale-env cause; still nothing mounted.
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    app = FastAPI()
+    with caplog.at_level(logging.WARNING, logger="app.static_files"):
+        mount_static(app, str(dist))
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert str(dist) in warnings[0].message
+    assert "MUSICDROP_STATIC_DIR" in warnings[0].message
+    assert "dev origins" in warnings[0].message  # the consequence: prod posture, no SPA
+    client = TestClient(app)
+    assert client.get("/").status_code == 404  # fail-closed, as before
+
+
+def test_dir_with_index_logs_no_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="app.static_files"):
+        mount_static(FastAPI(), str(_dist(tmp_path)))
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 def test_real_app_has_no_spa_catchall_in_dev() -> None:

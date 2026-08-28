@@ -1,6 +1,8 @@
 """Bank store tests — pure filesystem, no beets, payloads kept None
 (ParkedAlbum construction is exercised by its own model/mapping tests)."""
 
+import json
+import logging
 import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -13,6 +15,7 @@ from app.models.bank import BankDecision, BankItem
 from app.models.import_models import (
     AlbumChange,
     Candidate,
+    CandidateOption,
     DuplicatePrompt,
     IncomingAlbum,
     ParkedAlbum,
@@ -51,6 +54,127 @@ def test_get_rejects_traversal_ids(tmp_path: Path) -> None:
     _create(tmp_path)
     assert store.get_item(_bank(tmp_path), "../../etc/passwd") is None
     assert store.get_item(_bank(tmp_path), "nope") is None
+
+
+def _candidate(confidence: float) -> Candidate:
+    after = AlbumChange(
+        artist="Artist", album="Album", year=2000, label=None, country=None, media=None
+    )
+    return Candidate(
+        confidence=confidence,
+        recommendation=Recommendation.medium,
+        data_source="MusicBrainz",
+        data_url="https://mb/a1",
+        cover_after_url=None,
+        has_current_art=False,
+        changed_fields=[],
+        album_before=after,
+        album_after=after,
+        tracks=[],
+        missing=[],
+        unmatched=[],
+        options=[
+            CandidateOption(
+                index=0,
+                confidence=confidence,
+                data_source="MusicBrainz",
+                disambiguation=None,
+            )
+        ],
+    )
+
+
+def _create_parked(tmp_path: Path, *, confidence: float = 75.5) -> str:
+    item = store.create_item(
+        _bank(tmp_path),
+        folder="/library/A/B",
+        source="sweep",
+        reason="needs_review",
+        fingerprint="f" * 64,
+        artist="Artist",
+        album="Album",
+        recommendation="medium",
+        confidence=confidence,
+        parked=ParkedAlbum(album_index=0, folder="/library/A/B", candidate=_candidate(confidence)),
+    )
+    return item.id
+
+
+def test_poisoned_non_finite_row_loads_lists_and_rewrites_strict(tmp_path: Path) -> None:
+    """A row on disk with non-finite floats must load, list, and re-write clean.
+
+    Written by a pre-clamp producer (or hand-poisoned): NaN top-level, Infinity in the
+    required nested candidate, -Infinity in options[0]. Healing to 0.0 — not to None:
+    a null in a REQUIRED nested float would be a ValidationError, and this store's
+    corrupt-rows-read-as-absent posture would then drop the row from every listing —
+    the list is the only source of ids, so a vanished row is unreachable forever.
+    """
+    bank = _bank(tmp_path)
+    item_id = _create_parked(tmp_path)
+    raw_path = bank / f"{item_id}.json"
+    obj = json.loads(raw_path.read_text(encoding="utf-8"))
+    obj["confidence"] = float("nan")
+    obj["parked"]["candidate"]["confidence"] = float("inf")
+    obj["parked"]["candidate"]["options"][0]["confidence"] = float("-inf")
+    raw_path.write_text(json.dumps(obj), encoding="utf-8")
+    poisoned = raw_path.read_text(encoding="utf-8")
+    # All THREE non-finite tokens present on disk ("-Infinity" also satisfies a
+    # bare "Infinity" substring check, so each token is pinned by its full form).
+    assert '"confidence": NaN' in poisoned
+    assert '"confidence": Infinity' in poisoned
+    assert '"confidence": -Infinity' in poisoned
+
+    # LOADS with every poisoned float healed to the same 0.0 clamp.
+    healed = store.get_item(bank, item_id)
+    assert healed is not None
+    assert healed.confidence == 0.0
+    assert healed.parked is not None
+    assert healed.parked.candidate.confidence == 0.0
+    assert healed.parked.candidate.options[0].confidence == 0.0
+
+    # LISTS — the row did not vanish into the corrupt-row skip.
+    listed = [s.id for s in store.list_items(bank, offset=0, limit=50)]
+    assert item_id in listed
+
+    # And a re-write through the sink is strict RFC-JSON: healed 0.0s, no tokens.
+    updated = store.decide_item(bank, item_id, BankDecision(action="ignore"))
+    assert updated is not None
+    rewritten = raw_path.read_text(encoding="utf-8")
+    json.loads(
+        rewritten,
+        parse_constant=lambda token: pytest.fail(f"non-JSON token {token!r} in re-written row"),
+    )
+
+
+def test_sink_refuses_a_non_finite_confidence(tmp_path: Path) -> None:
+    """The disk sink fails loud: a non-finite float reaching it is a bug.
+
+    It must raise, not write a bare NaN token that no strict JSON parser reads
+    back — the clamp lives at the producer, the heal at the read path.
+    """
+    with pytest.raises(ValueError, match="Out of range float"):
+        store.create_item(
+            _bank(tmp_path),
+            folder="/library/A/B",
+            source="sweep",
+            reason="no_match",
+            fingerprint="f" * 64,
+            confidence=float("nan"),
+        )
+
+
+def test_sink_refuses_a_nested_non_finite_candidate_confidence(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Out of range float"):
+        store.create_item(
+            _bank(tmp_path),
+            folder="/library/A/B",
+            source="sweep",
+            reason="needs_review",
+            fingerprint="f" * 64,
+            parked=ParkedAlbum(
+                album_index=0, folder="/library/A/B", candidate=_candidate(float("inf"))
+            ),
+        )
 
 
 def test_list_paginates_and_filters(tmp_path: Path) -> None:
@@ -868,3 +992,135 @@ def test_legacy_pydantic_json_row_still_loads(tmp_path: Path) -> None:
     assert item.banked_at == legacy.banked_at
     store.reset_bank_index()
     assert [s.id for s in store.list_items(bank, offset=0, limit=50)] == [legacy.id]
+
+
+# Non-UTF-8 bytes: the 500 class the "{not json" fixtures miss — those are
+# valid UTF-8 and only exercise JSONDecodeError. UnicodeDecodeError is a
+# ValueError, NOT an OSError, so an OSError-only read guard lets it 500.
+_NON_UTF8 = b"\x00\xe9\xff"
+
+
+def test_non_utf8_get_returns_none(tmp_path: Path) -> None:
+    """One read posture: a non-UTF-8 row reads as ABSENT, never a 500."""
+    item_id = _create(tmp_path)
+    (_bank(tmp_path) / f"{item_id}.json").write_bytes(_NON_UTF8)
+    assert store.get_item(_bank(tmp_path), item_id) is None
+
+
+def test_non_utf8_list_skips_and_logs(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Loud skip: the row vanishes from the list AND the skip is logged,
+    naming the file and the reason — a silent skip reads as 'deleted'.
+
+    The index is write-through (built while the healthy row was created), so
+    a rebuild is forced for the fresh-scan path — ``_all_items`` — where the
+    skip (and this log) actually happens."""
+    _create(tmp_path)
+    (_bank(tmp_path) / "corrupt.json").write_bytes(_NON_UTF8)
+    store.reset_bank_index()
+    with caplog.at_level(logging.WARNING, logger="app.bank.store"):
+        rows = store.list_items(_bank(tmp_path), offset=0, limit=10)
+    assert len(rows) == 1
+    warnings = [
+        r for r in caplog.records if r.name == "app.bank.store" and r.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "corrupt.json" in warnings[0].getMessage()
+
+
+def test_delete_purges_present_but_corrupt_row(tmp_path: Path) -> None:
+    """Invariant 2: a present-but-corrupt row is PURGEABLE — file and index
+    entry both go (an invisible-and-permanent row is a trap)."""
+    item_id = _create(tmp_path)
+    (_bank(tmp_path) / f"{item_id}.json").write_bytes(_NON_UTF8)
+    assert store.delete_item(_bank(tmp_path), item_id) is True
+    assert not (_bank(tmp_path) / f"{item_id}.json").exists()
+    # The folder's index mapping is gone too: a re-bank mints a fresh row.
+    fresh = store.upsert_by_folder(
+        _bank(tmp_path),
+        folder="/library/A/B",
+        source="sweep",
+        reason="no_match",
+        fingerprint="f" * 64,
+    )
+    assert fresh.id != item_id
+
+
+def test_delete_refuses_corrupt_row_the_runner_is_applying(tmp_path: Path) -> None:
+    """Invariant 2's guard: an unreadable row cannot reveal its own status,
+    so 'actively applying' is derived from the QUEUE's own state (the
+    write-through index the runner's queued->applying claim wrote), never
+    from the row."""
+    item_id = _create(tmp_path)
+    store.decide_item(_bank(tmp_path), item_id, BankDecision(action="asis"))
+    store.set_status(_bank(tmp_path), item_id, "applying")  # the runner's claim
+    (_bank(tmp_path) / f"{item_id}.json").write_bytes(_NON_UTF8)
+    with pytest.raises(store.InvalidTransitionError):
+        store.delete_item(_bank(tmp_path), item_id)
+    assert (_bank(tmp_path) / f"{item_id}.json").exists()  # still there, not purged
+
+
+def test_bulk_delete_skips_corrupt_and_completes_the_rest(tmp_path: Path) -> None:
+    """Invariant 3: no input can abort a batch mid-way — a corrupt id resolves
+    as absent and is SKIPPED (the count reports what landed), like the
+    applying-row skip it sits beside."""
+    bank = _bank(tmp_path)
+    a = _create(tmp_path, folder="/library/A/a")
+    b = _create(tmp_path, folder="/library/A/b")
+    corrupt = _create(tmp_path, folder="/library/A/corrupt")
+    (bank / f"{corrupt}.json").write_bytes(_NON_UTF8)
+    count = store.bulk_delete(bank, [a, corrupt, b])
+    assert count == 2
+    assert store.get_item(bank, a) is None
+    assert store.get_item(bank, b) is None
+    assert (bank / f"{corrupt}.json").exists()  # skipped, the batch did not die on it
+
+
+def test_bulk_ignore_skips_corrupt(tmp_path: Path) -> None:
+    bank = _bank(tmp_path)
+    good = _create(tmp_path, folder="/library/A/good")
+    corrupt = _create(tmp_path, folder="/library/A/corrupt")
+    (bank / f"{corrupt}.json").write_bytes(_NON_UTF8)
+    assert store.bulk_ignore(bank, [good, corrupt]) == 1
+    assert store.get_item(bank, good) is not None
+
+
+def test_next_queued_moves_past_a_corrupt_queued_row(tmp_path: Path) -> None:
+    """Invariant 4: a corrupt QUEUED row reads as absent — the FIFO head is
+    the healthy row behind it, not an endless log-and-retry of the dead one."""
+    bank = _bank(tmp_path)
+    first = _create(tmp_path, folder="/library/A/first")
+    store.decide_item(bank, first, BankDecision(action="asis"))
+    second = _create(tmp_path, folder="/library/A/second")
+    store.decide_item(bank, second, BankDecision(action="asis"))
+    (bank / f"{first}.json").write_bytes(_NON_UTF8)
+    head = store.next_queued(bank)
+    assert head is not None
+    assert head.id == second
+
+
+def test_upsert_by_folder_tolerates_a_corrupt_indexed_row(tmp_path: Path) -> None:
+    """Invariant 4: a corrupt row the index still maps must not raise — the
+    re-bank mints the fresh row and the dead file goes with the old id."""
+    bank = _bank(tmp_path)
+    old = _create(tmp_path, folder="/library/A/B")
+    (bank / f"{old}.json").write_bytes(_NON_UTF8)
+    fresh = store.upsert_by_folder(
+        bank, folder="/library/A/B", source="sweep", reason="no_match", fingerprint="f" * 64
+    )
+    assert fresh.id != old
+    assert not (bank / f"{old}.json").exists()
+    assert (bank / f"{fresh.id}.json").exists()
+
+
+def test_reconcile_drops_dead_claim_for_corrupt_applying_row(tmp_path: Path) -> None:
+    """Startup reconciliation must not strand a corrupt row the index claims
+    is 'applying': at that point nothing is running, so the dead claim is
+    dropped and the row stays purgeable (delete_item trusts the index as the
+    queue's 'actively applying' state)."""
+    bank = _bank(tmp_path)
+    item_id = _create(tmp_path)
+    store.decide_item(bank, item_id, BankDecision(action="asis"))
+    store.set_status(bank, item_id, "applying")
+    (bank / f"{item_id}.json").write_bytes(_NON_UTF8)
+    assert store.reconcile_interrupted(bank) == 0
+    assert store.delete_item(bank, item_id) is True

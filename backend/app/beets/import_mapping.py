@@ -8,6 +8,7 @@ AlbumInfo/TrackInfo never leak past here.
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Any
 
@@ -33,8 +34,16 @@ def _confidence(distance: Any) -> float:
     """beets distance (0.0 = perfect) -> a confidence percentage.
 
     Mirrors beets' own display: ``(1 - distance) * 100`` (autotag/distance.py).
+
+    Always finite: a non-finite distance or result clamps to 0.0. beets' Distance
+    arithmetic yields ``nan`` on non-finite weight routes (``match.distance_weights:
+    {album: .nan}`` survives ``POST /api/config/save`` straight to beets) and a
+    contrived overflow can still yield ``±inf``. 0.0 — "no confidence" — is the
+    honest reading of an unusable distance, and a bare NaN/Infinity token would be
+    invalid JSON on the wire and in the bank row.
     """
-    return round((1.0 - float(distance)) * 100.0, 1)
+    value = round((1.0 - float(distance)) * 100.0, 1)
+    return value if math.isfinite(value) else 0.0
 
 
 # beets IntEnum -> our string enum (only the album-level levels are needed).

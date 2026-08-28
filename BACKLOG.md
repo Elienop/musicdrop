@@ -24,9 +24,12 @@ entry carries a dated correction block where the pass changed it._
    (critical, first entry below), the unmounted-share ghost delete, and the Trash rows
    Restore can never restore (with the orphan-sweep feeder that fills them). All in the
    beets adapter.
-2. **The small-fix slice** — the non-UTF-8 500 (playlists half is trivial; the bank half
-   needs one purge-posture decision), the `static_dir` startup warning, the four confirmed
-   vacuous pins, and the mypy exemption-list trim.
+2. ~~**The small-fix slice**~~ — **SHIPPED as #191** (2026-08-28), grown mid-slice by the
+   owner's advisory-channel pick and the NaN clamp: read postures (purge-unless-applying
+   decided), `static_dir` warning, disk-sync album root, import restore leak + singletons
+   hoist, config advisories end to end. The four vacuous pins had already landed in #190;
+   still open from this item's old wording: the mypy exemption-list trim (its own entry
+   below).
 3. **`.m3u8` staleness and the bank re-run-vs-replay** — each needs a short design
    conversation before code; see their entries.
 4. **Real authentication** — the standing long-term security item, shaped 2026-08-28: 112
@@ -358,222 +361,68 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   so is widening the `ReorganizeCollisionKind` Literal; the no-regen escape is reusing
   `kind="cross_unit"` with the art detail in `detail`.
 
-- **`static_dir` gate mismatch (residual of the logged-posture fix).** The security gates key
-  on the truthiness of `MUSICDROP_STATIC_DIR`, but `mount_static` (`app/static_files.py`)
-  no-ops unless the directory holds an `index.html` — so a stale or invalid path still yields
-  the production posture (every dev write 403s) with NO SPA served. The silent half is closed
-  (the effective posture is logged at startup — see the Host-allowlist entry under Recently
-  shipped), ~~but the gate itself may still want to key on the same `index.html` check
-  `mount_static` uses, so the posture and the served SPA stay in agreement~~ (withdrawn
-  2026-08-28 — that fix is FAIL-OPEN; see below).
-  **Consumer correction (2026-08-27 re-verification): this entry named only
-  `resolve_extra_origins`, and there are TWO gates.** `resolve_extra_origins`
-  (`app/origin_guard.py`) returns the dev write/CORS origin on falsy `static_dir`;
-  `resolve_allowed_hosts` (`app/host_guard.py`) appends the TestClient host on the same test,
-  and its module docstring says outright that it keys on `settings.static_dir` "exactly like
-  ``resolve_extra_origins``". Both are built from `settings.static_dir` in `app/main.py`.
-  Enumerate the keyed-on-truthiness sites with `grep -rn static_dir backend/app/` rather than
-  trusting a count written here. **A fix must move BOTH**, or the CSRF posture and the host
-  allowlist will disagree with each other — strictly worse than today, where they are at
-  least consistently wrong together.
-  **2026-08-28 re-verification (pair-reviewed): the fix this entry proposed is FAIL-OPEN
-  and is withdrawn.** Keying the gates on `mount_static`'s `index.html` check means a
-  deployment with a stale / bind-mounted-over / unbuilt static dir silently drops to DEV
-  posture — regranting the `http://localhost:5173` cross-origin write grant and CORS read
-  of the whole API — where today the same state fails CLOSED (verified: no direction of
-  the current mismatch makes the app more permissive). Any candidate fix must answer
-  "what does this return for a broken path?" with never-the-dev-grant. Three more
-  corrections: the truthiness sites are FIVE, not two (`grep -rn static_dir backend/app/`
-  — including the non-security `container_music_default` in `main.py`, which aims a
-  first-boot beets config at `/music`); the "must move BOTH or strictly worse" clause is
-  withdrawn — the two gates read different headers and the host gate's whole dev/prod
-  delta is the single unresolvable name `testserver`, so `resolve_extra_origins` is
-  independently fixable (cost: `host_guard.py:26`'s "exactly like" docstring becomes a doc
-  bug to fix in the same change); and the realistic trigger is a developer's stale
-  `MUSICDROP_STATIC_DIR` in `backend/.env` — the shipped image cannot even build without a
-  dist (`Dockerfile:27` COPYs it) and compose mounts nothing over `/app/static`, so the
-  live symptom is the Vite dev server 403-ing every write under a startup log that says
-  "prod", with no pointer to the cause. The proportionate fix needs no owner decision: one
-  WARNING where the condition is already computed (`static_files.py`'s bare `return` when
-  `index.html` is absent, or beside the posture log line in `main.py`) — fail-closed, no
-  new knob, no contract change, `container_music_default` untouched. The high-value test
-  can be written first: boot `app.main` in a subprocess with a truthy static dir holding
-  no `index.html` and assert the resolved origins/hosts do NOT contain the dev grants —
-  every existing posture test builds a VALID dist and sidesteps exactly this state. Only
-  the bigger redesign (fatal at startup, or an explicit posture knob) needs the owner, and
-  no variant forces the OpenAPI regen. Stale comment to fix in passing:
-  `origin_guard.py:30` still names "the body-limit 413 echo" as a consumer of the tuple;
-  the body limit no longer reads it.
+- ~~**`static_dir` gate mismatch (residual of the logged-posture fix).**~~ — **FIXED in
+  #191** (2026-08-28) exactly as this entry's 2026-08-28 correction prescribed: one startup
+  WARNING where the condition is already computed (`static_files.py`'s bare return), naming
+  the configured path, the consequence (production posture active, no SPA served) and the
+  realistic cause (a stale `MUSICDROP_STATIC_DIR` in `backend/.env`). Fail-closed behavior
+  unchanged, no new knob, both gates untouched, `container_music_default` untouched; the
+  withdrawn index.html-keyed fix stays withdrawn (FAIL-OPEN). One of this fix's tests was
+  deleted by the cross-slice review as unfalsifiable (it asserted on a capture window it
+  opened after its own guard); dev posture stays pinned by the real-app catchall test.
 
-- ~~OpenAPI under-declares 403 on 61 write routes~~ — **FIXED in #159**, widened to the
-  whole middleware class: `app/openapi_overlay.py` post-processes the schema so every
-  operation declares the host guard's 400, every write the origin guard's 403 (the guard's
-  own `UNSAFE_METHODS`), and every bodied operation the body limit's 413 — add-only-where-
-  absent, 422 and richer route declarations preserved, new routes covered automatically.
+- ~~**Bank store sink has the same inf/NaN shape the playlists store just fixed**~~ —
+  **FIXED in #191** (2026-08-28) per this entry's own corrections, with the withdrawn
+  "straight port" staying withdrawn: `_confidence` clamps at the single producer
+  (non-finite → 0.0; all five sinks verified to flow through it), `_parse_row` heals
+  poisoned rows already on disk (to 0.0, never None — the REQUIRED nested candidate floats
+  must not validation-fail into silent invisibility), and `_row_text` gained
+  `allow_nan=False` as the loud guard against any future leak. Wire tests run over
+  SurrogateSafeJSONResponse (stock FastAPI nulls the value and false-passes — as this entry
+  warned). Residual: a healed row's cached index summary keeps the stale value until
+  rebuild — out-of-band by design.
 
-- ~~**`PUT /api/playlists/{playlist_id}/artwork` under-declares its OWN statuses.**~~ —
-  **FIXED in #181** (`8eda506`), which added the route's entire `responses=` block. The
-  route reads a raw JPEG/PNG body (`await request.body()`), so FastAPI emits no
-  `requestBody` and the middleware overlay rightly skips its 413 — which is precisely why
-  the route has to name that refusal itself. It now declares 404, 413 (naming both its own
-  8 MiB cap and the app-wide body limit) and 415, so the shipped contract carries
-  `200/400/403/404/413/415/422`.
+- ~~**`get_playlist` propagates `UnicodeDecodeError` on a non-UTF-8 record file**~~ —
+  **FIXED in #191** (2026-08-28) as the full read-posture class this entry's re-verifications
+  mapped: one read posture per store (missing / unreadable / undecodable / malformed →
+  absent, both single-record readers matching their list twins); playlists DELETE-on-corrupt
+  returns 204 and removes the file, making the route match its own comment; a corrupt bank
+  row is purgeable unless the queue's own index says `applying` (owner posture 2026-08-28 —
+  an unreadable row cannot testify about itself); bulk deletes skip-and-report; the apply
+  drain moves past corrupt queued rows; list-side skips log WARNINGs naming file and reason.
+  First raw-byte non-UTF-8 tests either store has ever had. Deep review attacked the purge
+  race with a per-row three-way barrier (0 stolen rows across genuinely colliding trials)
+  and a 10-shape hostile-id battery — held. Residuals: `reset_bank_index` rebuilds forget a
+  corrupt row's `applying` status (documented at the definition; test-only helper today —
+  wiring it to production needs the runner's in-flight id preserved across the rebuild);
+  a corrupt row still appears in listings from the cached index until a rebuild, its detail
+  reading absent — visible-then-absent beats invisible-and-permanent.
 
-- **Bank store sink has the same inf/NaN shape the playlists store just fixed.** `_row_text`
-  in `app/bank/store.py` (`json.dumps(model_dump(mode="json"), ensure_ascii=True)`) writes
-  a bare `Infinity` token for a non-finite float — not legal JSON.
-  `grep -n "_finite_only\|allow_nan" backend/app/bank/store.py` returns nothing, while the
-  same grep against `app/playlists/store.py` shows both halves of the fix already in place,
-  so this is a straight port of a tested pattern.
-  **Scope correction (2026-08-27 re-verification): this entry cited a single
-  `confidence: float | None`, and there are TWO.** `app/models/bank.py` declares the field on
-  `BankItem` and again on `BankItemSummary`, and `_summary_of` copies the item's value
-  straight across — so ONE non-finite value reaches two different sinks: the disk row via
-  `_row_text`, and the list/search responses, which Starlette renders with `allow_nan=False`
-  and which therefore 500. Guarding `_row_text` alone sanitises the file and leaves the wire
-  path open. Enumerate the fields with `grep -n float backend/app/models/bank.py` rather than
-  trusting a count written here. Reachability is low (confidence is set internally by the
-  beets matcher, not from a client body), which is why it wasn't fixed in the 2026-08-23
-  playlists slice — ~~apply the same `_finite_only` + `allow_nan=False` treatment when the
-  bank store is next touched~~ (withdrawn 2026-08-28 — the straight port loses rows; see
-  below).
-  **2026-08-28 re-verification (pair-reviewed): the token, the blast radius, and the fix
-  framing were all wrong.** The reachable token is **`NaN`, not `Infinity`** —
-  `_confidence` is `round((1.0 - float(distance)) * 100.0, 1)` and beets' `Distance`
-  arithmetic yields nan on every non-finite-weight route (a contrived weight-overflow can
-  still produce `-Infinity`, so guard all three tokens). A poisoned row carries
-  **2 + len(options)** bad tokens, not one: `_row_text` serializes the nested
-  `parked.candidate`, whose `confidence` floats are REQUIRED
-  (`app/models/import_models.py:122`, `:162`). The sinks are **five, not two**: the disk
-  row; the bank list (summary); bank detail/search/rescan (full item); the bare
-  `Candidate` at `app/api/import_.py:184`; and — most user-visible — the live import feed
-  `GET /api/import/{job_id}` (`ImportAlbumSummary.confidence`, a third required float fed
-  at `app/import_jobs/registry.py:831`), which 500s and kills the import screen for the
-  rest of a job that keeps running underneath. The wire 500 exists BECAUSE of
-  `SurrogateSafeJSONResponse`: naming a `default_response_class` disables FastAPI's Rust
-  fast path, which would have nulled the value — so never verify a fix against stock
-  FastAPI (false pass), and know the behaviour is coupled to the wire-safety class. **The
-  "straight port" framing is withdrawn**: `_finite_only` maps non-finite → None, sound in
-  playlists only because its sole stored float is Optional; here it writes `null` into
-  required nested floats, `_parse_row` raises, the store's own `except ValueError`
-  swallows it, and the row silently vanishes from every listing — strictly worse than the
-  bug. A fix also needs a **remediation invariant**: a producer-only clamp does not heal a
-  row already on disk (measured — the poisoned row keeps 500ing the whole bank page, and
-  since the list is the only place ids come from, there is no in-app recovery: low
-  probability, high impact once landed). Reachability is low but not internal-only:
-  `POST /api/config/save` persists arbitrary YAML (`extra="ignore"` drops nothing it
-  models and keeps the rest), so `match.distance_weights: {album: .nan}` survives to
-  beets, whose `if dist_max:` zero-guard is truthy for nan (penalty VALUES cannot be
-  non-finite — `Distance.add` rejects them; the weights are the only route). The test to
-  copy is `test_playlists_store.py:836` — it already covers NaN and strict-parses the row;
-  port it with the non-finite value NESTED in `parked.candidate.options[0]`, and assert
-  the row still loads and still lists after the fix.
-
-- **`get_playlist` propagates `UnicodeDecodeError` on a non-UTF-8 record file** while
-  `list_playlists` skips it (its guard is `except (OSError, ValueError)`; get's `read_text`
-  sits under `except OSError` only). Pre-existing, unreachable via the store's own sink
-  (`ensure_ascii=True` output is pure ASCII) — needs external file corruption. Align the
-  two sites' posture when next in the file. Two omissions the 2026-08-27 re-verification
-  adds, neither contradicting the above (this entry's wording was found accurate):
-  the blast radius is not reads-only — every mutator in `app/playlists/store.py` reads
-  through `get_playlist` (`grep -n 'get_playlist(' backend/app/playlists/store.py` shows the
-  call sites), so PATCH/PUT/tracks/artwork/merge 500 on the same file and only
-  `delete_playlist` survives, since it never reads the record; and `app/bank/store.py`
-  carries the identical mismatch, its single-row read guarded by `except OSError` while
-  `_all_items` uses `except (OSError, ValueError)`, so a fix should cover both stores.
-  Confirmed end-to-end: `GET /api/playlists` returns 200 `[]` (skipped) while
-  `GET /api/playlists/{id}` returns 500 on the same file.
-  **2026-08-28 re-verification (pair-reviewed): the blast radius is 20 endpoints plus a
-  stalled queue, and "align the postures when next in the file" is withdrawn for the bank
-  half.** (1) The playlists DELETE route reads the record BEFORE deleting
-  (`app/api/playlists.py:573`), so a corrupt playlist is invisible in the list AND
-  un-removable through the API — the exact state the route's own comment at `:571` says it
-  exists to avoid. 12 of the router's 16 playlist routes 500 (every `{id}` route); only
-  the four non-id routes survive. (2) The bank twin is worse than "identical":
-  `delete_item` reads through `get_item` (`app/bank/store.py:470`), so widening the except
-  alone converts the 500 into a permanent 404 on an un-purgeable row; and `bulk_ignore` /
-  `bulk_delete` abort the whole batch on the first corrupt id AFTER committing the earlier
-  ids (measured: the healthy row was flipped to `ignored`, then the request 500ed naming
-  no row). 8 bank routes affected (the decision route is `/bank/{item_id}/decision`).
-  (3) Three non-HTTP consumers: the apply queue's `next_queued` reads through `get_item`,
-  so a corrupt QUEUED row makes `_drain` log-and-retry the same id forever — no other
-  queued row is ever picked until restart, and after a restart the corrupt row silently
-  vanishes from the rebuilt index, so a decision the user made is never applied and never
-  reported; `upsert_by_folder` raises inside the import pipeline on a corrupt indexed row;
-  startup's `reconcile_interrupted` is SAFE (verified — it enumerates via the index, which
-  skips). Fix invariants: one read posture per store (missing / unreadable / undecodable /
-  malformed all resolve to absent, in BOTH readers); nothing the app stores may become
-  both invisible and permanent (the bank purge posture for an unreadable row needs an
-  explicit decision, including the `applying` guard's fate — external corruption is not
-  ordered with respect to the runner); a bulk operation is all-or-nothing per id; and make
-  the list-side skip LOUD while in there — today a skipped record is a playlist that
-  silently vanishes from the UI with no log line and no count, indistinguishable from
-  deleted (`_all_items` has the same silent guard). Neither store has ever had a non-UTF-8
-  test: both "corrupt" tests write `"{not json"` as valid UTF-8, exercising only the
-  JSONDecodeError arm — the new tests must `write_bytes` raw bytes (e.g. `b"\xe9"`), and
-  the route-level one to add is DELETE-on-corrupt returning 204, which makes the code
-  match its comment. Read-posture precedents already in-tree: `cover_thumbs.py:73-77`,
-  `config_snapshot.py:107-122`. Do NOT touch the sinks — `ensure_ascii=True` is
-  load-bearing for the lossless lone-surrogate handling.
-
-- **Config editor accepts `import.autotag` that MusicDrop-driven imports cannot honour — the
-  open defect is EDITOR-side, not worker-side.** `run_import_worker` force-enables autotag
-  (with snapshot/restore) because beets swaps out the `user_query` stage under `autotag: no`
-  — the only stage that fires `choose_match`, the sole hook MusicDrop's outcome tracking
-  hangs on (restore reported `could_not_restore` after a SUCCESSFUL import).
-  **Framing correction (2026-08-27 re-verification): this entry read as "the worker fails to
-  honour the value". It does not.** The override is deliberate, unconditional, documented in
-  `run_import_worker`'s own docstring, pinned by a regression test, and is itself the FIX for
-  that silent-loss bug (shipped in #126). Do not remove it. The open work is that nothing
-  tells the user the setting is inert here: `ImportSection.autotag` in
-  `app/models/config_editor.py` is a plain settable bool, validation raises nothing (and
-  `ValidationErrorItem` is an error-only channel — the config editor has no advisory channel
-  at all), the frontend never mentions the key, and `app/beets/config.starter.yaml` ships
-  `autotag: yes        # show candidates for human review`, which implies it is honoured.
-  The setting is still accepted silently; the editor should say it has no effect on
-  MusicDrop-driven imports. Note the value is not globally inert — it is beets' own config
-  file, so a `beet import` run from the CLI outside MusicDrop still honours `autotag: no`.
-  Note also: sweep/bank breakage under `autotag: no` was reasoned from the stage list,
-  demonstrated only for restore.
-  **2026-08-28 re-verification (pair-reviewed): this is a CLASS of four keys in two tiers,
-  plus two adjacent defects the entry never named.** Unconditionally inert on every
-  MusicDrop import path: `autotag` AND `duplicate_action` (forced to `"ask"` at
-  `import_session.py:1362` — the editor offers five values and four are silently
-  discarded). Conditionally forced: `singletons` and `incremental` (sweep / bank-apply
-  runs only). Adjacent defect 1 — a RESTORE LEAK: `duplicate_action` and `threaded` are
-  set BEFORE the snapshot block and appear nowhere in the finally (`:1398-1404` restores
-  seven other keys), so they leak process-globally after the first import — and because
-  the "Effective config" panel flattens the LIVE global (`config_snapshot.py:94`),
-  Settings then shows `ask` while the raw editor pane on the same page shows the user's
-  `skip`: two panels on one screen disagreeing, self-concealing because the user reads it
-  as "my save did not take". The same panel also faithfully prints the user's
-  `autotag: false` as if it were in force — so the frontend does surface the key after
-  all, in the worst possible way. Adjacent defect 2 — `singletons` on the DEFAULT review
-  import is not inert, it is honoured into `choose_item`'s SKIP funnel
-  (`import_session.py:380-398`): a `singletons: yes` user config makes a review import
-  import NOTHING while history-recording the folder. That one is not an advisory problem —
-  the sweep path's guard closes it, and the snapshot/restore for the key already exist
-  unconditionally (`:1379`, `:1402`), so hoisting the force out of the `if sweep:` branch
-  is a one-line backend fix. `incremental` is honoured-but-trapped (taghistory makes a
-  swept-then-manually-reimported folder silently do nothing, `:1325-1342`) — name that in
-  any advisory copy rather than filing it safe. Validation note: `validate_known_keys`
-  DOES raise for invalid values on modeled keys — nothing fires for `autotag: false`
-  because false is a valid bool and there is no semantic rule, so an advisory must be a
-  deliberate rule, not a tightened type, and it must ride a channel that is not `errors`
-  (CodeMirror paints that list red; a valid config must not paint red). The real advisory
-  channel is an OpenAPI contract change (new field on ValidateResponse → two-step regen +
-  a frontend render); the cheap route (starter.yaml comments + static Settings prose)
-  cannot warn at the point of edit. Second global-config mutation site, for completeness:
-  `cover.py:139`'s fetchart overlay (restored, but it materialises `auto: true` into the
-  same global the Effective panel reads when the key was previously unset). Owner call:
-  cheap patch vs advisory channel — and whether to take the `singletons` hoist and the
-  restore-leak fix now, since neither needs the contract change.
+- ~~**Config editor accepts `import.autotag` that MusicDrop-driven imports cannot honour**~~ —
+  **SHIPPED in #191** (2026-08-28) as the full advisory channel (the owner's pick over the
+  cheap patch, decided 2026-08-28): `ValidateResponse.advisories` + deliberate rules for
+  `autotag`, `duplicate_action`, `singletons`, `incremental` (the last honestly described as
+  honoured-but-trapped), rendered as neutral StatusBanners (`role="status"`) in the editor.
+  The restore leak (`duplicate_action`/`threaded`) is closed INCLUDING the
+  `InLibraryCopyError` early exit the deep review caught — mutations now start below the last
+  raise, with a red-first pin on the refusal path; the `singletons` force is hoisted to every
+  import path (a `singletons: yes` user config can no longer make a review import silently
+  import nothing); starter.yaml's autotag comment tells the truth. Residuals (2026-08-28):
+  advisories carry no line/column, so the UI is a list, not a CodeMirror gutter hint at the
+  point of edit (`_line_col_for_path` in `app/beets/config_editor.py` exists if that follow-up
+  is wanted); `threaded` (forced every run, lives outside `import:`) and `move`/`copy`
+  (overridden whenever the UI passes a move choice) sit outside the rule set by scope — the
+  boundary is recorded only in the rules tuple's docstring; the LIVE `data/beets/config.yaml`
+  still carries the old misleading autotag comment (runtime file, not repo — the editor
+  advisory now warns at edit time); deploy-skew: an old backend with a new bundle crashes the
+  advisory render (strict required field, consistent with the codebase's contract posture).
 
 - **Untested defensive lines** (deep-review survivors, all currently benign — pin when
   touched next): broken-symlink sidecar carry (`sidecars.py` `lexists`), singleton
   crash-path sidecar carry, `edit.py` `_inside_library` guard (pre-existing from main),
-  disk-sync emptied-row first-dir-wins and `"."`-fallback, dismiss double-click swallow,
+  dismiss double-click swallow,
   the aria-disabled-not-disabled focus rule (the "Pagination rule" is convention, not test).
+  (The disk-sync first-dir-wins clause left this list in #191 — replaced by commonpath, `"."` pinned.)
   From the 2026-08-23 m3u8 deep review, on the shared atomic recipe (`atomic.py`): the
   final `chmod` is umask-blind in tests (deleting it survives under the usual umask 022 —
   only visible under 077; a mode test should set the umask itself), the same-directory tmp
@@ -588,54 +437,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   a generic `failed` target state (reasoned from `_safe_reconcile`'s broad except, never
   executed against a real encoder).
 
-- **Disk-sync emptied-row path shows the first item's folder,** not the album root — a
-  multi-disc emptied album reads `Artist/Album/CD1`. Still separates label twins (the
-  feature's purpose); commonpath would be nicer.
-  **Location, because the obvious guess is wrong (added 2026-08-27):** the row is built in
-  the ADAPTER — `app/beets/disk_sync.py`, where `_scan_item` records the first item's
-  `_rel_dir` per album id and never revisits it, and `_collect_emptied` copies that verbatim
-  onto `DiskSyncEmptiedAlbum.path`. It is NOT built in `app/api/disk_sync.py`, which
-  constructs no row at all and only calls `plan_disk_sync`; a reader sent there finds
-  nothing. Scope: this is a divergence only for an album whose items span more than one
-  directory (a multi-disc layout, a user-edited `paths:` template, or files beets never moved
-  with `import.copy` off) — for a one-folder album the first item's folder IS the album root,
-  and the shipped starter config declares no `paths:` block, so stock installs do not produce
-  the case. Adjacent case from the same accumulator: items sitting at the library root yield
-  `path == "."`. Impact is display-only — `app/models/disk_sync.py` annotates the field so,
-  and nothing keys off it but a React list key. The fix already exists next door as
-  `_commonpath_of_dirs` in `app/beets/reorganize.py` (added by the same commit that gave
-  disk-sync first-dir-wins): accumulate a running commonpath per album id instead of a single
-  dir. No existing test pins the current behaviour — both adapter assertions use
-  single-folder albums — so the change needs its own regression test.
-  **2026-08-28 re-verification (pair-reviewed): four claims corrected, and the tradeoff
-  turns out to be documented in the code.** A multi-disc layout is NOT a trigger under
-  stock beets — the default `paths:` template has no `$disc` component, so a beets-managed
-  multi-disc album lands in ONE folder and the row is correct; multi-disc splits only
-  under a disc-bearing `paths:` template, which is a first-class in-app flow (the Naming
-  panel writes `paths:`), not hand-editing. A stock install CAN still produce a split
-  album: a mid-reorganize crash re-paths items one at a time and beets' Transaction
-  commits even while an exception propagates (documented in-repo at
-  `reorganize.py:512-517`), so a permission error or NAS blip splits an album permanently
-  with no user edit anywhere. With `import.copy: no`, items outside the music dir make
-  `os.path.relpath` ESCAPE rather than error — the row renders `../inbox/Album`. The
-  `(display only)` annotation cited above is on `DiskSyncRemoval.path`, not this field;
-  the accumulator comment at `disk_sync.py:142-144` documents first-dir-wins as a
-  CONSIDERED tradeoff — the fixer must delete that comment, or reviewers will read the
-  new behaviour as unintended; and the first-seen dir is deterministic but not
-  necessarily disc 1 (`sort_item` orders by artist before disc). `_commonpath_of_dirs` is
-  NOT reusable as-is: it takes bytes full paths and returns an ABSOLUTE dir (would flip
-  the field absolute, failing `test_disk_sync_adapter.py:80`/`:124` and leaking the host
-  layout), it would turn the O(albums) accumulator into O(items), and
-  `os.path.commonpath` edge values poison the fold — a root-level item (today's `"."`)
-  folds its whole album to the EMPTY string. Decide the no-common-folder display value
-  explicitly rather than letting it fall out of the arithmetic. Regen note: the new
-  contract belongs in the field's `#` comment (does not reach the schema — no regen);
-  putting it in the class DOCSTRING regenerates `openapi.json`/`schema.d.ts` and forces
-  the two-step regen. A third assertion on the field a careless change breaks:
-  `test_disk_sync_models.py:37`. (The old "added by the same commit" provenance was false
-  — three commits over two months.) One tempering note from the skeptic: first-dir-wins
-  still separates label twins in the ordinary case — the sentence above claiming so is
-  TRUE — so this stays display-polish, not a broken feature.
+- ~~**Disk-sync emptied-row path shows the first item's folder,** not the album root~~ —
+  **FIXED in #191** (2026-08-28): `_scan_item` folds a running commonpath per album id
+  (`_common_rel_dir`), the first-dir-wins tradeoff comment went with the code it described,
+  and the library-root `"."` case is pinned. Residual: items outside the music dir under
+  `import.copy: no` still render an escaping relpath (`../inbox/Album`) — display-only,
+  recorded, not worth a mapping layer today.
 
 - **Artist-image cache: after a broken cache dir is repaired, affected artists never return
   to disk.** Read "to disk" literally — the portraits keep SERVING, correct bytes and correct

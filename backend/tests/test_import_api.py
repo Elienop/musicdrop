@@ -283,9 +283,11 @@ def _api_candidate(rec: Recommendation, *, confidence: float = 75.5) -> Candidat
     )
 
 
-def _api_parked(index: int, rec: Recommendation) -> ParkedAlbum:
+def _api_parked(index: int, rec: Recommendation, *, confidence: float = 75.5) -> ParkedAlbum:
     return ParkedAlbum(
-        album_index=index, folder=f"/music/incoming/album{index}", candidate=_api_candidate(rec)
+        album_index=index,
+        folder=f"/music/incoming/album{index}",
+        candidate=_api_candidate(rec, confidence=confidence),
     )
 
 
@@ -336,6 +338,43 @@ def _poll_candidate(client: TestClient, job_id: str, index: int, attempts: int =
             return resp
         time.sleep(0.01)
     return client.get(url)
+
+
+def test_parked_candidate_bypassing_the_clamp_500s_not_invalid_json() -> None:
+    """A non-finite confidence reaching the WIRE must fail loud, via the REAL path.
+
+    The guard is the reverse-direction pin: the app names a
+    ``default_response_class`` (SurrogateSafeJSONResponse), so Starlette renders
+    with ``allow_nan=False`` and a NaN candidate 500s rather than writing a bare
+    NaN token (stock FastAPI would null the value and false-pass a test that
+    only checks the model dump). Therefore the clamp belongs at the producer
+    (``_confidence``) and the read heal in the bank store — never at a
+    permissive sink. ``raise_server_exceptions=False`` keeps the failure as the
+    500 the wire would see under uvicorn.
+    """
+    nan_parked = _api_parked(0, Recommendation.medium, confidence=float("nan"))
+    reset_registry(runner=FakeImportRunner(parked=[nan_parked]))
+    client = TestClient(app, raise_server_exceptions=False)
+    job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
+    url = f"/api/import/{job_id}/albums/0"
+    resp = None
+    for _ in range(200):
+        resp = client.get(url)  # 404 = not parked yet; 500 = parked, render refused
+        if resp.status_code != 404:
+            break
+        time.sleep(0.01)
+    assert resp is not None
+    assert resp.status_code == 500
+    assert "NaN" not in resp.text
+
+
+def test_clamped_zero_confidence_renders_over_the_real_response_path() -> None:
+    """The producer's clamp value (0.0) renders cleanly through the same path."""
+    client = _client_with_fake(parked=[_api_parked(0, Recommendation.medium, confidence=0.0)])
+    job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
+    resp = _poll_candidate(client, job_id, 0)
+    assert resp.status_code == 200
+    assert resp.json()["confidence"] == 0.0
 
 
 def test_start_returns_202_and_job_id() -> None:

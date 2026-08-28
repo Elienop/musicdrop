@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import threading
 import uuid
 from collections.abc import Callable
@@ -922,3 +923,33 @@ def test_invalid_json_list_skips_file(tmp_path: Path) -> None:
     good = store.create_playlist(tmp_path, name="Good")
     (tmp_path / "garbage.json").write_text("{ not json", encoding="utf-8")
     assert [p.id for p in store.list_playlists(tmp_path)] == [good.id]
+
+
+# Non-UTF-8 bytes: the 500 class the "{not json" fixtures miss — those are
+# valid UTF-8 and only exercise JSONDecodeError. UnicodeDecodeError is a
+# ValueError, NOT an OSError, so an OSError-only read guard lets it 500.
+_NON_UTF8 = b"\x00\xe9\xff"
+
+
+def test_non_utf8_get_returns_none(tmp_path: Path) -> None:
+    """One read posture: a non-UTF-8 record reads as ABSENT, never a 500."""
+    record = store.create_playlist(tmp_path, name="P")
+    (tmp_path / f"{record.id}.json").write_bytes(_NON_UTF8)
+    assert store.get_playlist(tmp_path, record.id) is None
+
+
+def test_non_utf8_list_skips_and_logs(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Loud skip: the file vanishes from the list AND the skip is logged,
+    naming the file and the reason — a silent skip reads as 'deleted'."""
+    good = store.create_playlist(tmp_path, name="Good")
+    (tmp_path / "corrupt.json").write_bytes(_NON_UTF8)
+    with caplog.at_level(logging.WARNING, logger="app.playlists.store"):
+        ids = [p.id for p in store.list_playlists(tmp_path)]
+    assert ids == [good.id]
+    warnings = [
+        r
+        for r in caplog.records
+        if r.name == "app.playlists.store" and r.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "corrupt.json" in warnings[0].getMessage()

@@ -386,8 +386,8 @@ class WebImportSession(ImportSession):
         # choose_match routes HERE (beets tasks.py:758-760), so ASIS is what
         # actually imports the tracks - the chunk-1 SKIP silently imported
         # NOTHING for the attended path (the bug this branch fixes). Every other
-        # mode (inbox, sweep, non-astracks directives) keeps SKIP; the sweep
-        # worker additionally forces import.singletons off so a singletons:yes
+        # mode (inbox, sweep, non-astracks directives) keeps SKIP; the import
+        # worker forces import.singletons off on EVERY run so a singletons:yes
         # user config can never funnel files here and history-mark them done
         # without banking.
         self._check_pause()
@@ -1293,7 +1293,11 @@ def run_import_worker(
 
     Forces single-threaded execution, ``import.duplicate_action: ask`` (so the
     duplicate hook always fires, regardless of the user's config — the web review
-    IS the "ask") and ``import.autotag: yes``, then runs beets. After run()
+    IS the "ask"), ``import.autotag: yes`` and ``import.singletons: no`` — the
+    last one forced for EVERY MusicDrop-driven import (review included), not just
+    sweep/apply branches: a ``singletons: yes`` user config would route every
+    DEFAULT review album into ``choose_item``'s SKIP funnel, importing NOTHING
+    while recording import history. After run()
     returns, moves any album the Replace action recorded to the reversible Trash,
     by stable id — beets imports the new album first, so the old copy is only
     touched once the new one is safe.
@@ -1307,7 +1311,7 @@ def run_import_worker(
     for real while the app records nothing: an empty review feed, a sweep that
     banks nothing yet history-marks every folder done, and a Trash restore that
     reports ``could_not_restore`` after it has already emptied the folder. Same
-    silent-loss class as the ``singletons`` forcing below, but total.
+    silent-loss class as the ``singletons`` forcing, but total.
 
     ``move`` scopes the file operation to this one run: ``True`` forces a move
     (``copy=False``), ``False`` forces a copy (``move=False``). Because
@@ -1329,7 +1333,8 @@ def run_import_worker(
     in ``set_config`` is dead code in 2.11 (``want_resume`` reads the global
     ``config["resume"]``, not the excluded copy), so without this every task
     writes resume progress and an aborted sweep re-enters the resume path on
-    the next run. ``singletons`` off — a ``singletons: yes`` user config
+    the next run. ``singletons`` off (forced unconditionally now — see the
+    ``Forces`` paragraph above) — a ``singletons: yes`` user config
     would route every file through choose_item -> SKIP and history-mark it
     done WITHOUT a bank row (silent loss); album-shaped tasks are the only
     thing the bank can review.
@@ -1339,9 +1344,10 @@ def run_import_worker(
     banked folder in taghistory (SKIPped tasks included) and the user's own
     config may say ``incremental: yes``, so without this beets' task factory
     skips the banked folder before any hook fires and the apply silently does
-    nothing; ``resume``/``singletons`` off for the sweep's reasons (astracks
-    singletons arrive deliberately via the TRACKS re-pipeline, not the
-    singletons flag); ``search_ids`` pinned to the chosen release id for an
+    nothing; ``resume`` off for the sweep's reasons; ``singletons`` is forced
+    unconditionally (see above — astracks singletons arrive deliberately via
+    the TRACKS re-pipeline, not the singletons flag); ``search_ids`` pinned to
+    the chosen release id for an
     ``apply`` directive (consumed by beets' lookup_candidates stage ->
     ``tag_album(search_ids=...)``: candidates come ONLY from that id) and
     cleared otherwise so a stale user pin can never hijack the run. The
@@ -1358,8 +1364,13 @@ def run_import_worker(
     # covered here: the job runner AND trash_manage.restore_album, which calls
     # this directly. Nesting is safe (beets binds via a ContextVar token).
     with session.lib.music_dir_context():
-        config["threaded"] = False
-        config["import"]["duplicate_action"] = "ask"
+        # Snapshot BEFORE mutation, restore verbatim in the finally below.
+        # The MUTATIONS all sit below the in-library guard: its raise is the
+        # last early exit, and anything assigned above a raise leaks into the
+        # process-global beets config (and the "Effective config" panel, which
+        # flattens the live global) because the finally never runs.
+        orig_threaded = config["threaded"].get()
+        orig_duplicate_action = config["import"]["duplicate_action"].get()
         # In-library sources MUST move (same-dataset rename; samefile no-op):
         # with a fresh DB, copy-mode would duplicate any file whose computed
         # destination differs from its current path. Explicit copy is refused;
@@ -1379,22 +1390,29 @@ def run_import_worker(
         orig_singletons = config["import"]["singletons"].get(bool)
         orig_search_ids = config["import"]["search_ids"].get()  # restore verbatim
         orig_autotag = config["import"]["autotag"].get(bool)
+        config["threaded"] = False
+        config["import"]["duplicate_action"] = "ask"
         config["import"]["autotag"] = True
+        # Hoisted OUT of the sweep/directive branches: a DEFAULT review import
+        # (no sweep, no directive) must be album-shaped too — under a
+        # ``singletons: yes`` user config it previously skipped every album
+        # while recording import history.
+        config["import"]["singletons"] = False
         if move is not None:
             config["import"]["move"] = move
             config["import"]["copy"] = not move
         if sweep:
             config["import"]["incremental"] = True
             config["import"]["resume"] = False
-            config["import"]["singletons"] = False
         if directive is not None:
             config["import"]["incremental"] = False
             config["import"]["resume"] = False
-            config["import"]["singletons"] = False
             config["import"]["search_ids"] = [directive.search_id] if directive.search_id else []
         try:
             session.run()
         finally:
+            config["threaded"] = orig_threaded
+            config["import"]["duplicate_action"] = orig_duplicate_action
             config["import"]["move"] = orig_move
             config["import"]["copy"] = orig_copy
             config["import"]["incremental"] = orig_incremental
