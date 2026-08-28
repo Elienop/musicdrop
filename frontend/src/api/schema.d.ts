@@ -4357,7 +4357,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "intra_unit" | "cross_unit";
+            kind: "intra_unit" | "cross_unit" | "art";
             /** Path */
             path: string;
             /** Detail */

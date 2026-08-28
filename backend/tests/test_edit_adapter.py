@@ -8,11 +8,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from beets.library import Library
+from beets.library import Item, Library
 from mediafile import MediaFile
 
 from app.beets.library import _require_id
 from app.models.edit import AlbumEditRequest, AlbumFieldEdits, TrackFieldEdits
+from tests.conftest import build_library
 
 
 def _album_id(lib: Library) -> int:
@@ -355,6 +356,82 @@ def test_apply_move_relocates_album_art_and_updates_artpath(edit_lib: Library) -
     new_dir = os.path.dirname(os.fsdecode(next(iter(refetched.items())).path))
     assert os.path.dirname(art_path) == new_dir
     assert "Radiohead (Live)" in art_path  # followed the album to its new home
+
+
+def test_apply_refuses_the_move_when_a_stray_file_holds_the_art_name(
+    edit_lib: Library,
+) -> None:
+    """A stray cover.jpg at the edited album's new dir must refuse the whole move
+    phase (tags still write), not silently divert the art.
+
+    Pre-fix (2026-08-28): move_failures == 0, all 3 rows moved=True with
+    error=None, and the stray dir held BOTH cover.jpg (the stray) and
+    cover.1.jpg (the album art, silently diverted by util.unique_path).
+    """
+    from app.beets.edit import apply_album_edit
+
+    aid = _album_id(edit_lib)
+    album = edit_lib.get_album(aid)
+    assert album is not None
+    old_dir = os.path.dirname(os.fsdecode(next(iter(album.items())).path))
+    art = os.path.join(old_dir, "cover.jpg")
+    with open(art, "wb") as fh:
+        fh.write(b"\xff\xd8\xff\xe0JFIF-fake-cover")
+    album.artpath = os.fsencode(art)
+    album.store()
+
+    music = Path(os.fsdecode(edit_lib.directory))
+    stray_dir = music / "Radiohead (Live)" / "In Rainbows"
+    stray_dir.mkdir(parents=True)
+    (stray_dir / "cover.jpg").write_bytes(b"stray")
+
+    req = AlbumEditRequest(album=AlbumFieldEdits(album_artist="Radiohead (Live)"))
+    result = apply_album_edit(edit_lib, album_id=aid, request=req, write=True, move=True)
+
+    assert result.move_failures == 3
+    for row in result.items:
+        assert row.moved is False
+        assert "cover.jpg" in (row.error or "")
+    # nothing moved on disk; art and stray untouched
+    for item in _items(edit_lib, aid):
+        assert os.path.dirname(os.fsdecode(item.path)) == old_dir
+    assert (stray_dir / "cover.jpg").read_bytes() == b"stray"
+    refetched = edit_lib.get_album(aid)
+    assert refetched is not None
+    assert bytes(refetched.artpath or b"") == os.fsencode(art)
+    assert not (stray_dir / "cover.1.jpg").exists()
+
+
+def test_preview_refuses_the_move_when_a_stray_file_holds_the_art_name(
+    edit_lib: Library,
+) -> None:
+    """Preview mirrors the apply: a stray cover.jpg at the new dir turns every
+    planned move into a refusal carrying the art detail, and promises no moves."""
+    from app.beets.edit import preview_album_edit
+
+    aid = _album_id(edit_lib)
+    album = edit_lib.get_album(aid)
+    assert album is not None
+    old_dir = os.path.dirname(os.fsdecode(next(iter(album.items())).path))
+    art = os.path.join(old_dir, "cover.jpg")
+    with open(art, "wb") as fh:
+        fh.write(b"\xff\xd8\xff\xe0JFIF-fake-cover")
+    album.artpath = os.fsencode(art)
+    album.store()
+
+    music = Path(os.fsdecode(edit_lib.directory))
+    stray_dir = music / "Radiohead (Live)" / "In Rainbows"
+    stray_dir.mkdir(parents=True)
+    (stray_dir / "cover.jpg").write_bytes(b"stray")
+
+    req = AlbumEditRequest(album=AlbumFieldEdits(album_artist="Radiohead (Live)"))
+    preview = preview_album_edit(edit_lib, album_id=aid, request=req, move_enabled=True)
+
+    assert preview.move_enabled is True
+    assert preview.move_plan == []
+    assert len(preview.move_refusals) == 3
+    for refusal in preview.move_refusals:
+        assert "cover.jpg" in refusal.detail
 
 
 def test_apply_runs_from_a_worker_thread(edit_lib: Library) -> None:
@@ -812,3 +889,90 @@ def test_preview_plans_moves_only_for_files_apply_will_move(edit_lib: Library) -
     result = apply_album_edit(edit_lib, album_id=aid, request=req, write=True, move=True)
     moved = {r.item_id for r in result.items if r.moved}
     assert moved == planned  # the preview promised exactly what the apply did
+
+
+def _two_disc_lib(tmp_path: Path) -> tuple[Library, int, Path]:
+    """A two-disc album under a path format with a $disc level — the shape
+    ``edit_lib`` (single dir) cannot produce, where "the first item that moved"
+    and "the album's folder" are different directories.
+
+    Stub files are fine: these tests pass ``write=False``.
+    """
+    music = tmp_path / "music"
+    lib = build_library(
+        str(tmp_path / "library.db"),
+        str(music),
+        path_format="$albumartist/$album/Disc $disc/$track $title",
+    )
+    base = music / "old"
+    base.mkdir(parents=True)
+    items = []
+    for disc, title in ((1, "One"), (2, "Two")):
+        f = base / f"{disc} {title}.mp3"
+        f.write_bytes(b"\x00")
+        it = Item(
+            album="Boxset",
+            albumartist="Ann",
+            artist="Ann",
+            title=title,
+            track=1,
+            disc=disc,
+        )
+        it.path = os.fsencode(str(f))
+        items.append(it)
+    album = lib.add_album(items)
+    art = base / "cover.jpg"
+    art.write_bytes(b"art")
+    album.artpath = os.fsencode(str(art))
+    album.store()
+    return lib, _require_id(album.id), music
+
+
+def test_art_follows_the_moved_items_when_the_first_mover_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Rename "Ann" -> "Bea". Disc 1's destination is occupied by a stranger, so
+    that track's move is refused; disc 2 moves. The art must follow the item
+    that MOVED (Disc 2), mirroring Album.move — with a bare
+    ``album.move_art(MoveOperation.MOVE)`` beets falls back to the FIRST item's
+    dir, which never moved, and the art stays behind."""
+    from app.beets.edit import apply_album_edit
+
+    # beets zero-pads $disc/$track in its rendering ("Disc 01", "01 One.mp3") —
+    # the blockers must sit at the REAL computed destinations.
+    lib, aid, music = _two_disc_lib(tmp_path)
+    blocker_dir = music / "Bea" / "Boxset" / "Disc 01"
+    blocker_dir.mkdir(parents=True)
+    (blocker_dir / "01 One.mp3").write_bytes(b"stranger")
+    req = AlbumEditRequest(album=AlbumFieldEdits(album_artist="Bea"))
+    result = apply_album_edit(lib, album_id=aid, request=req, write=False, move=True)
+    assert result.move_failures == 1  # the blocked Disc 1 track
+    refetched = lib.get_album(aid)
+    assert refetched is not None
+    assert refetched.artpath is not None
+    assert os.path.dirname(os.fsdecode(refetched.artpath)) == str(
+        music / "Bea" / "Boxset" / "Disc 02"
+    )
+
+
+def test_edit_reports_an_art_divert_that_slips_past_the_preflight(
+    tmp_path: Path,
+) -> None:
+    """Same shape as above, plus a stray cover.jpg at Disc 2 — the pre-flight
+    checked Disc 1 (the predicted first mover) and found it free, so the divert
+    happens at Disc 2 and must be reported on the moved rows."""
+    from app.beets.edit import apply_album_edit
+
+    lib, aid, music = _two_disc_lib(tmp_path)
+    blocker_dir = music / "Bea" / "Boxset" / "Disc 01"
+    blocker_dir.mkdir(parents=True)
+    (blocker_dir / "01 One.mp3").write_bytes(b"stranger")
+    disc2 = music / "Bea" / "Boxset" / "Disc 02"
+    disc2.mkdir(parents=True)
+    (disc2 / "cover.jpg").write_bytes(b"stray")
+    req = AlbumEditRequest(album=AlbumFieldEdits(album_artist="Bea"))
+    result = apply_album_edit(lib, album_id=aid, request=req, write=False, move=True)
+    moved_rows = [r for r in result.items if r.moved]
+    assert moved_rows
+    assert all("cover.1.jpg" in (r.error or "") for r in moved_rows)
+    assert (disc2 / "cover.jpg").read_bytes() == b"stray"

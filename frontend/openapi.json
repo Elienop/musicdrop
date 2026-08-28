@@ -13716,7 +13716,8 @@
             "type": "string",
             "enum": [
               "intra_unit",
-              "cross_unit"
+              "cross_unit",
+              "art"
             ],
             "title": "Kind"
           },

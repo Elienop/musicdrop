@@ -8,11 +8,12 @@ relocates files + art and prunes the vacated dirs. Every op binds
 ``lib.music_dir_context()`` because beets stores DB paths relative to the library
 dir and converts them both ways via a ContextVar a worker thread does not inherit.
 
-Two of the helpers here are the move-hygiene contract for the WHOLE app, not just
-this feature: ``collisions_by_dest`` (would beets divert this move to a ``.N``
-sibling?) and ``carry_sidecars`` (lyrics follow their audio). ``app/beets/edit.py``
-imports both, because a tag edit that renames a file performs the same move under
-a different trigger, and a second copy of either would drift out of agreement.
+Three of the helpers here are the move-hygiene contract for the WHOLE app, not
+just this feature: ``collisions_by_dest`` (would beets divert this move to a
+``.N`` sibling?), ``art_preflight`` (would beets silently rename the album art?)
+and ``carry_sidecars`` (lyrics follow their audio). ``app/beets/edit.py`` imports
+all three, because a tag edit that renames a file performs the same move under a
+different trigger, and a second copy of any of them would drift out of agreement.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import contextlib
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import beets
 from beets.util import FilesystemError, MoveOperation, prune_dirs, samefile, syspath
@@ -230,6 +231,85 @@ def _collisions(lib: Any, dests: list[tuple[Any, bytes]]) -> list[ReorganizeColl
     return list(collisions_by_dest(lib, dests).values())
 
 
+class ArtPreflight(NamedTuple):
+    collision: ReorganizeCollision | None
+    expected_dest: bytes | None  # normalized predicted art path when an art move is predicted
+
+
+def art_preflight(lib: Any, album: Any, dests: list[tuple[Any, bytes]]) -> ArtPreflight:
+    """Predict the album-art divert before ``Album.move`` happens.
+
+    ``Album.move`` moves the items and then calls ``move_art``; ``move_art``
+    silently renames the art to a ``.N`` sibling (``util.unique_path``) when its
+    destination name is already held by a file that is not the art itself. The
+    predicted destination is what ``Album.move`` will hand ``move_art``: the dir
+    of the FIRST item that relocates (``move_art`` receives ``os.path.dirname``
+    of the moved item's path, and beets moves items in order) — more precisely,
+    the first item whose move CHANGED its path: an item whose source file is
+    missing is skipped and shifts the art dir to the next mover, so the
+    prediction can name a sibling dir in that corner; the backstop covers it.
+    Must be called
+    under ``lib.music_dir_context()`` — the same requirement as the item
+    pre-flight, since ``album.art_destination`` renders paths the same way.
+
+    Returns ``(collision, expected_dest)``: ``collision`` is set only for a real
+    art collision (the predicted name is already held by something else on disk);
+    ``expected_dest`` is the normalized predicted art path whenever an art move
+    is predicted at all — ``reorganize_album``'s post-move backstop compares the
+    landed ``artpath`` against it.
+    """
+    old_art = album.artpath
+    if not old_art:
+        return ArtPreflight(None, None)
+    old = os.path.normpath(bytes(old_art))
+    if not os.path.exists(syspath(old)):
+        # beets clears a missing-art ref itself; not a divert.
+        return ArtPreflight(None, None)
+    moving = [(i, d) for i, d in dests if bytes(i.path) != d]
+    if not moving:
+        return ArtPreflight(None, None)
+    item_dir = os.path.dirname(os.path.normpath(moving[0][1]))
+    try:
+        new_art = album.art_destination(old, item_dir=item_dir)
+    except Exception:  # a template that cannot render must not fail the sweep
+        # (unlike _disc_dir_levels, degrading here disarms BOTH the refusal and
+        # the backstop — a DEBUG log would hide that entirely)
+        _log.warning(
+            "art-destination probe failed for album %s; art divert prediction"
+            " disabled for this move",
+            album.id,
+            exc_info=True,
+        )
+        return ArtPreflight(None, None)
+    key = os.path.normpath(bytes(new_art))
+    if key == old:
+        return ArtPreflight(None, None)  # already in place
+    if not os.path.exists(syspath(key)):
+        return ArtPreflight(None, key)  # free name; the move will land there
+    # No samefile(key, old) exemption: beets' Album.move_art (beets/library/
+    # models.py:407-463) has NO samefile guard — only the byte-equal
+    # new_art == old_art short-circuit above runs before util.unique_path
+    # diverts, so an occupant that is merely an ALIAS (e.g. symlink) of the
+    # album's own art still gets diverted to a .N sibling. The normpath
+    # byte-equality check (key == old) is the only own-art exemption we make.
+    moving_paths = {os.path.normpath(bytes(i.path)) for i, _d in moving}
+    if key in moving_paths or any(samefile(key, p) for p in moving_paths):
+        # the occupant vacates before art moves — items move first
+        return ArtPreflight(None, key)
+    rel = _rel_to_music(lib, key)
+    return ArtPreflight(
+        ReorganizeCollision(
+            kind="art",
+            path=rel,
+            detail=(
+                f"{rel}: the album art's computed name already exists on disk"
+                f" and {_occupant_desc(lib, key)}"
+            ),
+        ),
+        key,
+    )
+
+
 def _collision_error(collisions: list[ReorganizeCollision]) -> str:
     """The refused unit's error string (see COLLISION_ERROR_CAP)."""
     shown = [c.detail for c in collisions[:COLLISION_ERROR_CAP]]
@@ -349,7 +429,12 @@ def album_scope_label(handle: LibraryHandle, album_id: int) -> str | None:
 
 
 def _describe_unit(
-    lib: Any, *, kind: ReorganizeMoveKind, label: str, items: list[Any]
+    lib: Any,
+    *,
+    kind: ReorganizeMoveKind,
+    label: str,
+    items: list[Any],
+    album: Any | None = None,
 ) -> ReorganizeMove | ReorganizeConflict | None:
     """One preview row for a unit: a CONFLICT (would be refused), a MOVE, or None
     when it is already in place. A conflicted unit is never also a move — the
@@ -363,6 +448,10 @@ def _describe_unit(
     # commonpath over the item DIRS: for a lone singleton that is just its dir.
     from_path = _commonpath_of_dirs([i.path for i, _dest in dests])
     collisions = _collisions(lib, dests)
+    if album is not None:
+        art = art_preflight(lib, album, dests)
+        if art.collision is not None:
+            collisions.append(art.collision)
     if collisions:
         return ReorganizeConflict(
             kind=kind, label=label, from_path=from_path, collisions=collisions
@@ -377,7 +466,9 @@ def _describe_unit(
 
 
 def _describe_album(lib: Any, album: Any) -> ReorganizeMove | ReorganizeConflict | None:
-    return _describe_unit(lib, kind="album", label=album_label(album), items=list(album.items()))
+    return _describe_unit(
+        lib, kind="album", label=album_label(album), items=list(album.items()), album=album
+    )
 
 
 def _describe_singleton(lib: Any, item: Any) -> ReorganizeMove | ReorganizeConflict | None:
@@ -656,6 +747,12 @@ def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
     before ``Album.move`` runs, so nothing on disk and nothing in the DB is touched
     (see ``_collisions``). Otherwise ``Album.move`` relocates all items + art,
     prunes the vacated dirs, and updates DB paths (store=True).
+
+    The art pre-flight refuses a predicted divert BEFORE the move; after the
+    move, a backstop re-checks the art actually landed at its predicted name
+    and reports a divert that slipped in between pre-flight and move (same
+    doctrine as ``_verify_moves``: mutation happens, then the failure is
+    reported honestly).
     """
     label = album_label(album)
     pending: list[tuple[int, bytes, bytes]] = []  # bound before try: the except path reads it
@@ -668,6 +765,9 @@ def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
             if not any(bytes(i.path) != dest for i, dest in dests):
                 return ReorganizeOutcome(status="skipped", label=label)
             collisions = _collisions(lib, dests)
+            art = art_preflight(lib, album, dests)
+            if art.collision is not None:
+                collisions.append(art.collision)
             if collisions:
                 return ReorganizeOutcome(
                     status="failed", label=label, error=_collision_error(collisions)
@@ -683,6 +783,15 @@ def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
             after = {int(i.id): bytes(i.path) for i in album.items()}
             _carry_sidecars(lib, pending, after)
             problems = _verify_moves(pending, after)
+            if art.expected_dest is not None and album.artpath:
+                landed = os.path.normpath(bytes(album.artpath))
+                if landed != art.expected_dest:
+                    problems.append(
+                        f"{_rel_to_music(lib, art.expected_dest)!r}: the album art's"
+                        " computed name was already taken on disk, so the art landed at"
+                        f" {_rel_to_music(lib, landed)!r}"
+                        "; check this album's folder for what is holding that name"
+                    )
             if problems:
                 return ReorganizeOutcome(status="failed", label=label, error="; ".join(problems))
             return ReorganizeOutcome(status="moved", label=label, source_dir=source_dir or None)

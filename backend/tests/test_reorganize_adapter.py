@@ -16,7 +16,7 @@ from app.beets.reorganize import (
     collect_units,
     plan_reorganize,
 )
-from app.models.reorganize import ReorganizeMove
+from app.models.reorganize import ReorganizeConflict, ReorganizeMove
 from tests.conftest import build_library
 
 SAMPLE_FLAC = Path(__file__).parent / "fixtures" / "silent.flac"
@@ -384,6 +384,274 @@ def test_reorganize_cross_unit_collision_refused_every_run(tmp_path: Path) -> No
         assert plan.already_in_place == 1
         assert plan.conflicts_total == 1
         assert [c.kind for c in plan.conflicts[0].collisions] == ["cross_unit"]
+
+
+def test_reorganize_album_refuses_when_a_stray_file_holds_the_art_name(
+    reorganize_lib: Library,
+) -> None:
+    """A stray file already holds the name the album art would be moved to.
+
+    Pre-fix (2026-08-28): outcome was status "moved" and the real art was silently
+    diverted to ``cover.1.jpg`` beside the untouched stray ``cover.jpg``.
+    """
+    lib = reorganize_lib
+    music = Path(os.fsdecode(lib.directory))
+    with lib.music_dir_context():
+        album = _album(lib, "In Rainbows")
+        art = music / "junk" / "ir" / "cover.jpg"
+        art.write_bytes(b"real art")
+        album.artpath = os.fsencode(str(art))
+        album.store()
+    dest_dir = music / "Radiohead" / "In Rainbows"
+    dest_dir.mkdir(parents=True)
+    (dest_dir / "cover.jpg").write_bytes(b"stray")
+    outcome = reorg.reorganize_album(lib, _album(lib, "In Rainbows"))
+    assert outcome.status == "failed"
+    assert "cover.jpg" in (outcome.error or "")
+    # nothing moved: items, art and the stray all untouched
+    assert (music / "junk" / "ir" / "a.mp3").exists()
+    assert art.exists()
+    assert (dest_dir / "cover.jpg").read_bytes() == b"stray"
+    with lib.music_dir_context():
+        assert bytes(_album(lib, "In Rainbows").artpath or b"") == os.fsencode(str(art))
+
+
+def test_preview_counts_an_art_collision_as_a_conflict(reorganize_lib: Library) -> None:
+    """The same setup as the refusal test, seen through the PREVIEW: the unit is a
+    conflict (with an ``art`` row), not an ordinary move, and the plan's counts say
+    so — ``will_move`` drops by one, ``conflicts_total`` gains one."""
+    lib = reorganize_lib
+    music = Path(os.fsdecode(lib.directory))
+    with lib.music_dir_context():
+        album = _album(lib, "In Rainbows")
+        art = music / "junk" / "ir" / "cover.jpg"
+        art.write_bytes(b"real art")
+        album.artpath = os.fsencode(str(art))
+        album.store()
+    dest_dir = music / "Radiohead" / "In Rainbows"
+    dest_dir.mkdir(parents=True)
+    (dest_dir / "cover.jpg").write_bytes(b"stray")
+
+    with lib.music_dir_context():
+        row = _describe_album(lib, _album(lib, "In Rainbows"))
+        assert isinstance(row, ReorganizeConflict)
+        assert any(c.kind == "art" for c in row.collisions)
+
+    plan = plan_reorganize(lib, scope="library", artist=None, album_id=None)
+    # In Rainbows under conflicts, not moves (cf. test_plan_library_counts).
+    assert plan.will_move == 2
+    assert plan.conflicts_total == 1
+    assert "Radiohead - In Rainbows" in [c.label for c in plan.conflicts]
+
+
+def test_reorganize_album_refuses_an_alias_of_its_own_art_at_the_destination(
+    reorganize_lib: Library,
+) -> None:
+    """A symlink to the album's own art squatting the destination still makes
+    beets divert (move_art has no samefile guard), so it must refuse."""
+    lib = reorganize_lib
+    music = Path(os.fsdecode(lib.directory))
+    with lib.music_dir_context():
+        album = _album(lib, "In Rainbows")
+        art = music / "junk" / "ir" / "cover.jpg"
+        art.write_bytes(b"real art")
+        album.artpath = os.fsencode(str(art))
+        album.store()
+    dest_dir = music / "Radiohead" / "In Rainbows"
+    dest_dir.mkdir(parents=True)
+    (dest_dir / "cover.jpg").symlink_to(art)
+    outcome = reorg.reorganize_album(lib, _album(lib, "In Rainbows"))
+    assert outcome.status == "failed"
+    assert "cover.jpg" in (outcome.error or "")
+
+
+def test_art_destination_alias_of_a_moving_item_is_exempted(reorganize_lib: Library) -> None:
+    """The samefile half of the vacating exemption: the stray at the predicted
+    art name is a SYMLINK to a file that this unit itself relocates (a.mp3 ->
+    01 15 Step.mp3) — byte-unequal to every moving path, samefile-equal to one.
+    The alias's target vacates during the item moves, so by the time the art
+    moves the destination is a dangling symlink (os.path.exists: False), beets
+    takes the name and no divert happens."""
+    lib = reorganize_lib
+    music = Path(os.fsdecode(lib.directory))
+    with lib.music_dir_context():
+        album = _album(lib, "In Rainbows")
+        art = music / "junk" / "ir" / "cover.jpg"
+        art.write_bytes(b"real art")
+        album.artpath = os.fsencode(str(art))
+        album.store()
+        first = next(i for i in album.items())
+        assert os.path.basename(os.fsdecode(first.path)) == "a.mp3"  # the alias target
+    dest_dir = music / "Radiohead" / "In Rainbows"
+    dest_dir.mkdir(parents=True)
+    (dest_dir / "cover.jpg").symlink_to(art.parent / "a.mp3")
+    outcome = reorg.reorganize_album(lib, _album(lib, "In Rainbows"))
+    assert outcome.status == "moved"
+    with lib.music_dir_context():
+        final_art = _album(lib, "In Rainbows").artpath
+        assert final_art is not None
+        assert os.path.basename(final_art) == b"cover.jpg"
+
+
+def test_art_divert_that_slips_past_the_preflight_is_reported(
+    monkeypatch: pytest.MonkeyPatch, reorganize_lib: Library
+) -> None:
+    """A divert that lands between pre-flight and move is caught by the backstop:
+    the items DO move (mutation happens), then the failure reports honestly.
+    Simulated by silencing the pre-flight (monkeypatch, as in
+    test_reorganize_album_failure_is_caught)."""
+    lib = reorganize_lib
+    music = Path(os.fsdecode(lib.directory))
+    with lib.music_dir_context():
+        album = _album(lib, "In Rainbows")
+        art = music / "junk" / "ir" / "cover.jpg"
+        art.write_bytes(b"real art")
+        album.artpath = os.fsencode(str(art))
+        album.store()
+    dest_dir = music / "Radiohead" / "In Rainbows"
+    dest_dir.mkdir(parents=True)
+    (dest_dir / "cover.jpg").write_bytes(b"stray")
+    expected = os.path.normpath(os.fsencode(str(dest_dir / "cover.jpg")))
+    monkeypatch.setattr(reorg, "art_preflight", lambda *a, **k: reorg.ArtPreflight(None, expected))
+    outcome = reorg.reorganize_album(lib, _album(lib, "In Rainbows"))
+    assert outcome.status == "failed"
+    assert "cover.1.jpg" in (outcome.error or "")
+
+
+def test_reorganize_album_without_art_moves_despite_stray_occupant(
+    reorganize_lib: Library,
+) -> None:
+    """No artpath: a stray file holding the destination art name is irrelevant —
+    there is no art to divert, so the move goes through."""
+    lib = reorganize_lib
+    music = Path(os.fsdecode(lib.directory))
+    dest_dir = music / "Radiohead" / "In Rainbows"
+    dest_dir.mkdir(parents=True)
+    (dest_dir / "cover.jpg").write_bytes(b"stray")
+    outcome = reorg.reorganize_album(lib, _album(lib, "In Rainbows"))
+    assert outcome.status == "moved"
+
+
+def test_reorganize_album_with_missing_art_moves_and_beets_clears_the_ref(
+    reorganize_lib: Library,
+) -> None:
+    """artpath points at a file that does not exist: beets clears the dangling
+    ref itself during the move — that is not a divert, so the move goes through
+    and the re-fetched artpath is falsy."""
+    lib = reorganize_lib
+    music = Path(os.fsdecode(lib.directory))
+    with lib.music_dir_context():
+        album = _album(lib, "In Rainbows")
+        album.artpath = os.fsencode(str(music / "junk" / "ir" / "missing.jpg"))
+        album.store()
+    outcome = reorg.reorganize_album(lib, _album(lib, "In Rainbows"))
+    assert outcome.status == "moved"
+    with lib.music_dir_context():
+        assert not _album(lib, "In Rainbows").artpath
+
+
+def test_missing_art_with_a_stray_at_the_computed_name_still_moves(
+    reorganize_lib: Library,
+) -> None:
+    """The guard's real job: a DANGLING artpath plus a stray at the computed art
+    name. beets would move cleanly and just drop the dead ref; without the
+    missing-file early return the stray reads as an art collision and the album
+    is refused on every sweep forever."""
+    lib = reorganize_lib
+    music = Path(os.fsdecode(lib.directory))
+    with lib.music_dir_context():
+        album = _album(lib, "In Rainbows")
+        # File NOT created — the ref dangles. The extension is what
+        # art_destination takes from it, so the computed name is cover.jpg.
+        album.artpath = os.fsencode(str(music / "junk" / "ir" / "missing.jpg"))
+        album.store()
+    dest_dir = music / "Radiohead" / "In Rainbows"
+    dest_dir.mkdir(parents=True)
+    (dest_dir / "cover.jpg").write_bytes(b"stray")
+    outcome = reorg.reorganize_album(lib, _album(lib, "In Rainbows"))
+    assert outcome.status == "moved"
+    with lib.music_dir_context():
+        assert not _album(lib, "In Rainbows").artpath
+
+
+def test_reorganize_album_in_place_rename_keeps_its_art(reorganize_lib: Library) -> None:
+    """Geogaddi renames in place (right dir, wrong filenames): its art sits at
+    the SAME path before and after, so there is no divert — move goes through,
+    artpath unchanged, no cover.1.jpg anywhere in the dir."""
+    lib = reorganize_lib
+    music = Path(os.fsdecode(lib.directory))
+    dest_dir = music / "Boards of Canada" / "Geogaddi"
+    art = dest_dir / "cover.jpg"
+    art.write_bytes(b"real art")
+    with lib.music_dir_context():
+        album = _album(lib, "Geogaddi")
+        album.artpath = os.fsencode(str(art))
+        album.store()
+    outcome = reorg.reorganize_album(lib, _album(lib, "Geogaddi"))
+    assert outcome.status == "moved"
+    with lib.music_dir_context():
+        assert bytes(_album(lib, "Geogaddi").artpath or b"") == os.fsencode(str(art))
+    assert not (dest_dir / "cover.1.jpg").exists()
+
+
+def test_reorganize_album_vacating_item_vacates_the_art_name(reorganize_lib: Library) -> None:
+    """A fourth In Rainbows item currently SITS AT the destination art name
+    (Radiohead/In Rainbows/cover.jpg) and moves to '04 Hidden.jpg', so it
+    vacates the name before the art moves — the occupant is this unit's own
+    file, not a stranger, so the move goes through and the art lands at
+    cover.jpg (no .1 divert)."""
+    lib = reorganize_lib
+    music = Path(os.fsdecode(lib.directory))
+    with lib.music_dir_context():
+        album = _album(lib, "In Rainbows")
+        art = music / "junk" / "ir" / "cover.jpg"
+        art.write_bytes(b"real art")
+        album.artpath = os.fsencode(str(art))
+        album.store()
+    dest_dir = music / "Radiohead" / "In Rainbows"
+    dest_dir.mkdir(parents=True)
+    occupant = dest_dir / "cover.jpg"
+    occupant.write_bytes(b"\x00")
+    it = Item(
+        album="In Rainbows",
+        albumartist="Radiohead",
+        artist="Radiohead",
+        title="Hidden",
+        track=4,
+        disc=1,
+    )
+    it.path = os.fsencode(str(occupant))
+    it.album_id = album.id
+    lib.add(it)
+    it.store()
+    outcome = reorg.reorganize_album(lib, _album(lib, "In Rainbows"))
+    assert outcome.status == "moved"
+    with lib.music_dir_context():
+        assert bytes(_album(lib, "In Rainbows").artpath or b"") == os.fsencode(str(occupant))
+    assert not (dest_dir / "cover.1.jpg").exists()
+
+
+def test_reorganize_heals_a_previously_diverted_art_name(reorganize_lib: Library) -> None:
+    """Pins the upstream fact the whole fix leans on: art_destination rebuilds the
+    name from the template and DISCARDS a diverted `.1` base, so move_art's
+    byte-equal early return never fires on a diverted name and a clean move
+    renames cover.1.jpg back to cover.jpg."""
+    lib = reorganize_lib
+    music = Path(os.fsdecode(lib.directory))
+    with lib.music_dir_context():
+        album = _album(lib, "In Rainbows")
+        art = music / "junk" / "ir" / "cover.1.jpg"
+        art.write_bytes(b"real art")
+        album.artpath = os.fsencode(str(art))
+        album.store()
+    # destination dir does not exist yet: a fully clean move
+    outcome = reorg.reorganize_album(lib, _album(lib, "In Rainbows"))
+    assert outcome.status == "moved"
+    with lib.music_dir_context():
+        artpath = _album(lib, "In Rainbows").artpath
+        assert artpath is not None
+        assert os.path.basename(bytes(artpath)) == b"cover.jpg"
+    assert not (music / "Radiohead" / "In Rainbows" / "cover.1.jpg").exists()
 
 
 def test_reorganize_singleton_refuses_a_destination_held_by_a_stranger(tmp_path: Path) -> None:

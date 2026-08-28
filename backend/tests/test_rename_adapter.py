@@ -150,6 +150,46 @@ def test_apply_renames_every_album_and_moves_files(rename_lib: Library) -> None:
     assert len(outcome.moved_item_ids) == 3
 
 
+def test_apply_refuses_the_move_of_the_album_whose_art_name_is_taken(
+    rename_lib: Library,
+) -> None:
+    """A stray cover.jpg at one album's rename destination refuses only that
+    album's move phase (its tags still rename) and fans nothing into the rest."""
+    from app.beets.library import _require_id
+    from app.beets.rename import apply_artist_rename
+
+    aid = _require_id(
+        next(a.id for a in rename_lib.albums() if a.album == "Live" and a.albumartist == "Fayrouz")
+    )
+    album = rename_lib.get_album(aid)
+    assert album is not None
+    old_dir = os.path.dirname(os.fsdecode(next(iter(album.items())).path))
+    art = os.path.join(old_dir, "cover.jpg")
+    with open(art, "wb") as fh:
+        fh.write(b"\xff\xd8\xff\xe0JFIF-fake-cover")
+    album.artpath = os.fsencode(art)
+    album.store()
+
+    music = Path(os.fsdecode(rename_lib.directory))
+    stray_dir = music / "Fairuz" / "Live"
+    stray_dir.mkdir(parents=True)
+    (stray_dir / "cover.jpg").write_bytes(b"stray")
+
+    outcome = apply_artist_rename(rename_lib, request=_req(), write=True, move=True)
+    live = next(a for a in outcome.albums if a.title == "Live")
+    assert live.outcome == "renamed"  # tags renamed
+    assert live.move_failures == 1  # its single track's move refused
+    refetched = rename_lib.get_album(aid)
+    assert refetched is not None
+    refetched_path = os.fsdecode(next(iter(refetched.items())).path)
+    assert refetched_path == os.path.join(old_dir, "01 Kifak Inta.flac")
+    assert not (stray_dir / "cover.1.jpg").exists()
+    # the mate album moved normally
+    best_of = next(a for a in outcome.albums if a.title == "Best Of")
+    assert best_of.move_failures == 0
+    assert len(outcome.moved_item_ids) == 2
+
+
 def test_apply_writes_the_tag_into_the_files(rename_lib: Library) -> None:
     from mediafile import MediaFile
 
