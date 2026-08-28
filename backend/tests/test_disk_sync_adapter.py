@@ -404,3 +404,75 @@ def test_run_aborts_when_root_drops_midrun(
             edit_lib, on_total=lambda n: None, on_item=lambda o: None, should_stop=lambda: False
         )
     assert len(list(edit_lib.items())) == n_before  # no mass-removal
+
+
+def _new_multi_disc_album(lib: Library) -> list[bytes]:
+    """Seed ONE new album row whose items span sibling CD folders
+    (``Dualband/Split/CD1`` + ``/CD2``) — the disc-bearing ``paths:``
+    layout. ONE ``add_album`` call so beets groups all four items onto the
+    same album row (two calls would create two same-labelled rows). Returns
+    the absolute file paths (bytes).
+    """
+    import shutil
+
+    from beets.library import Item
+
+    sample = os.path.join(os.path.dirname(__file__), "fixtures", "silent.flac")
+    items = []
+    paths = []
+    n = 0
+    for disc in ("CD1", "CD2"):
+        base = os.path.join(os.fsdecode(lib.directory), "Dualband", "Split", disc)
+        os.makedirs(base, exist_ok=True)
+        for title in ("A", "B"):
+            n += 1
+            path = os.path.join(base, f"{n:02d} {title}.flac")
+            shutil.copyfile(sample, path)
+            item = Item(
+                album="Split", albumartist="Dualband", artist="Dualband", title=title, track=n
+            )
+            item.path = os.fsencode(path)
+            items.append(item)
+            paths.append(os.fsencode(path))
+    lib.add_album(items).store()
+    return paths
+
+
+def test_emptied_row_shows_album_root_for_multi_disc_album(edit_lib: Library) -> None:
+    """A disc-bearing ``paths:`` template puts ONE album's items in sibling
+    CD folders (Artist/Album/CD1, .../CD2). The emptied row must show the
+    album ROOT, not the first disc's folder — first-dir-wins read as "the
+    album is in CD1"."""
+    paths = _new_multi_disc_album(edit_lib)
+    for path in paths:
+        os.remove(path)  # the whole album is gone from disk
+
+    plan = plan_disk_sync(edit_lib)
+
+    rows = [row for row in plan.emptied_albums if "Dualband" in row.label]
+    assert rows, "the emptied album must be in the preview"
+    assert rows[0].track_count == 4
+    assert rows[0].path == os.path.join("Dualband", "Split")  # the album ROOT
+
+
+def test_emptied_row_item_at_library_root_shows_dot(edit_lib: Library) -> None:
+    """An item sitting at the MUSIC DIR ROOT has the display dir "." — pin the
+    defensive branch so the commonpath fold (which maps POSIX commonpath's
+    ``""`` back to ``"."``) cannot regress it to an empty path."""
+    import shutil
+
+    from beets.library import Item
+
+    sample = os.path.join(os.path.dirname(__file__), "fixtures", "silent.flac")
+    path = os.path.join(os.fsdecode(edit_lib.directory), "01 Root.flac")
+    shutil.copyfile(sample, path)
+    item = Item(album="Rootsolo", albumartist="Rootsolo", artist="Rootsolo", title="Root", track=1)
+    item.path = os.fsencode(path)
+    edit_lib.add_album([item]).store()
+    os.remove(path)
+
+    plan = plan_disk_sync(edit_lib)
+
+    rows = [row for row in plan.emptied_albums if "Rootsolo" in row.label]
+    assert rows
+    assert rows[0].path == "."

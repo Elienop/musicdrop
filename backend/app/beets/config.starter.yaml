@@ -15,7 +15,8 @@ plugins:
 
 # Import behavior. These defaults are what the candidate-review UI expects.
 import:
-  autotag: yes        # show candidates for human review
+  autotag: yes        # MusicDrop-driven imports always force candidate review
+                      # regardless of this value; it only affects CLI `beet import` runs
   copy: yes           # copy files into `directory`
   move: no            # if yes, move source files instead of copying
   write: yes          # write tags back to imported files on Apply

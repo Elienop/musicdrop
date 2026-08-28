@@ -6,6 +6,7 @@ Hashed /assets get immutable cache headers; everything else that isn't
 /api falls back to index.html (no-cache) so client-side deep links work.
 """
 
+import logging
 import os
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
 from app.models.errors import ErrorDetail
+
+logger = logging.getLogger(__name__)
 
 
 class ImmutableStaticFiles(StaticFiles):
@@ -42,6 +45,17 @@ def mount_static(app: FastAPI, static_dir: str) -> None:
     root = Path(static_dir).resolve()
     index = root / "index.html"
     if not index.is_file():
+        # main.py already switched to the PRODUCTION posture (dev origins
+        # refused) on the strength of a truthy static_dir — say out loud that
+        # no SPA will actually be served, and where to look. Fail-closed
+        # behavior is unchanged: nothing is mounted.
+        logger.warning(
+            "static_dir %s has no index.html: production posture is active "
+            "(dev origins refused) but no SPA will be served. The realistic "
+            "cause is a stale MUSICDROP_STATIC_DIR (e.g. in backend/.env) — "
+            "unset it for dev, or point it at a built frontend dist dir.",
+            static_dir,
+        )
         return
 
     assets = root / "assets"
