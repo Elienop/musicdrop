@@ -267,7 +267,9 @@ def test_reorganize_album_intra_unit_collision_refused_every_run(tmp_path: Path)
         error = outcome.error or ""
         assert "01 Song other.mp3" in error  # BOTH tracks named
         assert "'Song'" in error  # BOTH tracks named
-        assert "track number and title" not in error  # no hardcoded guess
+        # The real emitted form (collisions_by_dest) names the two colliding tracks;
+        # "track number and title" was unproducible by any message, so it pins nothing.
+        assert "tracks resolve to this same name" in error
         assert _tree(music) == before  # zero renames, zero new files
         assert not (music / "X").exists()  # the destination folder was never created
 
@@ -592,9 +594,14 @@ def test_verify_moves_divert_message_states_only_what_it_knows() -> None:
         [(1, b"/m/junk/raw.mp3", b"/m/X/A/01 Song.mp3")], {1: b"/m/X/A/01 Song.1.mp3"}
     )
     assert len(problems) == 1
-    assert "01 Song.1.mp3" in problems[0]
-    assert "already taken" in problems[0]
-    assert "two tracks share the same track number and title" not in problems[0]
+    # _verify_moves has exactly three forms (not-found / did-not-take-effect /
+    # diverted); this case emits the divert one, and "two tracks share the same
+    # track number and title" was unproducible by any of them — so pin the exact
+    # emitted text instead of a dead absence needle.
+    assert problems[0] == (
+        "raw.mp3: the computed file name was already taken on disk, so the file"
+        " landed at '01 Song.1.mp3'; check this album's folder for what is holding that name"
+    )
 
 
 # --- lyric sidecars follow the audio ------------------------------------------

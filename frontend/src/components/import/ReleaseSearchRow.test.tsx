@@ -65,7 +65,7 @@ test("the URL hint lives in the placeholder, not a paragraph", () => {
   expect(
     screen.getByPlaceholderText("MusicBrainz/Deezer release URL or ID"),
   ).toBeInTheDocument();
-  expect(screen.queryByText(/paste a musicbrainz release/i)).not.toBeInTheDocument();
+  // ("paste a musicbrainz release" never existed as paragraph copy in this component — placeholder only — so no absence pin.)
 });
 
 test("feedback and error lines render with live-region roles", () => {

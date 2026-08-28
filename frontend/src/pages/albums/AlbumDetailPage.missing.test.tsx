@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AlbumDetail } from "@/api/useAlbum";
 import type { AlbumMissingReport } from "@/api/useAlbumMissing";
+import { AlbumDetailPage } from "@/pages/albums/AlbumDetailPage";
 
 const album: AlbumDetail = {
   id: 7, album_artist: "Radiohead", title: "In Rainbows", year: 2007,
@@ -41,8 +42,7 @@ vi.mock("@/api/useLyricsBackfill", () => ({
   useStopLyricsBackfill: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
-async function renderPage() {
-  const { AlbumDetailPage } = await import("@/pages/albums/AlbumDetailPage");
+function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>

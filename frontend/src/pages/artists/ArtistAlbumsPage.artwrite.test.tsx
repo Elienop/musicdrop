@@ -136,7 +136,6 @@ describe("ArtistAlbumsPage artist-art apply", () => {
     const btn = screen.getByRole("button", { name: /save art to library/i });
     expect(btn).toBeEnabled();
     expect(btn).not.toHaveAttribute("aria-disabled");
-    // Result/tally now shows in the app banner, not inline.
-    expect(screen.queryByText(/1 written/i)).toBeNull();
+    // The "N written" tally renders in the app shell (useActivity), not this tree, so asserting its absence here proved nothing.
   });
 });

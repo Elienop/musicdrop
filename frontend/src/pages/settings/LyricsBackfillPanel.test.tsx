@@ -1,8 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import type { LyricsBackfillStatus, LyricsCoverage } from "@/api/useLyricsBackfill";
+import { LyricsBackfillPanel } from "@/pages/settings/LyricsBackfillPanel";
 
 const startMock = vi.fn();
 const baseCoverage: LyricsCoverage = {
@@ -23,8 +25,7 @@ vi.mock("@/api/useLyricsBackfill", () => ({
   useStopLyricsBackfill: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
-async function renderPanel() {
-  const { LyricsBackfillPanel } = await import("@/pages/settings/LyricsBackfillPanel");
+function renderPanel() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
@@ -41,7 +42,7 @@ describe("LyricsBackfillPanel", () => {
   });
 
   it("shows coverage and starts a backfill", async () => {
-    const user = (await import("@testing-library/user-event")).default.setup();
+    const user = userEvent.setup();
     await renderPanel();
     expect(screen.getByText(/70%/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /backfill missing lyrics/i }));
@@ -69,7 +70,7 @@ describe("LyricsBackfillPanel", () => {
   });
 
   it("passes recheckMisses when the checkbox is ticked", async () => {
-    const user = (await import("@testing-library/user-event")).default.setup();
+    const user = userEvent.setup();
     await renderPanel();
     await user.click(
       screen.getByRole("checkbox", { name: /re-check tracks already found to have no lyrics/i }),
