@@ -375,15 +375,15 @@ def test_duplicates_resolve_surfaces_the_root_cause(
     assert len(list(duplicates_lib.albums())) == n_before
 
     req = _StubRequest(_StubApp(make_test_handle(duplicates_lib, tmp_path)))
+    resolve_req = ResolveRequest(
+        mode=DuplicateMode.strict, keep_album_id=keep, remove_album_ids=[drop]
+    )
+    coro = resolve_duplicates_op(
+        req,  # type: ignore[arg-type]  # duck-typed stub: only .app.state is read
+        resolve_req,
+    )
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(
-            resolve_duplicates_op(
-                req,  # type: ignore[arg-type]  # duck-typed stub: only .app.state is read
-                ResolveRequest(
-                    mode=DuplicateMode.strict, keep_album_id=keep, remove_album_ids=[drop]
-                ),
-            )
-        )
+        asyncio.run(coro)
     assert ei.value.status_code == 500  # the established absorb shape, message-carrying
     assert "music share mounted" in str(ei.value.detail)
     assert len(list(duplicates_lib.albums())) == n_before

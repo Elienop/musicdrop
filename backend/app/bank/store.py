@@ -635,7 +635,7 @@ def upsert_by_folder(
                 # invisible-but-permanent orphan.
                 _row_path(bank_dir, existing_id).unlink(missing_ok=True)
                 _index_forget(bank_dir, existing_id)
-            pass  # fall through to create below (outside the lock reuse)
+            # fall through to create below (outside the lock reuse)
         elif existing.fingerprint == fingerprint:
             existing.banked_at = _now()
             _write(bank_dir, existing)

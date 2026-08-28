@@ -130,19 +130,26 @@ class _PlanAccumulator:
         self.album_dirs: dict[int, str] = {}
 
 
+def _fold_album_membership(lib: Any, item: Any, acc: _PlanAccumulator) -> int | None:
+    """Fold the item into its album's totals and root dir; returns the album id."""
+    album_id: int | None = item.album_id
+    if album_id is None:
+        return None
+    acc.album_totals[album_id] = acc.album_totals.get(album_id, 0) + 1
+    rel_dir = _rel_dir(lib, item)
+    if album_id in acc.album_dirs:
+        # Items can span folders (a disc-bearing ``paths:`` template or a
+        # mid-reorganize crash split): fold toward the deepest common
+        # dir so the row shows the album ROOT, not the first disc's.
+        acc.album_dirs[album_id] = _common_rel_dir(acc.album_dirs[album_id], rel_dir)
+    else:
+        acc.album_dirs[album_id] = rel_dir
+    return album_id
+
+
 def _scan_item(lib: Any, item: Any, acc: _PlanAccumulator) -> None:
     """Classify one item (remove / update / skip) and fold it into ``acc``."""
-    album_id = item.album_id
-    if album_id is not None:
-        acc.album_totals[album_id] = acc.album_totals.get(album_id, 0) + 1
-        rel_dir = _rel_dir(lib, item)
-        if album_id in acc.album_dirs:
-            # Items can span folders (a disc-bearing ``paths:`` template or a
-            # mid-reorganize crash split): fold toward the deepest common
-            # dir so the row shows the album ROOT, not the first disc's.
-            acc.album_dirs[album_id] = _common_rel_dir(acc.album_dirs[album_id], rel_dir)
-        else:
-            acc.album_dirs[album_id] = rel_dir
+    album_id = _fold_album_membership(lib, item, acc)
     if _file_missing(item):
         acc.will_remove += 1
         if album_id is not None:

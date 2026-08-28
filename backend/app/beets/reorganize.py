@@ -578,6 +578,25 @@ def _album_dirs_above(item: Any, root: str, music_dir: str, disc_levels: int) ->
     return {d for d in _template_dirs(item, music_dir, disc_levels) if _under(root, d)}
 
 
+def _poison_if_foreign_container(
+    parent: str,
+    roots: dict[str, Any],
+    music_dir: str,
+    disc_levels: int,
+    keeps: dict[str, bool],
+    poisoned: set[str],
+) -> None:
+    """Poison ``parent`` when it is another album's root the template does not
+    claim as that album's own dir (``keeps`` memoizes the template answer)."""
+    if parent not in roots or parent in poisoned:
+        return
+    if parent not in keeps:
+        own = _template_dirs(roots[parent], music_dir, disc_levels)
+        keeps[parent] = parent in own
+    if not keeps[parent]:
+        poisoned.add(parent)
+
+
 def _drop_container_roots(
     roots: dict[str, Any], music_dir: str, disc_levels: int
 ) -> dict[str, Any]:
@@ -607,12 +626,7 @@ def _drop_container_roots(
     for root in roots:
         parent = os.path.dirname(root)
         while _under(parent, music_dir):
-            if parent in roots and parent not in poisoned:
-                if parent not in keeps:
-                    own = _template_dirs(roots[parent], music_dir, disc_levels)
-                    keeps[parent] = parent in own
-                if not keeps[parent]:
-                    poisoned.add(parent)
+            _poison_if_foreign_container(parent, roots, music_dir, disc_levels, keeps, poisoned)
             nxt = os.path.dirname(parent)
             if nxt == parent:
                 break
