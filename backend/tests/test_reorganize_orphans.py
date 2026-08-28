@@ -300,3 +300,41 @@ def test_sweep_leaves_live_multidisc_scans_alone(tmp_path: Path) -> None:
     assert reg.state().orphans_trashed == 1
     assert (scans / "booklet.jpg").exists()
     assert not husk.exists()
+
+
+def test_live_album_roots_keeps_an_album_dir_that_nests_another_album(tmp_path: Path) -> None:
+    """A bonus disc imported as its OWN album row sits inside the main album's folder,
+    so the main album's root strictly contains another root. Dropping every such
+    container let the sweep trash the main album's 'Sleeve Photos' (deep-review F3).
+
+    The shape is ORDINARY, not a half-finished move: the main album's items are split
+    across ``Disc 01``/``Disc 02`` exactly as a split album's are split across two
+    sibling folders, so only the path template tells the two apart — ``A/Main`` is
+    where the template puts this album, ``Artist`` (the split case) is not.
+    """
+    from app.beets.orphans import find_orphan_folders
+    from app.beets.reorganize import live_album_roots
+
+    lib = _library(tmp_path, path_format=_DISC_FORMAT)
+    music = Path(os.fsdecode(lib.directory))
+    _add_album(
+        lib,
+        artist="A",
+        album="Main",
+        files=[("A/Main/Disc 01/01 T1.mp3", 1), ("A/Main/Disc 02/02 T2.mp3", 2)],
+    )
+    _add_album(lib, artist="A", album="Bonus Disc", files=[("A/Main/Bonus Disc/01 T1.mp3", 1)])
+    art = music / "A" / "Main" / "Sleeve Photos"
+    art.mkdir(parents=True)
+    (art / "back.jpg").write_bytes(b"x")
+    husk = music / "Ghost"  # control: a genuine husk must still be swept
+    husk.mkdir(parents=True)
+    (husk / "poster.jpg").write_bytes(b"x")
+
+    roots = live_album_roots(lib)
+
+    assert str(music / "A" / "Main") in roots
+    found = find_orphan_folders(
+        music, seeds=None, trash_dir=tmp_path / "trash", protected_dirs=roots
+    )
+    assert found == [husk]

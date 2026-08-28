@@ -435,21 +435,16 @@ def _disc_dir_levels(item: Any) -> int:
     return len(here) - shared
 
 
-def _album_dirs_above(item: Any, root: str, music_dir: str, disc_levels: int) -> set[str]:
-    """The dirs a live album owns ABOVE its actual root, per the path template.
+def _template_dirs(item: Any, music_dir: str, disc_levels: int) -> set[str]:
+    """The dirs the path template says this album occupies: the item's destination
+    dir, plus the dir ``disc_levels`` above it when each disc gets its own directory.
 
-    An album whose audio all sits in ONE subfolder (``Album/CD1/*.flac`` — a one-disc
-    box set, or a disc-bearing template with a single disc) folds to that subfolder,
-    so the ``$album`` dir holding its ``Scans (LP)`` is not covered by the root alone.
-    The template says where that dir is: the item's destination dir, plus the dir
-    ``disc_levels`` above it when each disc gets its own directory.
-
-    Only dirs that strictly CONTAIN the album's actual root are taken, and that is the
-    whole discriminator — it is what keeps an ARTIST container out of the set. For an
-    album filed where the template wants it the destination dir IS the root, so there
-    is nothing above to add; for a misfiled one the destination is somewhere else
-    entirely and contains no part of the root. So a genuine husk sitting beside a live
-    album (``Artist/{Good Album/01.flac, Old Album/cover.jpg}``) is still swept.
+    This is the ONE piece of information that separates an album's own folder from a
+    mere container of albums. The two are isomorphic on disk —
+    ``Artist/{Good Album/audio, Old Album/art}`` (husk, must sweep) and
+    ``Album/{CD1/audio, Scans (LP)/art}`` (art, must keep) are the same tree — so no
+    rule over the filesystem plus the set of roots can tell them apart. The template
+    can: it names where THIS album belongs.
     """
     try:
         dest_rel = os.path.dirname(os.fsdecode(item.destination(relative_to_libdir=True)))
@@ -457,30 +452,65 @@ def _album_dirs_above(item: Any, root: str, music_dir: str, disc_levels: int) ->
         _log.debug("destination probe for album protection failed", exc_info=True)
         return set()
     dest_dir = os.path.normpath(os.path.join(music_dir, dest_rel))
-    owned = [dest_dir]
     above = dest_dir
     for _ in range(disc_levels):
         above = os.path.dirname(above)
-    if above != dest_dir:
-        owned.append(above)
-    return {d for d in owned if _under(d, music_dir) and _under(root, d)}
+    return {d for d in (dest_dir, above) if _under(d, music_dir)}
 
 
-def _drop_container_roots(roots: dict[str, Any], music_dir: str) -> dict[str, Any]:
-    """Drop any root that strictly CONTAINS another album's root.
+def _album_dirs_above(item: Any, root: str, music_dir: str, disc_levels: int) -> set[str]:
+    """The dirs a live album owns ABOVE its actual root, per the path template.
 
-    Only a half-finished move folds that high — one album's items split across two
-    folders commonpath UP to the artist dir — and an artist dir in the set silently
-    stops every husk beneath it from ever being swept. Both dirs the split album
-    actually occupies hold audio directly, so its own art subfolders keep the
-    ``has_own_audio`` protection they had before.
+    An album whose audio all sits in ONE subfolder (``Album/CD1/*.flac`` — a one-disc
+    box set, or a disc-bearing template with a single disc) folds to that subfolder,
+    so the ``$album`` dir holding its ``Scans (LP)`` is not covered by the root alone.
+
+    Only :func:`_template_dirs` entries that strictly CONTAIN the album's actual root
+    are taken, and that is the whole discriminator — it is what keeps an ARTIST
+    container out of the set. For an album filed where the template wants it the
+    destination dir IS the root, so there is nothing above to add; for a misfiled one
+    the destination is somewhere else entirely and contains no part of the root. So a
+    genuine husk sitting beside a live album
+    (``Artist/{Good Album/01.flac, Old Album/cover.jpg}``) is still swept.
     """
+    return {d for d in _template_dirs(item, music_dir, disc_levels) if _under(root, d)}
+
+
+def _drop_container_roots(
+    roots: dict[str, Any], music_dir: str, disc_levels: int
+) -> dict[str, Any]:
+    """Drop a root that strictly CONTAINS another album's root — UNLESS the template
+    says that dir is the containing album's OWN.
+
+    Two shapes fold a root high enough to swallow another album's, and they are
+    indistinguishable on disk (both split the album's items across sibling folders of
+    the contained root):
+
+    * a half-finished move — one album's items left across ``Artist/Half A`` and
+      ``Artist/Half B`` commonpath UP to the ARTIST dir. Keeping that would silently
+      stop every husk under that artist from ever being swept, so it is dropped. Both
+      folders it occupies hold audio directly, so its own art subfolders keep the
+      ``has_own_audio`` protection they always had.
+    * an ordinary NESTED ALBUM — a bonus disc imported as its own row inside
+      ``A/Main``, whose multi-disc parent legitimately roots at ``A/Main``. Dropping
+      that one let the sweep trash ``A/Main/Sleeve Photos`` (deep-review F3).
+
+    :func:`_template_dirs` separates them: ``A/Main`` is where the template puts that
+    album, ``Artist`` is not. BOUND (deliberate, err toward sweeping over
+    over-protecting): a MISFILED album that also contains another album's root matches
+    no template dir, so it is still dropped and its art subfolders are sweepable.
+    """
+    keeps: dict[str, bool] = {}
     poisoned: set[str] = set()
     for root in roots:
         parent = os.path.dirname(root)
         while _under(parent, music_dir):
-            if parent in roots:
-                poisoned.add(parent)
+            if parent in roots and parent not in poisoned:
+                if parent not in keeps:
+                    own = _template_dirs(roots[parent], music_dir, disc_levels)
+                    keeps[parent] = parent in own
+                if not keeps[parent]:
+                    poisoned.add(parent)
             nxt = os.path.dirname(parent)
             if nxt == parent:
                 break
@@ -527,10 +557,12 @@ def live_album_roots(lib: Any) -> frozenset[str]:
         root = os.path.normpath(_commonpath_of_dirs(paths))
         if _under(root, music_dir):
             roots[root] = reps[key]
-    kept = _drop_container_roots(roots, music_dir)
-    if not kept:
+    if not roots:
         return frozenset()
-    disc_levels = _disc_dir_levels(next(iter(kept.values())))
+    # Before the container drop, which needs the same template reading to tell an
+    # album's own folder from a mere container of albums.
+    disc_levels = _disc_dir_levels(next(iter(roots.values())))
+    kept = _drop_container_roots(roots, music_dir, disc_levels)
     protected = set(kept)
     for root, item in kept.items():
         protected |= _album_dirs_above(item, root, music_dir, disc_levels)

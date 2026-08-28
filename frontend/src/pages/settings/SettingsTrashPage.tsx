@@ -118,6 +118,9 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
     .filter((bit): bit is string => Boolean(bit))
     .join(" · ");
 
+  // 0 tracks = "nothing here produced a readable media Item", NOT "no audio"
+  // (trash_manage.py) — beets' importer reads more than Item.from_path, so a
+  // 0-track folder can still restore. Explain the uncertainty; never disable.
   const noTracks = album.track_count === 0;
   const reasonId = useId();
 
@@ -130,7 +133,8 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
         <span className="text-muted-foreground truncate text-xs">{meta || album.folder}</span>
         {noTracks && (
           <span id={reasonId} className="text-muted-foreground text-xs">
-            No audio files to restore — Empty removes it permanently.
+            MusicDrop couldn&rsquo;t read audio tags here — Restore may still work; Empty
+            removes it permanently.
           </span>
         )}
         {result && (
@@ -142,7 +146,7 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
       <Button
         variant="outline"
         size="sm"
-        disabled={restore.isPending || noTracks}
+        disabled={restore.isPending}
         aria-describedby={noTracks ? reasonId : undefined}
         onClick={() => restore.mutate(album.folder, { onSuccess: setResult })}
       >

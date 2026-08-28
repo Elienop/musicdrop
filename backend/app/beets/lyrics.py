@@ -131,13 +131,37 @@ def active_source_names(plugin: Any) -> list[str]:
     return [_backend_name(b) for b in getattr(plugin, "backends", [])]
 
 
+#: Flags for creating the atomic-write temp file. ``O_EXCL`` is the load-bearing
+#: one: a FIFO planted at our derived ``.<name>.tmp`` path would make a plain
+#: ``open(tmp, "w")`` block until a reader appears — forever, with no timeout, on
+#: the single-slot backfill worker. Creating exclusively fails EEXIST instead,
+#: which the caller already logs and swallows. ``O_NOFOLLOW`` is belt-and-braces:
+#: POSIX makes ``O_CREAT | O_EXCL`` fail EEXIST on a symlink anyway (measured), so
+#: it only earns its keep if ``O_EXCL`` is ever dropped. Same hazard, and the same
+#: answer, as :func:`_is_marker_sidecar`'s stat guard on the read side.
+_TMP_CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+
+
 def _atomic_write_text(dst: Path, text: str) -> None:
     """Atomic utf-8 write (text mirror of ``artist_art._atomic_write_bytes``):
-    tmp in same dir -> fsync -> dst mode preserved on rewrite (umask default on
-    first write) -> os.replace -> fsync parent dir."""
+    tmp created EXCLUSIVELY in the same dir (see :data:`_TMP_CREATE_FLAGS`) ->
+    fsync -> dst mode preserved on rewrite (umask default on first write) ->
+    os.replace -> fsync parent dir.
+
+    Raises ``OSError`` — including ``FileExistsError`` when anything at all
+    occupies the temp path — and the caller decides what that means.
+    """
     tmp = dst.parent / f".{dst.name}.tmp"
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        # 0o666 so the first write still takes the umask default, as the mode
+        # test pins; a rewrite has its mode restored by the copymode below.
+        fd = os.open(tmp, _TMP_CREATE_FLAGS, 0o666)
+        try:
+            stream = os.fdopen(fd, "w", encoding="utf-8")
+        except BaseException:  # pragma: no cover - fdopen fails only on a bad fd
+            os.close(fd)
+            raise
+        with stream as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
@@ -150,6 +174,11 @@ def _atomic_write_text(dst: Path, text: str) -> None:
         finally:
             os.close(dir_fd)
     finally:
+        # Clears our own leftover AND whatever squatted at the temp path, so an
+        # EEXIST refusal self-heals on the next call instead of wedging this
+        # track forever (a crashed run leaves a stale .tmp the same way). A
+        # dangling symlink is the one squatter this misses — exists() follows it
+        # — which stays a safe, logged, repeated refusal rather than a block.
         if tmp.exists():
             with suppress(OSError):
                 tmp.unlink()

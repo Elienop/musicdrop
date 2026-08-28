@@ -108,6 +108,78 @@ def test_atomic_write_text_preserves_tightened_mode(tmp_path: Path) -> None:
     assert dst.read_text(encoding="utf-8") == "second\n"
 
 
+def test_a_fifo_at_the_tmp_path_neither_blocks_nor_writes(tmp_path: Path) -> None:
+    """The write side of the same hazard the matcher's stat guard closes.
+
+    ``_atomic_write_text`` writes through a derived ``.<name>.tmp`` sibling, and a
+    FIFO planted there makes a plain ``open(tmp, "w")`` block until a reader
+    appears — forever, on the single-slot backfill worker. Creating the temp file
+    exclusively turns that into an immediate EEXIST, which the writer's existing
+    best-effort handling logs and swallows. This test completing at all is the
+    no-hang proof."""
+    from app.beets.lyrics import write_lyric_sidecar
+
+    track = tmp_path / "t.flac"
+    track.write_bytes(b"")
+    os.mkfifo(tmp_path / ".t.txt.tmp")  # exactly the path the writer derives
+
+    assert write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN)) is None
+
+    assert not (tmp_path / "t.txt").exists()  # nothing half-written was left behind
+
+
+def test_a_squatted_tmp_path_is_not_a_permanent_lockout(tmp_path: Path) -> None:
+    """Refusing on EEXIST must not wedge the track forever: the writer's own
+    ``finally`` clears whatever sat at its temp path, so the NEXT write succeeds.
+    Covers a crashed run's leftover ``.tmp`` as much as a planted one."""
+    from app.beets.lyrics import write_lyric_sidecar
+
+    track = tmp_path / "t.flac"
+    track.write_bytes(b"")
+    os.mkfifo(tmp_path / ".t.txt.tmp")
+
+    assert write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN)) is None
+    out = write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN))
+
+    assert out == str(tmp_path / "t.txt")
+    assert "line one" in (tmp_path / "t.txt").read_text(encoding="utf-8")
+
+
+def test_the_tmp_file_is_created_exclusively_and_without_following_symlinks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deterministic twin of the fifo test: a mutation that reverts to a
+    plain ``open`` HANGS rather than failing, so the flags get a pin that goes
+    red in milliseconds instead.
+
+    O_EXCL is the one that closes the block. O_NOFOLLOW is belt-and-braces —
+    measured on this platform, ``O_CREAT | O_EXCL`` alone already fails EEXIST on
+    a symlink (POSIX requires it) — so it is asserted here rather than
+    behaviourally, and it earns its place only if O_EXCL is ever dropped."""
+    from app.beets.lyrics import write_lyric_sidecar
+
+    real_open = os.open
+    created: list[int] = []
+
+    def spy(path: Any, flags: int, *rest: Any) -> int:
+        if flags & os.O_CREAT:
+            created.append(flags)
+        return real_open(path, flags, *rest)
+
+    # `os` is one shared module object, so patching it here is what the adapter
+    # sees. (Reaching through `app.beets.lyrics.os` instead fails mypy strict:
+    # the module does not explicitly export the name.)
+    monkeypatch.setattr(os, "open", spy)
+    track = tmp_path / "t.flac"
+    track.write_bytes(b"")
+
+    assert write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN)) is not None
+
+    assert created, "the temp file was not created through os.open"
+    assert created[0] & os.O_EXCL
+    assert created[0] & os.O_NOFOLLOW
+
+
 def test_synced_result_never_replaces_an_existing_txt(tmp_path: Path) -> None:
     """A1: an existing sidecar of EITHER extension means the writer does nothing
     — no .lrc written beside it, and the .txt is not unlinked. Nothing records

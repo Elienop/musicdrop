@@ -14,6 +14,7 @@ only beets + the base adapter + settings (no registry/duplicates import).
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 from pathlib import Path
@@ -30,6 +31,20 @@ from app.beets.library import (
     require_library_root,
 )
 from app.config import Settings
+
+
+class TrashMoveIncompleteError(Exception):
+    """``Album.move`` returned normally but relocated nothing.
+
+    beets answers a source file it cannot find by logging and returning
+    (``beets/library/models.py:1178-1192``), so a move that moved NOTHING is
+    indistinguishable from a successful one at the call site. Dropping the DB
+    rows on that is the data loss the post-condition in :func:`trash_album`
+    exists to stop; this is what it raises when the music root is healthy and
+    the files are still sitting where they were. NOT raised for a ghost album
+    (files genuinely gone) or an unmounted share — those have their own answers,
+    see :func:`_require_move_happened`. Rows are kept either way.
+    """
 
 
 def album_format_bitrate(items: list[Any]) -> tuple[str | None, int | None]:
@@ -64,6 +79,59 @@ def _trash_container_name(album: Any) -> str:
     return name or "album"
 
 
+def _moved_under(lib: Library, items: list[Any], container: Path) -> list[Any]:
+    """The items whose CURRENT stored path is inside ``container``.
+
+    Pure string work over rows beets has already updated — no stat, no walk — so
+    it costs nothing next to the moves it is checking.
+    """
+    prefix = os.path.join(os.path.normpath(str(container)), "")
+    return [it for it in items if os.path.normpath(_abs_path(lib, it.path)).startswith(prefix)]
+
+
+def _require_move_happened(
+    lib: Library, album: Any, container: Path, *, items: list[Any], moved: list[Any]
+) -> None:
+    """Raise unless the shortfall in ``moved`` has an honest explanation.
+
+    Called only when some item did not land under ``container``. Three arms,
+    in the order that makes each failure name its own cause:
+
+    * **root unavailable** — the share dropped between the pre-check and the
+      moves, which is the whole reason a post-condition exists. Re-running the
+      predicate raises ``LibraryRootUnavailableError``, so the caller still
+      answers with the honest 503 and the rows stay.
+    * **root healthy and the source files are genuinely GONE** — the ghost
+      album. Moving nothing is correct here and dropping the rows is the point
+      (the deliberate cleanup ``trash_album_folder`` spells out in its own ghost
+      branch; reached through this path by import Replace and duplicates
+      resolve). Allowed through, exactly as before.
+    * **root healthy and the files are still SITTING THERE** — they did not
+      move and nobody can say why: a permission fault on the container, a beets
+      change, a bug here. Dropping the rows would be the silent data loss this
+      whole post-condition exists to stop, so refuse.
+
+    A partial move reaches neither of the last two arms: once ANY file has
+    landed in the container the move demonstrably happened, so the shortfall is
+    the pre-existing missing-track tolerance (one item whose file is gone makes
+    beets skip that item alone). Refusing there would break duplicate resolve
+    for every album carrying a missing track — a regression, not a fix.
+    """
+    with contextlib.suppress(OSError):
+        container.rmdir()  # succeeds only while nothing landed in it
+    require_library_root(lib)
+    if moved:
+        return
+    present = [it for it in items if it.path and os.path.exists(_abs_path(lib, it.path))]
+    if not present:
+        return  # ghost album: nothing to move because nothing is there
+    raise TrashMoveIncompleteError(
+        f"'{_trash_container_name(album)}' did not move to Trash: {len(present)} of its"
+        f" {len(items)} files are still in place and none were relocated. The library"
+        f" rows were kept."
+    )
+
+
 def trash_album(lib: Library, album: Any, *, trash_dir: Path) -> str:
     """Relocate one album's files under ``trash_dir`` and drop it from the library.
 
@@ -77,17 +145,27 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path) -> str:
     the whole-folder DELETE then wiped wholesale. Returns the album's new Trash
     folder. Caller controls the transaction (so a batch can be atomic).
 
-    Raises :class:`~app.beets.library.LibraryRootUnavailableError` if the music
-    root is missing, empty or unreadable — checked BEFORE anything is created or
-    moved. beets 2.12's ``Item.move`` silently skips a source file that is not
-    there ("If the source file is missing, skip the move", ``log.warning`` then
+    Guarded on BOTH sides of the move, because neither half is enough alone.
+    beets 2.12's ``Item.move`` silently skips a source file that is not there
+    ("If the source file is missing, skip the move", ``log.warning`` then
     ``return`` — ``beets/library/models.py:1178-1192``), so with the share
-    unmounted every move would no-op and ``Album.remove`` below would still drop
-    the rows: a Trash path pointing at an empty folder and a library that has
-    forgotten the album. The guard has to precede the ``mkdir`` as well as the
-    moves, because a beets transaction COMMITS on the way out even while
-    unwinding an exception (``beets/dbcore/db.py:924-941`` — no rollback branch),
-    so aborting after a mutation would not undo it.
+    unmounted every move no-ops while ``Album.move`` still returns normally, and
+    ``Album.remove`` would drop the rows anyway: a Trash path naming an empty
+    folder and a library that has forgotten the album.
+
+    * **Before** — :func:`~app.beets.library.require_library_root` raises
+      ``LibraryRootUnavailableError`` if the music root is missing, empty or
+      unreadable. It runs ahead of the ``mkdir`` as well as the moves, because a
+      beets transaction COMMITS on the way out even while unwinding an exception
+      (``beets/dbcore/db.py:924-941`` — no rollback branch), so aborting after a
+      mutation would not undo it.
+    * **After** — the rows are dropped only once the items' stored paths are
+      provably under the container. A pre-check is point-in-time: the share can
+      drop in the window between it and the first move, and then the check has
+      passed on a library that is already gone. See :func:`_require_move_happened`
+      for which shortfalls raise (``LibraryRootUnavailableError`` when the root is
+      the cause, :class:`TrashMoveIncompleteError` otherwise) and which one is
+      tolerated.
     """
     require_library_root(lib)
     trash_dir.mkdir(parents=True, exist_ok=True)
@@ -96,7 +174,22 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path) -> str:
     basedir = bytestring_path(str(container))
     album.move(basedir=basedir)  # relocate under the container + prune source dir
     items = list(album.items())
-    trash_path = os.path.dirname(_abs_path(lib, items[0].path)) if items else str(container)
+    # POST-CONDITION. ``Album.move`` cannot report a skip: beets logs a missing
+    # source and returns (models.py:1178-1192), so "move returned" is not
+    # "files moved". The pre-check above closes the window it can see; this
+    # closes the one it cannot — the share dropping AFTER the check, and every
+    # other cause of a silent skip. Rows are dropped only once the files are
+    # provably somewhere else.
+    moved = _moved_under(lib, items, container)
+    if len(moved) != len(items):
+        _require_move_happened(lib, album, container, items=items, moved=moved)
+    # ``moved[0]``, not ``items[0]``: with a skipped first item the latter still
+    # points into the music dir, so the returned "Trash folder" would name the
+    # place the album was never moved from.
+    first = moved[0] if moved else (items[0] if items else None)
+    trash_path = (
+        os.path.dirname(_abs_path(lib, first.path)) if first is not None else str(container)
+    )
     album.remove(delete=False)  # drop DB rows; files stay in Trash
     return trash_path
 
