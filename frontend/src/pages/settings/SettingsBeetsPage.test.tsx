@@ -171,7 +171,9 @@ function defaultMocks(
     http.get(ACTIVE_IMPORT_URL, () =>
       HttpResponse.json({ active: importActive }),
     ),
-    http.post(VALIDATE_URL, () => HttpResponse.json({ errors: [] })),
+    http.post(VALIDATE_URL, () =>
+      HttpResponse.json({ errors: [], advisories: [] }),
+    ),
   );
 }
 
@@ -375,7 +377,9 @@ describe("SettingsPage", () => {
         );
       }),
       http.get(ACTIVE_IMPORT_URL, () => HttpResponse.json({ active: false })),
-      http.post(VALIDATE_URL, () => HttpResponse.json({ errors: [] })),
+      http.post(VALIDATE_URL, () =>
+      HttpResponse.json({ errors: [], advisories: [] }),
+    ),
       http.post(SAVE_URL, () =>
         HttpResponse.json(
           snapshotFixture({ apply_pending: true, sha256: "sha-2" }),
@@ -418,7 +422,9 @@ describe("SettingsPage", () => {
         );
       }),
       http.get(ACTIVE_IMPORT_URL, () => HttpResponse.json({ active: false })),
-      http.post(VALIDATE_URL, () => HttpResponse.json({ errors: [] })),
+      http.post(VALIDATE_URL, () =>
+      HttpResponse.json({ errors: [], advisories: [] }),
+    ),
       http.post(APPLY_URL, () =>
         HttpResponse.json(snapshotFixture({ apply_pending: false })),
       ),
@@ -457,7 +463,9 @@ describe("SettingsPage", () => {
         );
       }),
       http.get(ACTIVE_IMPORT_URL, () => HttpResponse.json({ active: false })),
-      http.post(VALIDATE_URL, () => HttpResponse.json({ errors: [] })),
+      http.post(VALIDATE_URL, () =>
+      HttpResponse.json({ errors: [], advisories: [] }),
+    ),
       http.post(APPLY_URL, () =>
         HttpResponse.json(
           {
@@ -551,7 +559,9 @@ describe("SettingsPage", () => {
         );
       }),
       http.get(ACTIVE_IMPORT_URL, () => HttpResponse.json({ active: true })),
-      http.post(VALIDATE_URL, () => HttpResponse.json({ errors: [] })),
+      http.post(VALIDATE_URL, () =>
+      HttpResponse.json({ errors: [], advisories: [] }),
+    ),
     );
     renderPage();
     await findEditorContent();
@@ -581,6 +591,7 @@ describe("SettingsPage", () => {
               column: 0,
             },
           ],
+          advisories: [],
         }),
       ),
     );
@@ -770,6 +781,7 @@ describe("SettingsPage", () => {
               column: 0,
             },
           ],
+          advisories: [],
         }),
       ),
     );
@@ -892,5 +904,165 @@ describe("SettingsPage", () => {
         name: "Reorganize library",
       }),
     ).toBeInTheDocument();
+  });
+});
+
+/**
+ * The ADVISORY channel of `POST /api/config/validate`.
+ *
+ * `ValidateResponse` carries two independent lists and the split is the whole
+ * point: `errors` is what CodeMirror paints red, `advisories` is what it must
+ * not. A config that only trips an advisory is VALID and saves cleanly, so
+ * these tests pin the advisory surface as SEPARATE from the lint gutter — a
+ * regression that merged the channels would make a correct config look broken.
+ */
+describe("SettingsBeetsPage config advisories", () => {
+  // Two real rules from the backend's `_IMPORT_ADVISORY_RULES`, abridged. The
+  // message is the backend's copy verbatim; the page never authors advisory
+  // prose of its own, so the fixture text is what must appear on screen.
+  const AUTOTAG_ADVISORY = {
+    key: "import.autotag",
+    message:
+      "MusicDrop forces import.autotag on for every import it runs, so this value is discarded in the app.",
+  };
+  const SINGLETONS_ADVISORY = {
+    key: "import.singletons",
+    message:
+      "MusicDrop forces import.singletons off on every import path it runs, review imports included.",
+  };
+  const COPY_LINT_ERROR = {
+    loc: "import.copy",
+    msg: "must be a boolean",
+    type: "schema_type",
+    line: 1,
+    column: 0,
+  };
+
+  /**
+   * Register a validate stub AND count its hits. The hit counter is what makes
+   * the empty-advisories test non-vacuous: without it, "nothing rendered" would
+   * pass just as well on a page that never validated anything at all.
+   */
+  function validateStub(body: {
+    errors?: unknown[];
+    advisories?: { key: string; message: string }[];
+  }) {
+    const hits = { count: 0 };
+    server.use(
+      http.post(VALIDATE_URL, () => {
+        hits.count += 1;
+        return HttpResponse.json({
+          errors: body.errors ?? [],
+          advisories: body.advisories ?? [],
+        });
+      }),
+    );
+    return hits;
+  }
+
+  /**
+   * Drive CM6's debounced linter the way the gutter tests above do: enter edit
+   * mode, focus the contenteditable, type one character. The extension list
+   * debounces at 500ms (codemirror-config.ts), so callers wait with a generous
+   * ceiling rather than faking timers — CM6's linter uses real timers
+   * internally and faking them wedges its promise chain.
+   */
+  async function triggerLint(user: ReturnType<typeof userEvent.setup>) {
+    const content = await findEditorContent();
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    content.focus();
+    await user.keyboard("x");
+  }
+
+  test("renders the dotted key and the backend's message for every advisory", async () => {
+    defaultMocks();
+    validateStub({ advisories: [AUTOTAG_ADVISORY, SINGLETONS_ADVISORY] });
+    const user = userEvent.setup();
+    renderPage();
+    await triggerLint(user);
+
+    const key = await screen.findByText(
+      AUTOTAG_ADVISORY.key,
+      {},
+      { timeout: 4000 },
+    );
+    // The dotted key is a config path, so it renders monospaced — same
+    // treatment as the config file path in the section header.
+    expect(key).toHaveClass("font-mono");
+    // Verbatim backend copy, not a paraphrase or a truncation.
+    expect(screen.getByText(AUTOTAG_ADVISORY.message)).toBeInTheDocument();
+    // Both rows, not just the first: the response is a list.
+    expect(screen.getByText(SINGLETONS_ADVISORY.key)).toBeInTheDocument();
+    expect(screen.getByText(SINGLETONS_ADVISORY.message)).toBeInTheDocument();
+  });
+
+  test("renders no advisory UI at all when the advisories list is empty", async () => {
+    defaultMocks();
+    const hits = validateStub({ advisories: [] });
+    const user = userEvent.setup();
+    renderPage();
+    await triggerLint(user);
+
+    // Positive control first — the linter really did fire and the page really
+    // did consume a ValidateResponse. Only then is the absence below evidence
+    // of an empty-state branch rather than of a test that raced the debounce.
+    await waitFor(() => expect(hits.count).toBeGreaterThan(0), {
+      timeout: 4000,
+    });
+    expect(
+      screen.queryByRole("list", { name: /configuration advisories/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("an advisory lands in the status channel, NOT the error channel", async () => {
+    defaultMocks();
+    validateStub({ errors: [], advisories: [AUTOTAG_ADVISORY] });
+    const user = userEvent.setup();
+    renderPage();
+    await triggerLint(user);
+
+    const key = await screen.findByText(
+      AUTOTAG_ADVISORY.key,
+      {},
+      { timeout: 4000 },
+    );
+    // StatusBanner's neutral tone is ambient — role="status", never
+    // role="alert". Asserting the ancestor role (rather than a class or a
+    // colour) keeps this pinned to the semantic channel, not the styling.
+    expect(key.closest('[role="status"]')).not.toBeNull();
+    expect(key.closest('[role="alert"]')).toBeNull();
+    // ...and the error channel stayed empty on the very same validate tick:
+    // no gutter marker, no disabled-Save reason, Save still clickable. An
+    // advisory-only config is valid and must remain saveable.
+    expect(document.querySelector(".cm-lint-marker-error")).toBeNull();
+    expect(screen.queryByText(/validation error/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
+  });
+
+  test("a response carrying both channels shows the advisory AND the lint error", async () => {
+    defaultMocks();
+    validateStub({
+      errors: [COPY_LINT_ERROR],
+      advisories: [AUTOTAG_ADVISORY],
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await triggerLint(user);
+
+    // Error channel: gutter marker + the disabled-Save reason.
+    await waitFor(
+      () => {
+        expect(document.querySelector(".cm-lint-marker-error")).not.toBeNull();
+      },
+      { timeout: 4000 },
+    );
+    expect(screen.getByText(/1 validation error/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
+
+    // Advisory channel: same response, still its own surface. Neither channel
+    // suppresses the other.
+    const key = screen.getByText(AUTOTAG_ADVISORY.key);
+    expect(key.closest('[role="status"]')).not.toBeNull();
+    expect(screen.getByText(AUTOTAG_ADVISORY.message)).toBeInTheDocument();
   });
 });

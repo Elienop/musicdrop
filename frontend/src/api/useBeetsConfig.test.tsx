@@ -246,12 +246,21 @@ describe("useApplyConfig", () => {
 });
 
 describe("useValidateConfig", () => {
-  test("returns the errors array (the CodeMirror lint source consumes it)", async () => {
+  test("returns BOTH channels — advisories ride alongside the errors", async () => {
+    // The hook used to narrow to `data.errors`, which discarded the advisory
+    // channel before any caller could reach it. Asserting on the whole
+    // response means a re-narrowing regression fails HERE rather than
+    // silently blanking the settings page's advisory banners.
     const errors = [
       { loc: "directory", msg: "must be a string", type: "schema_type", line: 3, column: 0 },
     ];
+    const advisories = [
+      { key: "import.autotag", message: "MusicDrop forces import.autotag on." },
+    ];
     server.use(
-      http.post(VALIDATE_URL, () => HttpResponse.json({ errors }, { status: 200 })),
+      http.post(VALIDATE_URL, () =>
+        HttpResponse.json({ errors, advisories }, { status: 200 }),
+      ),
     );
 
     const { Wrapper } = makeWrapper();
@@ -259,12 +268,37 @@ describe("useValidateConfig", () => {
     result.current.mutate({ yaml_text: "directory: 5" });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(result.current.data).toEqual(errors);
+    expect(result.current.data).toEqual({ errors, advisories });
   });
 
-  test("resolves to an empty array on a clean validate (no errors)", async () => {
+  test("carries advisories through even when the errors channel is clean", async () => {
+    // The load-bearing case for the editor: a config that only trips an
+    // advisory is VALID and saves cleanly, so `errors` is empty while
+    // `advisories` is not. Any hook that gated the second channel on
+    // `errors.length` would drop exactly this response.
+    const advisories = [
+      { key: "import.singletons", message: "MusicDrop forces import.singletons off." },
+    ];
     server.use(
-      http.post(VALIDATE_URL, () => HttpResponse.json({ errors: [] }, { status: 200 })),
+      http.post(VALIDATE_URL, () =>
+        HttpResponse.json({ errors: [], advisories }, { status: 200 }),
+      ),
+    );
+
+    const { Wrapper } = makeWrapper();
+    const { result } = renderHook(() => useValidateConfig(), { wrapper: Wrapper });
+    result.current.mutate({ yaml_text: "import:\n  singletons: yes\n" });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.errors).toEqual([]);
+    expect(result.current.data?.advisories).toEqual(advisories);
+  });
+
+  test("resolves to two empty channels on a clean validate", async () => {
+    server.use(
+      http.post(VALIDATE_URL, () =>
+        HttpResponse.json({ errors: [], advisories: [] }, { status: 200 }),
+      ),
     );
 
     const { Wrapper } = makeWrapper();
@@ -272,6 +306,6 @@ describe("useValidateConfig", () => {
     result.current.mutate({ yaml_text: "directory: /music\n" });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(result.current.data).toEqual([]);
+    expect(result.current.data).toEqual({ errors: [], advisories: [] });
   });
 });

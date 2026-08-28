@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useLibraryJobActive } from "@/api/useLibraryJobActive";
 import {
   type BeetsConfigSnapshot,
+  type ConfigAdvisory,
   type ConfigOpError,
   type ValidationErrorItem,
   useApplyConfig,
@@ -15,6 +16,7 @@ import {
 } from "@/api/useBeetsConfig";
 import {
   Error as ErrorIcon,
+  Info,
   Spinner,
   Success,
   Warning,
@@ -145,6 +147,14 @@ export function SettingsBeetsPage() {
   // every successful validate so a cleared error frees the button up
   // immediately.
   const [lintErrors, setLintErrors] = useState(0);
+  // The validate endpoint's OTHER channel. Advisories name valid settings that
+  // MusicDrop-driven imports force or discard, so they must never reach the
+  // lint gutter — but the gutter's async source is the only thing that calls
+  // validate, and CodeMirror's `linter()` can only return `Diagnostic[]`.
+  // Lifting them into React state here (same trick as `lintErrors` above) is
+  // what lets the page render them outside the editor. Mirrors the LAST
+  // validate response, so a cleared advisory disappears on the next tick.
+  const [advisories, setAdvisories] = useState<ConfigAdvisory[]>([]);
 
   // Resync local state whenever the snapshot's content hash advances (post-Save
   // / post-Apply React Query invalidation refetches and gets a new sha256).
@@ -218,8 +228,16 @@ export function SettingsBeetsPage() {
 
   async function asyncSource(text: string): Promise<Diagnostic[]> {
     try {
-      const errors = await validate.mutateAsync({ yaml_text: text });
-      const diagnostics = mapErrorsToDiagnostics(errors, editorRef.current);
+      const result = await validate.mutateAsync({ yaml_text: text });
+      // Channel 2 first, and it is deliberately NOT folded into the
+      // diagnostics below: every config an advisory fires on is valid YAML
+      // that both this app and beets accept, so a red gutter marker would be
+      // a lie. It rides out to the banner list beside the editor instead.
+      setAdvisories(result.advisories);
+      const diagnostics = mapErrorsToDiagnostics(
+        result.errors,
+        editorRef.current,
+      );
       setLintErrors(diagnostics.length);
       return diagnostics;
     } catch {
@@ -228,8 +246,11 @@ export function SettingsBeetsPage() {
       // user's draft might be perfectly fine. Treat as "no lint signal";
       // hard failures still surface through React Query's error path if a
       // mutation observer ever needs them. Don't gate Save on a transient
-      // backend hiccup either.
+      // backend hiccup either. Advisories clear for the same reason: we no
+      // longer know whether they still hold, and a stale one would claim the
+      // app overrides a key the user may have just removed.
       setLintErrors(0);
+      setAdvisories([]);
       return [];
     }
   }
@@ -393,6 +414,8 @@ export function SettingsBeetsPage() {
           jobActive={job.active}
           data={data}
         />
+
+        <ConfigAdvisories advisories={advisories} />
 
         <CodeMirror
           ref={editorRef}
@@ -570,6 +593,45 @@ function ErrorBanner({ err }: Readonly<{ err: unknown }>) {
         </div>
       </div>
     </section>
+  );
+}
+
+/**
+ * The validate endpoint's ADVISORY channel, rendered as its own surface.
+ *
+ * One `StatusBanner` per advisory, `tone="neutral"` — the ambient treatment
+ * (`role="status"`, muted icon), NOT warning or destructive. That tone choice
+ * is the whole point: an advisory fires on a setting that is perfectly valid
+ * and saves cleanly, it just has no effect on imports MusicDrop runs. Anything
+ * louder would read as "your config is broken", which is the error channel's
+ * job and is already handled by CodeMirror's red gutter.
+ *
+ * The `<ul>` is real semantics, not a wrapper: advisories are a list, and the
+ * accessible name lets a screen reader announce how many there are before
+ * reading them. The banner owns no margin (spec §4), so the `gap-2` here is
+ * the caller's, and the empty case renders NOTHING at all — no heading, no
+ * empty box — because "no advisories" is the unremarkable default.
+ */
+function ConfigAdvisories({
+  advisories,
+}: Readonly<{ advisories: ConfigAdvisory[] }>) {
+  if (advisories.length === 0) return null;
+  return (
+    <ul className="flex flex-col gap-2" aria-label="Configuration advisories">
+      {advisories.map((advisory) => (
+        <li key={advisory.key}>
+          <StatusBanner tone="neutral" icon={Info}>
+            <div className="flex flex-col gap-1">
+              {/* The dotted config path gets the same monospace treatment as
+                  the config file path in the section header. */}
+              <p className="font-mono font-medium">{advisory.key}</p>
+              {/* Backend copy, verbatim — the page never paraphrases it. */}
+              <p className="text-muted-foreground">{advisory.message}</p>
+            </div>
+          </StatusBanner>
+        </li>
+      ))}
+    </ul>
   );
 }
 
