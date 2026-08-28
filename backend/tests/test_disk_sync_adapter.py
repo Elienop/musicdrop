@@ -15,8 +15,8 @@ import pytest
 from beets.library import Library
 from mediafile import MediaFile
 
-from app.beets.disk_sync import LibraryRootUnavailableError, plan_disk_sync
-from app.beets.library import _require_id
+from app.beets.disk_sync import plan_disk_sync
+from app.beets.library import LibraryRootUnavailableError, _require_id
 
 
 @pytest.fixture(autouse=True)

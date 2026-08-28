@@ -10,8 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.albums import get_library
-from app.beets.disk_sync import LibraryRootUnavailableError, plan_disk_sync
-from app.beets.library import LibraryHandle
+from app.beets.disk_sync import plan_disk_sync
+from app.beets.library import LibraryHandle, LibraryRootUnavailableError
 from app.disk_sync_jobs.registry import (
     DiskSyncRegistry,
     get_disk_sync_registry,

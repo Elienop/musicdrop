@@ -11,6 +11,15 @@ store plain lyrics into ``item.lyrics`` + flex fields, write the file tag
 (``try_write``) when writes are on, AND write an external ``.lrc``/``.txt``
 sidecar next to the track. The sidecar is what **Plex** actually reads — Plex
 ignores embedded lyrics tags, so the embed alone never surfaced in Plex.
+
+Sidecar files are the one artifact here the user may have curated by hand, and
+nothing records authorship, so the file layer is **fill-gaps-only**: a backfill
+writes a sidecar where none exists and otherwise leaves the disk alone. The sole
+exception is content-proven, and it runs both ways: a sidecar whose whole body is
+beets' "[Instrumental]" marker carries no lyric data, so a fresh instrumental
+verdict removes it, and a found result may replace it (an all-marker set counts
+as absent). Everything else on disk wins over anything we fetched — see
+:func:`remove_instrumental_marker_sidecars` and :func:`write_lyric_sidecar`.
 """
 
 from __future__ import annotations
@@ -28,7 +37,7 @@ import beets
 import confuse
 import requests
 from beets.library import Library
-from beets.util.lyrics import Lyrics
+from beets.util.lyrics import INSTRUMENTAL_LYRICS, Lyrics
 from beetsplug._utils.requests import HTTPNotFoundError
 
 from app.beets.library import LibraryHandle, _is_instrumental
@@ -122,13 +131,37 @@ def active_source_names(plugin: Any) -> list[str]:
     return [_backend_name(b) for b in getattr(plugin, "backends", [])]
 
 
+#: Flags for creating the atomic-write temp file. ``O_EXCL`` is the load-bearing
+#: one: a FIFO planted at our derived ``.<name>.tmp`` path would make a plain
+#: ``open(tmp, "w")`` block until a reader appears — forever, with no timeout, on
+#: the single-slot backfill worker. Creating exclusively fails EEXIST instead,
+#: which the caller already logs and swallows. ``O_NOFOLLOW`` is belt-and-braces:
+#: POSIX makes ``O_CREAT | O_EXCL`` fail EEXIST on a symlink anyway (measured), so
+#: it only earns its keep if ``O_EXCL`` is ever dropped. Same hazard, and the same
+#: answer, as :func:`_is_marker_sidecar`'s stat guard on the read side.
+_TMP_CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+
+
 def _atomic_write_text(dst: Path, text: str) -> None:
     """Atomic utf-8 write (text mirror of ``artist_art._atomic_write_bytes``):
-    tmp in same dir -> fsync -> dst mode preserved on rewrite (umask default on
-    first write) -> os.replace -> fsync parent dir."""
+    tmp created EXCLUSIVELY in the same dir (see :data:`_TMP_CREATE_FLAGS`) ->
+    fsync -> dst mode preserved on rewrite (umask default on first write) ->
+    os.replace -> fsync parent dir.
+
+    Raises ``OSError`` — including ``FileExistsError`` when anything at all
+    occupies the temp path — and the caller decides what that means.
+    """
     tmp = dst.parent / f".{dst.name}.tmp"
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        # 0o666 so the first write still takes the umask default, as the mode
+        # test pins; a rewrite has its mode restored by the copymode below.
+        fd = os.open(tmp, _TMP_CREATE_FLAGS, 0o666)
+        try:
+            stream = os.fdopen(fd, "w", encoding="utf-8")
+        except BaseException:  # pragma: no cover - fdopen fails only on a bad fd
+            os.close(fd)
+            raise
+        with stream as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
@@ -141,6 +174,11 @@ def _atomic_write_text(dst: Path, text: str) -> None:
         finally:
             os.close(dir_fd)
     finally:
+        # Clears our own leftover AND whatever squatted at the temp path, so an
+        # EEXIST refusal self-heals on the next call instead of wedging this
+        # track forever (a crashed run leaves a stale .tmp the same way). A
+        # dangling symlink is the one squatter this misses — exists() follows it
+        # — which stays a safe, logged, repeated refusal rather than a block.
         if tmp.exists():
             with suppress(OSError):
                 tmp.unlink()
@@ -165,14 +203,74 @@ def _has_sidecar(item: Any) -> bool:
     return any(os.path.exists(base + ext) for ext in SIDECAR_EXTS)
 
 
-def remove_lyric_sidecars(item: Any) -> list[str]:
-    """Delete this track's own ``.lrc``/``.txt`` sidecars; return the paths removed.
+#: A sidecar larger than this cannot be a bare "[Instrumental]" marker, so it is
+#: read no further and kept. Bounds the read on a per-track path.
+_MARKER_READ_CAP = 4096
 
-    Scoped to exactly the two siblings :func:`write_lyric_sidecar` could have
-    written, so an instrumental verdict can't leave Plex serving a stale
-    "[Instrumental]" file. A path-less item, a missing sidecar or an unlink
-    error is a no-op (logged) rather than an error — never raises, and never
-    touches the audio file or a neighbouring track's sidecar.
+
+def _is_marker_sidecar(path: Path) -> bool:
+    """Whether this file's ENTIRE body is beets' "[Instrumental]" marker.
+
+    The authorship proxy for the one deletion this module still makes. Nothing
+    records who wrote a sidecar, so content decides: a file whose every non-empty
+    line is the marker holds no lyric data and is exactly the artifact legacy
+    flows left behind, while any real lyric text disqualifies the file.
+
+    Timestamps are stripped line-wise with beets' own ``Lyrics.LRC_TIMESTAMP_PAT``
+    (``.venv/lib/python3.12/site-packages/beets/util/lyrics.py:31``) so the
+    LRC-timestamped form pre-#122 wrote — ``[00:01.00] [Instrumental]`` — matches
+    the constant at that module's line 15 too.
+
+    Everything else is False, i.e. KEEP: real text, a mixed file, an EMPTY file
+    (a vacuous "no line differs" match is how a content guard turns back into a
+    blanket deleter), a file past ``_MARKER_READ_CAP``, undecodable bytes, a
+    non-regular or absent path, or a read error — unknown content may be the
+    user's lyrics. Never raises, and never opens anything but a regular file.
+    """
+    try:
+        if not path.is_file():
+            # A cheap stat, and a HARD requirement rather than an optimisation:
+            # opening a FIFO for reading BLOCKS until a writer appears, and the
+            # backfill worker is single-slot — one named pipe at a sidecar path
+            # would park it until the process restarts. A device node, directory
+            # or dangling symlink is likewise never a sidecar, and the ordinary
+            # "no sidecar here" case lands on this line too, silently: it is not
+            # a fault, and a warning would fire twice per item on a library with
+            # none.
+            return False
+        with open(path, "rb") as f:
+            raw = f.read(_MARKER_READ_CAP + 1)
+    except FileNotFoundError:
+        return False  # raced away between the stat and the open — not a fault
+    except OSError:
+        _log.warning("lyric sidecar unreadable, keeping it: %s", path, exc_info=True)
+        return False
+    if len(raw) > _MARKER_READ_CAP:
+        return False
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    lines = [Lyrics.LRC_TIMESTAMP_PAT.sub("", line).strip() for line in text.splitlines()]
+    body = [line for line in lines if line]
+    return bool(body) and all(line == INSTRUMENTAL_LYRICS for line in body)
+
+
+def remove_instrumental_marker_sidecars(item: Any) -> list[str]:
+    """Delete this track's ``.lrc``/``.txt`` sidecars **that are nothing but the
+    "[Instrumental]" marker**; return the paths removed.
+
+    Deliberately not a general deleter. It is scoped twice over: to the two
+    siblings :func:`write_lyric_sidecar` could have written (a scope over NAMES),
+    and to files whose whole content is the marker (:func:`_is_marker_sidecar` —
+    a scope over CONTENT, the only authorship proxy available). A sidecar holding
+    real lyrics is the user's until proven otherwise and is always kept, so no
+    caller — present or future — can use this to destroy lyric data.
+
+    A path-less item, a missing sidecar, a non-marker sidecar or an unlink error
+    is a no-op (read/unlink errors logged; a missing or non-marker sidecar is
+    deliberately silent — it is the ordinary case) rather than an error — never
+    raises, and never touches the audio file or a neighbouring track's sidecar.
     """
     base = _sidecar_base(item)
     if base is None:
@@ -180,6 +278,8 @@ def remove_lyric_sidecars(item: Any) -> list[str]:
     removed: list[str] = []
     for ext in SIDECAR_EXTS:
         path = Path(base + ext)
+        if not _is_marker_sidecar(path):
+            continue
         try:
             path.unlink()
         except FileNotFoundError:
@@ -191,18 +291,69 @@ def remove_lyric_sidecars(item: Any) -> list[str]:
     return removed
 
 
+def _sidecars_are_all_markers(item: Any) -> bool:
+    """Whether every sidecar beside this track is an "[Instrumental]" marker file.
+
+    False when there are none at all: an empty ``all()`` is vacuously true, and a
+    vacuous match is exactly how a content guard turns back into a blanket
+    deleter. All-or-nothing on purpose — a curated ``.lrc`` next to a marker
+    ``.txt`` is one user's lyric state, and acting on half of it is acting on a
+    guess.
+    """
+    base = _sidecar_base(item)
+    if base is None:
+        return False
+    existing = [Path(base + ext) for ext in SIDECAR_EXTS if os.path.exists(base + ext)]
+    return bool(existing) and all(_is_marker_sidecar(path) for path in existing)
+
+
 def write_lyric_sidecar(item: Any, lyrics: Lyrics) -> str | None:
     """Write a Plex-readable lyric sidecar next to the track; return its path or None.
 
+    **Fill gaps only — never clobber.** A track that already has a ``.lrc`` OR a
+    ``.txt`` beside it is left exactly as it is: nothing written, nothing
+    unlinked, None returned. Nothing anywhere records who wrote a sidecar, and a
+    self-hosted Plex user's curated ``.lrc`` collection lives at precisely these
+    paths — so an existing NON-MARKER file always wins, the same posture
+    :func:`app.beets.sidecars.move_sidecars` already states ("keeping one
+    recoverable beats silently destroying either"). Three consequences worth
+    naming: a plain result never REPLACES a synced ``.lrc`` (no downgrade), it is
+    not written BESIDE one either (no coexistence — nothing in this repo
+    establishes what Plex prefers when both are present, so the case is never
+    created), and a same-extension atomic rewrite is refused too, an atomic
+    replace being destruction all the same.
+
+    The single exception is content-proven and points the other way: when EVERY
+    existing sidecar is an "[Instrumental]" marker
+    (:func:`_sidecars_are_all_markers`), the set counts as absent and is cleared
+    before the write. A stale marker agrees with "this track has no lyrics", so
+    keeping it while real lyrics arrive would leave Plex serving "[Instrumental]"
+    forever. Any non-marker file present — including one half of a mixed pair —
+    still refuses everything.
+
+    The fetched lyrics still reach ``item.lyrics`` and the embedded tag via
+    :func:`_store_lyrics`; only the FILE layer is gap-filling. The tag and a
+    user's sidecar can therefore hold different lyrics — accepted: Plex reads
+    only the sidecar, MusicDrop never renders lyric text, and honesty beats
+    deletion.
+
     ``.lrc`` (timestamped) when the fetched lyrics are synced, else ``.txt``
-    (plain, timestamps stripped). Writing one removes the opposite-extension
-    sibling so Plex never sees two conflicting files. Non-destructive (never
-    touches the audio file) and best-effort: a write error is logged and
-    swallowed so a batch keeps going; never raises.
+    (plain, timestamps stripped). Non-destructive (never touches the audio file)
+    and best-effort: a write error is logged and swallowed so a batch keeps
+    going; never raises.
     """
     base = _sidecar_base(item)
     if base is None:
         return None
+    if _has_sidecar(item):
+        if not _sidecars_are_all_markers(item):
+            return None
+        # Every sidecar here is a stale "[Instrumental]" marker, which AGREES
+        # with "no lyrics" — keeping it would leave Plex showing "[Instrumental]"
+        # for a track we just found lyrics for, the mirror image of the verdict
+        # path that deletes exactly these files. Cleared through the
+        # marker-guarded remover, so this cannot reach anything else.
+        remove_instrumental_marker_sidecars(item)
     if lyrics.synced:
         ext, body = SYNCED_EXT, lyrics.text
     else:
@@ -211,15 +362,11 @@ def write_lyric_sidecar(item: Any, lyrics: Lyrics) -> str | None:
     if not body:
         return None
     dst = Path(base + ext)
-    other = Path(base + (PLAIN_EXT if ext == SYNCED_EXT else SYNCED_EXT))
     try:
         _atomic_write_text(dst, body + "\n")
     except OSError:
         _log.warning("lyric sidecar write failed: %s", dst, exc_info=True)
         return None
-    if other.exists():
-        with suppress(OSError):
-            other.unlink()
     return str(dst)
 
 
@@ -236,18 +383,22 @@ def _store_instrumental(item: Any, lyrics: Lyrics) -> None:
 
     Flags the track the way beets does (``lyrics_instrumental``), keeps
     MusicDrop's ``lyrics_checked`` bookkeeping so both sweep gates agree, clears
-    any stale lyrics text off the DB row, and deletes the track's sidecars —
-    Plex reads those, and an old "[Instrumental]" marker file would otherwise
-    outlive the verdict. The audio file's own tag is deliberately left alone
-    (no ``try_write``): a stale tag is inert, and rewriting tags is not this
-    feature's job.
+    any stale lyrics text off the DB row, and removes the track's MARKER
+    sidecars — Plex reads those, and an old "[Instrumental]" file would otherwise
+    outlive the verdict. Marker only: a sidecar holding real lyrics survives this
+    verdict (see :func:`remove_instrumental_marker_sidecars`), which does leave
+    Plex showing lyrics for a track the DB calls instrumental — the honest
+    outcome, since the backend's verdict is no evidence about who wrote that
+    file. This is the ONLY deletion left in this module. The audio file's own tag
+    is deliberately left alone (no ``try_write``): a stale tag is inert, and
+    rewriting tags is not this feature's job.
     """
     item.lyrics = ""
     item["lyrics_instrumental"] = 1
     item["lyrics_checked"] = 1
     _set_source_flex(item, lyrics)
     item.store()
-    remove_lyric_sidecars(item)
+    remove_instrumental_marker_sidecars(item)
 
 
 def _store_lyrics(item: Any, lyrics: Lyrics, *, write: bool) -> bool:
@@ -288,11 +439,13 @@ def _early_skip_outcome(
     # recheck_misses, and deliberately independent of lyrics_checked — beets'
     # 2.13 migration flags pre-existing instrumentals without setting it.
     if not force and _is_instrumental(item):
-        # Cleanup, not classification: tracks beets' migration flagged arrive
-        # with old "[Instrumental]" sidecars that Plex keeps reading, and since
-        # flagged tracks are never re-searched, this skip is the only sweep
-        # path that can ever remove them. Idempotent (two stats when clean).
-        remove_lyric_sidecars(item)
+        # A REPORT, never file work. This branch used to delete both sidecars
+        # before returning — a "skip" for an operation that had just removed two
+        # files, on tracks whose flag beets' 2.13 migration set (a flag MusicDrop
+        # never wrote). That one-shot sweep of migrated "[Instrumental]" markers
+        # shipped in #123 and has since run in production; a fresh verdict still
+        # cleans its own markers via _store_instrumental. Any straggler is now
+        # left alone rather than risking a curated sidecar.
         return ItemLyricsOutcome(
             item_id=item_id, status="skipped_instrumental", source=None, written=False
         )
@@ -427,6 +580,25 @@ def fetch_item_lyrics(
     error stays ``fetch_failed`` (transient) and is NOT marked. A track already
     flagged instrumental is skipped by EVERY sweep (``recheck_misses`` included)
     — an instrumental is an answer, not a miss; only ``force`` re-searches one.
+
+    ``force`` bypasses the skip gates and NOTHING else. It is not threaded to the
+    sidecar layer, which is fill-gaps-only for every caller
+    (:func:`write_lyric_sidecar`), and it has no production caller at any layer:
+    ``app/lyrics_jobs/runner.py:73`` hardcodes ``force=False`` and no endpoint or
+    UI control exposes it. **If force is ever surfaced**, giving it destructive
+    file semantics needs two things first: the trigger must get this repo's
+    destructive-action AlertDialog (the convention lives in
+    ``frontend/src/pages/albums/DeleteAlbumAction.tsx``; the Backfill button has
+    none today), and a replaced sidecar must go to Trash rather than
+    ``Path.unlink()``, like every other delete in the app.
+
+    One known caveat, unchanged by the sidecar guards: a track with a curated
+    sidecar and an empty tag falls through the skip-existing gate below, so it is
+    FETCHED once. A found result fills the tag and it settles into
+    ``skipped_existing``; a clean ``not_found`` sets ``lyrics_checked`` and it
+    settles into ``skipped_checked`` — except on ``recheck_misses`` runs (the
+    panel toggle, and every per-album fetch, which pins it True), where such a
+    track is re-fetched each time. Network only: the disk is never touched.
     """
     item_id = int(item.id)
     skip = _early_skip_outcome(item_id, item, force=force, recheck_misses=recheck_misses)

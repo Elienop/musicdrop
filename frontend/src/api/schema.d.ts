@@ -5252,6 +5252,15 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
+            /** @description The music library root is missing, empty or unreadable, so the delete is refused before anything is moved or dropped (the guard against an unmounted share). Nothing reached the Trash folder. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
         };
     };
     get_album_missing_endpoint_api_albums__album_id__missing_get: {
@@ -5823,13 +5832,22 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description Deleting the artist failed, but its files are recoverable in the Trash folder. */
+            /** @description Deleting the artist failed, but its files are recoverable in the Trash folder. Also the status for a share that drops PART-WAY through the fan-out: the message then names how many of the artist's albums had been trashed before it did, and the rest are untouched. */
             500: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
+                };
+            };
+            /** @description The music library root is missing, empty or unreadable, so the delete is refused before any of the artist's albums is moved or dropped (the guard against an unmounted share). Nothing reached the Trash folder; a share that drops part-way through the fan-out is reported as the 500 instead. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
         };

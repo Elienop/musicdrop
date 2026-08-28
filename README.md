@@ -40,12 +40,25 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 - **Search** across the library.
 - **Cover art** — fetch + replace.
 - **Artist images** — portraits resolve automatically from the configured sources (fanart.tv → Spotify → Deezer, first verified match wins; Deezer needs no key) and are written into the library for Plex. To change one, open an artist and use the image action: pick a source, **Fetch**, and **Use this image** to keep it — or upload a file / paste a URL. **Reset to auto** forgets both your pick and the cached automatic image, so the artist is looked up again from scratch. An artist whose portrait isn't cached yet shows their initials while it resolves in the background; it appears without a reload when it lands.
-- **Lyrics** — presence, per-album fetch, and a library-wide backfill.
+- **Lyrics** — presence, per-album fetch, and a library-wide backfill. The backfill is
+  **fill-gaps-only on disk**: it writes a `.lrc`/`.txt` sidecar only where none exists and
+  never deletes or replaces one you already have (the sole removal is a file whose entire
+  content is the legacy `[Instrumental]` marker, cleaned when a track is classified
+  instrumental).
 - **Edit tags** — album & track, from the UI.
 - **Import** — interactive candidate picker, resume, an import-time duplicate guard, and search-by-release-ID when the right match isn't offered. Unattended runs **bank** undecidable albums for later review instead of stalling, and the summary verifies each album actually **landed** in the library.
 - **Duplicates** — find & resolve duplicate albums (resolve one, or resolve-all).
 - **Release identity** — which release an album is (source · label · country · media · disambiguation), with view-release links.
-- **Delete & Trash** — delete albums or artists into a reversible Trash; restore or empty it under **Settings → Trash**.
+- **Delete & Trash** — delete albums or artists into a reversible Trash; restore or empty it
+  under **Settings → Trash**. If the music root is missing, empty or unreadable (an unmounted
+  share), deletes are refused with a 503 — nothing is moved and no library rows are dropped —
+  so a genuinely emptied library needs a remount (or beets' own CLI) before its leftover
+  entries can be cleared. A share dropping part-way through an artist delete reports how
+  many albums were trashed before it dropped — those stay recoverable in Trash, the rest
+  untouched. A Trash row listed at zero tracks means MusicDrop
+  couldn't read audio tags there — Restore may still work (beets' importer reads more
+  formats than the listing does); a genuinely media-free folder (art/booklet leftovers)
+  reports "couldn't restore" and Empty is its only exit.
 - **beets config** — viewer + writable editor.
 - **Naming** — edit beets path/replace rules with a live preview. **Reorganize** — re-apply them to existing files (and sweep emptied leftover folders into the Trash).
 - **Disk sync** — a `beet update` equivalent: preview-first removal of library entries whose files were deleted outside the app, plus tag refresh for files changed on disk.

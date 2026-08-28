@@ -1006,9 +1006,9 @@ def _start(
 
 @router.delete(
     "/artists",
-    # Named models on both: a description-only entry drops the `content`
+    # Named models on all three: a description-only entry drops the `content`
     # block and openapi-typescript renders `content?: never` for a body the
-    # client must read (see app/models/errors.py). Both are raised inside
+    # client must read (see app/models/errors.py). All three are raised inside
     # delete_artist_op (app/beets/delete.py), not here. No 404: deleting an
     # unknown artist is a no-op on this route - delete_artist_op never raises
     # AlbumNotFoundError, only its album twin does.
@@ -1022,7 +1022,24 @@ def _start(
         500: {
             "model": StructuredErrorDetail,
             "description": (
-                "Deleting the artist failed, but its files are recoverable in the Trash folder."
+                "Deleting the artist failed, but its files are recoverable in the Trash"
+                " folder. Also the status for a share that drops PART-WAY through the"
+                " fan-out: the message then names how many of the artist's albums had"
+                " been trashed before it did, and the rest are untouched."
+            ),
+        },
+        # Flat ErrorDetail, unlike the 500 beside it: this one is raised only
+        # while the fan-out has mutated NOTHING, which is what lets its
+        # description promise that. Once an album has been trashed the same
+        # cause is re-raised as ArtistDeletePartialError and lands on the 500
+        # above - see app/beets/delete.py.
+        503: {
+            "model": ErrorDetail,
+            "description": (
+                "The music library root is missing, empty or unreadable, so the delete is"
+                " refused before any of the artist's albums is moved or dropped (the guard"
+                " against an unmounted share). Nothing reached the Trash folder; a share"
+                " that drops part-way through the fan-out is reported as the 500 instead."
             ),
         },
     },

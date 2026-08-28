@@ -2,13 +2,15 @@
 art/sidecars (no audio anywhere beneath). Pure filesystem — audio is detected by
 file extension on disk, NOT via the beets DB, so a folder containing an
 *untracked* audio file is never reported. Inside the beets-adapter boundary
-(CLAUDE.md rule 3) for proximity to trash.py, though it touches no beets API.
+(CLAUDE.md rule 3) for proximity to trash.py, though it touches no beets API:
+the DB-derived protection a caller may pass as ``protected_dirs`` is computed
+over in ``app.beets.reorganize.live_album_roots`` and arrives here as plain paths.
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 
 #: Lowercase audio extensions. Over-inclusive on purpose: a husk is only reported
@@ -63,9 +65,12 @@ SKIP_DIR_NAMES: frozenset[str] = frozenset(
 # Well-known art/booklet/rip-artifact subfolder basenames (lowercased). A live
 # MULTI-DISC album keeps its audio in ``Disc N/`` children, so the album dir has no
 # DIRECT audio and the has_own_audio guard can't tell its ``Scans/`` folder from a
-# genuine husk (structurally identical). Skipping these names is the backstop.
-# False-negative-only: a stale husk that happens to bear one of these names is
-# merely left in place — the module errs toward keeping.
+# genuine husk (structurally identical).
+# PRIMARY protection for that shape is now ``protected_dirs`` — the beets DB's own
+# live album dirs, which spare an album's art folder whatever it is named. This list
+# stays as the BACKSTOP: art no album row owns (artist-level, box-set-level), and
+# every caller that passes no set. False-negative-only: a stale husk that happens to
+# bear one of these names is merely left in place — the module errs toward keeping.
 ART_DIR_NAMES: frozenset[str] = frozenset(
     {
         "scans",
@@ -219,12 +224,46 @@ def _top_most(paths: list[str]) -> list[str]:
     return [p for p in paths if not any(p != q and _under(p, q) for q in paths)]
 
 
+def _drop_protected(raw: list[str], protected_dirs: Collection[str]) -> list[str]:
+    """Drop the candidates a LIVE album owns (see :func:`find_orphan_folders`).
+
+    Three ways a candidate ``dp`` can belong to an album whose root is in the set:
+    ``dp`` IS a root (a live album whose audio has vanished from disk — err toward
+    keeping until a disk-sync says otherwise), ``dp``'s PARENT is a root (the album's
+    own ``Scans (LP)``/booklet folder, whatever its basename — the case ART_DIR_NAMES
+    could not cover), or a root lies strictly UNDER ``dp`` (``dp`` is an ancestor:
+    a lone album whose audio is gone reports the whole ARTIST dir, and trashing that
+    would take the live album's folder with it).
+
+    The ancestor test is a set lookup, not a scan of the roots: every root's ancestor
+    chain is folded once, so the filter stays O(candidates) however large the set.
+    """
+    if not protected_dirs:
+        return raw
+    roots = {os.path.normpath(p) for p in protected_dirs}
+    ancestors: set[str] = set()
+    for root in roots:
+        d = os.path.dirname(root)
+        while d and d not in ancestors:
+            ancestors.add(d)
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+    return [
+        dp
+        for dp in raw
+        if dp not in roots and os.path.dirname(dp) not in roots and dp not in ancestors
+    ]
+
+
 def find_orphan_folders(
     music_dir: Path,
     *,
     seeds: list[Path] | None,
     trash_dir: Path,
     ignore_dirs: tuple[Path, ...] = (),
+    protected_dirs: Collection[str] = (),
 ) -> list[Path]:
     """Top-most audio-empty, non-empty folders under ``music_dir`` to move to Trash.
 
@@ -237,6 +276,11 @@ def find_orphan_folders(
     ``ignore_dirs`` are extra absolute roots to skip (e.g. the playlists export
     dir). Directories whose name is a dotdir or a known NAS/OS housekeeping name are
     always skipped.
+
+    ``protected_dirs`` are normalized absolute dirs owned by LIVE beets albums
+    (``app.beets.reorganize.live_album_roots``): nothing at, directly under, or above
+    one of them is ever returned, in either mode. Empty by default, so a caller that
+    knows nothing about the DB keeps exactly the old behaviour.
     """
     root = os.path.normpath(str(music_dir))
     exclude_roots = tuple(os.path.normpath(str(d)) for d in (trash_dir, *ignore_dirs))
@@ -245,5 +289,5 @@ def find_orphan_folders(
         raw = _library_orphans(root, excluded)
     else:
         raw = _seeded_orphans(seeds, root, excluded)
-    kept = _top_most(raw)
+    kept = _top_most(_drop_protected(raw, protected_dirs))
     return sorted(Path(p) for p in kept)

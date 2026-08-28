@@ -47,46 +47,38 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
 
-- **Lyrics backfill silently deletes and overwrites the user's own `.lrc`/`.txt` sidecars —
-  no provenance check, no confirmation, no report, no Trash.** (Found 2026-08-28, data-loss
-  sweep.) MusicDrop claims both sidecar names beside every track as its own
-  (`app/beets/sidecars.py:30`), but a self-hosted Plex user is exactly who already has a
-  curated `.lrc` collection sitting there. Two arms destroy files permanently with
-  `Path.unlink()`: `write_lyric_sidecar` writes one extension and unconditionally unlinks
-  the OTHER (`app/beets/lyrics.py:220`) — so a plain-text LRCLib answer deletes the user's
-  synced `.lrc` and replaces it with worse data; and `_early_skip_outcome` calls
-  `remove_lyric_sidecars(item)` for any track flagged instrumental (`:295`) — including
-  tracks beets' 2.13 migration flagged, i.e. flags MusicDrop never set — then reports
-  `skipped_instrumental`: a SKIP for an operation that just deleted two files. Reachability
-  is ordinary, not exotic: the skip-existing gate (`:300`) is
-  `not force and item.lyrics and _has_sidecar(item)`, so a track with a sidecar but an EMPTY
-  embedded lyrics tag — the normal state for a downloaded `.lrc` collection — is not skipped
-  at all. The trigger is one unconfirmed Backfill button (`LyricsBackfillPanel.tsx`, no
-  AlertDialog — unlike every delete action in the app), and `force` is not required. Nothing
-  anywhere records whether MusicDrop wrote a given sidecar;
-  `remove_lyric_sidecars`'s "scoped to exactly the two siblings write_lyric_sidecar could
-  have written" is a scope over NAMES, not authorship. README:113 documents the sidecars and
-  never says pre-existing ones get deleted. Cheap first step before any design work:
-  reproduce with a fixture library holding a pre-existing `.lrc` — the two arms are read
-  from the code and the gate expression, not yet executed.
+- ~~**Lyrics backfill silently deletes and overwrites the user's own `.lrc`/`.txt`
+  sidecars**~~ — **FIXED in #189.** The file layer is fill-gaps-only; skip paths touch no
+  files; the sole deletion is content-proven (a sidecar whose entire body is beets'
+  `[Instrumental]` marker, timestamped legacy form included) and runs BOTH ways — an
+  instrumental verdict removes marker files, a found verdict treats an all-marker set as
+  absent so fetched lyrics reach Plex. Read AND write paths are guarded against non-regular
+  files (a planted FIFO used to park the single-slot backfill worker until restart).
+  `remove_lyric_sidecars` was renamed `remove_instrumental_marker_sidecars` — it can no
+  longer blanket-delete. Residuals, all recorded 2026-08-28: (a) a legacy track with a
+  NON-EMPTY `item.lyrics` and a marker-only sidecar returns `skipped_existing` before the
+  writer runs, so its marker survives — closing it costs content-reads on every
+  sidecar-bearing track per sweep; a force re-fetch clears it (accepted); (b) stale markers
+  on already-flagged instrumental tracks are no longer swept (skip paths touch nothing) —
+  force clears; (c) a user's own minimal `[Instrumental]` file is indistinguishable from
+  the legacy artifact and is deleted by design — content is the only authorship proxy;
+  (d) a dangling symlink squatting the atomic-write tmp path is a safe, logged, repeated
+  refusal (widening cleanup to `lexists` was deliberately not done inside a data-safety
+  fix).
 
-- **Delete album/artist with the music share unmounted silently drops the beets rows while
-  the UI says "recoverable in Trash".** (Found 2026-08-28.) `trash_album_folder` treats a
-  non-existent album folder as a ghost album and drops the DB rows with nothing moved
-  (`app/beets/trash.py:208-214`) — a branch that cannot distinguish "folder genuinely
-  deleted outside MusicDrop" from "NAS not mounted", the common failure on the intended
-  deployment. `delete_album` then returns `trashed_albums=1` with a trash path, and the
-  confirm dialog has already promised "It stays recoverable in Trash"
-  (`DeleteAlbumAction.tsx:44`). `delete_artist` fans the same call across every album of the
-  artist in one transaction — one click can drop every row for an artist. What is lost is
-  not the audio (still on the unmounted share) but everything `library.db` holds about it —
-  added dates, play counts, lyrics flags, album grouping, flex fields — exactly what
-  README:164 warns is unrecoverable without a re-import. The codebase already names this the
-  nightmare scenario and holds the guard: `disk_sync.LibraryRootUnavailableError` /
-  `_require_root` exist precisely because "with the root gone EVERY file looks deleted" —
-  and `grep -rn '_require_root\|LibraryRootUnavailable' backend/app/` hits disk-sync and its
-  two callers only. Delete, trash restore and reorganize have no equivalent. Fix shape: the
-  same fail-fast root check before the ghost branch may drop rows.
+- ~~**Delete album/artist with the music share unmounted silently drops the beets rows
+  while the UI says "recoverable in Trash"**~~ — **FIXED in #189.** `require_library_root`
+  (missing/empty/unreadable ⇒ unavailable, unreadable named distinctly) now lives in the
+  base adapter and guards both trash primitives BEFORE the first mutation; both delete
+  routes declare 503; the artist fan-out checks the root before its transaction and a
+  mid-flight drop reports honest partial progress ("n of m") through the 500 arm; and a
+  post-condition in `trash_album` verifies the move actually happened before rows drop —
+  re-asking the root so a share vanishing between check and move is a 503, a genuine
+  all-files-gone ghost still cleans up, and anything else raises with rows kept
+  (`TrashMoveIncompleteError`). Genuine ghost cleanup is pinned unchanged; duplicates
+  resolve and import Replace inherit the guard. Behaviour change kept deliberately:
+  deleting a no-album artist with the root unavailable now 503s instead of returning
+  `trashed_albums=0`.
 
 - **`GET /api/config` serves the user's raw `config.yaml` — every credential in it,
   unmasked — to any caller who can reach port 3030.** (Found 2026-08-28, auth-posture
@@ -132,33 +124,55 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   the UI. Needs a design conversation (store the release id at bank time vs surface the
   caveat), not a drive-by.
 
-- **A Trash row holding no importable audio can never be restored through the UI — the only
-  working button on it is permanent Empty.** (Found 2026-08-28; the husk-row note under
-  Deferred minors treats these rows as expendable leftovers and misses this half.)
-  `restore_album` restores by re-importing through beets and reports `restored=True` only
-  when a landed `album_id` comes back (`app/beets/trash_manage.py:113-133`); a folder with
-  no beets-importable audio produces zero import tasks, so it can only ever return
-  `could_not_restore`. But `_audio_free_entries` deliberately LISTS such folders as
-  zero-track rows (added so Empty-all could not delete them silently), and `TrashRow`
-  renders Restore unconditionally — a guaranteed no-op sitting next to a permanent delete.
-  The orphan sweep is what puts real content into those rows: booklet scans, artwork
-  folders, a user's own `Playlists/` of m3u files, music videos, SACD `.iso` rips — none of
-  which are in `AUDIO_EXTS`. The only recovery is a shell on the NAS. High-confidence
-  reasoned from the code path, not executed. Pairs with the orphan-sweep entry below —
-  together they form a move-then-cannot-restore pipeline for a multi-disc album's art.
+- ~~**A Trash row holding no importable audio can never be restored through the UI**~~ —
+  **RESOLVED in #189, with a premise correction found by the deep review.** `track_count 0`
+  means "nothing here produced a readable media Item", NOT "no audio": beets' importer
+  restores formats the listing cannot read (`.tak`/`.ra`/`.dff`, truncated files), so the
+  first fix (disable Restore) was itself a new data-loss path and was reverted the same
+  day. Shipped shape: the zero-track row keeps Restore enabled and explains the
+  uncertainty ("MusicDrop couldn't read audio tags here — Restore may still work"), wired
+  to the button via `aria-describedby`; a genuinely media-free folder still reports
+  `could_not_restore` and Empty remains its only exit. Follow-up, recorded as its own
+  entry below: record the origin at trash time so a true move-back restore becomes
+  possible.
 
-- **The orphan sweep moves a multi-disc album's art/booklet folder to Trash whenever its
-  name is outside the hardcoded 13-name `ART_DIR_NAMES` list.** (Found 2026-08-28.)
-  `_library_orphans` protects an album's audio-empty subfolders with `has_own_audio` — but
-  a multi-disc album's directory holds no audio DIRECTLY (it lives in `Disc 1/`), so that
-  guard never fires and the only remaining protection is an exact lowercased basename match
-  (`app/beets/orphans.py:131`, `:139`). `Scans (LP)`, `Artwork 1600x1600`,
-  `Digital Booklet - Deluxe` all miss the list and get moved to Trash by a library-scope
-  reorganize — whose sweep runs automatically whether or not anything moved. The module's
-  own comment names the hole (`:66-68`) and calls the list "False-negative-only", which is
-  true of over-inclusion and silent about this false positive. Mitigation today: the
-  preview lists orphan rows — as "orphans", not as "your booklet scans". Combined with the
-  restore dead end above, the content lands in a Trash row the UI cannot bring back.
+- ~~**The orphan sweep moves a multi-disc album's art/booklet folder to Trash whenever
+  its name is outside the hardcoded `ART_DIR_NAMES` list**~~ — **FIXED in #189.** Sweep
+  and preview both drop candidates a live album owns, derived from the beets path template
+  (the album's destination dir — or one disc level above — when it strictly contains the
+  album's actual root), so `Scans (LP)` inside a multi-disc album is protected whatever
+  its basename while genuine artist-dir husks still sweep; survives an album nested inside
+  another album's directory. `ART_DIR_NAMES` stays as the backstop for non-album-owned
+  art. Bounded claim, stated in the code: protection covers an album FILED WHERE THE
+  TEMPLATE PUTS IT. Residuals recorded 2026-08-28: art left in a VACATED dir after an
+  album move is still sweepable (that dir is no longer any album's); a split album (items
+  across two folders) contributes no protection and falls back to `has_own_audio`;
+  query-keyed path formats disagreeing about disc nesting are read through the first
+  album's shape (less protection, never more).
+
+- **Record the origin path at trash time so a move-back restore becomes possible.**
+  (Follow-up from #189.) The trash layer is a bare `shutil.move` with no metadata anywhere
+  — origin is verifiably unrecoverable, which is why a genuinely media-free Trash row's
+  only exit is permanent Empty. One sidecar record (or a manifest) at trash time makes a
+  true restore possible for every future row; old rows stay import-restore-only. Small,
+  wants a short design look at where the record lives (per-folder file vs one manifest)
+  and what Empty does with it.
+
+- **The delete-path mount predicate accepts a root with ANY entry, so a stray file on a
+  local mountpoint masks a dropped share.** (Deferred 2026-08-28 by design call, from the
+  #189 security review.) `.stfolder`, `lost+found` or an empty leftover dir on the
+  mountpoint makes `require_library_root` pass while the share is gone, re-opening the
+  ghost drop for exactly that state — though #189's post-condition in `trash_album` now
+  catches the damage for the moved-nothing case. Proposal on file: a
+  `require_library_present()` variant sampling K live album dirs from the DB — strictly
+  stronger for delete; must NOT replace the shared default (disk-sync calls the predicate
+  per removal). Disk-sync accepted the identical residual for itself.
+
+- **`useDiskSync.ts:45` throws a hardcoded "Library folder unavailable…" for ANY 503,
+  discarding the server's message.** (Found during #189.) The backend now differentiates
+  empty vs unreadable (with strerror); the disk-sync UI shows the wrong sentence for both.
+  Delete dialogs render the real detail — this is the disk-sync path only. Trivial:
+  surface the server's `detail` when present.
 
 - **"Save art to library" is a one-click, unconfirmed action that permanently deletes
   hand-placed `artist-poster.*`/`artist-background.*` — and fires as rename collateral.**
@@ -746,6 +760,13 @@ the condition it names has changed.
 
 ## Open questions
 
+- **Should duplicates resolve / resolve-all gain 503 parity with the delete routes?**
+  (#189, owner call.) Both currently keep their established structured-500 absorb shape
+  with the honest root-unavailable message embedded — consistent with their other
+  failures, but a different status than the same cause gets on delete. Parity is a small
+  contract change (two routes' `responses=` + regen); the current shape is defensible.
+
+
 - **Phantom one-track album row: RESOLVED 2026-08-22.** Root cause diagnosed at the code
   level: beets' import duplicate gate is byte-exact on albumartist+album, and every
   MusicDrop protection was a reactive hook behind it — dead code for a typographic
@@ -968,9 +989,9 @@ the condition it names has changed.
 - Trash restore leaves `.lrc`/`.txt` sidecars behind in Trash (v1 limitation, noted in #67).
 - Trash restore leaves the emptied source folder behind as a 0-track husk row in the listing
   (name-independent; beets moves the files but never prunes the dir — Empty clears it).
-  See also the Open-bugs entry added 2026-08-28: a zero-track row holding real content
-  (booklet scans, a `Playlists/` folder) cannot be restored at all — these rows are not
-  always expendable.
+  Since #189 a zero-track row keeps Restore ENABLED with an honest uncertainty note
+  (zero tracks = unreadable tags, not no audio); a genuinely media-free row still cannot
+  restore — origin-recording at trash time is the recorded follow-up under Open bugs.
 - The hand-rolled banner idiom has **seven** instances across five files, not one
   (corrected 2026-08-28; the old entry named only MoveNotice) — two complete banner
   recipes ship side by side: StatusBanner (`rounded-xl gap-3 size-5 items-center p-3`)
@@ -999,6 +1020,11 @@ the condition it names has changed.
   inside it); the placeholder scandir path widens that pre-existing TOCTOU window slightly.
 
 Added by the 2026-08-28 sweeps:
+
+- `GET /api/reorganize/preview` is ungated (`raise_if_library_busy` sits only on the
+  POST) and does a whole-library `os.walk` — and, since #189, one `lib.items()` pass +
+  one `destination()` render per album for the protected set. The walk still dominates;
+  the ungated preview is the pattern to fix, not the new pass. (#189 security note.)
 
 - Browse filter-rail counts are whole-library totals while a filter is active — deferred
   outright in the adapter docstring (`browse.py:430`: "Absolute counts (not filter-aware)

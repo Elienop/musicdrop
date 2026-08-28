@@ -25,6 +25,8 @@ from typing import Any
 from beets import library
 from beets.library import ReadError
 
+from app.beets.library import LibraryRootUnavailableError as LibraryRootUnavailableError
+from app.beets.library import _music_dir, require_library_root
 from app.beets.reorganize import PREVIEW_ROW_CAP
 from app.models.disk_sync import (
     DiskSyncChange,
@@ -35,39 +37,18 @@ from app.models.disk_sync import (
     DiskSyncRemoval,
 )
 
-
-class LibraryRootUnavailableError(Exception):
-    """The music directory itself is missing — likely an unmounted share.
-
-    Guard against the nightmare scenario: with the root gone EVERY file looks
-    deleted and a sync would wipe the whole DB. Fail fast instead.
-    """
-
-
-def _music_dir(lib: Any) -> str:
-    return os.path.normpath(os.fsdecode(lib.directory))
-
-
-def _require_root(lib: Any) -> None:
-    root = _music_dir(lib)
-    if not os.path.isdir(root):
-        raise LibraryRootUnavailableError("Library folder unavailable. Is the music share mounted?")
-    # A dropped NAS/SMB/NFS mount usually leaves the mountpoint PRESENT but empty
-    # (the kernel keeps the directory), so os.path.isdir alone stays True and a sync
-    # would read every file as deleted and wipe the DB. Treat an empty or unreadable
-    # root as unavailable too — a real library's root always has entries, and a
-    # genuine single deletion leaves siblings behind. Deliberately O(1) (one entry,
-    # not a recursive audio scan): the residual gaps — a stray file left on the local
-    # mountpoint masking a drop, or a genuinely-empty library reading as unavailable —
-    # are accepted, since the plan/preview dry-run the user reviews stands in front of
-    # any removal.
-    try:
-        with os.scandir(root) as it:
-            has_entry = next(it, None) is not None
-    except OSError:
-        has_entry = False  # stale mount handle / I/O error → unavailable
-    if not has_entry:
-        raise LibraryRootUnavailableError("Library folder is empty. Is the music share mounted?")
+#: The root guard now lives in the base adapter (``app.beets.library``) because
+#: the Trash primitives need the SAME predicate — a second, looser copy is the
+#: failure that placement prevents. Two names survive here on purpose:
+#:
+#: * the ``as``-aliased re-export above keeps ``disk_sync.LibraryRootUnavailableError``
+#:   a module ATTRIBUTE (explicit re-export, so mypy --strict's
+#:   no-implicit-reexport and ruff's F401 both stay quiet), which is how
+#:   ``tests/test_disk_sync_adapter.py`` reaches it through the module;
+#: * ``_require_root`` is the module-global the call sites below resolve through,
+#:   and therefore the seam that same test monkeypatches to simulate a mount
+#:   dropping mid-sweep.
+_require_root = require_library_root
 
 
 def _item_label(item: Any) -> str:

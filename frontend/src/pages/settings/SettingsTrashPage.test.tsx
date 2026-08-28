@@ -103,6 +103,34 @@ describe("SettingsTrashPage", () => {
     expect(await screen.findByText(/Restored to your library/i)).toBeInTheDocument();
   });
 
+  test("a zero-track row keeps Restore enabled and explains the uncertainty", async () => {
+    // track_count === 0 means "nothing here produced a readable media Item",
+    // NOT "no audio" (see the comment in trash_manage.py) — beets' importer
+    // reads more than Item.from_path does, so Restore may genuinely work. The
+    // row must say so without taking the button away.
+    const emptyAlbum = {
+      folder: "No Audio - Ghost",
+      album_artist: null,
+      album: null,
+      year: null,
+      track_count: 0,
+      format: null,
+    };
+    server.use(
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [emptyAlbum], trash_path: "/t" }),
+      ),
+    );
+    renderPage();
+
+    const restore = await screen.findByRole("button", { name: /^Restore$/ });
+    expect(restore).toBeEnabled();
+    expect(
+      await screen.findByText(/couldn.t read audio tags here/i),
+    ).toBeInTheDocument();
+    expect(restore).toHaveAccessibleDescription(/restore may still work/i);
+  });
+
   test("Restore surfaces the already-in-library result", async () => {
     server.use(
       http.get(TRASH_URL, () => HttpResponse.json({ albums: [album], trash_path: "/t" })),

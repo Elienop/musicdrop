@@ -103,6 +103,16 @@ def _audio_free_entries(trash_dir: Path, groups: dict[str, list[Any]]) -> list[T
                     album_artist=None,
                     album=None,
                     year=None,
+                    # Zero means "nothing here produced a readable media Item",
+                    # NOT "no audio": _walk_trash_groups skips every file
+                    # ``Item.from_path`` raises on, while beets' own discovery
+                    # takes every non-ignored file in the folder as a candidate
+                    # (``albums_in_dir``, importer/tasks.py:1184-1216, no
+                    # extension or media filter). So a folder listed at 0 tracks
+                    # can still restore. The UI disables the affordance on this
+                    # count, which is the honest place for a hint; do NOT
+                    # "strengthen" it into a backend refusal — that would make a
+                    # restorable folder permanently unrestorable.
                     track_count=0,
                     format=None,
                 )

@@ -424,9 +424,9 @@ async def fetch_album_lyrics_endpoint(
 
 @router.delete(
     "/albums/{album_id}",
-    # Named models on all three: a description-only entry drops the `content`
+    # Named models on all four: a description-only entry drops the `content`
     # block and openapi-typescript renders `content?: never` for a body the
-    # client must read (see app/models/errors.py). All three are raised inside
+    # client must read (see app/models/errors.py). All four are raised inside
     # delete_album_op (app/beets/delete.py), not here.
     responses={
         404: {"model": ErrorDetail, "description": "No album has that id."},
@@ -440,6 +440,17 @@ async def fetch_album_lyrics_endpoint(
             "model": StructuredErrorDetail,
             "description": (
                 "Deleting the album failed, but its files are recoverable in the Trash folder."
+            ),
+        },
+        # Flat ErrorDetail, unlike the 500 beside it: this one aborts BEFORE any
+        # move or row drop, so there is no Trash state to describe and no
+        # recovery hint to give beyond remounting.
+        503: {
+            "model": ErrorDetail,
+            "description": (
+                "The music library root is missing, empty or unreadable, so the delete is"
+                " refused before anything is moved or dropped (the guard against an"
+                " unmounted share). Nothing reached the Trash folder."
             ),
         },
     },

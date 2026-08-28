@@ -215,3 +215,79 @@ def test_reorganize_models_carry_orphan_fields() -> None:
         finished_at=None,
     )
     assert status.orphans_trashed == 3
+
+
+def test_protected_dirs_do_not_shield_genuine_husk_in_artist_dir(tmp_path: Path) -> None:
+    """The sentinel for the discriminator: ``protected_dirs`` holds live album ROOTS,
+    never artist containers, so a genuine husk sitting next to a live album is still
+    swept. A naive "the parent has audio somewhere beneath" rule shields it (the
+    artist dir has audio via its OTHER album) — this test is what forbids that rule."""
+    root = tmp_path / "music"
+    _touch(root / "Artist" / "Good Album" / "01.flac")
+    _touch(root / "Artist" / "Old Album" / "cover.jpg")  # genuine husk
+    trash = tmp_path / "trash"
+    found = find_orphan_folders(
+        root,
+        seeds=None,
+        trash_dir=trash,
+        protected_dirs={str(root / "Artist" / "Good Album")},
+    )
+    assert found == [root / "Artist" / "Old Album"]
+
+
+def test_multidisc_nonlisted_art_folder_protected_by_album_root(tmp_path: Path) -> None:
+    """A live multi-disc album's art folder whose name is OUTSIDE ART_DIR_NAMES is
+    protected because its PARENT is a live album root (the bug: 'Scans (LP)' was
+    swept to Trash while the album stayed in the library)."""
+    root = tmp_path / "music"
+    _touch(root / "Artist" / "Album" / "Disc 1" / "01.flac")
+    _touch(root / "Artist" / "Album" / "Disc 2" / "01.flac")
+    _touch(root / "Artist" / "Album" / "Scans (LP)" / "booklet.jpg")
+    trash = tmp_path / "trash"
+    assert (
+        find_orphan_folders(
+            root,
+            seeds=None,
+            trash_dir=trash,
+            protected_dirs={str(root / "Artist" / "Album")},
+        )
+        == []
+    )
+
+
+def test_protected_dirs_shield_the_album_root_itself(tmp_path: Path) -> None:
+    """A DB-live album whose folder currently holds only art (its audio vanished
+    from disk without a disk-sync) is protected by the candidate-itself clause."""
+    root = tmp_path / "music"
+    _touch(root / "Artist" / "Other Album" / "01.flac")  # keeps the artist dir "kept"
+    _touch(root / "Artist" / "Live Album" / "cover.jpg")  # audio-empty, but DB-live
+    trash = tmp_path / "trash"
+    assert (
+        find_orphan_folders(
+            root,
+            seeds=None,
+            trash_dir=trash,
+            protected_dirs={str(root / "Artist" / "Live Album")},
+        )
+        == []
+    )
+
+
+def test_protected_root_under_candidate_shields_the_ancestor(tmp_path: Path) -> None:
+    """The candidate is an ANCESTOR of the album root, not the root or its parent:
+    a lone album under an artist dir whose audio is gone from disk reports the whole
+    ARTIST dir, and trashing it would take the live album's folder with it."""
+    root = tmp_path / "music"
+    _touch(root / "Artist" / "Album" / "cover.jpg")  # only art left on disk
+    trash = tmp_path / "trash"
+    # Without protection the whole artist dir is the reported husk (pins the shape):
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash) == [root / "Artist"]
+    assert (
+        find_orphan_folders(
+            root,
+            seeds=None,
+            trash_dir=trash,
+            protected_dirs={str(root / "Artist" / "Album")},
+        )
+        == []
+    )

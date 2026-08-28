@@ -6,19 +6,24 @@ import asyncio
 import os
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from beets.library import Library
 from fastapi import HTTPException
 
+from app.beets import delete as delete_mod
 from app.beets.delete import (
     AlbumNotFoundError,
     delete_album,
     delete_album_op,
     delete_artist,
+    delete_artist_op,
 )
-from app.beets.library import _require_id
-from app.beets.trash import album_folder
+from app.beets.library import LibraryRootUnavailableError, _require_id
+from app.beets.trash import album_folder, trash_album_folder
+from app.config import Settings
+from tests.conftest import make_test_handle
 
 
 def test_delete_album_trashes_whole_folder_and_drops(
@@ -103,3 +108,185 @@ def test_delete_album_op_409_during_backfill() -> None:
         assert ei.value.status_code == 409
     finally:
         reset_lyrics_backfill()
+
+
+# ----- The unmounted-share guard, from the front door -----
+#
+# Both delete entry points ride ``trash_album_folder``, whose ghost branch reads
+# a missing album folder as "deleted outside MusicDrop". With the library root
+# itself gone that reading is wrong for every album at once, so the primitive's
+# root guard has to fire before the first row drop — and the drop it prevents
+# would otherwise be permanent, because a beets ``Transaction`` commits on the
+# way out even while unwinding an exception (dbcore/db.py:924-941).
+
+
+def test_delete_album_root_unavailable_keeps_rows(duplicates_lib: Library, tmp_path: Path) -> None:
+    """No DeleteResult(trashed_albums=1) lie: the op raises and the album stays."""
+    trash = tmp_path / "trash"
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    shutil.rmtree(os.fsdecode(duplicates_lib.directory))
+
+    with pytest.raises(LibraryRootUnavailableError):
+        delete_album(duplicates_lib, album_id, trash_dir=trash)
+
+    assert duplicates_lib.get_album(album_id) is not None  # still queryable
+    assert not trash.exists()
+
+
+def test_delete_artist_root_unavailable_drops_nothing(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """The fan-out aborts on the FIRST album, before any row is dropped.
+
+    Radiohead holds two albums in the fixture; a guard that ran anywhere after
+    the first ``album.remove`` would leave one row committed and unrecoverable.
+    """
+    trash = tmp_path / "trash"
+    before = [_require_id(a.id) for a in duplicates_lib.albums() if a.albumartist == "Radiohead"]
+    assert len(before) == 2, "fixture should hold two Radiohead albums"
+    total_before = len(list(duplicates_lib.albums()))
+    shutil.rmtree(os.fsdecode(duplicates_lib.directory))
+
+    with pytest.raises(LibraryRootUnavailableError):
+        delete_artist(duplicates_lib, "Radiohead", trash_dir=trash)
+
+    assert [_require_id(a.id) for a in duplicates_lib.albums() if a.albumartist == "Radiohead"] == (
+        before
+    )
+    assert len(list(duplicates_lib.albums())) == total_before
+    assert not trash.exists()
+
+
+def test_delete_album_op_503_root_unavailable(duplicates_lib: Library, tmp_path: Path) -> None:
+    """The HTTP mapping: 503 + the flat honest sentence, not the structured 500.
+
+    The blanket ``except`` above would answer "Files are recoverable in the Trash
+    folder" for an operation that moved nothing, so the root-unavailable arm has
+    to sit in front of it. The stub request is enough because ``_swap_lock``
+    creates its lock lazily on whatever ``app.state`` it is handed
+    (config_editor.py:624-630) and ``_settings`` falls back to the module
+    singleton when ``state.settings`` is absent (:632-645).
+    """
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    handle = make_test_handle(duplicates_lib, tmp_path)
+    shutil.rmtree(os.fsdecode(duplicates_lib.directory))
+
+    class _App:
+        state = SimpleNamespace(beets_library=handle)
+
+    class _Req:
+        app = _App()
+
+    req = _Req()
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_album_op(req, album_id))  # type: ignore[arg-type]  # duck-typed stub
+
+    assert ei.value.status_code == 503
+    assert ei.value.detail == "Library folder unavailable. Is the music share mounted?"
+    assert duplicates_lib.get_album(album_id) is not None
+
+
+def test_delete_artist_op_503_root_unavailable(duplicates_lib: Library, tmp_path: Path) -> None:
+    """The artist op maps the same cause the same way — its own arm, its own pin.
+
+    Without this the artist half of the mapping is unpinned: the route-status
+    census reads the RAISE and only flags a status raised-but-undeclared, so
+    deleting the ``except`` here would leave a declared 503 nothing produces and
+    hand the fan-out back its "recoverable in the Trash folder" 500.
+    """
+    handle = make_test_handle(duplicates_lib, tmp_path)
+    before = len(list(duplicates_lib.albums()))
+    shutil.rmtree(os.fsdecode(duplicates_lib.directory))
+
+    class _App:
+        state = SimpleNamespace(beets_library=handle)
+
+    class _Req:
+        app = _App()
+
+    req = _Req()
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_artist_op(req, "Radiohead"))  # type: ignore[arg-type]  # duck-typed stub
+
+    assert ei.value.status_code == 503
+    assert ei.value.detail == "Library folder unavailable. Is the music share mounted?"
+    assert len(list(duplicates_lib.albums())) == before
+
+
+def test_delete_artist_root_gone_raises_before_the_transaction(
+    duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ENTRY check is what makes the artist 503's "nothing was dropped" true.
+
+    Relying on the primitive alone would leave that claim conditional: the
+    primitive only checks the root once it is already inside the transaction,
+    per album. Pinned by stubbing the primitive out entirely — with nothing else
+    in the fan-out able to raise, a raise here can only have come from the
+    check that runs before the loop.
+    """
+    calls: list[int] = []
+
+    def _never(*args: object, **kwargs: object) -> str:
+        calls.append(1)
+        return ""
+
+    monkeypatch.setattr(delete_mod, "trash_album_folder", _never)
+    before = len(list(duplicates_lib.albums()))
+    shutil.rmtree(os.fsdecode(duplicates_lib.directory))
+
+    with pytest.raises(LibraryRootUnavailableError):
+        delete_artist(duplicates_lib, "Radiohead", trash_dir=tmp_path / "trash")
+
+    assert calls == []  # the fan-out never started
+    assert len(list(duplicates_lib.albums())) == before
+
+
+def test_delete_artist_op_mid_flight_drop_reports_partial_progress(
+    duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A share that drops MID fan-out must not answer with the 503.
+
+    The 503 (and its OpenAPI description) says nothing was moved or dropped.
+    Once an album has been through the primitive that is false and unfixable —
+    beets commits on the way out of the transaction even while unwinding the
+    exception — so this case has to surface as the structured 500 whose message
+    states how far the fan-out got.
+    """
+    trash = tmp_path / "trash"
+    handle = make_test_handle(duplicates_lib, tmp_path)
+    real = trash_album_folder  # from its own module: delete.py does not re-export it
+    calls = {"n": 0}
+
+    def _drops_on_the_second(lib: Library, album: object, *, trash_dir: Path) -> str:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise LibraryRootUnavailableError(
+                "Library folder unavailable. Is the music share mounted?"
+            )
+        return str(real(lib, album, trash_dir=trash_dir))
+
+    monkeypatch.setattr(delete_mod, "trash_album_folder", _drops_on_the_second)
+
+    class _App:
+        # An explicit Settings pins the Trash location inside tmp_path: this is
+        # the one op test that really moves files, and _settings would otherwise
+        # fall back to the module singleton (a dev .env could point anywhere).
+        state = SimpleNamespace(beets_library=handle, settings=Settings(trash_dir=str(trash)))
+
+    class _Req:
+        app = _App()
+
+    req = _Req()
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_artist_op(req, "Radiohead"))  # type: ignore[arg-type]  # duck-typed stub
+
+    assert ei.value.status_code == 500  # NOT the nothing-was-dropped 503
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert "1 of 2" in detail["message"]  # names how far it got
+    assert "music share" in detail["message"]  # and why it stopped
+    # The library agrees with the message: one album trashed, one untouched.
+    assert len([a for a in duplicates_lib.albums() if a.albumartist == "Radiohead"]) == 1
+    assert trash.is_dir()
