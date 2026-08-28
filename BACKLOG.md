@@ -303,63 +303,39 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   the remainder: ARIA roles are correctly absent from source, `/i` regexes need
   case-insensitive matching, and JSX line-wrapped copy needs whitespace normalization.
 
-- **Album art can still be silently diverted — and on the tag-edit path it churns.** The
-  collision pre-flight covers item files only: `collisions_by_dest` is fed by `_unit_dests`
-  (`app/beets/reorganize.py`), which computes one destination per ITEM, and nothing anywhere
-  computes an art destination — `grep -rn "art_destination\|move_art" backend/app/` finds one
-  comment and one call, no guard and no test. `Album.move_art` goes through the same beets
-  `unique_path`, which diverts with no return value and no signal, so the move reports full
-  success (`status='moved'` / `move_failures=0`, every row `error=None`) while the art lands
-  at `cover.1.jpg`.
-  **Scope correction (2026-08-27 re-verification):** this entry used to state the trigger as
-  "two album rows resolving to one folder with disjoint track names". That is one instance,
-  not the condition. The real trigger is far weaker — ANY pre-existing file at the album's art
-  destination. A stray `cover.jpg` the library knows nothing about, sitting in the target
-  folder, diverts the incoming art identically, with no second album row anywhere
-  (reproduced).
-  **Correction that may change this item's priority:** the line that used to follow —
-  "One-shot (no churn — the unit is item-settled next run), which is why it was descoped" —
-  is the sentence that justified descoping, and it is only half true. It holds for reorganize
-  (a second `reorganize_album` on a settled unit returns `status='skipped'`, so `move_art`
-  never re-runs). It is FALSE for the tag-edit path, which gates the call on `if moved:`
-  (`app/beets/edit.py`) — on whether any FILE moved, not on whether the art is settled — so
-  every later album edit that relocates anything re-diverts the art. Verified oscillation
-  across three successive edits: `cover.1.jpg` → `cover.2.jpg` → `cover.1.jpg`, because
-  `unique_path` restarts its scan at `.1` once `.2` vacates. It renames rather than
-  accumulates, but `artpath` is rewritten and re-stored every time, ~~busting
-  `cover_validator`'s ETag~~ (withdrawn 2026-08-28 — false, see below). Re-triage rather
-  than assuming the old descope still stands.
-  **2026-08-28 re-verification (pair-reviewed): mechanism confirmed exactly; consequence
-  and blast radius corrected.** (1) The ETag claim is FALSE — `cover_validator` returns
-  `stat_etag(artpath)` and `stat_etag` is `mtime_ns-size` with NO path component
-  (`app/etag.py:40`); beets renames via `os.replace`, which preserves both, so conditional
-  GETs keep answering 304 across the divert and the whole oscillation. The real residue is
-  a misnamed file on disk — and even that heals on the next cover install (beets' `set_art`
-  removes both files and re-points `artpath`; reachable via `app/beets/cover.py:92`). Do
-  NOT write a test asserting the ETag changes — it does not. (2) A THIRD entry point with
-  the highest fan-out: artist rename (`app/beets/rename.py:134`) reaches the same
-  `if moved:` gate once per album of the artist. (3) The PREVIEW is silent too —
-  `_describe_unit` builds rows from the same item-only `_unit_dests`, so a diverted album
-  never surfaces in `plan_reorganize` either. (4) `reorganize.py` itself never calls
-  `move_art` — beets' `Album.move` calls it internally — so the reorganize fix is
-  necessarily a pre-flight before `album.move`, while edit's sits at an explicit call
-  site; the halves are not symmetric. The load-bearing upstream fact behind the churn
-  (pin it in the regression test, or the test outlives the wrong reason): beets'
-  `art_destination` rebuilds the filename from the template and DISCARDS the `.1` base,
-  so `move_art`'s `new_art == old_art` early-return never fires on a diverted name. Trap
-  for the fix: `collisions_by_dest`'s own-paths set is built from ITEM paths only
-  (`reorganize.py:165`) — feed it the art destination without also adding the album's
-  current `artpath` and every album that already has correct art reads as a cross-unit
-  collision, which reorganize REFUSES: a library-wide refusal, fanned per-album by rename.
-  The two paths compose: reorganize is genuinely one-shot and CREATES the diverted state;
-  the edit path then churns it — the cheapest repro is reorganize-then-edit.
-  (`trash.py:78` is a second `Album.move` site with no pre-flight, but not a live trigger:
-  `_unique_trash_dest` guarantees an empty container.) Reporting shapes, corrected:
-  `move_failures` / per-row `error=None` belong to the edit path's `AlbumEditResult`;
-  reorganize's success signal is `status='moved'`, `error=None`, unit absent from
-  `failures[]`. A new reported field is an OpenAPI contract change (two-step regen) — and
-  so is widening the `ReorganizeCollisionKind` Literal; the no-regen escape is reusing
-  `kind="cross_unit"` with the art detail in `detail`.
+- ~~**Album art can still be silently diverted — and on the tag-edit path it churns.**~~ —
+  **FIXED on `fix/album-art-divert-preflight` (PR # filled in at merge), 2026-08-28.**
+  `art_preflight` (`app/beets/reorganize.py`) is the third whole-app move-hygiene helper
+  beside `collisions_by_dest` and `carry_sidecars`: it predicts the art destination
+  exactly as `Album.move` hands it to `move_art` — the first SURVIVING, source-present
+  mover's destination dir — and refuses BEFORE anything moves. All three entry points are
+  covered: reorganize refuses the unit (preview mirrors apply; new `"art"`
+  `ReorganizeCollisionKind`, contract regenerated two-step), the tag edit refuses its
+  whole move phase (tags still write; a track with its OWN collision keeps its own
+  detail), and artist rename inherits via `apply_album_edit` with failure isolation
+  pinned. The edit path's `move_art` now receives `item_dir` of the first item that
+  actually MOVED (mirroring `Album.move` — the bare call followed the FIRST item even
+  when it never moved). Post-move backstops on both paths report a divert that races
+  past the pre-flight; reorganize's compares BASENAMES only, because a `unique_path`
+  divert always changes the basename and never the dir — a dir-only difference is a
+  misprediction, not a taken name. The trap this entry warned about was sidestepped: art
+  never enters `collisions_by_dest`; the predicate owns its exemptions (byte-equal own
+  art; occupants the unit itself vacates, samefile included). A samefile ALIAS of the
+  album's own art is deliberately NOT exempt — beets' `move_art` has no samefile guard
+  and diverts it (pinned with a symlink test). The heal is pinned too: a previously
+  diverted `cover.1.jpg` renames back to `cover.jpg` on the next clean move, because
+  `art_destination` discards the `.1` base. Verification: red-first repros on both
+  paths, 10/10 deep-review mutations killed plus 5 more found-and-pinned in the fix
+  rounds, browser-verified conflict rendering. Residuals (2026-08-28): (a) a mover whose
+  move RAISES mid-batch can still shift the actual art dir off the prediction — the
+  backstops report it (pinned via silenced-pre-flight race tests on both paths); (b) a
+  template that cannot render degrades to no-prediction at WARNING, disarming refusal
+  AND backstop for that album — deliberate never-fail-the-sweep posture; (c) `trash.py`'s
+  third `Album.move` site stays un-preflighted (not live: `_unique_trash_dest`
+  guarantees an empty container); (d) healing EXISTING diverted names is not built — one
+  heals on its next move-bearing operation or cover install; (e) the preview reads
+  pre-move disk state, so two albums converging on one folder surface the art collision
+  sequentially at apply time, the same bound item collisions already have.
 
 - ~~**`static_dir` gate mismatch (residual of the logged-posture fix).**~~ — **FIXED in
   #191** (2026-08-28) exactly as this entry's 2026-08-28 correction prescribed: one startup
@@ -421,6 +397,10 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   touched next): broken-symlink sidecar carry (`sidecars.py` `lexists`), singleton
   crash-path sidecar carry, `edit.py` `_inside_library` guard (pre-existing from main),
   dismiss double-click swallow,
+  from the art pre-flight (2026-08-28): `art_preflight`'s `not old_art` / `not moving`
+  early returns and its render-failure `except Exception` degrade arm, and the edit
+  backstop's recompute-against-`moved_dir` choice (comment-justified; no test
+  distinguishes it from recomputing against the pre-flight's dir),
   the aria-disabled-not-disabled focus rule (the "Pagination rule" is convention, not test).
   (The disk-sync first-dir-wins clause left this list in #191 — replaced by commonpath, `"."` pinned.)
   From the 2026-08-23 m3u8 deep review, on the shared atomic recipe (`atomic.py`): the
