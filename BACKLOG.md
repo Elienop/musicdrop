@@ -11,19 +11,274 @@ and deliberate decisions* instead, so it never reads as an open task. When somet
 move its entry to *Recently shipped* with the PR number. When something new turns up (review
 finding, incident, parked idea), add it here in the same commit that discovers it.
 
-_Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping triage._
+_Last groomed: 2026-08-28, from the full-board re-derivation: every open bug re-verified
+against the code at `1ae41ff` by an independent pair (re-deriver + adversarial skeptic), plus
+four sweeps for work recorded nowhere — source markers, contract drift, deferred-minors
+triage, and a data-loss lens. New findings open the Open-bugs section; every pre-existing
+entry carries a dated correction block where the pass changed it._
 
 ## Next up
 
-- Pick from Open bugs / hardening below; real authentication remains the standing
-  long-term security item. The 40 banked #143 Plex review Minors are now fully
-  adjudicated (2026-08-25, every item re-verified against v0.44.0): 12 shipped as the
-  triage fix slice (see Recently shipped), 12 recorded below, 3 accepted as deliberate, 3
-  were already fixed. Of the 12 recorded, the three that sat under Open bugs all shipped in
-  #184; the nine under Deferred minors remain open. Dispositions
-  with per-item evidence: the vault note `plex-143-review-minors`.
+1. **The data-safety slice** — the 2026-08-28 data-loss findings that destroy user files or
+   rows with no confirmation and no in-app recovery: the lyrics-backfill sidecar deletion
+   (critical, first entry below), the unmounted-share ghost delete, and the Trash rows
+   Restore can never restore (with the orphan-sweep feeder that fills them). All in the
+   beets adapter.
+2. **The small-fix slice** — the non-UTF-8 500 (playlists half is trivial; the bank half
+   needs one purge-posture decision), the `static_dir` startup warning, the four confirmed
+   vacuous pins, and the mypy exemption-list trim.
+3. **`.m3u8` staleness and the bank re-run-vs-replay** — each needs a short design
+   conversation before code; see their entries.
+4. **Real authentication** — the standing long-term security item, shaped 2026-08-28: 112
+   operations (66 state-changing), all reachable unauthenticated by anything that can open
+   TCP to port 3030 (compose publishes `0.0.0.0`); two unauthenticated calls end the
+   library (`DELETE /api/artists` per artist, then `DELETE /api/trash/all`); and the
+   exposure is dual-path (by-IP plain HTTP *and* via Caddy), so proxy-level auth alone
+   cannot cover the by-IP path the owner actively uses. The existing guards are a coherent
+   browser-CSRF + DNS-rebinding pair and none of them is authentication — their own
+   docstrings say so. Full posture analysis and option comparison: the vault note
+   `musicdrop-auth-posture`.
+
+The 40 banked #143 Plex review Minors stay fully adjudicated (2026-08-25, every item
+re-verified against v0.44.0): 12 shipped as the triage fix slice (see Recently shipped), 12
+recorded below, 3 accepted as deliberate, 3 were already fixed. Of the 12 recorded, the
+three that sat under Open bugs shipped in #184; the nine under Deferred minors remain open.
+Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
+
+- **Lyrics backfill silently deletes and overwrites the user's own `.lrc`/`.txt` sidecars —
+  no provenance check, no confirmation, no report, no Trash.** (Found 2026-08-28, data-loss
+  sweep.) MusicDrop claims both sidecar names beside every track as its own
+  (`app/beets/sidecars.py:30`), but a self-hosted Plex user is exactly who already has a
+  curated `.lrc` collection sitting there. Two arms destroy files permanently with
+  `Path.unlink()`: `write_lyric_sidecar` writes one extension and unconditionally unlinks
+  the OTHER (`app/beets/lyrics.py:220`) — so a plain-text LRCLib answer deletes the user's
+  synced `.lrc` and replaces it with worse data; and `_early_skip_outcome` calls
+  `remove_lyric_sidecars(item)` for any track flagged instrumental (`:295`) — including
+  tracks beets' 2.13 migration flagged, i.e. flags MusicDrop never set — then reports
+  `skipped_instrumental`: a SKIP for an operation that just deleted two files. Reachability
+  is ordinary, not exotic: the skip-existing gate (`:300`) is
+  `not force and item.lyrics and _has_sidecar(item)`, so a track with a sidecar but an EMPTY
+  embedded lyrics tag — the normal state for a downloaded `.lrc` collection — is not skipped
+  at all. The trigger is one unconfirmed Backfill button (`LyricsBackfillPanel.tsx`, no
+  AlertDialog — unlike every delete action in the app), and `force` is not required. Nothing
+  anywhere records whether MusicDrop wrote a given sidecar;
+  `remove_lyric_sidecars`'s "scoped to exactly the two siblings write_lyric_sidecar could
+  have written" is a scope over NAMES, not authorship. README:113 documents the sidecars and
+  never says pre-existing ones get deleted. Cheap first step before any design work:
+  reproduce with a fixture library holding a pre-existing `.lrc` — the two arms are read
+  from the code and the gate expression, not yet executed.
+
+- **Delete album/artist with the music share unmounted silently drops the beets rows while
+  the UI says "recoverable in Trash".** (Found 2026-08-28.) `trash_album_folder` treats a
+  non-existent album folder as a ghost album and drops the DB rows with nothing moved
+  (`app/beets/trash.py:208-214`) — a branch that cannot distinguish "folder genuinely
+  deleted outside MusicDrop" from "NAS not mounted", the common failure on the intended
+  deployment. `delete_album` then returns `trashed_albums=1` with a trash path, and the
+  confirm dialog has already promised "It stays recoverable in Trash"
+  (`DeleteAlbumAction.tsx:44`). `delete_artist` fans the same call across every album of the
+  artist in one transaction — one click can drop every row for an artist. What is lost is
+  not the audio (still on the unmounted share) but everything `library.db` holds about it —
+  added dates, play counts, lyrics flags, album grouping, flex fields — exactly what
+  README:164 warns is unrecoverable without a re-import. The codebase already names this the
+  nightmare scenario and holds the guard: `disk_sync.LibraryRootUnavailableError` /
+  `_require_root` exist precisely because "with the root gone EVERY file looks deleted" —
+  and `grep -rn '_require_root\|LibraryRootUnavailable' backend/app/` hits disk-sync and its
+  two callers only. Delete, trash restore and reorganize have no equivalent. Fix shape: the
+  same fail-fast root check before the ghost branch may drop rows.
+
+- **`GET /api/config` serves the user's raw `config.yaml` — every credential in it,
+  unmasked — to any caller who can reach port 3030.** (Found 2026-08-28, auth-posture
+  audit.) `yaml_text` is documented verbatim as the raw on-disk text with "secrets are NOT
+  masked here" (`app/models/config_api.py:16-20`); the sibling `effective_yaml` is
+  redacted through two passes (confuse's `redact` flag plus the `SECRET_KEY_PATTERN`
+  safety net), but `yaml_text` bypasses both — deliberately, because Save writes it back
+  verbatim and masking once clobbered list-nested credentials. So the third credential
+  store — the user's own beets config (`lyrics.genius_api_key`, `spotify.client_secret`,
+  `acoustid.apikey`, `subsonic.pass`, beets' own `plex.token`) — is served in full,
+  unauthenticated, while MusicDrop's two settings stores got 0600 files and write-only
+  APIs. Not a coding error: it follows correctly from "the editor edits the raw file" and
+  is only wrong because there is no caller identity. Auth is the fix (Next up #4 and the
+  vault note `musicdrop-auth-posture`); there is no sensible in-place patch that preserves
+  the round-trip editor. Recorded here because it is the strongest argument that the auth
+  item is mis-sized as "long-term".
+
+- **Every `.m3u8` export goes stale on a reorganize or an album tag edit — only the artist
+  rename re-exports.** (Found 2026-08-28.) The exports under `<music>/.playlists` embed
+  track paths RELATIVE to the export dir, and `reexport_playlists_containing`'s own
+  docstring states the invariant ("a batch of file moves leaves every existing export stale
+  until the playlist is next mutated") — but its only caller outside `app/api/playlists.py`
+  is the artist rename (`app/api/artists.py:275`). The reorganize runner, which can move the
+  entire library, never calls it; `edit_album_endpoint` calls `apply_album_edit_op` and then
+  only `emit_library_changed`. And tag edits move files BY DEFAULT under the shipped starter
+  config: beets' `should_move()` returns move OR copy, and `config.starter.yaml` ships
+  `copy: yes`. So the two most common file-moving operations silently break every Plex
+  playlist containing the moved tracks — no warning in the preview, no line in the job
+  result, no signal until dead entries show up in Plex. Delete-to-Trash and disk-sync
+  removals leave the same stale rows. Needs a short design conversation first (re-export on
+  which events, and what the job result reports); the wiring after that is mechanical.
+
+- **Bank apply re-runs the match instead of replaying the user's chosen release — every
+  sweep-banked DUPLICATE row, by construction.** (Found 2026-08-28.) The bank's promise is
+  "decide once": `directive_for` pins `import.search_ids` to the reviewed release so the
+  apply imports what the user approved — but with no stored id it falls through to an
+  unpinned lookup and the session takes its top candidate. The source calls this a
+  "documented caveat" in three docstrings (`app/bank/apply_runner.py:97`,
+  `app/models/bank.py:82`, `app/models/import_models.py:118`) and it was recorded on no
+  board. Not a rare legacy case: `apply_runner.py:72` says sweep-banked dup rows carry no
+  parked payload at all, so EVERY such decision applies against a re-run match — the user
+  reviewed release A and the library can get release B's tags, with no notice anywhere in
+  the UI. Needs a design conversation (store the release id at bank time vs surface the
+  caveat), not a drive-by.
+
+- **A Trash row holding no importable audio can never be restored through the UI — the only
+  working button on it is permanent Empty.** (Found 2026-08-28; the husk-row note under
+  Deferred minors treats these rows as expendable leftovers and misses this half.)
+  `restore_album` restores by re-importing through beets and reports `restored=True` only
+  when a landed `album_id` comes back (`app/beets/trash_manage.py:113-133`); a folder with
+  no beets-importable audio produces zero import tasks, so it can only ever return
+  `could_not_restore`. But `_audio_free_entries` deliberately LISTS such folders as
+  zero-track rows (added so Empty-all could not delete them silently), and `TrashRow`
+  renders Restore unconditionally — a guaranteed no-op sitting next to a permanent delete.
+  The orphan sweep is what puts real content into those rows: booklet scans, artwork
+  folders, a user's own `Playlists/` of m3u files, music videos, SACD `.iso` rips — none of
+  which are in `AUDIO_EXTS`. The only recovery is a shell on the NAS. High-confidence
+  reasoned from the code path, not executed. Pairs with the orphan-sweep entry below —
+  together they form a move-then-cannot-restore pipeline for a multi-disc album's art.
+
+- **The orphan sweep moves a multi-disc album's art/booklet folder to Trash whenever its
+  name is outside the hardcoded 13-name `ART_DIR_NAMES` list.** (Found 2026-08-28.)
+  `_library_orphans` protects an album's audio-empty subfolders with `has_own_audio` — but
+  a multi-disc album's directory holds no audio DIRECTLY (it lives in `Disc 1/`), so that
+  guard never fires and the only remaining protection is an exact lowercased basename match
+  (`app/beets/orphans.py:131`, `:139`). `Scans (LP)`, `Artwork 1600x1600`,
+  `Digital Booklet - Deluxe` all miss the list and get moved to Trash by a library-scope
+  reorganize — whose sweep runs automatically whether or not anything moved. The module's
+  own comment names the hole (`:66-68`) and calls the list "False-negative-only", which is
+  true of over-inclusion and silent about this false positive. Mitigation today: the
+  preview lists orphan rows — as "orphans", not as "your booklet scans". Combined with the
+  restore dead end above, the content lands in a Trash row the UI cannot bring back.
+
+- **"Save art to library" is a one-click, unconfirmed action that permanently deletes
+  hand-placed `artist-poster.*`/`artist-background.*` — and fires as rename collateral.**
+  (Found 2026-08-28.) `POST /api/artists/art/apply` runs `force=True`
+  (`app/api/artists.py:931`), and `_write_one` under force unlinks EVERY existing
+  `artist-<kind>.*` before writing MusicDrop's resolved image
+  (`app/beets/artist_art.py:82-84`) — the exact Plex Local Media Assets filenames a Plex
+  user curates by hand. Deleted, not trashed, behind a bare `IconAction` that reads as
+  additive; every other destructive action in the app sits behind an AlertDialog. The same
+  `force=True` fires automatically on a rename when items moved and the write toggle is on
+  (`artists.py:266-272`) — so merging artist A onto B silently replaces B's curated poster
+  with whatever Deezer resolved, and the rename dialog never mentions art.
+
+- **`write_artist_art` reports `status="written"` when only some folders wrote** — the same
+  swallowed-substep shape as the album-art divert. (Found 2026-08-28.) The per-directory
+  loop catches `OSError` into a `failed` flag that the status ladder consults only when
+  `written == 0` (`app/beets/artist_art.py:123-129`); `ArtistArtOutcome` carries no error
+  field, so a partial failure reaches neither the wire nor the job tally, and the model's
+  own docstring defines `failed` as "every write attempt errored" — the partial case has no
+  representable value. Trivial once the reporting shape is chosen. Related smaller lie, same
+  family: `ArtistRenameResult.playlists_reexported` counts playlists whose `.m3u8` write
+  FAILED (`_export_playlist` swallows every exception; the counter's docstring says "a
+  failed write still counts") — the honest shape is written vs attempted.
+
+- **`download_image` validates only the FIRST and LAST redirect hop, and issues the
+  intermediate requests anyway.** Moved here 2026-08-28 from Deferred minors, where a blind
+  SSRF sat under a heading that says "cosmetic / self-healing". Measured:
+  `public → 127.0.0.1:9 → public` returns bytes and the internal GET happens
+  (`app/artwork/download.py:120` streams with `follow_redirects=True`, and only the initial
+  and final URLs pass `assert_public_url`). The comment directly above asserts the exact
+  protection the code does not provide, so a reviewer reading only the comment concludes it
+  is hardened. Three live callers (fanart, spotify, deezer). The fix is already written ~60
+  lines below in the same file: `fetch_image_bytes`'s manual hop loop (`:180-193`,
+  `follow_redirects=False`, `assert_public_url` per hop). Severity bounded by the CDN set,
+  but this is the loose path — and it handles the semi-trusted input.
+
+- **The mypy `disallow_untyped_calls = false` exemption list has rotted: 96 of its 102
+  modules no longer need it.** (Measured 2026-08-28 with a probe config in the session
+  scratchpad — the repo was not touched.) The override's rationale ("beets is untyped; the
+  adapter absorbs that", `backend/pyproject.toml:57-59`) is false outside `app/beets/`: the
+  list blankets four HTTP API modules (`app.api.lyrics`, `.reorganize`, `.stats`,
+  `.disk_sync`), all four `app.plex.*` modules (which import no beets at all), and five job
+  runners — so the next untyped call added to any of those is silently accepted and CI
+  stays green, against hard rule 1. Removing all 102 entries leaves exactly 17 errors in 6
+  files (`app/plex/client.py`, `app/beets/{rename,lyrics,edit,cover}.py`,
+  `tests/test_plex_sync.py`). Small: shrink the list to the modules that still need it.
+
+- **Hard rule 3 (no `import beets` outside `app/beets/`) is claimed "enforced in CI" and
+  nothing enforces it.** (Verified clean 2026-08-28 — the boundary holds today, which is
+  exactly when a guard is cheapest to add and most likely to be assumed present.) Rules
+  1/2/4/5 each have a real gate (mypy, the spec guard, ruff, pytest); rule 3 has no ruff
+  rule (no `TID`/flake8-tidy-imports in the select list at `backend/pyproject.toml:46`) and
+  no test walking the tree. One banned-import lint rule or a five-line test closes it.
+
+- **Three image-serving GETs declare `application/json` while returning image bytes — the
+  defect their sibling route's own comment exists to prevent.** (Found 2026-08-28.) Six
+  endpoints return image bytes; three declare `200: {"content": {"image/*": {}}}` and three
+  declare nothing, so the contract falls back to JSON: the album cover
+  (`app/api/albums.py:220`), the import candidate cover (`app/api/import_.py:195`), and the
+  playlist artwork GET (`app/api/playlists.py:653`). The rule is spelled out at
+  `albums.py:284` ("without this entry the generated client is offered a JSON body and
+  never told about the binary one") and honoured at `artists.py:365`. Nothing breaks today
+  — all three are consumed via `<img src>` — but the generated types tell any future typed
+  caller the body is JSON, and `openapi-fetch` would call `res.json()` on a JPEG. Trivial
+  per route, and it IS a contract change: the two-step regen applies.
+
+- **README drift, five items (2026-08-28 sweep — each violates the keep-README-in-sync
+  rule).** (1) `Settings → Plex` does not exist: the panel lives under Integrations
+  (`SettingsLayout.tsx:13-17`; README:53 is the one broken nav path of the six checked).
+  (2) fanart.tv/Spotify artist-image credentials are env-only and the four
+  `MUSICDROP_ARTIST_IMAGE_*` variable names appear in no tracked document — README:88 says
+  they are "configured under Settings", where the entire settings model is one boolean;
+  without them the app is silently Deezer-only. (3) Two user-visible knobs are documented
+  nowhere: `MUSICDROP_INBOX_SETTLE_SECONDS` (the 60-second reason a finished slskd download
+  sits invisible in Review) and `MUSICDROP_MAX_BODY_BYTES` (the 25 MiB 413). (4) README:30
+  pins beets 2.12; the project has shipped 2.13.1 since #120 (2026-08-01) — it sends a
+  contributor to the wrong upstream source tree. (5) The Playlists bullet describes export
+  only — import (uploaded m3u AND from-Plex), merge, and per-playlist cover artwork are all
+  shipped and unlisted. One docs PR closes all five.
+
+- **The candidate-review screen says release art is "not applied" — the config editor can
+  falsify that, and the comment's own Revisit trigger has fired.** (Found 2026-08-28.)
+  `CandidateReview.tsx:236-238` reasons from "the default config (no fetchart/embedart)"
+  and `:315` says "Revisit when the config/art slice can enable fetchart" — that slice
+  shipped: `PluginName` admits `fetchart` and `embedart`, `setup_beets` loads the user's
+  plugin list at call time, and `run_import_worker` forces only import flags, never
+  plugins. For a fetchart user the caption "Release art · not applied" is false and
+  `WhatChanges` omits art — the same class as the #184 tooltip lie, on the screen whose one
+  job is saying what the import will change. Not executed against a fetchart-enabled
+  import; verify that first, then make the caption read the live plugin list.
+
+- **`MUSICDROP_TRASH_DIR` is an unvalidated `rmtree` root.** (Found 2026-08-28.)
+  `resolve_trash_dir` returns `Path(settings.trash_dir).resolve()` with no containment
+  check (`app/beets/trash.py:245-247`), and `empty_all` then `shutil.rmtree`s every child
+  of whatever came back (`trash_manage.py:170-174`). Nothing asserts the trash dir is not
+  the music root, not inside it, and not the beets dir — and pointing trash at the music
+  dataset (so deletes are same-filesystem renames instead of cross-device copies; the
+  default sits on the small `/data` volume per README:127) is a plausible operator move one
+  typo away from `MUSICDROP_TRASH_DIR=/music`. Every other destructive path here has a
+  containment check (`resolve_trash_child`, `_folder_is_shared`,
+  `orphans._excluded_predicate`); the trash root has none. Small: refuse at startup when
+  trash resolves inside or equal to the music dir or the beets dir.
+
+- **Vacuous-pin audit: sized, with first confirmed results (2026-08-28).** Population:
+  5,975 backend `assert` statements (ast-counted, not grepped) and 2,522 frontend
+  `expect(` calls; the absence-shaped frontend subset is 291, of which 133 are
+  copy-bearing. A needle-absent-from-source filter cut those 133 to 11 candidates;
+  adjudicated: **4 confirmed vacuous** — `ArtistAlbumsPage.artwrite.test.tsx:140` (the
+  `/1 written/` copy is structurally unreachable in the rendered tree, so the pin passes
+  with the whole artist-art tally deleted), `ReleaseSearchRow.test.tsx:68` (asserts the
+  absence of paragraph copy that never existed), `ImportPlaylistsPage.test.tsx:843`
+  (`/no library match/` appears nowhere in production), and
+  `test_reorganize_adapter.py:597` (a 48-character sentence `_verify_moves` has never been
+  able to emit) — plus one suspected (`test_reorganize_adapter.py:270`). The previously
+  recorded "~42 exact-string pins" figure is unsourced — no counting definition reproduces
+  it. #185's sweep covered ONE shape (the 192 `not.toBeInTheDocument()` pins), frontend
+  only: the 94 `toBeNull()` absence pins, the 33 `not.toHaveBeenCalled()`, and all 82
+  backend `not in` pins were never audited. Known false-positive modes for whoever runs
+  the remainder: ARIA roles are correctly absent from source, `/i` regexes need
+  case-insensitive matching, and JSX line-wrapped copy needs whitespace normalization.
 
 - **Album art can still be silently diverted — and on the tag-edit path it churns.** The
   collision pre-flight covers item files only: `collisions_by_dest` is fed by `_unit_dests`
@@ -48,16 +303,49 @@ _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping tri
   every later album edit that relocates anything re-diverts the art. Verified oscillation
   across three successive edits: `cover.1.jpg` → `cover.2.jpg` → `cover.1.jpg`, because
   `unique_path` restarts its scan at `.1` once `.2` vacates. It renames rather than
-  accumulates, but `artpath` is rewritten and re-stored every time, busting
-  `cover_validator`'s ETag. Re-triage rather than assuming the old descope still stands.
+  accumulates, but `artpath` is rewritten and re-stored every time, ~~busting
+  `cover_validator`'s ETag~~ (withdrawn 2026-08-28 — false, see below). Re-triage rather
+  than assuming the old descope still stands.
+  **2026-08-28 re-verification (pair-reviewed): mechanism confirmed exactly; consequence
+  and blast radius corrected.** (1) The ETag claim is FALSE — `cover_validator` returns
+  `stat_etag(artpath)` and `stat_etag` is `mtime_ns-size` with NO path component
+  (`app/etag.py:40`); beets renames via `os.replace`, which preserves both, so conditional
+  GETs keep answering 304 across the divert and the whole oscillation. The real residue is
+  a misnamed file on disk — and even that heals on the next cover install (beets' `set_art`
+  removes both files and re-points `artpath`; reachable via `app/beets/cover.py:92`). Do
+  NOT write a test asserting the ETag changes — it does not. (2) A THIRD entry point with
+  the highest fan-out: artist rename (`app/beets/rename.py:134`) reaches the same
+  `if moved:` gate once per album of the artist. (3) The PREVIEW is silent too —
+  `_describe_unit` builds rows from the same item-only `_unit_dests`, so a diverted album
+  never surfaces in `plan_reorganize` either. (4) `reorganize.py` itself never calls
+  `move_art` — beets' `Album.move` calls it internally — so the reorganize fix is
+  necessarily a pre-flight before `album.move`, while edit's sits at an explicit call
+  site; the halves are not symmetric. The load-bearing upstream fact behind the churn
+  (pin it in the regression test, or the test outlives the wrong reason): beets'
+  `art_destination` rebuilds the filename from the template and DISCARDS the `.1` base,
+  so `move_art`'s `new_art == old_art` early-return never fires on a diverted name. Trap
+  for the fix: `collisions_by_dest`'s own-paths set is built from ITEM paths only
+  (`reorganize.py:165`) — feed it the art destination without also adding the album's
+  current `artpath` and every album that already has correct art reads as a cross-unit
+  collision, which reorganize REFUSES: a library-wide refusal, fanned per-album by rename.
+  The two paths compose: reorganize is genuinely one-shot and CREATES the diverted state;
+  the edit path then churns it — the cheapest repro is reorganize-then-edit.
+  (`trash.py:78` is a second `Album.move` site with no pre-flight, but not a live trigger:
+  `_unique_trash_dest` guarantees an empty container.) Reporting shapes, corrected:
+  `move_failures` / per-row `error=None` belong to the edit path's `AlbumEditResult`;
+  reorganize's success signal is `status='moved'`, `error=None`, unit absent from
+  `failures[]`. A new reported field is an OpenAPI contract change (two-step regen) — and
+  so is widening the `ReorganizeCollisionKind` Literal; the no-regen escape is reusing
+  `kind="cross_unit"` with the art detail in `detail`.
 
 - **`static_dir` gate mismatch (residual of the logged-posture fix).** The security gates key
   on the truthiness of `MUSICDROP_STATIC_DIR`, but `mount_static` (`app/static_files.py`)
   no-ops unless the directory holds an `index.html` — so a stale or invalid path still yields
   the production posture (every dev write 403s) with NO SPA served. The silent half is closed
   (the effective posture is logged at startup — see the Host-allowlist entry under Recently
-  shipped), but the gate itself may still want to key on the same `index.html` check
-  `mount_static` uses, so the posture and the served SPA stay in agreement.
+  shipped), ~~but the gate itself may still want to key on the same `index.html` check
+  `mount_static` uses, so the posture and the served SPA stay in agreement~~ (withdrawn
+  2026-08-28 — that fix is FAIL-OPEN; see below).
   **Consumer correction (2026-08-27 re-verification): this entry named only
   `resolve_extra_origins`, and there are TWO gates.** `resolve_extra_origins`
   (`app/origin_guard.py`) returns the dev write/CORS origin on falsy `static_dir`;
@@ -68,6 +356,34 @@ _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping tri
   trusting a count written here. **A fix must move BOTH**, or the CSRF posture and the host
   allowlist will disagree with each other — strictly worse than today, where they are at
   least consistently wrong together.
+  **2026-08-28 re-verification (pair-reviewed): the fix this entry proposed is FAIL-OPEN
+  and is withdrawn.** Keying the gates on `mount_static`'s `index.html` check means a
+  deployment with a stale / bind-mounted-over / unbuilt static dir silently drops to DEV
+  posture — regranting the `http://localhost:5173` cross-origin write grant and CORS read
+  of the whole API — where today the same state fails CLOSED (verified: no direction of
+  the current mismatch makes the app more permissive). Any candidate fix must answer
+  "what does this return for a broken path?" with never-the-dev-grant. Three more
+  corrections: the truthiness sites are FIVE, not two (`grep -rn static_dir backend/app/`
+  — including the non-security `container_music_default` in `main.py`, which aims a
+  first-boot beets config at `/music`); the "must move BOTH or strictly worse" clause is
+  withdrawn — the two gates read different headers and the host gate's whole dev/prod
+  delta is the single unresolvable name `testserver`, so `resolve_extra_origins` is
+  independently fixable (cost: `host_guard.py:26`'s "exactly like" docstring becomes a doc
+  bug to fix in the same change); and the realistic trigger is a developer's stale
+  `MUSICDROP_STATIC_DIR` in `backend/.env` — the shipped image cannot even build without a
+  dist (`Dockerfile:27` COPYs it) and compose mounts nothing over `/app/static`, so the
+  live symptom is the Vite dev server 403-ing every write under a startup log that says
+  "prod", with no pointer to the cause. The proportionate fix needs no owner decision: one
+  WARNING where the condition is already computed (`static_files.py`'s bare `return` when
+  `index.html` is absent, or beside the posture log line in `main.py`) — fail-closed, no
+  new knob, no contract change, `container_music_default` untouched. The high-value test
+  can be written first: boot `app.main` in a subprocess with a truthy static dir holding
+  no `index.html` and assert the resolved origins/hosts do NOT contain the dev grants —
+  every existing posture test builds a VALID dist and sidesteps exactly this state. Only
+  the bigger redesign (fatal at startup, or an explicit posture knob) needs the owner, and
+  no variant forces the OpenAPI regen. Stale comment to fix in passing:
+  `origin_guard.py:30` still names "the body-limit 413 echo" as a consumer of the tuple;
+  the body limit no longer reads it.
 
 - ~~OpenAPI under-declares 403 on 61 write routes~~ — **FIXED in #159**, widened to the
   whole middleware class: `app/openapi_overlay.py` post-processes the schema so every
@@ -98,8 +414,40 @@ _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping tri
   path open. Enumerate the fields with `grep -n float backend/app/models/bank.py` rather than
   trusting a count written here. Reachability is low (confidence is set internally by the
   beets matcher, not from a client body), which is why it wasn't fixed in the 2026-08-23
-  playlists slice — apply the same `_finite_only` + `allow_nan=False` treatment when the
-  bank store is next touched.
+  playlists slice — ~~apply the same `_finite_only` + `allow_nan=False` treatment when the
+  bank store is next touched~~ (withdrawn 2026-08-28 — the straight port loses rows; see
+  below).
+  **2026-08-28 re-verification (pair-reviewed): the token, the blast radius, and the fix
+  framing were all wrong.** The reachable token is **`NaN`, not `Infinity`** —
+  `_confidence` is `round((1.0 - float(distance)) * 100.0, 1)` and beets' `Distance`
+  arithmetic yields nan on every non-finite-weight route (a contrived weight-overflow can
+  still produce `-Infinity`, so guard all three tokens). A poisoned row carries
+  **2 + len(options)** bad tokens, not one: `_row_text` serializes the nested
+  `parked.candidate`, whose `confidence` floats are REQUIRED
+  (`app/models/import_models.py:122`, `:162`). The sinks are **five, not two**: the disk
+  row; the bank list (summary); bank detail/search/rescan (full item); the bare
+  `Candidate` at `app/api/import_.py:184`; and — most user-visible — the live import feed
+  `GET /api/import/{job_id}` (`ImportAlbumSummary.confidence`, a third required float fed
+  at `app/import_jobs/registry.py:831`), which 500s and kills the import screen for the
+  rest of a job that keeps running underneath. The wire 500 exists BECAUSE of
+  `SurrogateSafeJSONResponse`: naming a `default_response_class` disables FastAPI's Rust
+  fast path, which would have nulled the value — so never verify a fix against stock
+  FastAPI (false pass), and know the behaviour is coupled to the wire-safety class. **The
+  "straight port" framing is withdrawn**: `_finite_only` maps non-finite → None, sound in
+  playlists only because its sole stored float is Optional; here it writes `null` into
+  required nested floats, `_parse_row` raises, the store's own `except ValueError`
+  swallows it, and the row silently vanishes from every listing — strictly worse than the
+  bug. A fix also needs a **remediation invariant**: a producer-only clamp does not heal a
+  row already on disk (measured — the poisoned row keeps 500ing the whole bank page, and
+  since the list is the only place ids come from, there is no in-app recovery: low
+  probability, high impact once landed). Reachability is low but not internal-only:
+  `POST /api/config/save` persists arbitrary YAML (`extra="ignore"` drops nothing it
+  models and keeps the rest), so `match.distance_weights: {album: .nan}` survives to
+  beets, whose `if dist_max:` zero-guard is truthy for nan (penalty VALUES cannot be
+  non-finite — `Distance.add` rejects them; the weights are the only route). The test to
+  copy is `test_playlists_store.py:836` — it already covers NaN and strict-parses the row;
+  port it with the non-finite value NESTED in `parked.candidate.options[0]`, and assert
+  the row still loads and still lists after the fix.
 
 - **`get_playlist` propagates `UnicodeDecodeError` on a non-UTF-8 record file** while
   `list_playlists` skips it (its guard is `except (OSError, ValueError)`; get's `read_text`
@@ -115,6 +463,38 @@ _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping tri
   `_all_items` uses `except (OSError, ValueError)`, so a fix should cover both stores.
   Confirmed end-to-end: `GET /api/playlists` returns 200 `[]` (skipped) while
   `GET /api/playlists/{id}` returns 500 on the same file.
+  **2026-08-28 re-verification (pair-reviewed): the blast radius is 20 endpoints plus a
+  stalled queue, and "align the postures when next in the file" is withdrawn for the bank
+  half.** (1) The playlists DELETE route reads the record BEFORE deleting
+  (`app/api/playlists.py:573`), so a corrupt playlist is invisible in the list AND
+  un-removable through the API — the exact state the route's own comment at `:571` says it
+  exists to avoid. 12 of the router's 16 playlist routes 500 (every `{id}` route); only
+  the four non-id routes survive. (2) The bank twin is worse than "identical":
+  `delete_item` reads through `get_item` (`app/bank/store.py:470`), so widening the except
+  alone converts the 500 into a permanent 404 on an un-purgeable row; and `bulk_ignore` /
+  `bulk_delete` abort the whole batch on the first corrupt id AFTER committing the earlier
+  ids (measured: the healthy row was flipped to `ignored`, then the request 500ed naming
+  no row). 8 bank routes affected (the decision route is `/bank/{item_id}/decision`).
+  (3) Three non-HTTP consumers: the apply queue's `next_queued` reads through `get_item`,
+  so a corrupt QUEUED row makes `_drain` log-and-retry the same id forever — no other
+  queued row is ever picked until restart, and after a restart the corrupt row silently
+  vanishes from the rebuilt index, so a decision the user made is never applied and never
+  reported; `upsert_by_folder` raises inside the import pipeline on a corrupt indexed row;
+  startup's `reconcile_interrupted` is SAFE (verified — it enumerates via the index, which
+  skips). Fix invariants: one read posture per store (missing / unreadable / undecodable /
+  malformed all resolve to absent, in BOTH readers); nothing the app stores may become
+  both invisible and permanent (the bank purge posture for an unreadable row needs an
+  explicit decision, including the `applying` guard's fate — external corruption is not
+  ordered with respect to the runner); a bulk operation is all-or-nothing per id; and make
+  the list-side skip LOUD while in there — today a skipped record is a playlist that
+  silently vanishes from the UI with no log line and no count, indistinguishable from
+  deleted (`_all_items` has the same silent guard). Neither store has ever had a non-UTF-8
+  test: both "corrupt" tests write `"{not json"` as valid UTF-8, exercising only the
+  JSONDecodeError arm — the new tests must `write_bytes` raw bytes (e.g. `b"\xe9"`), and
+  the route-level one to add is DELETE-on-corrupt returning 204, which makes the code
+  match its comment. Read-posture precedents already in-tree: `cover_thumbs.py:73-77`,
+  `config_snapshot.py:107-122`. Do NOT touch the sinks — `ensure_ascii=True` is
+  load-bearing for the lossless lone-surrogate handling.
 
 - **Config editor accepts `import.autotag` that MusicDrop-driven imports cannot honour — the
   open defect is EDITOR-side, not worker-side.** `run_import_worker` force-enables autotag
@@ -135,6 +515,39 @@ _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping tri
   file, so a `beet import` run from the CLI outside MusicDrop still honours `autotag: no`.
   Note also: sweep/bank breakage under `autotag: no` was reasoned from the stage list,
   demonstrated only for restore.
+  **2026-08-28 re-verification (pair-reviewed): this is a CLASS of four keys in two tiers,
+  plus two adjacent defects the entry never named.** Unconditionally inert on every
+  MusicDrop import path: `autotag` AND `duplicate_action` (forced to `"ask"` at
+  `import_session.py:1362` — the editor offers five values and four are silently
+  discarded). Conditionally forced: `singletons` and `incremental` (sweep / bank-apply
+  runs only). Adjacent defect 1 — a RESTORE LEAK: `duplicate_action` and `threaded` are
+  set BEFORE the snapshot block and appear nowhere in the finally (`:1398-1404` restores
+  seven other keys), so they leak process-globally after the first import — and because
+  the "Effective config" panel flattens the LIVE global (`config_snapshot.py:94`),
+  Settings then shows `ask` while the raw editor pane on the same page shows the user's
+  `skip`: two panels on one screen disagreeing, self-concealing because the user reads it
+  as "my save did not take". The same panel also faithfully prints the user's
+  `autotag: false` as if it were in force — so the frontend does surface the key after
+  all, in the worst possible way. Adjacent defect 2 — `singletons` on the DEFAULT review
+  import is not inert, it is honoured into `choose_item`'s SKIP funnel
+  (`import_session.py:380-398`): a `singletons: yes` user config makes a review import
+  import NOTHING while history-recording the folder. That one is not an advisory problem —
+  the sweep path's guard closes it, and the snapshot/restore for the key already exist
+  unconditionally (`:1379`, `:1402`), so hoisting the force out of the `if sweep:` branch
+  is a one-line backend fix. `incremental` is honoured-but-trapped (taghistory makes a
+  swept-then-manually-reimported folder silently do nothing, `:1325-1342`) — name that in
+  any advisory copy rather than filing it safe. Validation note: `validate_known_keys`
+  DOES raise for invalid values on modeled keys — nothing fires for `autotag: false`
+  because false is a valid bool and there is no semantic rule, so an advisory must be a
+  deliberate rule, not a tightened type, and it must ride a channel that is not `errors`
+  (CodeMirror paints that list red; a valid config must not paint red). The real advisory
+  channel is an OpenAPI contract change (new field on ValidateResponse → two-step regen +
+  a frontend render); the cheap route (starter.yaml comments + static Settings prose)
+  cannot warn at the point of edit. Second global-config mutation site, for completeness:
+  `cover.py:139`'s fetchart overlay (restored, but it materialises `auto: true` into the
+  same global the Effective panel reads when the key was previously unset). Owner call:
+  cheap patch vs advisory channel — and whether to take the `singletons` hoist and the
+  restore-leak fix now, since neither needs the contract change.
 
 - **Untested defensive lines** (deep-review survivors, all currently benign — pin when
   touched next): broken-symlink sidecar carry (`sidecars.py` `lexists`), singleton
@@ -174,6 +587,35 @@ _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping tri
   disk-sync first-dir-wins): accumulate a running commonpath per album id instead of a single
   dir. No existing test pins the current behaviour — both adapter assertions use
   single-folder albums — so the change needs its own regression test.
+  **2026-08-28 re-verification (pair-reviewed): four claims corrected, and the tradeoff
+  turns out to be documented in the code.** A multi-disc layout is NOT a trigger under
+  stock beets — the default `paths:` template has no `$disc` component, so a beets-managed
+  multi-disc album lands in ONE folder and the row is correct; multi-disc splits only
+  under a disc-bearing `paths:` template, which is a first-class in-app flow (the Naming
+  panel writes `paths:`), not hand-editing. A stock install CAN still produce a split
+  album: a mid-reorganize crash re-paths items one at a time and beets' Transaction
+  commits even while an exception propagates (documented in-repo at
+  `reorganize.py:512-517`), so a permission error or NAS blip splits an album permanently
+  with no user edit anywhere. With `import.copy: no`, items outside the music dir make
+  `os.path.relpath` ESCAPE rather than error — the row renders `../inbox/Album`. The
+  `(display only)` annotation cited above is on `DiskSyncRemoval.path`, not this field;
+  the accumulator comment at `disk_sync.py:142-144` documents first-dir-wins as a
+  CONSIDERED tradeoff — the fixer must delete that comment, or reviewers will read the
+  new behaviour as unintended; and the first-seen dir is deterministic but not
+  necessarily disc 1 (`sort_item` orders by artist before disc). `_commonpath_of_dirs` is
+  NOT reusable as-is: it takes bytes full paths and returns an ABSOLUTE dir (would flip
+  the field absolute, failing `test_disk_sync_adapter.py:80`/`:124` and leaking the host
+  layout), it would turn the O(albums) accumulator into O(items), and
+  `os.path.commonpath` edge values poison the fold — a root-level item (today's `"."`)
+  folds its whole album to the EMPTY string. Decide the no-common-folder display value
+  explicitly rather than letting it fall out of the arithmetic. Regen note: the new
+  contract belongs in the field's `#` comment (does not reach the schema — no regen);
+  putting it in the class DOCSTRING regenerates `openapi.json`/`schema.d.ts` and forces
+  the two-step regen. A third assertion on the field a careless change breaks:
+  `test_disk_sync_models.py:37`. (The old "added by the same commit" provenance was false
+  — three commits over two months.) One tempering note from the skeptic: first-dir-wins
+  still separates label twins in the ordinary case — the sentence above claiming so is
+  TRUE — so this stays display-polish, not a broken feature.
 
 - **Artist-image cache: after a broken cache dir is repaired, affected artists never return
   to disk.** Read "to disk" literally — the portraits keep SERVING, correct bytes and correct
@@ -202,6 +644,35 @@ _Last groomed: 2026-08-27, with the SonarQube programme and the #143 mapping tri
   codes it:** re-write to disk on a memory hit (simple, but puts a write on the read path), or
   periodically re-probe the dir and flush (more moving parts, keeps reads read-only). Do not
   assume either.
+  **2026-08-28 re-verification (pair-reviewed): the cost is a feedback loop, it runs
+  during the outage too, and the loop half of the fix is small.** Because `validator()`
+  stats disk only, a stranded artist's request skips the 304 path, enters `filler.fill`,
+  and every completed fill arms an UNSCOPED `art:changed` — which remounts every VISIBLE
+  portrait (`<img key={assetVersion}>`; `loading="lazy"` bounds it to the viewport),
+  re-requests them, re-invalidates all 11 query families, and feeds the next cycle: a
+  self-sustaining ~2 Hz loop for as long as one tab shows one stranded artist — during
+  the outage as well as after repair (repair only stops the log line, which is what makes
+  it look post-repair). Monogram artists amplify it: each bump un-fails every 404'd
+  portrait. The full-size path (the default) additionally pays a sha256 over up to 10 MB
+  per request — `_serve_full`'s own docstring documents that cost. Clearing-path
+  corrections: rename MIGRATES the strand (pinned by
+  `test_rename_carries_the_memory_fallback_entry` — must keep passing; though rename's
+  auto-backfill usually repopulates disk when the write toggle is on), and map eviction
+  is unreachable post-repair (nothing is ever inserted again). Two recovery paths the
+  entry missed: the artist-art backfill sweep builds its own cache instance and
+  `store_positive`s to the repaired dir, and a manual override puts `.override` on disk —
+  both end the symptom. The design call narrows: the LOOP half is closed by making
+  `validator()` consult the memory tier — `_has_portrait` (`cache.py:561-571`) already
+  does exactly the disk-then-memory probe, so the asymmetry reads as oversight, not
+  design — while the PERSISTENCE half (re-write on memory hit vs periodic re-probe vs a
+  first-class memory tier with its own revalidation tag) is the owner decision.
+  Recommended shape: memory-as-tier (fixes the outage window too), then persistence; drop
+  the "flush on the next successful write of any key" variant — post-repair, no other key
+  ever writes, so it would rarely fire. Hazard any fix must cover: a thumb derived under
+  a memory tag writes a `.thumb` pair that outlives the process and is never swept. Two
+  pins must keep passing (`test_artwork_cache.py:1013` and disk-takes-authority `~:591`),
+  and don't build the regression strand with `chmod` — those tests self-skip as root;
+  insert into `_memory` directly.
 
 ## Accepted residuals and deliberate decisions (not work)
 
@@ -258,6 +729,16 @@ the condition it names has changed.
   worth knowing: a smart playlist with BOTH problems only reveals the path issue after the first
   is fixed. Untested in either direction. From the #184 deep review, 2026-08-27.
 
+- **`_make_fetchart_plugin`'s global-config overlay race is a documented residual — now
+  documented HERE, not only in its own docstring** (recorded 2026-08-28). The cover-fetch
+  path mutates the process-global beets config (`fetchart.set({"auto": False})`) and
+  restores it in a `finally`; a concurrent config Apply clearing `beets.config` between
+  the two would leave a stale `fetchart.auto` overlay for the process lifetime. The
+  docstring at `app/beets/cover.py:128-131` names the hole, labels it a documented
+  residual, and names the eventual fix (removing the persistent overlay). Genuinely
+  narrow: single user, requires an Apply mid-fetch. Recorded so "documented" is true for
+  someone who has not read that function.
+
 - **Wire-safety net coverage caveats** (by design, recorded so nobody assumes otherwise):
   SSE `/api/events` bypasses the response class (scopes are tag-derived today, never paths);
   any future route-level `response_class=` or hand-built `JSONResponse` bypasses both halves
@@ -311,10 +792,15 @@ the condition it names has changed.
   scan of the section" perf invariant is unpinned (`FakeSection.searchTracks` counts
   nothing — three full-library pulls per sync would pass green).
 
-- `ArtworkEditPanel`'s success line is a conditionally-mounted `role="status"` region —
-  it mounts WITH its text, the exact pattern the repo's a11y doctrine (and now the
-  announce comment in `PlaylistDetailPage.tsx`) forbids, so the mount itself may never be
-  announced. Pre-existing; flagged by the 2026-08-25 triage-slice UI review.
+- The playlist-artwork panel's success line may never be announced — and the old entry's
+  quotes all grep to zero, which reads as "already fixed" (corrected 2026-08-28):
+  `ArtworkEditPanel` is not a file but an inner function of `PlaylistDetailPage.tsx`
+  (declared `:1256`), and the region is an HTML `<output>` (implicit role status), so a
+  `role="status"` grep misses it. The defect is real and is WCAG 4.1.3 (AA), not
+  cosmetic: the region is conditionally mounted WITH its text and double-guarded
+  (`outcome !== null && !busy`, `:1359-1360`) — the exact pattern the repo's a11y
+  doctrine 600 lines up forbids (`:730-731`), with the correct always-mounted pattern
+  (zero-width-space reannounce) ready to copy at `:958`.
 - Artwork degrade logging: three of the six log sites are pinned by no test — mutations that
   silence `cover_thumbs.py`'s thumb-cache-unwritable line, `cache.py`'s
   `mime-sidecar-unsendable` line and `cache.py`'s thumb-cache-unwritable line all SURVIVE.
@@ -358,40 +844,58 @@ the condition it names has changed.
   now that 304s are stat-cheap, but a scoped identity would need the normalized-name mapping.
 - Browse-side A-Z index would need a per-filter letter-to-offset endpoint (Artists-only
   shipped in the perf wave).
-- ~~No CI guard that `frontend/openapi.json` matches the live spec~~ — **PR #158 (awaiting
-  merge, CI green 2026-08-25).** Guards BOTH links: backend pytest pins live spec →
+- ~~No CI guard that `frontend/openapi.json` matches the live spec~~ — **FIXED in #158
+  (merged 2026-08-25, `f7e8d0a`; this entry said "awaiting merge" until 2026-08-28).** Guards BOTH links: backend pytest pins live spec →
   `openapi.json` (parsed dicts; missing/corrupt file fails loudly with the regen steps), a
   frontend CI step pins `openapi.json` → `schema.d.ts` (`gen:api` + `git diff --exit-code`),
   and `scripts/dump_openapi.py` is the now-committed step-1 command, byte-pinned by its own
   test. Operational note: a FastAPI bump can change the spec (0.128 did — three Body_*
   schemas), so Dependabot backend PRs may now legitimately go red until someone runs the
   two-step regen; that is the guard working, not a flake.
-- **`download_image` validates only the FIRST and LAST redirect hop, and issues the intermediate
-  request anyway.** Measured: `public → 127.0.0.1:9 → public` returns bytes and the internal GET
-  happens. Its sibling `fetch_image_bytes` (the user-pasted-URL path) does it correctly with
-  `follow_redirects=False` and `assert_public_url` on every hop. So the hardened path is the one
-  handling untrusted input and the CDN path is the loose one. Low severity given the CDNs
-  involved; the fix is to give `download_image` the same manual hop loop.
-- `ArtistImageEditPanel.onPickFile` no longer clears notices and nothing pins it — deleting the
-  call passes all 1034 FE tests. Pick a file after a failed fetch or a reset and a stale note
-  rides onto the preview screen. Not a regression (the pre-fix inline `fetchImage.reset()` was
-  equally unpinned); a third arm on the existing clear-notices test closes it.
-- `aside.w-96` on `ArtistAlbumsPage` overflows a 390px viewport by 18px, reproduced with the
-  panel closed (`App.tsx:53` gives main `px-6`, leaving ~342px for a 384px rail). Fix is
-  `w-full max-w-96 lg:w-96`, not a design change.
+- ~~`download_image` validates only the FIRST and LAST redirect hop~~ — **moved to Open
+  bugs 2026-08-28**: a blind SSRF does not belong under a heading that says "cosmetic /
+  self-healing", and the in-code comment asserts a protection the code does not provide.
+- ~~`ArtistImageEditPanel.onPickFile` no longer clears notices~~ — the claim was FALSE
+  (2026-08-28): `clearNotices()` is the first statement of `onPickFile`
+  (`ArtistImageEditPanel.tsx:149-150`); a reader taking the entry literally would "fix"
+  code that is already right. The real gap is COVERAGE: the panel has four clear-notices
+  entry points and the test at `ArtistImageEditPanel.test.tsx:379` exercises two (Reset,
+  Set-from-URL) — `onPickFile` and `onFetch` are unpinned. Fix = third and fourth arms on
+  that existing two-arm test.
+- `aside.w-96` overflows a 390 px viewport by **42 px, not 18** (corrected 2026-08-28:
+  390 − 2×24 of `px-6` = 342 px available for a 384 px rail; 18 was never derivable from
+  the entry's own premise) — and `AlbumDetailPage.tsx:158` carries the byte-identical
+  rail, where the loading skeleton is ALREADY bounded (`w-96 max-w-full`, `:554`): on a
+  phone the album page renders correctly while loading, then jumps to a horizontal
+  scroll when content lands. Fix is one token per site — `w-96 max-w-full`, the in-repo
+  idiom — not the previously recorded three-utility `w-full max-w-96 lg:w-96`. Needs a
+  browser check, not a test: jsdom cannot measure layout.
 - The aria-hidden clickable-name idiom now has TWO instances (`MergePlaylistDialog.tsx`,
   `ImportPlaylistsPage.tsx` since the backlog-minors wave): a third should become a shared
   component. Reviews of it should also check `select-none` isn't suppressing selection of
   user data someone might want to copy — on the import rows the playlist NAME is now
   unselectable, an accepted trade-off of the pattern.
-- `SegmentedControl` segments are 28px tall, under the 44px touch-target guidance. Shared
-  component; the artist-image wave made it load-bearing on a mobile flow for the first time.
-  `py-1` → `py-2` reaches ~36px without touching the visual language; 44px needs a design call.
+- `SegmentedControl` segments are 28 px tall — which PASSES WCAG 2.2 SC 2.5.8 Target Size
+  Minimum (24 px, Level AA) and misses only the AAA/platform guidance (44 px Apple HIG,
+  48 dp Material): a house-quality call, not a compliance gap (reframed 2026-08-28). The
+  same decision covers THREE shared controls, not one: the segments, plus
+  `AlphabetIndex`'s 26-letter jump bar and Pagination's numbered page buttons, both at
+  32 px (`size="icon-sm"` → `size-8`). `py-1` → `py-2` reaches exactly 36 px (group
+  42 px). Fold the `AlphabetIndex` missing `shadow-xs` (already recorded below) into the
+  same touch. Load-bearing on mobile: the segments are the image-source picker at
+  `ArtistImageEditPanel.tsx:278`.
 - Artist-image panel minors, all shipped deliberately: Fetch is `secondary` while the pasted-link
-  Set is the only filled control (ranking reads backwards); the URL input's `aria-label` shadows
-  its visible label (WCAG 2.5.3, pre-existing — fixing it breaks `getByLabelText` in two files);
-  generic `alt="Artist image preview"`; comparing two sources costs a Discard; and a possible
-  live-region/focus contention that needs a real screen reader to settle.
+  Set is the only filled control (ranking reads backwards); the URL input's `aria-label`
+  shadows its visible label — a genuine SC 2.5.3 Label-in-Name failure (Level A: name
+  "Image URL", visible "…or paste an image link", zero overlap, so a speech-input user
+  saying the visible label hits nothing), and CHEAPER than recorded (corrected 2026-08-28:
+  the `getByLabelText` dependency is ONE file, three call sites, all case-insensitive
+  regexes — `ArtistImageEditPanel.test.tsx:199/:410/:429` — not two files); ~~generic
+  `alt="Artist image preview"`~~ (that string never existed — greps to zero, reading as
+  fixed; the real attribute is `alt="Pending artist portrait"` at `:400`, which already
+  names the pending state — residual nit only: it names neither artist nor source, and
+  the caption below carries the source); comparing two sources costs a Discard; and a
+  possible live-region/focus contention that needs a real screen reader to settle.
 - `test_default_settings_disabled_endpoint_404s` proves the 404, not the REASON: with the
   flag mutated to enabled it still passes offline (the inline-grace path also 404s), so
   "no outbound call when off" is asserted nowhere. A bare `@respx.mock` does NOT close
@@ -421,10 +925,18 @@ the condition it names has changed.
 - `get_artist_image_cache`'s sibling has no lazy fallback (same latent isolated-run fragility
   the cover dep fix addressed); `cover_client` has a pre-existing beets_library state leak; no
   eviction of cover thumbs on album delete (parity with the artist cache is missing).
-- Pagination: numbered-window `aria-label="Page N"` vs. the visible "N" is a WCAG 2.5.3
-  label-in-name partial mismatch; the icon-sm caret width is tight for 3-digit page numbers.
-- Pagination: a component docstring is stale re click-to-edit; there's a minor spinner style
-  delta from the original design. (The busy-state-not-in-the-accessible-name and
+- ~~Pagination numbered-window `aria-label="Page N"` vs the visible "N" as a WCAG 2.5.3
+  mismatch~~ — NOT a violation (2026-08-28): SC 2.5.3 requires the accessible name to
+  CONTAIN the visible text, and "Page 3" contains "3"; this is the ARIA APG pagination
+  pattern verbatim. At most a best-practice note (visible text sits at the end of the
+  name). The icon-sm caret width staying tight for 3-digit page numbers stands.
+- Pagination's stale docstring is NOT the click-to-edit one (corrected 2026-08-28) —
+  `PageJumpInput`'s is accurate; the stale one is the top-level `Pagination` docstring
+  (`Pagination.tsx:35-37`), which promises "deliberately NO scrolling or focus management
+  here" directly above a 30-line `useEffect` doing deferred focus restoration with two
+  race guards, and describes the interactive compact readout as a passive "terse 2 / 67
+  readout". Fixing the entry as previously written would edit the correct docstring and
+  leave the wrong one. There's also a minor spinner style delta from the original design. (The busy-state-not-in-the-accessible-name and
   untested-empty-commit items were fixed in v0.33.1 / PR #130 — the competing `aria-label` is
   gone so the sr-only child wins, and the empty/clamped commit paths are pinned in
   `Pagination.test.tsx`.)
@@ -446,23 +958,86 @@ the condition it names has changed.
   bucket (`Hip Hop\0Gangsta Rap` vs. `Gangsta Rap\0Hip Hop` land in different buckets), and
   selecting "Rock" won't surface an album tagged `["Pop", "Rock"]`. Multi-bucket faceting
   would break the counts-sum invariant — flagged for awareness, not scheduled.
-- 413 responses carry no CORS headers (dev-only annoyance).
+- ~~413 responses carry no CORS headers (dev-only annoyance)~~ — dead since #181 moved
+  CORSMiddleware outermost (2026-08-28 check): the 413 now travels out through CORS and
+  is stamped, pinned by three tests in `test_body_limit.py:92-117` (allowed origin,
+  disallowed origin, no-Origin). One of the tests' docstrings names the invariant the
+  deleted header echo used to serve, so nobody should re-add it.
 - PlaylistDetail stale-snapshot move-PUT (self-heals on refetch).
 - Remove-to-empty stale focus; playlist-import focus-after-resolve.
 - Trash restore leaves `.lrc`/`.txt` sidecars behind in Trash (v1 limitation, noted in #67).
 - Trash restore leaves the emptied source folder behind as a 0-track husk row in the listing
   (name-independent; beets moves the files but never prunes the dir — Empty clears it).
-- MoveNotice in AlbumEditPanel is legacy hand-rolled banner markup that StatusBanner's own
-  docstring claims to generalize (rounded-md/gap-2/size-4 vs canonical rounded-xl/gap-3/
-  size-5) — mechanical migration to `<StatusBanner tone="warning">`, flagged 2026-08-02.
-- ConflictList and MoveRefusalList scroll containers have no focusable children/tabindex, so
-  Safari keyboard users can't scroll them (Chrome/Firefox auto-focus scrollers). Shared
-  idiom — fix both together or neither.
+  See also the Open-bugs entry added 2026-08-28: a zero-track row holding real content
+  (booklet scans, a `Playlists/` folder) cannot be restored at all — these rows are not
+  always expendable.
+- The hand-rolled banner idiom has **seven** instances across five files, not one
+  (corrected 2026-08-28; the old entry named only MoveNotice) — two complete banner
+  recipes ship side by side: StatusBanner (`rounded-xl gap-3 size-5 items-center p-3`)
+  vs the legacy recipe (`rounded-md gap-2 size-4 items-start`, itself fragmented `p-3`
+  vs `p-2`), and `PlaylistDetailPage.tsx` renders BOTH on one screen. The migration is
+  NOT mechanical: every legacy site uses `items-start` with a nudged icon because its
+  copy wraps to 2-3 lines, while StatusBanner is `items-center` — migrating as-is drops
+  the icon ~20 px below the first line. One design call first (an `align` prop, or
+  change StatusBanner's base to `items-start`), then seven mechanical replacements:
+  `AlbumEditPanel.tsx:308` (MoveNotice) and `:432`, `ArtistImageEditPanel.tsx:428`,
+  `CoverEditPanel.tsx:226`, `PlexSettingsPanel.tsx:353` and `:399`,
+  `PlaylistDetailPage.tsx:338`.
+- Unfocusable scroll containers: **four, not two** (corrected 2026-08-28), and the two
+  previously unrecorded are the biggest and carry no `aria-label` either — the reorganize
+  plan's MAIN moves list (`ReorganizeControl.tsx:188`, `max-h-72`, potentially hundreds
+  of rows) and the orphans list (`:206`, `max-h-40`), alongside the two already named
+  (ConflictList `:86` and MoveRefusalList `AlbumEditPanel.tsx:354`, both labelled).
+  Safari keyboard users cannot scroll any of them — WCAG 2.1.1 (Level A), visible and
+  unreachable, not cosmetic; mis-filed in this section. Fix is one `tabIndex={0}` plus a
+  label per container; the `tabIndex={-1}` at `:416`/`:530` is on the plan WRAPPER (a
+  programmatic focus target) and does not close this. Fix all four together.
 - Trash/inbox rows key on the scrubbed display name (`key={album.folder}` /
   `key={item.name}`), so two differently-damaged non-UTF-8 siblings share a React key
   (duplicate-key warning, possible node reuse). Cosmetic — either row's action 409s cleanly.
 - `empty_trash_one` resolves the display name outside the swap lock (`restore` resolves
   inside it); the placeholder scandir path widens that pre-existing TOCTOU window slightly.
+
+Added by the 2026-08-28 sweeps:
+
+- Browse filter-rail counts are whole-library totals while a filter is active — deferred
+  outright in the adapter docstring (`browse.py:430`: "Absolute counts (not filter-aware)
+  — a drill-down refinement is deferred") and repeated at `BrowsePage.tsx:61-62`; the
+  rail renders `{fv.count}` beside each checkbox, so with `genre=Rock` active the Media
+  facet still advertises the whole library's Vinyl total, and ticking it returns a
+  fraction of the promised number — reads as a filtering bug, is a labelling choice. Was
+  in two docstrings and on no board.
+- The shipped starter-config header makes two false claims that become the header of the
+  USER'S own file on first run (`config.starter.yaml:2-3`): "MusicDrop reads it; it never
+  writes back" (the config editor's save and save-naming both `atomic_write` it) and
+  "Edit and restart MusicDrop to apply changes" (`POST /api/config/apply` re-arms beets
+  in-process). The CAS 409 catches concurrent hand-edits, so this is confusion, not
+  corruption.
+- `_sweep_orphans` swallows a failed husk move (`runner.py:130-133`, `except OSError:
+  continue`) — skips the orphan tally and joins no failure list, so a permission-denied
+  or cross-device move is invisible: the job finishes `done` and the preview lists the
+  same folder next run with no explanation. The orphan phase is the runner's only phase
+  with no failure channel.
+- 12 cache-degradation tests self-skip silently when the suite runs as root
+  (`pytest.skip("running as root…")` — 8 in `test_artwork_cache.py`, plus
+  `test_artist_image_endpoint.py:632`, `test_cover_thumbs.py:141`, and two "needs a
+  non-root user" guards in `test_acquisition_inbox.py`). They are exactly the tests
+  around the open artist-image-cache bug, and the shipped image's declared user is root —
+  a maintainer running the suite in-container gets a green with these unexercised and no
+  summary line saying so. CI runs non-root, so CI is unaffected.
+- One production `# type: ignore` lacks its same-line reason
+  (`app/models/import_models.py:390`; the reason exists two lines above) — the sole
+  literal miss of hard rule 1's comment requirement, and nothing enforces that rule
+  either way.
+- Eleven `@theme inline` aliases generate utilities nothing uses: the eight-token sidebar
+  family (`styles.css:151-158`, whose "wired to the real sidebar in Phase 2" comment at
+  `:69` was overtaken — the real Sidebar uses the elevation ramp), plus
+  `destructive-foreground`, `success-foreground`, `warning-foreground`; `surface-base`
+  and `error` have live `:root` vars but dead aliases. The reverse direction from the
+  unknown-utility bug — tokens without classes, in a file whose stated principle is "no
+  dead CSS". Also stale: the header at `styles.css:26-28` promises a Phase 3 sweep of
+  leftover `dark:` utilities; zero remain (the only two `dark` hits are a CodeMirror JS
+  option, not utilities).
 
 ## Recently shipped
 
