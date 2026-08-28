@@ -217,7 +217,9 @@ def _incremental_advisory(section: ImportSection) -> str | None:
 #: already raises for an invalid value on any modeled key; nothing fires for
 #: ``autotag: false`` because ``false`` is a perfectly valid bool. What the user
 #: has no way to learn is that MusicDrop overrides it (``run_import_worker``
-#: snapshots, forces and restores these keys around every session).
+#: snapshots, forces and restores these keys around every session —
+#: ``incremental`` excepted: it is honoured on the default review path and
+#: forced only for sweep/bank-apply runs, which is what its advisory says).
 _IMPORT_ADVISORY_RULES: Final[tuple[tuple[str, Callable[[ImportSection], str | None]], ...]] = (
     ("autotag", _autotag_advisory),
     ("duplicate_action", _duplicate_action_advisory),

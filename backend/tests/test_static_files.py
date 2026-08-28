@@ -109,19 +109,6 @@ def test_dir_with_index_logs_no_warning(tmp_path: Path, caplog: pytest.LogCaptur
     assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
-def test_empty_static_dir_gated_before_mount(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    # main.py gates the mount on truthiness (`if settings.static_dir`);
-    # dev (empty) never calls mount_static, so no warning. Pin the gate the
-    # same way production calls it.
-    static_dir = ""
-    if static_dir:
-        mount_static(FastAPI(), static_dir)
-    with caplog.at_level(logging.WARNING, logger="app.static_files"):
-        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
-
-
 def test_real_app_has_no_spa_catchall_in_dev() -> None:
     from app.main import app as real_app
 

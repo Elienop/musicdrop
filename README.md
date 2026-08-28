@@ -46,7 +46,7 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   content is the legacy `[Instrumental]` marker, cleaned when a track is classified
   instrumental).
 - **Edit tags** — album & track, from the UI.
-- **Import** — interactive candidate picker, resume, an import-time duplicate guard, and search-by-release-ID when the right match isn't offered. Unattended runs **bank** undecidable albums for later review instead of stalling, and the summary verifies each album actually **landed** in the library.
+- **Import** — interactive candidate picker, resume, an import-time duplicate guard (duplicates always route to review, whatever `duplicate_action` says), and search-by-release-ID when the right match isn't offered. Unattended runs **bank** undecidable albums for later review instead of stalling, and the summary verifies each album actually **landed** in the library.
 - **Duplicates** — find & resolve duplicate albums (resolve one, or resolve-all).
 - **Release identity** — which release an album is (source · label · country · media · disambiguation), with view-release links.
 - **Delete & Trash** — delete albums or artists into a reversible Trash; restore or empty it
@@ -59,7 +59,7 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   couldn't read audio tags there — Restore may still work (beets' importer reads more
   formats than the listing does); a genuinely media-free folder (art/booklet leftovers)
   reports "couldn't restore" and Empty is its only exit.
-- **beets config** — viewer + writable editor.
+- **beets config** — viewer + writable editor, with advisory notices for import keys MusicDrop forces (a saved value that only affects CLI runs is flagged, not silently accepted).
 - **Naming** — edit beets path/replace rules with a live preview. **Reorganize** — re-apply them to existing files (and sweep emptied leftover folders into the Trash).
 - **Disk sync** — a `beet update` equivalent: preview-first removal of library entries whose files were deleted outside the app, plus tag refresh for files changed on disk.
 - **Library dashboard** — counts, duration, size, recently added.
@@ -98,7 +98,7 @@ services:
     restart: unless-stopped
 ```
 
-`docker compose up -d`, then open `http://<host>:3030`. First boot writes a starter beets config to `data/beets/config.yaml` with `directory: /music`; edit it under **Settings → beets** (plugins, import behavior) — MusicDrop reads it like the beets CLI would. Optional integrations (slskd webhook, Plex, fanart.tv/Spotify artist images) are configured under Settings or via `MUSICDROP_*` env vars; for slskd, mount its downloads dir (e.g. `/inbox`) and set `MUSICDROP_INBOX_DIR=/inbox`.
+`docker compose up -d`, then open `http://<host>:3030`. First boot writes a starter beets config to `data/beets/config.yaml` with `directory: /music`; edit it under **Settings → beets** (plugins, import behavior) — MusicDrop reads it like the beets CLI would, with one carve-out: in-app imports force a few `import.*` keys (`autotag`, `duplicate_action`, `singletons` — and `incremental` on sweep runs) so the review flow stays intact. The editor shows an advisory when a saved value won't take effect in-app; a CLI `beet import` still honours it. Optional integrations (slskd webhook, Plex, fanart.tv/Spotify artist images) are configured under Settings or via `MUSICDROP_*` env vars; for slskd, mount its downloads dir (e.g. `/inbox`) and set `MUSICDROP_INBOX_DIR=/inbox`.
 
 **Browsing by DNS name?** Requests are only accepted when the `Host` is an IP literal,
 `localhost`, or a name listed in `MUSICDROP_ALLOWED_HOSTS` (comma-separated) — a
