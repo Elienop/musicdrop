@@ -781,3 +781,28 @@ def test_stop_is_idempotent(tmp_path: Path) -> None:
     runner.start()
     runner.stop()
     runner.stop()  # second stop must not raise
+
+
+def test_drain_moves_past_a_corrupt_queued_row(tmp_path: Path) -> None:
+    """Invariant 4 at the runner level: a corrupt FIFO head must not stall
+    _drain (today: log-and-retry the same id forever) — the healthy row
+    behind it still drains to done."""
+    fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.applied, album_id=5)])
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    dead = _seed_queued(bank, _folder(tmp_path, "Dead"))
+    live_id = _seed_queued(bank, _folder(tmp_path, "Live"))
+    (bank / f"{dead}.json").write_bytes(b"\x00\xe9\xff")  # corrupt the FIFO head
+
+    runner = _make_runner(bank, reg)
+    runner.start()
+    try:
+        item = _poll(
+            lambda: store.get_item(bank, live_id),
+            lambda i: i is not None and i.status in ("done", "failed"),
+        )
+        assert item is not None
+        assert item.status == "done"
+        assert item.album_id == 5
+    finally:
+        runner.stop()

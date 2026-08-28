@@ -32,6 +32,7 @@ surrogate-free data."""
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 import uuid
@@ -50,6 +51,8 @@ from app.models.import_models import DuplicatePrompt, ParkedAlbum
 from app.playlists.atomic import write_atomic_text
 
 _VALID_ID = re.compile(r"\A[0-9a-f]{32}\Z")
+
+logger = logging.getLogger(__name__)
 
 # The Review page's default "needs attention" view: in-flight rows stay
 # visible, resolved rows (done/ignored) don't.
@@ -134,6 +137,18 @@ def _index_drop(bank_dir: Path, item_id: str) -> None:
     summary = by_id.pop(item_id, None)
     if summary is not None and by_folder.get(summary.folder) == item_id:
         del by_folder[summary.folder]
+
+
+def _index_status(bank_dir: Path, item_id: str) -> str | None:
+    """The QUEUE's own view of a row's status — from the write-through index,
+    never from the row file (which may be unreadable). Callers MUST hold
+    ``_LOCK``. Never builds the index: an id the queue has never seen has no
+    known status, and "no known status" is not "applying"."""
+    by_id = _INDEX.get(_index_key(bank_dir))
+    if by_id is None:
+        return None
+    summary = by_id.get(item_id)
+    return summary.status if summary is not None else None
 
 
 def _index_forget(bank_dir: Path, item_id: str) -> None:
@@ -222,17 +237,18 @@ def create_item(
 def get_item(bank_dir: Path, item_id: str) -> BankItem | None:
     if not _VALID_ID.match(item_id):
         return None
+    # No index cleanup here: get_item is called WITHOUT _LOCK from the API,
+    # and the index may only be mutated under it. A missing-file-for-indexed
+    # -id state can't arise under the single-writer invariant anyway; true
+    # out-of-band edits are handled by reset_bank_index().
     try:
-        raw = _row_path(bank_dir, item_id).read_text(encoding="utf-8")
-    except OSError:
-        # No index cleanup here: get_item is called WITHOUT _LOCK from the API,
-        # and the index may only be mutated under it. A missing-file-for-indexed
-        # -id state can't arise under the single-writer invariant anyway; true
-        # out-of-band edits are handled by reset_bank_index().
-        return None
-    try:
-        return _parse_row(raw)
-    except ValueError:
+        return _parse_row(_row_path(bank_dir, item_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # ONE read posture: missing, unreadable (``OSError``), undecodable
+        # (``UnicodeDecodeError`` — a ``ValueError`` the old OSError-only guard let
+        # 500) and malformed (``json.JSONDecodeError`` / pydantic
+        # ``ValidationError``) all read as ABSENT — matching the list-side twin
+        # (``_all_items``).
         return None
 
 
@@ -243,7 +259,10 @@ def _all_items(bank_dir: Path) -> list[BankItem]:
     for child in bank_dir.glob("*.json"):
         try:
             items.append(_parse_row(child.read_text(encoding="utf-8")))
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            # Loud skip: a silently vanished row is indistinguishable from a
+            # deleted one in the UI — name the file and the reason.
+            logger.warning("Skipping unreadable bank row %s: %s", child.name, exc)
             continue  # unreadable/corrupt rows never break the listing
     # Deterministic order for index building; the DISPLAY order (newest banked
     # first) is applied in list_page.
@@ -466,14 +485,33 @@ def set_status(
 
 
 def delete_item(bank_dir: Path, item_id: str) -> bool:
+    """Delete the row (file + index entry). True iff a file was removed.
+
+    A PRESENT-BUT-CORRUPT row is purgeable: it reads as absent, so its status
+    cannot come from the row — the refusal (when due) comes from the QUEUE's
+    own state (the write-through index the runner's queued->applying claim
+    wrote), never from the row. A missing id reports ``False`` (API -> 404).
+    """
+    if not _VALID_ID.match(item_id):
+        return False
+    path = _row_path(bank_dir, item_id)
+    if not path.exists():
+        with _LOCK:
+            _index_forget(bank_dir, item_id)  # already gone: keep the index honest
+        return False
     with _LOCK:
         item = get_item(bank_dir, item_id)
-        if item is None:
-            return False
-        if item.status == "applying":
+        if item is not None:
+            if item.status == "applying":
+                raise InvalidTransitionError("row is applying; wait for the apply to finish")
+        elif _index_status(bank_dir, item_id) == "applying":
+            # The row is unreadable and cannot prove its own state; the queue's
+            # index is the runner's state, and an actively applying row must
+            # not be pulled out from under it (same refusal shape as the
+            # readable arm above).
             raise InvalidTransitionError("row is applying; wait for the apply to finish")
         try:
-            _row_path(bank_dir, item_id).unlink()
+            path.unlink()
         except FileNotFoundError:
             _index_forget(bank_dir, item_id)  # already gone: keep the index honest
             return False
@@ -499,17 +537,26 @@ def bulk_ignore(bank_dir: Path, ids: list[str]) -> int:
 def bulk_delete(bank_dir: Path, ids: list[str]) -> int:
     """Delete every listed deletable row; return how many were actually removed.
 
-    Reuses ``delete_item``'s rules (id validation, file unlink) but never lets
-    one bad id abort the batch: an ``applying`` row (``delete_item`` raises
-    ``InvalidTransitionError``) and a missing id (returns False) are skipped.
+    Skip-and-report posture: an id that resolves as ABSENT — missing OR
+    corrupt (one-read-posture ``get_item``) — and an ``applying`` row are
+    skipped, so no input can abort the batch mid-way; the count reports what
+    landed. (The single-row ``delete_item`` deliberately PURGES a
+    present-but-corrupt row; a bulk batch does not — its contract is "delete
+    the rows I named", and a row the listing cannot show is not one of them.)
     """
     deleted = 0
     for item_id in ids:
+        with _LOCK:
+            item = get_item(bank_dir, item_id)
+            if item is None:
+                continue  # absent — missing or corrupt: skip, don't abort
+            if item.status == "applying":
+                continue  # an applying row can't be deleted
         try:
             if delete_item(bank_dir, item_id):
                 deleted += 1
         except InvalidTransitionError:
-            continue  # an applying row can't be deleted - skip, don't abort
+            continue  # flipped to applying in the race window above
     return deleted
 
 
@@ -536,6 +583,14 @@ def upsert_by_folder(
         existing_id = by_folder.get(folder)
         existing = get_item(bank_dir, existing_id) if existing_id is not None else None
         if existing is None:
+            if existing_id is not None:
+                # The index knew this folder's row but it reads as absent: the
+                # file is corrupt. A re-banked folder is a fresh decision, so
+                # the fresh row below owns the folder — the dead file and the
+                # index entries go with the old id, or they would survive as an
+                # invisible-but-permanent orphan.
+                _row_path(bank_dir, existing_id).unlink(missing_ok=True)
+                _index_forget(bank_dir, existing_id)
             pass  # fall through to create below (outside the lock reuse)
         elif existing.fingerprint == fingerprint:
             existing.banked_at = _now()
@@ -588,7 +643,16 @@ def reconcile_interrupted(bank_dir: Path) -> int:
     for item_id in applying_ids:
         with _LOCK:
             fresh = get_item(bank_dir, item_id)
-            if fresh is None or fresh.status != "applying":
+            if fresh is None:
+                # The index saw an applying row whose file is gone or corrupt.
+                # Nothing is running (reconcile runs at startup, before any
+                # claim), so the index entry is a DEAD claim: drop it, or a
+                # corrupt file would stay un-purgeable — delete_item trusts the
+                # index as the queue's "actively applying" state.
+                if _index_status(bank_dir, item_id) == "applying":
+                    _index_forget(bank_dir, item_id)
+                continue
+            if fresh.status != "applying":
                 continue
             fresh.status = "needs_review"
             fresh.error = "apply interrupted by a restart - decide again"

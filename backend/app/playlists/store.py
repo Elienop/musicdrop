@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -46,6 +47,8 @@ _VALID_ID = re.compile(r"\A[0-9a-f]{32}\Z")
 # can't drop a mutation (last-writer-wins). Pure reads don't take it — the
 # atomic replace means a read never observes a half-written file.
 _LOCK = threading.Lock()
+
+logger = logging.getLogger(__name__)
 
 
 def _is_valid_id(playlist_id: str) -> bool:
@@ -232,18 +235,18 @@ def get_playlist(playlists_dir: Path, playlist_id: str) -> StoredPlaylist | None
         return None
     path = _record_path(playlists_dir, playlist_id)
     try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
         # ``json.loads`` -> ``model_validate`` (not the Rust ``model_validate_json``):
         # the former restores the identical str INCLUDING lone surrogates the new
         # sink writes as ``\\uXXXX``, and ``model_validate`` accepts it where the
-        # Rust JSON parser does not. ``json.JSONDecodeError`` and pydantic's
-        # ``ValidationError`` are both ``ValueError`` subclasses, so the corrupt-file
-        # posture (return None) is unchanged.
+        # Rust JSON parser does not.
+        raw = path.read_text(encoding="utf-8")
         return StoredPlaylist.model_validate(json.loads(raw))
-    except ValueError:
+    except (OSError, ValueError):
+        # ONE read posture: missing, unreadable (``OSError``), undecodable
+        # (``UnicodeDecodeError`` — a ``ValueError`` the old OSError-only guard let
+        # 500) and malformed (``json.JSONDecodeError`` / pydantic
+        # ``ValidationError``, both ``ValueError`` subclasses) all read as ABSENT —
+        # the same posture the list-side twin (``list_playlists``) already had.
         return None
 
 
@@ -260,7 +263,10 @@ def list_playlists(playlists_dir: Path) -> list[StoredPlaylist]:
             records.append(
                 StoredPlaylist.model_validate(json.loads(child.read_text(encoding="utf-8")))
             )
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            # Loud skip: a silently vanished playlist is indistinguishable from a
+            # deleted one in the UI — name the file and the reason.
+            logger.warning("Skipping unreadable playlist record %s: %s", child.name, exc)
             continue
     records.sort(key=lambda record: record.created_at)
     return records
