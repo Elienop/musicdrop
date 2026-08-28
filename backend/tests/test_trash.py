@@ -6,13 +6,15 @@ import os
 import shutil
 from collections.abc import Sequence
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from beets.dbcore.query import Query
 from beets.dbcore.sort import Sort
 from beets.library import Library
+from fastapi import HTTPException
 
-from app.beets.library import _abs_path, _require_id
+from app.beets.library import LibraryHandle, LibraryRootUnavailableError, _abs_path, _require_id
 from app.beets.trash import (
     _album_root,
     _folder_is_shared,
@@ -21,6 +23,7 @@ from app.beets.trash import (
     trash_album,
     trash_album_folder,
 )
+from tests.conftest import make_test_handle
 
 
 def test_trash_album_moves_files_and_drops_db(duplicates_lib: Library, tmp_path: Path) -> None:
@@ -237,3 +240,171 @@ def test_folder_shared_counts_a_singleton_under_the_root(duplicates_lib: Library
     single.path = _os.fsencode(_os.path.join(root, "96 Loose.mp3"))
     duplicates_lib.add(single)  # item WITHOUT an album row
     assert _folder_is_shared(duplicates_lib, album, root) is True
+
+
+class _StubApp:
+    """The minimum an ``_op`` reads off ``request.app``: ``state.beets_library``.
+
+    ``_swap_lock`` creates its lock lazily on whatever state object it is handed
+    (config_editor.py:624-630) and ``_settings`` falls back to the module
+    singleton when ``state.settings`` is absent (:632-645), so a bare namespace
+    is enough — no TestClient, no lifespan, no real app.
+    """
+
+    def __init__(self, handle: LibraryHandle) -> None:
+        self.state = SimpleNamespace(beets_library=handle)
+
+
+class _StubRequest:
+    def __init__(self, app: _StubApp) -> None:
+        self.app = app
+
+
+# ----- The unmounted-share guard: a missing folder must not become a row drop -----
+#
+# Both row-dropping primitives here (``trash_album_folder``'s ghost branch and
+# ``trash_album``, whose per-item ``Album.move`` SILENTLY skips missing sources —
+# beets 2.12 library/models.py:1178-1192) read an absent path as "the user deleted
+# this". With the library root itself gone that reading is wrong for EVERY album,
+# so the shared root predicate has to run before the first mutation. It matters
+# doubly because a beets ``Transaction`` COMMITS on the way out even when it is
+# unwinding an exception (dbcore/db.py:924-941, no rollback branch): anything
+# dropped before the raise would stick.
+
+
+def test_trash_album_folder_root_gone_raises_and_keeps_rows(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """Root missing entirely (share unmounted, mountpoint removed) -> raise, drop nothing."""
+    trash = tmp_path / "trash"
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    shutil.rmtree(os.fsdecode(duplicates_lib.directory))  # the WHOLE music root
+
+    with pytest.raises(LibraryRootUnavailableError), duplicates_lib.transaction():
+        trash_album_folder(duplicates_lib, album, trash_dir=trash)
+
+    assert duplicates_lib.get_album(album_id) is not None  # rows survive the commit-on-exit
+    assert not trash.exists()  # nothing relocated either
+
+
+def test_trash_album_folder_root_present_but_empty_raises(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """The dropped-NAS signature: the mountpoint dir stays, its contents vanish.
+
+    ``os.path.isdir`` is still True here, so an isdir-only guard would wave this
+    through and the ghost branch would drop the rows. Pins that the FULL shared
+    predicate (missing OR empty OR unreadable) is what runs — not a parallel
+    re-implementation.
+    """
+    trash = tmp_path / "trash"
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    root = os.fsdecode(duplicates_lib.directory)
+    shutil.rmtree(root)
+    os.mkdir(root)  # present but empty
+    assert os.path.isdir(root)
+
+    with pytest.raises(LibraryRootUnavailableError), duplicates_lib.transaction():
+        trash_album_folder(duplicates_lib, album, trash_dir=trash)
+
+    assert duplicates_lib.get_album(album_id) is not None
+    assert not trash.exists()
+
+
+def test_trash_album_root_gone_raises_before_any_mutation(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """The second primitive (duplicates resolve / import Replace) aborts too.
+
+    ``trash_album`` would otherwise ``mkdir`` the Trash container, let beets skip
+    every missing-source move without a word, and then drop the rows — a trash
+    path pointing at an empty folder. The guard sits ahead of the mkdir, so the
+    never-created trash dir is what discriminates guard placement.
+    """
+    trash = tmp_path / "trash"
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    shutil.rmtree(os.fsdecode(duplicates_lib.directory))
+
+    with pytest.raises(LibraryRootUnavailableError), duplicates_lib.transaction():
+        trash_album(duplicates_lib, album, trash_dir=trash)
+
+    assert duplicates_lib.get_album(album_id) is not None
+    assert not trash.exists()  # the guard preceded even the container mkdir
+
+
+def test_duplicates_resolve_surfaces_the_root_cause(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """The resolve caller inherits the guard, and its 500 names the real cause.
+
+    Lives beside the primitive rather than in test_duplicates_resolve.py because
+    what it pins is ``trash_album``'s raise reaching a caller honestly: the op's
+    blanket ``except`` interpolates the exception into ``message``, so the user
+    reads "Is the music share mounted?" instead of a Trash-recovery promise for
+    files that never moved.
+    """
+    import asyncio
+
+    from app.beets.duplicates import resolve_duplicate_group, resolve_duplicates_op
+    from app.models.duplicates import DuplicateMode, ResolveRequest
+
+    group = [a for a in duplicates_lib.albums() if a.albumartist == "Radiohead"]
+    keep, drop = _require_id(group[0].id), _require_id(group[1].id)
+    n_before = len(list(duplicates_lib.albums()))
+    shutil.rmtree(os.fsdecode(duplicates_lib.directory))
+
+    with pytest.raises(LibraryRootUnavailableError):
+        resolve_duplicate_group(
+            duplicates_lib,
+            mode=DuplicateMode.strict,
+            keep_album_id=keep,
+            remove_album_ids=[drop],
+            trash_dir=tmp_path / "trash",
+        )
+    assert len(list(duplicates_lib.albums())) == n_before
+
+    req = _StubRequest(_StubApp(make_test_handle(duplicates_lib, tmp_path)))
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(
+            resolve_duplicates_op(
+                req,  # type: ignore[arg-type]  # duck-typed stub: only .app.state is read
+                ResolveRequest(
+                    mode=DuplicateMode.strict, keep_album_id=keep, remove_album_ids=[drop]
+                ),
+            )
+        )
+    assert ei.value.status_code == 500  # the established absorb shape, message-carrying
+    assert "music share mounted" in str(ei.value.detail)
+    assert len(list(duplicates_lib.albums())) == n_before
+
+
+def test_root_unreadable_names_permissions_not_emptiness(
+    duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An I/O failure listing the root is not the same fault as an empty root.
+
+    Both fail closed, but only one of the two sentences tells the person who can
+    fix it what to look at — a PUID/PGID drift, a stale NFS handle or an EIO
+    reads as "the folder is empty" otherwise, which sends them looking for
+    missing files that are all still there.
+    """
+    trash = tmp_path / "trash"
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+
+    def _denied(path: object) -> object:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "scandir", _denied)
+
+    with pytest.raises(LibraryRootUnavailableError) as ei, duplicates_lib.transaction():
+        trash_album(duplicates_lib, album, trash_dir=trash)
+
+    assert "unreadable" in str(ei.value)
+    assert "empty" not in str(ei.value)
+    assert "Permission denied" in str(ei.value)  # the OS's own reason, no path
+    assert duplicates_lib.get_album(album_id) is not None  # still fails CLOSED
+    assert not trash.exists()

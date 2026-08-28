@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from beets.library import Library
+from beets.library import Album, Item, Library
 
 from app.beets.reorganize import plan_reorganize, reorganize_album, reorganize_singleton
 
@@ -91,3 +91,212 @@ def test_sweep_trashes_library_orphans(reorganize_lib: Library, tmp_path: Path) 
     assert reg.state().orphans_trashed == 1
     assert not husk.exists()
     assert (trash / "Ghost Artist" / "artist-poster.jpg").exists()
+
+
+# --- live_album_roots: the DB-side protected set ------------------------------
+# Fixtures build their own library (never ``reorganize_lib``) because the shape
+# under test is the PATH TEMPLATE: a discless template flattens a multi-disc album
+# during the unit loop, so the album dir would gain direct audio and the sweep's
+# has_own_audio guard would spare the art folder without any of this code.
+
+_DISC_FORMAT = "$albumartist/$album/Disc $disc/$track $title"
+
+
+def _library(tmp_path: Path, *, path_format: str) -> Library:
+    from tests.conftest import build_library
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    return build_library(
+        str(tmp_path / "library.db"), str(tmp_path / "music"), path_format=path_format
+    )
+
+
+def _add_album(lib: Library, *, artist: str, album: str, files: list[tuple[str, int]]) -> Album:
+    """Add an album whose items live at the given music-dir-relative paths.
+
+    ``files`` is ``[(relative path, disc)]``; every file is a ``b"\\x00"`` stub so
+    beets' move/destination machinery works without real audio.
+    """
+    music = Path(os.fsdecode(lib.directory))
+    items = []
+    for i, (rel, disc) in enumerate(files, start=1):
+        f = music / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"\x00")
+        it = Item(album=album, albumartist=artist, artist=artist, title=f"T{i}", track=i, disc=disc)
+        it.path = os.fsencode(str(f))
+        items.append(it)
+    added = lib.add_album(items)
+    added.store()
+    return added
+
+
+def test_live_album_roots_folds_a_multidisc_album_to_its_album_dir(tmp_path: Path) -> None:
+    """The root is the commonpath of the item DIRS (``_album_root`` semantics), so a
+    multi-disc album yields its ``$album`` folder — the dir whose art subfolders the
+    sweep must spare. An album sitting AT the music root is dropped: its "root" is
+    the whole library, which would protect everything."""
+    from app.beets.reorganize import live_album_roots
+
+    lib = _library(tmp_path, path_format=_DISC_FORMAT)
+    music = Path(os.fsdecode(lib.directory))
+    _add_album(
+        lib,
+        artist="Artist",
+        album="Album",
+        files=[("Artist/Album/Disc 01/01 T1.mp3", 1), ("Artist/Album/Disc 02/02 T2.mp3", 2)],
+    )
+    _add_album(lib, artist="Loose", album="Loose", files=[("loose.mp3", 1)])
+
+    roots = live_album_roots(lib)
+
+    assert str(music / "Artist" / "Album") in roots
+    assert str(music) not in roots
+    assert str(music / "Artist" / "Album" / "Disc 01") not in roots
+
+
+def test_live_album_roots_skips_an_album_row_with_no_items(tmp_path: Path) -> None:
+    """An album row carrying no items contributes nothing and raises nothing —
+    ``os.path.commonpath([])`` is a ValueError, so the derivation must never reach it
+    for such a row (grouping by the ITEMS is what keeps it out of reach)."""
+    from app.beets.reorganize import live_album_roots
+
+    lib = _library(tmp_path, path_format=_DISC_FORMAT)
+    music = Path(os.fsdecode(lib.directory))
+    _add_album(lib, artist="Artist", album="Album", files=[("Artist/Album/01 T1.mp3", 1)])
+    empty = _add_album(lib, artist="Gone", album="Gone", files=[("Gone/Gone/01 T1.mp3", 1)])
+    album_id = empty.id
+    with lib.transaction():
+        for item in list(empty.items()):
+            # with_album=False keeps the row: the default prunes an album that just
+            # lost its last item, which is why this state looks unreachable.
+            item.remove(delete=False, with_album=False)
+    assert album_id is not None
+    assert lib.get_album(album_id) is not None  # the row is really there, itemless
+
+    assert live_album_roots(lib) == frozenset({str(music / "Artist" / "Album")})
+
+
+def test_live_album_roots_excludes_an_album_outside_the_music_dir(tmp_path: Path) -> None:
+    """A row pointing outside the library (legacy import, moved share) must not
+    protect anything: the set is only meaningful inside the swept tree."""
+    from app.beets.reorganize import live_album_roots
+
+    lib = _library(tmp_path, path_format=_DISC_FORMAT)
+    outside = tmp_path / "elsewhere" / "Album"
+    outside.mkdir(parents=True)
+    (outside / "01.mp3").write_bytes(b"\x00")
+    it = Item(album="Album", albumartist="Artist", artist="Artist", title="T", track=1, disc=1)
+    it.path = os.fsencode(str(outside / "01.mp3"))
+    lib.add_album([it]).store()
+
+    assert live_album_roots(lib) == frozenset()
+
+
+def test_live_album_roots_protects_the_album_dir_above_a_nested_disc_dir(tmp_path: Path) -> None:
+    """Single-nested-disc gap: an album whose audio all sits in ONE subfolder folds
+    to that subfolder, so the ``$album`` dir above it needs protecting too — it is
+    where 'Scans (LP)' lives. Both templates are covered: the disc-less one puts the
+    album's destination dir directly above the actual root, the disc-bearing one puts
+    it one DISC level above the destination."""
+    from app.beets.reorganize import live_album_roots
+
+    lib = _library(tmp_path, path_format="$albumartist/$album/$track $title")
+    music = Path(os.fsdecode(lib.directory))
+    _add_album(lib, artist="Artist", album="Album", files=[("Artist/Album/CD1/01 T1.mp3", 1)])
+    assert str(music / "Artist" / "Album") in live_album_roots(lib)
+
+    disc_lib = _library(tmp_path / "d", path_format=_DISC_FORMAT)
+    disc_music = Path(os.fsdecode(disc_lib.directory))
+    _add_album(disc_lib, artist="Artist", album="Album", files=[("Artist/Album/CD1/01 T1.mp3", 1)])
+    assert str(disc_music / "Artist" / "Album") in live_album_roots(disc_lib)
+
+
+def test_live_album_roots_never_protects_a_dir_the_album_is_not_in(tmp_path: Path) -> None:
+    """The control arm for the discriminator above. A misfiled album (its files are
+    not under the ``$album`` folder the template names) extends protection to
+    nothing: only dirs that strictly CONTAIN the album's actual root are taken.
+
+    Two husks are the bait. The artist container must never enter the set or every
+    husk beside a live album stops being swept; and the album's future destination
+    dir — which here exists as a genuine art-only husk — must not be protected by a
+    row whose files are somewhere else entirely."""
+    from app.beets.reorganize import live_album_roots
+
+    lib = _library(tmp_path, path_format=_DISC_FORMAT)
+    music = Path(os.fsdecode(lib.directory))
+    _add_album(lib, artist="Artist", album="Album", files=[("Artist/Wrong Name/CD1/01 T1.mp3", 1)])
+    husk = music / "Artist" / "Album"  # where the template WANTS it: art only
+    husk.mkdir(parents=True)
+    (husk / "cover.jpg").write_bytes(b"x")
+
+    roots = live_album_roots(lib)
+
+    assert str(music / "Artist") not in roots
+    assert str(husk) not in roots
+    assert roots == frozenset({str(music / "Artist" / "Wrong Name" / "CD1")})
+
+
+def test_live_album_roots_drops_a_root_that_contains_another_root(tmp_path: Path) -> None:
+    """An album whose items are split across two folders (a half-finished move) folds
+    to their common ancestor — here the ARTIST dir. Such a root swallows its
+    siblings' albums, so it is dropped rather than allowed to shield every husk
+    under that artist."""
+    from app.beets.reorganize import live_album_roots
+
+    lib = _library(tmp_path, path_format="$albumartist/$album/$track $title")
+    music = Path(os.fsdecode(lib.directory))
+    _add_album(
+        lib,
+        artist="Artist",
+        album="Split",
+        files=[("Artist/Half A/01 T1.mp3", 1), ("Artist/Half B/01 T2.mp3", 1)],
+    )
+    _add_album(lib, artist="Artist", album="Kept", files=[("Artist/Kept/01 T1.mp3", 1)])
+
+    roots = live_album_roots(lib)
+
+    assert str(music / "Artist") not in roots
+    assert str(music / "Artist" / "Kept") in roots
+
+
+def test_sweep_leaves_live_multidisc_scans_alone(tmp_path: Path) -> None:
+    """End-to-end: the executor and the preview both spare a live multi-disc album's
+    non-listed art folder while still trashing a genuine husk.
+
+    The album is placed EXACTLY where the disc-bearing template wants it, so the unit
+    loop moves nothing (asserted) — against a disc-less template beets would flatten
+    the discs first, the album dir would gain direct audio, and ``has_own_audio``
+    would spare 'Scans (LP)' with none of this code running."""
+    from app.beets.reorganize import plan_reorganize
+    from app.reorganize_jobs.registry import ReorganizeRegistry
+    from app.reorganize_jobs.runner import sweep
+    from tests.conftest import make_test_handle
+
+    lib = _library(tmp_path, path_format=_DISC_FORMAT)
+    music = Path(os.fsdecode(lib.directory))
+    _add_album(
+        lib,
+        artist="Artist",
+        album="Album",
+        files=[("Artist/Album/Disc 01/01 T1.mp3", 1), ("Artist/Album/Disc 02/02 T2.mp3", 2)],
+    )
+    scans = music / "Artist" / "Album" / "Scans (LP)"
+    scans.mkdir(parents=True)
+    (scans / "booklet.jpg").write_bytes(b"x")
+    husk = music / "Ghost Artist"
+    husk.mkdir(parents=True)
+    (husk / "artist-poster.jpg").write_bytes(b"x")
+    trash = tmp_path / "trash"
+
+    plan = plan_reorganize(lib, scope="library", artist=None, album_id=None, trash_dir=trash)
+    assert [o.name for o in plan.orphans] == ["Ghost Artist"]  # not 'Scans (LP)'
+
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    sweep(reg, make_test_handle(lib, tmp_path), scope="library", trash_dir=trash)
+
+    assert reg.state().moved == 0  # the fixture is already in place: nothing flattened
+    assert reg.state().orphans_trashed == 1
+    assert (scans / "booklet.jpg").exists()
+    assert not husk.exists()

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import type { RestoreResult, TrashedAlbum } from "@/api/useTrash";
 import {
@@ -118,6 +118,9 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
     .filter((bit): bit is string => Boolean(bit))
     .join(" · ");
 
+  const noTracks = album.track_count === 0;
+  const reasonId = useId();
+
   return (
     <li className="flex items-center gap-3 px-4 py-3">
       <div className="flex min-w-0 flex-1 flex-col">
@@ -125,6 +128,11 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
           {album.album_artist ?? "Unknown artist"} - {album.album ?? album.folder}
         </span>
         <span className="text-muted-foreground truncate text-xs">{meta || album.folder}</span>
+        {noTracks && (
+          <span id={reasonId} className="text-muted-foreground text-xs">
+            No audio files to restore — Empty removes it permanently.
+          </span>
+        )}
         {result && (
           <output className="text-muted-foreground text-xs">
             {restoreResultMessage(result)}
@@ -134,7 +142,8 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
       <Button
         variant="outline"
         size="sm"
-        disabled={restore.isPending}
+        disabled={restore.isPending || noTracks}
+        aria-describedby={noTracks ? reasonId : undefined}
         onClick={() => restore.mutate(album.folder, { onSuccess: setResult })}
       >
         {restore.isPending ? (

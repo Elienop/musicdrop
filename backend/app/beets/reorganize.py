@@ -26,8 +26,8 @@ from typing import Any
 import beets
 from beets.util import FilesystemError, MoveOperation, prune_dirs, samefile, syspath
 
-from app.beets.library import LibraryHandle
-from app.beets.orphans import find_orphan_folders
+from app.beets.library import LibraryHandle, _abs_path
+from app.beets.orphans import _under, find_orphan_folders
 from app.beets.sidecars import move_sidecars
 from app.models.reorganize import (
     OrphanFolder,
@@ -394,6 +394,149 @@ def _scope_label(
     return "library"
 
 
+def _dest_dir_parts(item: Any) -> list[str]:
+    """The directory components of where the path template wants this item."""
+    rel = os.fsdecode(item.destination(relative_to_libdir=True))
+    return os.path.dirname(rel).split(os.sep)
+
+
+def _disc_dir_levels(item: Any) -> int:
+    """How many TRAILING directory components of a destination the disc number
+    controls: 1 for ``$albumartist/$album/Disc $disc/$track $title``, 0 for a template
+    that gives discs no directory of their own.
+
+    Probed by rendering one item's destination twice with different disc numbers
+    instead of parsing the template text, which would miss ``%if``/function forms.
+    A template that only emits the disc dir CONDITIONALLY changes the component
+    COUNT, and that returns 0 — too ambiguous to strip. Computed once per call from
+    one album, so a library whose query-keyed path formats disagree about disc
+    nesting is read through the first album's shape; the fallback is simply less
+    protection, never more.
+
+    The second render runs on ``Model.copy()``, which duplicates the field values
+    but keeps ``_db`` AND the row id (beets ``dbcore/db.py:406-419``) — the probe is
+    DB-ATTACHED, not a detached value object. Only ``destination()`` may ever be
+    called on it: ``store()`` on the copy would write the fake disc number to the
+    real row.
+    """
+    try:
+        here = _dest_dir_parts(item)
+        probe = item.copy()
+        probe.disc = int(item.disc or 0) + 1
+        there = _dest_dir_parts(probe)
+    except Exception:  # a template that cannot render must not fail the sweep
+        _log.debug("disc-level probe failed", exc_info=True)
+        return 0
+    if len(here) != len(there):
+        return 0
+    shared = 0
+    while shared < len(here) and here[shared] == there[shared]:
+        shared += 1
+    return len(here) - shared
+
+
+def _album_dirs_above(item: Any, root: str, music_dir: str, disc_levels: int) -> set[str]:
+    """The dirs a live album owns ABOVE its actual root, per the path template.
+
+    An album whose audio all sits in ONE subfolder (``Album/CD1/*.flac`` — a one-disc
+    box set, or a disc-bearing template with a single disc) folds to that subfolder,
+    so the ``$album`` dir holding its ``Scans (LP)`` is not covered by the root alone.
+    The template says where that dir is: the item's destination dir, plus the dir
+    ``disc_levels`` above it when each disc gets its own directory.
+
+    Only dirs that strictly CONTAIN the album's actual root are taken, and that is the
+    whole discriminator — it is what keeps an ARTIST container out of the set. For an
+    album filed where the template wants it the destination dir IS the root, so there
+    is nothing above to add; for a misfiled one the destination is somewhere else
+    entirely and contains no part of the root. So a genuine husk sitting beside a live
+    album (``Artist/{Good Album/01.flac, Old Album/cover.jpg}``) is still swept.
+    """
+    try:
+        dest_rel = os.path.dirname(os.fsdecode(item.destination(relative_to_libdir=True)))
+    except Exception:  # same reason as _disc_dir_levels: degrade, never fail
+        _log.debug("destination probe for album protection failed", exc_info=True)
+        return set()
+    dest_dir = os.path.normpath(os.path.join(music_dir, dest_rel))
+    owned = [dest_dir]
+    above = dest_dir
+    for _ in range(disc_levels):
+        above = os.path.dirname(above)
+    if above != dest_dir:
+        owned.append(above)
+    return {d for d in owned if _under(d, music_dir) and _under(root, d)}
+
+
+def _drop_container_roots(roots: dict[str, Any], music_dir: str) -> dict[str, Any]:
+    """Drop any root that strictly CONTAINS another album's root.
+
+    Only a half-finished move folds that high — one album's items split across two
+    folders commonpath UP to the artist dir — and an artist dir in the set silently
+    stops every husk beneath it from ever being swept. Both dirs the split album
+    actually occupies hold audio directly, so its own art subfolders keep the
+    ``has_own_audio`` protection they had before.
+    """
+    poisoned: set[str] = set()
+    for root in roots:
+        parent = os.path.dirname(root)
+        while _under(parent, music_dir):
+            if parent in roots:
+                poisoned.add(parent)
+            nxt = os.path.dirname(parent)
+            if nxt == parent:
+                break
+            parent = nxt
+    return {root: item for root, item in roots.items() if root not in poisoned}
+
+
+def live_album_roots(lib: Any) -> frozenset[str]:
+    """Normalized absolute dirs owned by LIVE albums, for ``protected_dirs``.
+
+    Per album: the commonpath of its item dirs (``_commonpath_of_dirs`` — the fold
+    ``app.beets.trash._album_root`` applies, including its ValueError fallback for
+    mixed absolute/relative rows), plus whatever :func:`_album_dirs_above` says the
+    path template puts above that. Items with no album row (singletons) are skipped,
+    and so is any root at or outside the music dir: a root-level album would
+    otherwise protect the whole library.
+
+    Cost: one ``lib.items()`` pass grouped by album id plus one ``destination()``
+    render per album — O(items + albums). That is the same "seconds at 75k tracks"
+    class of full-library read ``app.beets.trash._folder_is_shared`` documents, paid
+    once per sweep/preview beside their own full-disk ``os.walk``. If it ever
+    measures slow, the named escape is a raw-SQL fold over ``items`` (the
+    ``_folder_is_shared`` pattern). One spot measurement, 2026-08-28, synthetic
+    1000 albums x 10 tracks on the dev box: 0.73 s, 0.45 s of it the item
+    materialization — a dated data point, not a live figure; re-measure rather than
+    quoting it.
+
+    KNOWN LIMIT (named residual, not handled here): when a reorganize MOVES a live
+    album, an untracked art folder left behind in the VACATED dir is still sweepable
+    — the set is read after the moves, and the vacated dir is no longer any album's.
+    """
+    music_dir = os.path.normpath(_abs_path(lib, lib.directory))
+    item_paths: dict[int, list[bytes]] = {}
+    reps: dict[int, Any] = {}
+    for item in lib.items():
+        album_id = item.album_id
+        if album_id is None:
+            continue
+        key = int(album_id)
+        item_paths.setdefault(key, []).append(os.fsencode(_abs_path(lib, item.path)))
+        reps.setdefault(key, item)
+    roots: dict[str, Any] = {}
+    for key, paths in item_paths.items():
+        root = os.path.normpath(_commonpath_of_dirs(paths))
+        if _under(root, music_dir):
+            roots[root] = reps[key]
+    kept = _drop_container_roots(roots, music_dir)
+    if not kept:
+        return frozenset()
+    disc_levels = _disc_dir_levels(next(iter(kept.values())))
+    protected = set(kept)
+    for root, item in kept.items():
+        protected |= _album_dirs_above(item, root, music_dir, disc_levels)
+    return frozenset(protected)
+
+
 def _orphan_preview(
     lib: Any,
     *,
@@ -408,8 +551,14 @@ def _orphan_preview(
     if trash_dir is None or scope != "library":
         return [], 0
     music_dir = Path(os.fsdecode(lib.directory))
+    # After the early returns: a preview that shows no orphan section must not pay
+    # for the DB pass. The executor derives the same set, so preview == outcome.
     folders = find_orphan_folders(
-        music_dir, seeds=None, trash_dir=trash_dir, ignore_dirs=ignore_dirs
+        music_dir,
+        seeds=None,
+        trash_dir=trash_dir,
+        ignore_dirs=ignore_dirs,
+        protected_dirs=live_album_roots(lib),
     )
     rows: list[OrphanFolder] = []
     for f in folders[:PREVIEW_ROW_CAP]:

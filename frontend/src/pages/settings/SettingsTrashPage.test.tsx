@@ -103,6 +103,30 @@ describe("SettingsTrashPage", () => {
     expect(await screen.findByText(/Restored to your library/i)).toBeInTheDocument();
   });
 
+  test("Restore is disabled with a visible reason when a row has no audio files", async () => {
+    const emptyAlbum = {
+      folder: "No Audio - Ghost",
+      album_artist: null,
+      album: null,
+      year: null,
+      track_count: 0,
+      format: null,
+    };
+    server.use(
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [emptyAlbum], trash_path: "/t" }),
+      ),
+    );
+    renderPage();
+
+    const restore = await screen.findByRole("button", { name: /^Restore$/ });
+    expect(restore).toBeDisabled();
+    expect(restore).toHaveAccessibleDescription(/no audio files to restore/i);
+    expect(
+      await screen.findByText(/no audio files to restore/i),
+    ).toBeInTheDocument();
+  });
+
   test("Restore surfaces the already-in-library result", async () => {
     server.use(
       http.get(TRASH_URL, () => HttpResponse.json({ albums: [album], trash_path: "/t" })),

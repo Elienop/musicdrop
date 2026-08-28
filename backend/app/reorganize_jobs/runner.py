@@ -7,13 +7,18 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import Any
 
 from app.beets.library import LibraryHandle, library_paths_context
 from app.beets.orphans import find_orphan_folders
-from app.beets.reorganize import collect_units, reorganize_album, reorganize_singleton
+from app.beets.reorganize import (
+    collect_units,
+    live_album_roots,
+    reorganize_album,
+    reorganize_singleton,
+)
 from app.beets.trash import trash_folder
 from app.models.reorganize import ReorganizeOutcome, ReorganizeScope
 from app.reorganize_jobs.registry import ReorganizeRegistry
@@ -62,6 +67,14 @@ def sweep(
                 return
             stopped = False
             if trash_dir is not None:
+                # Read AFTER the unit loops, because the roots move during the
+                # run. What keeps the library still between this read and the
+                # orphan pass is the library-busy UNION gate (app/library_busy.py,
+                # which consults this job's slot): a delete, a duplicate resolve
+                # or an import is refused while a reorganize runs. The single-slot
+                # registry alone only excludes a SECOND reorganize.
+                # Inside this branch on purpose: a caller that skips the orphan
+                # phase must not pay for the DB pass.
                 stopped = _sweep_orphans(
                     reg,
                     scope=scope,
@@ -69,6 +82,7 @@ def sweep(
                     trash_dir=trash_dir,
                     vacated=vacated,
                     ignore_dirs=ignore_dirs,
+                    protected_dirs=live_album_roots(handle.lib),
                 )
             reg.finish("stopped" if stopped else "done")
     except Exception as exc:  # any crash becomes a failed job, never a lost thread
@@ -116,14 +130,23 @@ def _sweep_orphans(
     trash_dir: Path,
     vacated: list[Path],
     ignore_dirs: tuple[Path, ...],
+    protected_dirs: Collection[str],
 ) -> bool:
     """Move audio-empty husks to Trash. Library scope scans the whole root; a
     narrower scope seeds from the dirs this run vacated. Per-folder failures are
     isolated so one bad move never aborts the job. Returns True if it broke early
-    on a Stop request (so the caller finishes ``stopped``, not ``done``)."""
+    on a Stop request (so the caller finishes ``stopped``, not ``done``).
+
+    ``protected_dirs`` are the live albums' own dirs: a seeded climb lands on an
+    album's audio-free subfolder just as readily as a library scan does, so both
+    modes get the same set."""
     seeds = None if scope == "library" else vacated
     for folder in find_orphan_folders(
-        music_dir, seeds=seeds, trash_dir=trash_dir, ignore_dirs=ignore_dirs
+        music_dir,
+        seeds=seeds,
+        trash_dir=trash_dir,
+        ignore_dirs=ignore_dirs,
+        protected_dirs=protected_dirs,
     ):
         if reg.should_stop():
             return True

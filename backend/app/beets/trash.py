@@ -22,7 +22,13 @@ from typing import Any
 from beets.library import Library
 from beets.util import bytestring_path
 
-from app.beets.library import LibraryHandle, _abs_path, _coerce_int, _coerce_optional_str
+from app.beets.library import (
+    LibraryHandle,
+    _abs_path,
+    _coerce_int,
+    _coerce_optional_str,
+    require_library_root,
+)
 from app.config import Settings
 
 
@@ -70,7 +76,20 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path) -> str:
     under one ``$albumartist`` folder, which ``list_trashed_albums`` keys on and
     the whole-folder DELETE then wiped wholesale. Returns the album's new Trash
     folder. Caller controls the transaction (so a batch can be atomic).
+
+    Raises :class:`~app.beets.library.LibraryRootUnavailableError` if the music
+    root is missing, empty or unreadable — checked BEFORE anything is created or
+    moved. beets 2.12's ``Item.move`` silently skips a source file that is not
+    there ("If the source file is missing, skip the move", ``log.warning`` then
+    ``return`` — ``beets/library/models.py:1178-1192``), so with the share
+    unmounted every move would no-op and ``Album.remove`` below would still drop
+    the rows: a Trash path pointing at an empty folder and a library that has
+    forgotten the album. The guard has to precede the ``mkdir`` as well as the
+    moves, because a beets transaction COMMITS on the way out even while
+    unwinding an exception (``beets/dbcore/db.py:924-941`` — no rollback branch),
+    so aborting after a mutation would not undo it.
     """
+    require_library_root(lib)
     trash_dir.mkdir(parents=True, exist_ok=True)
     container = _unique_trash_dest(trash_dir, _trash_container_name(album))
     container.mkdir(parents=True, exist_ok=True)
@@ -199,17 +218,41 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path) -> str:
     no empty husk lingers. Falls back to the per-item ``trash_album`` when the
     folder is shared with another album, so a sibling is never collateral.
     Caller owns the transaction.
+
+    Raises :class:`~app.beets.library.LibraryRootUnavailableError` when the
+    album's folder is missing AND the music root itself is unavailable — an
+    unmounted share, not a deleted album. See the branch below.
     """
     items = list(album.items())
     if not items:
+        # No item rows means no files and no folder, so there is no on-disk
+        # state a mount could protect: this arm skips the root guard below by
+        # design. Near-unreachable anyway (beets prunes an album when its last
+        # item goes), but not free — inside delete_artist's fan-out it can drop
+        # such a row and then have a later album abort the run, which is part of
+        # why that caller reports partial progress rather than "nothing moved".
         album.remove(delete=False)
         return str(trash_dir)
     album_root = _album_root(lib, items)
     if not os.path.isdir(album_root):
-        # Ghost album: the folder was deleted outside MusicDrop (the DB rows are
-        # all that's left). Nothing to relocate — just drop the rows so the
-        # library stops advertising files that don't exist. beets 2.12 would
-        # silently skip the per-item moves anyway (missing sources).
+        # The folder is not there — but that reads two ways, and only one of them
+        # means the rows should go:
+        #
+        #   * deleted outside MusicDrop (over SMB, say) while the rest of the
+        #     library is present — a genuine ghost. The DB rows are all that is
+        #     left, so drop them and stop advertising files that don't exist.
+        #   * the share is not mounted — in which case EVERY album's folder is
+        #     "missing" and this branch would erase the library one delete at a
+        #     time, keeping nothing recoverable in Trash (nothing moved) while
+        #     losing everything library.db held: added dates, play counts, lyrics
+        #     flags, flex fields.
+        #
+        # The root tells them apart, so check it here, at the decision moment —
+        # the same per-removal re-check disk sync makes before treating a missing
+        # file as a deletion. Raising before ``remove`` is what makes it safe: a
+        # beets transaction commits on the way out even while unwinding an
+        # exception (``beets/dbcore/db.py:924-941``).
+        require_library_root(lib)
         album.remove(delete=False)
         return str(trash_dir)
     if _folder_is_shared(lib, album, album_root):

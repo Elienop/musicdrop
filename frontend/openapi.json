@@ -279,6 +279,16 @@
               }
             }
           },
+          "503": {
+            "description": "The music library root is missing, empty or unreadable, so the delete is refused before anything is moved or dropped (the guard against an unmounted share). Nothing reached the Trash folder.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -1027,11 +1037,21 @@
             }
           },
           "500": {
-            "description": "Deleting the artist failed, but its files are recoverable in the Trash folder.",
+            "description": "Deleting the artist failed, but its files are recoverable in the Trash folder. Also the status for a share that drops PART-WAY through the fan-out: the message then names how many of the artist's albums had been trashed before it did, and the rest are untouched.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StructuredErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The music library root is missing, empty or unreadable, so the delete is refused before any of the artist's albums is moved or dropped (the guard against an unmounted share). Nothing reached the Trash folder; a share that drops part-way through the fan-out is reported as the 500 instead.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }

@@ -193,11 +193,101 @@ def test_fetch_item_skips_when_lyrics_and_sidecar_exist_unless_forced(edit_lib: 
     assert forced.status == "found"
 
 
-def test_skip_instrumental_cleans_a_stale_sidecar(edit_lib: Library) -> None:
-    """beets' 2.13 migration leaves already-instrumental tracks flagged, and
-    sweeps skip flagged tracks without re-searching — so the skip gate is the
-    ONLY place their old "[Instrumental]" sidecars (which Plex keeps reading)
-    can ever be cleaned up."""
+# --- A1: the user's own sidecars survive a backfill --------------------------
+
+
+def test_found_with_existing_lrc_preserves_it_byte_for_byte(edit_lib: Library) -> None:
+    """The flagship reproduction of the reported bug's reachable arm.
+
+    A downloaded .lrc collection is the normal self-hosted state: a sidecar on
+    disk and an EMPTY embedded tag. That combination falls straight through the
+    skip-existing gate, so the track IS fetched — and a plain LRCLib answer used
+    to unlink the curated .lrc and leave worse data in a .txt. Now the fetch
+    fills the gap (DB row + embedded tag) and the file layer does nothing at all.
+    """
+    from app.beets.lyrics import fetch_item_lyrics
+
+    item = _first_item(edit_lib)
+    assert not item.lyrics  # the state that makes the gate fall through
+    base, _ext = os.path.splitext(os.fsdecode(item.path))
+    curated = Path(base + ".lrc")
+    body = b"[00:01.00] the user's own synced line\n[00:05.00] and another\n"
+    curated.write_bytes(body)
+
+    out = fetch_item_lyrics(
+        _FakePlugin([_FakeBackend(result=Lyrics("fetched plain line", "lrclib", "u"))]),
+        item,
+        force=False,
+        write=True,
+    )
+
+    assert out.status == "found"
+    assert item.lyrics == "fetched plain line"  # the gap IS filled...
+    assert curated.read_bytes() == body  # ...and the file is untouched, byte for byte
+    assert not Path(base + ".txt").exists()  # no worse sibling written beside it
+
+
+def test_found_lyrics_replace_a_stale_marker_sidecar(edit_lib: Library) -> None:
+    """End to end for the inverted case: a track carrying a stale
+    "[Instrumental]" sidecar and an empty tag falls through the skip gates, the
+    backend answers with real lyrics, and Plex must stop showing "[Instrumental]"
+    — so the marker is cleared and the real sidecar takes its place."""
+    from app.beets.lyrics import fetch_item_lyrics
+
+    item = _first_item(edit_lib)
+    base, _ext = os.path.splitext(os.fsdecode(item.path))
+    marker = Path(base + ".txt")
+    marker.write_text("[Instrumental]\n", encoding="utf-8")
+
+    out = fetch_item_lyrics(
+        _FakePlugin(
+            [_FakeBackend(result=Lyrics("[00:01.00] real line\n[00:05.00] second", "lrclib", "u"))]
+        ),
+        item,
+        force=False,
+        write=True,
+    )
+
+    assert out.status == "found"
+    assert not marker.exists()  # the stale marker no longer outlives the lyrics
+    assert "[00:01.00] real line" in Path(base + ".lrc").read_text(encoding="utf-8")
+
+
+def test_forced_fetch_still_never_replaces_a_curated_sidecar(edit_lib: Library) -> None:
+    """``force`` is a skip-gate bypass, not a licence to overwrite files. It has
+    no production caller today (``app/lyrics_jobs/runner.py:73`` hardcodes
+    ``force=False``), so its file semantics are defined at the strongest reading:
+    the sidecar layer is fill-gaps-only for EVERY caller."""
+    from app.beets.lyrics import fetch_item_lyrics
+
+    item = _first_item(edit_lib)
+    base, _ext = os.path.splitext(os.fsdecode(item.path))
+    curated = Path(base + ".lrc")
+    body = b"[00:01.00] the user's own synced line\n"
+    curated.write_bytes(body)
+
+    out = fetch_item_lyrics(
+        _FakePlugin([_FakeBackend(result=Lyrics("[00:09.00] fetched synced line", "lrclib", "u"))]),
+        item,
+        force=True,
+        write=True,
+    )
+
+    assert out.status == "found"
+    assert curated.read_bytes() == body
+    assert not Path(base + ".txt").exists()
+
+
+def test_skip_instrumental_touches_no_sidecar(edit_lib: Library) -> None:
+    """A2: a path that REPORTS a skip must not have touched disk.
+
+    The flag here is the migrated shape — beets' 2.13 migration flags
+    pre-existing instrumentals (``beets/library/migrations.py:290-329``), i.e. a
+    flag MusicDrop never set — and this gate used to delete both sidecars before
+    returning ``skipped_instrumental``. Seeds BOTH a marker .txt and a
+    real-lyrics .lrc: the marker file makes the pin non-vacuous against the
+    minimal regression (re-adding the marker-guarded remover here), the real
+    .lrc against the original blanket one."""
     from app.beets.lyrics import _sidecar_base, fetch_item_lyrics
 
     seed = _first_item(edit_lib)
@@ -207,15 +297,19 @@ def test_skip_instrumental_cleans_a_stale_sidecar(edit_lib: Library) -> None:
     assert item is not None
     base = _sidecar_base(item)
     assert base is not None
-    stale = Path(base + ".txt")
-    stale.write_text("[Instrumental]", encoding="utf-8")
+    marker = Path(base + ".txt")
+    marker.write_text("[Instrumental]\n", encoding="utf-8")
+    curated = Path(base + ".lrc")
+    curated.write_text("[00:01.00] a real synced line\n", encoding="utf-8")
     never = _FakeBackend(result=Lyrics("should not be fetched", "lrclib", "u"))
 
     out = fetch_item_lyrics(_FakePlugin([never]), item, force=False, write=True)
 
     assert out.status == "skipped_instrumental"
-    assert never.calls == 0  # still no re-search — cleanup only
-    assert not stale.exists()
+    assert never.calls == 0  # no re-search...
+    # ...and no file work either: a skip is a pure report.
+    assert marker.read_text(encoding="utf-8") == "[Instrumental]\n"
+    assert curated.read_text(encoding="utf-8") == "[00:01.00] a real synced line\n"
 
 
 def test_skip_existing_keeps_its_sidecar(edit_lib: Library) -> None:
@@ -321,10 +415,14 @@ def test_fetch_item_instrumental_stops_searching_and_flags(edit_lib: Library) ->
     assert item.get("lyrics_checked")  # and marked searched
 
 
-def test_fetch_item_instrumental_clears_stale_lyrics_and_sidecars(edit_lib: Library) -> None:
-    """A force re-fetch of a track that still carries the old "[Instrumental]"
-    text must end with an empty lyrics field and no sidecars — but the audio
-    file's own tag is out of scope and stays untouched."""
+def test_fetch_item_instrumental_clears_stale_lyrics_and_marker_sidecars(
+    edit_lib: Library,
+) -> None:
+    """A3: a FRESH instrumental verdict may delete a sidecar whose whole body is
+    beets' marker — the owner's "stale Plex sidecars go" ruling — and it must
+    still reach the LRC-TIMESTAMPED form pre-#122 wrote. The lyrics field is
+    cleared and persisted; the audio file's own tag is out of scope and stays
+    untouched."""
     from app.beets.lyrics import fetch_item_lyrics
 
     item = _first_item(edit_lib)
@@ -344,9 +442,31 @@ def test_fetch_item_instrumental_clears_stale_lyrics_and_sidecars(edit_lib: Libr
     row = edit_lib.get_item(item.id)
     assert row is not None
     assert row.lyrics == ""  # persisted, not just in memory
-    assert not Path(base + ".lrc").exists()
+    assert not Path(base + ".lrc").exists()  # timestamped marker still reached
     assert not Path(base + ".txt").exists()
     assert INSTRUMENTAL_LYRICS in (MediaFile(os.fsdecode(item.path)).lyrics or "")
+
+
+def test_fetch_item_instrumental_keeps_a_real_lyrics_sidecar(edit_lib: Library) -> None:
+    """The other half of A3, and the destructive arm the BACKLOG entry never
+    named: a user .lrc + an empty tag reaches the fetch, and a backend that says
+    "instrumental" used to delete that .lrc by name. Content is the authorship
+    proxy — real lyrics are never the marker, so the file stays."""
+    from app.beets.lyrics import fetch_item_lyrics
+
+    item = _first_item(edit_lib)
+    base, _ext = os.path.splitext(os.fsdecode(item.path))
+    curated = Path(base + ".lrc")
+    body = "[00:01.00] a real synced line\n[00:05.00] and another\n"
+    curated.write_text(body, encoding="utf-8")
+
+    out = fetch_item_lyrics(
+        _FakePlugin([_FakeBackend(result=_instrumental())]), item, force=False, write=True
+    )
+
+    assert out.status == "instrumental"
+    assert item.get("lyrics_instrumental")  # the verdict is still recorded
+    assert curated.read_text(encoding="utf-8") == body  # but the file survives it
 
 
 def test_fetch_item_instrumental_sidecar_removal_noop_when_none(edit_lib: Library) -> None:

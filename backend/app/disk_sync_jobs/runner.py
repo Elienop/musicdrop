@@ -7,8 +7,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from app.beets.disk_sync import LibraryRootUnavailableError, run_disk_sync
-from app.beets.library import LibraryHandle, library_paths_context
+from app.beets.disk_sync import run_disk_sync
+from app.beets.library import (
+    LibraryHandle,
+    LibraryRootUnavailableError,
+    library_paths_context,
+)
 from app.disk_sync_jobs.registry import DiskSyncRegistry
 
 _log = logging.getLogger(__name__)

@@ -85,6 +85,62 @@ def close_library(lib: Library) -> None:
     lib._close()
 
 
+class LibraryRootUnavailableError(Exception):
+    """The music directory itself is missing — likely an unmounted share.
+
+    Guard against the nightmare scenario: with the root gone EVERY file looks
+    deleted, so any "the file is not there, drop the row" rule fires library-wide
+    at once. Fail fast instead.
+
+    Lives in the base adapter rather than in one feature module because both
+    row-dropping surfaces need the SAME predicate — disk sync's per-item removal
+    (``app.beets.disk_sync``) and the Trash primitives' missing-folder handling
+    (``app.beets.trash``). A second, looser copy of the check is the failure this
+    placement exists to prevent.
+    """
+
+
+def _music_dir(lib: Library) -> str:
+    """The music root as a normalized str path (beets stores it as bytes)."""
+    return os.path.normpath(os.fsdecode(lib.directory))
+
+
+def require_library_root(lib: Library) -> None:
+    """Raise :class:`LibraryRootUnavailableError` unless the music root looks mounted.
+
+    Call this at the DECISION MOMENT — immediately before code would read a
+    missing path as a user deletion — not merely once at the start of a job: a
+    share can drop mid-run, and every remaining file then looks deleted.
+    """
+    root = _music_dir(lib)
+    if not os.path.isdir(root):
+        raise LibraryRootUnavailableError("Library folder unavailable. Is the music share mounted?")
+    # A dropped NAS/SMB/NFS mount usually leaves the mountpoint PRESENT but empty
+    # (the kernel keeps the directory), so os.path.isdir alone stays True and the
+    # caller would read every file as deleted and wipe the DB. Treat an empty or
+    # unreadable root as unavailable too — a real library's root always has
+    # entries, and a genuine single deletion leaves siblings behind. Deliberately
+    # O(1) (one entry, not a recursive audio scan): the residual gaps — a stray
+    # file left on the local mountpoint masking a drop, or a genuinely-empty
+    # library reading as unavailable — are accepted, since the alternative is the
+    # library-wide row loss this guard exists for.
+    try:
+        with os.scandir(root) as it:
+            has_entry = next(it, None) is not None
+    except OSError as exc:
+        # Fails closed like the empty case, but NOT with the same sentence: a
+        # permission drift (PUID/PGID), a stale NFS handle or an I/O error is
+        # not an empty folder, and the person reading this string is the one who
+        # can fix it. ``strerror`` is the OS's own summary ("Permission denied",
+        # "Stale file handle") and carries no path, so it is safe to surface.
+        reason = f" ({exc.strerror})" if exc.strerror else ""
+        raise LibraryRootUnavailableError(
+            f"Library folder is unreadable{reason}. Check its permissions and the mount."
+        ) from exc
+    if not has_entry:
+        raise LibraryRootUnavailableError("Library folder is empty. Is the music share mounted?")
+
+
 def library_paths_context(handle: LibraryHandle) -> AbstractContextManager[Any]:
     """Bind beets' path conversion to this library for the calling thread.
 
