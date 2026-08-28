@@ -175,6 +175,14 @@ def reset_bank_index() -> None:
 
     For tests (per-test tmp dirs share this module global) and the rare case
     where rows were written to the bank dir out-of-band.
+
+    COUPLING WARNING: the rebuild enumerates via ``_all_items``, which SKIPS
+    corrupt rows — so a rebuild permanently forgets that a corrupt row was
+    ``applying``, and ``delete_item``'s corrupt-arm refusal (which reads the
+    index precisely because the row cannot testify) stops protecting that row
+    from being purged mid-apply. Safe today because nothing in production
+    calls this; wiring it to a "rescan bank dir" feature needs the runner's
+    in-flight id preserved across the rebuild first.
     """
     _INDEX.clear()
     _FOLDER.clear()
@@ -580,6 +588,11 @@ def bulk_delete(bank_dir: Path, ids: list[str]) -> int:
         with _LOCK:
             item = get_item(bank_dir, item_id)
             if item is None:
+                if _VALID_ID.match(item_id) and not _row_path(bank_dir, item_id).exists():
+                    # mirror delete_item's missing-file arm: keep the index
+                    # honest for a vanished file (corrupt-but-present rows
+                    # stay per the contract in the docstring above)
+                    _index_forget(bank_dir, item_id)
                 continue  # absent — missing or corrupt: skip, don't abort
             if item.status == "applying":
                 continue  # an applying row can't be deleted

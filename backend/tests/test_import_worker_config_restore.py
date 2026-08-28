@@ -18,7 +18,9 @@ around every test.
 from __future__ import annotations
 
 import contextlib
+import os
 from contextlib import AbstractContextManager
+from pathlib import Path
 from typing import Any, ClassVar
 
 from beets import config
@@ -92,3 +94,34 @@ def test_worker_pins_singletons_off_for_default_review_import() -> None:
 
     assert session.seen["singletons"] is False  # pinned for this run
     assert config["import"]["singletons"].get(bool) is True  # user value restored
+
+
+def test_in_library_copy_refusal_mutates_nothing(tmp_path: Path) -> None:
+    """The in-library guard's raise sits BETWEEN the first snapshots and the
+    try/finally: a copy-refusal must leave the process-global config exactly
+    as found. The deep-review probe caught ``threaded`` and
+    ``duplicate_action`` leaking on this early exit — the finally never runs,
+    so the only safe shape is "nothing mutates above the last raise"."""
+    import pytest
+
+    from app.beets.import_session import InLibraryCopyError, run_import_worker
+
+    config["threaded"] = True  # the user's config
+    config["import"]["duplicate_action"] = "skip"  # the user's config
+
+    lib_dir = tmp_path / "music"
+    (lib_dir / "Album").mkdir(parents=True)
+
+    class _InLibraryLib(_BindOnlyLib):
+        directory = os.fsencode(str(lib_dir))
+
+    session = _RecordingSession()
+    session.lib = _InLibraryLib()  # type: ignore[misc]  # ClassVar shadowed on purpose: this test needs the guard to fire
+    session.paths = [os.fsencode(str(lib_dir / "Album"))]  # type: ignore[misc]
+
+    with pytest.raises(InLibraryCopyError):
+        run_import_worker(session, move=False)  # type: ignore[arg-type]  # minimal stand-in; the guard raises before run()
+
+    assert session.seen == {}  # the pipeline never started
+    assert config["threaded"].get(bool) is True
+    assert config["import"]["duplicate_action"].get() == "skip"

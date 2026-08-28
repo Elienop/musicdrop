@@ -1364,14 +1364,13 @@ def run_import_worker(
     # covered here: the job runner AND trash_manage.restore_album, which calls
     # this directly. Nesting is safe (beets binds via a ContextVar token).
     with session.lib.music_dir_context():
-        # Snapshot BEFORE mutation, restore verbatim in the finally below:
-        # these two were set before the snapshot block and restored NOWHERE,
-        # leaking into the process-global beets config (and the "Effective
-        # config" panel, which flattens the live global) after every run.
+        # Snapshot BEFORE mutation, restore verbatim in the finally below.
+        # The MUTATIONS all sit below the in-library guard: its raise is the
+        # last early exit, and anything assigned above a raise leaks into the
+        # process-global beets config (and the "Effective config" panel, which
+        # flattens the live global) because the finally never runs.
         orig_threaded = config["threaded"].get()
         orig_duplicate_action = config["import"]["duplicate_action"].get()
-        config["threaded"] = False
-        config["import"]["duplicate_action"] = "ask"
         # In-library sources MUST move (same-dataset rename; samefile no-op):
         # with a fresh DB, copy-mode would duplicate any file whose computed
         # destination differs from its current path. Explicit copy is refused;
@@ -1391,6 +1390,8 @@ def run_import_worker(
         orig_singletons = config["import"]["singletons"].get(bool)
         orig_search_ids = config["import"]["search_ids"].get()  # restore verbatim
         orig_autotag = config["import"]["autotag"].get(bool)
+        config["threaded"] = False
+        config["import"]["duplicate_action"] = "ask"
         config["import"]["autotag"] = True
         # Hoisted OUT of the sweep/directive branches: a DEFAULT review import
         # (no sweep, no directive) must be album-shaped too — under a
