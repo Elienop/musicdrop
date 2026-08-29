@@ -210,11 +210,17 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   (`item.duplicate is None`), or a prompt that listed no existing album, has no stored id to
   enforce, so it behaves exactly as before. (c) **The identity check can read a re-tagged
   copy as gone.** It compares album-artist + album (case-folded) and, when both sides carry
-  one, the release URL. An album RENAMED or re-tagged to another release since banking fails
-  the match and counts as not surviving — so a `skip_new` would then let the import run, and
-  a `replace` would leave that copy in place. That is the deliberate direction (never act on
-  an album we cannot confirm), but it means enforcement is not total: the drift case it does
-  not cover is a stored copy whose identity moved, and the remedy is a rescan.
+  one, the release URL — and when the stored name key is only half filled, a stored URL must
+  be matched by a live one or the entry fails shut. An album RENAMED or re-tagged to another
+  release since banking fails the match and counts as not surviving — so a `skip_new` would
+  then let the import run, and a `replace` would leave that copy in place. That is the
+  deliberate direction (never act on an album we cannot confirm), but it means enforcement is
+  not total: the drift case it does not cover is a stored copy whose identity moved, and the
+  remedy is a rescan. The REPORTING of that case is honest, though: a `replace` whose banked
+  copies have all gone or drifted (and whose run beets did not re-detect either) now fails
+  with wording that says the album was imported and no old copy was moved to Trash, and steers
+  to checking for a leftover — it no longer reports `done`, which the Review page renders as
+  "Replaced / the old copy was moved to Trash".
 
   The original diagnosis, kept because it is why the fix looks like this: beets consults
   `get_duplicate_action` only

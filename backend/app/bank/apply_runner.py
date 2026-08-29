@@ -18,7 +18,10 @@ its duplicate hook only when ``task.find_duplicates()`` hits on the CHOSEN
 release's albumartist+album, so a renamed library copy (or a release named
 differently) makes the decision evaporate silently. ``skip_new`` is enforced
 HERE (below), ``replace`` in the session (it needs the library at trash time),
-and ``merge`` cannot be forced at all — it is reported honestly instead.
+and ``merge`` cannot be forced at all — it is reported honestly instead. What
+CANNOT be enforced is still reported honestly rather than as ``done``: a merge
+that landed a second copy, and a replace whose banked copies had all gone (so
+nothing was trashed and the row must not claim one was).
 """
 
 from __future__ import annotations
@@ -63,12 +66,28 @@ _NOTHING_IMPORTED_ERROR = (
 # album is already in the library as a second copy, so "decide again" - the
 # guidance every other failure gives - would import a third. Steer to removing
 # one copy instead; the Duplicates page keeps one and trashes the rest (it does
-# not merge). The ONLY error carried with ``error_retryable=False``, so the
-# banner above it drops the "decide again to retry" headline it contradicts.
+# not merge). One of the two errors carried with ``error_retryable=False`` (the
+# other is the un-replaced replace below), so the banner above it drops the
+# "decide again to retry" headline it contradicts.
 _MERGE_NOT_MERGED_ERROR = (
     "the album landed in your library as a second copy and the merge never ran (your "
     "library copy no longer matched it) - deciding again would import it a third time; "
     "remove one of the two copies instead, from its album page or the Duplicates page"
+)
+# The replace that replaced nothing. A ``replace`` IS forceable - the session
+# trashes the banked ids itself - but only while one of them still survives;
+# when every stored copy has gone or drifted out of identity, the session logs
+# "left in place" and trashes nothing, and beets' own re-detection missed too
+# (no ``needs_dup_resolution`` on the feed). What actually happened is "the new
+# album was imported and nothing was replaced", so reporting ``done`` would
+# render the Review page's "Replaced - the old copy was moved to Trash": a false
+# claim about a DESTRUCTIVE operation. Same not-retryable posture as the merge
+# arm - the album is already in the library, so a re-decide imports another.
+_REPLACE_NOT_REPLACED_ERROR = (
+    "the album was imported but your old copy was not moved to Trash (it was gone, or it no "
+    "longer matched the copy you decided about) - deciding again would import another copy; "
+    "check whether a leftover copy is still there and remove it from its album page or the "
+    "Duplicates page"
 )
 
 
@@ -287,6 +306,9 @@ class BankApplyRunner:
         if self._skip_new_is_enforced(claimed):
             bank_store.set_status(self._bank_dir, item.id, "done", error=None, album_id=None)
             return
+        # Read BEFORE the import starts (see the helper): it only feeds
+        # classification, so nothing about the run changes either way.
+        replace_targets_gone = self._replace_targets_are_gone(claimed)
         directive = directive_for(claimed)
         try:
             job_id = self._import_registry.start(
@@ -313,7 +335,7 @@ class BankApplyRunner:
             return
         if state is None:
             return  # shutting down mid-apply; startup reconciliation reverts
-        status, error, album_id, retryable = self._classify(claimed, state)
+        status, error, album_id, retryable = self._classify(claimed, state, replace_targets_gone)
         bank_store.set_status(
             self._bank_dir,
             item.id,
@@ -368,6 +390,51 @@ class BankApplyRunner:
             return False
         return True
 
+    def _replace_targets_are_gone(self, item: BankItem) -> bool:
+        """Whether a banked ``replace`` has NOTHING left to trash.
+
+        True for exactly one shape: a ``replace`` decision whose banked prompt
+        listed stored library albums, of which NONE still survives - present
+        under its stored id AND identity-matching what was banked (ids are
+        reused rowids; see ``_album_identity_matches``). The session's seed
+        re-derives survivors itself and does the trashing; this pre-check feeds
+        CLASSIFICATION only, and is the one signal that separates "replaced"
+        from "imported a second copy and trashed nothing" - beets' hook missing
+        the collision looks identical from the feed.
+
+        Read BEFORE the import starts, deliberately: afterwards a reused rowid
+        can make a stored id look like a survivor when it is really the album
+        this run just landed (the seed's own third guard). The window between
+        this read and the seed is the accepted single-user TOCTOU class already
+        documented on ``self._library`` - a config Apply can swap the library in
+        between, nothing here holds a lock, and a raise from the getter lands in
+        _drain's catch-all as an honest failed row.
+
+        False for everything else, including the two no-evidence shapes that
+        keep today's path untouched: no banked prompt (``item.duplicate is
+        None`` - the up-front resolver's flow) and a prompt that listed no
+        existing album. An empty stored list must never read as "the copies
+        vanished", or every such replace would report a failure.
+        """
+        decision = item.decided
+        if decision is None or decision.action != "duplicate":
+            return False
+        if decision.duplicate_action is not DuplicateAction.replace:
+            return False
+        prompt = item.duplicate
+        if prompt is None or not prompt.existing:
+            return False
+        surviving = surviving_duplicate_album_ids(self._library(), prompt.existing)
+        if surviving:
+            return False
+        logger.info(
+            "bank apply replace: none of the %d banked library copies survive for %s; "
+            "the import will land a copy that replaces nothing",
+            len(prompt.existing),
+            item.folder,
+        )
+        return True
+
     def _wait_for_gate(self) -> bool:
         """Block until the import gate is free. ``False`` when shutting down."""
         while not self._stop.is_set():
@@ -391,15 +458,21 @@ class BankApplyRunner:
 
     @staticmethod
     def _classify(
-        item: BankItem, state: ImportJobState
+        item: BankItem, state: ImportJobState, replace_targets_gone: bool
     ) -> tuple[BankStatus, str | None, int | None, bool]:
         """Map the finished apply job onto the row's terminal status.
 
+        ``replace_targets_gone`` is ``_replace_targets_are_gone``'s pre-import
+        verdict, threaded in because it cannot be re-derived here: after the run
+        has landed an album, "no stored copy survives" and "the survivor IS the
+        album we just imported" are indistinguishable.
+
         Returns ``(status, error, album_id, error_retryable)``. The last is
-        False for exactly ONE outcome - the merge that landed a second copy
-        below - because that is the only failure whose error tells the user NOT
-        to decide again; every other outcome's recovery IS a re-decide, so the
-        banner's "decide again to retry" headline stays true.
+        False for exactly TWO outcomes - the merge that landed a second copy and
+        the replace that replaced nothing, both below - because those are the
+        only failures whose error tells the user NOT to decide again; every
+        other outcome's recovery IS a re-decide, so the banner's "decide again
+        to retry" headline stays true.
 
         Decision-aware, and ``done`` always needs POSITIVE evidence (a
         transient lookup failure makes the session SKIP while the job still
@@ -414,6 +487,11 @@ class BankApplyRunner:
           split. ``dup_resolution_ran`` is the hook's own evidence channel: the
           ``needs_dup_resolution`` feed row is emitted at the top of
           ``get_duplicate_action`` and nowhere else.
+        * ``replace`` that landed an album with the hook NOT having run AND no
+          banked copy left to trash -> failed, for the same reason: the session
+          trashed nothing, so "Replaced - the old copy was moved to Trash" would
+          be a false claim about a destructive step. Unlike merge this is a
+          NARROW arm: a surviving copy is trashed by the seed and stays ``done``.
         * ``duplicate`` -> done only when the dup outcome is on the feed (its
           resolution was auto-answered) OR an album id landed (the library
           copy vanished, so the album just imported); a clean SKIP run failed.
@@ -434,7 +512,9 @@ class BankApplyRunner:
         )
         if action == "duplicate":
             dup_action = decision.duplicate_action if decision is not None else None
-            return BankApplyRunner._classify_duplicate(dup_action, album_id, dup_resolution_ran)
+            return BankApplyRunner._classify_duplicate(
+                dup_action, album_id, dup_resolution_ran, replace_targets_gone
+            )
         if dup_resolution_ran:
             return "failed", _DUP_BLOCKED_ERROR, None, True
         if action == "astracks":
@@ -447,15 +527,24 @@ class BankApplyRunner:
 
     @staticmethod
     def _classify_duplicate(
-        dup_action: DuplicateAction | None, album_id: int | None, dup_resolution_ran: bool
+        dup_action: DuplicateAction | None,
+        album_id: int | None,
+        dup_resolution_ran: bool,
+        replace_targets_gone: bool,
     ) -> tuple[BankStatus, str | None, int | None, bool]:
         """The ``duplicate``-decision arm of ``_classify`` (same return contract)."""
-        if dup_action is DuplicateAction.merge and album_id is not None and not dup_resolution_ran:
+        landed_unresolved = album_id is not None and not dup_resolution_ran
+        if dup_action is DuplicateAction.merge and landed_unresolved:
             # album_id stays off the row on purpose: ``album_id`` is the
             # store's "the apply landed THIS" field, only ever written with
             # ``done``, and what landed here is the copy the user has to
             # clean up - the error string is where that belongs.
             return "failed", _MERGE_NOT_MERGED_ERROR, None, False
+        if dup_action is DuplicateAction.replace and landed_unresolved and replace_targets_gone:
+            # Same reasoning as the merge arm for keeping album_id off the row:
+            # what landed is a copy the user may have to clean up, not a
+            # "the apply landed THIS" success.
+            return "failed", _REPLACE_NOT_REPLACED_ERROR, None, False
         if dup_resolution_ran or album_id is not None:
             return "done", None, album_id, True
         return "failed", _NOTHING_IMPORTED_ERROR, None, True

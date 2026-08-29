@@ -149,10 +149,11 @@ def _outcome(status: AlbumOutcomeStatus, album_id: int | None = None) -> AlbumOu
 def _no_library() -> LibraryHandle:
     """The default getter: raises if the runner reads the library at all.
 
-    Only an enforced ``skip_new`` needs a library read, so on every other row
-    this is a real assertion rather than a stub — if a change starts reading it
-    on the apply/asis/astracks/keep_both/replace/merge paths, that row FAILS
-    (the raise lands in _drain's catch-all) instead of passing for a new reason.
+    Only two shapes need a library read — an enforced ``skip_new`` and a
+    ``replace`` whose banked prompt listed existing albums — so on every other
+    row this is a real assertion rather than a stub: if a change starts reading
+    it on the apply/asis/astracks/keep_both/merge paths, that row FAILS (the
+    raise lands in _drain's catch-all) instead of passing for a new reason.
     """
     raise RuntimeError("this row must resolve without reading the library")
 
@@ -674,6 +675,71 @@ def test_skip_new_with_an_empty_existing_list_keeps_the_hook_path(tmp_path: Path
         runner.stop()
 
 
+def test_skip_new_on_a_deleted_folder_goes_stale_not_done(tmp_path: Path) -> None:
+    # WHERE the enforcement sits is behavior, not tidiness. The banked copy
+    # survives, so the short-circuit would resolve this row "done" — but the
+    # folder it was banked from is gone, and "done" on a vanished folder claims
+    # a decision was carried out about something that no longer exists. Hoisting
+    # the enforcement block above the staleness checks passes every other gate
+    # and silently swallows this case; this test is what fails.
+    handle, ids = _library(tmp_path, [("A", "B")])
+    fake = FakeImportRunner()
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    folder = _folder(tmp_path)
+    item_id = _seed_dup_row(
+        bank, folder, DuplicateAction.skip_new, prompt=_dup_prompt([_existing(ids[0])])
+    )
+    for child in folder.iterdir():
+        child.unlink()
+    folder.rmdir()
+
+    runner = _make_runner(bank, reg, lambda: handle)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status in ("done", "failed", "stale"),
+        )
+        assert got is not None
+        assert got.status == "stale"
+        assert got.error is not None
+        assert "no longer exists" in got.error
+        assert fake.validate_calls == []
+    finally:
+        runner.stop()
+
+
+def test_skip_new_on_a_changed_folder_goes_stale_not_done(tmp_path: Path) -> None:
+    # The second half of the placement pin: the folder is still there but no
+    # longer what was banked, so the row is stale — the user decided about
+    # different contents. Same hoist, same silent "done" if the block moves up.
+    handle, ids = _library(tmp_path, [("A", "B")])
+    fake = FakeImportRunner()
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    folder = _folder(tmp_path)
+    item_id = _seed_dup_row(
+        bank, folder, DuplicateAction.skip_new, prompt=_dup_prompt([_existing(ids[0])])
+    )
+    (folder / "02 New.mp3").write_bytes(b"y" * 32)
+
+    runner = _make_runner(bank, reg, lambda: handle)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status in ("done", "failed", "stale"),
+        )
+        assert got is not None
+        assert got.status == "stale"
+        assert got.error is not None
+        assert "changed" in got.error
+        assert fake.validate_calls == []
+    finally:
+        runner.stop()
+
+
 def test_merge_that_never_merged_fails_honestly(tmp_path: Path) -> None:
     # A merge cannot be enforced after the fact: beets performs it INSIDE the
     # duplicate hook, and here the hook never fired (no needs_dup_resolution on
@@ -806,11 +872,140 @@ def test_merge_is_done_when_the_resolution_hook_ran(tmp_path: Path) -> None:
         runner.stop()
 
 
+def test_replace_that_replaced_nothing_fails_honestly(tmp_path: Path) -> None:
+    # The mirror of the merge arm, for the one replace shape that trashes
+    # nothing: every banked copy has gone (here the stored id was REUSED and now
+    # names a stranger), so the session's seed logs "left in place" and moves
+    # nothing, while beets' own re-detection missed too (no needs_dup_resolution
+    # on the feed) and an album still landed. Reporting done would render
+    # "Replaced - the old copy was moved to Trash": a false claim about a
+    # destructive step that never happened.
+    handle, ids = _library(tmp_path, [("Someone", "Else")])
+    fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.applied, album_id=55)])
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    item_id = _seed_dup_row(
+        bank, _folder(tmp_path), DuplicateAction.replace, prompt=_dup_prompt([_existing(ids[0])])
+    )
+
+    runner = _make_runner(bank, reg, lambda: handle)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status in ("done", "failed"),
+        )
+        assert got is not None
+        assert got.status == "failed"
+        assert got.album_id is None  # not a "the apply landed THIS" success
+        assert got.error is not None
+        assert "not moved to Trash" in got.error
+        assert "another copy" in got.error  # steers away from a blind retry
+        assert "Duplicates page" in got.error
+        # The album really is in the library, so the banner must not offer
+        # "decide again to retry" — the second row that says no.
+        assert got.error_retryable is False
+    finally:
+        runner.stop()
+
+
+def test_replace_is_done_when_a_banked_copy_still_survives(tmp_path: Path) -> None:
+    # THE control for the arm above, identical in every other respect: an album
+    # landed, the hook never ran, the prompt listed a stored id — the ONLY
+    # difference is that the copy is still there, so the session's seed trashes
+    # it and "Replaced" is the truth. Deleting the pre-check conjunct from
+    # _classify_duplicate would fail this row instead.
+    handle, ids = _library(tmp_path, [("A", "B")])
+    fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.applied, album_id=55)])
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    item_id = _seed_dup_row(
+        bank, _folder(tmp_path), DuplicateAction.replace, prompt=_dup_prompt([_existing(ids[0])])
+    )
+
+    runner = _make_runner(bank, reg, lambda: handle)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status in ("done", "failed"),
+        )
+        assert got is not None
+        assert got.status == "done"
+        assert got.album_id == 55
+        assert got.error is None
+    finally:
+        runner.stop()
+
+
+def test_replace_without_stored_entries_keeps_todays_path(tmp_path: Path) -> None:
+    # No stored evidence, no verdict: a prompt that listed no existing album has
+    # nothing to be "gone", so the row resolves exactly as it did before —
+    # reading an empty list as "the copies vanished" would fail every such
+    # replace. The raising getter proves no library read happens on that shape.
+    fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.applied, album_id=55)])
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    item_id = _seed_dup_row(
+        bank, _folder(tmp_path), DuplicateAction.replace, prompt=_dup_prompt([])
+    )
+
+    runner = _make_runner(bank, reg)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status in ("done", "failed"),
+        )
+        assert got is not None
+        assert got.status == "done"
+        assert got.album_id == 55
+        assert got.error is None
+    finally:
+        runner.stop()
+
+
+def test_replace_is_done_when_the_resolution_hook_ran(tmp_path: Path) -> None:
+    # The other control: beets DID find the collision and answered it with the
+    # banked action, so the replacement is beets' own and the vanished stored id
+    # says nothing about it. Scopes the honest-failure arm to the runs where
+    # nothing resolved the duplicate at all.
+    handle, ids = _library(tmp_path, [("Someone", "Else")])
+    fake = FakeImportRunner(
+        applied=[
+            _outcome(AlbumOutcomeStatus.needs_dup_resolution),
+            _outcome(AlbumOutcomeStatus.applied, album_id=55),
+        ]
+    )
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    item_id = _seed_dup_row(
+        bank, _folder(tmp_path), DuplicateAction.replace, prompt=_dup_prompt([_existing(ids[0])])
+    )
+
+    runner = _make_runner(bank, reg, lambda: handle)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status in ("done", "failed"),
+        )
+        assert got is not None
+        assert got.status == "done"
+        assert got.error is None
+    finally:
+        runner.stop()
+
+
 def test_duplicate_decision_pins_banked_release_end_to_end(tmp_path: Path) -> None:
     # The whole seam, store -> directive_for -> registry -> runner: a dup row
     # banked WITH its matched release drives the import run's search_id to that
     # release. The dup screen posts no candidate_index, so this is the
     # index-less resolution (options[0]) the sweep actually stores.
+    # A REAL library, because a replace row with stored entries now reads it
+    # before the import (``_replace_targets_are_gone``); the copy survives here,
+    # so the pre-check answers False and classification is unaffected.
+    handle, ids = _library(tmp_path, [("A", "B")])
     fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.needs_dup_resolution)])
     reg = ImportJobRegistry(runner=fake)
     bank = _bank(tmp_path)
@@ -826,13 +1021,13 @@ def test_duplicate_decision_pins_banked_release_end_to_end(tmp_path: Path) -> No
             folder=str(folder),
             candidate=_candidate_with_options(["mbid-banked", "mbid-other"]),
         ),
-        duplicate=_dup_prompt(),
+        duplicate=_dup_prompt([_existing(ids[0])]),
     )
     store.decide_item(
         bank, item.id, BankDecision(action="duplicate", duplicate_action=DuplicateAction.replace)
     )
 
-    runner = _make_runner(bank, reg)
+    runner = _make_runner(bank, reg, lambda: handle)
     runner.start()
     try:
         got = _poll(
@@ -847,7 +1042,7 @@ def test_duplicate_decision_pins_banked_release_end_to_end(tmp_path: Path) -> No
         assert fake.received_directive.search_id == "mbid-banked"
         # ...and the collision the prompt recorded rides along, so the session
         # can trash the old copy even when beets' re-detection never fires.
-        assert fake.received_directive.replace_existing == [_existing()]
+        assert fake.received_directive.replace_existing == [_existing(ids[0])]
     finally:
         runner.stop()
 
@@ -873,6 +1068,38 @@ def test_failed_import_is_recorded_retryable(tmp_path: Path) -> None:
     requeued = store.decide_item(bank, item_id, BankDecision(action="asis"))
     assert requeued is not None
     assert requeued.status == "queued"
+
+
+def test_a_crashing_row_records_a_retryable_failure(tmp_path: Path) -> None:
+    # The drain's per-row catch-all writes only `error=str(exc)` and LEANS on
+    # `set_status(error_retryable=True)`'s default — as does the _UNCONFIRMED
+    # write. Every other asserting test passes the value explicitly, so nothing
+    # observed that default and flipping it to False was invisible. A row that
+    # crashed mid-apply is precisely one whose recovery IS deciding again, so
+    # the banner must keep its retry headline.
+    def exploding_library() -> LibraryHandle:
+        raise RuntimeError("the library could not be opened")
+
+    fake = FakeImportRunner()
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    # A skip_new row with a banked collision is the shape that reads the
+    # library, so the stubbed getter raises INSIDE _apply_one.
+    item_id = _seed_dup_row(bank, _folder(tmp_path), DuplicateAction.skip_new)
+
+    runner = _make_runner(bank, reg, exploding_library)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status == "failed",
+        )
+        assert got is not None
+        assert got.error == "the library could not be opened"
+        assert got.error_retryable is True
+        assert fake.validate_calls == []  # it crashed before starting anything
+    finally:
+        runner.stop()
 
 
 def test_apply_without_album_id_fails_honestly(tmp_path: Path) -> None:

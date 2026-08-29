@@ -213,10 +213,14 @@ def _album_identity_matches(album: Any, stored: ExistingAlbum) -> bool:
       URL embeds it), yet a copy re-tagged to a different release since banking
       must not be read as a match — so a live URL that DISAGREES rejects, while
       a live copy carrying none leaves the name match standing.
-    * ...unless both folded names are None, where the names proved nothing:
-      "no name == no name" matches every untagged album a reused rowid could
-      now hold. There the URL is the whole identity and must be VERIFIED, not
-      merely non-contradicting — an absent live URL fails SHUT.
+    * ...unless the stored name key is INCOMPLETE — either folded name None —
+      and a URL was stored. A full name pair is two independent discriminators;
+      one name plus a blank is one, and "no name == no name" matches every
+      untagged album a reused rowid could now hold. A stored entry that brought
+      a URL to that comparison must have it VERIFIED, not merely
+      non-contradicting: an absent live URL fails SHUT. Half-named and carrying
+      NO URL is unchanged — the single name is all the identity that was ever
+      recorded, so it is all that can be asked for.
     """
     stored_url = stored.release.release_url if stored.release is not None else None
     stored_artist = _fold(stored.album_artist)
@@ -233,9 +237,16 @@ def _album_identity_matches(album: Any, stored: ExistingAlbum) -> bool:
         return False
     if not stored_url:
         return True
+    # ``getattr`` HERE, unlike the two names above, because this must be read
+    # EXACTLY the way the stored side was: ``to_existing_album`` builds the
+    # banked URL with ``release_identity(album, getattr(album, "mb_albumid",
+    # None))`` (``existing_album.py:70``). Both halves of the comparison have to
+    # be computed identically, or a difference in how the id was fetched would
+    # read as a difference between the releases.
     live_url = release_identity(album, getattr(album, "mb_albumid", None)).release_url
-    if stored_artist is None and stored_album is None:
-        # Names proved nothing: no live URL means nothing was verified at all.
+    if stored_artist is None or stored_album is None:
+        # An incomplete name key proved too little on its own: the stored URL is
+        # then the identity, and an absent live one verified nothing at all.
         return live_url == stored_url
     return not live_url or live_url == stored_url
 
@@ -250,11 +261,12 @@ def duplicate_albums_still_present(lib: Library, existing: Sequence[ExistingAlbu
     survive" (import proceeds) or "not trashable" (leave it alone), never as a
     fault.
 
-    ``music_dir_context`` is bound because callers run on worker threads that
-    inherit none of beets' path ContextVar (``library_paths_context``): the
-    fields compared here are metadata, but constructing an ``Album`` touches
-    beets' path types, and an unbound read is the quirk this adapter exists to
-    hide.
+    ``music_dir_context`` is cheap insurance, the same posture as
+    ``completeness.release_missing_report``: callers run on worker threads that
+    inherit none of beets' path ContextVar (``library_paths_context``), and
+    while the fields compared here are metadata that read fine unbound, an
+    unbound path read does not raise — it silently yields ``b""``. Binding costs
+    nothing and removes the class of bug rather than the one instance of it.
     """
     present: list[int] = []
     with lib.music_dir_context():

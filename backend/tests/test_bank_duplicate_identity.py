@@ -195,6 +195,64 @@ def test_a_blank_named_entry_survives_on_a_verified_url(tmp_path: Path) -> None:
     assert duplicate_albums_still_present(lib, [stored]) == [album_id]
 
 
+def test_a_half_named_entry_with_a_url_fails_shut_without_a_live_url(tmp_path: Path) -> None:
+    # HALF a name key is one discriminator, not two: "Greatest Hits" by nobody
+    # matches every blank-artist album of that title a reused rowid could now
+    # hold. The stored entry brought a release URL to that comparison, so the
+    # URL has to be VERIFIED — carrying it and never checking it is the hole.
+    # Under `replace`, matching here trashes an album nobody decided about.
+    lib = _library(tmp_path)
+    album_id = _add(lib, artist="", album="Greatest Hits")  # no mb_albumid
+    stored = _stored(
+        album_id,
+        artist=None,
+        album="Greatest Hits",
+        release_url="https://musicbrainz.org/release/mb-banked",
+    )
+    assert duplicate_albums_still_present(lib, [stored]) == []
+
+
+def test_a_half_named_entry_with_a_url_rejects_a_different_live_release(tmp_path: Path) -> None:
+    # The disagreeing-URL case for the same shape: present but different is a
+    # rejection whether the name key is whole or partial.
+    lib = _library(tmp_path)
+    album_id = _add(lib, artist="", album="Greatest Hits", mb="mb-other", data_source="MusicBrainz")
+    stored = _stored(
+        album_id,
+        artist=None,
+        album="Greatest Hits",
+        release_url="https://musicbrainz.org/release/mb-banked",
+    )
+    assert duplicate_albums_still_present(lib, [stored]) == []
+
+
+def test_a_half_named_entry_survives_on_a_verified_url(tmp_path: Path) -> None:
+    # The control: fail-shut must not become reject-always, or a half-named
+    # entry carrying a URL could never match anything again.
+    lib = _library(tmp_path)
+    album_id = _add(
+        lib, artist="", album="Greatest Hits", mb="mb-banked", data_source="MusicBrainz"
+    )
+    stored = _stored(
+        album_id,
+        artist=None,
+        album="Greatest Hits",
+        release_url="https://musicbrainz.org/release/mb-banked",
+    )
+    assert duplicate_albums_still_present(lib, [stored]) == [album_id]
+
+
+def test_a_half_named_entry_without_a_url_still_matches_on_the_name(tmp_path: Path) -> None:
+    # The UNCHANGED arm, pinned so the fail-shut rule cannot quietly widen onto
+    # it: with no URL ever stored, the single name is all the identity that was
+    # recorded, so it is all that can be asked for. Tightening this instead
+    # would un-enforce every decision banked from a half-tagged library copy.
+    lib = _library(tmp_path)
+    album_id = _add(lib, artist="", album="Greatest Hits")
+    stored = _stored(album_id, artist=None, album="Greatest Hits")
+    assert duplicate_albums_still_present(lib, [stored]) == [album_id]
+
+
 def test_an_identityless_entry_never_survives(tmp_path: Path) -> None:
     # A stored entry with nothing to compare would match every sparsely tagged
     # album in the library — the id-reuse hazard with extra steps.
