@@ -163,12 +163,17 @@ def _queued_item(
     *,
     parked: ParkedAlbum | None = None,
     duplicate: DuplicatePrompt | None = None,
+    reason: BankReason | None = None,
 ) -> BankItem:
-    reason: BankReason = (
-        "needs_review"
-        if parked is not None
-        else ("needs_dup_resolution" if duplicate is not None else "no_match")
-    )
+    # A sweep-banked duplicate row carries BOTH payloads (the prompt to decide
+    # on, the candidate to pin), so the reason cannot be inferred from parked
+    # alone — pass it explicitly for that shape.
+    if reason is None:
+        reason = (
+            "needs_review"
+            if parked is not None
+            else ("needs_dup_resolution" if duplicate is not None else "no_match")
+        )
     now = datetime.now(UTC)
     return BankItem(
         id="a" * 32,
@@ -206,12 +211,18 @@ def test_directive_for_apply_without_stored_id_is_unpinned() -> None:
 
 
 def test_directive_for_duplicate_and_passthroughs() -> None:
+    # Today's sweep-banked dup row: both payloads, so the WHOLE directive is
+    # pinned here — action, the banked release id, and the resolution.
     dup = _queued_item(
         BankDecision(action="duplicate", duplicate_action=DuplicateAction.skip_new),
+        parked=ParkedAlbum(
+            album_index=0, folder="/x/A", candidate=_candidate_with_options(["rel-0", "rel-1"])
+        ),
         duplicate=_dup_prompt(),
+        reason="needs_dup_resolution",
     )
     assert directive_for(dup) == BankApplyDirective(
-        action="duplicate", duplicate_action=DuplicateAction.skip_new
+        action="duplicate", search_id="rel-0", duplicate_action=DuplicateAction.skip_new
     )
     assert directive_for(_queued_item(BankDecision(action="asis"))).action == "asis"
     assert directive_for(_queued_item(BankDecision(action="astracks"))).action == "astracks"
@@ -237,7 +248,10 @@ def test_duplicate_directive_pins_selected_release() -> None:
 
 
 def test_duplicate_directive_unpinned_when_no_parked() -> None:
-    # A sweep-banked needs_dup_resolution row (parked is None) stays unpinned.
+    # A LEGACY dup row — banked before the sweep stored its matched release, or
+    # banked from a task that had no match to store — has no id to pin and
+    # stays honestly unpinned: its apply re-runs the lookup. Such rows drain by
+    # user decision; nothing back-fills them.
     item = _queued_item(
         BankDecision(action="duplicate", duplicate_action=DuplicateAction.skip_new),
         duplicate=_dup_prompt(),
@@ -460,6 +474,49 @@ def test_duplicate_decision_resolves_done(tmp_path: Path) -> None:
         assert got.album_id is None  # skip_new lands nothing, by the user's choice
         assert fake.received_directive is not None
         assert fake.received_directive.duplicate_action is DuplicateAction.skip_new
+    finally:
+        runner.stop()
+
+
+def test_duplicate_decision_pins_banked_release_end_to_end(tmp_path: Path) -> None:
+    # The whole seam, store -> directive_for -> registry -> runner: a dup row
+    # banked WITH its matched release drives the import run's search_id to that
+    # release. The dup screen posts no candidate_index, so this is the
+    # index-less resolution (options[0]) the sweep actually stores.
+    fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.needs_dup_resolution)])
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    folder = _folder(tmp_path)
+    item = store.create_item(
+        bank,
+        folder=str(folder),
+        source="sweep",
+        reason="needs_dup_resolution",
+        fingerprint=folder_fingerprint(folder),
+        parked=ParkedAlbum(
+            album_index=0,
+            folder=str(folder),
+            candidate=_candidate_with_options(["mbid-banked", "mbid-other"]),
+        ),
+        duplicate=_dup_prompt(),
+    )
+    store.decide_item(
+        bank, item.id, BankDecision(action="duplicate", duplicate_action=DuplicateAction.replace)
+    )
+
+    runner = _make_runner(bank, reg)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, item.id),
+            lambda i: i is not None and i.status == "done",
+        )
+        assert got is not None
+        assert fake.received_directive is not None
+        assert fake.received_directive.action == "duplicate"
+        assert fake.received_directive.duplicate_action is DuplicateAction.replace
+        # THE pin: the banked release, not a re-run lookup's top candidate.
+        assert fake.received_directive.search_id == "mbid-banked"
     finally:
         runner.stop()
 

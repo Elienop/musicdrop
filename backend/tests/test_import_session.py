@@ -1904,7 +1904,9 @@ def test_apply_directive_without_release_id_leaves_lookup_unpinned() -> None:
     config["import"]["search_ids"] = []
     s = _ApplyConfigSession()
     run_import_worker(s, directive=BankApplyDirective(action="asis"))  # type: ignore[arg-type]
-    assert s.seen["search_ids"] == []  # unpinned: asis/dup/legacy rows
+    # Unpinned: asis/astracks carry no release, and so do LEGACY rows (banked
+    # before the release id was stored, or from a task that had no match).
+    assert s.seen["search_ids"] == []
     assert s.seen["incremental"] is False  # the non-incremental forcing still applies
 
 

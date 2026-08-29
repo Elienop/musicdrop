@@ -453,6 +453,12 @@ def test_variant_gate_sweep_banks_needs_dup_resolution(
     assert row.reason == "needs_dup_resolution"
     assert row.duplicate is not None
     assert [e.album for e in row.duplicate.existing] == ["Greatest Hits - Chapter One"]
+    # The variant gate routes through the SAME banking as the exact case, so a
+    # gated row stores its matched release too: the apply replays the variant
+    # release the sweep chose instead of re-running the lookup.
+    assert row.parked is not None
+    assert row.parked.candidate.options[0].release_id == "a9"  # _match's album_id
+    assert row.parked.candidate.album_after.album == "Greatest Hits " + _EN_DASH + " Chapter One"
 
 
 def test_variant_gate_directive_without_decision_skips(

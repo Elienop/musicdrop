@@ -31,7 +31,7 @@ from app.beets.library import _require_id
 from app.models.import_models import Recommendation
 
 
-def _build_match(rec_level: BeetsRec) -> AlbumMatch:
+def _build_match(rec_level: BeetsRec, album_id: str = "a1") -> AlbumMatch:
     if rec_level == BeetsRec.strong:
         items = [
             Item(artist="Radiohead", album="OK Computer", title="Airbag", track=1, length=234.0)
@@ -45,9 +45,9 @@ def _build_match(rec_level: BeetsRec) -> AlbumMatch:
         tracks=tracks,
         album=album,
         artist="Radiohead",
-        album_id="a1",
+        album_id=album_id,
         data_source="MusicBrainz",
-        data_url="https://mb/a1",
+        data_url=f"https://mb/{album_id}",
         year=1997,
         va=False,
     )
@@ -189,6 +189,12 @@ def test_sweep_banks_duplicate_prompt_then_skips(
     existing_album = lib.add_album([dup_item])
     folder = _album_folder(tmp_path)
     task = _make_task(match, monkeypatch, BeetsRec.strong, paths=[os.fsencode(str(folder))])
+    # beets only reaches this hook through _resolve_duplicates, which gates on
+    # task.choice_flag (stages.py) — set by set_choice, which is also what puts
+    # the matched release on task.match. An APPLY task arriving here therefore
+    # ALWAYS carries its match; the choice is part of the fixture, not scenery.
+    task.set_choice(match)
+    task.md_album_index = 3  # type: ignore[attr-defined]  # the index choose_match stashed
 
     action = session.get_duplicate_action(task, [existing_album])
 
@@ -198,10 +204,119 @@ def test_sweep_banks_duplicate_prompt_then_skips(
     row = store.get_item(bank_dir, summaries[0].id)
     assert row is not None
     assert row.reason == "needs_dup_resolution"
-    assert row.parked is None
     assert row.duplicate is not None
     assert row.duplicate.incoming.album == "OK Computer"
     assert [e.album_id for e in row.duplicate.existing] == [_require_id(existing_album.id)]
+    # "decide once": the sweep had already MATCHED this album when the collision
+    # was found, so the matched release is banked as the same ParkedAlbum a
+    # needs_review row carries. The apply then REPLAYS it (directive_for pins
+    # import.search_ids to options[0] for the dup screen's index-less decision)
+    # instead of re-running the lookup and taking whatever ranks first later.
+    assert row.parked is not None
+    assert row.parked.folder == str(folder)
+    assert row.parked.candidate.recommendation is Recommendation.strong
+    assert row.parked.candidate.options
+    # options[0] IS the release the sweep matched — the id the apply pins.
+    assert row.parked.candidate.options[0].release_id == "a1"
+    assert match.info.album_id == "a1"  # ...which is this match's release
+    # Both payloads describe the same album, so both carry its feed index.
+    assert row.parked.album_index == 3
+    assert row.duplicate.album_index == 3
+
+
+def test_sweep_duplicate_payload_leads_with_the_matched_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The apply pin is options[0] (the duplicate screen posts no
+    # candidate_index), so the MATCHED release must lead the banked options —
+    # beets' set_choice does not move the chosen match to the head of
+    # task.candidates, so taking candidates[0] would pin the wrong release
+    # whenever the sweep applied anything but the top-ranked one.
+    other = _build_match(BeetsRec.strong, album_id="a-other")
+    match = _build_match(BeetsRec.strong, album_id="a-matched")
+
+    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
+        return ("Radiohead", "OK Computer", Proposal([other, match], BeetsRec.strong))
+
+    monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
+    bank_dir = tmp_path / "bank"
+    session = _sweep_session(ImportBridge(), bank_dir)
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    session.lib = lib
+    existing_album = lib.add_album(
+        [
+            Item(
+                albumartist="Radiohead",
+                album="OK Computer",
+                title="Airbag",
+                track=1,
+                length=234.0,
+                path=os.fsencode(str(tmp_path / "music" / "ok.mp3")),
+            )
+        ]
+    )
+    folder = _album_folder(tmp_path)
+    task = ImportTask(
+        toppath=None, paths=[os.fsencode(str(folder))], items=list(match.mapping.keys())
+    )
+    task.lookup_candidates([])
+    task.set_choice(match)  # the SECOND candidate is the one that was applied
+    assert [c.info.album_id for c in task.candidates or []] == ["a-other", "a-matched"]
+
+    session.get_duplicate_action(task, [existing_album])
+
+    summaries = store.list_items(bank_dir, offset=0, limit=10)
+    row = store.get_item(bank_dir, summaries[0].id)
+    assert row is not None
+    assert row.parked is not None
+    options = row.parked.candidate.options
+    # The match leads; the rest follow, none dropped and none duplicated.
+    assert [o.release_id for o in options] == ["a-matched", "a-other"]
+    assert row.parked.candidate.album_after.album == "OK Computer"
+
+
+def test_sweep_matchless_duplicate_banks_no_parked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # beets shares this hook with ASIS/RETAG tasks (_resolve_duplicates fires
+    # for choice_flag in ASIS/APPLY/RETAG) and set_choice leaves task.match None
+    # for those: NOTHING was matched, so there is no release to pin. The row
+    # banks honestly unpinned rather than guessing task.candidates[0] — which is
+    # still populated here, and would pin a release the sweep never chose.
+    match = _build_match(BeetsRec.strong)
+    bank_dir = tmp_path / "bank"
+    session = _sweep_session(ImportBridge(), bank_dir)
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    session.lib = lib
+    existing_album = lib.add_album(
+        [
+            Item(
+                albumartist="Radiohead",
+                album="OK Computer",
+                title="Airbag",
+                track=1,
+                length=234.0,
+                path=os.fsencode(str(tmp_path / "music" / "ok.mp3")),
+            )
+        ]
+    )
+    folder = _album_folder(tmp_path)
+    task = _make_task(match, monkeypatch, BeetsRec.strong, paths=[os.fsencode(str(folder))])
+    task.set_choice(Action.ASIS)
+    assert task.candidates  # the lookup ran; only the CHOICE is absent
+    assert task.match is None
+
+    action = session.get_duplicate_action(task, [existing_album])
+
+    assert action is BeetsDuplicateAction.SKIP
+    summaries = store.list_items(bank_dir, offset=0, limit=10)
+    assert len(summaries) == 1
+    row = store.get_item(bank_dir, summaries[0].id)
+    assert row is not None
+    assert row.reason == "needs_dup_resolution"
+    assert row.duplicate is not None  # the prompt still banks
+    assert row.parked is None  # nothing matched -> nothing to pin
+    assert row.confidence == 0.0
 
 
 def test_sweep_without_folder_banks_nothing(

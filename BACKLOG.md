@@ -30,10 +30,12 @@ entry carries a dated correction block where the pass changed it._
    hoist, config advisories end to end. The four vacuous pins had already landed in #190;
    still open from this item's old wording: the mypy exemption-list trim (its own entry
    below).
-3. **The bank re-run-vs-replay** — design settled 2026-08-29 (vault decisions 24: store
-   the reviewed release id at bank time, pin the apply to it, honest re-match label on
-   legacy id-less rows); see its entry. The `.m3u8` half of this item shipped — see the
-   struck staleness entry under Open bugs.
+3. ~~**The bank re-run-vs-replay**~~ — design settled 2026-08-29 (vault decisions 24) and
+   **BOTH halves shipped in this branch's PR (number filled before merge)**: the backend
+   pin (see its struck entry under Open bugs) AND the honest unpinned-row notes on both
+   bank decision screens — the duplicate screen's note names the on-screen Rescan remedy,
+   the candidate screen's keys on the *selected* option. The `.m3u8` half of this item
+   shipped as #195 — see the struck staleness entry under Open bugs.
 4. **Real authentication** — the standing long-term security item, shaped 2026-08-28: 112
    operations (66 state-changing), all reachable unauthenticated by anything that can open
    TCP to port 3030 (compose publishes `0.0.0.0`); two unauthenticated calls end the
@@ -158,18 +160,31 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   removals leave the same stale rows. Needs a short design conversation first (re-export on
   which events, and what the job result reports); the wiring after that is mechanical.
 
-- **Bank apply re-runs the match instead of replaying the user's chosen release — every
-  sweep-banked DUPLICATE row, by construction.** (Found 2026-08-28.) The bank's promise is
-  "decide once": `directive_for` pins `import.search_ids` to the reviewed release so the
-  apply imports what the user approved — but with no stored id it falls through to an
-  unpinned lookup and the session takes its top candidate. The source calls this a
-  "documented caveat" in three docstrings (`app/bank/apply_runner.py:97`,
-  `app/models/bank.py:82`, `app/models/import_models.py:118`) and it was recorded on no
-  board. Not a rare legacy case: `apply_runner.py:72` says sweep-banked dup rows carry no
-  parked payload at all, so EVERY such decision applies against a re-run match — the user
-  reviewed release A and the library can get release B's tags, with no notice anywhere in
-  the UI. Needs a design conversation (store the release id at bank time vs surface the
-  caveat), not a drive-by.
+- ~~**Bank apply re-runs the match instead of replaying the user's chosen release — every
+  sweep-banked DUPLICATE row, by construction.**~~ (Found 2026-08-28.) — **FIXED in this
+  branch's PR (number filled before merge), 2026-08-29, per the owner's settled design
+  (vault decisions 24): store the reviewed release id at bank time and pin the apply to
+  it.** The sweep's
+  duplicate banking site (`app/beets/import_session.py`, `get_duplicate_action`'s sweep
+  branch) now stores the release the task was MATCHED to as the same `ParkedAlbum` payload
+  a `needs_review` row carries, so `directive_for`'s existing "decide once" path pins
+  `import.search_ids` to it. No apply-side change was needed and the OpenAPI contract did
+  not move (`BankItem.parked` was already in it — verified by re-running both regen steps).
+  Residuals, recorded deliberately: (a) **legacy rows stay honestly unpinned** — rows
+  banked before this change carry no payload, so their apply still re-runs the lookup;
+  nothing back-fills them and they drain by user decision. The honest labels ship in the
+  SAME PR, on both bank decision screens: the duplicate screen's note (which names the
+  Rescan remedy — a rescan re-banks the row through the pinning path) and the candidate
+  screen's selected-option note. (b) **Id-less sources stay
+  unpinned** — an option whose `release_id` is None (a source that carries no release id)
+  has nothing to pin, unchanged from before. (c) **The pin is machine-matched, not
+  user-chosen**: on a sweep-banked dup row the release was picked by beets' auto-apply, not
+  reviewed by a human — the fix makes the apply replay *the decision the sweep actually
+  made* rather than a fresh one, which is what "decide once" can mean for a row nobody
+  looked at yet. A user who wants a different release still has search/rescan on the row.
+  (d) The bank's lazy `/duplicates` re-check stays gated OFF for `needs_dup_resolution`
+  rows (`app/api/bank.py`): such a row's collision is the banked prompt its screen renders,
+  and its new parked payload exists only to pin the apply.
 
 - ~~**A Trash row holding no importable audio can never be restored through the UI**~~ —
   **RESOLVED in #189, with a premise correction found by the deep review.** `track_count 0`
