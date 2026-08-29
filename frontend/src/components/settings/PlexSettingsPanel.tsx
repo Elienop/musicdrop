@@ -71,8 +71,9 @@ function resolveSection(sections: PlexSectionInfo[], title: string) {
  *  - "typed": the user edited the field. Theirs, whatever it happens to say. */
 type PathOrigin = { kind: "loaded" } | { kind: "panel"; value: string } | { kind: "typed" };
 
-/** Settings → Plex: the single-account connection (base URL + write-only admin
- * token + the music-library path as Plex sees it) plus a connection test. The
+/** Settings → Integrations: the Plex single-account connection (base URL +
+ * write-only admin token + the music-library path as Plex sees it) plus a
+ * connection test. The
  * token is write-only — the API returns only `has_token`, so the field shows a
  * "saved" placeholder and is sent only when the user types a replacement. */
 export function PlexSettingsPanel() {

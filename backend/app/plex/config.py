@@ -26,7 +26,7 @@ class PlexConfig(BaseModel):
     base_url: str = ""
     token: str = ""
     library_path: str = ""  # Plex-visible music root; empty = same mount as the app
-    library_section: str = ""  # section TITLE; empty = first artist section
+    library_section: str = ""  # section TITLE; empty = the SOLE artist section (several -> refuse)
 
 
 class PlexConfigStore:

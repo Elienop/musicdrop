@@ -33,9 +33,29 @@ from typing import Literal
 
 from pydantic import BaseModel, model_validator
 
+from app.config import settings
 from app.models.playlist import PendingTrack
 from app.models.plex import PlexTargetState
 from app.playlists.atomic import write_atomic_text
+
+
+def get_playlists_dir() -> Path:
+    """Resolve the owned-playlist store dir from settings.
+
+    Empty ``MUSICDROP_PLAYLISTS_DIR`` -> ``<beets_dir>/playlists``.
+
+    Lives HERE rather than in the router so the non-router callers can reach it:
+    ``app/api/albums.py`` needs it for the edit/delete `.m3u8` collateral, and
+    ``app.api.playlists`` already imports ``app.api.albums`` — importing back the
+    other way would be a cycle. It stays the single FastAPI dependency object
+    every ``Depends(get_playlists_dir)`` names, so one override still moves every
+    route at once.
+    """
+    configured = settings.playlists_dir.strip()
+    if configured:
+        return Path(configured)
+    return Path(settings.beets_dir) / "playlists"
+
 
 # Playlist ids are ``uuid.uuid4().hex`` — exactly 32 lowercase hex chars. Any
 # other value (``..``, an absolute path, a stray slash) is rejected before it

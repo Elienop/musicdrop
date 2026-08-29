@@ -18,7 +18,7 @@ from tests.conftest import make_test_handle
 async def test_reexports_only_playlists_containing_the_items(
     rename_lib: Library, tmp_path: Path
 ) -> None:
-    from app.api.playlists import reexport_playlists_containing
+    from app.playlists.reexport import reexport_playlists_containing
 
     handle = make_test_handle(rename_lib, tmp_path)
     playlists_dir = tmp_path / "playlists"
@@ -49,7 +49,7 @@ async def test_empty_item_set_never_lists_playlists(
     rename_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An empty id set must return 0 WITHOUT touching the playlist store."""
-    from app.api.playlists import reexport_playlists_containing
+    from app.playlists.reexport import reexport_playlists_containing
 
     def boom(_dir: Path) -> list[store.StoredPlaylist]:
         raise AssertionError("empty id set must not touch the playlist store")
@@ -64,9 +64,14 @@ async def test_export_failure_does_not_abort_the_fan_out(
     rename_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A failing export is swallowed per playlist: the rest still export and the
-    count still counts the attempt (best-effort semantics)."""
-    import app.api.playlists as playlists_api
-    from app.api.playlists import reexport_playlists_containing
+    count still counts the attempt (best-effort semantics).
+
+    Patched on ``app.playlists.reexport`` — the ONE implementation both the async
+    wrapper here and the loop-less worker threads go through — so the pin covers
+    both entrances rather than only the request path.
+    """
+    import app.playlists.reexport as reexport_core
+    from app.playlists.reexport import reexport_playlists_containing
 
     handle = make_test_handle(rename_lib, tmp_path)
     playlists_dir = tmp_path / "playlists"
@@ -80,10 +85,10 @@ async def test_export_failure_does_not_abort_the_fan_out(
 
     calls: list[str] = []
 
-    def raise_render(record: object, handle_: object, export_dir: object) -> None:
+    def raise_render(record: object, lib: object, export_dir: object) -> None:
         calls.append("render")
         raise OSError("disk full")
 
-    monkeypatch.setattr(playlists_api, "_render_export", raise_render)
+    monkeypatch.setattr(reexport_core, "render_export", raise_render)
     assert await reexport_playlists_containing({iid}, handle, playlists_dir) == 2
     assert len(calls) == 2  # the patched renderer really intercepted both exports

@@ -32,8 +32,10 @@ class Settings(BaseSettings):
     # guard — see app/host_guard.py). (env MUSICDROP_ALLOWED_HOSTS)
     allowed_hosts: str = ""
 
-    # Library-wide lyrics backfill: a courtesy pause between LRCLib requests
-    # (beets adds none; LRCLib is a free community API).
+    # Lyrics fetches: a courtesy inter-track pause (backfill and per-album),
+    # also the inter-artist pause in the artist-image backfill. beets 2.13
+    # separately rate-limits the lyrics HTTP itself (0.25s/request + 429
+    # backoff), so this is pacing on top, not the only throttle.
     # (env MUSICDROP_LYRICS_BACKFILL_DELAY_SECONDS)
     lyrics_backfill_delay_seconds: float = 0.2
 
@@ -102,8 +104,10 @@ class Settings(BaseSettings):
 
     # Plex sync (app/plex/). Empty plex_settings_dir = <beets_dir>/plex.
     # base URL + admin token + the music-library path AS PLEX SEES IT (for the
-    # Docker mount difference) + the Plex music-section TITLE (empty = first
-    # artist section). All env-seed the persisted JSON config.
+    # Docker mount difference) + the Plex music-section TITLE (empty works only
+    # when the server has a SINGLE artist section — with several, the client
+    # refuses until one is named; see app/plex/client.py). All env-seed the
+    # persisted JSON config.
     # (env MUSICDROP_PLEX_URL / MUSICDROP_PLEX_TOKEN / MUSICDROP_PLEX_LIBRARY_PATH
     #  / MUSICDROP_PLEX_LIBRARY_SECTION)
     plex_settings_dir: str = ""

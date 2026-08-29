@@ -6,11 +6,10 @@ import pytest
 from beets.library import Item
 from fastapi.testclient import TestClient
 
-from app.api.playlists import get_playlists_dir
 from app.beets.library import LibraryHandle, _require_id
 from app.models.playlist import PendingTrack, Playlist, PlaylistDetail
 from app.playlists import store
-from app.playlists.store import StoredEntry
+from app.playlists.store import StoredEntry, get_playlists_dir
 from app.plex import sync as plex_sync
 from tests.plex_fakes import FakePlaylist, FakeServer, FakeTrack
 

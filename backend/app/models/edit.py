@@ -129,3 +129,9 @@ class AlbumEditResult(BaseModel):
     items: list[ItemWriteResult]
     write_failures: int
     move_failures: int
+    # Playlists whose `.m3u8` export was rewritten because this edit MOVED one of
+    # their tracks (exports embed paths relative to the export dir, so a move
+    # leaves them pointing at a path that no longer exists). Best-effort — a
+    # failed write still counts. Defaulted because the adapter builds the result
+    # before the collateral runs; the endpoint fills it in.
+    playlists_reexported: int = 0

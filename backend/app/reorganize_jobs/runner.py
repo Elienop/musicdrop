@@ -5,6 +5,7 @@ local file IO, so no courtesy delay is needed (default 0)."""
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from collections.abc import Callable, Collection
@@ -21,7 +22,10 @@ from app.beets.reorganize import (
 )
 from app.beets.trash import trash_folder
 from app.models.reorganize import ReorganizeOutcome, ReorganizeScope
+from app.playlists.reexport import reexport_playlists_containing_sync
 from app.reorganize_jobs.registry import ReorganizeRegistry
+
+_log = logging.getLogger(__name__)
 
 
 def sweep(
@@ -33,6 +37,7 @@ def sweep(
     album_id: int | None = None,
     trash_dir: Path | None = None,
     ignore_dirs: tuple[Path, ...] = (),
+    playlists_dir: Path | None = None,
     delay: float = 0.0,
     reorg_album: Callable[..., ReorganizeOutcome] = reorganize_album,
     reorg_singleton: Callable[..., ReorganizeOutcome] = reorganize_singleton,
@@ -46,6 +51,13 @@ def sweep(
     When ``trash_dir`` is given, an orphan pass runs after the moves: any
     audio-empty husk left behind is moved to Trash. Omit it (the default) and
     the pass is skipped, leaving existing callers unchanged.
+
+    When ``playlists_dir`` is given, a `.m3u8` re-export pass runs LAST, over the
+    union of every item the run actually relocated — a reorganize is the widest
+    mover there is, and every export holding one of those tracks now names a path
+    that no longer exists. It runs on a STOP too (a stopped run still moved
+    files) and before ``reg.finish``, so the terminal status already carries the
+    count. Omit it and the pass is skipped, leaving existing callers unchanged.
     """
     try:
         with library_paths_context(handle):
@@ -54,19 +66,31 @@ def sweep(
             )
             reg.set_total(len(albums) + len(singletons))
             vacated: list[Path] = []
-            if _sweep_units(reg, handle.lib, albums, reorg_album, vacated=vacated, delay=delay):
-                return
-            if _sweep_units(
+            moved_ids: set[int] = set()
+            # ``_sweep_units`` no longer finishes the job itself: the re-export
+            # tail below has to run on the stopped path too, and it must land
+            # BEFORE the phase flips (a status read of a `done` job must not
+            # still be missing its count). One owner for every finish, here.
+            stopped = _sweep_units(
                 reg,
                 handle.lib,
-                singletons,
-                reorg_singleton,
+                albums,
+                reorg_album,
                 vacated=vacated,
+                moved_ids=moved_ids,
                 delay=delay,
-            ):
-                return
-            stopped = False
-            if trash_dir is not None:
+            )
+            if not stopped:
+                stopped = _sweep_units(
+                    reg,
+                    handle.lib,
+                    singletons,
+                    reorg_singleton,
+                    vacated=vacated,
+                    moved_ids=moved_ids,
+                    delay=delay,
+                )
+            if not stopped and trash_dir is not None:
                 # Read AFTER the unit loops, because the roots move during the
                 # run. What keeps the library still between this read and the
                 # orphan pass is the library-busy UNION gate (app/library_busy.py,
@@ -84,6 +108,7 @@ def sweep(
                     ignore_dirs=ignore_dirs,
                     protected_dirs=live_album_roots(handle.lib),
                 )
+            _reexport_playlists(reg, handle, moved_ids, playlists_dir)
             reg.finish("stopped" if stopped else "done")
     except Exception as exc:  # any crash becomes a failed job, never a lost thread
         reg.fail(str(exc) or exc.__class__.__name__)
@@ -99,27 +124,52 @@ def _sweep_units(
     reorg: Callable[..., ReorganizeOutcome],
     *,
     vacated: list[Path],
+    moved_ids: set[int],
     delay: float,
 ) -> bool:
     """Sweep one unit list (albums or singletons), the runner's twin loops.
 
     Per unit: the outcome is recorded via ``reg.record`` and then
-    ``reg.set_current(outcome.label)``; the vacated source dir (when set)
-    is appended to ``vacated``; the courtesy delay is honored. On a Stop
-    request, ``reg.finish("stopped")`` is called and ``True`` is returned, so
-    the caller must not fall through to the tail."""
+    ``reg.set_current(outcome.label)``; the vacated source dir (when set) is
+    appended to ``vacated``; every item the unit actually relocated is added to
+    ``moved_ids`` (a FAILED unit contributes too — see ``ReorganizeOutcome``);
+    the courtesy delay is honored. Returns ``True`` on a Stop request WITHOUT
+    finishing the job — ``sweep`` owns every ``reg.finish`` so the `.m3u8` tail
+    pass still runs on the stopped path."""
     for unit in units:
         if reg.should_stop():
-            reg.finish("stopped")
             return True
         outcome = reorg(lib, unit)
         reg.record(outcome)
         reg.set_current(outcome.label)
         if outcome.source_dir:
             vacated.append(Path(outcome.source_dir))
+        moved_ids.update(outcome.moved_item_ids)
         if delay:
             time.sleep(delay)
     return False
+
+
+def _reexport_playlists(
+    reg: ReorganizeRegistry,
+    handle: LibraryHandle,
+    moved_ids: set[int],
+    playlists_dir: Path | None,
+) -> None:
+    """Repair the `.m3u8` exports of every playlist this run moved a track out of.
+
+    Best-effort and isolated: this is collateral, so a store or filesystem fault
+    here must be logged, never turned into a FAILED reorganize by ``sweep``'s
+    blanket handler — the files really did move.
+    """
+    if playlists_dir is None or not moved_ids:
+        return
+    try:
+        reg.record_playlists_reexported(
+            reexport_playlists_containing_sync(moved_ids, handle.lib, playlists_dir)
+        )
+    except Exception:
+        _log.warning("reorganize .m3u8 re-export pass failed", exc_info=True)
 
 
 def _sweep_orphans(
@@ -167,6 +217,7 @@ def start_backfill(
     album_id: int | None = None,
     trash_dir: Path | None = None,
     ignore_dirs: tuple[Path, ...] = (),
+    playlists_dir: Path | None = None,
     delay: float = 0.0,
     on_complete: Callable[[], None] | None = None,
 ) -> None:
@@ -183,6 +234,7 @@ def start_backfill(
             album_id=album_id,
             trash_dir=trash_dir,
             ignore_dirs=ignore_dirs,
+            playlists_dir=playlists_dir,
             delay=delay,
             on_complete=on_complete,
         ),

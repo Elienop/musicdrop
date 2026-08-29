@@ -21,6 +21,7 @@ from app.events.emit import emit_library_changed
 from app.library_busy import raise_if_library_busy
 from app.models.disk_sync import DiskSyncPlan, DiskSyncStatus
 from app.models.errors import ErrorDetail
+from app.playlists.store import get_playlists_dir
 
 router = APIRouter(tags=["disk-sync"])
 
@@ -78,7 +79,12 @@ async def start_disk_sync(
         raise HTTPException(status.HTTP_409_CONFLICT, "A disk sync is already running") from None
     app = request.app
     handle = app.state.beets_library
-    start_backfill(reg, handle, on_complete=lambda: emit_library_changed(app))
+    start_backfill(
+        reg,
+        handle,
+        playlists_dir=get_playlists_dir(),
+        on_complete=lambda: emit_library_changed(app),
+    )
     return reg.state()
 
 

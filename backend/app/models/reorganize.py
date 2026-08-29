@@ -90,6 +90,13 @@ class ReorganizeOutcome(BaseModel):
     error: str | None = None
     # the unit's pre-move root dir (set on `moved`); seeds the orphan sweep
     source_dir: str | None = None
+    # Items whose file VERIFIABLY changed path (post-move path != pre-move path),
+    # which is what the `.m3u8` re-export needs — not the plan, and not `status`.
+    # Populated on a `failed` outcome too: beets moves and stores one item at a
+    # time and its transaction commits while unwinding, so a unit that failed
+    # part-way has still re-pathed the items it got through, and their playlists
+    # are just as stale as a clean move's would be.
+    moved_item_ids: list[int] = []
 
 
 class ReorganizeUnitFailure(BaseModel):
@@ -116,6 +123,11 @@ class ReorganizeBackfillStatus(BaseModel):
     album_id: int | None  # set for album scope (None otherwise)
     scope_label: str  # "library" / artist name / "Artist - Album"
     orphans_trashed: int  # husks moved to Trash this run (0 until the post-move pass)
+    # Playlists whose `.m3u8` was rewritten because this run moved one of their
+    # tracks. Written ONCE, just before the job reaches its terminal phase, so a
+    # status read while `running` always shows 0. Required (no default) like
+    # every other field here — see ``finished_at``.
+    playlists_reexported: int
     failures: list[ReorganizeUnitFailure]  # first FAILURE_ROW_CAP failed units (label + reason)
     # When this job reached done/stopped/failed (UTC ISO 8601 on the wire); None
     # while idle or running. The slot keeps the last job until the next start

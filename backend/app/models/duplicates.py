@@ -83,6 +83,12 @@ class MovedAlbum(BaseModel):
 class ResolveResult(BaseModel):
     kept_album_id: int
     moved: list[MovedAlbum]
+    # Playlists whose `.m3u8` export was rewritten because a loser album this
+    # resolve moved to Trash held one of their tracks — without it the export
+    # keeps pointing at a file that is no longer where it says. Best-effort (a
+    # failed write still counts). Defaulted: the adapter builds the result before
+    # the collateral runs, and the endpoint fills it in.
+    playlists_reexported: int = 0
 
 
 class GroupDecision(BaseModel):
@@ -122,3 +128,7 @@ class ResolveAllResult(BaseModel):
     skipped_stale: list[SkippedGroup]
     group_count: int
     moved_count: int
+    # Playlists re-exported for the batch as a WHOLE — one pass over the union of
+    # every group's dropped items, so it is NOT the sum of the per-group numbers
+    # (which stay 0 here: a playlist touched by two groups would be counted twice).
+    playlists_reexported: int = 0

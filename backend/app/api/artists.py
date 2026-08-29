@@ -13,7 +13,6 @@ from app.api.http_cache import (
     not_modified,
     revalidating_image_response,
 )
-from app.api.playlists import get_playlists_dir, reexport_playlists_containing
 from app.artist_art_jobs.registry import (
     ArtistArtBackfillRegistry,
     artist_art_backfill_active,
@@ -62,6 +61,8 @@ from app.models.artist_art import ArtistArtBackfillStatus, ArtistArtWriteSetting
 from app.models.delete import DeleteResult
 from app.models.errors import ErrorDetail, StructuredErrorDetail, validation_or_detail_422
 from app.models.rename import ArtistRenamePreview, ArtistRenameRequest, ArtistRenameResult
+from app.playlists.reexport import reexport_playlists_containing
+from app.playlists.store import get_playlists_dir
 
 router = APIRouter(tags=["artists"])
 
@@ -1047,12 +1048,20 @@ def _start(
 async def delete_artist_endpoint(
     request: Request,
     name: Annotated[str, Query(min_length=1)],
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
 ) -> DeleteResult:
     """Move EVERY album of the named artist to Trash (reversible) and drop them.
 
     ``name`` is a query param so slashes (e.g. "AC/DC") survive routing. 409
     while a library job is running.
+
+    Same `.m3u8` collateral as the single-album delete: every playlist holding one
+    of the dropped tracks is re-exported so it stops listing a file that is now in
+    Trash.
     """
-    result = await delete_artist_op(request, name)
+    dropped_ids: set[int] = set()
+    result = await delete_artist_op(request, name, dropped_ids)
+    reexported = await reexport_playlists_containing(dropped_ids, handle, playlists_dir)
     emit_library_changed(request.app)
-    return result
+    return result.model_copy(update={"playlists_reexported": reexported})

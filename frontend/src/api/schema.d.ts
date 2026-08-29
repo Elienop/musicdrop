@@ -70,6 +70,10 @@ export interface paths {
          * Delete Album Endpoint
          * @description Move the album's whole folder to Trash (reversible) and drop it from the
          *     library. 404 unknown album; 409 while a library job is running.
+         *
+         *     The dropped items' playlists get a fresh `.m3u8` afterwards: their exports
+         *     still list files that now live in Trash, and a re-export prunes those lines
+         *     (an unresolvable id simply drops out of ``m3u_entries``).
          */
         delete: operations["delete_album_endpoint_api_albums__album_id__delete"];
         options?: never;
@@ -129,6 +133,11 @@ export interface paths {
         /**
          * Edit Album Endpoint
          * @description Apply an album/track tag edit (write + config-gated move). 409 if importing.
+         *
+         *     A config-gated move relocates the track files, so every `.m3u8` export holding
+         *     one is left pointing at a path this edit just changed — re-export those before
+         *     answering. Only the tracks that ACTUALLY moved seed it (``ItemWriteResult.moved``,
+         *     not the plan), so a tag-only edit lists no playlists at all.
          */
         post: operations["edit_album_endpoint_api_albums__album_id__edit_post"];
         delete?: never;
@@ -221,6 +230,10 @@ export interface paths {
          *
          *     ``name`` is a query param so slashes (e.g. "AC/DC") survive routing. 409
          *     while a library job is running.
+         *
+         *     Same `.m3u8` collateral as the single-album delete: every playlist holding one
+         *     of the dropped tracks is re-exported so it stops listing a file that is now in
+         *     Trash.
          */
         delete: operations["delete_artist_endpoint_api_artists_delete"];
         options?: never;
@@ -960,7 +973,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Resolve Duplicates */
+        /**
+         * Resolve Duplicates
+         * @description Resolve one group, then re-export the `.m3u8` of every playlist that held a
+         *     track from a loser album — those exports now name files that live in Trash.
+         *
+         *     Before ``emit_library_changed`` on purpose: the event tells open tabs to
+         *     refetch, so the exports should already be repaired when they do.
+         */
         post: operations["resolve_duplicates_api_duplicates_resolve_post"];
         delete?: never;
         options?: never;
@@ -977,7 +997,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Resolve All Duplicates */
+        /**
+         * Resolve All Duplicates
+         * @description Batch resolve + the same `.m3u8` collateral, run ONCE over the union of
+         *     every group's dropped items rather than per group: a playlist holding tracks
+         *     from two groups must be rewritten once and counted once.
+         */
         post: operations["resolve_all_duplicates_api_duplicates_resolve_all_post"];
         delete?: never;
         options?: never;
@@ -2117,6 +2142,11 @@ export interface components {
             write_failures: number;
             /** Move Failures */
             move_failures: number;
+            /**
+             * Playlists Reexported
+             * @default 0
+             */
+            playlists_reexported: number;
         };
         /**
          * AlbumFieldEdits
@@ -2817,6 +2847,11 @@ export interface components {
             trashed_albums: number;
             /** Trash Path */
             trash_path: string;
+            /**
+             * Playlists Reexported
+             * @default 0
+             */
+            playlists_reexported: number;
         };
         /** DiskSyncChange */
         DiskSyncChange: {
@@ -2903,6 +2938,8 @@ export interface components {
             current: string | null;
             /** Error */
             error: string | null;
+            /** Playlists Reexported */
+            playlists_reexported: number;
             /** Failures */
             failures: components["schemas"]["DiskSyncReadError"][];
         };
@@ -4346,6 +4383,8 @@ export interface components {
             scope_label: string;
             /** Orphans Trashed */
             orphans_trashed: number;
+            /** Playlists Reexported */
+            playlists_reexported: number;
             /** Failures */
             failures: components["schemas"]["ReorganizeUnitFailure"][];
             /** Finished At */
@@ -4482,6 +4521,11 @@ export interface components {
             group_count: number;
             /** Moved Count */
             moved_count: number;
+            /**
+             * Playlists Reexported
+             * @default 0
+             */
+            playlists_reexported: number;
         };
         /**
          * ResolveRequest
@@ -4503,6 +4547,11 @@ export interface components {
             kept_album_id: number;
             /** Moved */
             moved: components["schemas"]["MovedAlbum"][];
+            /**
+             * Playlists Reexported
+             * @default 0
+             */
+            playlists_reexported: number;
         };
         /**
          * RestoreRequest

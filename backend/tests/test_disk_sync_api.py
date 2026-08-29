@@ -52,7 +52,9 @@ def test_start_runs_job_to_done(sync_client: TestClient, monkeypatch: pytest.Mon
     monkeypatch.setattr(
         api_mod,
         "start_backfill",
-        lambda reg, handle, *, on_complete=None: sweep(reg, handle, on_complete=on_complete),
+        lambda reg, handle, *, playlists_dir=None, on_complete=None: sweep(
+            reg, handle, playlists_dir=playlists_dir, on_complete=on_complete
+        ),
     )
     r = sync_client.post("/api/disk-sync")
     assert r.status_code == 200

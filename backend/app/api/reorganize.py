@@ -23,6 +23,7 @@ from app.events.emit import emit_library_changed
 from app.library_busy import raise_if_library_busy
 from app.models.errors import ErrorDetail
 from app.models.reorganize import ReorganizeBackfillStatus, ReorganizePlan, ReorganizeScope
+from app.playlists.store import get_playlists_dir
 from app.reorganize_jobs.registry import (
     ReorganizeRegistry,
     get_reorganize_backfill,
@@ -138,6 +139,7 @@ async def start_reorganize(
         album_id=None,
         trash_dir=_trash_dir(app),
         ignore_dirs=_ignore_dirs(app),
+        playlists_dir=get_playlists_dir(),
         on_complete=lambda: emit_library_changed(app),
     )
     return reg.state()
@@ -170,6 +172,7 @@ async def start_album_reorganize(
         album_id=album_id,
         trash_dir=_trash_dir(app),
         ignore_dirs=_ignore_dirs(app),
+        playlists_dir=get_playlists_dir(),
         on_complete=lambda: emit_library_changed(app),
     )
     return reg.state()

@@ -10,10 +10,10 @@ from beets.library import Library
 from fastapi.testclient import TestClient
 
 from app.api.artists import get_artist_art_write_toggle, get_artist_image_cache
-from app.api.playlists import get_playlists_dir
 from app.artist_art_jobs.registry import get_artist_art_backfill
 from app.artwork.cache import ArtistImageCache, CachedImage
 from app.main import app
+from app.playlists.store import get_playlists_dir
 from tests.conftest import make_test_handle
 
 

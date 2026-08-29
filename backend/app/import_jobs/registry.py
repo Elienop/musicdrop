@@ -129,6 +129,7 @@ class ImportJobRegistry:
         self._lib: object | None = None
         self._trash_dir: Path | None = None
         self._bank_dir: Path | None = None
+        self._playlists_dir: Path | None = None
         self._job: ImportJob | None = None
         self._lock = threading.Lock()
         self._broker: EventBroker | None = None
@@ -156,17 +157,20 @@ class ImportJobRegistry:
         lib: object | None,
         trash_dir: Path | None = None,
         bank_dir: Path | None = None,
+        playlists_dir: Path | None = None,
     ) -> None:
-        """Provide the beets Library + Trash dir + bank dir the production
-        runner builds from (bank_dir feeds sweep-mode sessions)."""
+        """Provide the beets Library + Trash dir + bank dir + playlists dir the
+        production runner builds from (bank_dir feeds sweep-mode sessions;
+        playlists_dir feeds the post-Replace `.m3u8` re-export)."""
         self._lib = lib
         self._trash_dir = trash_dir
         self._bank_dir = bank_dir
+        self._playlists_dir = playlists_dir
 
     def _resolve_runner(self) -> ImportRunner:
         if self._runner is not None:
             return self._runner
-        return BeetsImportRunner(self._lib, self._trash_dir, self._bank_dir)
+        return BeetsImportRunner(self._lib, self._trash_dir, self._bank_dir, self._playlists_dir)
 
     # ----- lifecycle -----
 

@@ -26,11 +26,9 @@ from app.beets.playlists import (
     TrackRef,
     cover_album_ids,
     item_exists,
-    m3u_entries,
     resolve_entries,
     track_match_refs,
 )
-from app.config import settings
 from app.models.errors import ErrorDetail, validation_or_detail_422
 from app.models.playlist import (
     Playlist,
@@ -54,9 +52,10 @@ from app.models.playlist_import import (
 )
 from app.models.plex import PlexTargetState
 from app.playlists import store
-from app.playlists.m3u import delete_m3u, write_m3u
+from app.playlists.m3u import delete_m3u
 from app.playlists.m3u_parse import parse_m3u
-from app.playlists.store import StoredEntry, StoredPlaylist
+from app.playlists.reexport import export_dir_for, export_playlist
+from app.playlists.store import StoredEntry, StoredPlaylist, get_playlists_dir
 from app.plex import playlists_pull
 from app.plex import sync as plex_sync
 from app.plex.config import PlexConfig, PlexConfigStore
@@ -64,7 +63,6 @@ from app.plex.errors import PlexConnectionError, PlexNotConfigured
 from app.plex.mapping import PlexTrackSpec
 from app.plex.paths import translate_path
 from app.plex.sync import PlexArtwork
-from app.wire import wire_safe
 
 router = APIRouter(tags=["playlists"])
 logger = logging.getLogger(__name__)
@@ -95,17 +93,6 @@ def _sniff_image_format(data: bytes) -> Literal["jpg", "png"] | None:
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "png"
     return None
-
-
-def get_playlists_dir() -> Path:
-    """Resolve the owned-playlist store dir from settings.
-
-    Empty ``MUSICDROP_PLAYLISTS_DIR`` -> ``<beets_dir>/playlists``.
-    """
-    configured = settings.playlists_dir.strip()
-    if configured:
-        return Path(configured)
-    return Path(settings.beets_dir) / "playlists"
 
 
 def _plex_without_miss_identities(
@@ -170,59 +157,24 @@ async def _detail_response(record: StoredPlaylist, handle: LibraryHandle) -> Pla
     return PlaylistDetail(**summary.model_dump(exclude={"plex"}), plex=record.plex, tracks=tracks)
 
 
-def _export_dir(handle: LibraryHandle) -> Path:
-    configured = settings.playlists_export_dir.strip()
-    if configured:
-        return Path(configured)
-    return Path(os.fsdecode(handle.lib.directory)) / ".playlists"
-
-
-def _render_export(record: StoredPlaylist, handle: LibraryHandle, export_dir: Path) -> None:
-    entries = m3u_entries(handle.lib, record.resolved_item_ids, str(export_dir))
-    # The NAME is a display label, so it gets the wire treatment (surrogates ->
-    # U+FFFD) before rendering: the store keeps a client-sent lone surrogate
-    # losslessly, and a HIGH one (outside surrogateescape's window) would kill
-    # the whole best-effort export that track PATHS — the locators, written
-    # byte-exact — depend on. Lossy on the label, never on the locator.
-    write_m3u(export_dir / f"{record.id}.m3u8", wire_safe(record.name), entries)
-
-
 async def _export_playlist(record: StoredPlaylist, handle: LibraryHandle) -> None:
     """Best-effort `.m3u8` (re)write. The owned store is the source of truth, so
-    a filesystem hiccup never fails the mutation."""
+    a filesystem hiccup never fails the mutation.
+
+    ``export_playlist`` already swallows a render failure; the try still wraps it
+    because ``export_dir_for`` (and the threadpool hop) run out here too.
+    """
     try:
-        await run_in_threadpool(_render_export, record, handle, _export_dir(handle))
+        await run_in_threadpool(export_playlist, record, handle.lib, export_dir_for(handle.lib))
     except Exception:
         # Best-effort: a filesystem hiccup (or any export failure) must never
         # fail the mutation — the owned store already holds the truth. Log it.
         logger.warning("Playlist .m3u8 export failed for %s", record.id, exc_info=True)
 
 
-async def reexport_playlists_containing(
-    item_ids: set[int], handle: LibraryHandle, playlists_dir: Path
-) -> int:
-    """Re-export the ``.m3u8`` of every stored playlist holding any of ``item_ids``.
-
-    The rename's collateral: exports embed paths RELATIVE to the export dir, so
-    a batch of file moves leaves every existing export stale until the playlist
-    is next mutated. Best-effort per playlist (``_export_playlist`` already
-    never raises); returns how many playlists were re-exported (best-effort: a
-    failed write still counts).
-    """
-    if not item_ids:
-        return 0
-    records = await run_in_threadpool(store.list_playlists, playlists_dir)
-    count = 0
-    for record in records:
-        if any(iid in item_ids for iid in record.resolved_item_ids):
-            await _export_playlist(record, handle)
-            count += 1
-    return count
-
-
 async def _remove_export(playlist_id: str, handle: LibraryHandle) -> None:
     try:
-        await run_in_threadpool(delete_m3u, _export_dir(handle) / f"{playlist_id}.m3u8")
+        await run_in_threadpool(delete_m3u, export_dir_for(handle.lib) / f"{playlist_id}.m3u8")
     except Exception:
         logger.warning("Playlist .m3u8 removal failed for %s", playlist_id, exc_info=True)
 

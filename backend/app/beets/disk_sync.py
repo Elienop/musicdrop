@@ -241,6 +241,9 @@ def _sync_item(
 ) -> None:
     """Apply the sync to one item and emit its ``DiskSyncOutcome``."""
     label = _item_label(item)
+    # Read up front: the removal branch below drops the row, and the runner needs
+    # the id to re-export the playlists that still list this track.
+    item_id = int(item.id)
     if _file_missing(item):
         # Re-verify the root before treating a missing file as a deletion.
         # _require_root ran once at the start, but if the share unmounts
@@ -252,17 +255,17 @@ def _sync_item(
         if item.album_id is not None:
             affected.add(int(item.album_id))
         item.remove(delete=False, with_album=True)
-        on_item(DiskSyncOutcome(status="removed", label=label))
+        on_item(DiskSyncOutcome(status="removed", label=label, item_id=item_id))
         return
     if item.current_mtime() <= item.mtime:
-        on_item(DiskSyncOutcome(status="unchanged", label=label))
+        on_item(DiskSyncOutcome(status="unchanged", label=label, item_id=item_id))
         return
     old_albumartist = item.albumartist
     old_artist = item.artist
     try:
         item.read()
     except ReadError as exc:
-        on_item(DiskSyncOutcome(status="read_error", label=label, error=str(exc)))
+        on_item(DiskSyncOutcome(status="read_error", label=label, error=str(exc), item_id=item_id))
         return
     # beets' albumartist special case (update.py): an empty re-read
     # albumartist is not a change when the old row had
@@ -280,9 +283,9 @@ def _sync_item(
     if changed:
         if item.album_id is not None:
             affected.add(int(item.album_id))
-        on_item(DiskSyncOutcome(status="updated", label=label, fields=changed))
+        on_item(DiskSyncOutcome(status="updated", label=label, fields=changed, item_id=item_id))
     else:
-        on_item(DiskSyncOutcome(status="unchanged", label=label))
+        on_item(DiskSyncOutcome(status="unchanged", label=label, item_id=item_id))
 
 
 def _realign_albums(lib: Any, affected: set[int]) -> int:

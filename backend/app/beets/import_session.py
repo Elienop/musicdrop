@@ -37,6 +37,7 @@ from app.beets.import_mapping import (
     map_album_match,
     map_candidate_options,
 )
+from app.beets.library import _require_id
 from app.beets.merge_preview import build_merge_preview
 from app.beets.release_identity import release_identity
 from app.beets.relookup import relookup
@@ -57,6 +58,7 @@ from app.models.import_models import (
     ParkedAlbum,
     Recommendation,
 )
+from app.playlists.reexport import reexport_playlists_containing_sync
 
 if TYPE_CHECKING:
     from beets.importer.tasks import ImportTask
@@ -310,6 +312,7 @@ class WebImportSession(ImportSession):
         sweep: bool = False,
         bank_dir: Path | None = None,
         directive: BankApplyDirective | None = None,
+        playlists_dir: Path | None = None,
     ) -> None:
         super().__init__(lib, loghandler, paths, query)
         self.bridge = bridge
@@ -320,6 +323,11 @@ class WebImportSession(ImportSession):
         self._trash_dir = trash_dir
         # Existing duplicate album ids recorded by Replace, trashed AFTER run().
         self._replace_album_ids: set[int] = set()
+        # The owned-playlist store, threaded from the runner exactly like
+        # trash_dir. Set = the post-run Trash pass also re-exports the `.m3u8` of
+        # every playlist that held a track from a replaced album; None = unwired
+        # (tests, fakes) and the re-export is skipped.
+        self._playlists_dir = playlists_dir
         # When True, uncertain matches + duplicates are set aside (SKIP), not
         # parked. A sweep is unattended by definition, and so is an apply run
         # (the directive IS the decision) - the flags OR in, so a caller can
@@ -1451,15 +1459,50 @@ def _trash_replaced_albums(session: WebImportSession) -> None:
     inner ``with`` restores rather than clears), and keeping it means this
     library primitive stays correct on its own terms instead of silently
     depending on a caller that a future refactor could change.
+
+    Finally, the `.m3u8` collateral: a replaced album's files are now in Trash and
+    its rows are gone, so every playlist that held one of its tracks has an export
+    naming a file that is not there. The item ids are read BEFORE each trash call
+    (it drops the rows) and the exports are rewritten once, after the loop.
+
+    The count is LOGGED rather than returned. The import's wire surface is a
+    per-album feed built by the registry from the bridge's callbacks, and this
+    primitive holds no registry handle — the only channel out of the worker is
+    ``on_finish()``, which takes no arguments. Carrying the number would mean
+    widening the ImportRunner protocol, the registry and ``ImportJobState`` for a
+    diagnostic figure the import UI has nowhere to show. Repairing the export is
+    the invariant; reporting it is not.
     """
     trash_dir = session._trash_dir
     if trash_dir is None or not session._replace_album_ids:
         return
     lib = session.lib
+    dropped_item_ids: set[int] = set()
     with lib.music_dir_context():
         for album_id in session._replace_album_ids:
             album = lib.get_album(album_id)
             if album is None:
                 continue  # already gone — nothing to trash
+            dropped_item_ids.update(_require_id(i.id) for i in album.items())
             with lib.transaction():
                 trash_album(lib, album, trash_dir=trash_dir)
+    _reexport_replaced_playlists(session, dropped_item_ids)
+
+
+def _reexport_replaced_playlists(session: WebImportSession, dropped_item_ids: set[int]) -> None:
+    """Rewrite the `.m3u8` of every playlist holding a replaced album's track.
+
+    Best-effort and swallowing: its caller's caller already treats a post-run
+    Trash failure as an annotation rather than an invalidated import (reporting a
+    committed import as failed would re-trigger duplicate detection on retry), and
+    this collateral has even less claim to fail the run.
+    """
+    playlists_dir = session._playlists_dir
+    if playlists_dir is None or not dropped_item_ids:
+        return
+    try:
+        count = reexport_playlists_containing_sync(dropped_item_ids, session.lib, playlists_dir)
+    except Exception:
+        logger.exception("post-import .m3u8 re-export failed after a Replace")
+    else:
+        logger.info("Replace collateral: re-exported %d playlist .m3u8 file(s)", count)

@@ -40,6 +40,7 @@ class _ReorganizeJob(JobState):
     album_id: int | None = None
     scope_label: str = "library"
     orphans_trashed: int = 0
+    playlists_reexported: int = 0
     failures: list[ReorganizeUnitFailure] = field(default_factory=list)
 
 
@@ -91,6 +92,12 @@ class ReorganizeRegistry(SingleSlotRegistry[_ReorganizeJob]):
             if self._job is not None:
                 self._job.orphans_trashed += n
 
+    def record_playlists_reexported(self, n: int) -> None:
+        """Tally the `.m3u8` exports this run repaired (see the runner's tail pass)."""
+        with self._lock:
+            if self._job is not None:
+                self._job.playlists_reexported += n
+
     def dismiss(self) -> None:
         """Drop a FINISHED job from the slot, returning ``state()`` to idle.
 
@@ -134,6 +141,7 @@ class ReorganizeRegistry(SingleSlotRegistry[_ReorganizeJob]):
                     album_id=None,
                     scope_label="library",
                     orphans_trashed=0,
+                    playlists_reexported=0,
                     failures=[],
                     finished_at=None,
                 )
@@ -152,6 +160,7 @@ class ReorganizeRegistry(SingleSlotRegistry[_ReorganizeJob]):
                 album_id=job.album_id,
                 scope_label=job.scope_label,
                 orphans_trashed=job.orphans_trashed,
+                playlists_reexported=job.playlists_reexported,
                 failures=list(job.failures),
                 finished_at=job.finished_at,
             )
