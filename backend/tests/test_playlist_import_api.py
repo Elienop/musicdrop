@@ -4,10 +4,10 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.playlists import get_playlists_dir
 from app.beets.library import LibraryHandle, _require_id
 from app.models.playlist_import import ParsedPlaylist, SourceEntry
 from app.playlists import store
+from app.playlists.store import get_playlists_dir
 
 
 def _dir() -> Path:

@@ -34,6 +34,7 @@ from app.beets.library import (
     _album_genre,
     _coerce_optional_str,
     _coerce_str,
+    _require_id,
 )
 from app.beets.trash import album_folder, album_format_bitrate, resolve_trash_dir, trash_album
 from app.library_busy import library_job_active
@@ -334,6 +335,7 @@ def resolve_duplicate_group(
     keep_album_id: int,
     remove_album_ids: list[int],
     trash_dir: Path,
+    dropped_item_ids: set[int] | None = None,
 ) -> ResolveResult:
     """Move ``remove_album_ids`` to ``trash_dir`` and drop them from the library.
 
@@ -374,6 +376,11 @@ def resolve_duplicate_group(
                     raise AlbumNotFoundError(f"album {album_id} not found")
                 album_artist = _coerce_str(album.albumartist)
                 title = _coerce_str(album.album)
+                if dropped_item_ids is not None:
+                    # BEFORE the trash call: it drops the album's item rows, so
+                    # ``album.items()`` afterwards yields nothing and the caller
+                    # would never learn which playlists it just invalidated.
+                    dropped_item_ids.update(_require_id(i.id) for i in album.items())
                 trash_path = trash_album(lib, album, trash_dir=trash_dir)
                 moved.append(
                     MovedAlbum(
@@ -386,7 +393,9 @@ def resolve_duplicate_group(
         return ResolveResult(kept_album_id=keep_album_id, moved=moved)
 
 
-async def resolve_duplicates_op(request: Request, req: ResolveRequest) -> ResolveResult:
+async def resolve_duplicates_op(
+    request: Request, req: ResolveRequest, dropped_item_ids: set[int] | None = None
+) -> ResolveResult:
     """Resolve a duplicate group, serialized against imports and config Apply.
 
     Mirrors :func:`app.beets.config_editor.apply`:
@@ -418,6 +427,7 @@ async def resolve_duplicates_op(request: Request, req: ResolveRequest) -> Resolv
                 keep_album_id=req.keep_album_id,
                 remove_album_ids=req.remove_album_ids,
                 trash_dir=trash_dir,
+                dropped_item_ids=dropped_item_ids,
             )
         except StaleGroupError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -442,6 +452,7 @@ def resolve_all_groups(
     mode: DuplicateMode,
     groups: list[GroupDecision],
     trash_dir: Path,
+    dropped_item_ids: set[int] | None = None,
 ) -> ResolveAllResult:
     """Resolve many duplicate groups in one pass.
 
@@ -465,6 +476,7 @@ def resolve_all_groups(
                 keep_album_id=decision.keep_album_id,
                 remove_album_ids=decision.remove_album_ids,
                 trash_dir=trash_dir,
+                dropped_item_ids=dropped_item_ids,
             )
         except StaleGroupError as exc:
             skipped.append(SkippedGroup(keep_album_id=decision.keep_album_id, reason=str(exc)))
@@ -478,7 +490,9 @@ def resolve_all_groups(
     )
 
 
-async def resolve_all_op(request: Request, req: ResolveAllRequest) -> ResolveAllResult:
+async def resolve_all_op(
+    request: Request, req: ResolveAllRequest, dropped_item_ids: set[int] | None = None
+) -> ResolveAllResult:
     """Batch resolve, serialized against imports + config Apply.
 
     Mirrors :func:`resolve_duplicates_op`: import gate (409), the shared
@@ -504,6 +518,7 @@ async def resolve_all_op(request: Request, req: ResolveAllRequest) -> ResolveAll
                 mode=req.mode,
                 groups=req.groups,
                 trash_dir=trash_dir,
+                dropped_item_ids=dropped_item_ids,
             )
         except AlbumNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

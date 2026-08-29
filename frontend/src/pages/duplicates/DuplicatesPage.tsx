@@ -240,15 +240,23 @@ function skippedSuffix(skipped: number): string {
  * groups skipped. */
 function BulkResolveNote({ summary }: Readonly<{ summary: ResolveAllResult }>) {
   const skipped = summary.skipped_stale.length;
+  const reexported = summary.playlists_reexported;
   return summary.moved_count > 0 ? (
     <output className="text-muted-foreground text-sm block">
       Moved {summary.moved_count} {summary.moved_count === 1 ? "copy" : "copies"} across{" "}
       {summary.group_count} {summary.group_count === 1 ? "group" : "groups"} to Trash.
+      {/* Own sentence, and only when there was one: a move that touched no
+          playlist should not spend a clause saying so. Sits ahead of the
+          skipped caveat, which trails the whole outcome. */}
+      {reexported > 0 && ` Re-exported ${reexported} ${plural(reexported, "playlist")}.`}
       {skipped > 0 && skippedSuffix(skipped)}
     </output>
   ) : (
     // All groups drifted since the scan (a normal 200 with nothing moved):
     // lead with the actionable part, not a "moved 0" that reads as a no-op.
+    // No re-export clause here by construction: the backend collects dropped
+    // item ids in the same step that counts a moved copy, so moved_count 0
+    // means playlists_reexported 0 (app/beets/duplicates.py, resolve loop).
     <output className="text-sm block">
       Nothing moved; {skipped === 1 ? "the group" : `all ${skipped} groups`} changed
       since the scan and {skipped === 1 ? "was" : "were"} skipped. The report refreshed;

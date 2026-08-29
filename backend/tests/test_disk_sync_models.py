@@ -50,6 +50,7 @@ def test_status_idle_shape() -> None:
         emptied_albums=0,
         current=None,
         error=None,
+        playlists_reexported=0,
         failures=[],
     )
     assert s.phase == "idle"

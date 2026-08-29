@@ -330,6 +330,20 @@ def _collision_error(collisions: list[ReorganizeCollision]) -> str:
     return "; ".join(shown)
 
 
+def _relocated_ids(pending: list[tuple[int, bytes, bytes]], after: dict[int, bytes]) -> list[int]:
+    """Ids from ``pending`` whose file actually ENDED UP somewhere else.
+
+    Compared against the item's own pre-move path, not against the computed
+    destination: a beets ``unique_path`` divert lands the file at a ``.N``
+    sibling, which is still a path change every `.m3u8` holding that track now
+    gets wrong. An item missing from ``after`` is treated as unmoved (its stored
+    path is all we know, and that is where the export already points).
+    """
+    return [
+        item_id for item_id, old_path, _dest in pending if after.get(item_id, old_path) != old_path
+    ]
+
+
 def _verify_moves(pending: list[tuple[int, bytes, bytes]], after: dict[int, bytes]) -> list[str]:
     """Post-move verification: beets silently skips a move whose source file is
     absent and silently diverts to a `.N`-suffixed name when the destination is
@@ -808,6 +822,7 @@ def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
             after = {int(i.id): bytes(i.path) for i in album.items()}
             _carry_sidecars(lib, pending, after)
             problems = _verify_moves(pending, after)
+            relocated = _relocated_ids(pending, after)
             if art.expected_dest is not None and album.artpath:
                 landed = os.path.normpath(bytes(album.artpath))
                 # A unique_path divert always changes the BASENAME (.N) and
@@ -822,8 +837,18 @@ def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
                         "; check this album's folder for what is holding that name"
                     )
             if problems:
-                return ReorganizeOutcome(status="failed", label=label, error="; ".join(problems))
-            return ReorganizeOutcome(status="moved", label=label, source_dir=source_dir or None)
+                return ReorganizeOutcome(
+                    status="failed",
+                    label=label,
+                    error="; ".join(problems),
+                    moved_item_ids=relocated,
+                )
+            return ReorganizeOutcome(
+                status="moved",
+                label=label,
+                source_dir=source_dir or None,
+                moved_item_ids=relocated,
+            )
         # FilesystemError (permission/disk-full/NAS I/O from beets' util.move/copy)
         # subclasses HumanReadableError(Exception), NOT OSError — catch it too, or
         # one bad album escapes this "never raises" adapter and aborts the whole sweep.
@@ -836,11 +861,19 @@ def reorganize_album(lib: Any, album: Any) -> ReorganizeOutcome:
             # the vacated folder decays into a husk the orphan sweep trashes.
             # Suppress everything: this adapter never raises, and no carry problem
             # may displace the original failure being reported in `exc`.
+            crashed_relocated: list[int] = []
             if pending:
                 with contextlib.suppress(Exception):
-                    _carry_sidecars(lib, pending, {int(i.id): bytes(i.path) for i in album.items()})
+                    after = {int(i.id): bytes(i.path) for i in album.items()}
+                    # Read BEFORE the carry: a carry failure must not also cost
+                    # us the list of items whose paths this crash already moved.
+                    crashed_relocated = _relocated_ids(pending, after)
+                    _carry_sidecars(lib, pending, after)
             return ReorganizeOutcome(
-                status="failed", label=label, error=str(exc) or exc.__class__.__name__
+                status="failed",
+                label=label,
+                error=str(exc) or exc.__class__.__name__,
+                moved_item_ids=crashed_relocated,
             )
 
 
@@ -870,17 +903,34 @@ def reorganize_singleton(lib: Any, item: Any) -> ReorganizeOutcome:
             after = {int(item.id): bytes(item.path)}
             _carry_sidecars(lib, pending, after)
             problems = _verify_moves(pending, after)
+            relocated = _relocated_ids(pending, after)
             if problems:
-                return ReorganizeOutcome(status="failed", label=label, error="; ".join(problems))
-            return ReorganizeOutcome(status="moved", label=label, source_dir=source_dir or None)
+                return ReorganizeOutcome(
+                    status="failed",
+                    label=label,
+                    error="; ".join(problems),
+                    moved_item_ids=relocated,
+                )
+            return ReorganizeOutcome(
+                status="moved",
+                label=label,
+                source_dir=source_dir or None,
+                moved_item_ids=relocated,
+            )
         except (ValueError, OSError, FilesystemError) as exc:  # see reorganize_album
             # Same crash-carry as reorganize_album. A failed single-file move
             # usually leaves item.path unchanged, making this a no-op — but a
             # partially-applied move (art moved, then store raised) is cheap to
             # cover with the identical best-effort pass.
+            crashed_relocated: list[int] = []
             if pending:
                 with contextlib.suppress(Exception):
-                    _carry_sidecars(lib, pending, {int(item.id): bytes(item.path)})
+                    after = {int(item.id): bytes(item.path)}
+                    crashed_relocated = _relocated_ids(pending, after)  # see reorganize_album
+                    _carry_sidecars(lib, pending, after)
             return ReorganizeOutcome(
-                status="failed", label=label, error=str(exc) or exc.__class__.__name__
+                status="failed",
+                label=label,
+                error=str(exc) or exc.__class__.__name__,
+                moved_item_ids=crashed_relocated,
             )

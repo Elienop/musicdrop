@@ -23,6 +23,7 @@ const idle = {
   unchanged: 0,
   read_errors: 0,
   emptied_albums: 0,
+  playlists_reexported: 0,
   current: null,
   error: null,
   failures: [],
@@ -184,6 +185,61 @@ test("a stopped (partial) job labels the summary as stopped early", async () => 
   wrap(<DiskSyncPanel />);
   expect(
     await screen.findByText(/Stopped early: 3 of 10 processed ·/),
+  ).toBeInTheDocument();
+});
+
+test("the terminal counts line ends with the playlists re-exported", async () => {
+  const done = {
+    ...idle,
+    phase: "done",
+    job_id: "d1",
+    total: 600,
+    processed: 600,
+    removed: 2,
+    updated: 1,
+    unchanged: 597,
+    emptied_albums: 1,
+    playlists_reexported: 1,
+  };
+  vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
+    if (path === "/api/disk-sync/status")
+      return { data: done, response: { ok: true, status: 200 } } as never;
+    return { data: undefined, response: { ok: false, status: 404 } } as never;
+  });
+  wrap(<DiskSyncPanel />);
+  // Singular forms pinned here; the zero-count test below pins the plural
+  // ("0 playlists").
+  expect(
+    await screen.findByText(
+      "2 removed · 1 updated · 597 unchanged · 1 album pruned · 1 playlist re-exported",
+    ),
+  ).toBeInTheDocument();
+});
+
+// This line spells every count out, zeros included — unlike the activity row
+// built from the same status, which drops them. Pinned so the two conventions
+// can't be quietly swapped for one another.
+test("the terminal counts line prints a zero re-export count rather than hiding it", async () => {
+  const done = {
+    ...idle,
+    phase: "done",
+    job_id: "d1",
+    total: 600,
+    processed: 600,
+    removed: 2,
+    updated: 1,
+    unchanged: 597,
+    emptied_albums: 1,
+    playlists_reexported: 0,
+  };
+  vi.spyOn(client, "GET").mockImplementation(async (path: string) => {
+    if (path === "/api/disk-sync/status")
+      return { data: done, response: { ok: true, status: 200 } } as never;
+    return { data: undefined, response: { ok: false, status: 404 } } as never;
+  });
+  wrap(<DiskSyncPanel />);
+  expect(
+    await screen.findByText(/0 playlists re-exported$/),
   ).toBeInTheDocument();
 });
 

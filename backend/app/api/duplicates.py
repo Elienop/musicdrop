@@ -4,10 +4,12 @@ Beets-free (CLAUDE.md rule 3): delegates entirely to ``app.beets.duplicates``.
 The GET is synchronous + read-only; the POST is the mutating, serialized op.
 """
 
-from typing import Final
+from pathlib import Path
+from typing import Annotated, Final
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
+from app.api.albums import get_library
 from app.beets.duplicates import (
     find_duplicate_albums,
     resolve_all_op,
@@ -24,6 +26,8 @@ from app.models.duplicates import (
     ResolveResult,
 )
 from app.models.errors import ErrorDetail, StructuredErrorDetail
+from app.playlists.reexport import reexport_playlists_containing
+from app.playlists.store import get_playlists_dir
 
 router = APIRouter(tags=["duplicates"])
 
@@ -73,10 +77,23 @@ def get_duplicates(
         500: _RESOLVE_FAILED_RESPONSE,
     },
 )
-async def resolve_duplicates(req: ResolveRequest, request: Request) -> ResolveResult:
-    result = await resolve_duplicates_op(request, req)
+async def resolve_duplicates(
+    req: ResolveRequest,
+    request: Request,
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
+) -> ResolveResult:
+    """Resolve one group, then re-export the `.m3u8` of every playlist that held a
+    track from a loser album — those exports now name files that live in Trash.
+
+    Before ``emit_library_changed`` on purpose: the event tells open tabs to
+    refetch, so the exports should already be repaired when they do.
+    """
+    dropped_ids: set[int] = set()
+    result = await resolve_duplicates_op(request, req, dropped_ids)
+    reexported = await reexport_playlists_containing(dropped_ids, handle, playlists_dir)
     emit_library_changed(request.app)
-    return result
+    return result.model_copy(update={"playlists_reexported": reexported})
 
 
 @router.post(
@@ -95,7 +112,17 @@ async def resolve_duplicates(req: ResolveRequest, request: Request) -> ResolveRe
         500: _RESOLVE_FAILED_RESPONSE,
     },
 )
-async def resolve_all_duplicates(req: ResolveAllRequest, request: Request) -> ResolveAllResult:
-    result = await resolve_all_op(request, req)
+async def resolve_all_duplicates(
+    req: ResolveAllRequest,
+    request: Request,
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
+) -> ResolveAllResult:
+    """Batch resolve + the same `.m3u8` collateral, run ONCE over the union of
+    every group's dropped items rather than per group: a playlist holding tracks
+    from two groups must be rewritten once and counted once."""
+    dropped_ids: set[int] = set()
+    result = await resolve_all_op(request, req, dropped_ids)
+    reexported = await reexport_playlists_containing(dropped_ids, handle, playlists_dir)
     emit_library_changed(request.app)
-    return result
+    return result.model_copy(update={"playlists_reexported": reexported})

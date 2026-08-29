@@ -66,6 +66,11 @@ class DiskSyncStatus(BaseModel):
     emptied_albums: int
     current: str | None  # label of the in-flight item
     error: str | None  # job-level failure
+    # Playlists whose `.m3u8` was rewritten because this sync DROPPED one of their
+    # tracks (its file is gone from disk, so the export must stop listing it).
+    # Written once, just before the job reaches its terminal phase; a status read
+    # while `running` always shows 0. Required (no default) like every field here.
+    playlists_reexported: int
     failures: list[DiskSyncReadError]  # first FAILURE_ROW_CAP read errors
 
 
@@ -78,3 +83,8 @@ class DiskSyncOutcome(BaseModel):
     label: str
     fields: list[str] = Field(default_factory=list)  # changed fields (updated)
     error: str | None = None  # read_error detail
+    # The beets item id this outcome is about, captured BEFORE any removal. The
+    # runner reads it off the ``removed`` outcomes to seed the `.m3u8` re-export;
+    # the registry ignores it. Optional so a hand-built outcome (tests, fakes)
+    # stays valid.
+    item_id: int | None = None

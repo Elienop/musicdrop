@@ -330,8 +330,10 @@ function DiskSyncControl() {
             {phase === "stopped" &&
               `Stopped early: ${job?.processed ?? 0} of ${job?.total ?? 0} processed · `}
             {job?.removed ?? 0} removed · {job?.updated ?? 0} updated ·{" "}
-            {job?.unchanged ?? 0} unchanged · {job?.emptied_albums ?? 0} albums
-            pruned
+            {job?.unchanged ?? 0} unchanged · {job?.emptied_albums ?? 0}{" "}
+            {plural(job?.emptied_albums ?? 0, "album")} pruned ·{" "}
+            {job?.playlists_reexported ?? 0}{" "}
+            {plural(job?.playlists_reexported ?? 0, "playlist")} re-exported
           </p>
         </div>
       )}

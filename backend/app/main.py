@@ -45,6 +45,7 @@ from app.events.emit import emit_art_changed
 from app.host_guard import HostGuardMiddleware, resolve_allowed_hosts
 from app.openapi_overlay import overlay_middleware_responses
 from app.origin_guard import OriginGuardMiddleware, resolve_extra_origins
+from app.playlists.store import get_playlists_dir
 from app.security_headers import SecurityHeadersMiddleware
 from app.static_files import mount_static
 from app.wire import SurrogateSafeJSONResponse, install_wire_safety
@@ -131,7 +132,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # duplicate-on-import Replace action moves the old copies (same reversible
     # Trash the /duplicates page uses).
     import_registry.attach_library(
-        handle.lib, resolve_trash_dir(settings, handle), bank_dir=get_bank_dir()
+        handle.lib,
+        resolve_trash_dir(settings, handle),
+        bank_dir=get_bank_dir(),
+        playlists_dir=get_playlists_dir(),
     )
     import_registry.attach_event_broker(app.state.event_broker)
 

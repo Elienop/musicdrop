@@ -31,14 +31,15 @@ const idleArtistArt: ArtistArtBackfillStatus = {
 };
 const idleReorganize: ReorganizeBackfillStatus = {
   phase: "idle", job_id: null, scope: null, total: 0, processed: 0,
-  moved: 0, skipped: 0, failed: 0, orphans_trashed: 0, current: null, error: null,
+  moved: 0, skipped: 0, failed: 0, orphans_trashed: 0, playlists_reexported: 0,
+  current: null, error: null,
   artist: null, album_id: null, scope_label: "library", failures: [],
   finished_at: null,
 };
 const idleDiskSync: DiskSyncStatus = {
   phase: "idle", job_id: null, total: 0, processed: 0, removed: 0, updated: 0,
-  unchanged: 0, read_errors: 0, emptied_albums: 0, current: null, error: null,
-  failures: [],
+  unchanged: 0, read_errors: 0, emptied_albums: 0, playlists_reexported: 0,
+  current: null, error: null, failures: [],
 };
 
 let importData: ActiveImportStatus = idleImport;
@@ -224,12 +225,57 @@ describe("useActivity", () => {
     diskSyncData = {
       ...idleDiskSync, phase: "done", job_id: "d1", total: 600, processed: 600,
       removed: 2, updated: 1, emptied_albums: 1, read_errors: 3,
+      playlists_reexported: 1,
     };
     rerender();
+    // The singular forms: N = 1 is the common case for a one-album operation,
+    // so "1 album pruned" / "1 playlist re-exported" are pinned here.
     expect(result.current.activity.rows[0]).toMatchObject({
       state: "done",
-      countsText: "2 removed · 1 updated · 1 albums pruned · 3 read errors",
+      countsText:
+        "2 removed · 1 updated · 1 album pruned · 3 read errors · 1 playlist re-exported",
     });
+  });
+
+  it("carries the playlists a reorganize re-exported in its done-row counts", () => {
+    reorganizeData = {
+      ...idleReorganize, phase: "done", job_id: "r1", total: 8, processed: 8,
+      moved: 8, orphans_trashed: 1, playlists_reexported: 2,
+    };
+    const { result } = renderActivity();
+    expect(result.current.activity.rows[0]).toMatchObject({
+      state: "done",
+      countsText: "8 moved · 1 cleaned up · 2 playlists re-exported",
+    });
+  });
+
+  it("carries the playlists a disk sync re-exported in its done-row counts", () => {
+    diskSyncData = {
+      ...idleDiskSync, phase: "done", job_id: "d1", total: 600, processed: 600,
+      removed: 2, updated: 1, playlists_reexported: 4,
+    };
+    const { result } = renderActivity();
+    expect(result.current.activity.rows[0]).toMatchObject({
+      state: "done",
+      countsText: "2 removed · 1 updated · 4 playlists re-exported",
+    });
+  });
+
+  // Zero is dropped like every other count here, so a job that touched no
+  // playlist reads the same as it did before re-export existed. This is the
+  // opposite of the disk-sync PANEL, which spells its zeros out.
+  it("drops the re-export count from done rows when no playlist changed", () => {
+    reorganizeData = {
+      ...idleReorganize, phase: "done", job_id: "r1", total: 8, processed: 8,
+      moved: 8, playlists_reexported: 0,
+    };
+    diskSyncData = {
+      ...idleDiskSync, phase: "done", job_id: "d1", total: 600, processed: 600,
+      removed: 2, playlists_reexported: 0,
+    };
+    const { result } = renderActivity();
+    const counts = result.current.activity.rows.map((r) => r.countsText);
+    expect(counts).toEqual(["8 moved", "2 removed"]);
   });
 
   it("maps a stopped disk sync to a done row carrying the partial-progress count", () => {

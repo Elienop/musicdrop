@@ -15,3 +15,8 @@ class DeleteResult(BaseModel):
 
     trashed_albums: int
     trash_path: str
+    # Playlists whose `.m3u8` export was rewritten because this delete DROPPED one
+    # of their tracks — the export would otherwise keep listing a file that is now
+    # in Trash. Best-effort (a failed write still counts). Defaulted because the
+    # adapter builds the result before the collateral runs; the endpoint fills it in.
+    playlists_reexported: int = 0

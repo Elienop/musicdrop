@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Annotated, Final, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
@@ -34,6 +35,8 @@ from app.models.delete import DeleteResult
 from app.models.edit import AlbumEditPreview, AlbumEditRequest, AlbumEditResult
 from app.models.errors import ErrorDetail, StructuredErrorDetail, validation_or_detail_422
 from app.models.lyrics import LyricsBackfillStatus
+from app.playlists.reexport import reexport_playlists_containing
+from app.playlists.store import get_playlists_dir
 
 router = APIRouter(tags=["albums"])
 
@@ -209,11 +212,20 @@ async def edit_album_endpoint(
     payload: AlbumEditRequest,
     request: Request,
     handle: Annotated[LibraryHandle, Depends(get_library)],
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
 ) -> AlbumEditResult:
-    """Apply an album/track tag edit (write + config-gated move). 409 if importing."""
+    """Apply an album/track tag edit (write + config-gated move). 409 if importing.
+
+    A config-gated move relocates the track files, so every `.m3u8` export holding
+    one is left pointing at a path this edit just changed — re-export those before
+    answering. Only the tracks that ACTUALLY moved seed it (``ItemWriteResult.moved``,
+    not the plan), so a tag-only edit lists no playlists at all.
+    """
     result = await apply_album_edit_op(request, album_id, payload)
+    moved_ids = {i.item_id for i in result.items if i.moved}
+    reexported = await reexport_playlists_containing(moved_ids, handle, playlists_dir)
     emit_library_changed(request.app)
-    return result
+    return result.model_copy(update={"playlists_reexported": reexported})
 
 
 @router.get(
@@ -455,9 +467,21 @@ async def fetch_album_lyrics_endpoint(
         },
     },
 )
-async def delete_album_endpoint(album_id: int, request: Request) -> DeleteResult:
+async def delete_album_endpoint(
+    album_id: int,
+    request: Request,
+    handle: Annotated[LibraryHandle, Depends(get_library)],
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
+) -> DeleteResult:
     """Move the album's whole folder to Trash (reversible) and drop it from the
-    library. 404 unknown album; 409 while a library job is running."""
-    result = await delete_album_op(request, album_id)
+    library. 404 unknown album; 409 while a library job is running.
+
+    The dropped items' playlists get a fresh `.m3u8` afterwards: their exports
+    still list files that now live in Trash, and a re-export prunes those lines
+    (an unresolvable id simply drops out of ``m3u_entries``).
+    """
+    dropped_ids: set[int] = set()
+    result = await delete_album_op(request, album_id, dropped_ids)
+    reexported = await reexport_playlists_containing(dropped_ids, handle, playlists_dir)
     emit_library_changed(request.app)
-    return result
+    return result.model_copy(update={"playlists_reexported": reexported})

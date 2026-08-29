@@ -49,23 +49,44 @@ class ArtistDeletePartialError(Exception):
     """
 
 
-def delete_album(lib: Library, album_id: int, *, trash_dir: Path) -> DeleteResult:
+def delete_album(
+    lib: Library,
+    album_id: int,
+    *,
+    trash_dir: Path,
+    dropped_item_ids: set[int] | None = None,
+) -> DeleteResult:
     """Move one album's whole folder to Trash and drop it. 404 on unknown id.
 
     Binds ``music_dir_context`` (the threadpool thread doesn't inherit it, so the
     move would otherwise get a relative source path); one transaction so the DB
     drop commits with the file move.
+
+    ``dropped_item_ids``, when given, collects the ids of the items this delete
+    removes — read BEFORE the trash call, because that call drops the rows and
+    ``album.items()`` would then be empty. The caller owes those items' playlists
+    a `.m3u8` re-export (the export lists a file that is now in Trash), and the
+    out-set is how it learns which ids to pass. Same accumulate-into-a-caller's-
+    collection shape the reorganize sweep uses for ``vacated``.
     """
     with lib.music_dir_context():
         album = lib.get_album(album_id)
         if album is None:
             raise AlbumNotFoundError(f"album {album_id} not found")
+        if dropped_item_ids is not None:
+            dropped_item_ids.update(_require_id(i.id) for i in album.items())
         with lib.transaction():
             trash_path = trash_album_folder(lib, album, trash_dir=trash_dir)
     return DeleteResult(trashed_albums=1, trash_path=trash_path)
 
 
-def delete_artist(lib: Library, artist_name: str, *, trash_dir: Path) -> DeleteResult:
+def delete_artist(
+    lib: Library,
+    artist_name: str,
+    *,
+    trash_dir: Path,
+    dropped_item_ids: set[int] | None = None,
+) -> DeleteResult:
     """Move EVERY album of ``artist_name`` (matched on albumartist) to Trash.
 
     Album ids are snapshotted before mutating (trashing drops rows). An artist
@@ -86,6 +107,11 @@ def delete_artist(lib: Library, artist_name: str, *, trash_dir: Path) -> DeleteR
     * **after at least one album** — the same cause is re-raised as
       :class:`ArtistDeletePartialError`, because the 503's promise is no longer
       true. It reaches the user as the 500, naming how far the fan-out got.
+
+    ``dropped_item_ids`` collects the ids this fan-out removes (see
+    :func:`delete_album`), filled PER ALBUM inside the loop rather than up front:
+    a partial run must report exactly the playlists it really invalidated, and an
+    album that raised before its own capture never contributed one.
     """
     with lib.music_dir_context():
         target = artist_name.strip()
@@ -103,6 +129,8 @@ def delete_artist(lib: Library, artist_name: str, *, trash_dir: Path) -> DeleteR
                 album = lib.get_album(album_id)
                 if album is None:
                     continue
+                if dropped_item_ids is not None:
+                    dropped_item_ids.update(_require_id(i.id) for i in album.items())
                 try:
                     trash_album_folder(lib, album, trash_dir=trash_dir)
                 except LibraryRootUnavailableError as exc:
@@ -140,15 +168,29 @@ def _failed(exc: Exception) -> HTTPException:
     )
 
 
-async def delete_album_op(request: Request, album_id: int) -> DeleteResult:
-    """Async wrapper for :func:`delete_album`: gate + swap-lock + threadpool."""
+async def delete_album_op(
+    request: Request, album_id: int, dropped_item_ids: set[int] | None = None
+) -> DeleteResult:
+    """Async wrapper for :func:`delete_album`: gate + swap-lock + threadpool.
+
+    ``dropped_item_ids`` is passed straight through so the endpoint can re-export
+    the `.m3u8` of every playlist holding a track this delete removed. It is only
+    ever read on the success path: every failure exit here raises, so a 503/500
+    caller never re-exports off a delete that did not (fully) happen.
+    """
     app = request.app
     _gate()
     async with _swap_lock(app):
         handle: LibraryHandle = app.state.beets_library
         trash_dir = resolve_trash_dir(_settings(app), handle)
         try:
-            return await run_in_threadpool(delete_album, handle.lib, album_id, trash_dir=trash_dir)
+            return await run_in_threadpool(
+                delete_album,
+                handle.lib,
+                album_id,
+                trash_dir=trash_dir,
+                dropped_item_ids=dropped_item_ids,
+            )
         except AlbumNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         # Ahead of the blanket except on purpose: ``_failed``'s recovery line
@@ -165,8 +207,17 @@ async def delete_album_op(request: Request, album_id: int) -> DeleteResult:
             raise _failed(exc) from exc
 
 
-async def delete_artist_op(request: Request, artist_name: str) -> DeleteResult:
-    """Async wrapper for :func:`delete_artist`: gate + swap-lock + threadpool."""
+async def delete_artist_op(
+    request: Request, artist_name: str, dropped_item_ids: set[int] | None = None
+) -> DeleteResult:
+    """Async wrapper for :func:`delete_artist`: gate + swap-lock + threadpool.
+
+    ``dropped_item_ids`` behaves as in :func:`delete_album_op`. Note the fan-out's
+    PARTIAL failure (``ArtistDeletePartialError`` -> 500) still leaves the albums
+    it already trashed out of any re-export: the endpoint never gets to run the
+    collateral. Nothing here can fix that — the response is an error, so there is
+    no result to carry a count on.
+    """
     app = request.app
     _gate()
     async with _swap_lock(app):
@@ -174,7 +225,11 @@ async def delete_artist_op(request: Request, artist_name: str) -> DeleteResult:
         trash_dir = resolve_trash_dir(_settings(app), handle)
         try:
             return await run_in_threadpool(
-                delete_artist, handle.lib, artist_name, trash_dir=trash_dir
+                delete_artist,
+                handle.lib,
+                artist_name,
+                trash_dir=trash_dir,
+                dropped_item_ids=dropped_item_ids,
             )
         # Same 503-before-the-blanket-500 ordering as delete_album_op above,
         # and it matters more here: this one fans across every album.

@@ -732,9 +732,13 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
         from app.api.bank import get_bank_dir
         from app.beets.trash import resolve_trash_dir
         from app.import_jobs.registry import get_registry
+        from app.playlists.store import get_playlists_dir
 
         get_registry().attach_library(
-            new.lib, resolve_trash_dir(settings, new), bank_dir=get_bank_dir()
+            new.lib,
+            resolve_trash_dir(settings, new),
+            bank_dir=get_bank_dir(),
+            playlists_dir=get_playlists_dir(),
         )
 
     return build_config_snapshot(new)

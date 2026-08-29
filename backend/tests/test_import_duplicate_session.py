@@ -79,6 +79,9 @@ def _session(bridge: ImportBridge, *, trash_dir: Path | None = None) -> WebImpor
     # branch reads (sweep banking lives in chunk 3; these tests stay non-sweep).
     session.sweep = False
     session._bank_dir = None
+    # __init__ is skipped, so default the playlists dir the post-run Replace
+    # trash pass reads for its `.m3u8` re-export. None = the pass is skipped.
+    session._playlists_dir = None
     # __init__ is skipped, so default the apply directive the hooks now read.
     session._directive = None
     # __init__ is skipped, so set the toppaths _task_folder scopes by (beets sets

@@ -30,8 +30,10 @@ entry carries a dated correction block where the pass changed it._
    hoist, config advisories end to end. The four vacuous pins had already landed in #190;
    still open from this item's old wording: the mypy exemption-list trim (its own entry
    below).
-3. **`.m3u8` staleness and the bank re-run-vs-replay** — each needs a short design
-   conversation before code; see their entries.
+3. **The bank re-run-vs-replay** — design settled 2026-08-29 (vault decisions 24: store
+   the reviewed release id at bank time, pin the apply to it, honest re-match label on
+   legacy id-less rows); see its entry. The `.m3u8` half of this item shipped — see the
+   struck staleness entry under Open bugs.
 4. **Real authentication** — the standing long-term security item, shaped 2026-08-28: 112
    operations (66 state-changing), all reachable unauthenticated by anything that can open
    TCP to port 3030 (compose publishes `0.0.0.0`); two unauthenticated calls end the
@@ -50,9 +52,11 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
 
-- **Three internal comments drifted from enforced behavior (2026-08-29 README audit;
+- ~~**Three internal comments drifted from enforced behavior (2026-08-29 README audit;
   comment-only, fold into the next code PR — a docs-only PR can't carry them without
-  cutting a release).** (1) `backend/app/config.py:105-106` and `backend/app/plex/config.py:29`
+  cutting a release).**~~ — **FIXED in #195,
+  2026-08-29:** all four sites corrected (Plex section semantics ×2, lyrics pacing, panel
+  nav path). (1) `backend/app/config.py:105-106` and `backend/app/plex/config.py:29`
   both say an empty `MUSICDROP_PLEX_LIBRARY_SECTION` means "the first artist section";
   the enforced behavior (`backend/app/plex/client.py:39-42`, mirrored in
   `PlexSettingsPanel.tsx`) is: sole artist section, else refuse with "Multiple Plex music
@@ -112,8 +116,35 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   the round-trip editor. Recorded here because it is the strongest argument that the auth
   item is mis-sized as "long-term".
 
-- **Every `.m3u8` export goes stale on a reorganize or an album tag edit — only the artist
-  rename re-exports.** (Found 2026-08-28.) The exports under `<music>/.playlists` embed
+- ~~**Every `.m3u8` export goes stale on a reorganize or an album tag edit — only the artist
+  rename re-exports.**~~ — **FIXED in #195,
+  2026-08-29, per the owner's all-movers decision (vault decisions 24).** One sync core
+  (`app/playlists/reexport.py`, async wrapper kept for endpoints) wired into album edit,
+  album/artist delete, duplicates resolve + resolve-all, reorganize apply, disk-sync apply,
+  and the import `replace` duplicate action — a seventh mover the entry below missed; each
+  result/status model carries `playlists_reexported` (rename's existing field name).
+  Residuals, recorded deliberately: (a) every FAN-OUT mover — a handler that loops N units
+  with the re-export running only after the loop returns cleanly — loses the collateral for
+  units already moved when a later unit raises: artist delete (share drops mid-loop),
+  duplicates resolve with several losers, and resolve-all (which absorbs only
+  `StaleGroupError`; any other fault propagates — `app/beets/duplicates.py:474-483`) all
+  share the shape (probe-verified 2026-08-29: a resolve-all 500 left group 1 trashed with
+  its export still naming the dead track). Single-unit movers are safe — a failed trash
+  drops nothing. The 500 carries no body to report through; (b) import `merge` destroys the old item ids,
+  so re-export cannot repair those playlists (entries go permanently unavailable) — known
+  gap, needs its own design; (c) trash restore is a structural no-op (re-import mints new
+  ids) — and beets' rowid REUSE (`import_session.py:549-551`) means a restore can land on
+  an id a playlist still references, a pre-existing hazard this work neither created nor
+  fixed; (d) the import-replace count is a log line only (the import worker has no result
+  channel for it); (e) a disk-sync aborted by `LibraryRootUnavailableError` deliberately
+  skips re-export — every track looks missing at that moment, and re-exporting would empty
+  every `.m3u8`; (f) three flows re-export but report NOTHING — album/artist delete and the
+  single-group duplicate resolve carry `playlists_reexported` in their result models yet
+  have no success-outcome surface at all (delete dialogs close and navigate, a resolved
+  group just vanishes from the refreshed report; artist rename likewise navigates away on
+  clean success), so the count stays silent there — status quo for those flows, its own UI
+  work if ever wanted (2026-08-29 review finding). Original entry:
+  (Found 2026-08-28.) The exports under `<music>/.playlists` embed
   track paths RELATIVE to the export dir, and `reexport_playlists_containing`'s own
   docstring states the invariant ("a batch of file moves leaves every existing export stale
   until the playlist is next mutated") — but its only caller outside `app/api/playlists.py`

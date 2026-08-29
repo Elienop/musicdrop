@@ -1203,6 +1203,12 @@ def test_run_import_worker_trashes_replace_ids_after_run(monkeypatch: pytest.Mon
         def __init__(self, album_id: int) -> None:
             self.id = album_id
 
+        def items(self) -> list[Any]:
+            # Read by the post-run pass BEFORE trashing, to seed the `.m3u8`
+            # re-export with the ids this Replace drops. Empty is honest for a
+            # fake whose only claim is "trashed by id, after run()".
+            return []
+
     class _Lib(_BindOnlyLib):
         def get_album(self, album_id: int) -> Any:
             return _Album(album_id)
@@ -1215,6 +1221,9 @@ def test_run_import_worker_trashes_replace_ids_after_run(monkeypatch: pytest.Mon
         paths: ClassVar[list[bytes]] = []
         _replace_album_ids: ClassVar[set[int]] = {11, 22}
         _trash_dir = Path("/tmp/trash")
+        # Unwired playlist store -> the post-trash `.m3u8` re-export is skipped
+        # (it is pinned in tests/test_playlist_reexport_movers.py instead).
+        _playlists_dir = None
 
         def run(self) -> None:
             # The new albums are imported during run(); trashing happens after.

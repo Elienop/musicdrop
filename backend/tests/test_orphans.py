@@ -211,6 +211,7 @@ def test_reorganize_models_carry_orphan_fields() -> None:
         album_id=None,
         scope_label="library",
         orphans_trashed=3,
+        playlists_reexported=0,
         failures=[],
         finished_at=None,
     )

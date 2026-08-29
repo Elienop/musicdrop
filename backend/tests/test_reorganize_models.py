@@ -80,6 +80,7 @@ def test_status_idle_shape() -> None:
         album_id=None,
         scope_label="library",
         orphans_trashed=0,
+        playlists_reexported=0,
         failures=[],
         finished_at=None,
     )

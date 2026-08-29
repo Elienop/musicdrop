@@ -77,7 +77,11 @@ class BeetsImportRunner:
     """
 
     def __init__(
-        self, lib: object, trash_dir: Path | None = None, bank_dir: Path | None = None
+        self,
+        lib: object,
+        trash_dir: Path | None = None,
+        bank_dir: Path | None = None,
+        playlists_dir: Path | None = None,
     ) -> None:
         self._lib = lib
         self._trash_dir = trash_dir
@@ -85,6 +89,12 @@ class BeetsImportRunner:
         # threaded session-ward exactly like trash_dir. Non-sweep runs never
         # receive it (the session's _bank_row would no-op anyway).
         self._bank_dir = bank_dir
+        # The owned-playlist store, threaded session-ward like the two above so
+        # the post-run Replace Trash pass can repair the `.m3u8` exports that
+        # named the replaced album's files. INJECTED rather than read from
+        # settings on the worker thread: a settings read would make a test import
+        # list the developer's real playlist store.
+        self._playlists_dir = playlists_dir
 
     def validate(self, paths: list[str], options: ImportOptions | None = None) -> None:
         # Only explicit copy is a user-facing error here; default/None are
@@ -135,6 +145,7 @@ class BeetsImportRunner:
             sweep=sweep,
             bank_dir=self._bank_dir if sweep else None,
             directive=directive,
+            playlists_dir=self._playlists_dir,
         )
 
         def target() -> None:

@@ -15,8 +15,8 @@ export const DISK_SYNC_STATUS_KEY = ["disk-sync", "status"] as const;
 
 const IDLE: DiskSyncStatus = {
   phase: "idle", job_id: null, total: 0, processed: 0, removed: 0, updated: 0,
-  unchanged: 0, read_errors: 0, emptied_albums: 0, current: null, error: null,
-  failures: [],
+  unchanged: 0, read_errors: 0, emptied_albums: 0, playlists_reexported: 0,
+  current: null, error: null, failures: [],
 };
 
 export function useDiskSyncStatus() {

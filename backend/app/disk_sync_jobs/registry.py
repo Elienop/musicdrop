@@ -34,6 +34,7 @@ class _DiskSyncJob(JobState):
     unchanged: int = 0
     read_errors: int = 0
     emptied_albums: int = 0
+    playlists_reexported: int = 0
     failures: list[DiskSyncReadError] = field(default_factory=list)
 
 
@@ -75,6 +76,12 @@ class DiskSyncRegistry(SingleSlotRegistry[_DiskSyncJob]):
             if self._job is not None:
                 self._job.emptied_albums += n
 
+    def record_playlists_reexported(self, n: int) -> None:
+        """Tally the `.m3u8` exports this run repaired (see the runner's tail pass)."""
+        with self._lock:
+            if self._job is not None:
+                self._job.playlists_reexported += n
+
     def state(self) -> DiskSyncStatus:
         with self._lock:
             job = self._job
@@ -91,6 +98,7 @@ class DiskSyncRegistry(SingleSlotRegistry[_DiskSyncJob]):
                     emptied_albums=0,
                     current=None,
                     error=None,
+                    playlists_reexported=0,
                     failures=[],
                 )
             return DiskSyncStatus(
@@ -105,6 +113,7 @@ class DiskSyncRegistry(SingleSlotRegistry[_DiskSyncJob]):
                 emptied_albums=job.emptied_albums,
                 current=job.current,
                 error=job.error,
+                playlists_reexported=job.playlists_reexported,
                 failures=list(job.failures),
             )
 
