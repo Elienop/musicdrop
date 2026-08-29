@@ -584,6 +584,146 @@ describe("AlbumEditPanel", () => {
     expect(status).not.toHaveTextContent(/wrote 0 tags/i);
   });
 
+  it("counts the playlists an apply re-exported, after the tag and file counts", async () => {
+    const post = vi.spyOn(client, "POST");
+    post.mockResolvedValueOnce(
+      ok({
+        changed_fields: ["title"],
+        album_before: { title: "In Rainbows" },
+        album_after: { title: "In Rainbows (R)" },
+        tracks: [],
+        move_enabled: true,
+        move_plan: [],
+        move_refusals: [],
+      }),
+    );
+    post.mockResolvedValueOnce(
+      ok({
+        album,
+        items: [
+          {
+            item_id: 1,
+            track: 1,
+            title: "15 Step",
+            written: true,
+            moved: true,
+            error: null,
+          },
+        ],
+        write_failures: 0,
+        move_failures: 0,
+        playlists_reexported: 3,
+      }),
+    );
+
+    renderPanel();
+    fireEvent.change(screen.getByLabelText(/album title/i), {
+      target: { value: "In Rainbows (R)" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+    await screen.findByRole("region", { name: /pending changes/i });
+    fireEvent.click(screen.getByRole("button", { name: /apply/i }));
+
+    // Whole line, anchored: the wording, the order, the " · " separators AND
+    // the absence of trailing junk are all pinned — moving files is what
+    // re-exports playlists, so it reads last.
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent(
+      /^Updated · wrote 1 tag · moved 1 file · re-exported 3 playlists$/,
+    );
+  });
+
+  it("keeps the re-export count singular for one playlist", async () => {
+    const post = vi.spyOn(client, "POST");
+    post.mockResolvedValueOnce(
+      ok({
+        changed_fields: ["title"],
+        album_before: { title: "In Rainbows" },
+        album_after: { title: "In Rainbows (R)" },
+        tracks: [],
+        move_enabled: true,
+        move_plan: [],
+        move_refusals: [],
+      }),
+    );
+    post.mockResolvedValueOnce(
+      ok({
+        album,
+        items: [
+          {
+            item_id: 1,
+            track: 1,
+            title: "15 Step",
+            written: false,
+            moved: true,
+            error: null,
+          },
+        ],
+        write_failures: 0,
+        move_failures: 0,
+        playlists_reexported: 1,
+      }),
+    );
+
+    renderPanel();
+    fireEvent.change(screen.getByLabelText(/album title/i), {
+      target: { value: "In Rainbows (R)" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+    await screen.findByRole("region", { name: /pending changes/i });
+    fireEvent.click(screen.getByRole("button", { name: /apply/i }));
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent("Updated · moved 1 file · re-exported 1 playlist");
+  });
+
+  it("omits the re-export count when the apply touched no playlist", async () => {
+    const post = vi.spyOn(client, "POST");
+    post.mockResolvedValueOnce(
+      ok({
+        changed_fields: ["title"],
+        album_before: { title: "In Rainbows" },
+        album_after: { title: "In Rainbows (R)" },
+        tracks: [],
+        move_enabled: false,
+        move_plan: [],
+        move_refusals: [],
+      }),
+    );
+    post.mockResolvedValueOnce(
+      ok({
+        album,
+        items: [
+          {
+            item_id: 1,
+            track: 1,
+            title: "15 Step",
+            written: true,
+            moved: false,
+            error: null,
+          },
+        ],
+        write_failures: 0,
+        move_failures: 0,
+        // An explicit zero, not an absent field: this line drops zero counts,
+        // so "re-exported 0 playlists" must never reach the user.
+        playlists_reexported: 0,
+      }),
+    );
+
+    renderPanel();
+    fireEvent.change(screen.getByLabelText(/album title/i), {
+      target: { value: "In Rainbows (R)" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+    await screen.findByRole("region", { name: /pending changes/i });
+    fireEvent.click(screen.getByRole("button", { name: /apply/i }));
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent(/^Updated · wrote 1 tag$/);
+    expect(status).not.toHaveTextContent(/re-exported/i);
+  });
+
   it("disables all inputs and buttons while apply is pending", async () => {
     const post = vi.spyOn(client, "POST");
     post.mockResolvedValueOnce(

@@ -17,6 +17,7 @@ import { useArtistArtBackfillStatus } from "@/api/useArtistArt";
 import { useDiskSyncStatus } from "@/api/useDiskSync";
 import { useLyricsBackfillStatus } from "@/api/useLyricsBackfill";
 import { useReorganizeStatus } from "@/api/useReorganize";
+import { plural } from "@/lib/format";
 import type { AcquisitionQueueStatus } from "@/api/useAcquisitionStatus";
 import type { ActiveImportStatus } from "@/api/useActiveImport";
 import type { ArtistArtBackfillStatus } from "@/api/useArtistArt";
@@ -290,6 +291,10 @@ function reorganizeRow(
         [status.skipped, "skipped"],
         [status.failed, "failed"],
         [status.orphans_trashed, "cleaned up"],
+        [
+          status.playlists_reexported,
+          `${plural(status.playlists_reexported, "playlist")} re-exported`,
+        ],
       ]),
       href: "/settings/beets",
     };
@@ -333,8 +338,12 @@ function diskSyncRow(status: DiskSyncStatus | undefined): ActivityRow | null {
       countsText: outcomeCounts([
         [status.removed, "removed"],
         [status.updated, "updated"],
-        [status.emptied_albums, "albums pruned"],
-        [status.read_errors, "read errors"],
+        [status.emptied_albums, `${plural(status.emptied_albums, "album")} pruned`],
+        [status.read_errors, plural(status.read_errors, "read error")],
+        [
+          status.playlists_reexported,
+          `${plural(status.playlists_reexported, "playlist")} re-exported`,
+        ],
       ]),
       href: "/settings/beets",
     };

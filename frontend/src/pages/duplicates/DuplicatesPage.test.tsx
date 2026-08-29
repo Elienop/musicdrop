@@ -267,6 +267,89 @@ describe("DuplicatesPage", () => {
     expect(await screen.findByText(/1 group changed and was skipped/i)).toBeInTheDocument();
   });
 
+  test("the summary reports the playlists the bulk resolve re-exported", async () => {
+    server.use(
+      http.get(DUP_URL, () => HttpResponse.json(reportWithTwoGroups())),
+      http.post(RESOLVE_ALL_URL, () =>
+        HttpResponse.json({
+          resolved: [{ kept_album_id: 1, moved: [{ id: 2, album_artist: "Radiohead", title: "In Rainbows", trash_path: "/t" }] }],
+          skipped_stale: [],
+          group_count: 2,
+          moved_count: 2,
+          playlists_reexported: 3,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findAllByText(/Matched on/i);
+    await user.click(screen.getByRole("button", { name: /resolve all/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /move all to trash/i }));
+
+    // Its own sentence, trailing the move outcome it followed from.
+    const note = await screen.findByText(/Moved 2 copies across 2 groups to Trash\./);
+    expect(note).toHaveTextContent(
+      "Moved 2 copies across 2 groups to Trash. Re-exported 3 playlists.",
+    );
+  });
+
+  test("the re-export sentence sits between the move outcome and the skip caveat", async () => {
+    // Both trailing clauses at once, so their ORDER is pinned — the code
+    // comment in BulkResolveNote claims it, this proves it.
+    server.use(
+      http.get(DUP_URL, () => HttpResponse.json(reportWithTwoGroups())),
+      http.post(RESOLVE_ALL_URL, () =>
+        HttpResponse.json({
+          resolved: [{ kept_album_id: 1, moved: [{ id: 2, album_artist: "Radiohead", title: "In Rainbows", trash_path: "/t" }] }],
+          skipped_stale: [{ keep_album_id: 3, reason: "duplicate group membership changed" }],
+          group_count: 1,
+          moved_count: 1,
+          playlists_reexported: 1,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findAllByText(/Matched on/i);
+    await user.click(screen.getByRole("button", { name: /resolve all/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /move all to trash/i }));
+
+    const note = await screen.findByText(/Moved 1 copy across 1 group to Trash\./);
+    expect(note).toHaveTextContent(
+      "Moved 1 copy across 1 group to Trash. Re-exported 1 playlist. " +
+        "1 group changed and was skipped; refreshed; re-check it.",
+    );
+  });
+
+  test("the summary says nothing about re-exports when no playlist changed", async () => {
+    server.use(
+      http.get(DUP_URL, () => HttpResponse.json(reportWithTwoGroups())),
+      http.post(RESOLVE_ALL_URL, () =>
+        HttpResponse.json({
+          resolved: [{ kept_album_id: 1, moved: [{ id: 2, album_artist: "Radiohead", title: "In Rainbows", trash_path: "/t" }] }],
+          skipped_stale: [],
+          group_count: 2,
+          moved_count: 2,
+          // Explicitly zero: the clause is dropped, never rendered as
+          // "Re-exported 0 playlists."
+          playlists_reexported: 0,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findAllByText(/Matched on/i);
+    await user.click(screen.getByRole("button", { name: /resolve all/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /move all to trash/i }));
+
+    const note = await screen.findByText(/Moved 2 copies across 2 groups to Trash\./);
+    expect(note).toHaveTextContent(/^Moved 2 copies across 2 groups to Trash\.$/);
+    expect(note).not.toHaveTextContent(/re-exported/i);
+  });
+
   test("an all-skipped batch leads with the skip notice, not 'moved 0'", async () => {
     // Every group drifted since the scan: a normal 200 with nothing moved. The
     // summary must surface the actionable skip, not read as a no-op success.

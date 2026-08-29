@@ -411,20 +411,27 @@ function ApplyOutcome({
 }> ) {
   const wrote = result.items.filter((i) => i.written).length;
   const moved = result.items.filter((i) => i.moved).length;
+  const reexported = result.playlists_reexported;
   const failures = result.items.filter((i) => Boolean(i.error));
+
+  // Zero counts are dropped, so "Updated" stands alone when an apply had
+  // nothing of a given kind to do — "wrote 0 tags" reads as a failure. Built as
+  // a list rather than inline separators: with three counts the "put a · here
+  // only if something precedes AND something follows" conditions multiply.
+  const counts: string[] = [];
+  if (wrote > 0) counts.push(`wrote ${wrote} tag${wrote === 1 ? "" : "s"}`);
+  if (moved > 0) counts.push(`moved ${moved} file${moved === 1 ? "" : "s"}`);
+  if (reexported > 0) {
+    counts.push(
+      `re-exported ${reexported} playlist${reexported === 1 ? "" : "s"}`,
+    );
+  }
 
   return (
     <div className="flex flex-col gap-2 text-sm">
       <output className="block">
         Updated
-        {(wrote > 0 || moved > 0) && (
-          <>
-            {" · "}
-            {wrote > 0 && `wrote ${wrote} tag${wrote === 1 ? "" : "s"}`}
-            {wrote > 0 && moved > 0 && " · "}
-            {moved > 0 && `moved ${moved} file${moved === 1 ? "" : "s"}`}
-          </>
-        )}
+        {counts.length > 0 && ` · ${counts.join(" · ")}`}
       </output>
       {(result.write_failures > 0 || result.move_failures > 0) && (
         <div
