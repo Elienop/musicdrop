@@ -52,13 +52,16 @@ _NOTHING_IMPORTED_ERROR = (
 def directive_for(item: BankItem) -> BankApplyDirective:
     """Translate a queued row's decision into the session directive.
 
-    ``apply`` resolves ``candidate_index`` against the BANKED options list
-    (None -> top; out-of-range falls back to top, mirroring _apply_choice)
-    and carries that option's ``release_id`` as the ``search_ids`` pin.
-    No stored id (duplicate rows have no parked payload; rows banked before
-    release ids were recorded) -> ``search_id=None``: the run does an
-    unpinned lookup and the session takes its top candidate (documented
-    caveat - the match is re-run rather than replayed).
+    ``apply`` and ``duplicate`` both resolve ``candidate_index`` against the
+    BANKED options list (None -> top; out-of-range falls back to top,
+    mirroring _apply_choice) and carry that option's ``release_id`` as the
+    ``search_ids`` pin: the apply REPLAYS the banked match instead of
+    re-running it.
+    No stored id -> ``search_id=None``: the run does an unpinned lookup and
+    the session takes its top candidate. That is the LEGACY case only - rows
+    banked before the sweep stored its matched release, rows whose task had
+    no match to store, and options from a source that carries no release id.
+    Those rows drain by user decision; nothing back-fills them.
     """
     decision = item.decided
     if decision is None:
@@ -66,10 +69,12 @@ def directive_for(item: BankItem) -> BankApplyDirective:
         # defensive for a hand-edited row file.
         raise RuntimeError("queued row has no decision")
     if decision.action == "duplicate":
-        # "decide once": when the row carries a parked candidate, pin the
-        # selected option's release_id so the apply imports exactly the chosen
-        # release while resolving the collision. Sweep-banked dup rows (no
-        # parked payload) stay unpinned, exactly as before.
+        # "decide once": the row carries the release it was matched to (the
+        # sweep banks it alongside the prompt), so pin that option's
+        # release_id and import exactly it while resolving the collision. The
+        # duplicate screen posts no candidate_index, so this resolves to
+        # options[0] - which the sweep stores as the matched release. Legacy
+        # rows with no parked payload stay unpinned.
         return BankApplyDirective(
             action="duplicate",
             search_id=_resolve_search_id(item, decision.candidate_index),
@@ -93,8 +98,9 @@ def _resolve_search_id(item: BankItem, candidate_index: int | None) -> str | Non
     ``candidate_index`` is resolved against the BANKED options list
     (None -> top; out-of-range falls back to top, mirroring _apply_choice).
     No parked payload, or a payload with no options -> ``None``: the run
-    does an unpinned lookup and the session takes its top candidate
-    (documented caveat - the match is re-run rather than replayed).
+    does an unpinned lookup and the session takes its top candidate. Only
+    LEGACY rows land there now (see ``directive_for``); on such a row the
+    match IS re-run rather than replayed.
     """
     parked = item.parked
     if parked is None or not parked.candidate.options:

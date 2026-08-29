@@ -417,7 +417,9 @@ class WebImportSession(ImportSession):
         flips that one row, then block the serial worker until a decision arrives.
         In sweep mode the prompt is banked (reason needs_dup_resolution) and the
         new album SKIPped instead — the library copy stays, the decision moves to
-        the bank.
+        the bank. The release the task was MATCHED to is banked with it (see
+        _matched_release_payload) so that later decision replays this match
+        instead of re-running the lookup.
 
         Our four model actions map onto beets' enum:
         skip_new→SKIP, keep_both→KEEP, merge→MERGE, and replace→KEEP (the new
@@ -470,12 +472,21 @@ class WebImportSession(ImportSession):
                 # Bank the prompt the attended flow would park: the user
                 # resolves skip/keep/replace/merge later from the Review page.
                 rec = task.rec if task.rec is not None else BeetsRec.none
+                recommendation = _REC_MAP.get(rec, Recommendation.none)
                 self._bank_row(
                     task,
                     reason="needs_dup_resolution",
-                    recommendation=_REC_MAP.get(rec, Recommendation.none),
+                    recommendation=recommendation,
                     confidence=_confidence(task.match.distance) if task.match is not None else 0.0,
                     duplicate=prompt,
+                    # ...and the release this album was MATCHED to, so the
+                    # apply replays it instead of re-running the lookup.
+                    parked=self._matched_release_payload(
+                        task,
+                        index=index,
+                        recommendation=recommendation,
+                        has_current_art=incoming.has_current_art,
+                    ),
                 )
             # Unattended: the outcome above records the set-aside; SKIP the new
             # album (keeps the library copy) without parking + blocking.
@@ -1158,6 +1169,58 @@ class WebImportSession(ImportSession):
             parked=parked,
             duplicate=duplicate,
         )
+
+    def _matched_release_payload(
+        self,
+        task: ImportTask,
+        *,
+        index: int,
+        recommendation: Recommendation,
+        has_current_art: bool,
+    ) -> ParkedAlbum | None:
+        """The release this task was matched to, as a needs_review row's payload.
+
+        A sweep-banked DUPLICATE row is a decision the pipeline had already
+        made: beets only reaches the duplicate hook after the choice is set, so
+        ``task.match`` is the exact release this album would have been imported
+        as. Persisting it in the SAME ParkedAlbum shape a needs_review row
+        carries is what lets ``directive_for`` pin ``import.search_ids`` when
+        the user later resolves the collision — the bank's "decide once"
+        promise. Without it the apply re-runs the lookup and takes whatever the
+        metadata sources rank first that day, which need not be the release the
+        user reviewed.
+
+        ``task.match`` is None for the ASIS/RETAG tasks that share this hook
+        (beets' ``_resolve_duplicates`` fires for choice_flag in
+        ASIS/APPLY/RETAG, and ``set_choice`` nulls the match for those): nothing
+        was matched, so there is nothing to pin and the row stays honestly
+        unpinned. ``task.candidates`` may still be populated there — pinning its
+        top would be exactly the re-run-instead-of-replay bug in reverse.
+
+        The match LEADS the option list so ``options[0]`` is the matched
+        release by construction, not by assuming beets left the chosen match at
+        the head of ``task.candidates`` (``set_choice`` does not reorder it).
+        That matters because the duplicate screen posts no ``candidate_index``,
+        and ``_resolve_search_id`` resolves an index-less decision to
+        ``options[0]``.
+        """
+        # Album-shaped by the singleton early-return at the top of this hook, so
+        # the match and every candidate is an AlbumMatch; typed as Any because
+        # beets types both as the wider AlbumMatch | TrackMatch union (the same
+        # reason choose_match annotates its candidate list that way).
+        match: Any = task.match
+        if match is None:
+            return None
+        others: list[Any] = [c for c in (task.candidates or []) if c is not match]
+        candidate = map_album_match(
+            match,
+            cur_artist=task.cur_artist,
+            cur_album=task.cur_album,
+            options=map_candidate_options([match, *others]),
+            recommendation=recommendation,
+            has_current_art=has_current_art,
+        )
+        return ParkedAlbum(album_index=index, folder=self._task_folder(task), candidate=candidate)
 
     def _outcome(
         self,

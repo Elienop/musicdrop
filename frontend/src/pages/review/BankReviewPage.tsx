@@ -478,6 +478,14 @@ function BankCandidateScreen({ item }: Readonly<{ item: BankItem }>) {
                   This album is already in your library.
                 </output>
               )}
+              {/* Same unpinned-apply hazard as the duplicate screen, keyed on
+                  the SELECTED option — both submit shapes here carry
+                  candidate_index, so this is exactly what the apply pins to. */}
+              {parked.candidate.options[selected]?.release_id == null && (
+                <output className="text-muted-foreground text-sm block">
+                  {UNPINNED_OPTION_NOTE}
+                </output>
+              )}
               <DecisionError error={decide.error} />
               <SearchConflict error={search.error} />
               <SearchConflict error={rescan.error} />
@@ -492,6 +500,50 @@ function BankCandidateScreen({ item }: Readonly<{ item: BankItem }>) {
       </div>
     </Shell>
   );
+}
+
+/**
+ * The honest note for a duplicate row whose resolution is NOT pinned to the
+ * release on screen. Deliberately avoids "Apply" (this screen has no Apply
+ * button — the four duplicate actions ARE the submit) and avoids "the release
+ * you chose": the banked release was matched by the sweep, not picked by the
+ * user, so it is only ever the one SHOWN. Shape-neutral on purpose — "no
+ * release id is stored" is true both for a row banked before matches were
+ * stored AND for a stored match from an id-less source — and it names the
+ * on-screen remedy: Rescan re-banks the row through the pinning path (fresh
+ * payload; the collision is re-flagged by the up-front check if still real).
+ */
+const LEGACY_REMATCH_NOTE =
+  "No release id is stored for this row: importing it re-matches the folder online, so the release that lands may differ from the one shown. Rescan the folder to see a fresh match.";
+
+/**
+ * The candidate screen's sibling of the note above, keyed on the SELECTED
+ * option — the user picks `candidate_index` on that screen, so keying index 0
+ * would go silently wrong the moment they switch. "Apply" is accurate there
+ * (the button exists). No rescan sentence: the natural remedy on that screen
+ * is picking an option that carries a release id, when one exists.
+ */
+const UNPINNED_OPTION_NOTE =
+  "The selected match has no stored release id: Apply re-matches the folder online, so the release that lands may differ from the one shown.";
+
+/**
+ * Is this row's resolution unpinned — i.e. will the apply runner re-run the
+ * match online instead of importing the release this screen displays?
+ *
+ * The sweep now banks the candidate payload alongside the duplicate prompt, so
+ * a modern row pins to its stored release like every other row. Two shapes
+ * cannot pin: no parked payload at all (banked before the fix), and a stored
+ * option from an id-less source (`release_id` null — nothing to pin TO, and
+ * possible on rows of any age).
+ *
+ * Keyed on the row's STORED DATA, never on `status`: a failed apply re-enters
+ * this screen as `failed` and is still legacy on every retry.
+ *
+ * Neither a missing payload nor an empty `options` array needs a clause of
+ * its own — the optional chain makes both read as `undefined == null` → true.
+ */
+function isLegacyUnpinned(item: BankItem): boolean {
+  return item.parked?.candidate.options[0]?.release_id == null;
 }
 
 function BankDuplicateScreen({ item }: Readonly<{ item: BankItem }>) {
@@ -543,6 +595,13 @@ function BankDuplicateScreen({ item }: Readonly<{ item: BankItem }>) {
           })}
           messages={
             <>
+              {/* Sits with the other decision-point messages, directly above
+                  the four duplicate actions it qualifies. */}
+              {isLegacyUnpinned(item) && (
+                <output className="text-muted-foreground text-sm block">
+                  {LEGACY_REMATCH_NOTE}
+                </output>
+              )}
               <DecisionError error={decide.error} />
               <SearchConflict error={rescan.error} />
               {rescan.isError && !(rescan.error instanceof BankConflictError) && (

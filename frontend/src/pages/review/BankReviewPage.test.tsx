@@ -193,6 +193,175 @@ describe("BankReviewPage", () => {
     expect(body).toEqual({ action: "duplicate", duplicate_action: "merge" });
   });
 
+  /**
+   * The re-match label on the bank duplicate screen. LEGACY rows (banked
+   * before the sweep stored the candidate payload) cannot pin their apply to
+   * the release on screen, so the apply re-runs the match online and may land
+   * a different one — these rows must say so. Post-fix rows pin, and must NOT.
+   *
+   * The expected copy is written out here on PURPOSE rather than imported from
+   * the page: a shared constant would follow any production edit and the
+   * assertion would never fail. This literal is the drift alarm.
+   */
+  describe("the legacy re-match label", () => {
+    const LEGACY_NOTE =
+      "No release id is stored for this row: importing it re-matches the folder online, so the release that lands may differ from the one shown. Rescan the folder to see a fresh match.";
+
+    /** A bank duplicate row; `parked` defaults to the POST-FIX payload
+     * (options[0].release_id === "mb-1"), so tests opt INTO legacy shapes. */
+    function dupRow(over: Record<string, unknown> = {}) {
+      return bankItem({
+        reason: "needs_dup_resolution",
+        duplicate: duplicatePrompt,
+        recommendation: null,
+        confidence: null,
+        ...over,
+      });
+    }
+
+    test("a LEGACY row (no parked payload) shows the label", async () => {
+      server.use(http.get(ITEM, () => HttpResponse.json(dupRow({ parked: null }))));
+      renderRow();
+      await screen.findByRole("heading", { name: /already in your library/i });
+      expect(screen.getByText(LEGACY_NOTE)).toBeInTheDocument();
+    });
+
+    test("a POST-FIX row (options[0].release_id set) does NOT show it, and still posts the same body", async () => {
+      let body: unknown = null;
+      server.use(
+        http.get(ITEM, () => HttpResponse.json(dupRow())),
+        http.post(DECISION, async ({ request }) => {
+          body = await request.json();
+          return HttpResponse.json(dupRow({ status: "queued" }));
+        }),
+      );
+      renderRow();
+      // Positive control: the screen really rendered, so the absence below is
+      // a real absence rather than an unmounted page.
+      await screen.findByRole("heading", { name: /already in your library/i });
+      expect(screen.queryByText(LEGACY_NOTE)).not.toBeInTheDocument();
+
+      // Pinning changes what the APPLY does, never the decision payload — the
+      // legacy side of this is already pinned by the duplicate test above.
+      await userEvent.click(screen.getByRole("button", { name: /merge/i }));
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/review"));
+      expect(body).toEqual({ action: "duplicate", duplicate_action: "merge" });
+    });
+
+    test("an ID-LESS SOURCE row (options[0].release_id null) shows the label", async () => {
+      // options[1] KEEPS its release_id, so this also proves the predicate
+      // reads index 0 specifically — not "some option lacks an id".
+      const idless = {
+        ...candidate,
+        options: [
+          { ...candidate.options[0], release_id: null },
+          ...candidate.options.slice(1),
+        ],
+      };
+      server.use(
+        http.get(ITEM, () =>
+          HttpResponse.json(
+            dupRow({ parked: { album_index: 0, folder: "/inbox/BoC", candidate: idless } }),
+          ),
+        ),
+      );
+      renderRow();
+      await screen.findByRole("heading", { name: /already in your library/i });
+      expect(screen.getByText(LEGACY_NOTE)).toBeInTheDocument();
+    });
+
+    test("a row with NO candidate options shows the label", async () => {
+      // The clause the implementation folds into the optional chain
+      // (`options[0]` undefined → `== null`). Pinned so the simplification
+      // cannot silently regress into a crash or a missing label.
+      server.use(
+        http.get(ITEM, () =>
+          HttpResponse.json(
+            dupRow({
+              parked: {
+                album_index: 0,
+                folder: "/inbox/BoC",
+                candidate: { ...candidate, options: [] },
+              },
+            }),
+          ),
+        ),
+      );
+      renderRow();
+      await screen.findByRole("heading", { name: /already in your library/i });
+      expect(screen.getByText(LEGACY_NOTE)).toBeInTheDocument();
+    });
+
+    test("a FAILED legacy row still shows it — the label is keyed on stored data, not status", async () => {
+      // A failed apply re-enters this screen for a retry; the row is still
+      // unpinned, so the honesty note must survive the status change.
+      server.use(
+        http.get(ITEM, () =>
+          HttpResponse.json(dupRow({ parked: null, status: "failed", error: "duplicate block" })),
+        ),
+      );
+      renderRow();
+      await screen.findByRole("heading", { name: /already in your library/i });
+      expect(screen.getByText(LEGACY_NOTE)).toBeInTheDocument();
+    });
+  });
+
+  describe("the candidate screen's unpinned-option note", () => {
+    const OPTION_NOTE =
+      "The selected match has no stored release id: Apply re-matches the folder online, so the release that lands may differ from the one shown.";
+
+    test("shows when the SELECTED option lacks a release id, even though another option has one", async () => {
+      const idless = {
+        ...candidate,
+        options: [
+          { ...candidate.options[0], release_id: null },
+          candidate.options[1], // keeps "mb-2" — pins selected-index keying
+        ],
+      };
+      server.use(
+        http.get(ITEM, () =>
+          HttpResponse.json(
+            bankItem({ parked: { album_index: 0, folder: "/inbox/BoC", candidate: idless } }),
+          ),
+        ),
+      );
+      renderRow();
+      await screen.findAllByText(/after import/i);
+      expect(screen.getByText(OPTION_NOTE)).toBeInTheDocument();
+    });
+
+    test("absent when the selected option carries an id, and follows a switch both ways", async () => {
+      const mixed = {
+        ...candidate,
+        options: [
+          candidate.options[0], // "mb-1" — pinned
+          { ...candidate.options[1], release_id: null }, // id-less
+        ],
+      };
+      server.use(
+        http.get(ITEM, () =>
+          HttpResponse.json(
+            bankItem({ parked: { album_index: 0, folder: "/inbox/BoC", candidate: mixed } }),
+          ),
+        ),
+      );
+      renderRow();
+      await screen.findAllByText(/after import/i);
+      // Default selection (index 0) has an id: no note.
+      expect(screen.queryByText(OPTION_NOTE)).not.toBeInTheDocument();
+      // Switch to the id-less option: the note follows the SELECTION.
+      fireEvent.change(screen.getByRole("combobox", { name: /candidate release/i }), {
+        target: { value: "1" },
+      });
+      expect(screen.getByText(OPTION_NOTE)).toBeInTheDocument();
+      // And back: it clears again.
+      fireEvent.change(screen.getByRole("combobox", { name: /candidate release/i }), {
+        target: { value: "0" },
+      });
+      expect(screen.queryByText(OPTION_NOTE)).not.toBeInTheDocument();
+    });
+  });
+
   test("a no_match row shows the folder and offers as-is / as tracks / ignore", async () => {
     let body: unknown = null;
     server.use(

@@ -23,6 +23,8 @@ from app.models.import_models import (
     AlbumChange,
     Candidate,
     CandidateOption,
+    DuplicatePrompt,
+    IncomingAlbum,
     ParkedAlbum,
     Recommendation,
 )
@@ -263,6 +265,58 @@ def test_duplicates_endpoint_empty_for_no_match_row(
 ) -> None:
     # A row with no parked candidate has nothing to check.
     assert client.get(f"/api/bank/{no_match_row}/duplicates").json()["existing"] == []
+
+
+@pytest.fixture
+def dup_row_with_banked_release(bank_dir: Path, beets_library: LibraryHandle) -> str:
+    """A sweep-banked dup row: the prompt to decide on AND the matched release.
+
+    The same collision the ``parked_row_in_library`` fixture makes the endpoint
+    report — so a leak shows up as a non-empty list, not as an empty one.
+    """
+    _add_album(beets_library.lib, artist="2Pac", album="Me Against the World", mb="mb-1", n=15)
+    item = store.create_item(
+        bank_dir,
+        folder="/inbox/2Pac-dup",
+        source="sweep",
+        reason="needs_dup_resolution",
+        fingerprint="f" * 64,
+        parked=ParkedAlbum(
+            album_index=0,
+            folder="/inbox/2Pac-dup",
+            candidate=_candidate(
+                artist="2Pac", album="Me Against the World", release_ids=["mb-1", "mb-2"]
+            ),
+        ),
+        duplicate=DuplicatePrompt(
+            album_index=0,
+            incoming=IncomingAlbum(
+                album_artist="2Pac",
+                album="Me Against the World",
+                year=None,
+                track_count=15,
+                format=None,
+                bitrate_kbps=None,
+                folder="/inbox/2Pac-dup",
+                has_current_art=False,
+            ),
+            existing=[],
+        ),
+    )
+    return item.id
+
+
+def test_duplicates_endpoint_empty_for_dup_row(
+    client: TestClient, bank_dir: Path, dup_row_with_banked_release: str
+) -> None:
+    # A needs_dup_resolution row now carries a parked payload too, but ONLY to
+    # pin its apply. Its collision is the banked prompt the dup screen renders
+    # (item.duplicate), so this lazy re-check stays out of it and keeps its
+    # pre-pin answer — the endpoint gates on the reason, exactly as the search
+    # endpoint does. Without that gate this returns the "2Pac" collision.
+    r = client.get(f"/api/bank/{dup_row_with_banked_release}/duplicates")
+    assert r.status_code == 200
+    assert r.json()["existing"] == []
 
 
 # ----- detection follows the SELECTED option's metadata, not the top match -----

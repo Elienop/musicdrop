@@ -77,13 +77,16 @@ class BankApplyDirective(BaseModel):
 
     * ``apply``     — ``search_id`` pins beets ``import.search_ids`` to the
       chosen release; the session selects the pinned lookup's top candidate.
-      ``search_id`` None (a duplicate row, or a row banked before release ids
-      were recorded) falls back to an unpinned lookup's top candidate —
-      documented caveat: that re-runs the match instead of replaying the exact
-      banked option.
+      ``search_id`` None falls back to an unpinned lookup's top candidate,
+      which re-runs the match instead of replaying the banked option. That is
+      the LEGACY shape only: a row banked before its matched release was
+      stored, a row whose task had no match, or an option from a source that
+      carries no release id.
     * ``asis`` / ``astracks`` — direct ``Action.ASIS`` / ``Action.TRACKS``
       (astracks singletons then import as-is via ``choose_item``).
-    * ``duplicate`` — ``resolve_duplicate`` auto-answers ``duplicate_action``.
+    * ``duplicate`` — ``resolve_duplicate`` auto-answers ``duplicate_action``,
+      and ``search_id`` pins the banked release the same way ``apply`` does
+      (the sweep banks the matched release with the prompt).
 
     Never referenced by an endpoint, so it stays out of the OpenAPI schema.
     """
@@ -104,7 +107,10 @@ class BankItem(BaseModel):
     album: str | None = None
     recommendation: str | None = None
     confidence: float | None = None
-    parked: ParkedAlbum | None = None  # the live review screen's exact payload
+    # The live review screen's exact payload. Required on a needs_review row;
+    # a needs_dup_resolution row carries one too (the release the sweep matched
+    # before the collision was found), which is what pins its apply.
+    parked: ParkedAlbum | None = None
     duplicate: DuplicatePrompt | None = None
     fingerprint: str
     status: BankStatus

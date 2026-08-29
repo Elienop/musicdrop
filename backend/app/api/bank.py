@@ -111,8 +111,16 @@ async def bank_item_duplicates(
     if item is None:
         raise HTTPException(status_code=404, detail=_BANK_ITEM_NOT_FOUND)
     parked = item.parked
-    if parked is None:
-        return DuplicatesCheckResponse(existing=[])  # nothing to check (no_match)
+    if parked is None or item.reason == "needs_dup_resolution":
+        # Nothing to check: a no_match row has no candidate at all, and a
+        # dup row's collision is the prompt it was banked WITH (item.duplicate,
+        # what the duplicate screen renders and what its four actions resolve).
+        # Such a row carries a parked payload only to PIN its apply to the
+        # matched release - re-checking that payload here would answer a
+        # question this row's screen never asks, from a second source that can
+        # disagree with the banked prompt. Gated on the reason, like the search
+        # endpoint below.
+        return DuplicatesCheckResponse(existing=[])
     albumartist, album, year, mb_albumid = selected_option_identity(
         parked.candidate.options, candidate_index, parked.candidate.album_after
     )
