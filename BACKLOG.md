@@ -256,8 +256,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   per route, and it IS a contract change: the two-step regen applies.
 
 - ~~**README drift, five items (2026-08-28 sweep — each violates the keep-README-in-sync
-  rule).**~~ — **FIXED in the README-drift docs PR (PR # filled on this branch before
-  merge), 2026-08-29.** All five confirmed by a re-derive-and-refute audit (17 findings
+  rule).**~~ — **FIXED in #194, 2026-08-29.** All five confirmed by a re-derive-and-refute audit (17 findings
   total, 0 refuted) and fixed, along with 12 more the full sweep found: the missing
   `MUSICDROP_PLEX_LIBRARY_SECTION` seed var (empty = the SOLE music section; several →
   sync refuses until one is named — the "first artist section" comments in the code are
