@@ -71,6 +71,8 @@ from app.etag import stat_etag
 
 _OVERRIDE_SUFFIX = ".override"
 _OVERRIDE_MIME_SUFFIX = ".override.mime"
+_BIN_SUFFIX = ".bin"
+_MIME_SUFFIX = ".mime"
 _CACHE_DIR_UNREADABLE = "artist-image cache dir is unreadable: %s"
 # One string for both writers under the "cache-write" throttle key: the two
 # sites (_or_remember's failure and the lazy write-back's) must stay
@@ -85,8 +87,8 @@ _CACHE_DIR_UNWRITABLE = (
 _ALL_SLOT_SUFFIXES: Final = (
     _OVERRIDE_SUFFIX,
     _OVERRIDE_MIME_SUFFIX,
-    ".bin",
-    ".mime",
+    _BIN_SUFFIX,
+    _MIME_SUFFIX,
     ".miss",
     ".thumb.bin",
     ".thumb.src",
@@ -97,8 +99,8 @@ _ALL_SLOT_SUFFIXES: Final = (
 _MOVE_ORDER: Final = (
     _OVERRIDE_MIME_SUFFIX,
     _OVERRIDE_SUFFIX,
-    ".mime",
-    ".bin",
+    _MIME_SUFFIX,
+    _BIN_SUFFIX,
     ".thumb.src",
     ".thumb.bin",
 )
@@ -400,7 +402,7 @@ class ArtistImageCache:
         if self._memory.discard_if(key, entry):
             return
         try:
-            for suffix in (".bin", ".mime"):
+            for suffix in (_BIN_SUFFIX, _MIME_SUFFIX):
                 (self._dir / f"{key}{suffix}").unlink(missing_ok=True)
         except OSError:
             pass
@@ -708,7 +710,7 @@ class ArtistImageCache:
             relocated = self._replace(
                 self._dir / f"{old_key}{suffix}", self._dir / f"{new_key}{suffix}"
             )
-            if suffix in (_OVERRIDE_SUFFIX, ".bin"):
+            if suffix in (_OVERRIDE_SUFFIX, _BIN_SUFFIX):
                 moved = moved or relocated
         remembered = self._memory.get(old_key)
         if isinstance(remembered, _MemoryEntry):
@@ -735,7 +737,7 @@ class ArtistImageCache:
         on disk or stranded in the memory fallback. Guarded: an unreadable
         cache dir reads as "no portrait" (same posture as ``validator``)."""
         try:
-            for suffix in (_OVERRIDE_SUFFIX, ".bin"):
+            for suffix in (_OVERRIDE_SUFFIX, _BIN_SUFFIX):
                 if (self._dir / f"{key}{suffix}").exists():
                     return True
         except OSError as exc:
