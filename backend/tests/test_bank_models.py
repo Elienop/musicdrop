@@ -91,6 +91,25 @@ def test_bank_item_roundtrip_minimal() -> None:
     assert again.duplicate is None
 
 
+def test_a_row_persisted_without_error_retryable_reads_as_retryable() -> None:
+    # Every bank row on disk predates this field, and rows are re-read (never
+    # migrated). The default has to be the SAFE side: "decide again to retry" is
+    # the banner's headline, and a legacy failed row must still offer it.
+    item = BankItem.model_validate(
+        {
+            "id": "a" * 32,
+            "folder": "/library/Artist/Album",
+            "source": "sweep",
+            "reason": "no_match",
+            "fingerprint": "deadbeef",
+            "status": "failed",
+            "error": "the apply imported nothing",
+            "banked_at": "2026-06-12T00:00:00+00:00",
+        }
+    )
+    assert item.error_retryable is True
+
+
 def test_bank_item_rejects_garbage_timestamps() -> None:
     with pytest.raises(ValidationError):
         BankItem.model_validate(

@@ -12,7 +12,9 @@ isolated here.
 """
 
 import os
+import unicodedata
 import uuid
+from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
@@ -32,6 +34,7 @@ from app.beets.release_identity import release_identity
 from app.etag import stat_etag
 from app.models.album import Album, AlbumDetail, Track
 from app.models.artist import Artist
+from app.models.import_models import ExistingAlbum
 from app.models.search import SearchEntity, SearchResults, SearchTrack, TypedSearchPage
 
 # Allowlist of cover-art extensions we serve. `.svg` is deliberately excluded:
@@ -166,6 +169,113 @@ def library_paths_context(handle: LibraryHandle) -> AbstractContextManager[Any]:
 def album_exists(handle: LibraryHandle, album_id: int) -> bool:
     """Whether ``album_id`` is in the library. A scalar read; no path expansion."""
     return handle.lib.get_album(album_id) is not None
+
+
+def _fold(value: object) -> str | None:
+    """NFC-normalized, case-folded, stripped comparison key. ``None`` when blank.
+
+    NFC before casefold because the two Unicode spellings of an accented name
+    (``é`` as U+00E9 vs ``e`` + U+0301) render identically and name the SAME
+    album, while comparing unequal byte-for-byte: whichever spelling a re-tag
+    happened to write must not read as a stranger.
+    """
+    if value is None:
+        return None
+    text = unicodedata.normalize("NFC", str(value)).strip()
+    return text.casefold() or None
+
+
+def _album_identity_matches(album: Any, stored: ExistingAlbum) -> bool:
+    """Whether the live album at ``stored.album_id`` is still the album banked.
+
+    An id ALONE proves nothing. beets album ids are SQLite rowids on an
+    ``id INTEGER PRIMARY KEY`` table, which reuses a deleted row's id (the
+    delete-then-reinsert case is documented at
+    ``import_session._library_change_signature``) — so after the banked album
+    was deleted, that id can name a completely different album. Acting on it
+    unverified would skip an import the user wanted, or Trash a copy they never
+    decided anything about.
+
+    Only the entry with NOTHING to compare (blank artist AND blank album AND no
+    release URL) is rejected up front: an empty key would match every sparsely
+    tagged album in the library, which is the id-reuse hazard again with extra
+    steps. That guard does NOT cover a blank-named entry that carries a URL —
+    the URL is what keeps it out, and the URL is what must then verify it (see
+    the last bullet). Compared in order:
+
+    * ``album_artist`` and ``album``, case-folded and stripped — the same pair
+      beets' own ``duplicate_keys.album`` uses, so a match here is the identity
+      the user was actually shown. Case-folding is deliberately laxer than
+      beets' byte-exact query: a case-only re-tag is the SAME album, and reading
+      it as a stranger is the wrong answer for both callers.
+    * the release URL. It is the strongest discriminator available
+      (``ExistingAlbum`` stores the release identity, not the raw id, and the
+      URL embeds it), yet a copy re-tagged to a different release since banking
+      must not be read as a match — so a live URL that DISAGREES rejects, while
+      a live copy carrying none leaves the name match standing.
+    * ...unless both folded names are None, where the names proved nothing:
+      "no name == no name" matches every untagged album a reused rowid could
+      now hold. There the URL is the whole identity and must be VERIFIED, not
+      merely non-contradicting — an absent live URL fails SHUT.
+    """
+    stored_url = stored.release.release_url if stored.release is not None else None
+    stored_artist = _fold(stored.album_artist)
+    stored_album = _fold(stored.album)
+    if not (stored_artist or stored_album or stored_url):
+        return False
+    # Read as plain attributes, not ``getattr(..., None)``: both are FIXED beets
+    # Album fields (always present, "" when unset), and a default would quietly
+    # accept a ``None`` album from a missing id — making the caller's own
+    # not-found skip dead code that no mutation could reach.
+    if _fold(album.albumartist) != stored_artist:
+        return False
+    if _fold(album.album) != stored_album:
+        return False
+    if not stored_url:
+        return True
+    live_url = release_identity(album, getattr(album, "mb_albumid", None)).release_url
+    if stored_artist is None and stored_album is None:
+        # Names proved nothing: no live URL means nothing was verified at all.
+        return live_url == stored_url
+    return not live_url or live_url == stored_url
+
+
+def duplicate_albums_still_present(lib: Library, existing: Sequence[ExistingAlbum]) -> list[int]:
+    """The banked duplicate ids the library still holds AS THE SAME album.
+
+    The identity-verified answer to "does the collision the user decided about
+    still exist?": every id in the result is present AND passes
+    ``_album_identity_matches``. A missing id, or one whose album no longer
+    matches, is simply absent from the result — callers treat that as "did not
+    survive" (import proceeds) or "not trashable" (leave it alone), never as a
+    fault.
+
+    ``music_dir_context`` is bound because callers run on worker threads that
+    inherit none of beets' path ContextVar (``library_paths_context``): the
+    fields compared here are metadata, but constructing an ``Album`` touches
+    beets' path types, and an unbound read is the quirk this adapter exists to
+    hide.
+    """
+    present: list[int] = []
+    with lib.music_dir_context():
+        for stored in existing:
+            album = lib.get_album(stored.album_id)
+            if album is None:
+                continue
+            if _album_identity_matches(album, stored):
+                present.append(stored.album_id)
+    return present
+
+
+def surviving_duplicate_album_ids(
+    handle: LibraryHandle, existing: Sequence[ExistingAlbum]
+) -> list[int]:
+    """``duplicate_albums_still_present`` for callers outside ``app/beets/``.
+
+    Handle-typed so ``app/bank/`` never touches a beets object (rule 3),
+    the same shape ``album_exists`` takes.
+    """
+    return duplicate_albums_still_present(handle.lib, existing)
 
 
 def _coerce_str(value: object) -> str:

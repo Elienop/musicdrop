@@ -9328,6 +9328,11 @@
             ],
             "title": "Error"
           },
+          "error_retryable": {
+            "type": "boolean",
+            "title": "Error Retryable",
+            "default": true
+          },
           "album_id": {
             "anyOf": [
               {

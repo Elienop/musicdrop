@@ -222,12 +222,35 @@ function RescanControl({
 
 const NO_HIT_FEEDBACK = "No release found. Showing your previous matches.";
 
-/** The failed-apply banner. role=alert via StatusBanner's destructive tone. */
-function FailedBanner({ error }: Readonly<{ error: string | null | undefined }>) {
+/** The failed-apply banner. role=alert via StatusBanner's destructive tone.
+ *
+ * The headline branches on the row's `error_retryable` flag, never on the
+ * error TEXT — the same stance the strip below takes, for the same reason.
+ * The runner marks a row not-retryable when deciding again would import a
+ * THIRD copy, so the emphasized line must not instruct the retry that the
+ * muted reason under it forbids; recovery is removing one of the two copies,
+ * which the Duplicates link reaches. Absent or true keeps the retry headline —
+ * rows banked before the flag existed are retryable. */
+function FailedBanner({ item }: Readonly<{ item: BankItem }>) {
+  const retryable = item.error_retryable !== false;
   return (
-    <StatusBanner tone="destructive" icon={Warning}>
-      <p className="font-medium">The apply failed. Decide again to retry.</p>
-      {error && <p className="text-muted-foreground text-sm">{error}</p>}
+    <StatusBanner
+      tone="destructive"
+      icon={Warning}
+      action={
+        retryable ? undefined : (
+          <Button variant="outline" size="sm" asChild>
+            <Link to="/duplicates">Open Duplicates</Link>
+          </Button>
+        )
+      }
+    >
+      <p className="font-medium">
+        {retryable
+          ? "The apply failed. Decide again to retry."
+          : "The apply failed."}
+      </p>
+      {item.error && <p className="text-muted-foreground text-sm">{item.error}</p>}
     </StatusBanner>
   );
 }
@@ -374,7 +397,7 @@ function BankCandidateScreen({ item }: Readonly<{ item: BankItem }>) {
   return (
     <Shell>
       <div className="flex flex-col gap-6">
-        {item.status === "failed" && <FailedBanner error={item.error} />}
+        {item.status === "failed" && <FailedBanner item={item} />}
         <CandidateReview
           candidate={parked.candidate}
           // Banked rows keep metadata only — the live job's current-art
@@ -565,7 +588,7 @@ function BankDuplicateScreen({ item }: Readonly<{ item: BankItem }>) {
   return (
     <Shell>
       <div className="flex flex-col gap-6">
-        {item.status === "failed" && <FailedBanner error={item.error} />}
+        {item.status === "failed" && <FailedBanner item={item} />}
         <DuplicateComparison prompt={prompt} incomingCoverUrl={null} />
         <ReviewControlBar
           decisions={[
@@ -629,7 +652,7 @@ function NoMatchScreen({ item }: Readonly<{ item: BankItem }>) {
   return (
     <Shell>
       <div className="flex flex-col gap-6">
-        {item.status === "failed" && <FailedBanner error={item.error} />}
+        {item.status === "failed" && <FailedBanner item={item} />}
         <div className="flex flex-col gap-1">
           <h1 tabIndex={-1} className="font-display text-display font-semibold tracking-tight">
             No match found
@@ -708,7 +731,13 @@ function NoMatchScreen({ item }: Readonly<{ item: BankItem }>) {
 
 /** queued/applying: the apply runner owns the row; the hook polls (2s) so
  * this screen progresses to done/failed live. No actions — deciding 409s and
- * deleting an applying row 409s. */
+ * deleting an applying row 409s.
+ *
+ * The queued body says only that the decision is carried out for you, because
+ * the two more specific claims it used to make are both false for a resolution
+ * that imports nothing: an enforced skip_new never takes the import slot (so
+ * it does not "wait" for it) and moves no files. One sentence that holds for
+ * all four duplicate actions beats two that hold for three of them. */
 function PendingNotice({ item }: Readonly<{ item: BankItem }>) {
   const applying = item.status === "applying";
   return (
@@ -720,7 +749,7 @@ function PendingNotice({ item }: Readonly<{ item: BankItem }>) {
         body={
           applying
             ? "beets is importing this folder; this page updates when it lands."
-            : "This decision waits for the import slot. Files move automatically; no further action needed."
+            : "This decision will be applied automatically; no further action needed."
         }
       />
     </Shell>
@@ -750,19 +779,37 @@ function DoneNotice({ item }: Readonly<{ item: BankItem }>) {
   );
 }
 
-/** Title + body describing what the resolved row actually did, read from the
- * decision. A skip_new duplicate resolution KEPT your copy — it never "landed
- * in your library", so it must not claim it did. */
+/**
+ * Title + body describing what the resolved row actually did, read from the
+ * decision AND the outcome. A skip_new duplicate resolution normally KEPT your
+ * copy — it never "landed in your library", so it must not claim it did.
+ *
+ * But the decision alone does not settle what happened. An enforced skip_new
+ * resolves without importing only while the stored library copy SURVIVES; if
+ * the user deleted or moved it between banking and applying there is nothing
+ * left to keep, the import proceeds, and the row lands an album. `album_id` is
+ * the only witness of which of the two ran, which is why the skip_new arm
+ * branches on it: keyed on the decision alone this notice would print "Nothing
+ * new was imported" directly beside DoneNotice's View-album button for the
+ * album that just imported.
+ */
 function doneOutcome(item: BankItem): { title: string; body: string } {
   const label = `${item.artist ?? "Unknown artist"} - ${item.album ?? lastSegment(item.folder)}`;
   const decided = item.decided;
   if (decided?.action === "duplicate") {
     switch (decided.duplicate_action) {
       case "skip_new":
-        return {
-          title: "Kept your existing copy",
-          body: "Nothing new was imported; your existing copy is untouched.",
-        };
+        return item.album_id == null
+          ? {
+              title: "Kept your existing copy",
+              body: "Nothing new was imported; your existing copy is untouched.",
+            }
+          : {
+              // Same noun phrase as the arm above on purpose — the two read as
+              // a matched pair, and the difference is the whole message.
+              title: "Imported — your existing copy was gone",
+              body: `The copy you chose to keep was no longer in your library, so ${label} was imported.`,
+            };
       case "replace":
         return {
           title: "Replaced",

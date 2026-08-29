@@ -173,9 +173,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # before the restart drain immediately - no decision re-post needed.
     from app.bank.apply_runner import BankApplyRunner
 
+    def live_library() -> LibraryHandle:
+        """The CURRENT library handle, read at call time.
+
+        The config editor's Apply rebuilds beets and swaps
+        ``app.state.beets_library`` mid-process, so the runner must not capture
+        ``handle`` from above: its duplicate-enforcement check would then read
+        the pre-Apply database. A getter is the whole fix.
+        """
+        current: LibraryHandle = app.state.beets_library
+        return current
+
     bank_apply_runner = BankApplyRunner(
         bank_dir=get_bank_dir(),
         import_registry=import_registry,
+        library=live_library,
         swap_lock=app.state.beets_swap_lock,
     )
     app.state.bank_apply_runner = bank_apply_runner

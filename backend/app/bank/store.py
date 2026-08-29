@@ -495,13 +495,17 @@ def set_status(
     *,
     error: str | None = None,
     album_id: int | None = None,
+    error_retryable: bool = True,
     expected: BankStatus | None = None,
 ) -> BankItem | None:
     """Bookkeeping transition (chunk 4's apply runner + reconciliation use it).
 
     ``album_id`` is only ever supplied with ``done`` (the apply landed an
     album); None leaves the field untouched so failure paths never erase a
-    previously recorded id. ``expected`` makes the write a compare-and-set:
+    previously recorded id. ``error_retryable`` is the opposite: it is written
+    on EVERY transition and defaults True, so a row that once failed
+    un-retryably cannot carry that False into its next decision. ``expected``
+    makes the write a compare-and-set:
     when given and the row's current status differs, return None WITHOUT
     writing — the apply runner's queued->applying claim uses it so a row
     re-banked under a stale reference (reset to needs_review, decided=None)
@@ -515,6 +519,7 @@ def set_status(
             return None
         item.status = status
         item.error = error
+        item.error_retryable = error_retryable
         if album_id is not None:
             item.album_id = album_id
         if status in ("done", "failed", "ignored"):
