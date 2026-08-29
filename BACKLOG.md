@@ -182,7 +182,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   misses — the album imports anyway and the row reports `done`.**~~ (Found 2026-08-29 by the
   release-id-pin deep review; probe-CONFIRMED against beets' real `_resolve_duplicates`
   with the production dup guard installed.) — **FIXED on `fix/bank-dup-enforce`
-  (PR # filled in at merge), 2026-08-29, per the owner's settled design (vault decisions 25):
+  (PR #197), 2026-08-29, per the owner's settled design (vault decisions 25):
   enforce the decision from the banked prompt's stored library album ids instead of trusting
   beets' name-keyed re-detection.** Three arms, because the four actions are not equally
   forceable: `skip_new` short-circuits in the apply runner (`app/bank/apply_runner.py`,
