@@ -8,7 +8,7 @@ MusicDrop is a from-scratch rebuild. It keeps the name, logo, and product vision
 
 - **See your library.** Browse artists, albums, and tracks; spot the gaps (what you have vs. don't); search, and view cover art, lyrics, and track info. The library as a visual surface, not a file explorer.
 - **A UI for beets.** beets' *toggles* (its config) and *actions* (`import`, `modify`, `fetchart`, `duplicates`, …) surfaced as real pages — do everything you'd do at the `beet` CLI, in the browser. The interactive import/match step gets a proper candidate-picker.
-- **Playlists.** Create, edit, and delete them easily. **Plex-compatible**, multi-user.
+- **Playlists.** Create, edit, and delete them easily; import them from `.m3u` files or straight from Plex; **Plex-compatible**, multi-user.
 - **Acquisition.** slskd downloads land in a watched inbox and flow through a unified **Review** page into the same beets import pipeline (deemix is a future adapter on the same seam).
 
 ## Architecture — the layers
@@ -27,7 +27,7 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 
 ## Stack
 
-- **Backend** — Python ≥ 3.11, **FastAPI + Pydantic** on Uvicorn; **beets 2.12** runs in-process behind the typed adapter in `app/beets/`. HTTP via httpx, Plex via [python-plexapi](https://github.com/pkkid/python-plexapi), YAML config editing via ruamel.yaml. Packaged with **uv**; `mypy --strict`, **Ruff** (lint + format), and **pytest** enforced in CI.
+- **Backend** — Python ≥ 3.11, **FastAPI + Pydantic** on Uvicorn; **beets 2.13** (pinned `beets==2.13.*`) runs in-process behind the typed adapter in `app/beets/`. HTTP via httpx, Plex via [python-plexapi](https://github.com/pkkid/python-plexapi), YAML config editing via ruamel.yaml. Packaged with **uv**; `mypy --strict`, **Ruff** (lint + format), and **pytest** enforced in CI.
 - **Frontend** — **React 19 + TypeScript**, built with **Vite**. UI is **shadcn/ui** (Radix primitives) + **Tailwind CSS 4** + [Phosphor](https://phosphoricons.com/) icons, with **League Spartan** as the display face; server state via **TanStack Query**; routing via React Router. The API client is **openapi-fetch**, and the TypeScript API types are **generated** from the backend's OpenAPI schema — never hand-written. Tested with Vitest + Testing Library + MSW.
 
 ## Status
@@ -42,10 +42,11 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 - **Artist images** — portraits resolve automatically from the configured sources (fanart.tv → Spotify → Deezer, first verified match wins; Deezer needs no key) and are written into the library for Plex. To change one, open an artist and use the image action: pick a source, **Fetch**, and **Use this image** to keep it — or upload a file / paste a URL. **Reset to auto** forgets both your pick and the cached automatic image, so the artist is looked up again from scratch. An artist whose portrait isn't cached yet shows their initials while it resolves in the background; it appears without a reload when it lands.
 - **Lyrics** — presence, per-album fetch, and a library-wide backfill. The backfill is
   **fill-gaps-only on disk**: it writes a `.lrc`/`.txt` sidecar only where none exists and
-  never deletes or replaces one you already have (the sole removal is a file whose entire
-  content is the legacy `[Instrumental]` marker, cleaned when a track is classified
-  instrumental).
-- **Edit tags** — album & track, from the UI.
+  never deletes or replaces one you already have. The one exception is a sidecar whose
+  entire content is the legacy `[Instrumental]` marker: an instrumental verdict cleans it
+  up, and a found verdict treats it as absent and replaces it with the fetched lyrics — a
+  real sidecar, including one half of a mixed pair, is never deleted or replaced.
+- **Edit tags** — album & track, from the UI. A rename that would land the album's cover on a name another file already holds is refused before anything moves — the tag changes still write, the files stay put, and the preview says why (beets alone would silently rename the cover to a `.1` sibling).
 - **Import** — interactive candidate picker, resume, an import-time duplicate guard (duplicates always route to review, whatever `duplicate_action` says), and search-by-release-ID when the right match isn't offered. Unattended runs **bank** undecidable albums for later review instead of stalling, and the summary verifies each album actually **landed** in the library.
 - **Duplicates** — find & resolve duplicate albums (resolve one, or resolve-all).
 - **Release identity** — which release an album is (source · label · country · media · disambiguation), with view-release links.
@@ -60,10 +61,10 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   formats than the listing does); a genuinely media-free folder (art/booklet leftovers)
   reports "couldn't restore" and Empty is its only exit.
 - **beets config** — viewer + writable editor, with advisory notices for import keys MusicDrop forces (a saved value that only affects CLI runs is flagged, not silently accepted).
-- **Naming** — edit beets path/replace rules with a live preview. **Reorganize** — re-apply them to existing files (and sweep emptied leftover folders into the Trash).
+- **Naming** — edit beets path/replace rules with a live preview. **Reorganize** — re-apply them to existing files, and sweep emptied leftover folders into the Trash — the sweep only ever offers folders with no audio anywhere beneath them, and never an art/booklet/scans folder sitting at a live album's own filed location. A move that would silently rename an album's cover (a stray file already holds the cover's name at the destination) is refused instead: the preview flags it as an art conflict, and apply holds back just that album.
 - **Disk sync** — a `beet update` equivalent: preview-first removal of library entries whose files were deleted outside the app, plus tag refresh for files changed on disk.
 - **Library dashboard** — counts, duration, size, recently added.
-- **Playlists** — create / edit / delete; `.m3u8` export; Plex-compatible, multi-user sync (metadata-matched, with cascade-delete). Configure Plex under **Settings → Plex** (base URL + admin token + the music-library path *as Plex sees it*), or seed it from `MUSICDROP_PLEX_URL` / `MUSICDROP_PLEX_TOKEN` / `MUSICDROP_PLEX_LIBRARY_PATH`.
+- **Playlists** — create / edit / delete; import from uploaded `.m3u`/`.m3u8` files or straight from Plex, with a preview that matches every entry against the library before committing (entries it can't match stay as pending rows to resolve later); merge one playlist into another; per-playlist cover artwork (upload / replace / remove — a Plex-sourced import seeds its poster automatically); `.m3u8` export; Plex-compatible, multi-user sync (metadata-matched, with cascade-delete). Configure Plex under **Settings → Integrations** (base URL + admin token + the music-library path *as Plex sees it*), or seed it from `MUSICDROP_PLEX_URL` / `MUSICDROP_PLEX_TOKEN` / `MUSICDROP_PLEX_LIBRARY_PATH` / `MUSICDROP_PLEX_LIBRARY_SECTION` (the Plex music-section title; leave it empty only when the server has a single music library — with several, sync refuses until one is named).
 - **Acquisition (slskd)** — completed slskd downloads land in a watched inbox (webhook-driven) and queue into the import pipeline; a unified **Review** page is the one home for import decisions and inbox backlog.
 - **Faceted Browse** — slice the library by genre · decade · format · type · media · country · source · lyrics coverage, sorted A–Z or recently added.
 - **Live updates** — library changes stream to every open tab (SSE), no manual refresh.
@@ -92,13 +93,20 @@ services:
       - PUID=1000   # match the owner of your music share
       - PGID=1000   # (tag writes / reorganize keep that ownership)
       - TZ=Etc/UTC
+      # - MUSICDROP_ARTIST_IMAGE_FANARTTV_API_KEY=…   # optional: enables fanart.tv portraits (see below)
     volumes:
       - ./data:/data            # beets library.db + config.yaml + app state
       - /path/to/music:/music   # your music library
     restart: unless-stopped
 ```
 
-`docker compose up -d`, then open `http://<host>:3030`. First boot writes a starter beets config to `data/beets/config.yaml` with `directory: /music`; edit it under **Settings → beets** (plugins, import behavior) — MusicDrop reads it like the beets CLI would, with one carve-out: in-app imports force a few `import.*` keys (`autotag`, `duplicate_action`, `singletons` — and `incremental` on sweep runs) so the review flow stays intact. The editor shows an advisory when a saved value won't take effect in-app; a CLI `beet import` still honours it. Optional integrations (slskd webhook, Plex, fanart.tv/Spotify artist images) are configured under Settings or via `MUSICDROP_*` env vars; for slskd, mount its downloads dir (e.g. `/inbox`) and set `MUSICDROP_INBOX_DIR=/inbox`.
+`docker compose up -d`, then open `http://<host>:3030`. First boot writes a starter beets config to `data/beets/config.yaml` with `directory: /music`; edit it under **Settings → Beets** (plugins, import behavior) — MusicDrop reads it like the beets CLI would, with one carve-out: in-app imports force a few `import.*` keys (`autotag`, `duplicate_action`, `singletons` — and `incremental` on sweep runs) so the review flow stays intact. The editor shows an advisory when a saved value won't take effect in-app; a CLI `beet import` still honours it. Optional integrations (slskd webhook, Plex) are configured under Settings or via `MUSICDROP_*` env vars; for slskd, mount its downloads dir (e.g. `/inbox`) and set `MUSICDROP_INBOX_DIR=/inbox`. The fanart.tv/Spotify artist-image credentials are **env-only** — Settings holds just the two on/off toggles: set `MUSICDROP_ARTIST_IMAGE_FANARTTV_API_KEY` to enable fanart.tv (`MUSICDROP_ARTIST_IMAGE_FANARTTV_CLIENT_KEY` is an optional extra passed alongside it), and both `MUSICDROP_ARTIST_IMAGE_SPOTIFY_CLIENT_ID` and `MUSICDROP_ARTIST_IMAGE_SPOTIFY_CLIENT_SECRET` for Spotify; with none set, portraits resolve from Deezer alone (which needs no key).
+
+A few more knobs are env-only, with defaults that suit most setups:
+
+- `MUSICDROP_INBOX_SETTLE_SECONDS` (default 60) — the quiet window an inbox folder must hold before **Review all** will import it: the inbox is slskd's live output dir, so a folder touched within the last 60 s is skipped (listed as still receiving; a per-row Review overrides) rather than imported half-finished, where the remainder would later re-import as a duplicate.
+- `MUSICDROP_MAX_BODY_BYTES` (default 25 MiB) — the request-body cap: anything larger (an oversized cover upload, a giant playlist import) is refused with a 413 before the body is read.
+- `MUSICDROP_LYRICS_BACKFILL_DELAY_SECONDS` (default 0.2) — the courtesy inter-track pause during lyrics fetches (the library-wide backfill and per-album fetches), also used as the inter-artist pause in the artist-image backfill; beets separately rate-limits the lyrics HTTP itself.
 
 **Browsing by DNS name?** Requests are only accepted when the `Host` is an IP literal,
 `localhost`, or a name listed in `MUSICDROP_ALLOWED_HOSTS` (comma-separated) — a
@@ -110,9 +118,9 @@ The same goes for server-to-server callers — a proxy that rewrites `Host` to a
 *name*, or another container calling MusicDrop by service name (slskd's webhook posting to
 `http://musicdrop:3030`) — list those names too; container/host IPs always work.
 
-Releases are automatic: every merged PR publishes a new image tag (`vX.Y.Z`, plus `latest`) with generated notes on the [Releases page](https://github.com/Elienop/musicdrop/releases).
+Releases are automatic: every merged PR that touches anything beyond markdown/docs publishes a new image tag (`vX.Y.Z`, plus `latest`) with generated notes on the [Releases page](https://github.com/Elienop/musicdrop/releases); a docs-only merge cuts no release of its own and ships with the next one.
 
-**One-time repair, for libraries built before the path fix.** Every release up to and including v0.34.0 stored MusicDrop-imported track paths in `library.db` *absolutely* (`/music/Artist/…`) instead of relative to the music directory, the way beets does. Nothing is damaged, but such rows do not follow the music share if it ever moves to a new mount, dataset, or machine. The release containing `fix(import): store item paths relative to the music dir` stops it recurring; the existing rows need a separate one-time database repair, and **the two have to land in the same maintenance window** — deploying either half on its own leaves the importer's duplicate lookup worse off than doing neither. The procedure, starting with the census that tells you whether you are affected, is [`docs/import-path-repair.md`](docs/import-path-repair.md).
+**One-time repair, for libraries built before the path fix.** Every release up to and including v0.34.1 stored MusicDrop-imported track paths in `library.db` *absolutely* (`/music/Artist/…`) instead of relative to the music directory, the way beets does. Nothing is damaged, but such rows do not follow the music share if it ever moves to a new mount, dataset, or machine. The release containing `fix(import): store item paths relative to the music dir` stops it recurring; the existing rows need a separate one-time database repair, and **the two have to land in the same maintenance window** — deploying either half on its own leaves the importer's duplicate lookup worse off than doing neither. The procedure, starting with the census that tells you whether you are affected, is [`docs/import-path-repair.md`](docs/import-path-repair.md).
 
 ## Backup & restore
 
@@ -139,7 +147,7 @@ MusicDrop has no built-in backup, deliberately: its state is plain files under t
 - `<inbox>/.musicdrop-ledger.json` — the handled-drops record. Defaults to `<beets_dir>/inbox`, inside `/data`; `MUSICDROP_INBOX_DIR` moves it onto the slskd downloads mount — the table's third row.
 - `data/beets/trash/` — deleted albums live here and nowhere else until you empty the Trash; normally the only GB-scale item under `data/`.
 - `data/beets/state.pickle` — beets' import state. The banking sweep's forced `incremental` reads its `taghistory`; without it the next sweep re-offers every folder it has already handled.
-- `data/cache/artist-images/` — the `*.override` (+ `*.override.mime`) images you uploaded or pasted by hand, which nothing refetches, and `_enabled.json` / `_art_write_enabled.json`, the two artist-image toggles: lose those and both revert to their env defaults (off).
+- `data/cache/artist-images/` — the `*.override` (+ `*.override.mime`) images you uploaded or pasted by hand, which nothing refetches, and `_enabled.json` / `_art_write_enabled.json`, the two artist-image toggles: lose those and both revert to their env defaults (`MUSICDROP_ARTIST_IMAGES_ENABLED` / `MUSICDROP_ARTIST_ART_WRITE_ENABLED`, off unless set).
 
 Those are the shipped image's paths (`MUSICDROP_BEETS_DIR=/data/beets`, `MUSICDROP_ARTIST_IMAGE_CACHE_DIR=/data/cache/artist-images`). Override either and the tree under it moves; a `MUSICDROP_*_DIR` for trash, bank, playlists, Plex, slskd or the inbox moves that subtree out from under `<beets_dir>`; and `config.yaml`'s `library:` and `directory:` relocate the DB and the music tree with no env var at all. Snapshot what these resolve to, not the defaults.
 

@@ -50,6 +50,19 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
 
+- **Three internal comments drifted from enforced behavior (2026-08-29 README audit;
+  comment-only, fold into the next code PR — a docs-only PR can't carry them without
+  cutting a release).** (1) `backend/app/config.py:105-106` and `backend/app/plex/config.py:29`
+  both say an empty `MUSICDROP_PLEX_LIBRARY_SECTION` means "the first artist section";
+  the enforced behavior (`backend/app/plex/client.py:39-42`, mirrored in
+  `PlexSettingsPanel.tsx`) is: sole artist section, else refuse with "Multiple Plex music
+  libraries found." (2) `frontend/src/components/settings/PlexSettingsPanel.tsx:74`'s doc
+  comment still says "Settings → Plex"; the panel renders only on Integrations.
+  (3) `backend/app/config.py:35-36`'s comment on the lyrics delay says beets adds no
+  pacing; beets 2.13 rate-limits LRCLib itself (0.25 s/request with 429 backoff —
+  `beetsplug/lyrics.py:176-178`), and the runner docstring
+  (`backend/app/lyrics_jobs/runner.py:6-7`) already says so.
+
 - ~~**Lyrics backfill silently deletes and overwrites the user's own `.lrc`/`.txt`
   sidecars**~~ — **FIXED in #189.** The file layer is fill-gaps-only; skip paths touch no
   files; the sole deletion is content-proven (a sidecar whose entire body is beets'
@@ -242,19 +255,20 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   caller the body is JSON, and `openapi-fetch` would call `res.json()` on a JPEG. Trivial
   per route, and it IS a contract change: the two-step regen applies.
 
-- **README drift, five items (2026-08-28 sweep — each violates the keep-README-in-sync
-  rule).** (1) `Settings → Plex` does not exist: the panel lives under Integrations
-  (`SettingsLayout.tsx:13-17`; README:53 is the one broken nav path of the six checked).
-  (2) fanart.tv/Spotify artist-image credentials are env-only and the four
-  `MUSICDROP_ARTIST_IMAGE_*` variable names appear in no tracked document — README:88 says
-  they are "configured under Settings", where the entire settings model is one boolean;
-  without them the app is silently Deezer-only. (3) Two user-visible knobs are documented
-  nowhere: `MUSICDROP_INBOX_SETTLE_SECONDS` (the 60-second reason a finished slskd download
-  sits invisible in Review) and `MUSICDROP_MAX_BODY_BYTES` (the 25 MiB 413). (4) README:30
-  pins beets 2.12; the project has shipped 2.13.1 since #120 (2026-08-01) — it sends a
-  contributor to the wrong upstream source tree. (5) The Playlists bullet describes export
-  only — import (uploaded m3u AND from-Plex), merge, and per-playlist cover artwork are all
-  shipped and unlisted. One docs PR closes all five.
+- ~~**README drift, five items (2026-08-28 sweep — each violates the keep-README-in-sync
+  rule).**~~ — **FIXED in the README-drift docs PR (PR # filled on this branch before
+  merge), 2026-08-29.** All five confirmed by a re-derive-and-refute audit (17 findings
+  total, 0 refuted) and fixed, along with 12 more the full sweep found: the missing
+  `MUSICDROP_PLEX_LIBRARY_SECTION` seed var (empty = the SOLE music section; several →
+  sync refuses until one is named — the "first artist section" comments in the code are
+  the drifted ones), `MUSICDROP_LYRICS_BACKFILL_DELAY_SECONDS`, the artist-image toggle
+  env names at the backup list, the #189 husk-sweep protection and marker-both-directions
+  wording, the #192 art-collision refusal (Edit tags + Reorganize bullets), docs-only
+  merges cutting no release, and the path-fix range being v0.34.1 (not v0.34.0). Two
+  details of the recorded entry were themselves wrong (right-THAT, wrong-HOW again):
+  the fanart key name WAS in a tracked file (`docker-compose.yml:15`), and "silently
+  Deezer-only" overstated — README:42 already documented the chain and "Deezer needs no
+  key"; the missing part was specifically HOW to enable fanart.tv/Spotify.
 
 - **The candidate-review screen says release art is "not applied" — the config editor can
   falsify that, and the comment's own Revisit trigger has fired.** (Found 2026-08-28.)
@@ -304,7 +318,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   case-insensitive matching, and JSX line-wrapped copy needs whitespace normalization.
 
 - ~~**Album art can still be silently diverted — and on the tag-edit path it churns.**~~ —
-  **FIXED on `fix/album-art-divert-preflight` (PR # filled in at merge), 2026-08-28.**
+  **FIXED on `fix/album-art-divert-preflight` (PR #192, squash `3cf1882` = v0.45.1), 2026-08-28.**
   `art_preflight` (`app/beets/reorganize.py`) is the third whole-app move-hygiene helper
   beside `collisions_by_dest` and `carry_sidecars`: it predicts the art destination
   exactly as `Album.move` hands it to `move_art` — the first SURVIVING, source-present
@@ -960,7 +974,7 @@ Added by the 2026-08-28 sweeps:
     artwork routes. `albums.py` had claimed the same "last" title, so the two contradicted each
     other outright; that claim went with them.
 
-- **#143-Minors triage fix slice — shipped 2026-08-25 (PR # filled in at merge).** The
+- **#143-Minors triage fix slice — shipped 2026-08-25 (PR #157 = `3ae7d92`).** The
   fix-now portion of the banked-Minors adjudication (see Next up). Copy honesty: the
   settings mismatch warning now describes the real fallback ladder (artist and title,
   then album, title and length) and the different-copy risk, instead of citing the case
@@ -997,7 +1011,7 @@ Added by the 2026-08-28 sweeps:
   saved as "STRASSE") resolves on the server but shows no folders in the panel
   (pre-existing, now noted at the function and scoped "(ASCII)" in its test name).
 
-- **Artist rename — shipped 2026-08-24 (PR # filled in at merge).** One action on the artist
+- **Artist rename — shipped 2026-08-24 (PR #156 = `e854871`).** One action on the artist
   page that fans the existing album edit across every album of the artist: `album_artist`
   only (per-track artists never follow — lyrics fetching keys on them), merges onto an
   existing name are the primary use case, synchronous apply with per-album outcomes
@@ -1029,7 +1043,7 @@ Added by the 2026-08-28 sweeps:
     failure, the older dialogs' plain-`disabled` buttons vs the new aria-disabled doctrine,
     and a typographic-twin warning on near-invisible rename targets (reuse the import gate's).
 
-- **Security response headers — shipped 2026-08-24 (PR # filled in at merge).**
+- **Security response headers — shipped 2026-08-24 (PR #155 = `653c26c`).**
   Pure-ASGI `SecurityHeadersMiddleware`, added after the three guards so it wraps
   outside all of them (CORS is outermost, added last for python:S8414): five
   headers on every response it passes through (`nosniff`,
@@ -1048,7 +1062,7 @@ Added by the 2026-08-28 sweeps:
   global `Exception` handler would move real 500s OUT of header reach; don't add one).
   No HSTS by design (TLS terminates at Caddy; plain-HTTP LAN access exists).
 
-- **Host allowlist (DNS-rebinding guard) — shipped 2026-08-23 (PR # filled in at merge).** All-method
+- **Host allowlist (DNS-rebinding guard) — shipped 2026-08-23 (PR #154 = `f5086f9`).** All-method
   `HostGuardMiddleware` (wraps outside the body-limit and origin guards, below the
   security-headers stamper and CORS): Host / X-Forwarded-Host must be a bare IP literal,
   `localhost`, or a name in `MUSICDROP_ALLOWED_HOSTS` (exact, case/port-insensitive match, no
