@@ -434,19 +434,7 @@ class BankApplyRunner:
         )
         if action == "duplicate":
             dup_action = decision.duplicate_action if decision is not None else None
-            if (
-                dup_action is DuplicateAction.merge
-                and album_id is not None
-                and not dup_resolution_ran
-            ):
-                # album_id stays off the row on purpose: ``album_id`` is the
-                # store's "the apply landed THIS" field, only ever written with
-                # ``done``, and what landed here is the copy the user has to
-                # clean up - the error string is where that belongs.
-                return "failed", _MERGE_NOT_MERGED_ERROR, None, False
-            if dup_resolution_ran or album_id is not None:
-                return "done", None, album_id, True
-            return "failed", _NOTHING_IMPORTED_ERROR, None, True
+            return BankApplyRunner._classify_duplicate(dup_action, album_id, dup_resolution_ran)
         if dup_resolution_ran:
             return "failed", _DUP_BLOCKED_ERROR, None, True
         if action == "astracks":
@@ -456,3 +444,18 @@ class BankApplyRunner:
         if album_id is None:
             return "failed", _NO_ALBUM_ERROR, None, True
         return "done", None, album_id, True
+
+    @staticmethod
+    def _classify_duplicate(
+        dup_action: DuplicateAction | None, album_id: int | None, dup_resolution_ran: bool
+    ) -> tuple[BankStatus, str | None, int | None, bool]:
+        """The ``duplicate``-decision arm of ``_classify`` (same return contract)."""
+        if dup_action is DuplicateAction.merge and album_id is not None and not dup_resolution_ran:
+            # album_id stays off the row on purpose: ``album_id`` is the
+            # store's "the apply landed THIS" field, only ever written with
+            # ``done``, and what landed here is the copy the user has to
+            # clean up - the error string is where that belongs.
+            return "failed", _MERGE_NOT_MERGED_ERROR, None, False
+        if dup_resolution_ran or album_id is not None:
+            return "done", None, album_id, True
+        return "failed", _NOTHING_IMPORTED_ERROR, None, True
