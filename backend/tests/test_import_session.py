@@ -28,6 +28,7 @@ from app.beets.import_session import (
     is_in_library_source,
     run_import_worker,
 )
+from app.beets.library import _require_id
 from app.models.import_models import (
     AlbumOutcome,
     AlbumOutcomeStatus,
@@ -181,6 +182,10 @@ def _make_session(bridge: ImportBridge) -> WebImportSession:
     session._directive = None
     # __init__ is skipped, so seed the album-id stash choose_match appends to.
     session._await_album_id = []
+    # __init__ is skipped, so seed the landed-id set _flush_album_ids fills and
+    # the banked-replace seed gates on. A __new__ fake breaks the moment
+    # production reads an attribute it never set, so this is not optional.
+    session._landed_album_ids = set()
     # __init__ is skipped, so default the astracks-in-flight flag choose_item
     # now reads (armed by choose_match when a park is decided "as tracks").
     session._astracks_in_flight = False
@@ -1856,6 +1861,194 @@ def test_directive_without_dup_action_skips_unanticipated_duplicate(
     assert session.get_duplicate_action(task, [existing]) is BeetsDuplicateAction.SKIP
     outcomes = session.bridge.drain_outcomes()
     assert any(o.status is AlbumOutcomeStatus.needs_dup_resolution for o in outcomes)
+
+
+# ----- the banked-replace seed (enforcing a replace beets never re-detected) -----
+
+
+def _existing_album_model(
+    album_id: int, *, artist: str = "Radiohead", album: str = "OK Computer"
+) -> Any:
+    from app.models.import_models import ExistingAlbum
+
+    return ExistingAlbum(
+        album_id=album_id,
+        album_artist=artist,
+        album=album,
+        year=None,
+        track_count=1,
+        format=None,
+        bitrate_kbps=None,
+        folder="/lib/x",
+    )
+
+
+def _replace_seed_setup(tmp_path: Path) -> tuple[WebImportSession, int]:
+    """A directive-mode session over a REAL library holding one album.
+
+    Deliberately no ImportTask and no hook call: these tests are about the case
+    where beets' duplicate hook NEVER FIRES, so driving it would test the
+    opposite thing.
+    """
+    session = _make_session(ImportBridge())
+    session.unattended = True
+    session._replace_album_ids = set()
+    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    session.lib = lib
+    album = lib.add_album(
+        [Item(albumartist="Radiohead", album="OK Computer", title="Airbag", track=1)]
+    )
+    album.store()
+    return session, _require_id(album.id)
+
+
+def _replace_directive(*existing: Any) -> Any:
+    from app.models.bank import BankApplyDirective
+    from app.models.import_models import DuplicateAction
+
+    return BankApplyDirective(
+        action="duplicate",
+        duplicate_action=DuplicateAction.replace,
+        replace_existing=list(existing),
+    )
+
+
+def test_banked_replace_seeds_the_trash_set_when_the_hook_never_fired(tmp_path: Path) -> None:
+    """THE enforcement: beets' name-keyed re-detection missed, so
+    ``_beets_dup_action`` never recorded anything — the stored id from the
+    banked prompt is what puts the old copy in the post-run Trash set."""
+    session, existing_id = _replace_seed_setup(tmp_path)
+    session._directive = _replace_directive(_existing_album_model(existing_id))
+    session._landed_album_ids = {existing_id + 500}  # the new album landed
+    session._seed_replace_from_directive()
+    assert session._replace_album_ids == {existing_id}
+
+
+def test_banked_replace_seed_skips_an_identity_mismatch(tmp_path: Path) -> None:
+    """The id-REUSE guard: beets ids are reused SQLite rowids, so the stored id
+    can now name a different album. Trashing it would destroy something the
+    user never decided about — it is skipped (and warned about) instead."""
+    session, existing_id = _replace_seed_setup(tmp_path)
+    session._directive = _replace_directive(
+        _existing_album_model(existing_id, artist="Someone", album="Else")
+    )
+    session._landed_album_ids = {existing_id + 500}
+    session._seed_replace_from_directive()
+    assert session._replace_album_ids == set()
+
+
+def test_banked_replace_seed_is_gated_on_something_landing(tmp_path: Path) -> None:
+    """Nothing landed -> nothing is trashed. A pinned lookup that resolves
+    nothing SKIPs while run() still returns normally and the trash pass still
+    executes; an ungated seed would Trash the user's ONLY copy."""
+    session, existing_id = _replace_seed_setup(tmp_path)
+    session._directive = _replace_directive(_existing_album_model(existing_id))
+    session._landed_album_ids = set()
+    session._seed_replace_from_directive()
+    assert session._replace_album_ids == set()
+
+
+def test_banked_replace_seed_never_trashes_the_album_it_just_imported(tmp_path: Path) -> None:
+    """If the old copy was deleted outside the app, the import can be handed
+    its exact rowid — and being the same album, it passes the identity check
+    too. Excluding this run's landed ids is what stops us trashing it."""
+    session, existing_id = _replace_seed_setup(tmp_path)
+    session._directive = _replace_directive(_existing_album_model(existing_id))
+    session._landed_album_ids = {existing_id}
+    session._seed_replace_from_directive()
+    assert session._replace_album_ids == set()
+
+
+def test_banked_replace_seed_ignores_a_non_replace_resolution(tmp_path: Path) -> None:
+    """Only ``replace`` may touch a library album this run did not import. The
+    directive never carries entries for the other three, and if one ever did,
+    the seed must still refuse."""
+    from app.models.bank import BankApplyDirective
+    from app.models.import_models import DuplicateAction
+
+    session, existing_id = _replace_seed_setup(tmp_path)
+    session._directive = BankApplyDirective(
+        action="duplicate",
+        duplicate_action=DuplicateAction.skip_new,
+        replace_existing=[_existing_album_model(existing_id)],
+    )
+    session._landed_album_ids = {existing_id + 500}
+    session._seed_replace_from_directive()
+    assert session._replace_album_ids == set()
+
+
+def test_flush_album_ids_records_what_landed(tmp_path: Path) -> None:
+    """``_landed_album_ids`` is the seed's gate, and this is the only thing
+    that fills it: an id follow-up flushed for a task beets actually added."""
+    session, _ = _replace_seed_setup(tmp_path)
+    outcome = AlbumOutcome(
+        album_index=0,
+        folder="/x",
+        artist="A",
+        album="B",
+        recommendation=Recommendation.strong,
+        confidence=99.0,
+        status=AlbumOutcomeStatus.applied,
+    )
+
+    class _AddedTask:
+        album = type("_Added", (), {"id": 404})()
+
+    session._await_album_id = [(outcome, cast(ImportTask, _AddedTask()))]
+    session._flush_album_ids()
+    assert session._landed_album_ids == {404}
+
+
+def test_run_seeds_the_replace_set_after_the_flush(tmp_path: Path, monkeypatch: Any) -> None:
+    """Order matters: the seed reads what the flush recorded, so run() must
+    call it AFTER _flush_album_ids, not before."""
+    from beets.importer.session import ImportSession
+
+    session, existing_id = _replace_seed_setup(tmp_path)
+    session._directive = _replace_directive(_existing_album_model(existing_id))
+
+    class _AddedTask:
+        album = type("_Added", (), {"id": existing_id + 500})()
+
+    outcome = AlbumOutcome(
+        album_index=0,
+        folder="/x",
+        artist="A",
+        album="B",
+        recommendation=Recommendation.strong,
+        confidence=99.0,
+        status=AlbumOutcomeStatus.applied,
+    )
+    session._await_album_id = [(outcome, cast(ImportTask, _AddedTask()))]
+    monkeypatch.setattr(ImportSession, "run", lambda self: None)
+    session.run()
+    assert session._replace_album_ids == {existing_id}
+
+
+def test_worker_trashes_a_seeded_copy_end_to_end(tmp_path: Path, monkeypatch: Any) -> None:
+    """The whole post-run path: seed -> _trash_replaced_albums, reusing the
+    SAME pass the hook-recorded ids already go through (it dedupes, skips
+    missing albums and re-exports playlists) rather than forking a second."""
+    from beets.importer.session import ImportSession
+
+    import app.beets.import_session as session_mod
+
+    trashed: list[int] = []
+
+    def fake_trash(lib: Any, album: Any, *, trash_dir: Path) -> str:
+        trashed.append(int(album.id))
+        return str(trash_dir)
+
+    monkeypatch.setattr(session_mod, "trash_album", fake_trash)
+    monkeypatch.setattr(ImportSession, "run", lambda self: None)
+
+    session, existing_id = _replace_seed_setup(tmp_path)
+    session._trash_dir = tmp_path / "trash"
+    session._playlists_dir = None
+    session._directive = _replace_directive(_existing_album_model(existing_id))
+    session._landed_album_ids = {existing_id + 500}
+    run_import_worker(session)
+    assert trashed == [existing_id]
 
 
 class _ApplyConfigSession(_SweepConfigSession):

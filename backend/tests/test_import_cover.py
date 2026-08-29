@@ -2,6 +2,7 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx import Response
 
 from app.import_jobs.fakes import FakeImportRunner
 from app.import_jobs.registry import reset_registry
@@ -58,6 +59,21 @@ def _poll(client: TestClient, job_id: str, predicate, attempts: int = 200):  # t
     return client.get(f"/api/import/{job_id}").json()
 
 
+def _poll_cover(client: TestClient, job_id: str, index: int = 0, attempts: int = 200) -> Response:
+    # The feed lists an album one registry drain BEFORE its parked payload (and
+    # with it the art source) attaches, so a cover fetch right after the feed
+    # poll races the attach and 404s. Tests expecting art must wait on the
+    # cover endpoint itself; the 404-expecting tests keep the feed poll, where
+    # waiting longer could never turn their 404 into a 200.
+    r = client.get(f"/api/import/{job_id}/albums/{index}/cover")
+    for _ in range(attempts):
+        if r.status_code == 200:
+            return r
+        time.sleep(0.01)
+        r = client.get(f"/api/import/{job_id}/albums/{index}/cover")
+    return r
+
+
 def test_cover_404_when_no_parked_album() -> None:
     # A parked album at index 0, but request a different (unparked) index.
     client = _client_with_fake(parked=[_parked(0)])
@@ -90,8 +106,7 @@ def test_cover_streams_embedded_art(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     client = _client_with_fake(parked=[_parked(0)], art_sources={0: "/fake/album0/track.flac"})
     job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
-    _poll(client, job_id, lambda s: len(s["albums"]) == 1)
-    r = client.get(f"/api/import/{job_id}/albums/0/cover")
+    r = _poll_cover(client, job_id)
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("image/")
     assert r.content == b"PNGDATA"
@@ -131,9 +146,7 @@ def test_cover_never_serves_an_unsendable_content_type(
     )
     client = _client_with_fake(parked=[_parked(0)], art_sources={0: "/fake/album0/track.flac"})
     job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
-    _poll(client, job_id, lambda s: len(s["albums"]) == 1)
-
-    r = client.get(f"/api/import/{job_id}/albums/0/cover")
+    r = _poll_cover(client, job_id)
 
     assert r.status_code == 200
     assert r.headers["content-type"] == served
@@ -157,7 +170,6 @@ def test_cover_offloads_the_tag_read_to_the_threadpool(monkeypatch: pytest.Monke
     monkeypatch.setattr(import_mod, "run_in_threadpool", spy, raising=False)
     client = _client_with_fake(parked=[_parked(0)], art_sources={0: "/fake/album0/track.flac"})
     job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
-    _poll(client, job_id, lambda s: len(s["albums"]) == 1)
-    r = client.get(f"/api/import/{job_id}/albums/0/cover")
+    r = _poll_cover(client, job_id)
     assert r.status_code == 200
     assert "candidate_cover" in [getattr(c.args[0], "__name__", "") for c in spy.call_args_list]

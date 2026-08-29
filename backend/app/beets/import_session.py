@@ -37,7 +37,7 @@ from app.beets.import_mapping import (
     map_album_match,
     map_candidate_options,
 )
-from app.beets.library import _require_id
+from app.beets.library import _require_id, duplicate_albums_still_present
 from app.beets.merge_preview import build_merge_preview
 from app.beets.release_identity import release_identity
 from app.beets.relookup import relookup
@@ -323,6 +323,12 @@ class WebImportSession(ImportSession):
         self._trash_dir = trash_dir
         # Existing duplicate album ids recorded by Replace, trashed AFTER run().
         self._replace_album_ids: set[int] = set()
+        # Library album ids beets actually ADDED during this run (filled by
+        # _flush_album_ids from task.album). Gates the banked-replace seed:
+        # a pinned lookup that resolves nothing SKIPs while run() still returns
+        # normally, and trashing the library copies then would leave the user
+        # with no copy at all.
+        self._landed_album_ids: set[int] = set()
         # The owned-playlist store, threaded from the runner exactly like
         # trash_dir. Set = the post-run Trash pass also re-exports the `.m3u8` of
         # every playlist that held a track from a replaced album; None = unwired
@@ -1093,16 +1099,81 @@ class WebImportSession(ImportSession):
     # ----- helpers -----
 
     def run(self) -> None:
-        """Run the import, then flush the final task's library album id.
+        """Run the import, flush the final task's album id, then seed Replace.
 
         beets' run() drives the whole sequential pipeline; the LAST task's
         ``task.add`` happens inside it with no later choose_match to flush it,
         so the follow-up is emitted here. Safe after an abort too: beets'
         run() catches ImportAbortError internally, and an aborted task never
         gained ``task.album``, so the flush drops it.
+
+        The banked-replace seed runs AFTER the flush and never before it: it is
+        gated on what that flush recorded as landed.
         """
         super().run()
         self._flush_album_ids()
+        self._seed_replace_from_directive()
+
+    def _seed_replace_from_directive(self) -> None:
+        """Union the BANKED replace targets into the post-run Trash set.
+
+        beets consults ``get_duplicate_action`` only when its own
+        ``find_duplicates`` hits, and that query keys on the CHOSEN release's
+        albumartist+album. When the library copy has been renamed since banking
+        (or the pinned release names it differently) the hook never fires, so
+        ``_beets_dup_action`` never records anything and a ``replace`` imports
+        the new album while trashing NOTHING - two copies, decision discarded.
+        The banked prompt already recorded WHICH albums collide, by id, so this
+        seeds the SAME post-run pass from it rather than forking a second one
+        (``_trash_replaced_albums`` already dedupes, skips missing albums and
+        re-exports the affected playlists).
+
+        Three guards, each of which alone would make this destructive:
+
+        * **something must have landed.** A directive whose pinned lookup
+          resolves nothing SKIPs, ``run()`` returns normally, and the trash pass
+          still executes - an ungated seed would move the user's only copies to
+          Trash while importing nothing.
+        * **identity, not just presence.** beets ids are reused SQLite rowids,
+          so a stored id whose album was deleted can now name a different
+          album; ``duplicate_albums_still_present`` re-checks each one and a
+          mismatch is skipped with a warning rather than trashed.
+        * **never an id this run just landed.** If the old copy was deleted
+          outside the app, the import can be handed its exact rowid - and since
+          it is the same album, it would pass the identity check too. Trashing
+          it would Trash the album we just imported.
+        """
+        directive = self._directive
+        if directive is None or directive.duplicate_action is not DuplicateAction.replace:
+            return
+        stored = directive.replace_existing
+        if not stored:
+            return  # legacy/up-front-resolver row: nothing banked to enforce
+        if not self._landed_album_ids:
+            logger.warning(
+                "bank apply replace: nothing landed, so the %d banked library copy/copies "
+                "were left in place",
+                len(stored),
+            )
+            return
+        surviving = set(duplicate_albums_still_present(self.lib, stored))
+        for entry in stored:
+            if entry.album_id not in surviving:
+                logger.warning(
+                    "bank apply replace: library album %d is gone or no longer matches the "
+                    "banked copy (%s - %s); left in place",
+                    entry.album_id,
+                    entry.album_artist,
+                    entry.album,
+                )
+        reused = surviving & self._landed_album_ids
+        for album_id in sorted(reused):
+            logger.warning(
+                "bank apply replace: library album %d is the album this run just imported "
+                "(its id was reused); left in place",
+                album_id,
+            )
+        self._replace_album_ids.update(surviving - self._landed_album_ids)
 
     def _note_outcome_awaiting_album_id(self, outcome: AlbumOutcome, task: ImportTask) -> None:
         """Emit a feed outcome AND stash the task for the album-id follow-up."""
@@ -1125,6 +1196,7 @@ class WebImportSession(ImportSession):
             album_id = getattr(album, "id", None)
             if album_id is None:
                 continue
+            self._landed_album_ids.add(int(album_id))
             self.bridge.note_outcome(
                 outcome.model_copy(
                     update={"album_id": int(album_id), "status": AlbumOutcomeStatus.applied}

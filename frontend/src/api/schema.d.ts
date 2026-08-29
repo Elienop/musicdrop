@@ -2510,6 +2510,11 @@ export interface components {
             decided?: components["schemas"]["BankDecision"] | null;
             /** Error */
             error?: string | null;
+            /**
+             * Error Retryable
+             * @default true
+             */
+            error_retryable: boolean;
             /** Album Id */
             album_id?: number | null;
             /**

@@ -625,6 +625,30 @@ describe("BankReviewPage", () => {
     expect(within(second.container).getByRole("link", { name: /view album/i })).toHaveAttribute("href", "/albums/7");
   });
 
+  /**
+   * The queued body must stay true for EVERY decision the runner can carry
+   * out. It used to promise "This decision waits for the import slot. Files
+   * move automatically" — both clauses are false for an ENFORCED skip_new,
+   * which imports nothing: it never takes the import slot and moves no files.
+   * The fixture therefore queues exactly that decision.
+   *
+   * Written out rather than imported from the page, per the convention below:
+   * a shared constant would follow any production edit and never fail.
+   */
+  test("the queued notice promises only what holds for every decision", async () => {
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(bankItem({ status: "queued", decided: { action: "duplicate", candidate_index: null, duplicate_action: "skip_new" } })),
+      ),
+    );
+    renderRow();
+    expect(
+      await screen.findByText("This decision will be applied automatically; no further action needed."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/files move automatically/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/waits for the import slot/i)).not.toBeInTheDocument();
+  });
+
   test("a skip_new dup resolution says it kept the existing copy, not 'landed'", async () => {
     server.use(
       http.get(ITEM, () =>
@@ -638,6 +662,47 @@ describe("BankReviewPage", () => {
     expect(screen.getByRole("button", { name: /remove from bank/i })).toBeInTheDocument();
   });
 
+  /**
+   * The OTHER half of the skip_new outcome, and the reason that arm reads
+   * `album_id` instead of the decision alone. An enforced skip_new resolves
+   * without importing only while the stored library copy SURVIVES; when the
+   * user deleted or moved it between banking and applying there is nothing
+   * left to keep, so the import runs and LANDS — status done, album_id set,
+   * decision still skip_new. Keyed on the decision alone this notice would
+   * print "Nothing new was imported" directly beside a View-album button for
+   * the album that just imported.
+   *
+   * Pinned both ways: the null side is the test directly above (unchanged).
+   * The copy is written out here on PURPOSE rather than imported from the
+   * page — a shared constant would follow any production edit and the
+   * assertion would never fail. These literals are the drift alarm.
+   */
+  test("a skip_new whose kept copy was GONE says it imported, and links the landed album", async () => {
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(bankItem({ status: "done", album_id: 7, decided: { action: "duplicate", candidate_index: 0, duplicate_action: "skip_new" } })),
+      ),
+    );
+    renderRow();
+    expect(
+      await screen.findByText("Imported — your existing copy was gone"),
+    ).toBeInTheDocument();
+    // The body names the row (artist - album), so a mutation that drops the
+    // label fails here too.
+    expect(
+      screen.getByText(
+        "The copy you chose to keep was no longer in your library, so Boards of Canada - MHTRTC was imported.",
+      ),
+    ).toBeInTheDocument();
+    // The self-contradiction this branch exists to prevent.
+    expect(screen.queryByText(/nothing new was imported/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/kept your existing copy/i)).not.toBeInTheDocument();
+    // The action stays the landed album's — not the Remove button the
+    // no-album side offers.
+    expect(screen.getByRole("link", { name: /view album/i })).toHaveAttribute("href", "/albums/7");
+    expect(screen.queryByRole("button", { name: /remove from bank/i })).not.toBeInTheDocument();
+  });
+
   test("a replace dup resolution says it replaced the old copy", async () => {
     server.use(
       http.get(ITEM, () =>
@@ -647,6 +712,106 @@ describe("BankReviewPage", () => {
     renderRow();
     expect(await screen.findByText(/^replaced$/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /view album/i })).toHaveAttribute("href", "/albums/7");
+  });
+
+  /**
+   * The merge honest failure. A merge the runner could NOT carry out no longer
+   * resolves quietly — it fails the row and parks the runner's own reason on
+   * it, which FailedBanner renders VERBATIM.
+   *
+   * The row carries `error_retryable: false` — the shape the runner now
+   * produces for this failure. That reason forbids deciding again (it would
+   * import a THIRD copy), so the emphasized line must not instruct the retry
+   * the muted line under it rules out, and the banner must point at the
+   * recovery that works. The duplicate actions stay ENABLED regardless: the
+   * strip is the escape hatch for the ordinary already-in-library failure, and
+   * a not-retryable headline is a copy change, not a lockout.
+   *
+   * FIXTURE CONTRACT — the literal below is `_MERGE_NOT_MERGED_ERROR` from
+   * `backend/app/bank/apply_runner.py`, duplicated VERBATIM on purpose: that
+   * constant is authoritative, and this copy is the drift alarm (exactly as
+   * the legacy-label block above explains — an import would follow production
+   * and never fail). If the backend rewords it, update this string to match.
+   */
+  test("a merge that could not run shows the reason, drops the retry instruction, and links Duplicates", async () => {
+    const MERGE_FAILED_ERROR =
+      "the album landed in your library as a second copy and the merge never ran (your " +
+      "library copy no longer matched it) - deciding again would import it a third time; " +
+      "remove one of the two copies instead, from its album page or the Duplicates page";
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(
+          bankItem({
+            reason: "needs_dup_resolution",
+            parked: null,
+            duplicate: duplicatePrompt,
+            recommendation: null,
+            confidence: null,
+            status: "failed",
+            error: MERGE_FAILED_ERROR,
+            error_retryable: false,
+            decided: { action: "duplicate", candidate_index: null, duplicate_action: "merge" },
+          }),
+        ),
+      ),
+    );
+    renderRow();
+    // Role-scoped on purpose: the fixture error and the comparison panel's own
+    // heading share the words "already in your library", so a text query for
+    // either would match both.
+    await screen.findByRole("heading", { name: /already in your library/i });
+    const banner = screen.getByRole("alert");
+    // Exact strings, not regexes: the banner's wrapper carries BOTH lines in
+    // its textContent, so a substring match would find two elements.
+    expect(within(banner).getByText("The apply failed.")).toBeInTheDocument();
+    expect(within(banner).getByText(MERGE_FAILED_ERROR)).toBeInTheDocument();
+    // The instruction the parked reason contradicts. Asserted on the banner's
+    // whole textContent, not as a queryByText miss, so re-adding the clause
+    // anywhere inside the banner — split across elements included — fails.
+    expect(banner).not.toHaveTextContent("Decide again to retry.");
+    // The recovery that actually works for this failure.
+    expect(within(banner).getByRole("link", { name: "Open Duplicates" })).toHaveAttribute(
+      "href",
+      "/duplicates",
+    );
+    // The strip below is unaffected — the row is still decidable as a duplicate.
+    expect(screen.getByRole("button", { name: /merge/i })).toBeEnabled();
+  });
+
+  /**
+   * The DEFAULT arm. Ordinary failures stay retryable, and a row banked before
+   * `error_retryable` existed carries no such key at all — the fixture factory
+   * omits it, so the first render IS that old shape. Both must keep the retry
+   * instruction and offer no Duplicates link.
+   *
+   * Rendered twice because the two inputs reach the arm by different routes:
+   * absent leans on the `!== false` predicate, `true` on the value itself, so
+   * narrowing the check to `=== true` survives the second and dies on the first.
+   */
+  test("a retryable failure keeps the retry headline, field true or absent", async () => {
+    server.use(
+      http.get(ITEM, () => HttpResponse.json(bankItem({ status: "failed", error: "beets exited 1" }))),
+    );
+    const absent = renderRow();
+    expect(
+      await within(absent.container).findByText("The apply failed. Decide again to retry."),
+    ).toBeInTheDocument();
+    expect(
+      within(absent.container).queryByRole("link", { name: "Open Duplicates" }),
+    ).not.toBeInTheDocument();
+
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(bankItem({ status: "failed", error: "beets exited 1", error_retryable: true })),
+      ),
+    );
+    const explicit = renderRow();
+    expect(
+      await within(explicit.container).findByText("The apply failed. Decide again to retry."),
+    ).toBeInTheDocument();
+    expect(
+      within(explicit.container).queryByRole("link", { name: "Open Duplicates" }),
+    ).not.toBeInTheDocument();
   });
 
   test("a vanished row shows the gone notice", async () => {

@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from app.models.import_models import (
     DuplicateAction,
     DuplicatePrompt,
+    ExistingAlbum,
     ParkedAlbum,
 )
 
@@ -84,9 +85,12 @@ class BankApplyDirective(BaseModel):
       carries no release id.
     * ``asis`` / ``astracks`` — direct ``Action.ASIS`` / ``Action.TRACKS``
       (astracks singletons then import as-is via ``choose_item``).
-    * ``duplicate`` — ``resolve_duplicate`` auto-answers ``duplicate_action``,
+    * ``duplicate`` — ``get_duplicate_action`` auto-answers ``duplicate_action``,
       and ``search_id`` pins the banked release the same way ``apply`` does
-      (the sweep banks the matched release with the prompt).
+      (the sweep banks the matched release with the prompt). ``replace_existing``
+      carries the collision the BANKED prompt recorded, so a ``replace`` is
+      enforced from stored ids rather than from beets' name-keyed re-detection
+      (which never fires when the library copy's naming has drifted).
 
     Never referenced by an endpoint, so it stays out of the OpenAPI schema.
     """
@@ -94,6 +98,14 @@ class BankApplyDirective(BaseModel):
     action: BankApplyAction
     search_id: str | None = None
     duplicate_action: DuplicateAction | None = None
+    # The library albums the banked ``DuplicatePrompt`` recorded as colliding.
+    # Populated ONLY for ``duplicate_action is replace``; empty everywhere else
+    # (including a legacy row whose prompt listed nothing). Carries the whole
+    # ``ExistingAlbum``, not a bare id, because beets ids are reused rowids: the
+    # session identity-checks each entry against the live library at trash time,
+    # where it holds the ``Library``. See the seed's own guards in
+    # ``WebImportSession._seed_replace_from_directive``.
+    replace_existing: list[ExistingAlbum] = []
 
 
 class BankItem(BaseModel):
@@ -116,6 +128,13 @@ class BankItem(BaseModel):
     status: BankStatus
     decided: BankDecision | None = None
     error: str | None = None
+    # Whether "decide again" is the sane recovery for THIS failure — the failed
+    # banner's headline, which would otherwise be one hardcoded sentence. Only
+    # meaningful while status is ``failed``; ``set_status`` (the sole writer of
+    # that status) always rewrites it, so a row can never surface a stale value.
+    # Default True: every failure retries except the merge that landed a second
+    # copy, and a row persisted before this field existed is retryable.
+    error_retryable: bool = True
     # The library album id the apply landed (set with status done when the
     # import's outcome carried one; None for skip_new dup resolutions and
     # astracks applies, which create no album entity).

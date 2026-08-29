@@ -118,6 +118,24 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   the round-trip editor. Recorded here because it is the strongest argument that the auth
   item is mis-sized as "long-term".
 
+- **`GET /api/albums/{id}/cover` 500s on an album whose first track is not a parseable
+  audio stream.** (Observed 2026-08-29 on the stage stub `.mp3`s; PRE-EXISTING, not
+  introduced by `fix/bank-dup-enforce`.) The embedded-art fallback constructs
+  `MediaFile(track_path)` unguarded (`app/beets/library.py:751`, reached from
+  `get_album_cover` whenever `artpath` yields nothing). mutagen's `HeaderNotFoundError` is
+  reraised by `mediafile.utils.mutagen_wrapper.mutagen_call` as
+  `mediafile.UnreadableFileError` — verified in the pinned venv, message "can't sync to MPEG
+  frame" — and nothing between there and `get_album_cover_endpoint`
+  (`app/api/albums.py:231-290`) catches it, so a truncated, half-copied or otherwise corrupt
+  file in a real library answers 500 instead of the endpoint's declared 404. Both sizes are
+  affected: `size=thumb` reaches the same call through the thumb cache's producer lambda.
+  Wanted: treat an unreadable audio file the same as "no art" — the 404 the frontend already
+  degrades into its placeholder — rather than an error the album grid cannot render around.
+  `cover_validator` is unaffected (it only `stat`s), so a corrupt file still yields an ETag
+  and the 500 is only reached on a validator miss. The sibling `MediaFile` reads (track
+  detail, import candidate cover) want the same audit; this entry is scoped to the one path
+  with a probe behind it.
+
 - ~~**Every `.m3u8` export goes stale on a reorganize or an album tag edit — only the artist
   rename re-exports.**~~ — **FIXED in #195,
   2026-08-29, per the owner's all-movers decision (vault decisions 24).** One sync core
@@ -160,10 +178,52 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   removals leave the same stale rows. Needs a short design conversation first (re-export on
   which events, and what the job result reports); the wiring after that is mechanical.
 
-- **A banked duplicate decision is silently DISCARDED when the apply's re-detection
-  misses — the album imports anyway and the row reports `done`.** (Found 2026-08-29 by the
+- ~~**A banked duplicate decision is silently DISCARDED when the apply's re-detection
+  misses — the album imports anyway and the row reports `done`.**~~ (Found 2026-08-29 by the
   release-id-pin deep review; probe-CONFIRMED against beets' real `_resolve_duplicates`
-  with the production dup guard installed.) beets consults `get_duplicate_action` only
+  with the production dup guard installed.) — **FIXED on `fix/bank-dup-enforce`
+  (PR #197), 2026-08-29, per the owner's settled design (vault decisions 25):
+  enforce the decision from the banked prompt's stored library album ids instead of trusting
+  beets' name-keyed re-detection.** Three arms, because the four actions are not equally
+  forceable: `skip_new` short-circuits in the apply runner (`app/bank/apply_runner.py`,
+  `_skip_new_is_enforced` between the staleness checks and `directive_for`) — if a stored
+  colliding album still survives, NO import is started and the row resolves `done` with no
+  album id, which the Review page already renders as "Kept your existing copy" with no
+  frontend change for that arm (the diff does change `BankReviewPage.tsx` elsewhere — the
+  album-id branch and the queued copy); `replace` rides a new internal
+  `BankApplyDirective.replace_existing` into
+  the session, which unions the stored ids into the SAME post-run Trash pass the hook-recorded
+  ids use (`WebImportSession._seed_replace_from_directive`); `merge` cannot be forced at all
+  (beets performs it inside the hook) so it is REPORTED honestly — an album that landed with
+  no `needs_dup_resolution` on the feed now fails with wording that says a second copy landed
+  and steers to removing one, never to a blind re-decide that would import a third;
+  `keep_both` is untouched. Every stored id is identity-verified before it is acted on
+  (`duplicate_albums_still_present` in `app/beets/library.py`): beets ids are reused SQLite
+  rowids, so presence alone would let a `skip_new` refuse an import over a stranger and a
+  `replace` Trash an album nobody decided about. The replace seed is additionally gated on
+  the run having actually landed something, and excludes this run's own landed ids (a
+  reused rowid would otherwise Trash the album just imported).
+  Residuals, recorded deliberately: (a) **`merge` stays report-only** — the row fails with
+  guidance, nothing is merged retroactively and nothing is undone; the album really is in
+  the library twice until the user removes one. (b) **Up-front-resolver dup decisions keep
+  the trust-the-hook path** — a `duplicate` decision posted on a row with no banked prompt
+  (`item.duplicate is None`), or a prompt that listed no existing album, has no stored id to
+  enforce, so it behaves exactly as before. (c) **The identity check can read a re-tagged
+  copy as gone.** It compares album-artist + album (case-folded) and, when both sides carry
+  one, the release URL — and when the stored name key is only half filled, a stored URL must
+  be matched by a live one or the entry fails shut. An album RENAMED or re-tagged to another
+  release since banking fails the match and counts as not surviving — so a `skip_new` would
+  then let the import run, and a `replace` would leave that copy in place. That is the
+  deliberate direction (never act on an album we cannot confirm), but it means enforcement is
+  not total: the drift case it does not cover is a stored copy whose identity moved, and the
+  remedy is a rescan. The REPORTING of that case is honest, though: a `replace` whose banked
+  copies have all gone or drifted (and whose run beets did not re-detect either) now fails
+  with wording that says the album was imported and no old copy was moved to Trash, and steers
+  to checking for a leftover — it no longer reports `done`, which the Review page renders as
+  "Replaced / the old copy was moved to Trash".
+
+  The original diagnosis, kept because it is why the fix looks like this: beets consults
+  `get_duplicate_action` only
   when `task.find_duplicates()` finds a hit, and that query keys on the CHOSEN release's
   albumartist+album (`duplicate_keys.album`, beets `config_default.yaml:51`; guard at
   `stages.py:334-341`, query at `tasks.py:368-399`). When the chosen release's naming
@@ -172,15 +232,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   and apply — the hook never fires and the decision evaporates: `skip_new` ("keep
   existing, import nothing") IMPORTS the album; `replace` never populates
   `_replace_album_ids` (only `_beets_dup_action`, reached from the hook, fills it —
-  `import_session.py:513`), so nothing is trashed and TWO copies remain; `merge` imports
-  as a separate album; only `keep_both` lands as intended. `_classify`
-  (`apply_runner.py:291-293`) then reads `album_id is not None` as success → `done`, so
-  there is no signal anywhere. The release-id pin NARROWS this — a pinned row against an
-  unchanged library re-detects (probe-verified) — but does not close the drift case.
-  Needs a short design conversation before code: when a `duplicate`-action apply finishes
-  without the resolution hook having run, should the runner fail the row (the album has
-  already imported by then), undo the import, or accept it — and what should the row's
-  status honestly say? At minimum, silently mapping that state to `done` is wrong.
+  `import_session.py`'s `_beets_dup_action`), so nothing was trashed and TWO copies remained;
+  `merge` imported as a separate album; only `keep_both` landed as intended. `_classify`
+  then read `album_id is not None` as success → `done`, so there was no signal anywhere.
+  The release-id pin (#196) NARROWED this — a pinned row against an unchanged library
+  re-detects (probe-verified) — but did not close the drift case, which is what the stored-id
+  enforcement above is for.
 
 - ~~**Bank apply re-runs the match instead of replaying the user's chosen release — every
   sweep-banked DUPLICATE row, by construction.**~~ (Found 2026-08-28.) — **FIXED in #196, 2026-08-29, per the owner's settled design
@@ -193,8 +250,10 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   not move (`BankItem.parked` was already in it — verified by re-running both regen steps).
   Residuals, recorded deliberately: (a) **legacy rows stay honestly unpinned** — rows
   banked before this change carry no payload, so their apply still re-runs the lookup —
-  and a re-run whose top match dodges duplicate detection can DISCARD the decision
-  entirely, importing against a "skip new" (its own OPEN entry directly above);
+  and a re-run whose top match dodges duplicate detection used to DISCARD the decision
+  entirely, importing against a "skip new" (the struck entry directly above, now fixed on
+  `fix/bank-dup-enforce`: a legacy row's stored prompt still enforces `skip_new`/`replace`
+  by id, so only the release CHOICE stays unpinned on those rows);
   nothing back-fills them and they drain by user decision. The honest labels ship in the
   SAME PR, on both bank decision screens: the duplicate screen's note (which names the
   Rescan remedy — a rescan re-banks the row through the pinning path) and the candidate
