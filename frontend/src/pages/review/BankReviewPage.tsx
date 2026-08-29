@@ -539,12 +539,11 @@ const UNPINNED_OPTION_NOTE =
  * Keyed on the row's STORED DATA, never on `status`: a failed apply re-enters
  * this screen as `failed` and is still legacy on every retry.
  *
- * An empty `options` array needs no clause of its own — `options[0]` is then
- * `undefined` and the optional chain yields `undefined == null` → true.
+ * Neither a missing payload nor an empty `options` array needs a clause of
+ * its own — the optional chain makes both read as `undefined == null` → true.
  */
 function isLegacyUnpinned(item: BankItem): boolean {
-  const parked = item.parked;
-  return parked == null || parked.candidate.options[0]?.release_id == null;
+  return item.parked?.candidate.options[0]?.release_id == null;
 }
 
 function BankDuplicateScreen({ item }: Readonly<{ item: BankItem }>) {
