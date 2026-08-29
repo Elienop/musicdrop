@@ -319,6 +319,42 @@ def test_sweep_matchless_duplicate_banks_no_parked(
     assert row.confidence == 0.0
 
 
+def test_matched_release_payload_is_faithful_field_by_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every banked-payload field, pinned directly on the helper.
+
+    These fields are WRITE-ONLY today (no bank surface renders a dup row's
+    parked payload — the dup screen shows the prompt, and a rescan replaces the
+    payload wholesale before the candidate screen ever reads it), so a wrong
+    value ships silently the day anything consumes them. Two mutations proved
+    the gap: has_current_art hardcoded False and cur_artist/cur_album
+    transposed both survived the full suite before this pin."""
+    match = _build_match(BeetsRec.strong, album_id="mb-pin")
+    session = _sweep_session(ImportBridge(), tmp_path / "bank")
+    folder = _album_folder(tmp_path)
+    task = _make_task(match, monkeypatch, BeetsRec.strong, paths=[os.fsencode(str(folder))])
+    # The real path reaches the duplicate hook only after choose_match returned
+    # the match and beets recorded it — set_choice is what populates task.match.
+    task.set_choice(match)
+
+    payload = session._matched_release_payload(
+        task, index=3, recommendation=Recommendation.strong, has_current_art=True
+    )
+
+    assert payload is not None
+    assert payload.album_index == 3
+    assert payload.folder == str(folder)
+    candidate = payload.candidate
+    assert candidate.has_current_art is True
+    # album_before carries the CURRENT tags (cur_artist/cur_album from the
+    # lookup) — transposing them is the survived mutation this line kills.
+    assert candidate.album_before.artist == "Radiohead"
+    assert candidate.album_before.album == "OK Computer"
+    assert candidate.recommendation is Recommendation.strong
+    assert candidate.options[0].release_id == "mb-pin"
+
+
 def test_sweep_without_folder_banks_nothing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

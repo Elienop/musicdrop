@@ -381,6 +381,74 @@ def test_upsert_replaces_changed_fingerprint(tmp_path: Path) -> None:
     assert replaced.resolved_at is None
 
 
+def test_upsert_replace_arm_carries_both_payloads(tmp_path: Path) -> None:
+    """The changed-fingerprint replace arm must forward ``parked`` AND
+    ``duplicate`` — its update dict enumerates fields one by one, so a dropped
+    field silently strands the release pin on the OLD payload (or none). The
+    sibling test above uses a payload-free ``no_match`` row, which is why a
+    dropped-``parked`` mutation survived the whole suite before this pin. The
+    re-read matters too: the arm uses ``model_copy``, which skips validators,
+    so a broken write would only surface as a corrupt row on the next load."""
+
+    def parked(rid: str) -> ParkedAlbum:
+        cand = _candidate(80.0)
+        cand = cand.model_copy(
+            update={
+                "options": [
+                    CandidateOption(
+                        index=0,
+                        confidence=80.0,
+                        data_source="MusicBrainz",
+                        disambiguation=None,
+                        release_id=rid,
+                    )
+                ]
+            }
+        )
+        return ParkedAlbum(album_index=0, folder="/library/X", candidate=cand)
+
+    prompt = DuplicatePrompt(
+        album_index=0,
+        incoming=IncomingAlbum(
+            album_artist="A",
+            album="B",
+            year=None,
+            track_count=1,
+            format=None,
+            bitrate_kbps=None,
+            folder="/library/X",
+            has_current_art=False,
+        ),
+        existing=[],
+    )
+    store.upsert_by_folder(
+        _bank(tmp_path),
+        folder="/library/X",
+        source="sweep",
+        reason="needs_dup_resolution",
+        fingerprint="f1",
+        duplicate=prompt,
+        parked=parked("mb-old"),
+    )
+    replaced = store.upsert_by_folder(
+        _bank(tmp_path),
+        folder="/library/X",
+        source="sweep",
+        reason="needs_dup_resolution",
+        fingerprint="f2",
+        duplicate=prompt,
+        parked=parked("mb-new"),
+    )
+    assert replaced.parked is not None
+    assert replaced.parked.candidate.options[0].release_id == "mb-new"
+    assert replaced.duplicate is not None
+    reread = store.get_item(_bank(tmp_path), replaced.id)
+    assert reread is not None
+    assert reread.parked is not None
+    assert reread.parked.candidate.options[0].release_id == "mb-new"
+    assert reread.duplicate is not None
+
+
 def test_next_queued_is_fifo_by_decided_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bank = _bank(tmp_path)
     first_banked = _create(tmp_path, folder="/x/A")

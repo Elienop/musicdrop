@@ -160,6 +160,28 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   removals leave the same stale rows. Needs a short design conversation first (re-export on
   which events, and what the job result reports); the wiring after that is mechanical.
 
+- **A banked duplicate decision is silently DISCARDED when the apply's re-detection
+  misses — the album imports anyway and the row reports `done`.** (Found 2026-08-29 by the
+  release-id-pin deep review; probe-CONFIRMED against beets' real `_resolve_duplicates`
+  with the production dup guard installed.) beets consults `get_duplicate_action` only
+  when `task.find_duplicates()` finds a hit, and that query keys on the CHOSEN release's
+  albumartist+album (`duplicate_keys.album`, beets `config_default.yaml:51`; guard at
+  `stages.py:334-341`, query at `tasks.py:368-399`). When the chosen release's naming
+  differs from the library copy's — an unpinned legacy re-run ranking a different edition
+  first, or even a PINNED row whose colliding album was renamed or removed between bank
+  and apply — the hook never fires and the decision evaporates: `skip_new` ("keep
+  existing, import nothing") IMPORTS the album; `replace` never populates
+  `_replace_album_ids` (only `_beets_dup_action`, reached from the hook, fills it —
+  `import_session.py:513`), so nothing is trashed and TWO copies remain; `merge` imports
+  as a separate album; only `keep_both` lands as intended. `_classify`
+  (`apply_runner.py:291-293`) then reads `album_id is not None` as success → `done`, so
+  there is no signal anywhere. The release-id pin NARROWS this — a pinned row against an
+  unchanged library re-detects (probe-verified) — but does not close the drift case.
+  Needs a short design conversation before code: when a `duplicate`-action apply finishes
+  without the resolution hook having run, should the runner fail the row (the album has
+  already imported by then), undo the import, or accept it — and what should the row's
+  status honestly say? At minimum, silently mapping that state to `done` is wrong.
+
 - ~~**Bank apply re-runs the match instead of replaying the user's chosen release — every
   sweep-banked DUPLICATE row, by construction.**~~ (Found 2026-08-28.) — **FIXED in this
   branch's PR (number filled before merge), 2026-08-29, per the owner's settled design
@@ -171,7 +193,9 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `import.search_ids` to it. No apply-side change was needed and the OpenAPI contract did
   not move (`BankItem.parked` was already in it — verified by re-running both regen steps).
   Residuals, recorded deliberately: (a) **legacy rows stay honestly unpinned** — rows
-  banked before this change carry no payload, so their apply still re-runs the lookup;
+  banked before this change carry no payload, so their apply still re-runs the lookup —
+  and a re-run whose top match dodges duplicate detection can DISCARD the decision
+  entirely, importing against a "skip new" (its own OPEN entry directly above);
   nothing back-fills them and they drain by user decision. The honest labels ship in the
   SAME PR, on both bank decision screens: the duplicate screen's note (which names the
   Rescan remedy — a rescan re-banks the row through the pinning path) and the candidate
