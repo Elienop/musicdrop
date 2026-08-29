@@ -12,8 +12,12 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from app.api.albums import get_library
-from app.api.artists import get_artist_image_cache, get_artist_image_service
-from app.artwork.cache import ArtistImageCache
+from app.api.artists import (
+    get_artist_image_cache,
+    get_artist_image_filler,
+    get_artist_image_service,
+)
+from app.artwork.cache import ArtistImageCache, CachedImage
 from app.artwork.deezer import DeezerArtistImageSource
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
@@ -537,7 +541,6 @@ def test_unreadable_cache_bytes_self_heal_instead_of_500ing(
     the endpoint then re-resolves and the entry rebuilds, instead of an OSError
     from the ``exists()``-then-``read_bytes()`` window reaching the client.
     """
-    from app.artwork.cache import CachedImage
     from app.artwork.source import ResolvedImage
     from app.beets import library as library_mod
 
@@ -808,6 +811,100 @@ def test_a_cached_image_is_served_without_touching_the_service(tmp_path: Path) -
         assert service.calls == []  # no resolve path on a hit
     finally:
         app.dependency_overrides.clear()
+
+
+class _RecordingFiller:
+    """Stands in for ArtistImageFiller, recording rather than resolving.
+
+    ``fills`` being empty is the assertion that matters: a completed fill arms
+    an unscoped ``art:changed``, which remounts and re-requests every visible
+    portrait — so an artist that keeps reaching the filler on a HIT is a
+    self-sustaining loop, not one wasted resolve.
+    """
+
+    def __init__(self) -> None:
+        self.fills: list[str] = []
+
+    async def fill(
+        self, service: object, name: str, *, get_mbid: object, grace_seconds: float
+    ) -> None:
+        self.fills.append(name)
+        return None
+
+
+def _stranded_cache(cache_dir: Path, name: str, data: bytes, mime: str) -> ArtistImageCache:
+    """A cache whose only copy of ``name`` is a memory-tier strand.
+
+    Inserted directly: staging it with ``chmod`` would self-skip as root.
+    """
+    cache = ArtistImageCache(cache_dir)
+    cache._memory.put(cache._key(name), CachedImage(data=data, content_type=mime))
+    return cache
+
+
+def test_a_stranded_portrait_serves_itself_without_starting_a_background_fill(
+    tmp_path: Path,
+) -> None:
+    """The loop kill, end to end.
+
+    A portrait stranded in the memory tier used to be invisible to
+    ``cache.validator``, so the endpoint saw "nothing to validate", skipped both
+    the 304 and the serve-from-cache paths, and handed the artist to the filler
+    on EVERY request — whose completed fill bumped the global asset version,
+    remounted every visible portrait and fed the next request. It must serve
+    from cache, with a real ETag, and never reach the filler.
+    """
+    cache = _stranded_cache(tmp_path, "ABBA", b"STRANDED", "image/png")
+    service = _StubService((b"SHOULD-NOT-BE-USED", "image/jpeg"))
+    filler = _RecordingFiller()
+    app.dependency_overrides[get_artist_image_service] = lambda: service
+    app.dependency_overrides[get_artist_image_cache] = lambda: cache
+    app.dependency_overrides[get_artist_image_filler] = lambda: filler
+    app.dependency_overrides[get_library] = lambda: _StubHandle()
+    try:
+        resp = TestClient(app).get("/api/artists/image", params={"name": "ABBA"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert resp.content == b"STRANDED"
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.headers["etag"]
+    assert filler.fills == []
+    assert service.calls == []
+
+
+def test_a_stranded_portrait_revalidates_with_a_304(tmp_path: Path) -> None:
+    """And the second request costs no bytes at all.
+
+    The cache dir is genuinely broken here (its parent is a regular file, so
+    ``mkdir`` is ENOTDIR — root-safe, unlike ``chmod``), which is both the real
+    scenario and what keeps the tag stable: with a healthy dir the first request
+    writes the strand back and the second correctly serves the new DISK tag.
+    """
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_bytes(b"")
+    cache = _stranded_cache(blocker / "cache", "ABBA", b"STRANDED", "image/png")
+    filler = _RecordingFiller()
+    app.dependency_overrides[get_artist_image_service] = lambda: _StubService(None)
+    app.dependency_overrides[get_artist_image_cache] = lambda: cache
+    app.dependency_overrides[get_artist_image_filler] = lambda: filler
+    app.dependency_overrides[get_library] = lambda: _StubHandle()
+    try:
+        client = TestClient(app)
+        first = client.get("/api/artists/image", params={"name": "ABBA"})
+        etag = first.headers["etag"]
+        second = client.get(
+            "/api/artists/image", params={"name": "ABBA"}, headers={"If-None-Match": etag}
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert first.status_code == 200
+    assert second.status_code == 304
+    assert second.content == b""
+    assert second.headers["etag"] == etag
+    assert filler.fills == []
 
 
 def test_a_disabled_feature_starts_no_background_fill() -> None:

@@ -30,6 +30,26 @@ a write that could not reach disk is remembered in a bounded map instead, so a
 broken cache dir degrades to a smaller cache rather than to no cache at all. The
 map lives on the INSTANCE and for its lifetime — the backfill daemon builds its
 own cache object, so each carries its own budget.
+
+That map is a real cache TIER, not just a holding pen, and the two properties
+that make it one are load-bearing:
+
+* **it answers ``validator()``.** A stranded image carries its own quoted-strong
+  revalidation tag (``"mem-<digest>-<size>"``, computed once when the entry is
+  created), so a request for it takes the same 304 / serve-from-cache path a
+  disk entry takes. Without that the endpoint saw "nothing to validate", fell
+  through to the background filler, and every completed fill armed an unscoped
+  ``art:changed`` — a self-sustaining remount/refetch loop for as long as one
+  tab showed one stranded artist, plus a sha256 over up to 10 MB and a thumb
+  re-derive per request;
+* **it writes back lazily, on the next touch.** ``get()`` re-attempts the disk
+  write it could not do at store time and drops the entry once disk takes it, so
+  a repaired cache dir re-persists without a restart and without a background
+  job. A restart before that touch loses the memory copies — accepted by design;
+  they simply re-fetch.
+
+Only WRITE FAILURES land here — never a read-through copy of a disk entry — so
+disk always has authority and a stale stand-in can never outlive its slot.
 """
 
 import hashlib
@@ -52,6 +72,13 @@ from app.etag import stat_etag
 _OVERRIDE_SUFFIX = ".override"
 _OVERRIDE_MIME_SUFFIX = ".override.mime"
 _CACHE_DIR_UNREADABLE = "artist-image cache dir is unreadable: %s"
+# One string for both writers under the "cache-write" throttle key: the two
+# sites (_or_remember's failure and the lazy write-back's) must stay
+# word-identical or the throttle dedups messages readers cannot correlate.
+_CACHE_DIR_UNWRITABLE = (
+    "artist-image cache dir is unwritable (%s); "
+    "serving from a bounded in-memory fallback until it recovers"
+)
 
 # Every slot suffix an artist's key can own (kept in ONE place so rename and
 # any future sweep cannot drift from the layout above).
@@ -132,6 +159,46 @@ class _NegativeUntil:
     expiry: float
 
 
+#: Marker opening a MEMORY-tier validator tag. A disk tag is ``"{mtime_ns}-{size}"``
+#: (see :func:`app.etag.stat_etag`), so it always starts with a digit — this prefix
+#: makes the two families disjoint by construction, which is what lets
+#: :meth:`ArtistImageCache.get_thumb` tell "derived from a slot a restart can
+#: reproduce" from "derived from a strand that dies with the process".
+_MEMORY_TAG_MARK: Final = "mem-"
+
+
+def _memory_tag(image: CachedImage) -> str:
+    """The revalidation tag a stranded image serves under.
+
+    QUOTED STRONG, like every tag in :mod:`app.etag`, because
+    ``size_scoped_etag`` splices its ``-t`` thumb marker INSIDE the closing
+    quote. Derived from the response (content-type + bytes) rather than from a
+    clock or a counter so it is stable for an unchanged entry across calls, and
+    changes the moment either half of the response does. Computed ONCE, when the
+    entry is created: this hashes up to 10 MB and ``validator()`` runs on every
+    single image request.
+    """
+    digest = hashlib.sha256(image.content_type.encode("utf-8") + b"\x00" + image.data).hexdigest()
+    return f'"{_MEMORY_TAG_MARK}{digest[:16]}-{len(image.data)}"'
+
+
+def _is_memory_tag(tag: str) -> bool:
+    """Whether ``tag`` came from the memory tier rather than a disk ``stat``."""
+    return tag.startswith(f'"{_MEMORY_TAG_MARK}')
+
+
+@dataclass(frozen=True)
+class _MemoryEntry:
+    """A stranded image plus the tag it revalidates under, paired for life.
+
+    The tag is stored, not recomputed per ``validator()`` call — see
+    :func:`_memory_tag`.
+    """
+
+    image: CachedImage
+    tag: str
+
+
 # Bounds for the fallback below. 64 images at the 10 MB upload cap would be
 # 640 MB, so the BYTE budget is the real limit and the entry count only keeps
 # the bookkeeping small; negatives cost nothing and are not charged against it.
@@ -140,13 +207,21 @@ _FALLBACK_MAX_BYTES: Final = 32 * 1024 * 1024
 
 
 class _MemoryFallback:
-    """Bounded, process-lifetime stand-in for entries disk refused to take.
+    """Bounded, process-lifetime cache TIER for entries disk refused to take.
 
-    Populated ONLY when a write failed, so on a healthy install it stays empty
-    and costs nothing. Insertion-ordered eviction (oldest first) under both a
-    byte budget and an entry cap: this exists to stop a broken cache dir from
-    multiplying upstream traffic, not to become an unbounded second cache that
-    turns a disk problem into an OOM.
+    Populated ONLY when a write failed — never as a read-through copy of a disk
+    entry — so on a healthy install it stays empty and costs nothing, and disk
+    keeps authority whenever disk has anything at all. Insertion-ordered
+    eviction (oldest first) under both a byte budget and an entry cap: this
+    exists to stop a broken cache dir from multiplying upstream traffic, not to
+    become an unbounded second cache that turns a disk problem into an OOM.
+
+    A stored image is a full tier entry, not a spare copy: it carries the
+    revalidation tag it serves under (:func:`_memory_tag`), so
+    ``ArtistImageCache.validator`` can answer from here and the request takes
+    the ordinary 304 / serve-from-cache path. It is released by the lazy
+    write-back in ``ArtistImageCache.get`` as soon as disk accepts the entry
+    again — see the module docstring.
 
     Thread-safe because concurrent image GETs run in the threadpool and can
     hit one instance at once. NOT shared with the artist-art backfill daemon:
@@ -158,25 +233,40 @@ class _MemoryFallback:
         self._max_entries = max_entries
         self._max_bytes = max_bytes
         self._lock = threading.Lock()
-        self._entries: OrderedDict[str, CachedImage | _NegativeUntil] = OrderedDict()
+        self._entries: OrderedDict[str, _MemoryEntry | _NegativeUntil] = OrderedDict()
         self._bytes = 0
 
-    def put(self, key: str, value: CachedImage | _NegativeUntil) -> None:
+    def put(self, key: str, value: CachedImage | _NegativeUntil | _MemoryEntry) -> None:
+        """Remember ``value`` under ``key``, tagging an image on the way in.
+
+        The tag is minted HERE, outside the lock (it hashes the payload), so
+        every stored image has one and nothing on the read path ever recomputes
+        it. Re-putting the same image mints an equal tag — the digest is over
+        the response, not over the insertion. An already-tagged ``_MemoryEntry``
+        is carried as-is (rename migrating a strand): the digest is
+        content-derived, so re-minting would only spend a hash of up to 10 MB
+        to compute the tag the entry already holds.
+        """
+        entry: _MemoryEntry | _NegativeUntil
+        if isinstance(value, CachedImage):
+            entry = _MemoryEntry(image=value, tag=_memory_tag(value))
+        else:
+            entry = value
         with self._lock:
             self._discard_locked(key)
-            size = len(value.data) if isinstance(value, CachedImage) else 0
+            size = len(entry.image.data) if isinstance(entry, _MemoryEntry) else 0
             if size > self._max_bytes:
                 return  # one image larger than the whole budget: keep nothing
-            self._entries[key] = value
+            self._entries[key] = entry
             self._bytes += size
             while self._entries and (
                 len(self._entries) > self._max_entries or self._bytes > self._max_bytes
             ):
                 _, evicted = self._entries.popitem(last=False)
-                if isinstance(evicted, CachedImage):
-                    self._bytes -= len(evicted.data)
+                if isinstance(evicted, _MemoryEntry):
+                    self._bytes -= len(evicted.image.data)
 
-    def get(self, key: str) -> CachedImage | _NegativeUntil | None:
+    def get(self, key: str) -> _MemoryEntry | _NegativeUntil | None:
         with self._lock:
             return self._entries.get(key)
 
@@ -185,10 +275,26 @@ class _MemoryFallback:
         with self._lock:
             self._discard_locked(key)
 
+    def discard_if(self, key: str, entry: _MemoryEntry) -> bool:
+        """Forget ``key`` only while it still holds exactly ``entry`` (identity).
+
+        The lazy write-back publishes to disk OUTSIDE the lock, so by the time
+        it lets go of the strand a concurrent ``clear_auto`` may have discarded
+        it (a user reset the publish must not undo) or a fresh strand may have
+        replaced it (newer bytes the old publish must not outrank). Returns
+        whether the discard happened; False tells the caller its publish is a
+        resurrect to take back.
+        """
+        with self._lock:
+            if self._entries.get(key) is entry:
+                self._discard_locked(key)
+                return True
+            return False
+
     def _discard_locked(self, key: str) -> None:
         existing = self._entries.pop(key, None)
-        if isinstance(existing, CachedImage):
-            self._bytes -= len(existing.data)
+        if isinstance(existing, _MemoryEntry):
+            self._bytes -= len(existing.image.data)
 
 
 class ArtistImageCache:
@@ -238,16 +344,66 @@ class ArtistImageCache:
         except OSError as exc:
             warn_throttled("cache-read", _CACHE_DIR_UNREADABLE, exc)
 
-        # Disk had nothing usable. Consult the fallback LAST so a healthy disk
-        # always wins: this only ever holds what a failed write could not store.
+        # Disk had nothing usable. Consult the memory tier LAST so a healthy
+        # disk always wins: it only ever holds what a failed write could not
+        # store.
+        return self._from_memory(key)
+
+    def _from_memory(self, key: str) -> CachedImage | _Negative | None:
+        """The memory tier's answer for ``key``, plus the lazy write-back.
+
+        Reached only once disk has answered "nothing usable", so this is the
+        one place that knows a strand was actually TOUCHED — which is exactly
+        when the retry is worth paying for. ``store_positive`` cannot do it:
+        it runs only after ``get()`` MISSES, and a strand makes ``get()`` hit,
+        so on the stranded keys it is never called again.
+
+        Negatives are deliberately excluded from the write-back: they carry
+        their own expiry and self-heal on TTL, and materialising a ``.miss``
+        from a mere probe would bar the re-resolve that repairs the key.
+        """
         remembered = self._memory.get(key)
-        if isinstance(remembered, CachedImage):
-            return remembered
+        if isinstance(remembered, _MemoryEntry):
+            self._write_back(key, remembered)
+            return remembered.image
         if isinstance(remembered, _NegativeUntil):
             if time.time() < remembered.expiry:
                 return NEGATIVE
             self._memory.discard(key)
         return None
+
+    def _write_back(self, key: str, entry: _MemoryEntry) -> None:
+        """Re-attempt the disk write that stranded ``entry``; on success let go.
+
+        Success hands authority back to disk exactly as ``_or_remember``'s
+        success branch does — the entry is DROPPED, not merely out-voted. The
+        publish runs outside the map's lock, so the drop is an identity
+        compare-and-discard: if the strand vanished mid-publish (a concurrent
+        ``clear_auto`` — the reset must stay reset) or was replaced by a fresh
+        strand (newer bytes), the files just published are a resurrect and are
+        taken back, best effort. A racing ``store_positive`` from a concurrent
+        resolve can still re-land legitimately after the take-back; the reset
+        route's zero-grace refill covers that the same way it covers its own
+        sweep race.
+
+        Failure is swallowed AND leaves the map untouched: no re-put. Re-putting
+        would refresh the entry's eviction position on every read, so a broken
+        dir plus a busy roster would keep the newest-touched entries and evict
+        the ones nothing happened to look at — turning a bounded oldest-first
+        map into an access-ordered one nobody asked for.
+        """
+        try:
+            self._publish_positive(key, entry.image)
+        except OSError as exc:
+            warn_throttled("cache-write", _CACHE_DIR_UNWRITABLE, exc)
+            return
+        if self._memory.discard_if(key, entry):
+            return
+        try:
+            for suffix in (".bin", ".mime"):
+                (self._dir / f"{key}{suffix}").unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def has_fresh_negative(self, name: str) -> bool:
         """Whether an unexpired no-match marker bars a re-fetch of ``name``.
@@ -275,20 +431,35 @@ class ArtistImageCache:
 
     def store_positive(self, name: str, data: bytes, content_type: str) -> None:
         key = self._key(name)
+        image = CachedImage(data=data, content_type=content_type)
         # A cache write may never fail the request that triggered it: the caller
         # already HAS the image and is about to serve it, so an unwritable cache
         # dir (volume re-chowned on recreate, read-only mount, disk full) must
         # cost the caching, not the response.
-        with self._or_remember(key, CachedImage(data=data, content_type=content_type)):
-            self._ensure_dir()
-            # A positive result supersedes any prior negative marker.
-            (self._dir / f"{key}.miss").unlink(missing_ok=True)
-            # Write the mime sidecar BEFORE the bytes so a concurrent get() never
-            # reads image bytes paired with a missing/stale content-type. Both writes
-            # are atomic (tmp + os.replace) so a reader never catches a truncated
-            # file and a crash can't leave a corrupt image cached (see _read_image).
-            _atomic_write_bytes(self._dir / f"{key}.mime", content_type.encode("utf-8"))
-            _atomic_write_bytes(self._dir / f"{key}.bin", data)
+        with self._or_remember(key, image):
+            self._publish_positive(key, image)
+
+    def _publish_positive(self, key: str, image: CachedImage) -> None:
+        """Publish the positive slot for ``key``. RAISES on a refusing dir.
+
+        Shared with the lazy write-back (:meth:`_write_back`) so a strand
+        re-persists through the exact same sequence that stored it originally —
+        a second copy of this would be free to drift on the ``.miss`` unlink or
+        the sidecar ordering, both of which are load-bearing.
+
+        The one method here that does NOT swallow ``OSError``: its two callers
+        need to know whether disk took the entry (one to remember it, one to
+        forget it), so the guard is theirs, not this one's.
+        """
+        self._ensure_dir()
+        # A positive result supersedes any prior negative marker.
+        (self._dir / f"{key}.miss").unlink(missing_ok=True)
+        # Write the mime sidecar BEFORE the bytes so a concurrent get() never
+        # reads image bytes paired with a missing/stale content-type. Both writes
+        # are atomic (tmp + os.replace) so a reader never catches a truncated
+        # file and a crash can't leave a corrupt image cached (see _read_image).
+        _atomic_write_bytes(self._dir / f"{key}.mime", image.content_type.encode("utf-8"))
+        _atomic_write_bytes(self._dir / f"{key}.bin", image.data)
 
     def store_negative(self, name: str, *, ttl_seconds: float) -> None:
         key = self._key(name)
@@ -302,23 +473,24 @@ class ArtistImageCache:
 
     @contextmanager
     def _or_remember(self, key: str, value: CachedImage | _NegativeUntil) -> Iterator[None]:
-        """Run a cache write; on OSError keep ``value`` in memory instead.
+        """Run a cache write; on OSError keep ``value`` in the memory tier instead.
 
-        Never raises — see the module docstring for why the fallback exists
-        rather than a bare swallow. On SUCCESS any earlier in-memory stand-in for
-        this key is dropped, so a cache dir that gets fixed hands authority back
-        to disk without a restart.
+        Never raises — see the module docstring for why the tier exists rather
+        than a bare swallow. On SUCCESS any earlier stand-in for this key is
+        dropped, so a cache dir that gets fixed hands authority back to disk
+        without a restart.
+
+        This branch is no longer the ONLY way that happens. It fires when a key
+        is written again, which post-repair the stranded keys never are (a
+        strand makes ``get()`` hit, so ``store_positive`` is never reached for
+        it) — the lazy write-back in :meth:`_write_back` is what covers them,
+        with the same drop-on-success semantics.
         """
         try:
             yield
         except OSError as exc:
             self._memory.put(key, value)
-            warn_throttled(
-                "cache-write",
-                "artist-image cache dir is unwritable (%s); "
-                "serving from a bounded in-memory fallback until it recovers",
-                exc,
-            )
+            warn_throttled("cache-write", _CACHE_DIR_UNWRITABLE, exc)
         else:
             self._memory.discard(key)
 
@@ -539,7 +711,7 @@ class ArtistImageCache:
             if suffix in (_OVERRIDE_SUFFIX, ".bin"):
                 moved = moved or relocated
         remembered = self._memory.get(old_key)
-        if isinstance(remembered, CachedImage):
+        if isinstance(remembered, _MemoryEntry):
             self._memory.put(new_key, remembered)
             moved = True
         self._memory.discard(old_key)
@@ -568,7 +740,7 @@ class ArtistImageCache:
                     return True
         except OSError as exc:
             warn_throttled("cache-read", _CACHE_DIR_UNREADABLE, exc)
-        return isinstance(self._memory.get(key), CachedImage)
+        return isinstance(self._memory.get(key), _MemoryEntry)
 
     def _replace(self, old: Path, new: Path) -> bool:
         """Move one slot file. True when it was there and is now at ``new``.
@@ -669,11 +841,22 @@ class ArtistImageCache:
 
     def validator(self, name: str) -> str | None:
         """Cheap revalidation tag for the image get() would serve: the override
-        slot when present, else the positive slot. None when neither exists (miss
-        or negative — the caller falls through to the resolve path). Same
-        stat-based scheme as the album cover's cover_validator: any writer
-        replaces the file (atomic rename bumps mtime), so a stale tag can never
-        yield a false 304.
+        slot when present, else the positive slot, else the MEMORY tier's own
+        tag. None when none of the three exists (miss or negative — the caller
+        falls through to the resolve path). Same stat-based scheme as the album
+        cover's cover_validator for the disk slots: any writer replaces the file
+        (atomic rename bumps mtime), so a stale tag can never yield a false 304.
+
+        Disk is probed FIRST and the memory tier only answers for what disk does
+        not have, which is the same disk-then-memory order ``get()`` and
+        ``_has_portrait`` use — the three must agree or a tag would validate an
+        image the endpoint is not about to serve. Skipping the tier here was the
+        recorded bug: a stranded image looked unvalidatable, so every request for
+        it bypassed the 304 path into the background filler, whose completed fill
+        armed an unscoped ``art:changed`` and fed the next request — a
+        self-sustaining remount loop, on top of a per-request sha256 and thumb
+        re-derive. A memory tag cannot collide with a stat tag (see
+        :data:`_MEMORY_TAG_MARK`).
 
         The probe is guarded for the same reason :func:`app.etag.stat_etag` is:
         this runs FIRST on every image request, so an unreadable cache dir (EACCES after a
@@ -694,14 +877,43 @@ class ArtistImageCache:
             warn_throttled(
                 "cache-read", "artist-image cache dir is unreadable (%s); serving unvalidated", exc
             )
-        return None
+        remembered = self._memory.get(key)
+        if not isinstance(remembered, _MemoryEntry):
+            return None
+        # get() ranks a FRESH disk negative above the memory tier, and the tag
+        # must rank it the same way or it validates an image get() refuses to
+        # serve. In-process the pair cannot arise (a strand blocks the resolve
+        # that writes markers), but the backfill daemon's separate cache
+        # instance over the same dir can write one while this instance holds a
+        # strand — and then a client holding the memory tag would keep 304ing
+        # the stale portrait while everyone else 404s. An unreadable dir makes
+        # no marker knowable, which is also what get()'s guarded probe
+        # concludes before serving the strand — the tag stays honest.
+        try:
+            miss = self._dir / f"{key}.miss"
+            if miss.exists() and time.time() < self._read_expiry(miss):
+                return None
+        except OSError:
+            pass
+        return remembered.tag
 
     def get_thumb(self, name: str) -> CachedImage | None:
         """The 320px WebP derivation of what get() would serve, deriving (and
         caching) it if the stored one is missing or was built from different
         source bytes. None when no source image is cached (the caller resolves
         first, then retries). An undecodable source degrades to the original
-        bytes — a grid that shows SOME image beats a 500."""
+        bytes — a grid that shows SOME image beats a 500.
+
+        A source that lives in the MEMORY tier is derived and SERVED but never
+        cached: its tag dies with the process, so a ``.thumb`` pair written under
+        it would outlive every reader that could match it — a permanent orphan no
+        sweep looks for, since ``clear_auto`` only touches keys someone resets.
+        That costs a derive per request while the strand lasts, which is exactly
+        what the strand cost before; the very next call caches normally, because
+        ``self.get`` below has by then written the source back to disk and the
+        following request's validator is a stat tag. Deliberately NOT re-running
+        ``validator()`` mid-flow to pick that tag up: the tag this response is
+        served under is the one the caller already put on the wire."""
         src_tag = self.validator(name)
         if src_tag is None:
             return None
@@ -739,11 +951,14 @@ class ArtistImageCache:
             source.data, source.content_type, subject=f"artist {name!r}"
         )
         # Caching is best-effort: the thumb is already derived, so an unwritable
-        # cache dir must cost the caching, not the image.
-        try:
-            self._ensure_dir()
-            _atomic_write_bytes(thumb_path, data)
-            _atomic_write_bytes(src_path, f"{src_tag} {mime}".encode())
-        except OSError as exc:
-            warn_throttled("cache-write", "artist-image thumb cache is unwritable: %s", exc)
+        # cache dir must cost the caching, not the image. A memory-tier source
+        # is not cached at all (see the docstring) — the pair would be keyed to a
+        # tag no restart can reproduce.
+        if not _is_memory_tag(src_tag):
+            try:
+                self._ensure_dir()
+                _atomic_write_bytes(thumb_path, data)
+                _atomic_write_bytes(src_path, f"{src_tag} {mime}".encode())
+            except OSError as exc:
+                warn_throttled("cache-write", "artist-image thumb cache is unwritable: %s", exc)
         return CachedImage(data=data, content_type=mime)
