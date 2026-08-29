@@ -54,7 +54,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**Three internal comments drifted from enforced behavior (2026-08-29 README audit;
   comment-only, fold into the next code PR — a docs-only PR can't carry them without
-  cutting a release).**~~ — **FIXED in this branch's PR (number filled before merge),
+  cutting a release).**~~ — **FIXED in #195,
   2026-08-29:** all four sites corrected (Plex section semantics ×2, lyrics pacing, panel
   nav path). (1) `backend/app/config.py:105-106` and `backend/app/plex/config.py:29`
   both say an empty `MUSICDROP_PLEX_LIBRARY_SECTION` means "the first artist section";
@@ -117,7 +117,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   item is mis-sized as "long-term".
 
 - ~~**Every `.m3u8` export goes stale on a reorganize or an album tag edit — only the artist
-  rename re-exports.**~~ — **FIXED in this branch's PR (number filled before merge),
+  rename re-exports.**~~ — **FIXED in #195,
   2026-08-29, per the owner's all-movers decision (vault decisions 24).** One sync core
   (`app/playlists/reexport.py`, async wrapper kept for endpoints) wired into album edit,
   album/artist delete, duplicates resolve + resolve-all, reorganize apply, disk-sync apply,
