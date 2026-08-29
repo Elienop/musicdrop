@@ -72,16 +72,20 @@ def export_playlist(
     record: StoredPlaylist,
     lib: Any,  # beets Library, untyped at the adapter boundary
     export_dir: Path,
-) -> None:
-    """Best-effort `.m3u8` (re)write — never raises.
+) -> bool:
+    """Best-effort `.m3u8` (re)write — never raises; True only when it WROTE.
 
     The owned store is the source of truth, so a filesystem hiccup must never
-    fail the mutation that asked for the export. Logged, not propagated.
+    fail the mutation that asked for the export. Logged, not propagated — but
+    the return value tells the caller the truth, because every UI surface words
+    the re-export count as accomplished fact.
     """
     try:
         render_export(record, lib, export_dir)
     except Exception:
         logger.warning("Playlist .m3u8 export failed for %s", record.id, exc_info=True)
+        return False
+    return True
 
 
 def reexport_playlists_containing_sync(
@@ -96,9 +100,10 @@ def reexport_playlists_containing_sync(
     ``m3u_entries`` drops its line — one pass repairs both.
 
     Best-effort per playlist (:func:`export_playlist` never raises); returns how
-    many playlists were re-exported, counting a failed write as an attempt so
-    the number matches "playlists this operation touched". An empty id set
-    returns 0 WITHOUT reading the store.
+    many playlists were actually RE-WRITTEN — a failed write is logged and not
+    counted, because every surface asserts the number as "re-exported N", and a
+    count of attempts would hide the exact stale export this module exists to
+    prevent. An empty id set returns 0 WITHOUT reading the store.
 
     Blocking (store IO + beets reads + file writes): call it on a worker thread,
     never on the event loop.
@@ -110,8 +115,8 @@ def reexport_playlists_containing_sync(
     count = 0
     for record in records:
         if any(iid in item_ids for iid in record.resolved_item_ids):
-            export_playlist(record, lib, export_dir)
-            count += 1
+            if export_playlist(record, lib, export_dir):
+                count += 1
     return count
 
 

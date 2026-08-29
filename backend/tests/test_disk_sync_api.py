@@ -64,6 +64,29 @@ def test_start_runs_job_to_done(sync_client: TestClient, monkeypatch: pytest.Mon
     assert status.json()["phase"] == "done"
 
 
+def test_start_passes_the_overridden_playlists_dir_to_the_worker(
+    sync_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The route must resolve get_playlists_dir via Depends, never a direct
+    call — a direct call escapes app.dependency_overrides, handing the worker
+    the settings-derived REAL playlist store while every test override
+    silently misses it."""
+    import app.api.disk_sync as api_mod
+    from app.playlists.store import get_playlists_dir
+
+    sentinel = tmp_path / "override-playlists"
+    app.dependency_overrides[get_playlists_dir] = lambda: sentinel
+
+    received: list[Path | None] = []
+    monkeypatch.setattr(
+        api_mod,
+        "start_backfill",
+        lambda reg, handle, *, playlists_dir=None, on_complete=None: received.append(playlists_dir),
+    )
+    assert sync_client.post("/api/disk-sync").status_code == 200
+    assert received == [sentinel]
+
+
 def test_start_409_while_reorganize_runs(sync_client: TestClient) -> None:
     from app.reorganize_jobs.registry import get_reorganize_backfill
 

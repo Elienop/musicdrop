@@ -120,6 +120,10 @@ async def preview_album_reorganize(
 async def start_reorganize(
     request: Request,
     reg: Annotated[ReorganizeRegistry, Depends(get_reorganize_backfill)],
+    # Depends (not a direct call) so app.dependency_overrides reaches this route
+    # too — a bare get_playlists_dir() here would hand the WORKER the real
+    # settings-derived store while every test override silently misses it.
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
     artist: Annotated[str | None, Query(min_length=1)] = None,
 ) -> ReorganizeBackfillStatus:
     _gate_busy(request.app)
@@ -139,7 +143,7 @@ async def start_reorganize(
         album_id=None,
         trash_dir=_trash_dir(app),
         ignore_dirs=_ignore_dirs(app),
-        playlists_dir=get_playlists_dir(),
+        playlists_dir=playlists_dir,
         on_complete=lambda: emit_library_changed(app),
     )
     return reg.state()
@@ -153,6 +157,8 @@ async def start_album_reorganize(
     album_id: int,
     request: Request,
     reg: Annotated[ReorganizeRegistry, Depends(get_reorganize_backfill)],
+    # Same Depends-not-direct-call rationale as start_reorganize above.
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
 ) -> ReorganizeBackfillStatus:
     handle = request.app.state.beets_library
     label = await run_in_threadpool(album_scope_label, handle, album_id)
@@ -172,7 +178,7 @@ async def start_album_reorganize(
         album_id=album_id,
         trash_dir=_trash_dir(app),
         ignore_dirs=_ignore_dirs(app),
-        playlists_dir=get_playlists_dir(),
+        playlists_dir=playlists_dir,
         on_complete=lambda: emit_library_changed(app),
     )
     return reg.state()

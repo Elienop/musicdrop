@@ -123,9 +123,14 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   album/artist delete, duplicates resolve + resolve-all, reorganize apply, disk-sync apply,
   and the import `replace` duplicate action — a seventh mover the entry below missed; each
   result/status model carries `playlists_reexported` (rename's existing field name).
-  Residuals, recorded deliberately: (a) a PARTIAL artist delete (share drops mid-loop)
-  raises before the endpoint's re-export, so already-trashed albums leave stale exports —
-  the 500 carries no body to report through; (b) import `merge` destroys the old item ids,
+  Residuals, recorded deliberately: (a) every FAN-OUT mover — a handler that loops N units
+  with the re-export running only after the loop returns cleanly — loses the collateral for
+  units already moved when a later unit raises: artist delete (share drops mid-loop),
+  duplicates resolve with several losers, and resolve-all (which absorbs only
+  `StaleGroupError`; any other fault propagates — `app/beets/duplicates.py:474-483`) all
+  share the shape (probe-verified 2026-08-29: a resolve-all 500 left group 1 trashed with
+  its export still naming the dead track). Single-unit movers are safe — a failed trash
+  drops nothing. The 500 carries no body to report through; (b) import `merge` destroys the old item ids,
   so re-export cannot repair those playlists (entries go permanently unavailable) — known
   gap, needs its own design; (c) trash restore is a structural no-op (re-import mints new
   ids) — and beets' rowid REUSE (`import_session.py:549-551`) means a restore can land on

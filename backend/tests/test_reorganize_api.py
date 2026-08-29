@@ -62,6 +62,31 @@ def _fake_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(reorganize_api, "start_backfill", fake_start_backfill)
 
 
+def test_start_passes_the_overridden_playlists_dir_to_the_worker(
+    reorg_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The route must resolve get_playlists_dir via Depends, never a direct
+    call — a direct call escapes app.dependency_overrides, handing the worker
+    the settings-derived REAL playlist store while every test override
+    silently misses it."""
+    import app.api.reorganize as reorganize_api
+    from app.playlists.store import get_playlists_dir
+
+    sentinel = tmp_path / "override-playlists"
+    app.dependency_overrides[get_playlists_dir] = lambda: sentinel
+
+    received: list[object] = []
+
+    def fake_start_backfill(reg: object, handle: object, **kwargs: object) -> None:
+        received.append(kwargs["playlists_dir"])
+        reg.set_total(0)  # type: ignore[attr-defined]  # fake reg is the real registry
+        reg.finish("done")  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(reorganize_api, "start_backfill", fake_start_backfill)
+    assert reorg_client.post("/api/reorganize").status_code == 200
+    assert received == [sentinel]
+
+
 def test_status_idle_then_start(reorg_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_sweep(monkeypatch)
     assert reorg_client.get("/api/reorganize/status").json()["phase"] == "idle"

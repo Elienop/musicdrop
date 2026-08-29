@@ -4,6 +4,7 @@
 Library-wide only. Mutually exclusive with every other library writer (the
 shared ``app.library_busy`` union — see _gate_busy) in BOTH directions."""
 
+from pathlib import Path
 from typing import Annotated, Final
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -71,6 +72,10 @@ async def preview_disk_sync(
 async def start_disk_sync(
     request: Request,
     reg: Annotated[DiskSyncRegistry, Depends(get_disk_sync_registry)],
+    # Depends (not a direct call) so app.dependency_overrides reaches this route
+    # too — a bare get_playlists_dir() here would hand the WORKER the real
+    # settings-derived store while every test override silently misses it.
+    playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
 ) -> DiskSyncStatus:
     _gate_busy(request.app)
     try:
@@ -82,7 +87,7 @@ async def start_disk_sync(
     start_backfill(
         reg,
         handle,
-        playlists_dir=get_playlists_dir(),
+        playlists_dir=playlists_dir,
         on_complete=lambda: emit_library_changed(app),
     )
     return reg.state()
