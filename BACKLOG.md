@@ -31,7 +31,7 @@ entry carries a dated correction block where the pass changed it._
    still open from this item's old wording: the mypy exemption-list trim (its own entry
    below).
 3. ~~**The bank re-run-vs-replay**~~ — design settled 2026-08-29 (vault decisions 24) and
-   **BOTH halves shipped in this branch's PR (number filled before merge)**: the backend
+   **BOTH halves shipped in #196**: the backend
    pin (see its struck entry under Open bugs) AND the honest unpinned-row notes on both
    bank decision screens — the duplicate screen's note names the on-screen Rescan remedy,
    the candidate screen's keys on the *selected* option. The `.m3u8` half of this item
@@ -183,8 +183,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   status honestly say? At minimum, silently mapping that state to `done` is wrong.
 
 - ~~**Bank apply re-runs the match instead of replaying the user's chosen release — every
-  sweep-banked DUPLICATE row, by construction.**~~ (Found 2026-08-28.) — **FIXED in this
-  branch's PR (number filled before merge), 2026-08-29, per the owner's settled design
+  sweep-banked DUPLICATE row, by construction.**~~ (Found 2026-08-28.) — **FIXED in #196, 2026-08-29, per the owner's settled design
   (vault decisions 24): store the reviewed release id at bank time and pin the apply to
   it.** The sweep's
   duplicate banking site (`app/beets/import_session.py`, `get_duplicate_action`'s sweep
