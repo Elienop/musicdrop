@@ -42,11 +42,17 @@ that make it one are load-bearing:
   ``art:changed`` — a self-sustaining remount/refetch loop for as long as one
   tab showed one stranded artist, plus a sha256 over up to 10 MB and a thumb
   re-derive per request;
-* **it writes back lazily, on the next touch.** ``get()`` re-attempts the disk
-  write it could not do at store time and drops the entry once disk takes it, so
-  a repaired cache dir re-persists without a restart and without a background
-  job. A restart before that touch loses the memory copies — accepted by design;
-  they simply re-fetch.
+* **it writes back lazily, on the next BYTE-SERVING touch.** ``get()``
+  re-attempts the disk write it could not do at store time and drops the entry
+  once disk takes it, so a repaired cache dir re-persists without a restart and
+  without a background job. "Touch" is literal and narrower than it sounds: only
+  a read that actually needs the bytes (a full or a thumb response) reaches
+  ``get()``. The 304 path is deliberately write-free — it answers from
+  ``validator()`` alone and never opens the entry — so a client that only ever
+  revalidates a strand it already holds never triggers the repair, and the entry
+  stays memory-only until something asks for bytes (a cold client, a reset, a
+  restart). A restart before that touch loses the memory copies — accepted by
+  design; they simply re-fetch.
 
 Only WRITE FAILURES land here — never a read-through copy of a disk entry — so
 disk always has authority and a stale stand-in can never outlive its slot.
@@ -74,9 +80,10 @@ _OVERRIDE_MIME_SUFFIX = ".override.mime"
 _BIN_SUFFIX = ".bin"
 _MIME_SUFFIX = ".mime"
 _CACHE_DIR_UNREADABLE = "artist-image cache dir is unreadable: %s"
-# One string for both writers under the "cache-write" throttle key: the two
-# sites (_or_remember's failure and the lazy write-back's) must stay
-# word-identical or the throttle dedups messages readers cannot correlate.
+# Two sites, one message, kept identical: _or_remember's failure branch and the
+# lazy write-back's report the SAME fact, so they must not drift into two
+# wordings of it. (No claim about the "cache-write" throttle key as a whole —
+# several other sites here log distinct messages under it.)
 _CACHE_DIR_UNWRITABLE = (
     "artist-image cache dir is unwritable (%s); "
     "serving from a bounded in-memory fallback until it recovers"
@@ -237,6 +244,7 @@ class _MemoryFallback:
         self._lock = threading.Lock()
         self._entries: OrderedDict[str, _MemoryEntry | _NegativeUntil] = OrderedDict()
         self._bytes = 0
+        self._in_flight: set[str] = set()
 
     def put(self, key: str, value: CachedImage | _NegativeUntil | _MemoryEntry) -> None:
         """Remember ``value`` under ``key``, tagging an image on the way in.
@@ -292,6 +300,39 @@ class _MemoryFallback:
                 self._discard_locked(key)
                 return True
             return False
+
+    def begin_write_back(self, key: str, entry: _MemoryEntry) -> bool:
+        """Claim the right to publish ``entry`` for ``key``. True for ONE caller.
+
+        Concurrent image GETs run in the threadpool, and one artist row can put
+        two of them on the same strand at once (``?size=full`` and
+        ``?size=thumb``). Without this claim both publish — idempotently, so
+        disk is fine — and then both let go: the first ``discard_if`` wins and
+        drops the strand, the second finds the key gone and CANNOT tell that
+        from a concurrent ``clear_auto``, so it takes back the very files its
+        rival just published. End state: nothing on disk, nothing in memory, a
+        full upstream re-resolve. Measured 40/40 with two plain threads — the
+        window is two fsyncs wide and grows on slow storage.
+
+        False when the key is already in flight, or when the map no longer
+        holds exactly ``entry`` (identity — the same "somebody newer moved in"
+        test :meth:`discard_if` makes, applied before the publish rather than
+        after it). A refused caller has nothing to do: it already holds the
+        bytes it came for, and the claimer is persisting them.
+
+        Must be paired with :meth:`end_write_back` in a ``finally`` — a leaked
+        claim would bar the key from ever persisting again.
+        """
+        with self._lock:
+            if key in self._in_flight or self._entries.get(key) is not entry:
+                return False
+            self._in_flight.add(key)
+            return True
+
+    def end_write_back(self, key: str) -> None:
+        """Release the claim :meth:`begin_write_back` took. Always safe to call."""
+        with self._lock:
+            self._in_flight.discard(key)
 
     def _discard_locked(self, key: str) -> None:
         existing = self._entries.pop(key, None)
@@ -377,6 +418,12 @@ class ArtistImageCache:
     def _write_back(self, key: str, entry: _MemoryEntry) -> None:
         """Re-attempt the disk write that stranded ``entry``; on success let go.
 
+        CLAIMED first, so exactly one caller publishes a given strand at a time
+        (:meth:`_MemoryFallback.begin_write_back`). A refused caller returns
+        immediately and costs nothing — it already holds the bytes it came for.
+        Without the claim two concurrent touches destroyed the entry outright;
+        the claim's own docstring has the mechanism.
+
         Success hands authority back to disk exactly as ``_or_remember``'s
         success branch does — the entry is DROPPED, not merely out-voted. The
         publish runs outside the map's lock, so the drop is an identity
@@ -388,12 +435,29 @@ class ArtistImageCache:
         route's zero-grace refill covers that the same way it covers its own
         sweep race.
 
+        The take-back is WRITE-ONLY, not a rollback: ``_publish_positive``
+        unlinks any ``.miss`` on the way in and that unlink is never restored.
+        Deliberate in both interleavings that can reach here — a concurrent
+        ``clear_auto`` sweeps the marker itself (putting it back would undo the
+        very reset this branch is honouring), and a newer positive strand
+        supersedes a negative marker exactly as a publish does — so restoring
+        it would be the wrong answer, not merely an unimplemented one.
+
         Failure is swallowed AND leaves the map untouched: no re-put. Re-putting
         would refresh the entry's eviction position on every read, so a broken
         dir plus a busy roster would keep the newest-touched entries and evict
         the ones nothing happened to look at — turning a bounded oldest-first
         map into an access-ordered one nobody asked for.
         """
+        if not self._memory.begin_write_back(key, entry):
+            return
+        try:
+            self._publish_and_release(key, entry)
+        finally:
+            self._memory.end_write_back(key)
+
+    def _publish_and_release(self, key: str, entry: _MemoryEntry) -> None:
+        """The claimed half of :meth:`_write_back` — publish, then let go."""
         try:
             self._publish_positive(key, entry.image)
         except OSError as exc:
@@ -742,6 +806,8 @@ class ArtistImageCache:
                     return True
         except OSError as exc:
             warn_throttled("cache-read", _CACHE_DIR_UNREADABLE, exc)
+        # A strand counts even under a fresh ``.miss`` that would silence
+        # ``validator`` — the marker expires, the bytes are all there is.
         return isinstance(self._memory.get(key), _MemoryEntry)
 
     def _replace(self, old: Path, new: Path) -> bool:
@@ -850,9 +916,13 @@ class ArtistImageCache:
         (atomic rename bumps mtime), so a stale tag can never yield a false 304.
 
         Disk is probed FIRST and the memory tier only answers for what disk does
-        not have, which is the same disk-then-memory order ``get()`` and
-        ``_has_portrait`` use — the three must agree or a tag would validate an
-        image the endpoint is not about to serve. Skipping the tier here was the
+        not have, the same order ``get()`` uses: the TAG and the BYTES must
+        agree, or a tag would validate an image the endpoint is not about to
+        serve. ``_has_portrait`` reads the same two tiers but answers a
+        different question and is NOT required to match — with a fresh ``.miss``
+        over a strand this returns None and ``get()`` returns NEGATIVE (they
+        agree), while ``_has_portrait`` still says True on purpose, so a rename
+        never destroys held bytes over a marker that expires. Skipping the tier here was the
         recorded bug: a stranded image looked unvalidatable, so every request for
         it bypassed the 304 path into the background filler, whose completed fill
         armed an unscoped ``art:changed`` and fed the next request — a

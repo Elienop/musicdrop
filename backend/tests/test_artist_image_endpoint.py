@@ -907,6 +907,57 @@ def test_a_stranded_portrait_revalidates_with_a_304(tmp_path: Path) -> None:
     assert filler.fills == []
 
 
+def test_a_replaced_strand_stops_matching_the_old_tag(tmp_path: Path) -> None:
+    """A client holding the OLD strand's tag must get the NEW bytes, not a 304.
+
+    The whole point of deriving the memory tag from the response: the reachable
+    shape is a reset (or an eviction) on a cache dir that is still broken,
+    followed by a re-resolve that strands DIFFERENT bytes under the same key. A
+    constant tag — or one keyed on anything but the payload — 304s every client
+    that cached the first portrait, and since the memory tier carries no TTL and
+    the dir never repairs itself, those clients keep the superseded picture for
+    the life of the process while everyone else sees the new one. One URL, two
+    truths, forever.
+
+    End-to-end rather than at ``validator`` because the 304 is the observable:
+    the tag only matters as the thing ``If-None-Match`` is compared against.
+    The dir is genuinely broken (parent is a regular file, so ``mkdir`` is
+    ENOTDIR — root-safe unlike ``chmod``), which is what keeps the strand a
+    strand instead of being written back by the first request.
+    """
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_bytes(b"")
+    cache = _stranded_cache(blocker / "cache", "ABBA", b"FIRST-PORTRAIT", "image/png")
+    filler = _RecordingFiller()
+    app.dependency_overrides[get_artist_image_service] = lambda: _StubService(None)
+    app.dependency_overrides[get_artist_image_cache] = lambda: cache
+    app.dependency_overrides[get_artist_image_filler] = lambda: filler
+    app.dependency_overrides[get_library] = lambda: _StubHandle()
+    try:
+        client = TestClient(app)
+        first = client.get("/api/artists/image", params={"name": "ABBA"})
+        old_etag = first.headers["etag"]
+
+        # The reset-then-re-resolve, with the dir still refusing: same key,
+        # different bytes.
+        cache._memory.put(
+            cache._key("ABBA"), CachedImage(data=b"SECOND-PORTRAIT", content_type="image/png")
+        )
+
+        stale = client.get(
+            "/api/artists/image", params={"name": "ABBA"}, headers={"If-None-Match": old_etag}
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert first.status_code == 200
+    assert first.content == b"FIRST-PORTRAIT"
+    assert stale.status_code == 200, "the old tag must not validate the new portrait"
+    assert stale.content == b"SECOND-PORTRAIT"
+    assert stale.headers["etag"] != old_etag
+    assert filler.fills == [], "the replacement is still a cache hit, not a re-resolve"
+
+
 def test_a_disabled_feature_starts_no_background_fill() -> None:
     # The toggle has to be checked HERE, not only inside the service: the
     # endpoint now hands misses to a background task, and an off feature must

@@ -592,7 +592,10 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   regular FILE (ENOTDIR on `mkdir`, root-safe unlike `chmod`). **Residuals, all by design or
   pre-existing:** a restart before the next touch still loses the memory copies (accepted — they
   re-fetch); the rename merge / `kept_target` paths still discard the old key's strand without
-  carrying it (pre-existing, pinned by the merge tests — only `_rename_move_all` migrates one);
+  carrying it (pre-existing — only `_rename_move_all` migrates one; the discard itself is now
+  pinned by `test_rename_purging_the_old_key_forgets_its_strand` and
+  `test_rename_moving_a_pin_onto_an_auto_image_forgets_the_sources_strand`, since the merge tests
+  are disk-only and never reach the memory half);
   and the other recovery paths named below (the backfill sweep's own cache instance, a manual
   override, `clear_auto`) remain as they were. **Original entry, kept for the diagnosis that
   shaped the fix:**

@@ -318,13 +318,17 @@ async def _serve_full(
     request: Request, cache: ArtistImageCache, name: str, image_bytes: bytes, mime: str
 ) -> Response:
     """Serve freshly-resolved full-size bytes with the cheapest validator
-    available: the stat tag IF the positive slot was written, else the
-    content-hash ETag computed OFF the loop.
+    available: the cache's own tag IF the store left something to validate,
+    else the content-hash ETag computed OFF the loop.
 
     The store is best-effort by design (an unwritable cache dir must cost the
-    caching, not the response), so the re-stat can still come back None. While
-    a cache dir stays broken that sha256 of up to 10 MB is paid per request;
-    the in-memory fallback bounds the NETWORK cost, not this one.
+    caching, not the response), so the re-read can still come back None — but a
+    broken dir alone no longer forces that: a write that could not reach disk is
+    stranded in the memory tier, which answers ``validator`` with its own
+    precomputed tag, so this path takes the cheap branch and the per-request
+    sha256 of up to 10 MB is not paid. What still reaches the fallback is a
+    store that left NOTHING in either tier — an entry over the tier's byte
+    budget, or a slot that raced away between the store and this read.
     """
     validator = await run_in_threadpool(cache.validator, name)
     if validator is not None:
@@ -339,8 +343,12 @@ async def _serve_thumb(
     cache's own (which it wrote during the resolve) and deriving from the bytes
     in hand when the cache could not store one.
 
-    That second branch is an unwritable cache dir (nothing to stat, so
-    ``get_thumb`` bails before it can help) or an override that raced away.
+    That second branch is no longer "the cache dir is unwritable": a store that
+    could not reach disk strands the source in the memory tier, and
+    ``get_thumb`` derives from the strand and serves it (caching no ``.thumb``
+    pair, since the tag dies with the process). It stays reachable for the cases
+    that leave NOTHING to derive from — an image over the memory tier's byte
+    budget, or an override that raced away between the store and this read.
     Deriving beats serving a 1000px+ original under a ``?size=thumb`` URL:
     losing the cache must cost cache HITS, not the feature. Off-loop, because
     it is a decode+resize of up to 10 MB.
