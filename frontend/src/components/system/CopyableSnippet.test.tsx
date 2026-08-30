@@ -27,9 +27,9 @@ describe("CopyableSnippet", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Copy" }));
 
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByRole("button", { name: "Copied" }),
+    ).toBeInTheDocument();
     // Verbatim: a snippet the user is told to paste elsewhere must not be
     // reformatted on its way to the clipboard.
     expect(writeText).toHaveBeenCalledWith(SNIPPET);
@@ -50,15 +50,26 @@ describe("CopyableSnippet", () => {
     expect(screen.getByText(SNIPPET)).toBeInTheDocument();
   });
 
-  test("the scroll region is reachable by keyboard and carries a name", () => {
-    // `overflow-x-auto` makes this a scroll container; one that only a pointer
-    // can reach fails WCAG 2.1.1, and an unnamed stop in the tab order tells a
-    // screen-reader user nothing about what they have landed on.
+  test("the snippet wraps rather than scrolling, so it needs no tab stop", () => {
+    // The whole a11y argument in one assertion set. A scroll container only a
+    // pointer can reach fails WCAG 2.1.1, which is why this used to carry
+    // tabIndex + role + aria-label. Wrapping removes the scroll container, so
+    // all three go — but ONLY while it really does wrap. Both halves are
+    // pinned: re-adding `overflow-x-auto` or dropping either wrap utility has
+    // to fail here, otherwise the tab stop was deleted for nothing.
     render(<CopyableSnippet label="Webhook configuration" snippet={SNIPPET} />);
 
-    const region = screen.getByRole("group", { name: "Webhook configuration" });
-    expect(region).toHaveAttribute("tabindex", "0");
-    expect(region).toHaveTextContent(SNIPPET);
+    const block = screen.getByText(SNIPPET);
+    expect(block.tagName).toBe("PRE");
+    expect(block.className).toContain("whitespace-pre-wrap");
+    // Guards the long-URL case: without it a single unbreakable token
+    // overflows and silently restores the scroll container.
+    expect(block.className).toContain("break-words");
+    expect(block.className).not.toContain("overflow-x");
+    expect(block).not.toHaveAttribute("tabindex");
+    expect(block).not.toHaveAttribute("role");
+    expect(block).not.toHaveAttribute("aria-label");
+    expect(block).toHaveTextContent(SNIPPET);
   });
 
   test("renders the caller's explanation between the label and the snippet", () => {

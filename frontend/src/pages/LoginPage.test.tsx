@@ -506,9 +506,9 @@ describe("LoginPage — no password configured", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Copy" }));
 
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByRole("button", { name: "Copied" }),
+    ).toBeInTheDocument();
     expect(writeText.mock.calls[0][0]).toContain("app.auth.hash_password");
   });
 
@@ -552,9 +552,13 @@ describe("LoginPage — no password configured", () => {
     await screen.findByText(/no password is configured on this server/i);
     await userEvent.click(screen.getByRole("button", { name: "Check again" }));
 
-    expect(
-      await screen.findByText("Still no password configured."),
-    ).toBeInTheDocument();
+    const notice = await screen.findByText("Still no password configured.");
+    // The element is `<output>`, not `<p role="status">`. Pinned because the
+    // two are interchangeable to every other assertion in this file, so the
+    // swap would otherwise be untested: `<output>` has an IMPLICIT status
+    // role, and this asserts the live region survived the change.
+    expect(notice.tagName).toBe("OUTPUT");
+    expect(notice).toBe(screen.getByRole("status"));
     // And the button came back, rather than staying stuck on its busy label.
     expect(
       await screen.findByRole("button", { name: "Check again" }),
@@ -584,16 +588,22 @@ describe("LoginPage — no password configured", () => {
     ).toBeInTheDocument();
   });
 
-  test("the command block is reachable and named without a pointer", async () => {
-    // `overflow-x-auto` makes it a scroll container, and a scroll container
-    // only a mouse can reach fails WCAG 2.1.1.
+  test("the command block shows both commands in full, with no scroll container", async () => {
+    // This was `overflow-x-auto` + tabIndex + role="group": a scroll container
+    // only a mouse can reach fails WCAG 2.1.1, so it needed a named tab stop.
+    // It wraps now, so there is nothing to scroll to and no stop to name. That
+    // matters most HERE: the sign-in card is max-w-sm at every viewport, so
+    // the old version truncated this command on a 4K monitor too.
     server.use(statusHandler(false));
     renderLogin();
 
-    const block = await screen.findByRole("group", {
-      name: "Generate a password hash",
-    });
-    expect(block).toHaveAttribute("tabindex", "0");
+    const block = await screen.findByText(/docker exec -it musicdrop/);
+    expect(block.tagName).toBe("PRE");
+    expect(block.className).toContain("whitespace-pre-wrap");
+    expect(block.className).not.toContain("overflow-x");
+    expect(block).not.toHaveAttribute("tabindex");
+    // BOTH commands, in full. The checkout one is the half that scrolling hid.
     expect(block).toHaveTextContent("app.auth.hash_password");
+    expect(block).toHaveTextContent("cd backend && uv run python");
   });
 });

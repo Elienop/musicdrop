@@ -35,16 +35,18 @@ describe("SlskdPanel", () => {
   test("shows the webhook config through the shared snippet block", async () => {
     // The second call site of CopyableSnippet. It used to be a verbatim copy
     // of the sign-in page's block — same handler, same timeout, same markup —
-    // which is how the keyboard-reachability fix could land on one and miss
-    // the other.
+    // which is how a fix could land on one and miss the other.
     server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
     renderWithProviders(<SlskdPanel />);
 
-    const region = await screen.findByRole("group", {
-      name: "Webhook configuration",
-    });
-    expect(region).toHaveAttribute("tabindex", "0");
-    expect(region).toHaveTextContent("DownloadDirectoryComplete");
+    // The block wraps rather than scrolling, so it carries no tab stop. This
+    // is the caller that made that call worth it: the webhook `url:` line is
+    // 126 chars, and scrolling hid two thirds of it — including the trailing
+    // `# host must be an IP…` comment, which is the part that makes it work.
+    const region = await screen.findByText(/DownloadDirectoryComplete/);
+    expect(region.tagName).toBe("PRE");
+    expect(region).not.toHaveAttribute("tabindex");
+    expect(region).toHaveTextContent("MUSICDROP_ALLOWED_HOSTS");
     expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
   });
 

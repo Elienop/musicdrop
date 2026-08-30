@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type SubmitEvent, useEffect, useRef, useState } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router";
 
 import { useAuthStatus, useLogin } from "@/api/auth";
@@ -210,7 +210,7 @@ function SignInForm({
   const [password, setPassword] = useState("");
   const passwordRef = useRef<HTMLInputElement>(null);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  function handleSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     login.mutate(password, {
       onSuccess: () => {
@@ -318,11 +318,16 @@ function NoPasswordConfigured({
       </StatusBanner>
       <CopyableSnippet label="Generate a password hash" snippet={HASH_COMMANDS} />
       {recheck !== null && (
-        <p className="text-muted-foreground text-sm" role="status">
+        // `<output>` IS role="status" (same polite live region), and it is the
+        // native element for "the result of the thing you just did" — which is
+        // exactly what this is. Safe as a flex item: `<output>` is display:
+        // inline, but a flex container blockifies every child, so it lays out
+        // as the block <p> did. StatusProbePending above is the same choice.
+        <output className="text-muted-foreground text-sm">
           {recheck === "unreachable"
             ? "Couldn’t reach the server — it may still be restarting."
             : "Still no password configured."}
-        </p>
+        </output>
       )}
       {/* The copy above asks the operator to restart MusicDrop, so the likeliest
           moment for this click is mid-restart — when a silent re-check that
