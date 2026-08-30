@@ -55,7 +55,7 @@ export function PlaylistsPage() {
           onRetry={() => void refetch()}
         />
       )}
-      {data && data.length === 0 && (
+      {data?.length === 0 && (
         <EmptyState
           icon={Playlists}
           title="No playlists yet"

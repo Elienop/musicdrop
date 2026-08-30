@@ -114,7 +114,7 @@ export function ArtistArtPanel() {
           )}
           {/* A failed job surfaces its error inline so a 409/library-locked run
               isn't a silent no-op. */}
-          {libraryTerminal && job && job.phase === "failed" && (
+          {libraryTerminal && job?.phase === "failed" && (
             <span className="text-destructive text-sm" role="alert">
               Backfill failed{job.error ? `: ${job.error}` : "."}
             </span>

@@ -396,7 +396,7 @@ export function ImportPlaylistsPage() {
                 {plexQuery.error.message}
               </p>
             )}
-            {plexQuery.data && plexQuery.data.length === 0 && (
+            {plexQuery.data?.length === 0 && (
               <p className="text-muted-foreground text-sm">No Plex playlists found.</p>
             )}
             {plexQuery.data && plexQuery.data.length > 0 && (
