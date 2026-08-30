@@ -66,6 +66,26 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
 
+- **The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
+  three cleared families have now measurably regrown (2026-08-30, found while clearing auth
+  slice 2's Sonar violations).** The owner's standing instruction is that the PR driving a
+  family to zero also enables its lint twin, so CI pins it (recorded under the Sonar
+  programme below, and in auto-memory `sonar-lessons-standing`). The backend honours this
+  through ruff `select` — PT018, PT012, PT001, S324. **The frontend never could:** there is
+  no `eslint.config.*`, no eslint dependency, and no `lint` script in
+  `frontend/package.json`; the only related package is `vitest-sonar-reporter`. The
+  consequence is no longer hypothetical. Auth slice 2 reintroduced, in new code, three
+  families this programme had already driven to zero: `S9020` (`waitFor` + `getBy` instead
+  of `findBy`, cleared in Wave 2) ×2, `S6819` (`role="status"` instead of `<output>`,
+  cleared in Wave 4) ×1, and `S1874` (a deprecated type) ×2 — seven violations total, all
+  caught only by the server-side scan, after the code was written and reviewed. Fix shape:
+  its own PR (the programme already scoped it that way — do not bolt it onto a feature
+  branch) adding ESLint with `eslint-plugin-sonarjs`, enabling **only** rules whose families
+  are already at zero, and mutation-testing each enabled rule by reintroducing the smell and
+  confirming the lint reddens. Until then the server scan is the only net for every frontend
+  family, which means every regrowth costs a scan-fix-rescan cycle per PR rather than being
+  caught in the editor.
+
 - ~~**`GET /api/health` publishes the exact backend version to unauthenticated callers
   (2026-08-30 security audit of auth slice 1, finding L6 — deferred to auth slice 2).**~~
   — **FIXED in #(PR # filled in at merge), 2026-08-30 (auth slice 2):** `version` moved to
