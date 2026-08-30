@@ -83,7 +83,9 @@ def _b64decode(field: str) -> bytes | None:
         # translation runs BEFORE the validation regex, so this is exactly
         # urlsafe decoding with the junk-character check applied.
         return base64.b64decode(padded.encode("ascii"), altchars=b"-_", validate=True)
-    except (ValueError, UnicodeEncodeError):
+    except ValueError:
+        # Covers binascii.Error (junk characters, bad padding) and
+        # UnicodeEncodeError (non-ASCII in the field) — both are ValueErrors.
         return None
 
 
@@ -160,9 +162,10 @@ def session_token_is_valid(token: str | None, secret: bytes, password_hash: str)
 def _not_expired(payload: bytes) -> bool:
     try:
         expires_at = int(payload.decode("ascii"))
-    except (ValueError, UnicodeDecodeError):
-        # Signed by us and still unreadable: a payload shape from another
-        # version that reused the ``v1`` tag. Fail closed.
+    except ValueError:
+        # Signed by us and still unreadable (int() refuses, or the decode
+        # raises UnicodeDecodeError — itself a ValueError): a payload shape
+        # from another version that reused the ``v1`` tag. Fail closed.
         return False
     return time.time() < expires_at
 

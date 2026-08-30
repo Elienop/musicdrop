@@ -182,13 +182,18 @@ def overlay_middleware_responses(schema: dict[str, object]) -> dict[str, object]
     # listed shape the gate itself has.
     schema.setdefault("security", [{_SESSION_SCHEME: []}])
 
-    paths = schema.get("paths")
-    if isinstance(paths, dict):
-        for path, path_item in paths.items():
-            if not isinstance(path_item, dict) or not isinstance(path, str):
-                continue
-            for method, operation in path_item.items():
-                if not isinstance(method, str) or method not in _HTTP_METHODS:
-                    continue
-                _stamp_operation(method, path, operation)
+    _stamp_paths(schema.get("paths"))
     return schema
+
+
+def _stamp_paths(paths: object) -> None:
+    """Walk every operation under ``paths`` and stamp it (see above)."""
+    if not isinstance(paths, dict):
+        return
+    for path, path_item in paths.items():
+        if not isinstance(path_item, dict) or not isinstance(path, str):
+            continue
+        for method, operation in path_item.items():
+            if not isinstance(method, str) or method not in _HTTP_METHODS:
+                continue
+            _stamp_operation(method, path, operation)

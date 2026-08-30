@@ -70,7 +70,9 @@ def test_a_generated_hash_uses_the_owasp_parameters() -> None:
 
 def test_two_hashes_of_one_password_differ() -> None:
     """A random salt per hash — otherwise the value is a rainbow-table lookup."""
-    assert hash_password("same") != hash_password("same")
+    first = hash_password("same")
+    second = hash_password("same")
+    assert first != second
 
 
 def test_a_hash_is_verified_with_its_OWN_parameters_not_the_current_ones() -> None:
