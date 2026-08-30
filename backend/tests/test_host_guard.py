@@ -380,3 +380,7 @@ def test_posture_log_emits_under_real_uvicorn(tmp_path: Path) -> None:
     # exactly the case that must not boot silently.
     assert "NO password configured" in posture
     assert "MUSICDROP_PASSWORD_HASH" in posture
+    # The cookie clause is a RULE, not a state: Secure is decided per request
+    # from that request's scheme, so the line must not claim a boot-time value
+    # an operator behind a TLS proxy would read as false.
+    assert "session cookie: Secure on HTTPS requests, plain otherwise" in posture

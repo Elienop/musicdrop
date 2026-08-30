@@ -430,9 +430,15 @@ app.add_middleware(
 # configures only its own loggers and leaves root at WARNING with no handlers,
 # so an INFO record from `app.main` is discarded before it reaches any output
 # under the Dockerfile CMD. Pinned by test_posture_log_emits_under_real_uvicorn.
+#
+# The session-cookie clause is a fixed RULE, not a %s state, and deliberately
+# so: the Secure flag is decided per request from that request's scheme
+# (app/auth/cookies.py), so there is no boot-time value to report. Wording it
+# as a state would be a claim the process cannot make — an operator behind a
+# TLS proxy and one on the LAN read the same line and both read the truth.
 logging.getLogger("uvicorn.error").info(
     "security posture: %s; extra write origins: %s; allowed hosts: IP literals, localhost%s;"
-    " auth: %s",
+    " auth: %s; session cookie: Secure on HTTPS requests, plain otherwise",
     "prod (static_dir set)" if settings.static_dir else "dev (static_dir empty)",
     ", ".join(extra_origins) or "none",
     "".join(f", {name}" for name in allowed_hosts),

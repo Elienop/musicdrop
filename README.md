@@ -168,12 +168,18 @@ in the browser, but the token itself stays valid until it expires or until you r
 two values above. There is no server-side session list, deliberately — nothing to store, sweep
 or back up.
 
-**One honest caveat: the cookie is not marked `Secure`.** MusicDrop is designed to be browsed
-over plain HTTP by LAN IP (`http://192.168.1.10:3030`), and a `Secure` cookie is never sent over
-plain HTTP — the app would be impossible to sign into in its primary deployment. The practical
-consequence is that the session cookie is only as private as your network. If you expose
-MusicDrop beyond your LAN, put it behind a reverse proxy terminating TLS (which encrypts the hop
-that matters) and keep it off the open internet.
+**The `Secure` flag follows the connection, so a TLS proxy pays for itself.** If you sign in over
+HTTPS — directly, or through a reverse proxy that forwards `X-Forwarded-Proto` (Caddy, Traefik
+and nginx all do by default) — the cookie is marked `Secure` and your browser will refuse to
+send it over plain HTTP from then on. Nothing to configure.
+
+**The honest caveat is what remains over plain HTTP.** MusicDrop is designed to be browsed by LAN
+IP (`http://192.168.1.10:3030`), and a `Secure` cookie is never sent over plain HTTP — marking it
+there would make the app impossible to sign into in its primary deployment, so on that path the
+flag is deliberately absent and the session cookie is only as private as your network. That is an
+accepted residual, not an oversight. If you expose MusicDrop beyond your LAN, put it behind a
+reverse proxy terminating TLS (which encrypts the hop that matters, *and* hardens the cookie as
+above) and keep it off the open internet.
 
 > **This release is API-side only.** The backend enforces the password; the **login screen
 > arrives in the next release**. Until then a browser hitting a protected page gets 401s with no
@@ -228,7 +234,7 @@ Separate datasets don't change that, so long as ONE snapshot operation covers bo
 
 Quiescence comes from the process being gone, not from the shutdown grace: MusicDrop waits ~5s for an in-flight import to release the slot, but the beets worker is a daemon thread it cannot join, so past that bound the library closes under a still-running import. For the snapshot you keep as the restore point of record, snapshot after `docker compose down` returns.
 
-**Record the image tag in the snapshot's name.** Nothing inside the snapshot records it, and by restore time the container that could tell you is gone — so read it now, from the sidebar's health row, `GET /api/health`, or `docker inspect musicdrop --format '{{range .Config.Env}}{{println .}}{{end}}' | grep MUSICDROP_VERSION`.
+**Record the image tag in the snapshot's name.** Nothing inside the snapshot records it, and by restore time the container that could tell you is gone — so read it now, from the sidebar's health row, `GET /api/version` (signed in — it is behind the session gate, unlike the bare `/api/health` liveness probe), or `docker inspect musicdrop --format '{{range .Config.Env}}{{println .}}{{end}}' | grep MUSICDROP_VERSION`.
 
 **Never run without the `./data` bind mount**
 

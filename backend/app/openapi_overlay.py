@@ -111,8 +111,9 @@ def _ensure_security_scheme(components: dict[str, object]) -> None:
             "name": SESSION_COOKIE_NAME,
             "description": (
                 "The session cookie issued by POST /api/auth/login. HttpOnly, "
-                "SameSite=Lax, and deliberately NOT Secure so the app works "
-                "over plain HTTP on a LAN."
+                "SameSite=Lax, and Secure when the request arrives over HTTPS "
+                "(directly or via X-Forwarded-Proto); absent over plain HTTP "
+                "so the LAN by-IP path keeps working."
             ),
         },
     )

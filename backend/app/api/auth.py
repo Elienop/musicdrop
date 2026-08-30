@@ -23,6 +23,7 @@ import anyio
 import anyio.to_thread
 from fastapi import APIRouter, HTTPException, Request, Response
 
+from app.auth.cookies import request_is_https
 from app.auth.gate import scope_has_valid_session
 from app.auth.passwords import password_is_configured, verify_password
 from app.auth.session import (
@@ -188,20 +189,21 @@ async def login(body: LoginRequest, request: Request, response: Response) -> Aut
         path="/",
         httponly=True,
         samesite="lax",
-        # NOT Secure — and this is a recorded, accepted residual, not an
-        # oversight. MusicDrop is browsed over plain HTTP by LAN IP
-        # (http://192.168.x.x:3030); a Secure cookie would simply never be
-        # sent, so the app could not be signed into at all in its primary
-        # deployment. The cookie is therefore only as private as the LAN.
-        # Anyone terminating TLS in front of MusicDrop gets the encryption
-        # from that hop regardless.
-        secure=False,
+        # Secure only when THIS login arrived over HTTPS — a per-request
+        # decision, not a property of the build. Over plain HTTP (the by-IP
+        # LAN deployment) the flag has to be absent or the browser would never
+        # send the cookie back and the app could not be signed into at all;
+        # behind a TLS proxy it costs nothing and keeps the session off any
+        # plain-HTTP hop. app/auth/cookies.py carries the spoof analysis, and
+        # why X-Forwarded-Proto is trusted here while the host guard refuses
+        # to trust X-Forwarded-Host.
+        secure=request_is_https(request),
     )
     return AuthStatus(authenticated=True, password_set=True)
 
 
 @router.post("/auth/logout", status_code=204)
-def logout() -> Response:
+def logout(request: Request) -> Response:
     """Expire the session cookie in the browser.
 
     Client-side only: the token stays cryptographically valid until the expiry
@@ -209,17 +211,27 @@ def logout() -> Response:
     (see ``app/auth/session.py``). A token copied out of a browser before
     logout therefore keeps working; deleting ``<beets_dir>/session-secret``
     invalidates every session at once, which is the blunt instrument available.
+
+    Takes the ``Request`` only to read the scheme, so the expiring cookie
+    carries the same ``Secure`` posture the login one did.
     """
     response = Response(status_code=204)
     # Same attributes as the Set-Cookie that created it — a browser matches the
     # cookie to expire by name AND path, so a mismatched path would leave the
     # original in place and "logout" would do nothing.
+    #
+    # Secure is RECOMPUTED from this request rather than remembered, which is
+    # the only way it could be: a logout is a different request from the login,
+    # and nothing server-side records what the login decided. Name and path are
+    # what browsers actually match on, so a Secure mismatch would not break the
+    # deletion — the symmetry is kept anyway, because someone reading the two
+    # call sites should find one policy rather than two that happen to agree.
     response.delete_cookie(
         key=SESSION_COOKIE_NAME,
         path="/",
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=request_is_https(request),
     )
     return response
 
