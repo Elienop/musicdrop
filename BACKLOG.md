@@ -566,7 +566,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   recorded, not worth a mapping layer today.
 
 - ~~**Artist-image cache: after a broken cache dir is repaired, affected artists never return
-  to disk.**~~ — **FIXED on `fix/artist-image-cache-tier` (PR # filled in at merge), 2026-08-29,
+  to disk.**~~ — **FIXED on `fix/artist-image-cache-tier` (PR #198), 2026-08-29,
   per the owner's settled design (vault decisions 24): the in-memory stand-in becomes a real
   cache TIER with LAZY write-back on the next touch, no background job.** Two halves, both in
   `app/artwork/cache.py`. (1) `validator()` now consults the tier after disk: a strand carries
