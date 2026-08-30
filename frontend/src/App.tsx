@@ -4,20 +4,15 @@ import { Outlet } from "react-router";
 
 import { useActivity } from "@/api/useActivity";
 import { useEventStream } from "@/api/useEventStream";
+import { ICON_WEIGHT } from "@/components/icons";
 import { ActivityButton } from "@/components/shell/ActivityPopover";
 import { useActivityToasts } from "@/components/shell/activityToasts";
 import { AppToaster } from "@/components/shell/AppToaster";
 import { AppSidebar } from "@/components/shell/Sidebar";
+import { SignOutButton } from "@/components/shell/SignOutButton";
 import { AppTopbar } from "@/components/shell/Topbar";
 import { RouteAnnouncer } from "@/components/system/RouteAnnouncer";
 import { RouteLoading } from "@/components/system/RouteLoading";
-
-// ONE icon weight app-wide: every Phosphor glyph without an explicit
-// `weight` renders LIGHT (nav, status, buttons…). Deliberate overrides
-// stay local: detail-rail actions = thin (large glyphs), checkbox tick =
-// bold (tiny control glyph needs the stroke). A module constant so the
-// provider value is referentially stable across shell re-renders.
-const ICON_CONTEXT = { weight: "light" } as const;
 
 /**
  * App shell (spec §2): persistent sidebar + topbar around the routed page.
@@ -36,7 +31,7 @@ export function App() {
   useActivityToasts(rows);
   useEventStream();
   return (
-    <IconContext.Provider value={ICON_CONTEXT}>
+    <IconContext.Provider value={ICON_WEIGHT}>
     <div className="bg-background text-foreground flex min-h-svh">
       <a
         href="#main-content"
@@ -49,6 +44,12 @@ export function App() {
       <div className="flex min-w-0 flex-1 flex-col">
         <AppTopbar>
           <ActivityButton />
+          {/* Sign out sits in the topbar, not the sidebar footer beside
+              HealthStatus: that footer lives in the `hidden md:flex` aside
+              and MobileNav renders only the nav sections, so below md there
+              would be no way out. The topbar is the one chrome present at
+              every width. */}
+          <SignOutButton />
         </AppTopbar>
         <main
           id="main-content"

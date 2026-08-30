@@ -137,6 +137,19 @@ async function fetchHealth() {
   return data;
 }
 
+/** The version moved OFF /api/health when the API went behind the session
+ * gate: the healthcheck is exempt (the container's own probe uses it), and an
+ * exempt endpoint must not hand the build string to an unauthenticated
+ * caller. /api/version is gated, so it answers only inside a session — which
+ * is the only place this component renders anyway. */
+async function fetchVersion() {
+  const { data, error } = await client.GET("/api/version");
+  if (error || !data) {
+    throw new Error("Version check failed");
+  }
+  return data;
+}
+
 /**
  * Render the backend's reported version for display. The two shapes it
  * actually arrives in are BOTH already display-ready:
@@ -202,13 +215,21 @@ function healthPresentation(
  * version trails on the right of the same row (expanded sidebar only).
  */
 export function HealthStatus({ compact = false }: Readonly<{ compact?: boolean }>) {
-  const { data, isPending, isError } = useQuery({
+  const { isPending, isError } = useQuery({
     queryKey: ["health"],
     queryFn: fetchHealth,
   });
+  // A SECOND query, deliberately not folded into the first: reachability is
+  // what this row means, and it stays keyed on /api/health alone. If the
+  // version probe fails — or has simply not answered yet — the backend is
+  // still online and must keep saying so; the version is decoration on top.
+  const versionQuery = useQuery({ queryKey: ["version"], queryFn: fetchVersion });
 
   const reachable = !isError && !isPending;
-  const version = reachable && data ? formatVersion(data.version) : null;
+  const version =
+    reachable && versionQuery.data
+      ? formatVersion(versionQuery.data.version)
+      : null;
   const health = healthPresentation(isPending, reachable, version);
 
   return (

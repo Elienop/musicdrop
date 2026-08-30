@@ -1,10 +1,16 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { lazy, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Navigate, RouterProvider } from "react-router";
 
 import { App } from "@/App";
+import { createAppQueryClient } from "@/api/queryClient";
+import { RequireAuth } from "@/components/system/RequireAuth";
 import { RouteErrorBoundary } from "@/components/system/RouteErrorBoundary";
+// Eager, unlike every page below: /login is where a signed-out visitor lands
+// on their FIRST request, so a lazy chunk would put a second round trip in
+// front of the one screen that has to work before anything else can.
+import { LoginPage } from "@/pages/LoginPage";
 
 import "@/styles.css";
 
@@ -111,13 +117,10 @@ const SettingsTrashPage = lazy(() =>
   })),
 );
 
-// Cap retries so an outage surfaces the error state promptly instead of
-// hanging through TanStack's long default backoff; a short staleTime avoids
-// refetching on every focus/mount for read-heavy library views. The test
-// client (see test/render.tsx) keeps `retry: false`.
-const queryClient = new QueryClient({
-  defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
-});
+// Retry/staleTime policy — including "never retry a 401" — lives in
+// api/queryClient so it can be tested; the test client (see test/render.tsx)
+// keeps its own `retry: false`.
+const queryClient = createAppQueryClient();
 
 // `App` is the persistent shell (sidebar + topbar + <main><Outlet>); feature
 // pages render into it. Data router (`createBrowserRouter`) so future
@@ -134,9 +137,24 @@ const queryClient = new QueryClient({
 //                   Browse, or Search via router state)
 // /search is reached by typing in the topbar search; it has no sidebar item.
 // Unknown routes fall to a minimal NotFound, not a page.
+//
+// /login is a TOP-LEVEL sibling of the shell layout, not a child of it: the
+// sign-in screen must not render inside the chrome it is the gate for, and
+// leaving the layout unmounts the shell's SSE stream and query fan-out. A
+// static path out-ranks the `*` splat inside the layout regardless of order,
+// so "/login" can never fall through to NotFound.
 const router = createBrowserRouter([
   {
-    element: <App />,
+    path: "/login",
+    element: <LoginPage />,
+    errorElement: <RouteErrorBoundary />,
+  },
+  {
+    element: (
+      <RequireAuth>
+        <App />
+      </RequireAuth>
+    ),
     // Shell-level fallback: only reached if the App shell ITSELF throws.
     errorElement: <RouteErrorBoundary />,
     children: [

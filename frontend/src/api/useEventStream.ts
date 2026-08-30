@@ -47,6 +47,10 @@ export const LIBRARY_CONTENT_KEY_COUNT = LIBRARY_CONTENT_KEYS.length;
 const FLUSH_AFTER_MS = 300;
 const MAX_WAIT_MS = 2000;
 
+/** `EventSource.CLOSED`, as a literal: the hook's own tests stub the global
+ * EventSource class, and a stub carries no static constants. */
+const EVENT_SOURCE_CLOSED = 2;
+
 export function useEventStream(): void {
   const qc = useQueryClient();
   useEffect(() => {
@@ -107,6 +111,27 @@ export function useEventStream(): void {
       // The asset-version bump stays immediate — it's cheap (an in-memory
       // counter) and images should refresh without waiting on the debounce.
       if (type === "art:changed") bumpAssetVersion(scope);
+    };
+    es.onerror = () => {
+      // A transient drop leaves readyState CONNECTING: the browser is already
+      // retrying and onopen's `connected` branch catches up on the gap, so
+      // there is nothing to do. CLOSED means it has given up permanently —
+      // which is what an HTTP error on the INITIAL response produces, and the
+      // session gate's 401 (an expired cookie) is exactly that. No message can
+      // arrive after this, so the trailing debounce is waiting for a quiet gap
+      // that has already begun: flush now rather than sit on invalidations for
+      // messages that did arrive.
+      if (es.readyState !== EVENT_SOURCE_CLOSED || timer === null) return;
+      clearTimeout(timer);
+      flush();
+      // Nothing here reopens the stream, and nothing needs to. /login is a
+      // top-level sibling of the App layout route (main.tsx), so bouncing
+      // there unmounts App, which runs this effect's cleanup; returning to the
+      // shell after signing in mounts a fresh hook and a fresh EventSource.
+      // That new stream replays nothing (onopen only catches up when
+      // `connected` is already true, and a new closure starts false) — the
+      // sign-in path invalidates the library families itself for that reason
+      // (see useLogin in api/auth.ts).
     };
     return () => {
       es.close();

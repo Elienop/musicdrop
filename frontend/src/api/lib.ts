@@ -2,12 +2,36 @@
  * (api/client.ts) and call `fetch` directly — blob/multipart endpoints the
  * generated client can't express. */
 
+import { markUnauthenticated, UnauthenticatedError } from "@/api/authStore";
+
 /** Absolute URL for an API path. The explicit origin (rather than a relative
  * path) keeps one code path that works in both the browser and the test
  * runner — Node's fetch (undici) refuses origin-relative URLs under jsdom. */
 export function apiUrl(path: string): string {
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   return `${origin}${path}`;
+}
+
+/**
+ * `fetch` for the raw-body endpoints, carrying the same session handling the
+ * typed client's middleware gives every other call.
+ *
+ * These hooks never reach openapi-fetch, so without this they would meet the
+ * gate's 401 as an ordinary failure and report "Couldn't save the artwork"
+ * while the real answer is that the session expired. Throwing (rather than
+ * returning the response) also keeps the existing status branches honest: a
+ * `res.status === 404` check below the call can never be reached by a 401.
+ *
+ * `path` is an API path, not a URL — `apiUrl` is applied here so no caller can
+ * forget it and no caller can pass a cross-origin URL through the check.
+ */
+export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const res = await fetch(apiUrl(path), init);
+  if (res.status === 401) {
+    markUnauthenticated();
+    throw new UnauthenticatedError();
+  }
+  return res;
 }
 
 /** Unwrap an openapi-fetch result: throw `message` on a transport error, a

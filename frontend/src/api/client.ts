@@ -1,5 +1,6 @@
 import createClient from "openapi-fetch";
 
+import { markUnauthenticated, UnauthenticatedError } from "@/api/authStore";
 import type { paths } from "@/api/schema";
 
 /**
@@ -25,4 +26,32 @@ export const client = createClient<paths>({
   // tests is the pre-MSW reference — so requests would escape interception.
   // Resolving per-call also future-proofs any runtime fetch swap.
   fetch: (...args) => globalThis.fetch(...args),
+});
+
+/** Endpoints that answer 401 as a NORMAL result rather than as "your session
+ * is gone": sign-in rejecting a wrong password, and its siblings. Bouncing on
+ * those would throw the user off the very page they are trying to sign in on. */
+const AUTH_PATH_PREFIX = "/api/auth/";
+
+/**
+ * One place where the session gate's 401 becomes an app-level fact.
+ *
+ * Every gated route can answer 401 (an expired or missing cookie), and no call
+ * site can act on it usefully: `lib.ts`'s `unwrap` collapses the status code
+ * into a generic Error, and the ~40 hooks that check `{ error, response }`
+ * themselves would each paint their own misleading "Couldn't load …" while the
+ * app is already bouncing to /login. Handling it here covers all of them with
+ * one edit, and openapi-fetch propagates a throw from `onResponse` straight out
+ * of `client.GET/POST/…` (its middleware loop is not wrapped in a try) — the
+ * same rejection shape a transport failure already produces, so callers need no
+ * change.
+ */
+client.use({
+  onResponse({ response, schemaPath }) {
+    if (response.status !== 401 || schemaPath.startsWith(AUTH_PATH_PREFIX)) {
+      return;
+    }
+    markUnauthenticated();
+    throw new UnauthenticatedError();
+  },
 });

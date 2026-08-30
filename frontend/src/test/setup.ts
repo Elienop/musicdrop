@@ -34,6 +34,9 @@ vi.stubGlobal(
 // dedicated useEventStream test installs its own capturing mock.
 class NoopEventSource {
   url: string | URL;
+  /** OPEN. The hook's onerror branches on CLOSED (2); a stand-in that never
+   * errors stays open, and the dedicated test drives this itself. */
+  readyState = 1;
   onopen: ((e: Event) => void) | null = null;
   onmessage: ((e: MessageEvent) => void) | null = null;
   onerror: ((e: Event) => void) | null = null;
