@@ -180,7 +180,11 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   to the literal `"Plex"`. **The false-success arms are the more serious half**: an error
   is visible, a green *Connected* against the wrong server is not, and it is the arm that
   fires for the most likely mistake (a wrong port on a box that runs other web services).
-  The slskd twin is already correct for comparison —
+  **The slskd twin shares the false-success half** — a first draft of this entry called it
+  "already correct", which is true only of the crash half. Measured: a 20,000-character junk
+  body comes back as `ok=True` with the junk as `version`. So the "refuse `ok=True` without a
+  parseable identity" fix belongs on both sides. Where slskd genuinely is correct is not
+  crashing —
   `app/slskd/client.py` catches `ValueError` around `response.json()` and degrades to the
   raw text.
 
@@ -206,10 +210,19 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   This is about the **owner's** own typo, which it never covered. (1) `{"path": "/"}` is
   accepted and starts a beets autotag walk of the whole container filesystem. The only
   path validation on the way in is `BeetsImportRunner.validate`
-  (`app/import_jobs/runner.py:99`), and it checks exactly one thing — an *explicit* copy
-  of an in-library source; a root path in the default mode passes it untouched, as does
-  the model (`app/models/import_api.py::StartImportRequest.path` is constrained to non-empty
-  after stripping, and nothing more).
+  (`app/import_jobs/runner.py:99`), and it checks exactly one thing — an *explicit* copy of
+  an in-library source. **A root path passes it in EVERY mode, copy included**, which a
+  first draft of this entry got wrong by saying "in the default mode" and so implying copy
+  was covered. Measured 2026-08-30: `validate(["/"], operation="copy")` and
+  `validate(["/mnt"], operation="copy")` both **pass**, while a path *inside* the library
+  raises `InLibraryCopyError`. The cause is that `is_in_library_source` tests only
+  source-at-or-below-library, so any **ancestor** of the library defeats it — and the
+  worker's "second" guard re-calls the same predicate, so it is one lock counted twice.
+  That matters because an operator who picks Copy and types `/` gets exactly the harm the
+  guard's own message warns about ("a copy-import would duplicate its files"), at library
+  scale, with the guard silent. The model does not help either
+  (`app/models/import_api.py::StartImportRequest.path` is constrained to non-empty after
+  stripping, and nothing more).
   The single-slot policy then works against the operator rather than for them:
   `ensure_import_can_start` (`app/api/import_.py:86`) plus the registry's
   `RuntimeError -> 409` mean this one job holds the only import slot, so every later
@@ -947,9 +960,20 @@ the condition it names has changed.
   retargets the request. Do **not** describe this as fixing the SSRF; it does not touch the
   host or the credential.
 
-      parts = urlsplit(value)
-      if parts.query or parts.fragment:
+      # Check the RAW STRING, not urlsplit's parts. See the trap below.
+      if "#" in value or "?" in value:
           raise ValueError("base_url must not contain a query string or fragment")
+
+  **The obvious version of that validator does not work, and would ship green.** The
+  canonical `parts = urlsplit(value); if parts.query or parts.fragment:` **passes the exact
+  payload measured above**: a *bare trailing* `#` makes `urlsplit` return `fragment=''`,
+  which is falsy. Measured 2026-08-30 —
+  `http://169.254.169.254/latest/meta-data/iam/security-credentials/#` → `fragment=''` →
+  passes; `http://x/y/?` → `query=''` → passes; only a *non-empty* `#x` is caught. So an
+  implementer who reaches for `urlsplit` and tests with `#x` sees it blocked, ships, and
+  leaves the attack untouched. The bare `#` is not an edge case here — it is precisely the
+  shape that works, because the suffix has to land in an *empty* fragment for the wire path
+  to end where the attacker wants.
 
   For completeness, since a reader will ask: `assert_public_url` *would* block the
   link-local metadata target specifically — so the anti-hardening argument is "wrong tool",

@@ -20,7 +20,8 @@ allowed to DO with a response it already has. Five headers on every response:
   SameSite=Lax withholds the cookie, and present and absent artists both answer
   401 indistinguishably. What keeps the header is the case the gate cannot see:
   cookies are scoped to a HOST, not a port (``app/api/csrf.py::origin_allowed``
-  compares a port-inclusive authority precisely because of this), so ANOTHER
+  does compare a port-inclusive authority, though it does not itself record why),
+  so ANOTHER
   PLAIN-HTTP SERVICE ON THE SAME HOST the victim uses to reach MusicDrop is
   same-SITE, and its subresource loads DO carry the cookie. The origin guard
   checks only unsafe methods and waves that GET through, and the gate then

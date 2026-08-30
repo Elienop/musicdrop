@@ -283,7 +283,13 @@ async def test_assert_public_url_rejects_every_normal_integration_base_url(
     ``SlskdConfig.base_url``'s comment describes, so the argument here is
     "wrong tool", not "no benefit". Both field comments say this in prose and
     cite these exact values; this test is the executable half, so the claim
-    cannot quietly become false if the guard's address rules are ever loosened.
+    cannot quietly become false if the guard stops refusing these shapes.
+
+    Scope, so nobody over-trusts it: it pins the four values the comments name,
+    not the guard's rule set. ``ipaddress.is_private`` subsumes link-local,
+    reserved and unspecified, so deleting any of those three disjuncts leaves
+    this whole FILE green — a real gap, but a pre-existing one in the by-class
+    test above, not something this test claims to close.
 
     Overlaps ``test_assert_public_url_rejects_each_disallowed_class`` on intent,
     but not entirely on coverage: ``172.16/12`` is exercised nowhere else in the
