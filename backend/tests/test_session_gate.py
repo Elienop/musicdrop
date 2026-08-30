@@ -16,6 +16,7 @@ would be proven live by ~2,500 red tests rather than silently bypassed.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -23,9 +24,11 @@ import pytest
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
+from httpx import Response
 from starlette.types import Message, Receive, Scope, Send
 
 from app.auth.gate import (
+    AUTH_ROUTE_PATHS,
     DOC_SURFACE_PATHS,
     EXEMPT_PATHS,
     SessionGateMiddleware,
@@ -687,11 +690,33 @@ def test_a_401_is_marked_uncacheable() -> None:
     assert resp.headers["cache-control"] == "no-store"
 
 
-def test_the_exempt_auth_routes_are_marked_uncacheable() -> None:
-    """``status`` is per-caller even though the gate exempts it: a shared cache
-    that stored one browser's "authenticated: true" would hand it to the next."""
-    resp = _anonymous().get("/api/auth/status")
-    assert resp.status_code == 200
+#: One probe per member of ``AUTH_ROUTE_PATHS``, since they differ in method
+#: and body. Checked for completeness below, so a member added without a probe
+#: fails loudly instead of silently going unprobed.
+_AUTH_ROUTE_PROBES: dict[str, Callable[[TestClient], object]] = {
+    "/api/auth/status": lambda c: c.get("/api/auth/status"),
+    "/api/auth/login": lambda c: c.post("/api/auth/login", json={"password": "wrong"}),
+}
+
+
+def test_every_exempt_auth_route_has_a_cache_probe() -> None:
+    """The parametrization below is only as good as its coverage of the set."""
+    assert set(_AUTH_ROUTE_PROBES) == set(AUTH_ROUTE_PATHS)
+
+
+@pytest.mark.parametrize("path", sorted(AUTH_ROUTE_PATHS))
+def test_the_exempt_auth_routes_are_marked_uncacheable(path: str) -> None:
+    """Per-caller even though the gate exempts them.
+
+    ``status`` reports whether THIS browser is signed in — a shared cache that
+    stored one browser's "authenticated: true" would hand it to the next — and
+    ``login`` is the one response that carries the session token. Parametrized
+    over the set rather than probing ``status`` alone, because with only that
+    one probe, dropping ``login`` from ``AUTH_ROUTE_PATHS`` left 189 tests green
+    and shipped the token-bearing response with no cache directives at all.
+    """
+    resp = _AUTH_ROUTE_PROBES[path](_anonymous())
+    assert isinstance(resp, Response)
     assert resp.headers["cache-control"] == "no-store"
     assert "Cookie" in resp.headers["vary"]
 

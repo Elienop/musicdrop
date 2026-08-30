@@ -90,10 +90,16 @@ EXEMPT_PATHS: Final = frozenset(
     }
 )
 
-#: The sign-in surface. Two of these are gate-EXEMPT, but their responses are
-#: still per-caller: ``status`` reports whether this browser is signed in, and
-#: ``login`` carries a Set-Cookie. Neither may be stored by a shared cache.
-AUTH_ROUTE_PATHS: Final = frozenset({"/api/auth/login", "/api/auth/logout", "/api/auth/status"})
+#: The gate-EXEMPT half of the sign-in surface, whose responses are per-caller
+#: anyway: ``status`` reports whether THIS browser is signed in, and ``login``
+#: carries the Set-Cookie. Neither may be stored by a shared cache, and neither
+#: is covered by the gated arm of :func:`scope_is_private`, so this set is what
+#: reaches them.
+#:
+#: ``/api/auth/logout`` is deliberately NOT here. It is gated, so the first
+#: disjunct already marks it private; adding it would be a member no test could
+#: distinguish from its absence, and a set that looks better covered than it is.
+AUTH_ROUTE_PATHS: Final = frozenset({"/api/auth/login", "/api/auth/status"})
 
 _UNAUTHENTICATED_DETAIL: Final = "authentication required"
 # Written as literal bytes for the same reason the origin guard's 403 body is:

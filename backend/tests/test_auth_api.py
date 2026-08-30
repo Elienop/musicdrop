@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import threading
 import time
 
 import anyio
+import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.auth.session import SESSION_COOKIE_NAME, SESSION_MAX_AGE_SECONDS
@@ -103,6 +106,23 @@ def test_the_right_password_sets_the_session_cookie(configured: None) -> None:
     # and a Secure cookie would never be sent there — the app could not be
     # signed into at all. A recorded, accepted residual (README, "Authentication").
     assert "Secure" not in header
+
+    # The TOKEN's own expiry must match the Max-Age the header just claimed.
+    # These are two independent values: the cookie passes max_age explicitly
+    # while the token takes its lifetime from mint_session_token's keyword
+    # DEFAULT, so a call site passing max_age_seconds=60 would leave a browser
+    # holding a "30-day" cookie that the server rejects after a minute — a
+    # 43,200x drift, and fully green before this assertion existed.
+    max_age = int(header.split("Max-Age=")[1].split(";")[0])
+    token = resp.cookies[SESSION_COOKIE_NAME]
+    payload = token.split(".")[1]
+    embedded_expiry = int(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    assert abs(embedded_expiry - (time.time() + max_age)) < 5
+
+    # The one response that carries the session token may never be stored.
+    # Asserted HERE, in the same response as the Set-Cookie, because the two
+    # properties are what make each other matter.
+    assert resp.headers["cache-control"] == "no-store"
 
 
 def test_the_issued_cookie_actually_opens_a_gated_route(configured: None) -> None:
@@ -192,20 +212,26 @@ def test_login_refuses_when_the_server_has_no_signing_secret(
     assert "set-cookie" not in resp.headers
 
 
-def test_a_verify_that_cannot_get_a_turn_is_refused_rather_than_queued(
+@pytest.mark.anyio
+async def test_a_verify_that_cannot_get_a_turn_is_refused_rather_than_queued(
     configured: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The bounded wait, and that it really is bounded.
+    """The bounded wait, over HTTP, with the turn genuinely held by someone else.
 
-    A derive slower than the wait window stands in for "someone else already
-    has the turn". The caller must be told to come back rather than queue
-    behind it — an unbounded queue would let a burst turn every login into a
-    multi-second hang.
+    The contention is created by taking the limiter's one token on behalf of a
+    sentinel borrower — the honest simulation of "another sign-in is mid-derive".
+
+    It used to be created by making THIS request's own derive slower than the
+    window, which passed for the wrong reason: the window cancelled the caller's
+    own in-flight derive. That is precisely the behaviour that unbounded the
+    memory ceiling (see ``_verify_serialised``), so the old shape of this test
+    would now report a 200 — the window bounds the WAIT for a turn, and a caller
+    that gets one runs to completion however long that takes.
     """
     from app.api import auth as auth_module
 
     wait = 0.05
-    derive = 0.6
+    derive = 0.4
     monkeypatch.setattr("app.api.auth._LOCK_WAIT_SECONDS", wait)
 
     def slow_verify(candidate: str, stored: str) -> bool:
@@ -214,17 +240,37 @@ def test_a_verify_that_cannot_get_a_turn_is_refused_rather_than_queued(
 
     monkeypatch.setattr(auth_module, "verify_password", slow_verify)
 
-    started = time.monotonic()
-    resp = _anonymous().post(_LOGIN, json={"password": _PASSWORD})
-    waited = time.monotonic() - started
+    # One event loop for both callers. Two TestClients would each run in their
+    # OWN loop, and a CapacityLimiter signals its waiters with asyncio.Events
+    # bound to the loop that created them — releasing from one loop while
+    # another waits is not sound, so the contention has to be built in-loop.
+    transport = httpx.ASGITransport(app=real_app)
+    results: dict[str, httpx.Response] = {}
+    elapsed: dict[str, float] = {}
 
-    assert resp.status_code == 429
-    assert resp.json() == {"detail": "another sign-in attempt is in progress"}
-    # It WAITED (a bare non-blocking acquire would 429 a double-clicked Sign
-    # in)...
-    assert waited >= wait
-    # ...and it GAVE UP rather than blocking for the whole derive.
-    assert waited < derive
+    async def attempt(tag: str, delay: float) -> None:
+        await anyio.sleep(delay)
+        began = time.monotonic()
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            results[tag] = await client.post(_LOGIN, json={"password": _PASSWORD})
+        elapsed[tag] = time.monotonic() - began
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(attempt, "first", 0.0)
+        group.start_soon(attempt, "second", wait / 2)
+
+    # The one that got the turn ran to completion, however long that took.
+    assert results["first"].status_code == 200
+    assert elapsed["first"] >= derive
+
+    # The one that did not was told to come back rather than queued behind it.
+    assert results["second"].status_code == 429
+    assert results["second"].json() == {"detail": "another sign-in attempt is in progress"}
+    # It WAITED (a bare non-blocking acquire would 429 a double-clicked Sign in)...
+    assert elapsed["second"] >= wait
+    # ...and it gave up rather than blocking for the whole derive.
+    assert elapsed["second"] < derive
+    assert auth_module._VERIFY_LIMITER.borrowed_tokens == 0
 
 
 @pytest.mark.anyio
@@ -258,6 +304,120 @@ async def test_only_one_password_derive_runs_at_a_time(
 
     assert len(high_water) == 4, "every call ran"
     assert max(high_water) == 1, f"derives overlapped: {high_water}"
+    assert auth_module._VERIFY_LIMITER.borrowed_tokens == 0
+
+
+@pytest.mark.anyio
+async def test_a_derive_that_outlives_the_window_still_blocks_the_next_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The serialization invariant when callers GIVE UP — where it used to fail.
+
+    The test above uses a derive far shorter than the window, so nothing ever
+    times out and the abandonment path is never taken. That is exactly the case
+    that was broken: anyio holds the limiter as ``async with limiter:`` around
+    the ``await future``, so abandoning a slow derive released the token while
+    the worker thread kept running, and the next caller was admitted on top of
+    it. Steady-state concurrency was ``derive / window``, not 1 — measured at
+    peak 3 with a 0.6 s derive and a 0.2 s window, i.e. ~384 MiB of scrypt.
+
+    Callers arrive STAGGERED, one just after the previous one gives up, because
+    a simultaneous burst cannot show this: the losers are cancelled while still
+    waiting for admission, so they never start a derive and the peak is 1 even
+    with the bug present.
+    """
+    from app.api import auth as auth_module
+
+    window = 0.1
+    derive = 0.35
+    monkeypatch.setattr("app.api.auth._LOCK_WAIT_SECONDS", window)
+
+    lock = threading.Lock()
+    live = 0
+    peak = 0
+    started = 0
+
+    def slow_verify(candidate: str, stored: str) -> bool:
+        nonlocal live, peak, started
+        with lock:
+            live += 1
+            started += 1
+            peak = max(peak, live)
+        time.sleep(derive)
+        with lock:
+            live -= 1
+        return True
+
+    monkeypatch.setattr(auth_module, "verify_password", slow_verify)
+
+    refusals: list[float] = []
+
+    async def caller(delay: float) -> None:
+        await anyio.sleep(delay)
+        began = time.monotonic()
+        try:
+            await auth_module._verify_serialised("pw", "stored")
+        except HTTPException as exc:
+            assert exc.status_code == 429
+            refusals.append(time.monotonic() - began)
+
+    async with anyio.create_task_group() as group:
+        for i in range(5):
+            group.start_soon(caller, i * (window + 0.02))
+
+    assert peak == 1, f"derives overlapped: peak {peak} of {started} started"
+    # ...and the callers that could not get in were REFUSED promptly, rather
+    # than the invariant being held by nobody ever getting a turn.
+    assert refusals, "no caller was refused, so nothing contended"
+    assert max(refusals) < derive, f"a refusal waited for the derive: {refusals}"
+    assert auth_module._VERIFY_LIMITER.borrowed_tokens == 0
+
+
+@pytest.mark.anyio
+async def test_a_disconnecting_caller_cannot_abandon_its_derive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other way a caller gives up: it goes away mid-derive.
+
+    ``move_on_after`` only wraps the ADMISSION, so the wait timeout can no
+    longer abandon a running derive — but a client disconnect cancels the whole
+    request task, and that WOULD unwind the derive's await if it were not
+    shielded. The token would be released by the ``finally`` while the
+    un-interruptible worker thread carried on, and the next caller would be
+    admitted on top of it: the same unbounded ceiling as F1, reached by hanging
+    up instead of by waiting.
+
+    ``run_sync``'s default ``abandon_on_cancel=False`` is what shields it.
+    Passing ``True`` leaves every other test in this file green (measured), so
+    this is the only thing standing between that default and a silent revert.
+    """
+    from app.api import auth as auth_module
+
+    derive = 0.3
+    live = 0
+    lock = threading.Lock()
+
+    def slow_verify(candidate: str, stored: str) -> bool:
+        nonlocal live
+        with lock:
+            live += 1
+        time.sleep(derive)
+        with lock:
+            live -= 1
+        return True
+
+    monkeypatch.setattr(auth_module, "verify_password", slow_verify)
+
+    began = time.monotonic()
+    with anyio.move_on_after(0.05):
+        await auth_module._verify_serialised("pw", "stored")
+    waited = time.monotonic() - began
+
+    # The cancellation did not take effect until the derive had finished...
+    assert waited >= derive, f"the derive was abandoned after {waited:.3f}s"
+    # ...so no worker is still holding ~128 MiB behind a freed token.
+    with lock:
+        assert live == 0
     assert auth_module._VERIFY_LIMITER.borrowed_tokens == 0
 
 

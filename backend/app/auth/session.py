@@ -44,7 +44,17 @@ SESSION_COOKIE_NAME: Final = "musicdrop_session"
 #: 30 days. Long on purpose: this is a LAN app the owner leaves open in a tab,
 #: and the cost of a short window is a login prompt interrupting a library scan,
 #: not a meaningfully smaller attack surface for a cookie that never leaves the
-#: house. Also the cookie's ``Max-Age``, so the two cannot drift.
+#: house.
+#:
+#: Also the cookie's ``Max-Age`` — but sharing this constant is NOT what keeps
+#: the two in step, and reading it that way is how the drift gets shipped. The
+#: cookie passes ``max_age`` explicitly while the token takes its lifetime from
+#: :func:`mint_session_token`'s keyword default, so a login call site passing
+#: ``max_age_seconds=60`` leaves the browser holding a "30-day" cookie the
+#: server rejects after a minute, with every test green. The actual pin is the
+#: assertion in ``test_the_right_password_sets_the_session_cookie``, which
+#: decodes the minted token and compares its embedded expiry to the Max-Age the
+#: header claims.
 SESSION_MAX_AGE_SECONDS: Final = 30 * 24 * 60 * 60
 
 SESSION_SECRET_FILENAME: Final = "session-secret"
@@ -145,6 +155,13 @@ def session_token_is_valid(token: str | None, secret: bytes, password_hash: str)
     is ``hmac.compare_digest`` so a forged signature cannot be walked byte by
     byte from response timing.
     """
+    # ``not secret`` is defence-in-depth, not covered behaviour: no production
+    # caller can reach it. The gate only calls this once ``app.state.session_secret``
+    # is `bytes`, and the only writer is `load_or_create_session_secret`, which
+    # returns either a >=32-byte file read or a fresh 32-byte token — b"" is not
+    # among its outputs. `test_no_secret_means_no_valid_token` exercises the arm
+    # by calling this function directly, so it is pinned but only at that level;
+    # do not read it as evidence that an empty secret is a reachable state.
     if not token or not secret:
         return False
     fields = token.split(_TOKEN_SEPARATOR)

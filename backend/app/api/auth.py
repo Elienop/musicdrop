@@ -54,6 +54,10 @@ _NO_SECRET_DETAIL: Final = "the session signing secret is unavailable"
 # logins starves every other blocking call in the app (album reads, imports,
 # artwork writes) — measured at ~2.1 s for an unrelated request under 80
 # concurrent logins.
+#
+# Acquired and released BY HAND in _verify_serialised, never via run_sync's
+# `limiter=` kwarg — that spelling looks equivalent and is not. Read that
+# function's docstring before changing this.
 _VERIFY_LIMITER: Final = anyio.CapacityLimiter(1)
 
 # How long a request will WAIT for a turn before giving up with a 429. The wait
@@ -61,10 +65,10 @@ _VERIFY_LIMITER: Final = anyio.CapacityLimiter(1)
 # queue would let a burst turn every login into a multi-second hang. ~2 s admits
 # a double-clicked Sign in (one derive ahead of it) and a dozen more.
 #
-# On timeout the derive already in flight is ABANDONED, not killed — a thread
-# cannot be interrupted. That is bounded at one abandoned derive, because the
-# limiter admits one at a time, so the memory ceiling the limiter exists to
-# enforce still holds.
+# This bounds the WAIT, not the derive. A caller that gives up here never
+# started one; a caller that was admitted runs to completion however long that
+# takes, holding the token throughout — see _verify_serialised for why the
+# reverse (abandoning an in-flight derive) silently unbounds the memory ceiling.
 _LOCK_WAIT_SECONDS: Final = 2.0
 
 _LOGIN_RESPONSES: Final[dict[int | str, dict[str, object]]] = {
@@ -117,26 +121,49 @@ def _session_secret(request: Request) -> bytes:
 
 
 async def _verify_serialised(candidate: str, stored: str) -> bool:
-    # Bound outside the cancel scope so the name exists on every syntactic path.
-    # It is never the value returned — a timeout raises the 429 below before
-    # ``return ok`` is reached — so mutating this line alone changes nothing;
-    # its job is to keep a future edit that drops that raise from returning an
-    # unbound name (an UnboundLocalError 500) instead of a plain refusal.
-    ok = False
-    with anyio.move_on_after(_LOCK_WAIT_SECONDS) as scope:
-        ok = await anyio.to_thread.run_sync(
-            verify_password,
-            candidate,
-            stored,
-            limiter=_VERIFY_LIMITER,
-            # The worker cannot be interrupted, so on timeout we stop waiting
-            # for it rather than pretending it stopped. It releases the limiter
-            # when it finishes.
-            abandon_on_cancel=True,
-        )
-    if scope.cancel_called:
+    """Run one derive at a time, or refuse with a 429 rather than queue.
+
+    ADMISSION IS TAKEN EXPLICITLY, and this is the whole point of the shape.
+    The obvious spelling — ``run_sync(..., limiter=_VERIFY_LIMITER,
+    abandon_on_cancel=True)`` inside ``move_on_after`` — does NOT bound
+    concurrency, because anyio holds the limiter as ``async with limiter:``
+    *around* the ``await future`` (see ``run_sync_in_worker_thread`` in
+    ``anyio/_backends/_asyncio.py``). Abandoning unwinds through that
+    ``async with`` and RELEASES the token while the un-interruptible worker
+    thread keeps deriving, so the next caller is admitted immediately and
+    steady-state concurrency is ``derive_time / window``, not 1. Measured with
+    a 0.6 s derive and a 0.2 s window: **peak 3 concurrent derives, every
+    caller admitted**. At production numbers that is ~384 MiB of scrypt at
+    under 0.5 requests per second — the exact ceiling the limiter exists to
+    enforce, gone.
+
+    So: wait for the token under the timeout, and hold it in a ``finally``
+    until the derive COMPLETES rather than until a caller gives up.
+
+    ``admitted`` rather than ``scope.cancel_called`` decides the refusal,
+    because those two can disagree: the token can be handed over just as the
+    deadline fires, and only ``admitted`` says whether there is something to
+    release. A cancelled ``acquire`` never takes a token (anyio pops the waiter
+    and re-notifies the next one), so the two failure directions are covered.
+
+    ``abandon_on_cancel=False`` and no ``limiter=`` kwarg on the derive itself:
+    admission is already held, and passing the same limiter again would
+    self-deadlock. The derive therefore draws one token from anyio's DEFAULT
+    thread limiter (40) — bounded at one by the admission above, so 39 remain
+    for every other blocking call in the app.
+    """
+    admitted = False
+    with anyio.move_on_after(_LOCK_WAIT_SECONDS):
+        await _VERIFY_LIMITER.acquire()
+        # No await between the acquire returning and this line, so the flag
+        # cannot disagree with whether the token is held.
+        admitted = True
+    if not admitted:
         raise HTTPException(status_code=429, detail=_BUSY_DETAIL)
-    return ok
+    try:
+        return await anyio.to_thread.run_sync(verify_password, candidate, stored)
+    finally:
+        _VERIFY_LIMITER.release()
 
 
 @router.post("/auth/login", responses=_LOGIN_RESPONSES)
