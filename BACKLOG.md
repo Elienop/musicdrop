@@ -202,25 +202,124 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   2026-07-07 ruling rejected as workflow friction, and the reasoning it gave for ad-hoc
   `/downloads` imports has not changed.
 
-- **The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
+- ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth
-  slice 2's Sonar violations).** The owner's standing instruction is that the PR driving a
-  family to zero also enables its lint twin, so CI pins it (recorded under the Sonar
-  programme below, and in auto-memory `sonar-lessons-standing`). The backend honours this
-  through ruff `select` — PT018, PT012, PT001, S324. **The frontend never could:** there is
-  no `eslint.config.*`, no eslint dependency, and no `lint` script in
-  `frontend/package.json`; the only related package is `vitest-sonar-reporter`. The
-  consequence is no longer hypothetical. Auth slice 2 reintroduced, in new code, three
-  families this programme had already driven to zero: `S9020` (`waitFor` + `getBy` instead
-  of `findBy`, cleared in Wave 2) ×2, `S6819` (`role="status"` instead of `<output>`,
-  cleared in Wave 4) ×1, and `S1874` (a deprecated type) ×2 — seven violations total, all
-  caught only by the server-side scan, after the code was written and reviewed. Fix shape:
-  its own PR (the programme already scoped it that way — do not bolt it onto a feature
-  branch) adding ESLint with `eslint-plugin-sonarjs`, enabling **only** rules whose families
-  are already at zero, and mutation-testing each enabled rule by reintroducing the smell and
-  confirming the lint reddens. Until then the server scan is the only net for every frontend
-  family, which means every regrowth costs a scan-fix-rescan cycle per PR rather than being
-  caught in the editor.
+  slice 2's Sonar violations).**~~ — **FIXED in #TBD, 2026-08-30.** The owner's standing
+  instruction is that the PR driving a family to zero also enables its lint twin, so CI pins
+  it; the backend honoured that through ruff `select` (PT018, PT012, PT001, S324) and the
+  frontend could not, having no `eslint.config.*`, no eslint dependency and no `lint`
+  script. Auth slice 2 then reintroduced three already-cleared families in new code —
+  `S9020` ×2, `S6819` ×1, `S1874` ×2 — caught only by the server scan, after review.
+
+  What shipped: `frontend/eslint.config.js` on ESLint 10, **closed by default** (it extends
+  `tseslint.configs.base`, which enables zero rules, and allowlists from there — extending
+  the recommended presets instead produced 182 findings of which 30 came from rules nobody
+  had selected, and that turn-it-off list regrows on every preset update). **18 rules**, one
+  per Sonar family this project has actually violated and fixed. A `lint` script, an
+  `ESLint` step in CI ahead of `Typecheck` mirroring the backend's `ruff check` seat, and
+  `frontend/eslint.config.test.ts` — 25 mutation cases that feed each rule the smell it
+  guards and assert it reddens, plus two coverage tests (27 in all): one fails if a rule is
+  enabled without a case **or is set to `"warn"` rather than `"error"`**, the other if the
+  MAIN block stops reaching a source directory. Verified by mutating the config seven ways
+  — drop the decorator, widen its exemption, drop its custom-component pre-filter, disable a
+  rule, downgrade a rule to `warn`, move a rule between scope blocks, and ignore
+  `src/pages/**`. Each reddened exactly one test, and every restore went green.
+
+  The `warn` case is worth spelling out, because it was the review's Critical and it is not
+  obvious: **`eslint .` exits 0 when only warnings are present.** So a single `"error"` →
+  `"warn"` edit disabled the whole gate while the suite stayed green — the smell was still
+  reported, so the fixture assertions passed, and the "is this rule enabled" check accepted
+  `warn`. Closed from both sides, because they fail at different moments: the script is now
+  `eslint . --max-warnings 0` (fails once a violation exists) and the coverage test asserts
+  severity is `error` (fails the instant the config is edited). Measured: with a violation
+  on disk and the rule at `warn`, bare `eslint .` exits 0 and `--max-warnings 0` exits 1.
+
+  Two structural facts drove the shape, both read off the server rather than assumed.
+  **Sonar rules carry a `scope`**, and the scanner cannot raise a MAIN-scope rule in a file
+  `sonar.test.inclusions` qualifies as a test — so the config splits MAIN from TEST the same
+  way, and excludes `src/components/ui/**` to match `sonar.exclusions:22`. Without that
+  split the gate failed on 19 findings Sonar is structurally incapable of reporting. Three
+  rules are TEST-scope (`S5906`, `S5976`, `S9020`); the first two were pinned in the MAIN
+  block first, where they can never fire on the files Sonar raises them in. **And `S6848` is
+  `no-static-element-interactions`, not `no-noninteractive-element-interactions`** — that is
+  `S6847`, which this project has never violated (0 issues ever, against 3 for S6848). The
+  wrong twin was pinned first, from memory; it fired 3× on code Sonar has no complaint
+  about. The mapping is in the sonarjs README, lines 505-506.
+
+  One rule is wrapped rather than raw. `jsx-a11y/prefer-tag-over-role` reports 7 sites that
+  Sonar accepts — `role="status"` that is also a live region — and the silence is measured:
+  all 7 lines were last touched between 2026-05-27 and 2026-08-21, the 2026-08-30 `main`
+  analysis scanned them, and S6819 is at 0 open. Deleting the rule was the obvious response
+  and the wrong one, S6819 being both a 45-issue family and one of the three that regrew, so
+  it is decorated with that exemption and nothing wider. **An earlier note here claimed
+  these 7 were live sites Sonar misses; that was backwards — they are over-fires by the raw
+  rule.**
+
+  **The exemption is not inferred — it is transcribed.** `eslint-plugin-sonarjs@4.2.0` ships
+  279 rules and does **not** implement `prefer-tag-over-role`; its README merely maps S6819
+  to the jsx-a11y rule, which makes the real logic look unreadable. It isn't: it is in the
+  analyzer, at `/mnt/data/sonarqube/scanner-cache/*/sonar-javascript-plugin.jar` →
+  `sonarjs-1.0.0.tgz` → `package/bin/server.cjs`, minified but greppable by rule name. The
+  decorator there reports only when a DOM pre-filter passes and none of **nine** exemptions
+  match. Three of those facts are now mirrored in the config and pinned by cases: `Qdr`
+  admits only native HTML tag names, so Sonar never raises this on a custom component —
+  `<Alert role="status">` is ordinary shadcn code and the raw rule reds the build on it;
+  role is read with `getLiteralPropValue` and lowercased, so `role={"STATUS"}` resolves like
+  the bare literal; and `U8g` is `role==="status" && !!getProp(attrs,"aria-live")` —
+  **presence, not value**. The other six exemptions (slider, radio, combobox, separator,
+  img-on-div/span, and two more) are named in the config but deliberately not implemented:
+  none occurs in the tree, and copying nine minified predicates would make an untestable
+  fork of an analyzer out of a 20-line mirror.
+
+  That last point cost a round trip worth recording. The security audit found the first
+  version exempting `aria-live="off"`, which is by definition not a live region, and it was
+  right on the accessibility merits — so the fix allowlisted `polite`/`assertive`. Reading
+  `U8g` showed that made the gate **stricter than the thing it mirrors**, which is the one
+  property this file exists to avoid: it would fail the build on code the server accepts.
+  Reverted to presence-only. The a11y argument is real and belongs upstream at Sonar, not
+  in a mirror.
+
+  Scoped out, deliberately: **10 of the 28 cleared frontend families have no twin enabled.**
+  Nine (`S7780`, `S6479`, `S1186`, `S7776`, `S7755`, `S6772`, `S6478`, `S7760`, `S6481` — 21
+  issues between them) map to `eslint-plugin-unicorn` and `eslint-plugin-react`, neither
+  installed; adding them is a follow-up worth doing, and the config's allowlist shape means
+  it costs one line per rule. The tenth is `css:S8776`, a CSS rule with no JS twin. Also
+  unchanged: the 7 `role="status"` sites themselves — converting them to `<output>` is a
+  real UI change needing browser verification, and `SlskdPanel.tsx:304` is an always-mounted
+  live region that the earlier a11y wave already flagged as needing its own thought.
+
+  One self-inflicted hazard is worth recording because it passed every green check.
+  `eslint-plugin-jsx-a11y@6.10.2` peers `eslint` at `^9`, and installing it with
+  `--legacy-peer-deps` **silently removed `@testing-library/dom`** — a peer of
+  `@testing-library/react` — breaking all 118 frontend test files with `Cannot find module`.
+  The flag suppresses peer resolution tree-wide, not just for the conflict it was aimed at.
+  Replaced with a targeted `overrides: { "eslint-plugin-jsx-a11y": { "eslint": "^10" } }` in
+  `frontend/package.json`, which relaxes only that one peer edge — measured: 369 → 578
+  lockfile entries, **0 removed and 0 version-changed** across all 369 pre-existing ones,
+  0 new advisories, 0 new install scripts, every addition dev-only and from
+  `registry.npmjs.org` with a sha512 integrity hash. The range is `^10` rather than
+  `$eslint` deliberately: `$eslint` tracks the root spec, so an ESLint 11 bump would keep
+  installing a plugin two majors behind in silence. `^10` makes npm raise ERESOLVE instead
+  — verified by simulating the bump, which errored rather than quietly nesting a second
+  ESLint. `eslint-plugin-jsx-a11y@6.10.2` is the latest release and is 672 days old, so
+  that re-raised conflict is the signal to check whether the plugin is still alive.
+
+  Two more from the same audit, both fixed here. `.github/workflows/ci.yml` had **no
+  `permissions:` block**, leaving four steps that execute repo-controlled JavaScript
+  (`gen:api`, `lint`, `test`, `build`) dependent on a repository setting that lives in the
+  web UI and can be flipped to read/write with no diff and no review; it now declares
+  `contents: read` at the top level, which `release.yml`'s `gates` caller inherits while its
+  separate `release` job keeps its own `contents: write`. And the gate did not lint
+  `vite.config.ts`/`vitest.config.ts`, which `sonar.sources=.` scans as source — a
+  MAIN-scope finding there would have reached the server without failing CI. Both files are
+  clean under every enabled rule, so closing the gap cost nothing.
+
+  **Not fixed, and deliberately: the npm Dependabot lane has no release-age `cooldown:`**,
+  so future frontend updates land the day they publish — `eslint` and `typescript-eslint`
+  were both 5 days old when pinned here. A `cooldown: { default-days: 7 }` is the standard
+  defence against a compromised-publish event. It is NOT applied because editing
+  `.github/dependabot.yml` is forbidden by the standing 2026-07-25 ruling (decisions #1),
+  which names that file specifically. Raising it for the owner to decide, not proposing it.
 
 - ~~**`GET /api/health` publishes the exact backend version to unauthenticated callers
   (2026-08-30 security audit of auth slice 1, finding L6 — deferred to auth slice 2).**~~

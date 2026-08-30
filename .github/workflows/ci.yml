@@ -24,6 +24,15 @@ concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Every job here only reads the repo — none tags, comments, or publishes; release.yml
+# declares `contents: write` on its own release job for that. Stated explicitly rather
+# than relying on the repository setting (`default_workflow_permissions: read`), which
+# lives in the web UI and can be flipped to read/write with no diff and no review. Four
+# steps in the frontend job execute repo-controlled JavaScript — `gen:api`, `lint`,
+# `test`, `build` — so what the token can do at that moment belongs under review.
+permissions:
+  contents: read
+
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -80,6 +89,15 @@ jobs:
 
       - name: Generated API types match the tracked contract
         run: npm run gen:api && git diff --exit-code -- src/api/schema.d.ts
+
+      # Mirrors the backend's `ruff check` seat: lint before typecheck. Every rule
+      # enabled in eslint.config.js pins a SonarQube family this project already
+      # cleared, so this is the frontend half of the lock-on-clear rule that the
+      # backend has honoured through ruff `select` all along. The `Test` step below
+      # covers eslint.config.test.ts, which proves each of those rules still fires —
+      # without it a broken config would pass this step by finding nothing.
+      - name: ESLint
+        run: npm run lint
 
       - name: Typecheck
         run: npm run typecheck
