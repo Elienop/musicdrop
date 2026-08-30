@@ -88,7 +88,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**`GET /api/health` publishes the exact backend version to unauthenticated callers
   (2026-08-30 security audit of auth slice 1, finding L6 — deferred to auth slice 2).**~~
-  — **FIXED in #(PR # filled in at merge), 2026-08-30 (auth slice 2):** `version` moved to
+  — **FIXED in #200, 2026-08-30 (auth slice 2):** `version` moved to
   a gated `GET /api/version` and dropped from the health payload, which is now `{"status":
   "ok"}` alone. The sidebar reads the new endpoint, so the string only renders for a
   signed-in caller; the Dockerfile HEALTHCHECK reads only `.status` and was unaffected, as
