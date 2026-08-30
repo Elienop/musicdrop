@@ -11,8 +11,40 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Health */
+        /**
+         * Health
+         * @description Alive or not — nothing else, because this answer is public.
+         *
+         *     Anything added to this body is added to the anonymous attack surface. The
+         *     image's HEALTHCHECK only reads the HTTP status code, so it needs no field
+         *     here at all; ``status`` exists for a human running ``curl``.
+         */
         get: operations["health_api_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Version
+         * @description The running build, for the UI's version badge.
+         *
+         *     Gated by being absent from ``EXEMPT_PATHS`` — nothing here opts in, the
+         *     gate covers ``/api/`` by default and this route simply does not ask for an
+         *     exception. Read through the settings singleton at request time, the way
+         *     every other route does, so the suite's attribute patching is visible to it.
+         */
+        get: operations["version_api_version_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -59,6 +91,9 @@ export interface paths {
          *     (see ``app/auth/session.py``). A token copied out of a browser before
          *     logout therefore keeps working; deleting ``<beets_dir>/session-secret``
          *     invalidates every session at once, which is the blunt instrument available.
+         *
+         *     Takes the ``Request`` only to read the scheme, so the expiring cookie
+         *     carries the same ``Secure`` posture the login one did.
          */
         post: operations["logout_api_auth_logout_post"];
         delete?: never;
@@ -3333,8 +3368,6 @@ export interface components {
         HealthResponse: {
             /** Status */
             status: string;
-            /** Version */
-            version: string;
         };
         /**
          * ImportAction
@@ -5188,6 +5221,11 @@ export interface components {
             /** Column */
             column?: number | null;
         };
+        /** VersionResponse */
+        VersionResponse: {
+            /** Version */
+            version: string;
+        };
         /**
          * WebhookAck
          * @description The webhook's typed 2xx body. ``401`` is the only non-2xx it ever returns.
@@ -5228,6 +5266,44 @@ export interface operations {
             };
             /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+        };
+    };
+    version_api_version_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionResponse"];
+                };
+            };
+            /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login. */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

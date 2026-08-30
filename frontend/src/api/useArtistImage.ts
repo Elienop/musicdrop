@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
-import { apiUrl, errorDetail, unwrap } from "@/api/lib";
+import { apiFetch, errorDetail, unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 export type ArtistImageSettings = components["schemas"]["ArtistImageSettings"];
@@ -47,12 +47,14 @@ export function useSetArtistImageSettings() {
   });
 }
 
-function overrideUrl(name: string): string {
-  return apiUrl(`/api/artists/image/override?name=${encodeURIComponent(name)}`);
+// Paths, not URLs: `apiFetch` resolves the origin so the session check can
+// never be skipped by a caller that built its own absolute URL.
+function overridePath(name: string): string {
+  return `/api/artists/image/override?name=${encodeURIComponent(name)}`;
 }
 
-function fromUrlOverrideUrl(name: string): string {
-  return apiUrl(`/api/artists/image/override/from-url?name=${encodeURIComponent(name)}`);
+function fromUrlOverridePath(name: string): string {
+  return `/api/artists/image/override/from-url?name=${encodeURIComponent(name)}`;
 }
 
 /** Upload a custom portrait for `name` (multipart, field "file"). The header
@@ -62,7 +64,7 @@ export function useUploadArtistImageOverride(name: string) {
     mutationFn: async (image) => {
       const form = new FormData();
       form.append("file", image, "artist-image");
-      const res = await fetch(overrideUrl(name), { method: "POST", body: form });
+      const res = await apiFetch(overridePath(name), { method: "POST", body: form });
       if (!res.ok) throw new Error(await errorDetail(res, OVERRIDE_ERROR));
     },
   });
@@ -131,10 +133,8 @@ export type FetchedArtistImage =
 export function useFetchArtistImage(name: string) {
   return useMutation<FetchedArtistImage, Error, ArtistImageSourceId>({
     mutationFn: async (source) => {
-      const res = await fetch(
-        apiUrl(
-          `/api/artists/image/fetch?name=${encodeURIComponent(name)}&source=${encodeURIComponent(source)}`,
-        ),
+      const res = await apiFetch(
+        `/api/artists/image/fetch?name=${encodeURIComponent(name)}&source=${encodeURIComponent(source)}`,
         { method: "POST" },
       );
       // 404 is a real answer ("that source has nothing for this artist"); every
@@ -171,7 +171,7 @@ export function useFetchArtistImage(name: string) {
 export function useResetArtistImage(name: string) {
   return useMutation<ArtistImageResetResult, Error, void>({
     mutationFn: async () => {
-      const res = await fetch(apiUrl(`/api/artists/image/reset?name=${encodeURIComponent(name)}`), {
+      const res = await apiFetch(`/api/artists/image/reset?name=${encodeURIComponent(name)}`, {
         method: "POST",
       });
       if (!res.ok) throw new Error(await errorDetail(res, OVERRIDE_ERROR));
@@ -184,7 +184,7 @@ export function useResetArtistImage(name: string) {
 export function useSetArtistImageFromUrl(name: string) {
   return useMutation<void, Error, string>({
     mutationFn: async (url) => {
-      const res = await fetch(fromUrlOverrideUrl(name), {
+      const res = await apiFetch(fromUrlOverridePath(name), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ url }),

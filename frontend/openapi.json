@@ -11,6 +11,7 @@
           "health"
         ],
         "summary": "Health",
+        "description": "Alive or not \u2014 nothing else, because this answer is public.\n\nAnything added to this body is added to the anonymous attack surface. The\nimage's HEALTHCHECK only reads the HTTP status code, so it needs no field\nhere at all; ``status`` exists for a human running ``curl``.",
         "operationId": "health_api_health_get",
         "responses": {
           "200": {
@@ -35,6 +36,48 @@
           }
         },
         "security": []
+      }
+    },
+    "/api/version": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Version",
+        "description": "The running build, for the UI's version badge.\n\nGated by being absent from ``EXEMPT_PATHS`` \u2014 nothing here opts in, the\ngate covers ``/api/`` by default and this route simply does not ask for an\nexception. Read through the settings singleton at request time, the way\nevery other route does, so the suite's attribute patching is visible to it.",
+        "operationId": "version_api_version_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/auth/login": {
@@ -146,7 +189,7 @@
           "auth"
         ],
         "summary": "Logout",
-        "description": "Expire the session cookie in the browser.\n\nClient-side only: the token stays cryptographically valid until the expiry\nbaked into it, because there is no server-side session record to revoke\n(see ``app/auth/session.py``). A token copied out of a browser before\nlogout therefore keeps working; deleting ``<beets_dir>/session-secret``\ninvalidates every session at once, which is the blunt instrument available.",
+        "description": "Expire the session cookie in the browser.\n\nClient-side only: the token stays cryptographically valid until the expiry\nbaked into it, because there is no server-side session record to revoke\n(see ``app/auth/session.py``). A token copied out of a browser before\nlogout therefore keeps working; deleting ``<beets_dir>/session-secret``\ninvalidates every session at once, which is the blunt instrument available.\n\nTakes the ``Request`` only to read the scheme, so the expiring cookie\ncarries the same ``Secure`` posture the login one did.",
         "operationId": "logout_api_auth_logout_post",
         "responses": {
           "204": {
@@ -12389,16 +12432,11 @@
           "status": {
             "type": "string",
             "title": "Status"
-          },
-          "version": {
-            "type": "string",
-            "title": "Version"
           }
         },
         "type": "object",
         "required": [
-          "status",
-          "version"
+          "status"
         ],
         "title": "HealthResponse"
       },
@@ -16585,6 +16623,19 @@
         "title": "ValidationErrorItem",
         "description": "One row of the ``POST /api/config/validate`` and ``POST /api/config/save``\nerror responses. ``line`` is 1-based for CodeMirror's ``state.doc.line(n)``\n(CodeMirror reference manual)."
       },
+      "VersionResponse": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "title": "Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "version"
+        ],
+        "title": "VersionResponse"
+      },
       "WebhookAck": {
         "properties": {
           "status": {
@@ -16609,7 +16660,7 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "musicdrop_session",
-        "description": "The session cookie issued by POST /api/auth/login. HttpOnly, SameSite=Lax, and deliberately NOT Secure so the app works over plain HTTP on a LAN."
+        "description": "The session cookie issued by POST /api/auth/login. HttpOnly, SameSite=Lax, and Secure when the request arrives over HTTPS (directly or via X-Forwarded-Proto); absent over plain HTTP so the LAN by-IP path keeps working."
       }
     }
   },

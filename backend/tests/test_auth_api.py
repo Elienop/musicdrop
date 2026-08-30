@@ -30,13 +30,17 @@ from fastapi.testclient import TestClient
 from app.auth.session import SESSION_COOKIE_NAME, SESSION_MAX_AGE_SECONDS
 from app.config import settings
 from app.main import app as real_app
-from tests.conftest import TEST_SESSION_SECRET
+from tests.conftest import TEST_SESSION_SECRET, session_cookie_value
 
 _PASSWORD = "correct horse battery staple"
 _LOGIN = "/api/auth/login"
 _LOGOUT = "/api/auth/logout"
 _STATUS = "/api/auth/status"
 _GATED = "/openapi.json"
+#: The cookie attribute this file spends most of its assertions on, and the
+#: header that decides it over plain HTTP.
+_SECURE_FLAG = "Secure"
+_PROTO_HEADER = "X-Forwarded-Proto"
 
 
 def _stored_hash(password: str, *, n: int = 1024, r: int = 8, p: int = 1) -> str:
@@ -102,10 +106,12 @@ def test_the_right_password_sets_the_session_cookie(configured: None) -> None:
     assert "SameSite=lax" in header
     assert "Path=/" in header
     assert f"Max-Age={SESSION_MAX_AGE_SECONDS}" in header
-    # NOT Secure, deliberately: MusicDrop is browsed over plain HTTP by LAN IP,
-    # and a Secure cookie would never be sent there — the app could not be
-    # signed into at all. A recorded, accepted residual (README, "Authentication").
-    assert "Secure" not in header
+    # No Secure, because THIS request came over http — the flag is conditional
+    # on the request's scheme, not a constant (app/auth/cookies.py). Marking it
+    # here would make the by-IP LAN deployment impossible to sign into, since a
+    # Secure cookie is never sent back over plain HTTP. The https arms are
+    # pinned below.
+    assert _SECURE_FLAG not in header
 
     # The TOKEN's own expiry must match the Max-Age the header just claimed.
     # These are two independent values: the cookie passes max_age explicitly
@@ -125,6 +131,89 @@ def test_the_right_password_sets_the_session_cookie(configured: None) -> None:
     assert resp.headers["cache-control"] == "no-store"
 
 
+def test_a_login_over_real_tls_gets_a_secure_cookie(configured: None) -> None:
+    """The direct-HTTPS arm, with no forwarding header in play at all.
+
+    ``base_url="https://..."`` genuinely flips ``request.url.scheme`` (verified:
+    the ASGI scope's ``scheme`` is ``"https"``), and TestClient sends no
+    ``X-Forwarded-Proto`` of its own — so this arm exercises the scheme branch
+    alone, the way a container terminating TLS itself, or one behind a proxy
+    uvicorn already trusts, would arrive.
+    """
+    client = TestClient(real_app, base_url="https://testserver")
+    client.cookies.clear()
+    resp = client.post(_LOGIN, json={"password": _PASSWORD})
+    assert resp.status_code == 200
+    assert _SECURE_FLAG in resp.headers["set-cookie"]
+
+
+@pytest.mark.parametrize(
+    ("forwarded", "expect_secure"),
+    [
+        ("https", True),
+        # Case-insensitive: the header is a token, and proxies differ.
+        ("HTTPS", True),
+        # By convention the LEFTMOST element is the browser's own hop, the way
+        # X-Forwarded-For reads — whether a given proxy appends, overwrites or
+        # passes a client value through is its own config (app/auth/cookies.py).
+        ("https, http", True),
+        ("  https ,http", True),
+        ("http", False),
+        # The mutation that matters: a substring test reads this as https,
+        # and mints a Secure cookie for a browser that arrived over plain HTTP
+        # and can therefore never send it back.
+        ("http, https", False),
+        ("", False),
+    ],
+)
+def test_the_forwarded_proto_header_decides_the_secure_flag(
+    forwarded: str, expect_secure: bool, configured: None
+) -> None:
+    """Over plain HTTP, ``X-Forwarded-Proto``'s first element decides it.
+
+    Trusted rather than validated, deliberately: a client that gets this header
+    wrong only affects its OWN cookie — either locking itself out with a
+    ``Secure`` cookie it cannot send back, or silently downgrading its own
+    session to a plain one. See ``app/auth/cookies.py`` for both modes, and for
+    why this differs from the host guard's treatment of ``X-Forwarded-Host``.
+    """
+    resp = _anonymous().post(
+        _LOGIN, json={"password": _PASSWORD}, headers={_PROTO_HEADER: forwarded}
+    )
+    assert resp.status_code == 200
+    assert (_SECURE_FLAG in resp.headers["set-cookie"]) is expect_secure
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "expect_secure"),
+    [
+        ("https", "http", True),
+        # The silent self-downgrade: a TLS-fronted session whose cookie comes
+        # back without Secure, because the value the browser's own proxy set is
+        # not the one read.
+        ("http", "https", False),
+    ],
+)
+def test_duplicate_forwarded_proto_headers_are_decided_by_the_FIRST_one(
+    first: str, second: str, expect_secure: bool, configured: None
+) -> None:
+    """Two separate headers, not one comma chain — first-header-wins.
+
+    A proxy that APPENDS its own ``X-Forwarded-Proto`` rather than rewriting a
+    client-supplied one sends the value twice, and Starlette's ``Headers.get``
+    returns the FIRST occurrence. So the second arm here is a genuinely
+    TLS-fronted request that mints a non-Secure cookie — the self-downgrade
+    ``app/auth/cookies.py`` names, pinned so the two arms cannot quietly swap.
+    """
+    resp = _anonymous().post(
+        _LOGIN,
+        json={"password": _PASSWORD},
+        headers=[(_PROTO_HEADER, first), (_PROTO_HEADER, second)],
+    )
+    assert resp.status_code == 200
+    assert (_SECURE_FLAG in resp.headers["set-cookie"]) is expect_secure
+
+
 def test_the_issued_cookie_actually_opens_a_gated_route(configured: None) -> None:
     """The round trip, not just the header: log in, then read something gated.
 
@@ -141,7 +230,7 @@ def test_the_issued_cookie_actually_opens_a_gated_route(configured: None) -> Non
 def test_the_wrong_password_is_refused(configured: None) -> None:
     resp = _anonymous().post(_LOGIN, json={"password": _PASSWORD + "!"})
     assert resp.status_code == 401
-    assert resp.json() == {"detail": "incorrect password"}
+    assert resp.json() == {"detail": "Incorrect password."}
     assert "set-cookie" not in resp.headers
 
 
@@ -151,7 +240,7 @@ def test_an_unset_hash_refuses_every_password(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr("app.config.settings.password_hash", "")
     resp = _anonymous().post(_LOGIN, json={"password": "anything"})
     assert resp.status_code == 401
-    assert resp.json() == {"detail": "no password is configured on this server"}
+    assert resp.json() == {"detail": "No password is configured on this server."}
     assert "set-cookie" not in resp.headers
 
 
@@ -168,7 +257,7 @@ def test_an_unreadable_hash_says_so_rather_than_blaming_the_password(
     monkeypatch.setattr("app.config.settings.password_hash", "argon2id$v=19$whatever")
     resp = _anonymous().post(_LOGIN, json={"password": _PASSWORD})
     assert resp.status_code == 401
-    assert resp.json() == {"detail": "the configured password hash is not readable"}
+    assert resp.json() == {"detail": "The configured password hash is not readable."}
 
 
 @pytest.mark.parametrize(
@@ -193,7 +282,7 @@ def test_every_shape_of_broken_hash_refuses(broken: str, monkeypatch: pytest.Mon
     monkeypatch.setattr("app.config.settings.password_hash", broken)
     resp = _anonymous().post(_LOGIN, json={"password": _PASSWORD})
     assert resp.status_code == 401
-    assert resp.json() == {"detail": "the configured password hash is not readable"}
+    assert resp.json() == {"detail": "The configured password hash is not readable."}
 
 
 def test_login_refuses_when_the_server_has_no_signing_secret(
@@ -208,7 +297,7 @@ def test_login_refuses_when_the_server_has_no_signing_secret(
     monkeypatch.delattr(real_app.state, "session_secret")
     resp = _anonymous().post(_LOGIN, json={"password": _PASSWORD})
     assert resp.status_code == 503
-    assert resp.json() == {"detail": "the session signing secret is unavailable"}
+    assert resp.json() == {"detail": "The session signing secret is unavailable."}
     assert "set-cookie" not in resp.headers
 
 
@@ -265,7 +354,9 @@ async def test_a_verify_that_cannot_get_a_turn_is_refused_rather_than_queued(
 
     # The one that did not was told to come back rather than queued behind it.
     assert results["second"].status_code == 429
-    assert results["second"].json() == {"detail": "another sign-in attempt is in progress"}
+    assert results["second"].json() == {
+        "detail": "Another sign-in is already in progress. Try again in a moment."
+    }
     # It WAITED (a bare non-blocking acquire would 429 a double-clicked Sign in)...
     assert elapsed["second"] >= wait
     # ...and it gave up rather than blocking for the whole derive.
@@ -463,6 +554,50 @@ def test_logout_expires_the_cookie_and_the_client_is_locked_out(
     # The jar honoured the expiry, so the next request carries nothing.
     assert client.cookies.get(SESSION_COOKIE_NAME) is None
     assert client.get(_GATED).status_code == 401
+
+
+def test_logout_matches_logins_secure_posture(configured: None) -> None:
+    """The expiring cookie carries the same conditional Secure flag.
+
+    Both arms, because only the pair proves the flag is being computed rather
+    than hardcoded: the plain-HTTP request must not grow one and the forwarded
+    HTTPS request must.
+
+    This symmetry is load-bearing, and the plain-HTTP arm is the one that
+    matters. A Set-Cookie carrying Secure that arrives over a non-secure
+    connection is ignored entirely rather than stored, so it expires nothing
+    (draft-ietf-httpbis-rfc6265bis-20 section 5.7, "Storage Model", step 13) —
+    a logout hardcoded to secure=True would return 204 over plain HTTP while
+    leaving the session cookie live.
+
+    What is asserted here is still only the SYMMETRY, not that browser rule.
+    http.cookiejar applies no secure check when storing a cookie
+    (DefaultCookiePolicy has set_ok_path and set_ok_domain but no
+    set_ok_secure), so this client would accept a cookie a browser drops, and
+    any test claiming to pin the browser behaviour would be pinning nothing.
+    See the block above ``delete_cookie`` in ``app/api/auth.py``.
+    """
+    plain = _anonymous()
+    assert plain.post(_LOGIN, json={"password": _PASSWORD}).status_code == 200
+    assert _SECURE_FLAG not in plain.post(_LOGOUT).headers["set-cookie"]
+
+    # The full arc over real TLS: the jar sends the Secure cookie back, so this
+    # logout is a genuinely authenticated one rather than a 401.
+    over_tls = TestClient(real_app, base_url="https://testserver")
+    over_tls.cookies.clear()
+    assert over_tls.post(_LOGIN, json={"password": _PASSWORD}).status_code == 200
+    assert _SECURE_FLAG in over_tls.post(_LOGOUT).headers["set-cookie"]
+
+    # And the forwarded arm, which is the production shape: browser -> TLS
+    # proxy -> plain internal hop. The cookie is seeded onto the jar by hand
+    # rather than taken from a login response, because a jar that took one
+    # would refuse to send it back over http — that refusal IS the Secure flag
+    # working, and it would turn this logout into a 401 about nothing.
+    forwarded = _anonymous()
+    forwarded.cookies.set(SESSION_COOKIE_NAME, session_cookie_value())
+    resp = forwarded.post(_LOGOUT, headers={_PROTO_HEADER: "https"})
+    assert resp.status_code == 204
+    assert _SECURE_FLAG in resp.headers["set-cookie"]
 
 
 def test_logout_is_itself_gated() -> None:

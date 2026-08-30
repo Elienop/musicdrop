@@ -3,10 +3,12 @@
 // The icon concept module (spec §3): pages import CONCEPTS, not glyphs —
 // one concept = one Phosphor icon, so swapping a glyph is a one-line change
 // here and no two pages drift onto different icons for the same idea.
-// Default weight is "light", set ONCE by the app-wide IconContext (App.tsx) —
-// glyphs don't pass `weight` themselves. The only sanctioned local overrides:
-// detail-rail actions = thin (large size-10 glyphs), checkbox tick = bold
-// (tiny control glyph needs the stroke).
+// Default weight is "light" — glyphs don't pass `weight` themselves. It comes
+// from ONE constant (ICON_WEIGHT below), fed to an IconContext by App for the
+// shell and by each route that renders outside it (the sign-in page, the
+// admission fallback). The only sanctioned local overrides: detail-rail
+// actions = thin (large size-10 glyphs), checkbox tick = bold (tiny control
+// glyph needs the stroke).
 // The one spinner is Spinner (CircleNotch) + className "animate-spin".
 // `Success` and `Online` intentionally share CheckCircle (spec's map; online
 // status always pairs the icon with text, never color alone).
@@ -68,9 +70,31 @@ export {
   UploadSimpleIcon as Upload,
   ArrowUpIcon as MoveUp,
   ArrowDownIcon as MoveDown,
+  SignOutIcon as SignOut,
 } from "@phosphor-icons/react";
 
+// The provider half of the weight rule. Re-exported here so "everything
+// icon-related comes from icons.ts" holds literally: the three routes that
+// mount their own provider (App, the sign-in page, the admission fallback)
+// take the context and the value it carries from the same module, instead of
+// reaching past it into Phosphor for one and here for the other.
+export { IconContext } from "@phosphor-icons/react";
+
 import type { Icon } from "@phosphor-icons/react";
+
+/**
+ * ONE icon weight app-wide, as an IconContext value: every Phosphor glyph
+ * without an explicit `weight` renders LIGHT (nav, status, buttons…).
+ * Deliberate overrides stay local: detail-rail actions = thin (large glyphs),
+ * checkbox tick = bold (tiny control glyph needs the stroke).
+ *
+ * A module constant so the provider value stays referentially stable across
+ * re-renders, and it lives HERE rather than in App because App's provider no
+ * longer covers everything: the routes outside the shell (the sign-in page,
+ * the admission fallback) mount their own, and a second literal would be free
+ * to drift onto a different weight.
+ */
+export const ICON_WEIGHT = { weight: "light" } as const;
 
 /** The type every primitive's `icon` prop accepts — Phosphor's component
  * type (size/color/weight props, ref to SVGSVGElement). */

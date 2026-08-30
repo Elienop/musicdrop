@@ -9,6 +9,22 @@ import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
 
 const HEALTH_URL = `${window.location.origin}/api/health`;
+const VERSION_URL = `${window.location.origin}/api/version`;
+
+/** The two probes behind the health row, as the backend now splits them:
+ * /api/health is exempt from the session gate and reports REACHABILITY only,
+ * /api/version is gated and carries the build string. Pass `version: null` for
+ * a server whose version probe fails. */
+function healthHandlers(version: string | null) {
+  return [
+    http.get(HEALTH_URL, () => HttpResponse.json({ status: "ok" })),
+    http.get(VERSION_URL, () =>
+      version === null
+        ? new HttpResponse(null, { status: 500 })
+        : HttpResponse.json({ version }),
+    ),
+  ];
+}
 
 /** Exposes the live router location so tests can assert URL changes. */
 function LocationProbe() {
@@ -101,11 +117,7 @@ const DEV_VERSION = "dev";
 
 describe("HealthStatus (Topbar copy)", () => {
   test("conveys a reachable backend with a non-color text label", async () => {
-    server.use(
-      http.get(HEALTH_URL, () =>
-        HttpResponse.json({ status: "ok", version: RELEASE_VERSION }),
-      ),
-    );
+    server.use(...healthHandlers(RELEASE_VERSION));
 
     renderWithProviders(<HealthStatus />);
 
@@ -116,6 +128,7 @@ describe("HealthStatus (Topbar copy)", () => {
   test("conveys an unreachable backend with a non-color text label", async () => {
     server.use(
       http.get(HEALTH_URL, () => new HttpResponse(null, { status: 500 })),
+      http.get(VERSION_URL, () => new HttpResponse(null, { status: 500 })),
     );
 
     renderWithProviders(<HealthStatus />);
@@ -124,11 +137,7 @@ describe("HealthStatus (Topbar copy)", () => {
   });
 
   test("compact mode keeps the status text in the live region (sr-only, not hidden)", async () => {
-    server.use(
-      http.get(HEALTH_URL, () =>
-        HttpResponse.json({ status: "ok", version: RELEASE_VERSION }),
-      ),
-    );
+    server.use(...healthHandlers(RELEASE_VERSION));
 
     renderWithProviders(<HealthStatus compact />);
 
@@ -143,11 +152,7 @@ describe("HealthStatus (Topbar copy)", () => {
 
 describe("HealthStatus version", () => {
   test("shows a release build's version with exactly one leading v", async () => {
-    server.use(
-      http.get(HEALTH_URL, () =>
-        HttpResponse.json({ status: "ok", version: RELEASE_VERSION }),
-      ),
-    );
+    server.use(...healthHandlers(RELEASE_VERSION));
 
     renderWithProviders(<HealthStatus />);
 
@@ -161,11 +166,7 @@ describe("HealthStatus version", () => {
   });
 
   test("shows a dev build's version without inventing a v prefix", async () => {
-    server.use(
-      http.get(HEALTH_URL, () =>
-        HttpResponse.json({ status: "ok", version: DEV_VERSION }),
-      ),
-    );
+    server.use(...healthHandlers(DEV_VERSION));
 
     renderWithProviders(<HealthStatus />);
 
@@ -179,11 +180,7 @@ describe("HealthStatus version", () => {
   test("a reachable backend with an empty version still describes itself as online", async () => {
     // `settings.version` is a plain `str` with no min-length and is overridable
     // at runtime via MUSICDROP_VERSION, so "" arrives from a REACHABLE backend.
-    server.use(
-      http.get(HEALTH_URL, () =>
-        HttpResponse.json({ status: "ok", version: "" }),
-      ),
-    );
+    server.use(...healthHandlers(""));
 
     renderWithProviders(<HealthStatus />);
 
@@ -198,11 +195,7 @@ describe("HealthStatus version", () => {
   });
 
   test("keeps the static version OUT of the role=status live region", async () => {
-    server.use(
-      http.get(HEALTH_URL, () =>
-        HttpResponse.json({ status: "ok", version: RELEASE_VERSION }),
-      ),
-    );
+    server.use(...healthHandlers(RELEASE_VERSION));
 
     renderWithProviders(<HealthStatus />);
 
@@ -213,11 +206,7 @@ describe("HealthStatus version", () => {
   });
 
   test("compact rail renders no visible version (the title carries it)", async () => {
-    server.use(
-      http.get(HEALTH_URL, () =>
-        HttpResponse.json({ status: "ok", version: RELEASE_VERSION }),
-      ),
-    );
+    server.use(...healthHandlers(RELEASE_VERSION));
 
     renderWithProviders(<HealthStatus compact />);
 
@@ -232,6 +221,7 @@ describe("HealthStatus version", () => {
   test("offline still describes the backend without a version", async () => {
     server.use(
       http.get(HEALTH_URL, () => new HttpResponse(null, { status: 500 })),
+      http.get(VERSION_URL, () => new HttpResponse(null, { status: 500 })),
     );
 
     renderWithProviders(<HealthStatus />);
@@ -241,5 +231,81 @@ describe("HealthStatus version", () => {
       "title",
       "Backend unreachable",
     );
+  });
+
+  test("reads the version from /api/version, never from the health body", async () => {
+    // The leak the backend half closed: /api/health is EXEMPT from the session
+    // gate, so it must not hand the build string to a caller with no cookie.
+    // A health response that still carries one (a stale server, a proxy that
+    // rewrites) must be ignored — the gated /api/version is the only source.
+    server.use(
+      http.get(HEALTH_URL, () =>
+        HttpResponse.json({ status: "ok", version: "v9.9.9-from-health" }),
+      ),
+      http.get(VERSION_URL, () => HttpResponse.json({ version: RELEASE_VERSION })),
+    );
+
+    renderWithProviders(<HealthStatus />);
+
+    expect(await screen.findByText(RELEASE_VERSION)).toBeInTheDocument();
+    expect(screen.queryByText(/from-health/)).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveAttribute(
+      "title",
+      `Backend online (${RELEASE_VERSION})`,
+    );
+  });
+
+  test("an unreachable backend shows no version, even when /api/version answered", async () => {
+    // The other half of the `reachable && versionQuery.data` conjunct, and the
+    // half nothing pinned: dropping `reachable &&` survived every test here,
+    // because they all had the two probes agreeing. They can disagree for real
+    // — /api/health is exempt from the session gate and /api/version is not,
+    // and the two are separate queries that resolve independently — and the
+    // result would be a build string sitting next to "Offline", or next to the
+    // checking spinner while health is still pending.
+    // Ordered, not raced: health is held until the version response has gone
+    // out, so "Offline" can only appear once the version query already has its
+    // answer. Without that the absence assertion could pass simply by running
+    // before the badge had a chance to render — a test that holds whether or
+    // not the conjunct is there.
+    let versionServed = () => {};
+    const versionDone = new Promise<void>((resolve) => {
+      versionServed = resolve;
+    });
+    server.use(
+      http.get(VERSION_URL, () => {
+        versionServed();
+        return HttpResponse.json({ version: RELEASE_VERSION });
+      }),
+      http.get(HEALTH_URL, async () => {
+        await versionDone;
+        return new HttpResponse(null, { status: 500 });
+      }),
+    );
+
+    renderWithProviders(<HealthStatus />);
+
+    expect(await screen.findByText(/offline/i)).toBeInTheDocument();
+    expect(screen.queryByText(RELEASE_VERSION)).not.toBeInTheDocument();
+    // And the version does not sneak in through the status description either.
+    expect(screen.getByRole("status")).toHaveAttribute(
+      "title",
+      "Backend unreachable",
+    );
+  });
+
+  test("a failing version probe leaves the backend Online, just unlabelled", async () => {
+    // Reachability is keyed on /api/health ALONE. The version query is gated,
+    // so it is the one that dies first when a session expires — and a dead
+    // session must not make a running backend read as "unreachable".
+    server.use(...healthHandlers(null));
+
+    renderWithProviders(<HealthStatus />);
+
+    expect(await screen.findByText(/online/i)).toBeInTheDocument();
+    expect(screen.queryByText(/offline/i)).not.toBeInTheDocument();
+    const status = screen.getByRole("status");
+    expect(status).toHaveAttribute("title", "Backend online");
+    expect(status.getAttribute("aria-label")).not.toMatch(/\(\s*\)/);
   });
 });

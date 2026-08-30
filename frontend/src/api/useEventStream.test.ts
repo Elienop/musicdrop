@@ -8,7 +8,14 @@ import { LIBRARY_CONTENT_KEY_COUNT, useEventStream } from "@/api/useEventStream"
 
 class CapturingEventSource {
   static last: CapturingEventSource | null = null;
+  /** The platform's CLOSED constant, which the hook reads off the global
+   * class. Without it the hook compares `readyState !== undefined` and never
+   * takes the give-up branch these tests drive. */
+  static readonly CLOSED = 2;
   url: string | URL;
+  /** OPEN. The hook's onerror only acts on CLOSED (2), so a test that wants
+   * the permanent-close branch sets this itself before firing onerror. */
+  readyState = 1;
   onopen: ((e: Event) => void) | null = null;
   onmessage: ((e: MessageEvent) => void) | null = null;
   onerror: ((e: Event) => void) | null = null;
@@ -175,6 +182,66 @@ describe("useEventStream", () => {
     // Re-connect (after a drop/sleep): invalidate to catch up on what was missed.
     es().onopen?.(new Event("open"));
     expect(spy.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it("reads CLOSED off the platform class, not off a literal in the hook", () => {
+    // The hook used to hardcode 2 because the stubs carried no statics — a
+    // production constant whose authority sat with a test double. It now reads
+    // `EventSource.CLOSED`, so the stubs carry the real value and this asserts
+    // the two agree rather than that one copy matches the other.
+    setup();
+    expect(EventSource.CLOSED).toBe(2);
+    expect(CapturingEventSource.CLOSED).toBe(EventSource.CLOSED);
+  });
+
+  it("flushes a queued round when the stream closes for good", () => {
+    // An HTTP error on the INITIAL response closes an EventSource
+    // permanently — the browser does not retry one — and the session gate's
+    // 401 on an expired cookie is exactly that. Whatever was queued is the
+    // last thing this stream will ever say, and the quiet gap the debounce
+    // waits for has already begun, so sitting on it just delays a refresh
+    // that is already owed.
+    vi.useFakeTimers();
+    const { spy, es } = setup();
+    es().onmessage?.(new MessageEvent("message", { data: '{"type":"library:changed"}' }));
+    expect(spy).not.toHaveBeenCalled(); // still inside the trailing debounce
+
+    es().readyState = 2; // CLOSED
+    es().onerror?.(new Event("error"));
+
+    expect(spy).toHaveBeenCalledTimes(LIBRARY_CONTENT_KEY_COUNT); // one round, now
+    // And the cancelled timer does not fire a second one behind it.
+    vi.advanceTimersByTime(2000);
+    expect(spy).toHaveBeenCalledTimes(LIBRARY_CONTENT_KEY_COUNT);
+  });
+
+  it("leaves a TRANSIENT drop alone — the browser is still retrying", () => {
+    // readyState CONNECTING means a reconnect is already in flight, and
+    // onopen's catch-up branch covers the gap. Flushing here would spend a
+    // full invalidation round on a stream that is about to come back.
+    vi.useFakeTimers();
+    const { spy, es } = setup();
+    es().onmessage?.(new MessageEvent("message", { data: '{"type":"library:changed"}' }));
+
+    es().readyState = 0; // CONNECTING
+    es().onerror?.(new Event("error"));
+
+    expect(spy).not.toHaveBeenCalled();
+    // The debounce it left alone still fires on its own schedule.
+    vi.advanceTimersByTime(300);
+    expect(spy).toHaveBeenCalledTimes(LIBRARY_CONTENT_KEY_COUNT);
+  });
+
+  it("a permanent close with nothing queued invalidates nothing", () => {
+    // The common shape of this branch: the 401 lands on the stream's very
+    // first response, so no message ever arrived to queue anything.
+    vi.useFakeTimers();
+    const { spy, es } = setup();
+
+    es().readyState = 2; // CLOSED
+    es().onerror?.(new Event("error"));
+
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it("closes the stream on unmount", () => {

@@ -66,16 +66,33 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
 
-- **`GET /api/health` publishes the exact backend version to unauthenticated callers
-  (2026-08-30 security audit of auth slice 1, finding L6 — deferred to auth slice 2).**
-  The session gate exists so an anonymous scanner learns nothing, but the exempt
-  healthcheck returns `{"status":"ok","version":"<release>"}` — the precise release to
-  match advisories against. Not fixed in slice 1 because the frontend consumes it:
-  `Topbar.tsx` renders "Backend online (vX.Y.Z)" and its test pins the string, so removal
-  forces a frontend change the backend slice should not carry. Fix shape for slice 2:
-  serve `version` from a gated endpoint (or fold it into an authenticated status payload),
-  point the Topbar there, and drop it from `/api/health` — the Dockerfile HEALTHCHECK
-  reads only `.status`, so the container is unaffected.
+- **The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
+  three cleared families have now measurably regrown (2026-08-30, found while clearing auth
+  slice 2's Sonar violations).** The owner's standing instruction is that the PR driving a
+  family to zero also enables its lint twin, so CI pins it (recorded under the Sonar
+  programme below, and in auto-memory `sonar-lessons-standing`). The backend honours this
+  through ruff `select` — PT018, PT012, PT001, S324. **The frontend never could:** there is
+  no `eslint.config.*`, no eslint dependency, and no `lint` script in
+  `frontend/package.json`; the only related package is `vitest-sonar-reporter`. The
+  consequence is no longer hypothetical. Auth slice 2 reintroduced, in new code, three
+  families this programme had already driven to zero: `S9020` (`waitFor` + `getBy` instead
+  of `findBy`, cleared in Wave 2) ×2, `S6819` (`role="status"` instead of `<output>`,
+  cleared in Wave 4) ×1, and `S1874` (a deprecated type) ×2 — seven violations total, all
+  caught only by the server-side scan, after the code was written and reviewed. Fix shape:
+  its own PR (the programme already scoped it that way — do not bolt it onto a feature
+  branch) adding ESLint with `eslint-plugin-sonarjs`, enabling **only** rules whose families
+  are already at zero, and mutation-testing each enabled rule by reintroducing the smell and
+  confirming the lint reddens. Until then the server scan is the only net for every frontend
+  family, which means every regrowth costs a scan-fix-rescan cycle per PR rather than being
+  caught in the editor.
+
+- ~~**`GET /api/health` publishes the exact backend version to unauthenticated callers
+  (2026-08-30 security audit of auth slice 1, finding L6 — deferred to auth slice 2).**~~
+  — **FIXED in #200, 2026-08-30 (auth slice 2):** `version` moved to
+  a gated `GET /api/version` and dropped from the health payload, which is now `{"status":
+  "ok"}` alone. The sidebar reads the new endpoint, so the string only renders for a
+  signed-in caller; the Dockerfile HEALTHCHECK reads only `.status` and was unaffected, as
+  predicted. An anonymous scanner now learns that something answers, not which release.
 
 - ~~**Three internal comments drifted from enforced behavior (2026-08-29 README audit;
   comment-only, fold into the next code PR — a docs-only PR can't carry them without
@@ -685,13 +702,22 @@ because a recorded decision is what stops the question being reopened from scrat
 scan here for something to pick up — scan *Open bugs / hardening*. Revisit an item only if
 the condition it names has changed.
 
-- **The session cookie is deliberately NOT `Secure` (2026-08-30, auth slice 1).**
-  MusicDrop is browsed over plain HTTP by LAN IP as a design point; a `Secure` cookie
-  would never be sent on that path and the app could not be signed into at all in its
-  primary deployment. The cookie is HttpOnly, SameSite=Lax, host-only, Path=/ — the
-  residual is exactly "as private as the LAN". A TLS hop in front (Caddy) encrypts that
-  leg regardless. Recorded at the Set-Cookie site in `app/api/auth.py` and in README's
-  Authentication section; revisit only if the by-IP plain-HTTP path stops being used.
+- **The session cookie omits `Secure` on the plain-HTTP path only (2026-08-30, auth slice
+  1; narrowed in slice 2).** Slice 1 set the flag to a static `False`, which this entry
+  originally recorded as the accepted end state. Slice 2 made it follow the connection
+  (`app/auth/cookies.py::request_is_https`): over TLS — direct, or behind a proxy that
+  sets `X-Forwarded-Proto: https` — the cookie IS `Secure`, so the accepted residual is
+  now confined to a deployment genuinely served over plain HTTP. It cannot be closed
+  there: MusicDrop is browsed by LAN IP over HTTP as a design point, and an unconditional
+  `Secure` makes that deployment impossible to sign into at all. This is what the
+  ecosystem does — Sonarr/Radarr (`SameAsRequest`), qBittorrent, Gitea, Nextcloud and
+  Portainer are all conditional; Authelia is the only unconditional one, and it pairs that
+  with refusing plain HTTP outright — *"we won't support websites served over HTTP in order
+  to avoid any risk"* (<https://www.authelia.com/overview/security/measures/>, re-verified
+  2026-08-30). That pairing is the point: an unconditional `Secure` is only coherent
+  alongside a refusal to serve HTTP at all, which is not a trade MusicDrop can make. The cookie is HttpOnly, SameSite=Lax, host-only, Path=/ throughout, so
+  on the HTTP path the residual is exactly "as private as the LAN". Recorded at
+  `request_is_https` and in README's Authentication section.
 
 - **Logout is client-side only; session tokens are stateless (2026-08-30, auth slice 1).**
   A token stays cryptographically valid until its embedded expiry (≤30 days) — there is

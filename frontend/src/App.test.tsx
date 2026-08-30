@@ -12,6 +12,7 @@ import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
 
 const HEALTH_URL = `${window.location.origin}/api/health`;
+const VERSION_URL = `${window.location.origin}/api/version`;
 const ARTISTS_URL = `${window.location.origin}/api/artists`;
 const SEARCH_URL = `${window.location.origin}/api/search`;
 const ACTIVE_IMPORT_URL = `${window.location.origin}/api/imports/active`;
@@ -21,15 +22,16 @@ const LYRICS_URL = `${window.location.origin}/api/lyrics/backfill`;
 const ARTIST_ART_URL = `${window.location.origin}/api/artists/art/backfill`;
 const DISK_SYNC_URL = `${window.location.origin}/api/disk-sync/status`;
 
-/** Idle handlers for every probe the shell polls (health + the Review badge
- * probe + the six activity sources), so shell tests are deterministic and
- * quiet under MSW's onUnhandledRequest:"error". Spread these AFTER any
- * per-test override — within one server.use() call, earlier handlers win. */
+/** Idle handlers for every probe the shell polls (health + the version badge
+ * + the Review badge probe + the six activity sources), so shell tests are
+ * deterministic and quiet under MSW's onUnhandledRequest:"error". Spread these
+ * AFTER any per-test override — within one server.use() call, earlier handlers
+ * win. Health no longer carries a version: it is exempt from the session gate,
+ * so the build string moved to the gated /api/version. */
 function idleShellHandlers() {
   return [
-    http.get(HEALTH_URL, () =>
-      HttpResponse.json({ status: "ok", version: "v0.29.1" }),
-    ),
+    http.get(HEALTH_URL, () => HttpResponse.json({ status: "ok" })),
+    http.get(VERSION_URL, () => HttpResponse.json({ version: "v0.29.1" })),
     http.get(ARTISTS_URL, () => HttpResponse.json([])),
     http.get(ACTIVE_IMPORT_URL, () =>
       HttpResponse.json({
@@ -122,9 +124,8 @@ function idleShellHandlers() {
 describe("HealthStatus", () => {
   test("conveys a reachable backend with a non-color text label", async () => {
     server.use(
-      http.get(HEALTH_URL, () =>
-        HttpResponse.json({ status: "ok", version: "v0.29.1" }),
-      ),
+      http.get(HEALTH_URL, () => HttpResponse.json({ status: "ok" })),
+      http.get(VERSION_URL, () => HttpResponse.json({ version: "v0.29.1" })),
     );
 
     renderWithProviders(<HealthStatus />);
@@ -138,6 +139,7 @@ describe("HealthStatus", () => {
   test("conveys an unreachable backend with a non-color text label", async () => {
     server.use(
       http.get(HEALTH_URL, () => new HttpResponse(null, { status: 500 })),
+      http.get(VERSION_URL, () => new HttpResponse(null, { status: 500 })),
     );
 
     renderWithProviders(<HealthStatus />);
@@ -199,6 +201,12 @@ describe("App shell", () => {
 
     expect(
       screen.getByRole("button", { name: "Activity" }),
+    ).toBeInTheDocument();
+    // Sign out lives in this slot, not the sidebar footer: that footer is
+    // inside the `hidden md:flex` aside and MobileNav renders only the nav
+    // sections, so below md there would be no way out of the app.
+    expect(
+      screen.getByRole("button", { name: "Sign out" }),
     ).toBeInTheDocument();
     expect(await screen.findByText(/online/i)).toBeInTheDocument();
     // sonner's single live region (AppToaster) is mounted.

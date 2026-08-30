@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { createMemoryRouter, Navigate, RouterProvider } from "react-router";
 import { describe, expect, test } from "vitest";
 
 import { App } from "@/App";
+import { RequireAuth } from "@/components/system/RequireAuth";
+import { LoginPage } from "@/pages/LoginPage";
 import { HomePage } from "@/pages/HomePage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { AlbumDetailPage } from "@/pages/albums/AlbumDetailPage";
@@ -29,6 +31,8 @@ import { SettingsNamingPage } from "@/pages/settings/SettingsNamingPage";
 import { server } from "@/test/msw-server";
 
 const HEALTH_URL = `${window.location.origin}/api/health`;
+const VERSION_URL = `${window.location.origin}/api/version`;
+const AUTH_STATUS_URL = `${window.location.origin}/api/auth/status`;
 const STATS_URL = `${window.location.origin}/api/stats`;
 const ARTISTS_URL = `${window.location.origin}/api/artists`;
 const ALBUMS_URL = `${window.location.origin}/api/albums`;
@@ -43,14 +47,20 @@ const ARTIST_ART_SETTINGS_URL = `${window.location.origin}/api/artists/art/setti
 const ARTIST_IMAGE_SETTINGS_URL = `${window.location.origin}/api/artists/image/settings`;
 
 /** The route table mirrors main.tsx 1:1 — the same page components at the
- * same paths, inside the real App shell — so the IA contract is exercised
- * end-to-end: `/` is the Overview dashboard, `/artists` is the roster,
- * details hang off the artist spine, `/settings` index-redirects to
- * /settings/beets, unknown routes fall to NotFound. Keep this table in
- * lockstep with main.tsx whenever a route is added or moved. */
+ * same paths, behind the same admission guard, inside the real App shell — so
+ * the IA contract is exercised end-to-end: `/` is the Overview dashboard,
+ * `/artists` is the roster, details hang off the artist spine, `/settings`
+ * index-redirects to /settings/beets, unknown routes fall to NotFound, and
+ * /login is a TOP-LEVEL sibling rather than a child of the shell. Keep this
+ * table in lockstep with main.tsx whenever a route is added or moved. */
 const routes = [
+  { path: "/login", element: <LoginPage /> },
   {
-    element: <App />,
+    element: (
+      <RequireAuth>
+        <App />
+      </RequireAuth>
+    ),
     children: [
       { index: true, element: <HomePage /> },
       { path: "/artists", element: <ArtistsPage /> },
@@ -94,8 +104,10 @@ const routes = [
  * routes simply leave their handlers unused. */
 function appHandlers() {
   return [
-    http.get(HEALTH_URL, () =>
-      HttpResponse.json({ status: "ok", version: "v0.29.1" }),
+    http.get(HEALTH_URL, () => HttpResponse.json({ status: "ok" })),
+    http.get(VERSION_URL, () => HttpResponse.json({ version: "v0.29.1" })),
+    http.get(AUTH_STATUS_URL, () =>
+      HttpResponse.json({ authenticated: true, password_set: true }),
     ),
     http.get(STATS_URL, () =>
       HttpResponse.json({
@@ -224,8 +236,9 @@ function appHandlers() {
   ];
 }
 
-function renderAt(path: string) {
-  server.use(...appHandlers());
+function renderAt(path: string, ...overrides: Parameters<typeof server.use>) {
+  // Overrides go in FIRST: within one server.use() call, earlier handlers win.
+  server.use(...overrides, ...appHandlers());
   const router = createMemoryRouter(routes, { initialEntries: [path] });
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -269,9 +282,18 @@ describe("routing (sidebar IA)", () => {
       await screen.findByRole("heading", { level: 1, name: "Settings" }),
     ).toBeInTheDocument();
     // The redirect landed on /settings/beets: its section link is current.
-    expect(
-      await screen.findByRole("link", { name: "Beets" }),
-    ).toHaveAttribute("aria-current", "page");
+    // Wait on the ATTRIBUTE, not the link: SettingsLayout renders its section
+    // links in the same commit that mounts the index route's <Navigate>, so
+    // the element exists one render before the redirect it is reporting on.
+    // Awaiting the element alone resolves in that window and reads the
+    // pre-redirect DOM — which is what it did once the admission guard put an
+    // extra async step in front of the lazy chunk.
+    await waitFor(() =>
+      expect(screen.getByRole("link", { name: "Beets" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      ),
+    );
   });
 
   test("/import renders the import entry page", async () => {
@@ -295,6 +317,43 @@ describe("routing (sidebar IA)", () => {
     expect(
       await screen.findByRole("heading", { level: 1, name: "Import playlists" }),
     ).toBeInTheDocument();
+  });
+
+  test("a signed-out visitor gets /login instead of the shell", async () => {
+    renderAt(
+      "/artists",
+      http.get(AUTH_STATUS_URL, () =>
+        HttpResponse.json({ authenticated: false, password_set: true }),
+      ),
+    );
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "MusicDrop" }),
+    ).toBeInTheDocument();
+    // A password input carries no ARIA role, so the label is the handle.
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
+    // The shell is not merely hidden behind the form — it never rendered, so
+    // none of its gated queries fired.
+    expect(
+      screen.queryByRole("link", { name: "Artists" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("searchbox", { name: /search library/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("/login resolves to the sign-in page, not the shell's NotFound splat", async () => {
+    // A top-level sibling of the layout route: React Router ranks the static
+    // path above the shell's `*`, so this can never fall through to NotFound.
+    renderAt(
+      "/login",
+      http.get(AUTH_STATUS_URL, () =>
+        HttpResponse.json({ authenticated: false, password_set: true }),
+      ),
+    );
+
+    expect(await screen.findByLabelText("Password")).toBeInTheDocument();
+    expect(screen.queryByText(/page not found/i)).not.toBeInTheDocument();
   });
 
   test("an unknown route renders NotFound with the one Overview escape", async () => {

@@ -68,6 +68,7 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 - **Acquisition (slskd)** — completed slskd downloads land in a watched inbox (webhook-driven) and queue into the import pipeline; a unified **Review** page is the one home for import decisions and inbox backlog.
 - **Faceted Browse** — slice the library by genre · decade · format · type · media · country · source · lyrics coverage, sorted A–Z or recently added.
 - **Live updates** — library changes stream to every open tab (SSE), no manual refresh.
+- **Sign-in** — a single-password login screen, a 30-day session cookie, and a **Sign out** control in the top bar. Before a password hash is configured, the same screen is a setup notice naming the env var and the command that generates one — see [Authentication](#authentication).
 - **Dark, art-forward UI** — violet-accented dark theme, dissolving detail rails, Koito-inspired row cards, a two-font type system (League Spartan display face), and the original MusicDrop logo re-colored onto the design tokens.
 
 **Planned** — deemix acquisition adapter.
@@ -125,8 +126,15 @@ MusicDrop has a **single account**, protected by one password. Every `/api/*` re
 session cookie. The only exceptions are the container healthcheck (`/api/health`), the slskd
 webhook (which carries its own shared secret), and the two sign-in endpoints themselves.
 
-**Until you set a password, the API answers nothing.** That is deliberate — there is no
-"unprotected by default" mode — and the startup log says so on one line:
+**Until you set a password, nothing is reachable.** That is deliberate — there is no
+"unprotected by default" mode. On a fresh install the browser lands on a **setup screen** instead
+of the sign-in form: it names the env var to set (`MUSICDROP_PASSWORD_HASH`), shows the command
+that generates a hash, and offers **Check again** so you can restart the container and recheck
+without reloading the page. The command block comes with a **Copy** button *when the browser will
+allow one* — clipboard access needs a secure page, meaning HTTPS or `localhost`, so on a plain-HTTP
+LAN address the button is replaced by a line telling you to select the text instead. The command
+wraps rather than scrolling, so it is fully visible either way. The startup log says the same thing
+on one line:
 
 ```
 security posture: prod (static_dir set); …; auth: NO password configured, so every gated API
@@ -154,8 +162,15 @@ restart:
 The doubling is only a `docker-compose.yml` quirk. In an `.env` file, an `env_file:`, or a plain
 `docker run -e`, paste the value exactly as printed.
 
-Signing in sets a cookie that lasts **30 days**, survives container restarts, and is
-`HttpOnly` + `SameSite=Lax`. **Sign out** clears it in that browser.
+With a hash set, MusicDrop opens on a **sign-in screen** — one password field, no username, and
+it is the only page an unauthenticated visitor can reach. Signing in sets a cookie that lasts
+**30 days**, survives container restarts, and is `HttpOnly` + `SameSite=Lax`; you land on
+whichever page you originally asked for rather than being dropped on the Overview. If the server
+refuses, it says why in the form itself — a wrong password, a hash it cannot read, a sign-in
+already in flight — rather than failing blankly.
+
+**Sign out** is in the top bar, beside the activity indicator, at every window width; it clears
+the cookie in that browser.
 
 **Changing the password signs every session out, everywhere.** The cookie is signed with a key
 derived from `MUSICDROP_PASSWORD_HASH`, so setting a new hash and restarting invalidates every
@@ -168,16 +183,33 @@ in the browser, but the token itself stays valid until it expires or until you r
 two values above. There is no server-side session list, deliberately — nothing to store, sweep
 or back up.
 
-**One honest caveat: the cookie is not marked `Secure`.** MusicDrop is designed to be browsed
-over plain HTTP by LAN IP (`http://192.168.1.10:3030`), and a `Secure` cookie is never sent over
-plain HTTP — the app would be impossible to sign into in its primary deployment. The practical
-consequence is that the session cookie is only as private as your network. If you expose
-MusicDrop beyond your LAN, put it behind a reverse proxy terminating TLS (which encrypts the hop
-that matters) and keep it off the open internet.
+**The `Secure` flag follows the connection, so a TLS proxy pays for itself.** If you sign in over
+HTTPS — directly, or through a reverse proxy that forwards `X-Forwarded-Proto` — the cookie is
+marked `Secure` and your browser will refuse to send it over plain HTTP from then on.
 
-> **This release is API-side only.** The backend enforces the password; the **login screen
-> arrives in the next release**. Until then a browser hitting a protected page gets 401s with no
-> way to sign in from the UI — so do not deploy this version expecting a usable interface.
+Behind a proxy this decision rests entirely on that header, so it is worth knowing what your proxy
+does with it. **Caddy** is safe by default: `reverse_proxy` sets `X-Forwarded-Proto`, and its
+documentation is explicit that "for these `X-Forwarded-*` headers, by default, the proxy will
+ignore their values from incoming requests, to prevent spoofing". The exception is
+[`trusted_proxies`](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy) — configure it
+and Caddy starts *trusting* incoming `X-Forwarded-*` values from those ranges, so a range wide
+enough to cover ordinary clients hands them the ability to set their own. **nginx** adds no
+`X-Forwarded-*` header at all by default (its only default `proxy_set_header` directives are `Host`
+and `Connection`), so a proxied deployment there needs
+`proxy_set_header X-Forwarded-Proto $scheme;` — and setting it with `$scheme` rather than passing
+the client's value through is what keeps it trustworthy.
+
+The failure mode worth avoiding: a proxy that *forwards* a client-supplied `X-Forwarded-Proto`
+instead of overwriting it lets a client claim `http` on a TLS connection and be handed a cookie
+without `Secure`. Check your own proxy rather than assuming.
+
+**The honest caveat is what remains over plain HTTP.** MusicDrop is designed to be browsed by LAN
+IP (`http://192.168.1.10:3030`), and a `Secure` cookie is never sent over plain HTTP — marking it
+there would make the app impossible to sign into in its primary deployment, so on that path the
+flag is deliberately absent and the session cookie is only as private as your network. That is an
+accepted residual, not an oversight. If you expose MusicDrop beyond your LAN, put it behind a
+reverse proxy terminating TLS (which encrypts the hop that matters, *and* hardens the cookie as
+above) and keep it off the open internet.
 
 Releases are automatic: every merged PR that touches anything beyond markdown/docs publishes a new image tag (`vX.Y.Z`, plus `latest`) with generated notes on the [Releases page](https://github.com/Elienop/musicdrop/releases); a docs-only merge cuts no release of its own and ships with the next one.
 
@@ -228,7 +260,7 @@ Separate datasets don't change that, so long as ONE snapshot operation covers bo
 
 Quiescence comes from the process being gone, not from the shutdown grace: MusicDrop waits ~5s for an in-flight import to release the slot, but the beets worker is a daemon thread it cannot join, so past that bound the library closes under a still-running import. For the snapshot you keep as the restore point of record, snapshot after `docker compose down` returns.
 
-**Record the image tag in the snapshot's name.** Nothing inside the snapshot records it, and by restore time the container that could tell you is gone — so read it now, from the sidebar's health row, `GET /api/health`, or `docker inspect musicdrop --format '{{range .Config.Env}}{{println .}}{{end}}' | grep MUSICDROP_VERSION`.
+**Record the image tag in the snapshot's name.** Nothing inside the snapshot records it, and by restore time the container that could tell you is gone — so read it now, from the sidebar's health row, `GET /api/version` (signed in — it is behind the session gate, unlike the bare `/api/health` liveness probe), or `docker inspect musicdrop --format '{{range .Config.Env}}{{println .}}{{end}}' | grep MUSICDROP_VERSION`.
 
 **Never run without the `./data` bind mount**
 

@@ -23,6 +23,7 @@ import anyio
 import anyio.to_thread
 from fastapi import APIRouter, HTTPException, Request, Response
 
+from app.auth.cookies import request_is_https
 from app.auth.gate import scope_has_valid_session
 from app.auth.passwords import password_is_configured, verify_password
 from app.auth.session import (
@@ -36,11 +37,43 @@ from app.models.errors import ErrorDetail
 
 router = APIRouter(tags=["auth"])
 
-_NO_PASSWORD_DETAIL: Final = "no password is configured on this server"
-_UNREADABLE_HASH_DETAIL: Final = "the configured password hash is not readable"
-_WRONG_PASSWORD_DETAIL: Final = "incorrect password"
-_BUSY_DETAIL: Final = "another sign-in attempt is in progress"
-_NO_SECRET_DETAIL: Final = "the session signing secret is unavailable"
+# These five are UI COPY, which is why they are full sentences.
+#
+# Every other ``ErrorDetail`` in the app is read by a developer — in a log, in
+# `curl` output, through a generated client — but the login form renders
+# whichever of these came back straight into the page, verbatim and unwrapped
+# (frontend/src/pages/LoginPage.tsx; the contract is documented on both sides).
+# The operator IS the only user here, and they see this text in a form next to
+# sentence-case labels, so the register is a copy decision rather than a house
+# convention.
+#
+# The divergence is narrower than it looks. Capitalisation is already the house
+# majority, comfortably and under every way of counting it ("Album not found",
+# "An import is already running") — so only the terminating period is unusual,
+# and it is here because a fragment reads as a label while a sentence reads as
+# an answer. ``app/models/errors.py`` calls the shape "one ASCII sentence";
+# these five are the ones that take it literally.
+#
+# That majority is stated as a PREDICATE on purpose, where this comment used to
+# quote an exact fraction. The fraction is not reproducible without also
+# writing down where you draw the line, and the line has several defensible
+# places: count only the string literals passed as ``detail=`` and you get one
+# denominator; add the ``HTTPException`` calls that pass detail POSITIONALLY
+# and you get another; fold in the strings nested inside ``detail={...}``
+# payloads and you get a third. Re-derived by AST over ``backend/app`` on
+# 2026-08-30, those readings spanned 53-84 distinct literals at 77-90%
+# capitalised. The direction is robust under all of them; the exact pair of
+# numbers was not, and nothing in CI re-runs it — so a corrected count would
+# only have been a fresh expiry date.
+#
+# The gate's own detail (``app/auth/gate.py``: "authentication required") is
+# deliberately NOT in this set. It is a bounce trigger the transport turns into
+# a redirect and no human ever reads, so it keeps the house register.
+_NO_PASSWORD_DETAIL: Final = "No password is configured on this server."
+_UNREADABLE_HASH_DETAIL: Final = "The configured password hash is not readable."
+_WRONG_PASSWORD_DETAIL: Final = "Incorrect password."
+_BUSY_DETAIL: Final = "Another sign-in is already in progress. Try again in a moment."
+_NO_SECRET_DETAIL: Final = "The session signing secret is unavailable."
 
 # ONE verify at a time, process-wide. Each scrypt derive holds ~128 MiB
 # (app/auth/passwords.py), so N parallel logins would allocate N times that and
@@ -188,20 +221,21 @@ async def login(body: LoginRequest, request: Request, response: Response) -> Aut
         path="/",
         httponly=True,
         samesite="lax",
-        # NOT Secure — and this is a recorded, accepted residual, not an
-        # oversight. MusicDrop is browsed over plain HTTP by LAN IP
-        # (http://192.168.x.x:3030); a Secure cookie would simply never be
-        # sent, so the app could not be signed into at all in its primary
-        # deployment. The cookie is therefore only as private as the LAN.
-        # Anyone terminating TLS in front of MusicDrop gets the encryption
-        # from that hop regardless.
-        secure=False,
+        # Secure only when THIS login arrived over HTTPS — a per-request
+        # decision, not a property of the build. Over plain HTTP (the by-IP
+        # LAN deployment) the flag has to be absent or the browser would never
+        # send the cookie back and the app could not be signed into at all;
+        # behind a TLS proxy it costs nothing and keeps the session off any
+        # plain-HTTP hop. app/auth/cookies.py carries the spoof analysis, and
+        # why X-Forwarded-Proto is trusted here while the host guard refuses
+        # to trust X-Forwarded-Host.
+        secure=request_is_https(request),
     )
     return AuthStatus(authenticated=True, password_set=True)
 
 
 @router.post("/auth/logout", status_code=204)
-def logout() -> Response:
+def logout(request: Request) -> Response:
     """Expire the session cookie in the browser.
 
     Client-side only: the token stays cryptographically valid until the expiry
@@ -209,17 +243,49 @@ def logout() -> Response:
     (see ``app/auth/session.py``). A token copied out of a browser before
     logout therefore keeps working; deleting ``<beets_dir>/session-secret``
     invalidates every session at once, which is the blunt instrument available.
+
+    Takes the ``Request`` only to read the scheme, so the expiring cookie
+    carries the same ``Secure`` posture the login one did.
     """
     response = Response(status_code=204)
     # Same attributes as the Set-Cookie that created it — a browser matches the
     # cookie to expire by name AND path, so a mismatched path would leave the
-    # original in place and "logout" would do nothing.
+    # original in place and "logout" would do nothing. Name and path are the
+    # only MATCHING keys, but do not read that as "the rest are cosmetic":
+    # Secure decides whether this Set-Cookie is stored at all, which is the
+    # next paragraph.
+    #
+    # Secure is RECOMPUTED from this request rather than remembered, which is
+    # the only way it could be: a logout is a different request from the login,
+    # and nothing server-side records what the login decided.
+    #
+    # Keeping it symmetric with the login call site is LOAD-BEARING, not
+    # tidiness. A Set-Cookie carrying Secure that arrives over a non-secure
+    # connection is dropped before it is ever stored, so it can expire nothing
+    # — draft-ietf-httpbis-rfc6265bis-20 section 5.7 ("Storage Model") step 13:
+    # "If the request-uri does not denote a 'secure' connection (as defined by
+    # the user agent), and the cookie's secure-only-flag is true, then abort
+    # these steps and ignore the cookie entirely." That step is new in bis; the
+    # published RFC 6265 (2011) has no equivalent, but browsers do implement it
+    # (MDN, Set-Cookie: "Insecure sites (http:) cannot set cookies with the
+    # Secure attribute"). So hardcoding secure=True here would make sign-out
+    # over plain HTTP a SILENT no-op: 204 returned, session cookie still live.
+    # Only the opposite mismatch — no Secure, over TLS — is harmless, and that
+    # is the one direction this comment used to describe.
+    #
+    # No test can pin the browser rule, so do not add one that appears to:
+    # http.cookiejar runs no secure check when STORING (DefaultCookiePolicy
+    # defines set_ok_{version,verifiability,name,path,domain,port} and no
+    # set_ok_secure), so httpx and therefore TestClient will happily keep a
+    # cookie a browser would drop. test_logout_matches_logins_secure_posture
+    # pins the part that IS real and checkable: both call sites derive the flag
+    # from the same property of the request in front of them.
     response.delete_cookie(
         key=SESSION_COOKIE_NAME,
         path="/",
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=request_is_https(request),
     )
     return response
 

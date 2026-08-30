@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
-import { apiUrl, errorDetail, unwrap } from "@/api/lib";
+import { apiFetch, errorDetail, unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
 export type Playlist = components["schemas"]["Playlist"];
@@ -202,7 +202,7 @@ export function useUploadPlaylistArtwork(id: string) {
   const queryClient = useQueryClient();
   return useMutation<Playlist, Error, Blob>({
     mutationFn: async (image) => {
-      const res = await fetch(apiUrl(`/api/playlists/${id}/artwork`), {
+      const res = await apiFetch(`/api/playlists/${id}/artwork`, {
         method: "PUT",
         body: image,
       });
@@ -222,7 +222,7 @@ export function useDeletePlaylistArtwork(id: string) {
   const queryClient = useQueryClient();
   return useMutation<void, Error, void>({
     mutationFn: async () => {
-      const res = await fetch(apiUrl(`/api/playlists/${id}/artwork`), { method: "DELETE" });
+      const res = await apiFetch(`/api/playlists/${id}/artwork`, { method: "DELETE" });
       if (!res.ok) throw new Error("Couldn’t remove the artwork.");
     },
     onSuccess: () => {

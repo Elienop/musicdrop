@@ -1,11 +1,35 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { SlskdPanel } from "@/components/settings/SlskdPanel";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
+
+/** Captured before any test stubs it — restoring ONLY navigator, because
+ * `vi.unstubAllGlobals()` would also drop test/setup.ts's own stubs. */
+const REAL_NAVIGATOR = globalThis.navigator;
+
+afterEach(() => {
+  vi.stubGlobal("navigator", REAL_NAVIGATOR);
+});
+
+/**
+ * A SECURE context, which is what a test asserting the Copy button has to be
+ * in: `CopyableSnippet` now feature-detects `navigator.clipboard` and renders
+ * a "select the text by hand" line instead of a dead button where it is
+ * missing — and jsdom's navigator has no clipboard, exactly like the plain-http
+ * LAN origin the README calls MusicDrop's primary deployment. Without this the
+ * two assertions below were asking for a button that origin never shows.
+ * The insecure case is covered where it belongs, in CopyableSnippet's own test.
+ */
+function stubSecureContext() {
+  vi.stubGlobal("navigator", {
+    ...navigator,
+    clipboard: { writeText: async () => {} },
+  });
+}
 
 const SETTINGS = `${window.location.origin}/api/slskd/settings`;
 const TEST_URL = `${window.location.origin}/api/slskd/test`;
@@ -30,6 +54,25 @@ describe("SlskdPanel", () => {
     server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
     renderWithProviders(<SlskdPanel />);
     expect(await screen.findByRole("heading", { level: 2, name: "slskd" })).toBeInTheDocument();
+  });
+
+  test("shows the webhook config through the shared snippet block", async () => {
+    // The second call site of CopyableSnippet. It used to be a verbatim copy
+    // of the sign-in page's block — same handler, same timeout, same markup —
+    // which is how a fix could land on one and miss the other.
+    stubSecureContext();
+    server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
+    renderWithProviders(<SlskdPanel />);
+
+    // The block wraps rather than scrolling, so it carries no tab stop. This
+    // is the caller that made that call worth it: the webhook `url:` line is
+    // 126 chars, and scrolling hid two thirds of it — including the trailing
+    // `# host must be an IP…` comment, which is the part that makes it work.
+    const region = await screen.findByText(/DownloadDirectoryComplete/);
+    expect(region.tagName).toBe("PRE");
+    expect(region).not.toHaveAttribute("tabindex");
+    expect(region).toHaveTextContent("MUSICDROP_ALLOWED_HOSTS");
+    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
   });
 
   test("saves settings, omitting blank secrets, and confirms the save", async () => {
@@ -138,6 +181,7 @@ describe("SlskdPanel", () => {
   });
 
   test("shows the paste-in webhook snippet", async () => {
+    stubSecureContext();
     server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
     renderWithProviders(<SlskdPanel />);
 
