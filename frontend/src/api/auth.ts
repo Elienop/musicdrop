@@ -4,6 +4,7 @@ import { bumpAssetVersion } from "@/api/assetVersion";
 import {
   markAuthenticated,
   markUnauthenticated,
+  UnauthenticatedError,
   useSignedOut,
 } from "@/api/authStore";
 import { client } from "@/api/client";
@@ -72,10 +73,30 @@ export function useAuthGateState(): AuthGateState {
 export function useLogin() {
   const queryClient = useQueryClient();
   return useMutation<AuthStatus, Error, string>({
+    // The password rides in `variables`, which TanStack keeps readable for
+    // `gcTime` after the form unmounts — five minutes of a plaintext
+    // credential sitting in memory for no one's benefit. Zero here rather
+    // than a `reset()` at the call site: it covers the REJECTED attempt too
+    // (a wrong password is still a password someone typed), and it cannot be
+    // forgotten by a future caller. Safe while mounted — TanStack's
+    // `optionalRemove` only collects a mutation with no observers left.
+    gcTime: 0,
     mutationFn: async (password) => {
-      const { data, error } = await client.POST("/api/auth/login", {
-        body: { password },
-      });
+      let result;
+      try {
+        result = await client.POST("/api/auth/login", { body: { password } });
+      } catch {
+        // A rejection here means the request never got an ANSWER — the server
+        // is down, the proxy dropped it, DNS failed. The browser's own words
+        // for that are "Failed to fetch" / "NetworkError when attempting to
+        // fetch resource", which is jargon on the one screen whose whole job
+        // is explaining why signing in isn't working. (The gate's 401 cannot
+        // reach here: /api/auth/login is exempt from the client middleware.)
+        throw new Error(
+          "Can’t reach the server. Check that MusicDrop is running, then try again.",
+        );
+      }
+      const { data, error } = result;
       if (error || !data) {
         throw new Error(detailMessage(error) ?? "Couldn’t sign in. Try again.");
       }
@@ -101,11 +122,25 @@ export function useLogin() {
 /** Expire the cookie in this browser. The server keeps no session list, so
  * this is the browser's half only (README §Authentication). */
 export function useLogout() {
+  const queryClient = useQueryClient();
   return useMutation<void, Error, void>({
     mutationFn: async () => {
-      const { response } = await client.POST("/api/auth/logout");
-      if (!response.ok) {
-        throw new Error("Couldn’t sign out. Try again.");
+      try {
+        const { response } = await client.POST("/api/auth/logout");
+        if (!response.ok) {
+          throw new Error("Couldn’t sign out. Try again.");
+        }
+      } catch (error) {
+        // A 401 is the ASKED-FOR outcome, not a failure. /api/auth/logout is
+        // itself gated, so an expired cookie — or an operator rotating the
+        // password hash — refuses the very request that would clear it, and
+        // the session it was going to clear is already gone. Reporting an
+        // error here deadlocked the one control that gets the user out: every
+        // retry reproduced the same 401, forever.
+        if (error instanceof UnauthenticatedError) {
+          return;
+        }
+        throw error;
       }
     },
     onSuccess: () => {
@@ -113,6 +148,13 @@ export function useLogout() {
       // what makes the gate (and the login page's already-signed-in redirect)
       // disagree with it, exactly as it does for an expired cookie.
       markUnauthenticated();
+      // Sign out is a promise about THIS browser, and the cache is where it
+      // would otherwise be broken: `["beets-config"]` holds the raw
+      // config.yaml with its secrets unmasked, and the default gcTime keeps
+      // every cached answer readable for five minutes after the last observer
+      // unmounts. `clear()` (not `invalidate`) because invalidation only marks
+      // data stale — it leaves the bytes in place.
+      queryClient.clear();
     },
   });
 }

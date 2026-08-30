@@ -9,6 +9,7 @@ import {
   useTestSlskd,
 } from "@/api/useSlskd";
 import { Spinner, Success } from "@/components/icons";
+import { CopyableSnippet } from "@/components/system/CopyableSnippet";
 import { SettingsSection } from "@/components/system/SettingsSection";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -77,7 +78,6 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
   // reliably announced, so the save/test handlers set this rather than
   // conditionally mounting the confirmation node.
   const [statusMsg, setStatusMsg] = useState("");
-  const [copied, setCopied] = useState(false);
 
   // Reseed the inputs when the persisted snapshot changes (e.g. after a Save
   // refetch) WITHOUT remounting — a remount-on-key would strand keyboard focus
@@ -149,17 +149,6 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
         }
       },
     });
-  }
-
-  async function handleCopy() {
-    try {
-      await navigator.clipboard.writeText(WEBHOOK_SNIPPET);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Clipboard access can be denied (insecure context / permission); the
-      // snippet stays visible to select manually, so a failed copy is a no-op.
-    }
   }
 
   const result = test.data;
@@ -262,26 +251,12 @@ function SlskdSettingsEditor({ initial }: Readonly<{ initial: SlskdSettings }>) 
           </div>
         </div>
 
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-sm font-medium">Webhook configuration</p>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={handleCopy}
-            >
-              {copied ? "Copied" : "Copy"}
-            </Button>
-          </div>
+        <CopyableSnippet label="Webhook configuration" snippet={WEBHOOK_SNIPPET}>
           <p className="text-muted-foreground text-xs">
             Add this to slskd&rsquo;s config so it notifies MusicDrop when a
             download finishes (use the webhook secret you set above).
           </p>
-          <pre className="bg-muted overflow-x-auto rounded-lg p-3 font-mono text-xs">
-            {WEBHOOK_SNIPPET}
-          </pre>
-        </div>
+        </CopyableSnippet>
 
         <p className="text-muted-foreground border-t pt-4 text-sm">
           Set-aside downloads and imports needing a decision appear in{" "}

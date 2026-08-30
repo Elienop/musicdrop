@@ -33,6 +33,11 @@ vi.stubGlobal(
 // every App-rendering test needs a stand-in. A no-op class is enough here; the
 // dedicated useEventStream test installs its own capturing mock.
 class NoopEventSource {
+  /** The platform's CLOSED constant. useEventStream reads
+   * `EventSource.CLOSED` off whatever class is global, so a stub without this
+   * makes the comparison `!== undefined` — permanently true, silently
+   * disabling the hook's give-up branch. */
+  static readonly CLOSED = 2;
   url: string | URL;
   /** OPEN. The hook's onerror branches on CLOSED (2); a stand-in that never
    * errors stays open, and the dedicated test drives this itself. */

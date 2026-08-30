@@ -1,3 +1,5 @@
+import { toast } from "sonner";
+
 import { useLogout } from "@/api/auth";
 import { SignOut, Spinner } from "@/components/icons";
 import { Button } from "@/components/ui/button";
@@ -16,6 +18,13 @@ import {
  * `RequireAuth` is already watching it — the same single path that carries a
  * mid-session 401 to /login. A second `navigate` alongside it would be a
  * second way to leave the shell, free to drift from the first.
+ *
+ * The failure side IS this component's, though: a sign-out that fails leaves
+ * the user in the shell with nothing changed, and the hook's message reaching
+ * nobody made "nothing happened" the whole of the feedback. sonner is where
+ * mutation failures go here (the activityToasts dialect), and the toast is a
+ * per-call callback because — unlike the success path, which unmounts this
+ * button — a failure leaves it mounted to receive one.
  */
 export function SignOutButton() {
   const logout = useLogout();
@@ -29,7 +38,11 @@ export function SignOutButton() {
           size="icon-xl"
           aria-label={label}
           disabled={logout.isPending}
-          onClick={() => logout.mutate()}
+          onClick={() =>
+            logout.mutate(undefined, {
+              onError: (error) => toast.error(error.message),
+            })
+          }
           className="focus-ring text-muted-foreground hover:text-foreground"
         >
           {logout.isPending ? (

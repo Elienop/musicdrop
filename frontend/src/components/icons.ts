@@ -73,6 +73,13 @@ export {
   SignOutIcon as SignOut,
 } from "@phosphor-icons/react";
 
+// The provider half of the weight rule. Re-exported here so "everything
+// icon-related comes from icons.ts" holds literally: the three routes that
+// mount their own provider (App, the sign-in page, the admission fallback)
+// take the context and the value it carries from the same module, instead of
+// reaching past it into Phosphor for one and here for the other.
+export { IconContext } from "@phosphor-icons/react";
+
 import type { Icon } from "@phosphor-icons/react";
 
 /**

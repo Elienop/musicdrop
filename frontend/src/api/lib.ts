@@ -6,8 +6,14 @@ import { markUnauthenticated, UnauthenticatedError } from "@/api/authStore";
 
 /** Absolute URL for an API path. The explicit origin (rather than a relative
  * path) keeps one code path that works in both the browser and the test
- * runner — Node's fetch (undici) refuses origin-relative URLs under jsdom. */
-export function apiUrl(path: string): string {
+ * runner — Node's fetch (undici) refuses origin-relative URLs under jsdom.
+ *
+ * NOT exported: `apiFetch` below is the only way into it, which is what makes
+ * that function's "no caller can forget it" true rather than merely asserted.
+ * While this was exported a new hook could reach for it and call bare `fetch`,
+ * reintroducing the pre-gate behaviour — a 401 read as a generic failure, no
+ * store flip, no bounce — and the compiler would have said nothing. */
+function apiUrl(path: string): string {
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   return `${origin}${path}`;
 }

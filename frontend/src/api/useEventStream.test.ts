@@ -8,6 +8,10 @@ import { LIBRARY_CONTENT_KEY_COUNT, useEventStream } from "@/api/useEventStream"
 
 class CapturingEventSource {
   static last: CapturingEventSource | null = null;
+  /** The platform's CLOSED constant, which the hook reads off the global
+   * class. Without it the hook compares `readyState !== undefined` and never
+   * takes the give-up branch these tests drive. */
+  static readonly CLOSED = 2;
   url: string | URL;
   /** OPEN. The hook's onerror only acts on CLOSED (2), so a test that wants
    * the permanent-close branch sets this itself before firing onerror. */
@@ -178,6 +182,16 @@ describe("useEventStream", () => {
     // Re-connect (after a drop/sleep): invalidate to catch up on what was missed.
     es().onopen?.(new Event("open"));
     expect(spy.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it("reads CLOSED off the platform class, not off a literal in the hook", () => {
+    // The hook used to hardcode 2 because the stubs carried no statics — a
+    // production constant whose authority sat with a test double. It now reads
+    // `EventSource.CLOSED`, so the stubs carry the real value and this asserts
+    // the two agree rather than that one copy matches the other.
+    setup();
+    expect(EventSource.CLOSED).toBe(2);
+    expect(CapturingEventSource.CLOSED).toBe(EventSource.CLOSED);
   });
 
   it("flushes a queued round when the stream closes for good", () => {

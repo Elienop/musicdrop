@@ -1,10 +1,9 @@
-import { IconContext } from "@phosphor-icons/react";
 import { Suspense } from "react";
 import { Outlet } from "react-router";
 
 import { useActivity } from "@/api/useActivity";
 import { useEventStream } from "@/api/useEventStream";
-import { ICON_WEIGHT } from "@/components/icons";
+import { ICON_WEIGHT, IconContext } from "@/components/icons";
 import { ActivityButton } from "@/components/shell/ActivityPopover";
 import { useActivityToasts } from "@/components/shell/activityToasts";
 import { AppToaster } from "@/components/shell/AppToaster";

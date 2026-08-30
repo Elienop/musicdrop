@@ -18,6 +18,19 @@ import { useSyncExternalStore } from "react";
  * carries the half the endpoint cannot — that the cached answer has since
  * gone stale. `useAuthGateState` (api/auth.ts) composes the two into the
  * "unknown" / "authenticated" / "unauthenticated" state the guard renders.
+ *
+ * ACCEPTED, not overlooked — a refusal carries no session identity, so a 401
+ * ISSUED before a sign-in but RESOLVED after it re-flips the store and bounces
+ * a user off the form they just cleared. Closing it needs the epoch a request
+ * left under, threaded from `onRequest` to `onResponse` through openapi-fetch's
+ * middleware AND separately through `apiFetch` — two transports, a per-request
+ * map and its cleanup, to cover a window that requires a successful sign-in to
+ * complete inside the latency of an already-issued rejection. The gate refuses
+ * without touching beets, /login mounts no gated queries, and the cost when it
+ * does fire is one extra sign-in on a page the user is already looking at, with
+ * their new cookie still valid. If this is ever observed in practice, the epoch
+ * is the fix: `markAuthenticated` bumps it, and a `markUnauthenticated(epoch)`
+ * from an older one is ignored.
  */
 
 /** Thrown for any 401 outside the `/api/auth/` family, so a caller (and the

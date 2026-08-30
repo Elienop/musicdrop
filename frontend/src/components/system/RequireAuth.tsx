@@ -1,9 +1,8 @@
-import { IconContext } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router";
 
 import { useAuthGateState } from "@/api/auth";
-import { ICON_WEIGHT, Spinner } from "@/components/icons";
+import { ICON_WEIGHT, IconContext, Spinner } from "@/components/icons";
 
 /**
  * Admission to the app shell.
@@ -31,7 +30,10 @@ export function RequireAuth({ children }: Readonly<{ children: ReactNode }>) {
     // unreachable URL out of history, so Back doesn't bounce here again.
     return <Navigate to="/login" replace state={{ from: location }} />;
   }
-  return <>{children}</>;
+  // `children`, not `<>{children}</>` — React 19 lets a component return a
+  // ReactNode directly, and the fragment wrapped it in a node that rendered
+  // nothing (typescript:S6749).
+  return children;
 }
 
 /** The first paint before the status probe answers. Deliberately not the
@@ -42,7 +44,7 @@ function AuthGateLoading() {
     <IconContext.Provider value={ICON_WEIGHT}>
       <div className="bg-background text-foreground flex min-h-svh items-center justify-center">
         <output className="text-muted-foreground flex items-center gap-3 text-sm">
-          <Spinner className="size-6 animate-spin" aria-hidden="true" />
+          <Spinner className="size-5 animate-spin" aria-hidden="true" />
           <span className="sr-only">Checking your session…</span>
         </output>
       </div>

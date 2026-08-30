@@ -16,6 +16,8 @@ import { server } from "@/test/msw-server";
 // in the app is in exactly that position.
 const GATED_URL = `${window.location.origin}/api/health`;
 const LOGIN_URL = `${window.location.origin}/api/auth/login`;
+const STATUS_URL = `${window.location.origin}/api/auth/status`;
+const LOGOUT_URL = `${window.location.origin}/api/auth/logout`;
 const RAW_URL = `${window.location.origin}/api/albums/7/cover`;
 
 beforeEach(() => {
@@ -92,14 +94,36 @@ describe("client middleware — the session gate's 401", () => {
   });
 });
 
-describe("client middleware — the /api/auth/ exemption", () => {
+describe("client middleware — the exemption is the gate's, exactly", () => {
+  test("logout is GATED, so its 401 flips the store like any other route", async () => {
+    // The server exempts four exact paths and /api/auth/logout is not one of
+    // them (backend app/auth/gate.py::EXEMPT_PATHS, pinned there by
+    // test_logout_is_itself_gated). A client exemption written as the prefix
+    // "/api/auth/" covered it anyway: the middleware returned without flipping
+    // the store, useLogout threw, and the user was stuck in a shell whose
+    // session was already dead — every retry reproducing it.
+    server.use(
+      http.post(LOGOUT_URL, () =>
+        HttpResponse.json({ detail: "authentication required" }, { status: 401 }),
+      ),
+    );
+    const { notified, unsubscribe } = watchStore();
+
+    await expect(client.POST("/api/auth/logout")).rejects.toBeInstanceOf(
+      UnauthenticatedError,
+    );
+
+    expect(notified).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
   test("a wrong password does NOT sign the user out", async () => {
     // Without the exemption, submitting a wrong password would flip the store,
     // and the guard would bounce the user off the very page they are trying to
     // sign in on — while the form never gets to show them why it failed.
     server.use(
       http.post(LOGIN_URL, () =>
-        HttpResponse.json({ detail: "incorrect password" }, { status: 401 }),
+        HttpResponse.json({ detail: "Incorrect password." }, { status: 401 }),
       ),
     );
     const { notified, unsubscribe } = watchStore();
@@ -109,7 +133,26 @@ describe("client middleware — the /api/auth/ exemption", () => {
     });
 
     expect(response.status).toBe(401);
-    expect(error).toEqual({ detail: "incorrect password" });
+    expect(error).toEqual({ detail: "Incorrect password." });
+    expect(notified).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  test("the status probe is exempt too, so it cannot bounce its own page", async () => {
+    // The second half of the exact set. /api/auth/status is gate-exempt
+    // server-side and answers 200 for a cookie-less caller, so a 401 here is a
+    // contract break rather than a session fact — and treating it as one would
+    // have the login page's own admission probe sign the visitor out.
+    server.use(
+      http.get(STATUS_URL, () =>
+        HttpResponse.json({ detail: "authentication required" }, { status: 401 }),
+      ),
+    );
+    const { notified, unsubscribe } = watchStore();
+
+    const { response } = await client.GET("/api/auth/status");
+
+    expect(response.status).toBe(401);
     expect(notified).not.toHaveBeenCalled();
     unsubscribe();
   });

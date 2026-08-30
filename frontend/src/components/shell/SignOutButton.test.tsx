@@ -3,12 +3,18 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { createMemoryRouter, RouterProvider, useLocation } from "react-router";
-import { beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { markAuthenticated } from "@/api/authStore";
 import { SignOutButton } from "@/components/shell/SignOutButton";
 import { RequireAuth } from "@/components/system/RequireAuth";
 import { server } from "@/test/msw-server";
+
+// The shell's AppToaster is not mounted here, and sonner is the app's
+// mutation-failure channel — so the toast is captured rather than rendered
+// (the activityToasts / ReviewPage dialect).
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+import { toast } from "sonner";
 
 const STATUS_URL = `${window.location.origin}/api/auth/status`;
 const LOGOUT_URL = `${window.location.origin}/api/auth/logout`;
@@ -40,15 +46,17 @@ function renderInGuardedShell() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
     </QueryClientProvider>,
   );
+  return { view, queryClient };
 }
 
 beforeEach(() => {
   markAuthenticated();
+  vi.mocked(toast.error).mockClear();
   server.use(
     http.get(STATUS_URL, () =>
       HttpResponse.json({ authenticated: true, password_set: true }),
@@ -87,9 +95,12 @@ describe("SignOutButton", () => {
     expect(posted).toBe(1);
   });
 
-  test("a failed sign-out leaves the user where they are", async () => {
+  test("a failed sign-out leaves the user where they are, and SAYS so", async () => {
     // The cookie is still live, so pretending otherwise would strand them on a
-    // sign-in page while the session they still hold keeps working.
+    // sign-in page while the session they still hold keeps working. But
+    // staying put is only half the behaviour: without the toast this is a
+    // click that produces no navigation, no error and no acknowledgement —
+    // the hook's authored message reaching nobody.
     server.use(
       http.post(LOGOUT_URL, () => new HttpResponse(null, { status: 500 })),
     );
@@ -105,5 +116,65 @@ describe("SignOutButton", () => {
       ).toBeEnabled(),
     );
     expect(screen.queryByTestId("location")).not.toBeInTheDocument();
+    expect(toast.error).toHaveBeenCalledWith("Couldn’t sign out. Try again.");
+  });
+
+  test("a 401 on the logout route IS a sign-out, not a failure", async () => {
+    // The deadlock this replaced: the cookie expired (or the operator rotated
+    // the password hash), so the gated logout route refuses the one request
+    // that would clear it. Reported as an error, the user was stuck inside the
+    // shell with a dead session and every retry reproduced it forever.
+    server.use(
+      http.post(LOGOUT_URL, () =>
+        HttpResponse.json({ detail: "authentication required" }, { status: 401 }),
+      ),
+    );
+    const { queryClient } = renderInGuardedShell();
+    queryClient.setQueryData(["beets-config"], {
+      yaml_text: "plex:\n  token: super-secret\n",
+    });
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Sign out" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent("/login"),
+    );
+    // The bounce alone does NOT discriminate: the client middleware flips the
+    // store on its way past, so the user reaches /login whether or not this
+    // hook treats the 401 as success. What only the success arm does is run
+    // `onSuccess` — and with it the cache clear. Treated as an error, a
+    // sign-out on an expired cookie left the unmasked config sitting in the
+    // cache, which is the one thing sign-out is supposed to deal with.
+    await waitFor(() =>
+      expect(queryClient.getQueryData(["beets-config"])).toBeUndefined(),
+    );
+    // And it is not ALSO reported as a failure on the way out.
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  test("signing out empties the cache, not just the session flag", async () => {
+    // `/api/config` caches the raw config.yaml with its secrets UNMASKED under
+    // ["beets-config"], and TanStack keeps a query readable for gcTime (5
+    // minutes by default) after its last observer unmounts. Marking the
+    // session gone while leaving the bytes in place makes sign-out a promise
+    // the cache does not keep.
+    server.use(
+      http.post(LOGOUT_URL, () => new HttpResponse(null, { status: 204 })),
+    );
+    const { queryClient } = renderInGuardedShell();
+    queryClient.setQueryData(["beets-config"], {
+      yaml_text: "plex:\n  token: super-secret\n",
+    });
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Sign out" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent("/login"),
+    );
+    expect(queryClient.getQueryData(["beets-config"])).toBeUndefined();
   });
 });

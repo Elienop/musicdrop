@@ -32,6 +32,22 @@ describe("SlskdPanel", () => {
     expect(await screen.findByRole("heading", { level: 2, name: "slskd" })).toBeInTheDocument();
   });
 
+  test("shows the webhook config through the shared snippet block", async () => {
+    // The second call site of CopyableSnippet. It used to be a verbatim copy
+    // of the sign-in page's block — same handler, same timeout, same markup —
+    // which is how the keyboard-reachability fix could land on one and miss
+    // the other.
+    server.use(http.get(SETTINGS, () => HttpResponse.json(settings())));
+    renderWithProviders(<SlskdPanel />);
+
+    const region = await screen.findByRole("group", {
+      name: "Webhook configuration",
+    });
+    expect(region).toHaveAttribute("tabindex", "0");
+    expect(region).toHaveTextContent("DownloadDirectoryComplete");
+    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+  });
+
   test("saves settings, omitting blank secrets, and confirms the save", async () => {
     let body: Record<string, unknown> | null = null;
     let saved = false;

@@ -47,10 +47,6 @@ export const LIBRARY_CONTENT_KEY_COUNT = LIBRARY_CONTENT_KEYS.length;
 const FLUSH_AFTER_MS = 300;
 const MAX_WAIT_MS = 2000;
 
-/** `EventSource.CLOSED`, as a literal: the hook's own tests stub the global
- * EventSource class, and a stub carries no static constants. */
-const EVENT_SOURCE_CLOSED = 2;
-
 export function useEventStream(): void {
   const qc = useQueryClient();
   useEffect(() => {
@@ -121,9 +117,23 @@ export function useEventStream(): void {
       // arrive after this, so the trailing debounce is waiting for a quiet gap
       // that has already begun: flush now rather than sit on invalidations for
       // messages that did arrive.
-      if (es.readyState !== EVENT_SOURCE_CLOSED || timer === null) return;
+      // `EventSource.CLOSED` off the platform class rather than a literal 2 —
+      // the test stubs carry the same static, so the constant's authority
+      // stays with the DOM instead of with a test double.
+      if (es.readyState !== EventSource.CLOSED || timer === null) return;
       clearTimeout(timer);
       flush();
+      // This handler does NOT sign anybody out, and that is deliberate:
+      // EventSource exposes no status code, so a 401, a 500 and a proxy
+      // dropping an idle connection all arrive here identically — flipping the
+      // auth store would sign a user out over an outage. What actually detects
+      // an expired cookie on an otherwise idle shell is the 30s
+      // `useActiveImport` / `useAcquisitionStatus` polls: their 401s go through
+      // the client middleware, which flips the store and bounces once. Those
+      // two intervals are load-bearing for expiry detection, not just for
+      // freshness — dropping them would leave a dead session rendering a live
+      // shell until the user clicked something.
+      //
       // Nothing here reopens the stream, and nothing needs to. /login is a
       // top-level sibling of the App layout route (main.tsx), so bouncing
       // there unmounts App, which runs this effect's cleanup; returning to the

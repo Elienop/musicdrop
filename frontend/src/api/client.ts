@@ -28,10 +28,35 @@ export const client = createClient<paths>({
   fetch: (...args) => globalThis.fetch(...args),
 });
 
-/** Endpoints that answer 401 as a NORMAL result rather than as "your session
- * is gone": sign-in rejecting a wrong password, and its siblings. Bouncing on
- * those would throw the user off the very page they are trying to sign in on. */
-const AUTH_PATH_PREFIX = "/api/auth/";
+/**
+ * Endpoints where a 401 is a NORMAL result rather than "your session is gone",
+ * as an EXACT set — the server's exemption is exact too
+ * (`backend/app/auth/gate.py::EXEMPT_PATHS`), and a prefix here would claim
+ * more than the gate grants.
+ *
+ * `login` earns its place: its 401 IS the rejection the form exists to render,
+ * and bouncing on it would throw the user off the very page they are signing in
+ * on. `status` is the login page's own admission probe — it is gate-exempt and
+ * answers 200 for a cookie-less caller, so a 401 there would be a contract
+ * break rather than a session fact, and acting on one would have this page sign
+ * its visitor out mid-probe.
+ *
+ * The gate's other two exempt paths are absent because listing them would be
+ * decoration: `/api/health` (which the topbar does call) and
+ * `/api/slskd/webhook` are exempt server-side, so neither can answer 401 at
+ * all, and a member no test can distinguish from its absence makes this set
+ * look better covered than it is — the same reasoning `gate.py` gives for
+ * keeping `logout` out of `AUTH_ROUTE_PATHS`.
+ *
+ * `/api/auth/logout` is deliberately ABSENT: it is gated, so its 401 means the
+ * session really is gone. Exempting it deadlocked sign-out — the middleware
+ * returned without flipping the store, `useLogout` threw, and every retry
+ * reproduced it (see `useLogout` in api/auth.ts for the other half of the fix).
+ */
+const GATE_EXEMPT_PATHS: ReadonlySet<string> = new Set([
+  "/api/auth/login",
+  "/api/auth/status",
+]);
 
 /**
  * One place where the session gate's 401 becomes an app-level fact.
@@ -48,7 +73,7 @@ const AUTH_PATH_PREFIX = "/api/auth/";
  */
 client.use({
   onResponse({ response, schemaPath }) {
-    if (response.status !== 401 || schemaPath.startsWith(AUTH_PATH_PREFIX)) {
+    if (response.status !== 401 || GATE_EXEMPT_PATHS.has(schemaPath)) {
       return;
     }
     markUnauthenticated();
