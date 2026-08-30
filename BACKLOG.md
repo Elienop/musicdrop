@@ -343,12 +343,51 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   exactly. Two rules are knowingly still unmirrored and named in the config: S6582 and S9020
   are also `decorated`, with type-directed suppressions that would need porting.
 
-  **Not fixed, and deliberately: the npm Dependabot lane has no release-age `cooldown:`**,
-  so future frontend updates land the day they publish — `eslint` and `typescript-eslint`
-  were both 5 days old when pinned here. A `cooldown: { default-days: 7 }` is the standard
-  defence against a compromised-publish event. It is NOT applied because editing
-  `.github/dependabot.yml` is forbidden by the standing 2026-07-25 ruling (decisions #1),
-  which names that file specifically. Raising it for the owner to decide, not proposing it.
+  ~~**Not fixed, and deliberately: the npm Dependabot lane has no release-age
+  `cooldown:`**~~ — **FIXED in #203, 2026-08-30** (`be186e2` = v0.47.3). The gap was real:
+  frontend updates landed the day they published, and `eslint` and `typescript-eslint` were
+  both 5 days old when pinned here. `cooldown: { default-days: 7 }` now applies to all three
+  lanes (uv, npm, github-actions), i.e. a MINIMUM RELEASE AGE — the one supply-chain control
+  green CI cannot substitute for, since a compromised publish behaves normally and the
+  payload runs at install time. Such releases are typically yanked within 24–72h.
+
+  Three things this entry got wrong or left unstated, corrected here so the next reader does
+  not re-derive them. **`interval: weekly` is not a cooldown** — it bounds how often
+  Dependabot checks, not how old a version may be, so the lane was less protected than a
+  reader might assume. **There was already a default of 3 days** (`default-days` defaults to
+  3 when unset), so this was 3 → 7, not 0 → 7. And **security updates are exempt** by
+  design, so a known-vulnerable dependency is still bumped immediately.
+
+  On the ruling: the owner authorised this edit explicitly. Decisions #1 forbids changes
+  that would make the parked frontend-deps PR go green **by narrowing what Dependabot
+  proposes**; a release-age gate narrows nothing, so the park stands. Entry #1 now records
+  the distinction. The 29-line header in `.github/dependabot.yml` carries the full reasoning
+  in-repo.
+
+  **Measured afterwards: editing this file CAN close and recreate already-open PRs — but
+  which ones is not predictable, and two repos disagreed.** Here, within four minutes of
+  #203 merging (17:17:42Z), Dependabot closed the parked #137 (17:20:26Z) and opened #204 in
+  its place (17:21:27Z): *"Looks like these dependencies are updatable in another way, so
+  this is no longer needed."* The lineage moved again
+  (#102 → #116 → #121 → #128 → #133 → #137 → **#204**), which is why decisions #1 says never
+  to quote the number.
+
+  The mechanism is **not** the age gate rejecting anything — an edit to
+  `.github/dependabot.yml` re-runs the update jobs, and a PR can be superseded when its job
+  re-runs under changed config. But the blast radius is narrower than "expect the park to
+  move": SpenDrop merged the identical change twenty minutes later and **its** parked PR
+  survived untouched, while an ordinary dev-dep PR was superseded instead. Five of six of
+  its open PRs survived. Group-vs-individual does not explain the split either. So: the
+  supersede is real, it is triggered by the edit rather than the cooldown value, and
+  **anything more specific than that is unsupported by two observations.** Do not infer from
+  #204 carrying *more* updates than #137 that the age gate is or is not filtering; that was
+  not measured.
+
+  **The operational form, which does not depend on predicting any of it:** after any
+  `dependabot.yml` change, re-derive which PRs exist, and verify the park by **content** —
+  grep for the actual bump (`typescript` major) — never by number. A closed park with a
+  successor is the normal lineage move; a closed park with none is the real problem, and
+  only a content check tells them apart.
 
 - ~~**`GET /api/health` publishes the exact backend version to unauthenticated callers
   (2026-08-30 security audit of auth slice 1, finding L6 — deferred to auth slice 2).**~~
