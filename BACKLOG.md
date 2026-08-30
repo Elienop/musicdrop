@@ -279,14 +279,30 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   Reverted to presence-only. The a11y argument is real and belongs upstream at Sonar, not
   in a mirror.
 
-  Scoped out, deliberately: **10 of the 28 cleared frontend families have no twin enabled.**
-  Nine (`S7780`, `S6479`, `S1186`, `S7776`, `S7755`, `S6772`, `S6478`, `S7760`, `S6481` — 21
-  issues between them) map to `eslint-plugin-unicorn` and `eslint-plugin-react`, neither
-  installed; adding them is a follow-up worth doing, and the config's allowlist shape means
-  it costs one line per rule. The tenth is `css:S8776`, a CSS rule with no JS twin. Also
-  unchanged: the 7 `role="status"` sites themselves — converting them to `<output>` is a
-  real UI change needing browser verification, and `SlskdPanel.tsx:304` is an always-mounted
-  live region that the earlier a11y wave already flagged as needing its own thought.
+  Scoped out at the time: 10 of the 28 cleared frontend families had no twin enabled — nine
+  mapping to `eslint-plugin-unicorn` and `eslint-plugin-react`, neither then installed, plus
+  `css:S8776`, a CSS rule with no JS twin. **Seven of those nine were pinned in the
+  follow-up** (`S7780`, `S7776`, `S7760`, `S6772`, `S6481`, `S6478`, `S1186` — 16 of the 21
+  issues), taking the gate to 26 rules over 25 of the 27 JS/TS families. Both plugins are
+  pinned to the versions the analyzer itself runs — `eslint-plugin-unicorn@65.0.1` (which
+  needs no peer override; it peers `eslint >=9.38.0`) and `eslint-plugin-react@7.37.5`
+  (which does, same scoped shape as `jsx-a11y`) — because a newer major is a different
+  linter from the one being mirrored.
+
+  **Three residuals, and they are decisions rather than omissions.** `css:S8776` still has
+  no JS twin. `S7755` (`unicorn/prefer-at`, 2 issues) and `S6479`
+  (`react/no-array-index-key`, 3 issues) are deliberately OFF: both are `decorated` with
+  suppressions that cannot be mirrored cheaply, so the raw rules are STRICTER than Sonar,
+  and a gate stricter than the server fails CI on code the server passes. S6479 is the
+  measured case — raw it reports **9 sites on `main`** that Sonar accepts, every one the
+  `` key={`${x.label}-${i}`} `` composite-key idiom that Sonar drops on its `LBg` arm. Both
+  reasons are written out in `frontend/eslint.config.js` under "DELIBERATELY OFF"; do not
+  re-derive them, and do not enable either rule without porting the suppression first.
+
+  Also unchanged: the 7 `role="status"` sites themselves — converting them to `<output>` is
+  a real UI change needing browser verification, and `SlskdPanel.tsx:304` is an
+  always-mounted live region that the earlier a11y wave already flagged as needing its own
+  thought.
 
   One self-inflicted hazard is worth recording because it passed every green check.
   `eslint-plugin-jsx-a11y@6.10.2` peers `eslint` at `^9`, and installing it with
@@ -341,7 +357,27 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `getProp`/`getLiteralPropValue` from `jsx-ast-utils`, with both packages promoted to direct
   devDependencies since this file imports them. Eleven differential cases now match Sonar
   exactly. Two rules are knowingly still unmirrored and named in the config: S6582 and S9020
-  are also `decorated`, with type-directed suppressions that would need porting.
+  are also `decorated`, with suppressions that would need porting.
+
+  **That last sentence used to say "type-directed suppressions", and half of it was wrong.**
+  Corrected in the follow-up, against the bundle: S9020's registration sets
+  `requiresTypeChecking: false` — it is not type-directed at all. What its decorator does is
+  shadow `context.settings` with three `eslint-plugin-testing-library` entries, all `"off"`
+  (`utils-module`, `custom-renders`, `custom-queries`), which switches off that plugin's
+  Aggressive Reporting; those are now mirrored on the config's TEST block. That change is
+  pure narrowing — it can only make the gate report less — and costs 0 findings today. One
+  arm remains unported and is named in the config: Sonar also drops a report whose queried
+  receiver resolves to a module outside `@testing-library.`.
+
+  S6582's description was closer but still wrong in its arithmetic: only **4 of its 6**
+  suppression arms use the contextual type of the logical chain. A fifth reads
+  `getTypeAtLocation` of an assignment TARGET, and a sixth uses no type context at all — a
+  null-comparison predicate whose operator set is `!== != < > <= >=`, notably **without**
+  `===`. That precision is load-bearing, not pedantry: on Dependabot PR #204 (package.json
+  and package-lock.json only, no source) this raw rule reports 3 errors it does not report
+  on `main`, all `X && X.prop === literal` inside a JSX expression container. No arm covers
+  a JSX expression container and arm 6 excludes `===`, so Sonar would report them too — the
+  gate is working, and the fix belongs in the source rather than in a suppression.
 
   ~~**Not fixed, and deliberately: the npm Dependabot lane has no release-age
   `cooldown:`**~~ — **FIXED in #203, 2026-08-30** (`be186e2` = v0.47.3). The gap was real:

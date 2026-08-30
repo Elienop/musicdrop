@@ -10,12 +10,24 @@
 // browser-verified.
 //
 // The selection rule, and the reason there is no `recommended` preset below: every rule
-// here maps to a Sonar rule this project has actually violated and fixed — 19 rules
-// covering 18 of the 27 TypeScript families (768 resolved issues) that the programme
-// cleared, the counts differing because S1082 is a union of two ESLint rules — and `main`
+// here maps to a Sonar rule this project has actually violated and fixed — 26 rules
+// covering 25 of the 27 JS/TS families (769 resolved issues) that the programme cleared,
+// the counts differing because S1082 is a union of two ESLint rules — and `main`
 // currently sits at 0 open issues, so each one is a regression guard rather than a new
 // opinion. Turning on a preset would flag code nobody has agreed to change and would make
 // the gate impossible to land.
+//
+// Re-derive those numbers rather than quoting them; they move whenever a family is
+// cleared or regrows. One command, and it needs the server's token:
+//
+//   T=$(cat /mnt/data/sonarqube/token); curl -s -u "$T:" \
+//     'http://127.0.0.1:9000/api/issues/search?componentKeys=musicdrop&languages=ts,js,css&resolved=true&ps=1&facets=rules&facetMode=count'
+//
+// Read the `rules` facet, not the bare total. It returns 29 rows for 28 families: S1874
+// appears twice, once under `typescript:` and once under `javascript:`, and `css:S8776`
+// (4 issues) is the one CSS family, which has no JS twin and never will. An earlier count
+// here said 768 because it summed only the `typescript:` rows and dropped
+// `javascript:S1874`'s single issue.
 //
 // The pragmatic case for an allowlist is that extending the presets produced 182 findings,
 // 30 of them from rules nobody selected. The structural case is stronger and is the reason
@@ -33,21 +45,91 @@
 // A MAPPING IS NOT ALWAYS ONE-TO-ONE, which is the subtlety that has cost the most here.
 // Every SonarJS registration carries an `implementation` of `original`, `external` or
 // `decorated`, plus an `externalRules` array — all readable in the same bundle the
-// decorator note below cites. Four of the rules enabled here are twins of `decorated`
-// Sonar rules, and `decorated` means the ESLint rule is wrapped, merged, or both:
+// decorator note below cites. `decorated` means the ESLint rule is wrapped, merged, or
+// both, and "wrapped" spans everything from a cosmetic message rewrite to a type-directed
+// suppression that changes which lines report. So the label alone settles nothing: read
+// the decorator body. Nine of the families pinned here are `decorated`:
 //
-//   S6819  prefer-tag-over-role     decorated  -> wrapped below, faithfully
-//   S1082  mouse-events-a11y        decorated  -> a UNION of two rules; both now enabled
-//   S6582  prefer-optional-chain    decorated  -> run RAW; Sonar adds six suppressions
-//   S9020  prefer-find-by           decorated  -> run RAW; Sonar suppresses on type
+//   S6819  prefer-tag-over-role         -> wrapped below, faithfully (one of nine arms)
+//   S1082  mouse-events-a11y            -> a UNION of two rules; both enabled
+//   S6478  no-unstable-nested-components-> wrapped below + Sonar's own looser options
+//   S1186  no-empty-function            -> wrapped below + Sonar's own looser options
+//   S7780  prefer-string-raw            -> raw is FAITHFUL; decorator only strips the fix
+//   S6481  jsx-no-constructed-context-values -> raw is FAITHFUL; only message text changes
+//   S9020  prefer-find-by               -> run RAW, minus the three settings mirrored below
+//   S6582  prefer-optional-chain        -> run RAW; Sonar adds six suppression arms
+//   S7755  prefer-at                    -> NOT ENABLED, see the "deliberately off" note
 //
-// The last two are knowingly unmirrored. Sonar's S6582 stays silent when the contextual
-// type of the whole logical chain excludes `undefined | any | unknown | void`, and S9020
-// when the queried receiver is not a testing-library type — so both can red the build on
-// code the server accepts. Neither does so in the tree today, and mirroring them means
-// porting type-directed predicates, which is a different order of work from the four-line
-// mirror below. Recorded rather than done: if either fires on something Sonar is silent
-// about, this comment is the place to start, not a disable comment.
+// The two that stay knowingly unmirrored are S6582 and S9020, and the earlier summary of
+// both was wrong, so here is what the bundle actually says.
+//
+// S6582 (`B$n` in `server.cjs`) suppresses on `b(S) = u || f || d || m || A || E`. FOUR of
+// the six arms — `u`, `f`, `d`, `m` — take the CONTEXTUAL type of the outermost logical
+// chain and stay silent when it excludes `undefined | any | unknown | void` (`P$n`); they
+// differ only in where the chain sits (`return`, a `VariableDeclarator` init, a `Property`
+// value, a call argument). Arm `A` is different: the chain is the right-hand side of a
+// plain `=` assignment and the type read is `getTypeAtLocation` of the ASSIGNMENT TARGET,
+// not a contextual type. Arm `E` uses NO type context at all — it fires when the right
+// conjunct is a `BinaryExpression` whose operator is one of `!== != < > <= >=` (note: `===`
+// and `==` are NOT in that set), both sides are member expressions on differently-spelled
+// objects, and both object types include `null | undefined`. Also: if the program has
+// neither `strict` nor `strictNullChecks`, Sonar runs the rule RAW.
+//
+// Why that accuracy matters, measured. On Dependabot PR #204 — which changes ONLY
+// `package.json` and `package-lock.json`, no source — this raw rule reports 3 errors it
+// does not report on `main`: `ImportPlaylistsPage.tsx:399`, `PlaylistsPage.tsx:58` and
+// `ArtistArtPanel.tsx:117`, all the shape `X && X.prop === literal` inside a JSX
+// expression container. A type-aware rule's output moves when the types move, and #204
+// bumps 23 packages including `@tanstack/react-query` and `@types/react`, which is where
+// those three receivers get their types. The instinct is to call that an over-fire and
+// suppress it. Read the arms first: none of the six matches a JSX expression container
+// (`u`/`f`/`d`/`A` need a return, declarator, property or assignment parent, and `m` needs
+// a call argument), and arm `E`'s operator set excludes `===`. So Sonar would report these
+// too — this is the gate working, not over-firing, and the fix belongs in the source.
+//
+// S9020's old note here claimed Sonar "suppresses on type". That is FALSE: its own
+// registration sets `requiresTypeChecking: false`. What the decorator (`UGo`) actually
+// does is inject three `eslint-plugin-testing-library` settings, all `"off"` — those are
+// mirrored on the TEST block below — plus one arm this file does NOT mirror (`jAh`): it
+// suppresses when the `waitFor(() => X.getBy…())` receiver's fully-qualified name resolves
+// to something outside `@testing-library.`. An unresolvable name is NOT suppressed. That
+// arm needs Sonar's own module-name resolver; the three settings already cover most of the
+// same ground and are pure narrowing, so the residue is recorded rather than ported.
+//
+// If either rule ever fires on something Sonar is silent about, this comment is the place
+// to start, not a disable comment.
+//
+// --- DELIBERATELY OFF, with the reason, so nobody "finishes the job" by accident --------
+//
+// Two cleared families have a twin that this gate must NOT enable, because the raw rule
+// reports code SonarQube accepts. A gate stricter than the thing it mirrors fails CI on
+// code the server passes, which turns every dependency bump into a disable comment.
+//
+//   S7755  unicorn/prefer-at  (2 issues, all FIXED)
+//     Decorator `Mph` reports ONLY when `Dc(parserServices)` (full type information) AND
+//     `ulr(receiver, "at", services)` — the receiver's type has an `at` member that is a
+//     method, or a property with call signatures. With no type info it reports NOTHING.
+//     Mirroring that means walking the receiver back through the member/call chain and
+//     asking the TypeScript checker for a callable `.at()`, i.e. importing the type
+//     checker into this file. The raw rule finds 0 sites today, so enabling it would be a
+//     silent bet that the first future hit happens to be one Sonar also reports.
+//
+//   S6479  react/no-array-index-key  (3 issues, all FIXED)
+//     MEASURED, not predicted: the raw rule reports 9 sites on `main` — 5 in
+//     `ReorganizeControl.tsx`, 4 in `DiskSyncPanel.tsx` — and Sonar reports 0 open S6479
+//     against that same code (last `main` analysis 2026-08-30T16:54Z, all 3 historical
+//     issues resolved FIXED, none FALSE-POSITIVE or WONTFIX). Every one of the 9 is
+//     `key={`${x.label}-${i}`}`, which Sonar drops on its `LBg` arm: a `TemplateLiteral`
+//     with more than one expression. `LBg` is two lines and porting it would silence all
+//     nine — but the other arm, `MBg`, is not portable at that price: it walks up to the
+//     enclosing `.map`/`filter`/`reduce` callback, matches the index parameter by name,
+//     and then decides whether the receiver is a compile-time-constant array via
+//     `g$n` (nested array literals), `GBg` (`Array.from({length: <literal>})`) and `Qho`
+//     (const-variable resolution with write/escape analysis over the scope graph). Leaving
+//     `MBg` out keeps a live over-fire on the ordinary `[1, 2, 3].map((n, i) => <Skeleton
+//     key={i} />)` skeleton idiom. Copying scope-and-mutation analysis out of a minified
+//     analyzer is the "untestable fork" this file already refuses to build once, so the
+//     rule stays off and this paragraph is the record.
 
 // `defineConfig`/`globalIgnores` come from ESLint core, not from `tseslint.config`.
 // typescript-eslint deprecated its own helper once core shipped the same functionality
@@ -60,6 +142,40 @@ import tseslint from "typescript-eslint";
 import sonarjs from "eslint-plugin-sonarjs";
 import a11y from "eslint-plugin-jsx-a11y";
 import testingLibrary from "eslint-plugin-testing-library";
+// PINNED TO WHAT THE ANALYZER RUNS, not to what npm calls latest. `package/package.json`
+// inside the same bundle the decorator notes cite lists the exact plugin versions SonarJS
+// executes: `eslint-plugin-unicorn` 65.0.1, `eslint-plugin-react` 7.37.5,
+// `eslint-plugin-jsx-a11y` 6.10.2, `eslint-plugin-testing-library` 7.16.2. Tracking a
+// newer major would silently make this gate a DIFFERENT linter from the one it mirrors —
+// unicorn 74, the current latest, is nine majors ahead and has already renamed rules the
+// sonarjs README still maps by their old ids (`no-array-for-each` -> `no-for-each`, S7728),
+// which is a hard config error rather than a silent no-op. So the caret ranges in
+// `package.json` are `^65.0.1` and `^7.37.5` on purpose; a Dependabot major on either is a
+// prompt to re-read the bundle, not a routine bump.
+//
+// A MINOR can move a mirrored rule too, so the pin is asserted rather than trusted:
+// `eslint.config.test.ts` compares the four installed plugin versions against the ones the
+// bundle declares and fails on any drift. The precedent is `propNamePattern`, the option
+// the S6478 mirror leans on — it arrived in a 7.3x minor, and the plugin's own default is
+// narrower. A caret admits exactly that kind of change silently.
+//
+// `typescript-eslint` is the fifth plugin behind a mirrored rule and is deliberately NOT
+// pinned this way: the repo floats `^8.68.0` while the bundle declares 8.65.0, backing both
+// `sonar-mirror/no-empty-function` and the raw `@typescript-eslint/prefer-optional-chain`.
+// Checked at the time of writing — `dist/rules/no-empty-function.js` and
+// `dist/rules/prefer-optional-chain.js` are byte-identical between the two versions apart
+// from a trailing sourceMappingURL — so the divergence is real but currently inert. It is
+// named here because an unnamed divergence is the one nobody re-checks.
+//
+// One asymmetry the gate cannot express: S7780, S7776 and S7760 all register
+// `skipOnGeneratedSource: true`, and the analyzer skips them on any file the scanner tags
+// as generated. ESLint has no equivalent notion, so on such a file the gate would report
+// where Sonar stays silent. Theoretical today — nothing under `frontend/` is tagged, and
+// `src/api/schema.d.ts`, the one generated artifact, sits in both `globalIgnores` and
+// `sonar.exclusions` — but it is the same class of divergence documented for S6582 below,
+// and it would bite the moment a generated file lands outside those ignores.
+import react from "eslint-plugin-react";
+import unicorn from "eslint-plugin-unicorn";
 // Both are declared as direct devDependencies even though `eslint-plugin-jsx-a11y` already
 // pulls them in: this file imports them, so it owns the declaration. npm dedupes them onto
 // the same copy the plugin uses, which is the point — a mirror that read a different
@@ -226,6 +342,172 @@ const a11yDecorated = {
   },
 };
 
+// --- S1186's decorator: only three SHAPES of empty function are reported ------
+//
+// `@typescript-eslint/no-empty-function` is S1186's twin, and the options alone do not get
+// there. Sonar passes `allow: ["arrowFunctions", "constructors", "private-constructors"]`
+// — mirrored on the rule entry below — and then wraps the result in `Wia`/`yMf`, which
+// throws away every report whose node is not one of exactly three shapes (`_Mf`):
+//
+//   1. a `FunctionDeclaration`,
+//   2. the value of a class `MethodDefinition`,
+//   3. the init of a `VariableDeclarator`,
+//
+// and, in each case, only when the corresponding NAME is not an event handler or a noop
+// (`lCn`: an `Identifier` matching `/^on[A-Z]/` or `/noop/i`). Everything else is silent
+// at Sonar: an empty callback argument (`vi.fn(() => {})`, `foo(function () {})`), an
+// object-literal method (`{ m() {} }` — its parent is a `Property`, not a
+// `MethodDefinition`), an empty function in a JSX prop, an empty IIFE. The raw rule
+// reports all of them, so running it raw would fail the build on ordinary test doubles.
+//
+// `lCn` reads the name through Sonar's `Ei`, which accepts an `Identifier` and nothing
+// else, so the exemption is narrower than it looks. Measured against this config:
+// `class K { onFoo() {} }` is exempt but `class K { ["onFoo"]() {} }` REPORTS, because a
+// computed key is not an `Identifier`. Mirrored rather than "improved" in either
+// direction: a stricter reading fails CI on code the server passes, and a looser one hands
+// back the family. (The other two halves, also measured: `onclick` reports — `^on[A-Z]` is
+// case-sensitive — and `makeNoopHandler` is exempt, since `/noop/i` is unanchored.)
+function reportOnlyNamedEmptyFunctionShapes(rule) {
+  // Mirrors `lCn`. Note both halves: `^on[A-Z]` is anchored and case-SENSITIVE (so
+  // `onclick` is still reported), `noop` is unanchored and case-INSENSITIVE (so
+  // `makeNoopHandler` is exempt).
+  const isHandlerOrNoopName = (id) =>
+    id != null && id.type === "Identifier" && (/^on[A-Z]/.test(id.name) || /noop/i.test(id.name));
+  // Mirrors `_Mf`, kept as the same three-way disjunction rather than an early return per
+  // shape, so a future reader can diff it against the minified original line for line.
+  const isSonarReportedShape = (node) => {
+    const parent = node.parent;
+    return (
+      (node.type === "FunctionDeclaration" && !isHandlerOrNoopName(node.id)) ||
+      (parent?.type === "MethodDefinition" &&
+        parent.value === node &&
+        !isHandlerOrNoopName(parent.key)) ||
+      (parent?.type === "VariableDeclarator" &&
+        parent.init === node &&
+        !isHandlerOrNoopName(parent.id))
+    );
+  };
+  return {
+    ...rule,
+    create(context) {
+      const filtered = Object.create(context, {
+        report: {
+          value(descriptor) {
+            const node = descriptor.node;
+            // Mirrors `AMf`: no node, or a node the traversal never linked into the tree,
+            // and Sonar drops the report entirely rather than passing it through.
+            if (!node || typeof node.type !== "string" || !("parent" in node)) return;
+            if (!isSonarReportedShape(node)) return;
+            context.report(descriptor);
+          },
+        },
+      });
+      return rule.create(filtered);
+    },
+  };
+}
+
+// --- S6478's decorator: react-intl render props are not nested components -----
+//
+// Two separate loosenings, and the options are only the first. Sonar's registration
+// carries `fields` defaults of `allowAsProps: false` and `propNamePattern:
+// "{render*,*Enhancer,*Renderer}"`; the plugin's own default is the narrower `"render*"`,
+// so passing Sonar's value is a WIDENING of what counts as a render prop and therefore a
+// narrowing of what reports. Both are set explicitly on the rule entry below — including
+// `allowAsProps: false`, which equals the plugin default, because writing the pair keeps
+// the config diffable against the bundle's `fields` array.
+//
+// The second is `RBg`, mirrored here: an inline function that is a `Property` of an
+// `ObjectExpression` is exempt when that object is either the `values` prop of a react-intl
+// element (`OBg` — `<FormattedMessage values={{ b: (c) => <b>{c}</b> }} />`) or the second
+// argument of a `…formatMessage(…)` call (`FBg`). MusicDrop does not use react-intl today;
+// the arm is mirrored anyway because the alternative is a decorator that is *nearly* the
+// analyzer, which is how the a11y mirror above went wrong three times.
+function exemptReactIntlRenderProps(rule) {
+  // `$t` is in Sonar's set alongside the three `Formatted*` components; it is the
+  // Vue-i18n-style alias, kept so this set is a transcription rather than a summary.
+  const REACT_INTL_ELEMENTS = new Set([
+    "FormattedMessage",
+    "FormattedHTMLMessage",
+    "FormattedPlural",
+    "$t",
+  ]);
+  // Mirrors `OBg`.
+  const isIntlValuesProp = (container) => {
+    const attribute = container.parent;
+    if (attribute?.type !== "JSXAttribute") return false;
+    const element = attribute.parent;
+    if (element?.type !== "JSXOpeningElement") return false;
+    return (
+      attribute.name.type === "JSXIdentifier" &&
+      attribute.name.name === "values" &&
+      element.name.type === "JSXIdentifier" &&
+      REACT_INTL_ELEMENTS.has(element.name.name)
+    );
+  };
+  // Mirrors `FBg`. The object must be argument index 1 exactly, and the callee a member
+  // expression whose property is `formatMessage` — the receiver is not checked.
+  const isFormatMessageValuesArgument = (call, object) => {
+    const callee = call.callee;
+    const property = callee.type === "MemberExpression" ? callee.property : null;
+    return (
+      call.arguments[1] === object && property?.type === "Identifier" && property.name === "formatMessage"
+    );
+  };
+  // Mirrors `RBg`.
+  const isReactIntlRenderProp = (node) => {
+    if (node.type !== "ArrowFunctionExpression" && node.type !== "FunctionExpression") return false;
+    const property = node.parent;
+    const object = property?.parent;
+    const outer = object?.parent;
+    if (property?.type !== "Property" || object?.type !== "ObjectExpression") return false;
+    if (outer?.type === "JSXExpressionContainer") return isIntlValuesProp(outer);
+    if (outer?.type === "CallExpression") return isFormatMessageValuesArgument(outer, object);
+    return false;
+  };
+  return {
+    ...rule,
+    create(context) {
+      const filtered = Object.create(context, {
+        report: {
+          value(descriptor) {
+            const node = descriptor.node;
+            if (node && isReactIntlRenderProp(node)) return;
+            context.report(descriptor);
+          },
+        },
+      });
+      return rule.create(filtered);
+    },
+  };
+}
+
+const reactDecorated = {
+  rules: {
+    ...react.rules,
+    "no-unstable-nested-components": exemptReactIntlRenderProps(
+      react.rules["no-unstable-nested-components"],
+    ),
+  },
+};
+
+// A NAMESPACE OF OUR OWN, and not a stylistic choice. `jsx-a11y` above can be re-registered
+// under its own name because nothing else registers it; `@typescript-eslint` cannot, because
+// `tseslint.configs.base` in the parsing block already claims that key, and ESLint 10 rejects
+// a second definition outright — measured: `Config (unnamed): Key "plugins": Cannot redefine
+// plugin "@typescript-eslint"`. Shadowing the base config instead (hand-rolling parser +
+// plugin here) would drift from whatever `base` becomes on the next typescript-eslint bump,
+// so the decorated rule gets its own key. Grepping for
+// `@typescript-eslint/no-empty-function` therefore finds this comment and not a rule entry:
+// the live rule id is `sonar-mirror/no-empty-function`, and it is the S1186 twin.
+const sonarMirror = {
+  rules: {
+    "no-empty-function": reportOnlyNamedEmptyFunctionShapes(
+      tseslint.plugin.rules["no-empty-function"],
+    ),
+  },
+};
+
 export default defineConfig(
   // Generated, vendored, or build output — never ours to lint. `schema.d.ts` in
   // particular is regenerated from the OpenAPI schema and must not be hand-edited.
@@ -284,10 +566,41 @@ export default defineConfig(
     plugins: {
       sonarjs,
       "jsx-a11y": a11yDecorated,
+      react: reactDecorated,
+      unicorn,
+      "sonar-mirror": sonarMirror,
     },
+    // TRANSCRIBED FROM THE ANALYZER, not chosen. SonarJS builds every file's config with
+    // `settings: { react: { version: "999.999.999" }, … }` — the plugin's own
+    // `ULTIMATE_LATEST_SEMVER` sentinel, meaning "assume the newest React". It never
+    // detects.
+    //
+    // Two things break if this is "improved". `version: "detect"` CRASHES on ESLint 10:
+    // `eslint-plugin-react`'s `resolveBasedir` calls `context.getFilename()`
+    // (`lib/util/version.js:31`), which ESLint 10 removed, so every rule routed through
+    // `Components.detect` dies at load with `contextOrFilename.getFilename is not a
+    // function` — measured here on `no-unstable-nested-components` and
+    // `jsx-no-constructed-context-values`, while `no-array-index-key` and
+    // `jsx-child-element-spacing` survive because they never take that path. And omitting
+    // the setting entirely is not free either: the plugin then prints "React version not
+    // specified" to stderr on every run and falls back to the same 999.999.999 anyway.
+    //
+    // Pinning the INSTALLED react version instead would be the intuitive fix and is the
+    // wrong one — it makes any version-sensitive rule behave differently from the server,
+    // which is the failure mode this whole file is built to avoid. The sentinel is not a
+    // stale literal to be kept in sync with `react` in `package.json`; it is the value the
+    // analyzer uses, and `eslint.config.test.ts` pins it as such.
+    settings: { react: { version: "999.999.999" } },
     rules: {
       // --- typescript-eslint twins of cleared families ----------------------
       "@typescript-eslint/prefer-optional-chain": "error", // S6582 — 6 issues
+      // S1186 — 3 issues. Both loosenings are load-bearing; see
+      // `reportOnlyNamedEmptyFunctionShapes` above for why the raw rule reports test
+      // doubles Sonar accepts. The `allow` list is Sonar's `fields` default verbatim.
+      "sonar-mirror/no-empty-function": [
+        "error",
+        { allow: ["arrowFunctions", "constructors", "private-constructors"] },
+      ],
 
       // --- sonarjs twins, highest-volume first ------------------------------
       "sonarjs/deprecation": "error", // S1874 — 411 issues, REGREW in #200
@@ -330,6 +643,41 @@ export default defineConfig(
       "jsx-a11y/click-events-have-key-events": "error",
       "jsx-a11y/img-redundant-alt": "error", // S6851 — 2 issues
       "jsx-a11y/no-noninteractive-tabindex": "error", // S6845 — 1 issue
+
+      // --- unicorn twins ----------------------------------------------------
+      // `eslint-plugin-unicorn@65.0.1` needs NO peer override: it declares
+      // `eslint: ">=9.38.0"`, which ESLint 10.9.1 satisfies. Only `eslint-plugin-react`
+      // needed one, and only because its range stops at `^9.7`.
+      //
+      // All three run RAW and that is faithful, not a shortcut. S7776 and S7760 are
+      // `implementation: "external"` — no decorator exists. S7780 IS `decorated`, but its
+      // decorator (`uUo`) reports on BOTH branches: it strips `fix`/`suggest` when the
+      // literal sits on a template-literal line and otherwise passes the descriptor
+      // through untouched. The reported SET is identical, and the gate never runs `--fix`.
+      "unicorn/prefer-string-raw": "error", // S7780 — 5 issues
+      "unicorn/prefer-set-has": "error", // S7776 — 2 issues
+      "unicorn/prefer-default-parameters": "error", // S7760 — 1 issue
+
+      // --- react twins -------------------------------------------------------
+      // `eslint-plugin-react@7.37.5` caps its `eslint` peer at `^9.7` and is installed
+      // through a scoped override, same shape as `jsx-a11y`. Unlike `jsx-a11y` this one is
+      // NOT merely an un-widened range — parts of the plugin genuinely break on ESLint 10.
+      // The break is narrow and fully explained by the `settings.react.version` note above:
+      // with the sentinel set, all three rules below load and fire, and
+      // `eslint.config.test.ts` proves it under the ESLint the repo actually runs.
+      //
+      // S6772 is `external` — raw is faithful. S6481 IS `decorated`, but its decorator
+      // (`Uho`) only rewrites message text, stripping a ` (at line N)` suffix; the reported
+      // set is untouched, so raw is faithful there too.
+      "react/jsx-child-element-spacing": "error", // S6772 — 2 issues
+      "react/jsx-no-constructed-context-values": "error", // S6481 — 1 issue
+      // S6478 — 2 issues. Options are Sonar's `fields` defaults verbatim (the plugin's own
+      // `propNamePattern` default is the narrower `"render*"`), and the rule object is
+      // decorated with Sonar's react-intl arm; see `exemptReactIntlRenderProps` above.
+      "react/no-unstable-nested-components": [
+        "error",
+        { allowAsProps: false, propNamePattern: "{render*,*Enhancer,*Renderer}" },
+      ],
     },
   },
 
@@ -343,6 +691,23 @@ export default defineConfig(
     // where its family cannot appear is an inert rule wearing a guard's name.
     ...SONAR_TEST,
     plugins: { sonarjs, "testing-library": testingLibrary },
+    // The mirrorable half of S9020's decorator, transcribed from `yAh` in `server.cjs`:
+    // SonarJS wraps `create` and shadows `context.settings` with exactly these three
+    // entries before handing the context to the rule. They switch OFF the plugin's
+    // Aggressive Reporting — module, renders and queries — so the rule considers only
+    // built-in queries reached through a real `@testing-library/*` import instead of
+    // guessing at custom wrappers.
+    //
+    // This is a pure NARROWING: it can only make the gate report less, which is the safe
+    // direction for a gate that must never be stricter than the server. It costs 0
+    // findings today (the suite imports `screen`/`waitFor` straight from
+    // `@testing-library/react`), and the existing mutation case still reddens, which is
+    // what proves the rule did not go inert.
+    settings: {
+      "testing-library/utils-module": "off",
+      "testing-library/custom-renders": "off",
+      "testing-library/custom-queries": "off",
+    },
     rules: {
       "testing-library/prefer-find-by": "error", // S9020 — 23 issues, REGREW in #200
       "sonarjs/prefer-specific-assertions": "error", // S5906 — 3 issues
