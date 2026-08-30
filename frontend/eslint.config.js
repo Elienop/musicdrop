@@ -10,8 +10,9 @@
 // browser-verified.
 //
 // The selection rule, and the reason there is no `recommended` preset below: every rule
-// here maps to a Sonar rule this project has actually violated and fixed — 18 of the 27
-// TypeScript families (768 resolved issues) that the programme cleared — and `main`
+// here maps to a Sonar rule this project has actually violated and fixed — 19 rules
+// covering 18 of the 27 TypeScript families (768 resolved issues) that the programme
+// cleared, the counts differing because S1082 is a union of two ESLint rules — and `main`
 // currently sits at 0 open issues, so each one is a regression guard rather than a new
 // opinion. Turning on a preset would flag code nobody has agreed to change and would make
 // the gate impossible to land.
@@ -28,6 +29,25 @@
 // was read back from the running server (`api/rules/show`, `api/issues/search` against
 // projectKey `musicdrop`) rather than from memory — one mapping was wrong when written
 // from memory, see the S6848 note.
+//
+// A MAPPING IS NOT ALWAYS ONE-TO-ONE, which is the subtlety that has cost the most here.
+// Every SonarJS registration carries an `implementation` of `original`, `external` or
+// `decorated`, plus an `externalRules` array — all readable in the same bundle the
+// decorator note below cites. Four of the rules enabled here are twins of `decorated`
+// Sonar rules, and `decorated` means the ESLint rule is wrapped, merged, or both:
+//
+//   S6819  prefer-tag-over-role     decorated  -> wrapped below, faithfully
+//   S1082  mouse-events-a11y        decorated  -> a UNION of two rules; both now enabled
+//   S6582  prefer-optional-chain    decorated  -> run RAW; Sonar adds six suppressions
+//   S9020  prefer-find-by           decorated  -> run RAW; Sonar suppresses on type
+//
+// The last two are knowingly unmirrored. Sonar's S6582 stays silent when the contextual
+// type of the whole logical chain excludes `undefined | any | unknown | void`, and S9020
+// when the queried receiver is not a testing-library type — so both can red the build on
+// code the server accepts. Neither does so in the tree today, and mirroring them means
+// porting type-directed predicates, which is a different order of work from the four-line
+// mirror below. Recorded rather than done: if either fires on something Sonar is silent
+// about, this comment is the place to start, not a disable comment.
 
 // `defineConfig`/`globalIgnores` come from ESLint core, not from `tseslint.config`.
 // typescript-eslint deprecated its own helper once core shipped the same functionality
@@ -40,6 +60,17 @@ import tseslint from "typescript-eslint";
 import sonarjs from "eslint-plugin-sonarjs";
 import a11y from "eslint-plugin-jsx-a11y";
 import testingLibrary from "eslint-plugin-testing-library";
+// Both are declared as direct devDependencies even though `eslint-plugin-jsx-a11y` already
+// pulls them in: this file imports them, so it owns the declaration. npm dedupes them onto
+// the same copy the plugin uses, which is the point — a mirror that read a different
+// `aria-query` than the rule it wraps would drift silently.
+import { dom } from "aria-query";
+// `jsx-ast-utils` is CommonJS, so a named ESM import throws at config-load time
+// ("Named export 'getLiteralPropValue' not found"). Destructure the default, which is what
+// `eslint-plugin-jsx-a11y` does internally for the same reason.
+import jsxAstUtils from "jsx-ast-utils";
+
+const { getProp, getLiteralPropValue } = jsxAstUtils;
 
 // --- Matching Sonar's own MAIN/TEST split ------------------------------------
 //
@@ -58,27 +89,30 @@ import testingLibrary from "eslint-plugin-testing-library";
 // its name. (Not localhost: the rule's own SAFE_HOSTS exempts loopback, which is why
 // production code is clean on both sides.)
 //
-// Scopes were read per rule from `api/rules/show`, not guessed: of the 18 enabled below,
-// 15 are MAIN and THREE are TEST — S9020, S5906 and S5976. That is not deducible from the
+// Scopes were read per rule from `api/rules/show`, not guessed: of the 19 enabled below,
+// 16 are MAIN and THREE are TEST — S9020, S5906 and S5976. That is not deducible from the
 // names, which is the whole reason the split is per-rule; `no-clear-text-protocols` fires
 // only on test fixtures here and is still MAIN.
-// `vite.config.ts` and `vitest.config.ts` are named because `sonar.sources=.` scans them
-// as SOURCE — they match no exclusion and no test inclusion. Leaving them out let a
-// MAIN-scope finding reach the server without ever failing this gate. Both are clean
-// under every rule below today, so closing the gap costs nothing.
+// Both globs are `**`, matching `sonar.sources=.`, and the narrowing is expressed ONLY as
+// `ignores`. An earlier version listed `src/**` plus `vite.config.ts` and `vitest.config.ts`
+// by name, which is the same shape as an allowlist of directories and fails the same way:
+// four kinds of file Sonar scans went unlinted — a new `scripts/` directory, a root-level
+// `.ts`, a root-level `*.test.ts`, and a `.js` under `src/` — each one silent, because a
+// file matching no `files` pattern is not an error, it simply has no rules. Enumerating
+// what to lint means every new location starts outside the gate; enumerating what to skip
+// means it starts inside. The second is the only one that fails safe.
+//
+// `src/test/**` (the vitest harness) is deliberately NOT excluded: `sonar.test.inclusions`
+// does not match it, so Sonar treats it as source and so does this.
 const SONAR_MAIN = {
-  files: ["src/**/*.{ts,tsx}", "vite.config.ts", "vitest.config.ts"],
-  ignores: ["src/**/*.test.{ts,tsx}", "src/components/ui/**"],
+  files: ["**/*.{ts,tsx}"],
+  ignores: ["**/*.test.{ts,tsx}", "src/components/ui/**"],
 };
-// Exactly `sonar.test.inclusions`, no wider. `src/test/**` (the vitest harness) is
-// deliberately absent: Sonar treats it as SOURCE, so widening here would exempt from the
-// MAIN rules a directory Sonar still scans. `eslint.config.test.ts` sits at the frontend
-// root rather than under `src/`, but `sonar.test.inclusions` matches it as `**/*.test.ts`
-// and Sonar scans it, so it is named here too — otherwise a TEST-scope finding in that
-// file would reach the server without ever failing this gate.
-const SONAR_TEST = { files: ["src/**/*.test.{ts,tsx}", "eslint.config.test.ts"] };
+// Exactly `sonar.test.inclusions` (`**/*.test.ts`, `**/*.test.tsx`), at any depth — which
+// is why `eslint.config.test.ts` at the frontend root needs no special-casing.
+const SONAR_TEST = { files: ["**/*.test.{ts,tsx}"] };
 
-// --- One decorated rule ------------------------------------------------------
+// --- The one rule that is wrapped rather than used raw -----------------------
 //
 // `jsx-a11y/prefer-tag-over-role` is S6819's twin, but Sonar accepts a `role="status"`
 // that is also a live region, and the raw rule does not. Seven such sites exist here.
@@ -110,46 +144,51 @@ const SONAR_TEST = { files: ["src/**/*.test.{ts,tsx}", "eslint.config.test.ts"] 
 //                    return M8g||Q8g||U8g||Y8g||G8g||V8g||H8g||K8g||X8g }
 //   function U8g(e,t){ return e==="status" && !!Xre(t,"aria-live") }
 //
-// Three consequences, each mirrored below:
-//   1. `nlm` is the set of native HTML tag names, so Sonar NEVER raises this on a custom
-//      component. In a shadcn codebase full of wrappers, `<Alert role="status">` is an
-//      ordinary thing to write and the raw rule would red the build on it.
-//   2. Role is read with `getLiteralPropValue` and lowercased, so `role={"status"}` and
-//      `role="STATUS"` are the same as `role="status"`.
-//   3. `U8g` tests `aria-live` for PRESENCE, not value. An earlier version of this
-//      function allowlisted `polite`/`assertive` on the reasoning that `aria-live="off"`
-//      is not a live region. True as accessibility advice, and wrong here — it made the
-//      gate stricter than the thing it mirrors, which is the one property this whole file
-//      is built to avoid. Match `U8g`; take the a11y argument to Sonar, not to this file.
+// Be precise about what is mirrored, because a looser summary of this got written twice
+// and was wrong both times. `L8g` has NINE arms and exactly ONE of them — `U8g` — is
+// reimplemented here. The other two pieces below are the wrapper (`Qdr`) and `L8g`'s
+// preamble (`$Er`), not arms:
 //
-// The other eight exemptions are NOT implemented: `slider` with aria-valuemin/max/now,
-// `radio` with aria-checked, `combobox` with aria-expanded plus one of
-// aria-controls/owns/haspopup, `separator` with children, `img` on div/span with children
-// or a style, and two more. None occurs in the tree today. Copying nine minified
-// predicates would turn a small mirror into an untestable fork of an analyzer, so they are
-// named here instead: if this rule ever fires on one of those shapes, it is a known
-// over-fire and the fix is another arm, not a disable comment.
+//   1. `Qdr`: `nlm` is a 149-entry set of native HTML tag names, so Sonar NEVER raises this
+//      on a custom component. In a shadcn codebase full of wrappers, `<Alert role="status">`
+//      is ordinary code and the raw rule would red the build on it.
+//   2. `$Er`: role is read with `getLiteralPropValue` and lowercased. Note the base rule
+//      looks roles up in a lowercase-keyed table and so returns early on `role="STATUS"`
+//      anyway — the lowercasing here is defensive, not load-bearing.
+//   3. `U8g`: `aria-live` is tested for PRESENCE, not value. An earlier version allowlisted
+//      `polite`/`assertive` on the reasoning that `aria-live="off"` is not a live region.
+//      True as accessibility advice, and wrong here — it made the gate stricter than the
+//      thing it mirrors, which is the one property this whole file is built to avoid. Take
+//      the a11y argument to Sonar, not to this file.
+//
+// The other EIGHT arms are not implemented, and all eight are named so the list cannot
+// quietly shrink again: `M8g` (`<svg role="presentation"|"img" aria-hidden>`), `Q8g`
+// (`<svg role="img">` with aria-label/labelledby or a `<title>` child), `Y8g` (`slider`
+// with aria-valuemin/max/now), `G8g` (`radio` with aria-checked), `V8g` (`combobox` with
+// aria-expanded plus one of aria-controls/owns/haspopup), `H8g` (`separator` with
+// children), `K8g` (`img` role on div/span with children or a style), `X8g` (table/grid/
+// listbox nesting with row/cell/option roles). None occurs in the tree today. Copying eight
+// more minified predicates would turn a small mirror into an untestable fork of an
+// analyzer; if this rule ever fires on one of those shapes it is a KNOWN over-fire, and the
+// fix is to add that arm here, not a disable comment at the call site.
 function exemptSonarAcceptedRoles(rule) {
-  const attrNamed = (node, name) =>
-    node.attributes.find(
-      (a) => a.type === "JSXAttribute" && a.name?.type === "JSXIdentifier" && a.name.name === name,
-    );
-  // Mirrors `$Er` (jsx-ast-utils `getLiteralPropValue`) for the shapes that reach it here:
-  // a bare string, or a string wrapped in an expression container.
-  const literalValue = (attr) => {
-    const v = attr?.value;
-    if (v?.type === "Literal") return v.value;
-    if (v?.type === "JSXExpressionContainer" && v.expression.type === "Literal") {
-      return v.expression.value;
-    }
-    return undefined;
-  };
-  // Mirrors `Qdr`. Sonar tests membership in an explicit native-tag set; JSX's own
-  // convention — lowercase initial means DOM element, capitalised means component — gives
-  // the same answer for every real tag, and differs only on a lowercase name that is not
-  // valid HTML (`<foo role="...">`), where this stays silent and Sonar would report.
+  // Sonar's `nlm` is `aria-query`'s `dom` plus 20 names it does not carry — obsolete tags
+  // and a few modern ones. Derived by diffing the two sets, not guessed; re-derive by
+  // extracting `nlm=new Set([...])` from `server.cjs` and comparing with `[...dom.keys()]`.
+  // Using `dom` alone would turn the over-fires this fixes into MISSES on `<svg role=...>`
+  // and `<search role=...>`, which is the same bug pointing the other way.
+  const SONAR_EXTRA_TAGS = new Set([
+    "basefont", "bgsound", "command", "element", "image", "isindex", "listing", "math",
+    "multicol", "nextid", "nobr", "noframes", "plaintext", "rb", "rbc", "search", "shadow",
+    "slot", "svg", "template",
+  ]);
+  // Mirrors `Qdr`. This previously used `/^[a-z]/`, which is not the same test and errs in
+  // the OVER-FIRE direction: `nlm` has no SVG child elements, so `<g role="navigation">`,
+  // `<path>`, `<circle>`, `<text>` and every web component (`<my-el>`) are silent at Sonar
+  // and were red here. `Logo.tsx` already contains `<g>`, `<path>` and `<rect>`.
   const isDomElement = (node) =>
-    node.name?.type === "JSXIdentifier" && /^[a-z]/.test(node.name.name);
+    node.name?.type === "JSXIdentifier" &&
+    (dom.has(node.name.name) || SONAR_EXTRA_TAGS.has(node.name.name));
   return {
     ...rule,
     create(context) {
@@ -163,9 +202,13 @@ function exemptSonarAcceptedRoles(rule) {
             const node = descriptor.node;
             if (node?.type === "JSXOpeningElement") {
               if (!isDomElement(node)) return;
-              const role = literalValue(attrNamed(node, "role"));
+              // `getProp`/`getLiteralPropValue` are the very helpers Sonar calls (`Xre`
+              // and `$Er`). Hand-rolled equivalents were here first and diverged three
+              // ways, each an over-fire: a template-literal role, a role arriving through
+              // an object spread, and `ROLE=` (getProp is case-insensitive by default).
+              const role = getLiteralPropValue(getProp(node.attributes, "role"));
               const lowered = typeof role === "string" ? role.toLowerCase() : undefined;
-              if (lowered === "status" && attrNamed(node, "aria-live")) return;
+              if (lowered === "status" && getProp(node.attributes, "aria-live")) return;
             }
             context.report(descriptor);
           },
@@ -198,6 +241,16 @@ export default defineConfig(
   globalIgnores(["dist/**", "coverage/**", "node_modules/**", "src/api/schema.d.ts"]),
 
   {
+    // An `eslint-disable` comment silences this gate; SonarQube does not honour one — its
+    // suppression channel is `NOSONAR` or an issue resolution on the server. So a disable
+    // comment produces exactly the #200 failure: CI green, family still reported by the
+    // scan. `grep -rn eslint-disable src` returns nothing today, so this costs nothing and
+    // keeps the "add another arm, not a disable comment" instruction above enforceable
+    // rather than advisory.
+    linterOptions: { noInlineConfig: true },
+  },
+
+  {
     // PARSING ONLY, for every source file — kept separate from rule selection
     // below because both rule blocks need it. Scoping the parser to the MAIN
     // block instead leaves test files on the default espree parser, which fails
@@ -216,7 +269,7 @@ export default defineConfig(
     // turn-it-off list is unbounded and silently regrows with every preset
     // update. An allowlist cannot drift that way, and it is the only shape that
     // honestly matches the selection rule stated above.
-    files: ["src/**/*.{ts,tsx}", "eslint.config.test.ts", "vite.config.ts", "vitest.config.ts"],
+    files: ["**/*.{ts,tsx}"],
     extends: [tseslint.configs.base],
     languageOptions: {
       parserOptions: {
@@ -264,7 +317,17 @@ export default defineConfig(
       // the mapping is in the sonarjs README (lines 505-506) — read it, do not
       // recall it.
       "jsx-a11y/no-static-element-interactions": "error", // S6848 — 3 issues
-      "jsx-a11y/mouse-events-have-key-events": "error", // S1082 — 3 issues
+      // S1082 — 3 issues. TWO rules, not one: Sonar registers S1082 as `mouse-events-a11y`
+      // with an `externalRules` array of length 2, and its `create` runs both and merges
+      // the visitors. Pinning only the mouse half left `<li onClick>`, `<ul onClick>` and
+      // `<p onClick>` free to regrow with the gate green — measured, exit 0 — and S6848
+      // does not cover them, because that rule exempts anything carrying a role, implicit
+      // or explicit, which is exactly what list and text elements have. Adding the click
+      // half costs 0 findings today. GENERAL RULE: any Sonar key whose `externalRules`
+      // array has more than one entry needs every member enabled, or the family is pinned
+      // at part of its width.
+      "jsx-a11y/mouse-events-have-key-events": "error",
+      "jsx-a11y/click-events-have-key-events": "error",
       "jsx-a11y/img-redundant-alt": "error", // S6851 — 2 issues
       "jsx-a11y/no-noninteractive-tabindex": "error", // S6845 — 1 issue
     },

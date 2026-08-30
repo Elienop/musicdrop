@@ -214,8 +214,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   What shipped: `frontend/eslint.config.js` on ESLint 10, **closed by default** (it extends
   `tseslint.configs.base`, which enables zero rules, and allowlists from there — extending
   the recommended presets instead produced 182 findings of which 30 came from rules nobody
-  had selected, and that turn-it-off list regrows on every preset update). **18 rules**, one
-  per Sonar family this project has actually violated and fixed. A `lint` script, an
+  had selected, and that turn-it-off list regrows on every preset update). **19 rules** covering 18
+  families this project has actually violated and fixed (S1082 is a union of two). A `lint` script, an
   `ESLint` step in CI ahead of `Typecheck` mirroring the backend's `ruff check` seat, and
   `frontend/eslint.config.test.ts` — 25 mutation cases that feed each rule the smell it
   guards and assert it reddens, plus two coverage tests (27 in all): one fails if a rule is
@@ -313,6 +313,35 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `vite.config.ts`/`vitest.config.ts`, which `sonar.sources=.` scans as source — a
   MAIN-scope finding there would have reached the server without failing CI. Both files are
   clean under every enabled rule, so closing the gap cost nothing.
+
+  A third round — adversarial, in an isolated worktree, 61 config mutations plus a
+  differential harness against the analyzer's own predicate — found four more ways to make
+  `npm run lint` pass while a pinned family regrows, all now closed and pinned. **S1082 is a
+  UNION of two ESLint rules** (`mouse-events-have-key-events` *and*
+  `click-events-have-key-events`, merged in one `create`); pinning half left `<li onClick>`
+  free to regrow with the gate green, measured exit 0, and S6848 does not cover it because
+  that rule exempts anything carrying a role. **An `eslint-disable` comment silenced the
+  gate** while Sonar kept reporting the family — its channel is `NOSONAR`, not an ESLint
+  comment — so `noInlineConfig: true` is now set, costing nothing (`grep -rn eslint-disable
+  src` is empty). **The coverage test spot-checked five hard-coded paths**, so ignoring any
+  other directory survived all tests: it now enumerates the tree. **And the globs enumerated
+  what to LINT**, which left four shapes Sonar scans unlinted — a new `scripts/` directory,
+  a root-level `.ts`, a root-level `*.test.ts`, a `.js` under `src/`. Both globs are now
+  `**` with the narrowing expressed only as `ignores`, so a new location starts inside the
+  gate rather than outside.
+
+  The same round corrected the decorator twice more. `/^[a-z]/` is not Sonar's `Qdr`: `nlm`
+  holds no SVG child elements, so `<g role="navigation">`, `<circle>`, `<text>` and every
+  web component were red here and silent at Sonar — and `Logo.tsx` already contains `<g>`,
+  `<path>` and `<rect>`. It now uses `aria-query`'s `dom` set plus the 20 names Sonar's set
+  adds, derived by diffing the two rather than guessed; `dom` alone would have turned those
+  over-fires into misses on `<svg role=...>` and `<search role=...>`. The hand-rolled prop
+  readers diverged three further ways (template-literal role, role via object spread, `ROLE=`
+  — `getProp` is case-insensitive), so the config now imports the very helpers Sonar calls,
+  `getProp`/`getLiteralPropValue` from `jsx-ast-utils`, with both packages promoted to direct
+  devDependencies since this file imports them. Eleven differential cases now match Sonar
+  exactly. Two rules are knowingly still unmirrored and named in the config: S6582 and S9020
+  are also `decorated`, with type-directed suppressions that would need porting.
 
   **Not fixed, and deliberately: the npm Dependabot lane has no release-age `cooldown:`**,
   so future frontend updates land the day they publish — `eslint` and `typescript-eslint`

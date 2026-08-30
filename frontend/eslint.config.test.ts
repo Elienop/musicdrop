@@ -30,7 +30,7 @@
 // aria-query maps no tag to it; and (c) `http://evil.example.com` as a cleartext fixture,
 // exempt under the rule's own DOCUMENTATION_HOSTS. All three read as passing.
 
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { ESLint } from "eslint";
@@ -143,6 +143,18 @@ export function b(n: number) {
     `export const A = () => <div role="navigation" />;\n`,
   ],
   [
+    // `noInlineConfig` pin. Without it an `eslint-disable` comment silences this gate while
+    // SonarQube keeps reporting the family — its suppression channel is `NOSONAR` or a
+    // server-side resolution, not an ESLint comment — which is the #200 failure exactly:
+    // CI green, family regrown. Both comment forms are here because they are separate
+    // ESLint features and `noInlineConfig` is what disables each.
+    "sonarjs/no-nested-conditional",
+    MAIN_FILE,
+    `/* eslint-disable sonarjs/no-nested-conditional */
+// eslint-disable-next-line sonarjs/no-nested-conditional
+export const f = (a: number, b: number) => (a ? (b ? 1 : 2) : 3);\n`,
+  ],
+  [
     // THE mutation case for the decorator, and the reason it exists. The exemption is the
     // `status` + `aria-live` PAIR; a bare `role="status"` must still fail. Without this
     // line, widening the exemption to every `role="status"` in the codebase leaves all
@@ -161,6 +173,14 @@ export function b(n: number) {
     "jsx-a11y/mouse-events-have-key-events",
     MAIN_FILE,
     `export const A = () => <div onMouseOver={() => {}} />;\n`,
+  ],
+  [
+    // The other half of S1082, which Sonar merges into one rule. `<li onClick>` escaped the
+    // gate entirely until this was added — and S6848 does not cover it, because that rule
+    // exempts anything with a role, implicit included, which `li` has.
+    "jsx-a11y/click-events-have-key-events",
+    MAIN_FILE,
+    `export const A = () => <li onClick={() => {}} />;\n`,
   ],
   [
     "jsx-a11y/img-redundant-alt",
@@ -226,12 +246,15 @@ const MUST_NOT_TRIP: ReadonlyArray<
     `export const B = () => <p role="status" aria-live="off">x</p>;\n`,
   ],
   [
-    // Sonar reads the role with `getLiteralPropValue`, which unwraps an expression
-    // container, then lowercases it.
-    'role={"status"} and role="STATUS" resolve like the bare literal',
+    // Pins the expression-container unwrap in `getLiteralPropValue`. It must be
+    // `{"status"}` lowercase: the base rule looks roles up in a lowercase-keyed table and
+    // returns early on `{"STATUS"}`, so an uppercase fixture passes with the decorator
+    // deleted entirely and proves nothing. Verified against the raw rule — it fires on
+    // `role={"status"}` and is silent on `role={"STATUS"}` — so this case has an oracle.
+    'role={"status"} resolves like the bare literal',
     "prefer-tag-over-role",
     MAIN_FILE,
-    `export const B = () => <p role={"STATUS"} aria-live="polite">x</p>;\n`,
+    `export const B = () => <p role={"status"} aria-live="polite">x</p>;\n`,
   ],
   [
     // Sonar's `Qdr` admits only native HTML tag names, so a custom component is never
@@ -242,6 +265,29 @@ const MUST_NOT_TRIP: ReadonlyArray<
     MAIN_FILE,
     `function Alert(props: Readonly<{ role?: string }>) { return <div className={props.role} />; }
 export const B = () => <Alert role="navigation" />;\n`,
+  ],
+  [
+    // `nlm` contains `svg` and `math` but NO SVG child elements, so these are silent at
+    // Sonar. A `/^[a-z]/` test — the obvious way to write `Qdr` — reddens all of them, and
+    // `Logo.tsx` already contains `<g>`, `<path>` and `<rect>`.
+    "SVG child elements are not native HTML tags, so they are never reported",
+    "prefer-tag-over-role",
+    MAIN_FILE,
+    `export const B = () => <svg><g role="navigation" /><circle role="button" /></svg>;\n`,
+  ],
+  [
+    "a web component is not a native HTML tag either",
+    "prefer-tag-over-role",
+    MAIN_FILE,
+    `export const B = () => <my-el role="navigation" />;\n`,
+  ],
+  [
+    // `getProp` defaults to `ignoreCase: true` and `getLiteralPropValue` resolves template
+    // literals. Hand-rolled equivalents missed both and over-fired.
+    "getProp/getLiteralPropValue handle ROLE= and template literals",
+    "prefer-tag-over-role",
+    MAIN_FILE,
+    "export const B = () => <p ROLE={`status`} aria-live=\"polite\">x</p>;\n",
   ],
   [
     "a MAIN-scope rule stays off in test files",
@@ -318,27 +364,51 @@ describe("eslint.config.js", () => {
   );
 
   test(
-    "the MAIN block reaches every source directory, not just the anchor file",
+    "every source file on disk is actually reached by a rule block",
     async () => {
-      // Both fixture anchors live at `src/App.tsx` / `src/App.test.tsx`, so adding an
-      // `ignores` glob for a whole directory — `src/pages/**`, say — silently stops the
-      // gate covering it while all the cases above stay green. The ESLint file count is
-      // not a signal either: the parsing-only block still visits those files, it just
-      // applies no rules to them.
-      const mustBeLinted = [
-        "src/pages/review/ReviewPage.tsx",
-        "src/components/shell/Topbar.tsx",
-        "src/lib/utils.ts",
-        "vite.config.ts",
-        "vitest.config.ts",
+      // Enumerated, NOT a hard-coded list. Both fixture anchors live at `src/App.tsx` and
+      // `src/App.test.tsx`, so a spot-check list only guards the directories it happens to
+      // name: adding `src/components/settings/**` to `ignores` left all other cases green
+      // while 15 MAIN rules stopped covering that directory, and planting six real smells
+      // there still gave `npm run lint` exit 0. The ESLint file count is not a signal
+      // either — the parsing-only block keeps visiting ignored files, it just applies no
+      // rules to them.
+      const walk = (dir: string): string[] =>
+        readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+          const full = path.join(dir, e.name);
+          if (e.isDirectory()) return e.name === "ui" ? [] : walk(full); // ui/** = sonar.exclusions
+          return /\.tsx?$/.test(e.name) && !full.endsWith(".d.ts") ? [full] : [];
+        });
+
+      const sources = [
+        ...walk(path.join(FRONTEND_ROOT, "src")),
+        path.join(FRONTEND_ROOT, "vite.config.ts"),
+        path.join(FRONTEND_ROOT, "vitest.config.ts"),
+        path.join(FRONTEND_ROOT, "eslint.config.test.ts"),
       ];
-      for (const rel of mustBeLinted) {
-        const config = await eslint.calculateConfigForFile(path.join(FRONTEND_ROOT, rel));
-        expect(Object.keys(config.rules ?? {}), `${rel} is linted by no rule block`).not.toEqual(
-          [],
-        );
+      expect(sources.length).toBeGreaterThan(100); // the walk itself must not silently empty
+
+      const unreached: string[] = [];
+      for (const file of sources) {
+        const config = await eslint.calculateConfigForFile(file);
+        if (Object.keys(config.rules ?? {}).length === 0) {
+          unreached.push(path.relative(FRONTEND_ROOT, file));
+        }
       }
+      expect(unreached, "these files are linted by no rule block").toEqual([]);
     },
-    30_000,
+    60_000,
   );
+
+  test("the npm script runs the gate the way CI needs it to", () => {
+    // Nothing else here reads `package.json`. Narrowing `eslint .` to `eslint src` would
+    // drop `vite.config.ts`, `vitest.config.ts` and this file from CI while every
+    // `calculateConfigForFile` assertion above stayed green, because those consult the
+    // config, never the command.
+    const pkg = JSON.parse(readFileSync(path.join(FRONTEND_ROOT, "package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    expect(pkg.scripts.lint).toContain("--max-warnings 0");
+    expect(pkg.scripts.lint).toMatch(/eslint\s+\.(\s|$)/);
+  });
 });
