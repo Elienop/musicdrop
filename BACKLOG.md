@@ -45,7 +45,7 @@ entry carries a dated correction block where the pass changed it._
    browser-CSRF + DNS-rebinding pair and none of them is authentication — their own
    docstrings say so. Full posture analysis and option comparison: the vault note
    `musicdrop-auth-posture`.
-   **Slice 1 — the backend session gate — shipped (PR # filled in at merge):** every
+   **Slice 1 — the backend session gate — shipped in #199:** every
    `/api/*` route plus the docs surface (`/docs`, `/redoc`, `/openapi.json`) now requires
    an HMAC-signed session cookie minted by `POST /api/auth/login` against the scrypt hash
    in `MUSICDROP_PASSWORD_HASH`; exempt exact paths: `/api/health`, `/api/slskd/webhook`
