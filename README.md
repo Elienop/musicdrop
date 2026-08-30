@@ -305,9 +305,16 @@ uv run ruff format                                 # format
 npm install        # install
 npm run dev        # Vite dev server on http://localhost:5173 (proxies /api -> :3030)
 npm run test       # vitest
+npm run lint       # eslint
 npm run typecheck  # tsc
 npm run build      # production build
 ```
+
+`npm run lint` is deliberately narrow: it enables one rule per SonarQube family this
+project has already driven to zero, so it guards against regrowth rather than imposing a
+new style. Adding a rule for anything else is a design change — see the header of
+`frontend/eslint.config.js`, and `frontend/eslint.config.test.ts`, which proves every
+enabled rule still fires.
 
 Keep the backend on port **3030** — that's the target of the Vite dev proxy.
 
