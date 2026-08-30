@@ -29,6 +29,13 @@
 // projectKey `musicdrop`) rather than from memory — one mapping was wrong when written
 // from memory, see the S6848 note.
 
+// `defineConfig`/`globalIgnores` come from ESLint core, not from `tseslint.config`.
+// typescript-eslint deprecated its own helper once core shipped the same functionality
+// (`config-helper.d.ts:67`), and the deprecated signature is a `javascript:S1874` — the
+// very family #200 regrew. Caught by the server scan, because this file is one of the few
+// the gate below cannot lint: every block needs the typed parser, and no tsconfig includes
+// a `.js` file at the frontend root.
+import { defineConfig, globalIgnores } from "eslint/config";
 import tseslint from "typescript-eslint";
 import sonarjs from "eslint-plugin-sonarjs";
 import a11y from "eslint-plugin-jsx-a11y";
@@ -176,20 +183,19 @@ const a11yDecorated = {
   },
 };
 
-export default tseslint.config(
-  {
-    // Generated, vendored, or build output — never ours to lint. `schema.d.ts` in
-    // particular is regenerated from the OpenAPI schema and must not be hand-edited.
-    //
-    // `eslint.config.js` used to be listed here, under that same "generated or vendored"
-    // heading, which it plainly is not. Removed rather than reworded: no block below has
-    // a `files` pattern matching `.js`, so it is unlinted either way and the entry only
-    // implied a decision nobody made. Linting it is not currently possible — every block
-    // needs the typed parser, and the project service rejects the file because no tsconfig
-    // includes it (verified: "was not found by the project service"). That is a real if
-    // small gap, since `sonar.sources=.` means Sonar DOES scan it as JS source.
-    ignores: ["dist/**", "coverage/**", "node_modules/**", "src/api/schema.d.ts"],
-  },
+export default defineConfig(
+  // Generated, vendored, or build output — never ours to lint. `schema.d.ts` in
+  // particular is regenerated from the OpenAPI schema and must not be hand-edited.
+  //
+  // `eslint.config.js` used to be listed here, under that same "generated or vendored"
+  // heading, which it plainly is not. Removed rather than reworded: no block below has a
+  // `files` pattern matching `.js`, so it is unlinted either way and the entry only
+  // implied a decision nobody made. Linting it is not currently possible — every block
+  // needs the typed parser, and the project service rejects the file because no tsconfig
+  // includes it (verified: "was not found by the project service"). That gap is not
+  // theoretical: the server scan found an S1874 in this very file, on the
+  // `tseslint.config` call the header above now explains.
+  globalIgnores(["dist/**", "coverage/**", "node_modules/**", "src/api/schema.d.ts"]),
 
   {
     // PARSING ONLY, for every source file — kept separate from rule selection
