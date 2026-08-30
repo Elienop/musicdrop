@@ -64,7 +64,15 @@ class StartImportRequest(BaseModel):
     beets config, attended review).
     """
 
-    # Non-blank after stripping (a blank/whitespace path is a 422).
+    # Non-blank after stripping (a blank/whitespace path is a 422). Otherwise
+    # UNVALIDATED — any server-side folder is accepted, deliberately and not by
+    # oversight. The decision and its full reasoning are recorded in BACKLOG.md;
+    # the short form is that the sole caller is now the single authenticated
+    # account (``/api/import`` is behind the session gate), and that account
+    # already sets the library root and the whole beets config via
+    # ``POST /api/config/save`` — so an allowlist here would restrict the owner
+    # from their own feature while crossing no privilege boundary. Read the
+    # BACKLOG entry before adding validation.
     path: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     options: ImportOptions | None = None
 

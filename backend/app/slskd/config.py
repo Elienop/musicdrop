@@ -23,13 +23,47 @@ _TOKEN_FILE_MODE = 0o600
 
 
 class SlskdConfig(BaseModel):
-    # ``base_url`` is admin-controlled (only the single self-hosted owner sets it
-    # via Settings), so the "the server connects to this URL" SSRF surface is
-    # mitigated by the single-user threat model — we don't restrict it.
+    # ``base_url`` is deliberately unrestricted, gated the same way its Plex twin
+    # is: its runtime writer is ``PUT /api/slskd/settings`` (app/api/slskd.py:83),
+    # under ``/api/`` and not in ``EXEMPT_PATHS``, so the session gate
+    # (app/auth/gate.py) requires a cookie. (``MUSICDROP_SLSKD_URL`` also seeds it
+    # via ``env_defaults`` — the operator's own deployment input, not a request
+    # path.) Do NOT restrict this with ``assert_public_url``
+    # (app/artwork/download.py:38): it rejects ``http://slskd:5030`` (this repo's
+    # own test value) and every other private-address slskd, which is all of them.
+    # Beware the shape of the retired justification, not just its words: "only the
+    # owner can set it, so the threat model covers it" was FALSE here for months,
+    # and it is the pattern to refuse — name the mechanism that enforces a claim.
+    #
+    # Two things make this field's SSRF worse than the Plex twin's. Note the
+    # difference is NOT credential exfiltration — Plex leaks a higher-value
+    # credential, by header, on its own primary path (see ``PlexConfig.base_url``).
+    # It is these:
+    #
+    # 1. It is REFLECTED, not blind. ``client.check`` (app/slskd/client.py:13)
+    #    returns the response body to the caller UNTRUNCATED, surfaced as
+    #    ``SlskdConnection.version``, so an internal endpoint's body can be read
+    #    back out through ``POST /api/slskd/test``.
+    # 2. The caller chooses the whole PATH. The appended
+    #    ``/api/v0/application/version`` is no constraint: a trailing ``#`` pushes
+    #    it into the fragment. Measured, with the mitigations that do apply, in
+    #    BACKLOG.md — kept in one place so the two copies cannot drift apart.
+    #
+    # And one hypothesis that was tested and REFUTED, recorded because a reader
+    # who knows ``/api/slskd/webhook`` is gate-exempt will reasonably doubt the
+    # paragraph above: the webhook does NOT reach this field. Verified against the
+    # handler (app/api/slskd.py:150) — it reads only ``webhook_secret`` (in its
+    # auth dependency), ``auto_import``, ``downloads_prefix``,
+    # ``app.state.inbox_dir`` and the queue. There is no anonymous path here.
     base_url: str = ""
     token: str = ""  # the slskd API key
     downloads_prefix: str = ""  # slskd's container-namespace download root (stripped on remap)
-    webhook_secret: str = ""  # the shared secret the inbound webhook authenticates with
+    # Authenticates the inbound webhook — the sole credential in front of the one
+    # gate-exempt mutating route. Live footgun: ``update`` treats ``None`` as keep
+    # but ``""`` as a real write, so blanking this succeeds and
+    # ``require_webhook_secret`` then rejects EVERY delivery, silently killing
+    # auto-import. Hardening gaps (no min length, no throttle) are in BACKLOG.md.
+    webhook_secret: str = ""
     auto_import: bool = False  # the operative toggle: a completed drop imports itself iff True
 
 

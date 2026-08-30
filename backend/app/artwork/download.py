@@ -45,8 +45,20 @@ def assert_public_url(url: str) -> None:
     if resolution fails or ANY address is disallowed we raise the single generic
     message (no oracle). This resolves-then-validates — it does not pin the IP
     for the subsequent connect, so it does not defend against a deliberate
-    DNS-rebind race; that is out of scope for this single-user LAN deployment,
-    and the fetch path re-validates every redirect hop.
+    DNS-rebind race. That stays out of scope, but the scope-out now rests on an
+    enforcement mechanism rather than on an assumption: every route that reaches
+    here is behind the session gate (``app/auth/gate.py``), so mounting the race
+    requires the password, not merely a route to the port. The fetch path also
+    re-validates every redirect hop.
+
+    Why this guard exists HERE and must not be copied to the integration
+    settings: a pasted image URL is expected to be PUBLIC, so rejecting private
+    space costs a legitimate user nothing. The Plex and slskd ``base_url``
+    fields are the mirror image — they are expected to be private
+    (``http://192.168.1.50:32400``, ``http://plex:32400``, ``http://slskd:5030``,
+    all of which this function rejects), and are protected by gating their
+    WRITER instead. The asymmetry is deliberate; see the comments on
+    ``PlexConfig.base_url`` and ``SlskdConfig.base_url`` for the other half.
     """
     parts = urlsplit(url)
     if parts.scheme.lower() not in ("http", "https"):
