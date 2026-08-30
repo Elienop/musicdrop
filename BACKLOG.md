@@ -36,49 +36,10 @@ entry carries a dated correction block where the pass changed it._
    bank decision screens — the duplicate screen's note names the on-screen Rescan remedy,
    the candidate screen's keys on the *selected* option. The `.m3u8` half of this item
    shipped as #195 — see the struck staleness entry under Open bugs.
-4. **Real authentication** — the standing long-term security item, shaped 2026-08-28: 112
-   operations (66 state-changing), all reachable unauthenticated by anything that can open
-   TCP to port 3030 (compose publishes `0.0.0.0`); two unauthenticated calls end the
-   library (`DELETE /api/artists` per artist, then `DELETE /api/trash/all`); and the
-   exposure is dual-path (by-IP plain HTTP *and* via Caddy), so proxy-level auth alone
-   cannot cover the by-IP path the owner actively uses. The existing guards are a coherent
-   browser-CSRF + DNS-rebinding pair and none of them is authentication — their own
-   docstrings say so. Full posture analysis and option comparison: the vault note
-   `musicdrop-auth-posture`.
-   **Slice 1 — the backend session gate — shipped in #199:** every
-   `/api/*` route plus the docs surface (`/docs`, `/redoc`, `/openapi.json`) now requires
-   an HMAC-signed session cookie minted by `POST /api/auth/login` against the scrypt hash
-   in `MUSICDROP_PASSWORD_HASH`; exempt exact paths: `/api/health`, `/api/slskd/webhook`
-   (its own fail-closed secret), `/api/auth/login`, `/api/auth/status`. The gate matches
-   both the raw and root-path-stripped scope path (fail-closed OR), the signing key is
-   bound to the password hash so rotating it evicts every session, and the whole test
-   suite exercises the live gate via a conftest-minted cookie.
-   **Slice 2 — the login UI — shipped in #200** (`0eca9c2` = v0.47.0): `/login` outside the
-   shell, a `RequireAuth` guard, transport 401 handling across both the openapi-fetch client
-   and `apiFetch`, sign out; plus the scheme-conditional `Secure` cookie and `version` moved
-   onto a gated `GET /api/version`. **The do-not-deploy hold is lifted** — v0.47.0 is the
-   first deployable release of this work.
-   **Slice 3 — re-open the "no auth" justifications — shipped in #201**, which completes
-   auth option C. No behaviour change: the OpenAPI dump regenerates byte-identical, and an AST
-   diff against `0eca9c2` with docstrings stripped is IDENTICAL on all five app files, so
-   nothing executable moved. The one addition is a test —
-   `test_assert_public_url_rejects_every_normal_integration_base_url` — which makes the
-   anti-hardening claim executable; mutation-tested by neutering the guard's loopback and
-   private terms, which reddens it. Re-derived 2026-08-30
-   by three investigators under nine adversarial verification lenses, zero refutations, and
-   the result inverts the framing this entry used to carry: the justifications were **not**
-   made stale by auth, they were **false when written** and auth has just made them true.
-   Each claimed the value was "admin-controlled (only the single self-hosted owner can set
-   it)" while any Origin-less `curl` on the LAN could write it — roughly twelve weeks for the
-   Plex one (written 2026-06-07 in #24; the gate shipped 2026-08-30). So the work is
-   replacing an assumption with a named enforcement mechanism, not conceding anything new.
-   It is also **five** sites, not three: the two `base_url` concessions and the `/import`
-   containment, plus `security_headers.py`'s CORP bullet (which cites "with no
-   authentication" outright and is the one genuinely stale reason) and
-   `artwork/download.py`'s DNS-rebind scope-out (which auth *strengthens*). Two hypotheses
-   were tested and **refuted**: the gate-exempt slskd webhook does not reach arbitrary-path
-   import (doubly contained by `contain(..., strict=True)` in the handler and again in the
-   queue, and it forces its own `operation="move"`), and it never reads `base_url` at all.
+4. ~~**Real authentication**~~ — **DONE 2026-08-30. All three slices of option C shipped**
+   (#199 = `3e82ae4` = v0.46.0, #200 = `0eca9c2` = v0.47.0, #201 = `9d1b4e7` = v0.47.1).
+   The full record moved to *Recently shipped* below; what remains from this item is not the
+   item but the findings it produced, each filed separately under *Open bugs / hardening*.
 
 The 40 banked #143 Plex review Minors stay fully adjudicated (2026-08-25, every item
 re-verified against v0.44.0): 12 shipped as the triage fix slice (see Recently shipped), 12
@@ -1397,6 +1358,38 @@ Added by the 2026-08-28 sweeps:
 
 ## Recently shipped
 
+- **Real authentication — auth option C, three slices, shipped 2026-08-30 (#199, #200, #201).**
+  The standing long-term security item, closed in one day. Before it: 112 operations (66
+  state-changing) reachable unauthenticated by anything that could open TCP to port 3030
+  (compose publishes `0.0.0.0`); two unauthenticated calls ended the library (`DELETE
+  /api/artists` per artist, then `DELETE /api/trash/all`); and the exposure was dual-path
+  (by-IP plain HTTP *and* via Caddy), so proxy-level auth alone could never have covered the
+  by-IP path the owner actively uses. The pre-existing guards were a coherent browser-CSRF +
+  DNS-rebinding pair and none of them was authentication — their own docstrings said so.
+  - **#199 = v0.46.0 — the backend session gate.** Every `/api/*` route plus the docs surface
+    (`/docs`, `/redoc`, `/openapi.json`) behind an HMAC-signed session cookie minted by `POST
+    /api/auth/login` against the scrypt hash in `MUSICDROP_PASSWORD_HASH`. Four exempt EXACT
+    paths: `/api/health`, `/api/slskd/webhook` (its own fail-closed secret), `/api/auth/login`,
+    `/api/auth/status`. The gate matches both the raw and root-path-stripped scope path
+    (fail-closed OR), and the signing key is bound to the password hash, so rotating the hash
+    evicts every session.
+  - **#200 = v0.47.0 — the login UI**, which lifted the do-not-deploy hold that #199 created.
+    `/login` outside the shell, a `RequireAuth` guard that remembers the destination, transport
+    401 handling across both the openapi-fetch client and `apiFetch`, sign out. Plus the
+    scheme-conditional `Secure` cookie (Sonar `S2092` fixed, not accepted) and `version` moved
+    off the anonymous healthcheck onto a gated `GET /api/version`.
+  - **#201 = v0.47.1 — the justifications re-based**, completing the option. Five comments had
+    justified skipping security work by citing auth's absence. The finding that matters for
+    anyone reading those comments later: they were **false when written**, not made stale —
+    each asserted "only the owner can set it" while an Origin-less `curl` needed no
+    credential, for ~12 weeks in the Plex case. Comment-and-docs only (AST-identical, OpenAPI
+    byte-identical) plus one test pinning the anti-hardening claim.
+  **Do not re-derive these from the old wording:** it was five sites, not the three originally
+  scoped; `assert_public_url` must NEVER be reused on `base_url` (measured — it rejects every
+  correct configuration); and the two `base_url` SSRF residuals are accepted **scoped to
+  principals, not to containment**, with a named re-open trigger (a second, less-privileged
+  account). Both are recorded under *Accepted residuals*. Vault: `decisions` 24, journals
+  `2026-08-30-auth-session-gate`, `-auth-login-ui`, `-auth-reopen-justifications`.
 - **SonarQube compliance programme — 1,281 issues to 0, shipped 2026-08-25/26 across 22 PRs
   (#160-#181).** Recorded as ONE entry because the wave structure, not the individual PRs, is
   what a future reader needs; per-PR detail is in the git log and the vault note
