@@ -104,10 +104,25 @@ def request_is_https(request: Request) -> bool:
     # That is the convention, not a guarantee: whether the proxy in front of
     # MusicDrop appends, overwrites, or passes a client-supplied value straight
     # through is ITS configuration, which this code neither controls nor can
-    # detect. Could not confirm Caddy's or nginx's actual handling from
-    # upstream source here (no proxy source available locally), so verify it
-    # against your own proxy's config before relying on the distinction — the
-    # module docstring's silent self-downgrade is what a pass-through costs.
+    # detect. Confirmed against upstream documentation for the two proxies
+    # README names (2026-08-30):
+    #
+    #   Caddy   — ``reverse_proxy`` sets X-Forwarded-Proto, and "by default,
+    #             the proxy will ignore their values from incoming requests, to
+    #             prevent spoofing". Safe as shipped. The exception is
+    #             ``trusted_proxies``: configured ranges ARE trusted to have
+    #             sent good X-Forwarded-* values, so a range wide enough to
+    #             include ordinary clients re-opens the spoof.
+    #   nginx   — adds no X-Forwarded-* at all by default (its only default
+    #             ``proxy_set_header`` directives are Host and Connection), so
+    #             it needs ``proxy_set_header X-Forwarded-Proto $scheme;``.
+    #             Written with ``$scheme`` it is the connection's own value;
+    #             written to pass the client's header through, it is not.
+    #
+    # So the header is trustworthy under both defaults and untrustworthy under
+    # specific misconfigurations — which is why this stays a documented
+    # residual rather than a guarantee. The module docstring's silent
+    # self-downgrade is what a pass-through costs.
     #
     # A substring test would be worse under every reading of the chain: it
     # takes ``http, https`` (a plain client hop, TLS onward) for an encrypted
