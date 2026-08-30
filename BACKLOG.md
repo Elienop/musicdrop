@@ -58,8 +58,8 @@ entry carries a dated correction block where the pass changed it._
    and `apiFetch`, sign out; plus the scheme-conditional `Secure` cookie and `version` moved
    onto a gated `GET /api/version`. **The do-not-deploy hold is lifted** — v0.47.0 is the
    first deployable release of this work.
-   **Slice 3 — re-open the "no auth" justifications — shipped in (PR # filled in at
-   merge).** No behaviour change: the OpenAPI dump regenerates byte-identical, and an AST
+   **Slice 3 — re-open the "no auth" justifications — shipped in #201**, which completes
+   auth option C. No behaviour change: the OpenAPI dump regenerates byte-identical, and an AST
    diff against `0eca9c2` with docstrings stripped is IDENTICAL on all five app files, so
    nothing executable moved. The one addition is a test —
    `test_assert_public_url_rejects_every_normal_integration_base_url` — which makes the
