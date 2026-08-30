@@ -352,3 +352,80 @@ def test_webhook_coalesces_multidisc_to_album(
         album = tmp_path.resolve() / "inbox" / "Artist" / "Album"
         assert probe.status().queued == 1
         assert str(album) in probe._dedupe
+
+
+def test_a_non_ascii_api_key_is_refused_not_a_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``hmac.compare_digest`` on ``str`` raises the moment either side is non-ASCII.
+
+    ``TypeError: comparing strings with non-ASCII characters is not supported``
+    — and uvicorn decodes header bytes as latin-1, so any caller could put one
+    accented character in ``X-API-Key`` and turn this guard into an unhandled
+    500. That matters more here than almost anywhere: this path is EXEMPT from
+    the session gate, so an anonymous stranger reaches it, and the bare 500
+    Starlette synthesises is built outside all user middleware and therefore
+    carries none of the security headers.
+
+    The header is passed as BYTES because httpx refuses to encode a non-ASCII
+    ``str`` header at all — which is also why no existing test caught this.
+    """
+    _write_config(tmp_path)
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    app.dependency_overrides.clear()
+    with TestClient(app, raise_server_exceptions=False) as client:
+        _configure(client, base_url="http://slskd:5030", token="t", webhook_secret="hook")
+        r = client.post(
+            "/api/slskd/webhook",
+            json=_VALID,
+            # BYTES, not str: httpx refuses to encode a non-ASCII str header
+            # at all, which is also why no existing test ever reached this.
+            headers={b"X-API-Key": "kéy".encode()},
+        )
+    assert r.status_code == 401
+    assert r.json() == {"detail": "invalid webhook token"}
+
+
+def test_a_wrong_shaped_body_cannot_read_the_contract_without_the_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """401 before 422 — the secret decides before the body is validated.
+
+    An anonymous caller posting nonsense used to get FastAPI's full validation
+    detail back, naming every field this webhook expects. On a gate-exempt path
+    that is the request contract handed to a stranger, and it contradicts this
+    module's own "401 is the only non-2xx" pin. The fix is a route DEPENDENCY:
+    FastAPI solves those before it validates the body.
+    """
+    _write_config(tmp_path)
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    app.dependency_overrides.clear()
+    with TestClient(app) as client:
+        _configure(client, base_url="http://slskd:5030", token="t", webhook_secret="hook")
+        r = client.post(
+            "/api/slskd/webhook",
+            json={"not": "the right shape"},
+            headers={"X-API-Key": "wrong"},
+        )
+    assert r.status_code == 401
+    assert r.json() == {"detail": "invalid webhook token"}
+
+
+def test_an_authenticated_caller_still_gets_its_422(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control: validation was REORDERED, not removed.
+
+    Without this, deleting body validation entirely would pass the test above.
+    """
+    _write_config(tmp_path)
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    app.dependency_overrides.clear()
+    with TestClient(app) as client:
+        _configure(client, base_url="http://slskd:5030", token="t", webhook_secret="hook")
+        r = client.post(
+            "/api/slskd/webhook",
+            json={"not": "the right shape"},
+            headers={"X-API-Key": "hook"},
+        )
+    assert r.status_code == 422

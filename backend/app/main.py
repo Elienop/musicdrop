@@ -12,6 +12,7 @@ from app import library_busy
 from app.api.acquisition import router as acquisition_router
 from app.api.albums import router as albums_router
 from app.api.artists import router as artists_router
+from app.api.auth import router as auth_router
 from app.api.bank import get_bank_dir
 from app.api.bank import router as bank_router
 from app.api.browse import router as browse_router
@@ -36,6 +37,8 @@ from app.artwork.filler import ArtistImageFiller
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
+from app.auth.gate import SessionGateMiddleware, auth_posture
+from app.auth.session import load_or_create_session_secret, session_secret_path
 from app.bank.store import reconcile_interrupted
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
@@ -115,6 +118,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # re-importing the module (and so tests can monkeypatch it on a single
     # surface).
     app.state.settings = settings
+    # The session gate reads its signing secret off ``app.state`` on every
+    # request, because the middleware stack is declared at import time while
+    # the secret lives under ``settings.beets_dir`` — a value that is not
+    # settled until now. Seeded ONLY IF ABSENT: the test suite pre-seeds a
+    # fixed secret on this same surface (tests/conftest.py), mirroring how
+    # ``app.state.settings`` exists to be monkeypatched, and overwriting it
+    # here would 401 every request made inside a ``with TestClient(app)``
+    # block. Correspondingly the teardown deletes it only if THIS lifespan
+    # created it, so a pre-seed survives the block it wrapped.
+    created_session_secret = not hasattr(app.state, "session_secret")
+    if created_session_secret:
+        app.state.session_secret = load_or_create_session_secret(
+            session_secret_path(settings.beets_dir)
+        )
     app.state.beets_swap_lock = asyncio.Lock()
     # Let the cross-job claim gate see beets swaps too — a config Apply holds
     # this lock while tearing down the Library handle but claims no job slot.
@@ -279,17 +296,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # of building its own. Both attributes are set before the `try`, so the
         # deletes cannot race a half-built lifespan.
         del app.state.artist_image_sources
+        # Only what this lifespan created: a secret pre-seeded by the suite
+        # must outlive the block, or every test after the first
+        # ``with TestClient(app)`` would run against a gate with no key and 401.
+        if created_session_secret:
+            del app.state.session_secret
 
 
 class App(FastAPI):
-    """FastAPI whose served OpenAPI schema also declares the ASGI guards' 400/403/413.
+    """FastAPI whose served OpenAPI schema also declares the ASGI guards' 400/401/403/413.
 
-    ``host_guard`` (400), ``origin_guard`` (403 on the UNSAFE_METHODS writes),
-    and ``body_limit`` (413 on bodied requests) reject requests before any route
-    runs, so no route's ``responses=`` can describe them; ``overlay_middleware_responses``
+    ``host_guard`` (400), ``auth/gate`` (401 on every gated path),
+    ``origin_guard`` (403 on the UNSAFE_METHODS writes), and ``body_limit``
+    (413 on bodied requests) reject requests before any route runs, so no
+    route's ``responses=`` can describe them; ``overlay_middleware_responses``
     adds them to every operation instead. ``super().openapi()`` keeps FastAPI's
-    ``openapi_schema`` cache (the base schema is computed once); the overlay is
-    idempotent on repeat calls and never touches a declared entry or any 422.
+    ``openapi_schema`` cache (the base schema is computed once) and the overlay
+    is idempotent on repeat calls.
+
+    It never touches a declared RESPONSE entry or any 422. It does set
+    ``security`` unconditionally — ``[]`` on the four gate-exempt operations,
+    and the document-wide requirement at the top level — because that is a fact
+    about the middleware rather than a description a route could know better.
     """
 
     # dict[str, Any], not dict[str, object]: this override keeps FastAPI's own
@@ -314,11 +342,35 @@ extra_origins = resolve_extra_origins(settings.static_dir)
 
 allowed_hosts = resolve_allowed_hosts(settings.static_dir, settings.allowed_hosts)
 
-# The middleware stack, innermost first: origin guard, body limit, host
-# guard, security headers, CORS. Starlette applies add_middleware in REVERSE
-# add order, so each block below wraps the ones above it.
+# The middleware stack, innermost first: session gate, origin guard, body
+# limit, host guard, security headers, CORS. Starlette applies add_middleware
+# in REVERSE add order, so each block below wraps the ones above it.
 #
-# Innermost of them all. BodySizeLimit MUST wrap outside it so an oversize
+# Innermost of them all — the last thing before the router. Three properties
+# make that the right seat rather than an arbitrary one:
+#  * the security-headers stamper wraps outside every rejecting guard, so a 401
+#    is stamped with nosniff/CSP exactly like the 400/403/413 are (pinned by
+#    test_unauthenticated_401_carries_the_security_headers);
+#  * CORS still answers preflights outermost, and OPTIONS never reaches here;
+#  * the cheaper guards keep winning: a wrong Host is still 400, an oversize
+#    body still 413 and a foreign-origin write still 403, all without spending
+#    an HMAC — so every existing precedence pin is untouched and
+#    test_disallowed_host_beats_the_session_gate pins the new pair.
+# Authentication being INSIDE the CSRF guard also means a cross-origin write
+# from a logged-in browser is refused as cross-origin (403), not accepted as
+# authenticated: the session cookie does not buy a page the right to use it.
+# That ordering is doing real work, because the cookie's SameSite=Lax is
+# WEAKER here than it looks: cookies are scoped to a host, not a port, so any
+# other HTTP service on the same LAN IP is same-SITE and Lax does nothing
+# against it. What actually stops that neighbour is the origin guard's
+# port-aware authority compare. Do not weaken it on the belief SameSite
+# covers this.
+app.add_middleware(SessionGateMiddleware)
+
+# Added after the session gate above, so it wraps outside it: a cross-origin
+# write is refused as CSRF before the gate spends an HMAC deciding whether the
+# forged request was also signed in. BodySizeLimit MUST wrap outside THIS one
+# so an oversize
 # body is refused before the origin guard (or CORS) touches it — that one is
 # load-bearing and pinned by test_oversize_body_beats_the_origin_guard. (CORS
 # does wrap outside the guard — it must, to sit outermost per python:S8414 —
@@ -343,8 +395,8 @@ app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_body_bytes)
 # test_disallowed_host_beats_the_body_limit.
 app.add_middleware(HostGuardMiddleware, allowed_hosts=allowed_hosts)
 
-# Added after the three guards so it wraps OUTSIDE ALL OF THEM: the guards
-# above write their rejections (400/413/403) straight to the transport without
+# Added after the four guards so it wraps OUTSIDE ALL OF THEM: the guards
+# above write their rejections (400/413/403/401) straight to the transport without
 # reaching the router, so this is the only position from which the security
 # headers land on them too. It does not need to be outermost overall — CORS
 # wraps outside it (added last, for python:S8414, below) — and it never
@@ -379,13 +431,20 @@ app.add_middleware(
 # so an INFO record from `app.main` is discarded before it reaches any output
 # under the Dockerfile CMD. Pinned by test_posture_log_emits_under_real_uvicorn.
 logging.getLogger("uvicorn.error").info(
-    "security posture: %s; extra write origins: %s; allowed hosts: IP literals, localhost%s",
+    "security posture: %s; extra write origins: %s; allowed hosts: IP literals, localhost%s;"
+    " auth: %s",
     "prod (static_dir set)" if settings.static_dir else "dev (static_dir empty)",
     ", ".join(extra_origins) or "none",
     "".join(f", {name}" for name in allowed_hosts),
+    # The auth clause is the difference between a locked deployment and one
+    # that refuses everything: an unset (or unreadable) MUSICDROP_PASSWORD_HASH
+    # is indistinguishable from a working one until the first login fails, and
+    # this line is the only place it is ever said out loud.
+    auth_posture(settings.password_hash),
 )
 
 app.include_router(health_router, prefix="/api")
+app.include_router(auth_router, prefix="/api")
 app.include_router(events_router, prefix="/api")
 app.include_router(albums_router, prefix="/api")
 app.include_router(artists_router, prefix="/api")

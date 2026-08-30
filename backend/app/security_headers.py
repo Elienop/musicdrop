@@ -1,6 +1,6 @@
 """ASGI middleware that stamps the browser-hardening response headers.
 
-The three guards next door refuse traffic; this one bounds what a browser is
+The four guards next door refuse traffic; this one bounds what a browser is
 allowed to DO with a response it already has. Five headers on every response:
 
 - ``X-Content-Type-Options: nosniff`` — a JSON body or an uploaded image can
@@ -35,11 +35,12 @@ EXACTLY, never by prefix, so ``/openapi.json`` and any ``/docsx`` lookalike
 stay strict. The hardening directives (``frame-ancestors``, ``base-uri``,
 ``form-action``, ``object-src``) are identical in both.
 
-Added after the three guards in ``app.main`` so it wraps OUTSIDE ALL OF THEM
+Added after the four guards in ``app.main`` so it wraps OUTSIDE ALL OF THEM
 (Starlette applies middleware in reverse add order). That position is
 load-bearing rather than cosmetic: the host guard's 400, the origin guard's
-403 and the body limit's 413 are written straight to the transport and never
-reach the router, so only a wrapper outside all three can stamp them. CORS is
+403, the body limit's 413 and the session gate's 401 are written straight to
+the transport and never reach the router, so only a wrapper outside all four
+can stamp them. CORS is
 added last — OUTSIDE this stamper — to satisfy SonarQube's ``python:S8414``,
 which requires CORSMiddleware to sit outermost. It changes nothing else — it
 does not read the body, buffer, reorder or reject; it edits the
@@ -132,6 +133,15 @@ def csp_for_path(path: str) -> str:
     which nothing here sets) the scope path arrives PREFIXED while the router
     strips the prefix — the docs pages would then fail CLOSED to the strict
     policy (blank page, never a loosened one).
+
+    ``app/auth/gate.py`` faces the SAME divergence and cannot resolve it this
+    way, because failing closed there means refusing traffic rather than
+    over-restricting it: a gate that read only the raw path let
+    ``/musicdrop/openapi.json`` through anonymously under ``--root-path``. It
+    strips the prefix explicitly and checks both forms. This function stays as
+    it is on purpose — a prefixed docs page losing its CDN allowances is a
+    cosmetic failure, and adding the same stripping here would be untested
+    behaviour bought for nothing.
     """
     return DOCS_CSP if path in DOCS_PATHS else STRICT_CSP
 

@@ -38,8 +38,10 @@ from app.artwork.factory import DEEZER, ArtistImageSources
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
 from app.artwork.source import ResolvedImage, TransientSourceError
+from app.auth.session import SESSION_COOKIE_NAME
 from app.beets import library as library_mod
 from app.main import app
+from tests.conftest import session_cookie_value
 
 _URL = "/api/artists/image/fetch"
 
@@ -411,9 +413,10 @@ def test_every_declared_status_carries_the_body_it_actually_returns() -> None:
     """
     operation = app.openapi()["paths"]["/api/artists/image/fetch"]["post"]
     responses = operation["responses"]
-    # 400 is the app-wide host guard (DNS-rebinding allowlist), declared by
-    # the OpenAPI overlay (app/openapi_overlay.py), not by this route.
-    assert sorted(responses) == ["200", "400", "403", "404", "409", "422", "502"]
+    # 400 (host guard), 401 (session gate) and 403 (cross-origin write guard)
+    # are declared by the OpenAPI overlay (app/openapi_overlay.py), not by this
+    # route.
+    assert sorted(responses) == ["200", "400", "401", "403", "404", "409", "422", "502"]
 
     # The 200 offers the image. It also carries FastAPI's `application/json`
     # artifact from the app-level response class, which cannot be dropped
@@ -519,7 +522,15 @@ async def test_the_fetch_waits_on_the_automatic_chains_limiter(
     monkeypatch.setattr(library_mod, "get_artist_mbid", recording)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    # This drives the real app through httpx rather than TestClient (the
+    # request has to be started and left in flight, which TestClient cannot
+    # do), so conftest's client patch does not apply and the session cookie has
+    # to be attached here or the gate answers 401 before the limiter is reached.
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        cookies={SESSION_COOKIE_NAME: session_cookie_value()},
+    ) as client:
         auto = asyncio.create_task(service.get_artist_image("Some Other Artist"))
         try:
             # Ordered, not raced: the automatic call must HOLD the single slot

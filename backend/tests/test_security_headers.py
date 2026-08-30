@@ -9,7 +9,7 @@ each token is in the string, so a future edit that drops one fails with a
 readable reason instead of a byte diff.
 
 Placement is the other load-bearing thing: the middleware is added AFTER THE
-THREE GUARDS in ``app.main`` so it wraps outside all of them (Starlette applies
+FOUR GUARDS in ``app.main`` so it wraps outside all of them (Starlette applies
 middleware in reverse add order) — the only position from which it can stamp
 the host guard's 400, the origin guard's 403 and the body limit's 413 — those
 never reach the router. CORS is added last and sits outermost, as
@@ -30,6 +30,7 @@ from fastapi.testclient import TestClient
 from starlette.responses import PlainTextResponse
 from starlette.types import Message, Receive, Scope, Send
 
+from app.auth.session import SESSION_COOKIE_NAME
 from app.body_limit import BodySizeLimitMiddleware
 from app.events.broker import EventBroker
 from app.host_guard import HostGuardMiddleware
@@ -37,6 +38,7 @@ from app.main import app as real_app
 from app.origin_guard import OriginGuardMiddleware
 from app.security_headers import SecurityHeadersMiddleware, csp_for_path
 from app.static_files import mount_static
+from tests.conftest import session_cookie_value
 
 # The two policies, byte for byte. See the module docstring for why these are
 # literals and not imports.
@@ -147,7 +149,7 @@ def _middleware_index(cls: object) -> int:
 def test_security_headers_wrap_outside_the_guards() -> None:
     # Starlette's add_middleware inserts at index 0, so user_middleware[0] is the
     # OUTERMOST wrapper. The invariant that matters is not "outermost" per se
-    # but OUTSIDE all three guards: their rejections (400/413/403) never reach
+    # but OUTSIDE all four guards: their rejections (400/413/403/401) never reach
     # the router, so only a wrapper outside them can stamp them. CORS may sit
     # outside the stamper — it must, added last per python:S8414 — because it
     # never rejects an ordinary request. The FULL order is asserted so a future
@@ -254,7 +256,7 @@ def test_non_preflight_options_still_reaches_the_router_and_is_stamped() -> None
 
     ``CORSMiddleware`` short-circuits on ``method == OPTIONS`` AND an
     ``Access-Control-Request-Method`` header. Drop the second condition and the
-    request is an ordinary one: it falls all the way through the three guards to
+    request is an ordinary one: it falls all the way through the four guards to
     the router (405 here — ``/api/config/validate`` is POST-only) and carries the
     five stamped headers like any other response. The narrow fact is worth
     pinning because the wider one — "an OPTIONS response no longer carries the
@@ -368,7 +370,14 @@ async def _response_start(path: str) -> Message:
         "raw_path": path.encode("ascii"),
         "query_string": b"",
         "root_path": "",
-        "headers": [(b"host", b"testserver")],
+        # The session cookie by hand: this drives the ASGI app directly rather
+        # than through TestClient, so conftest's client patch cannot reach it
+        # and ``/api/events`` would be refused 401 by the session gate before
+        # the stamper ever saw a streaming response.
+        "headers": [
+            (b"host", b"testserver"),
+            (b"cookie", f"{SESSION_COOKIE_NAME}={session_cookie_value()}".encode("ascii")),
+        ],
         "client": ("127.0.0.1", 51234),
         "server": ("testserver", 80),
     }

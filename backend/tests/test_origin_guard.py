@@ -261,10 +261,20 @@ def test_prod_posture_rejects_the_dev_origin_write(tmp_path: Path) -> None:
     dist = tmp_path / "dist"
     (dist / "assets").mkdir(parents=True)
     (dist / "index.html").write_text('<!doctype html><div id="root"></div>')
+    # The child runs without conftest, so it seeds the session secret and mints
+    # its own cookie: `/api/config/validate` is gated, and an un-authenticated
+    # child would report 401 for BOTH requests — which would pass the "dev
+    # origin is rejected" half for entirely the wrong reason. The auth wiring
+    # here is scaffolding; the assertions below still pin ORIGIN posture only.
     code = (
         "from starlette.testclient import TestClient\n"
         "from app.main import app\n"
-        "c = TestClient(app)\n"
+        "from app.auth.session import SESSION_COOKIE_NAME, mint_session_token\n"
+        "from app.config import settings\n"
+        "secret = b'0123456789abcdef0123456789abcdef'\n"
+        "app.state.session_secret = secret\n"
+        "c = TestClient(app, cookies={SESSION_COOKIE_NAME:"
+        " mint_session_token(secret, settings.password_hash)})\n"
         "dev = c.post('/api/config/validate', json={'yaml_text': 'a: 1'},"
         " headers={'Origin': 'http://localhost:5173'})\n"
         "same = c.post('/api/config/validate', json={'yaml_text': 'a: 1'},"
@@ -285,6 +295,11 @@ def test_prod_posture_rejects_the_dev_origin_write(tmp_path: Path) -> None:
         **os.environ,
         "MUSICDROP_STATIC_DIR": str(dist),
         "MUSICDROP_ALLOWED_HOSTS": "testserver",
+        # Hermetic binding: the session token is signed with a key derived
+        # from MUSICDROP_PASSWORD_HASH, and an env var beats backend/.env —
+        # so an owner who sets a real hash locally cannot change what this
+        # child mints under.
+        "MUSICDROP_PASSWORD_HASH": "",
     }
     backend = Path(__file__).resolve().parents[1]
     out = subprocess.run(

@@ -26,6 +26,16 @@ class Settings(BaseSettings):
     # this seam is a no-op. (env MUSICDROP_STATIC_DIR)
     static_dir: str = ""
 
+    # The single account's password, as a self-describing scrypt hash string
+    # (``scrypt$n$r$p$salt$digest`` — see app/auth/passwords.py). Generate one
+    # with ``uv run python -m app.auth.hash_password``. There is deliberately no
+    # plaintext-password setting: an env var is readable from `docker inspect`,
+    # the compose file and every process listing on the box, so what is stored
+    # here must already be useless to whoever reads it. Empty = no account is
+    # configured and every gated API request is refused. (env
+    # MUSICDROP_PASSWORD_HASH)
+    password_hash: str = ""
+
     # DNS names (comma-separated) accepted in the Host header — e.g. the
     # reverse-proxy site name the box is browsed by. IP literals and localhost
     # always pass; every other name is rejected with a 400 (the DNS-rebinding
