@@ -1,6 +1,33 @@
 # Dependency update notices as pre-tested PRs. Every PR runs the full CI
 # gates (backend suite exercises REAL beets), so green checks = safe to
 # merge — and merging auto-releases via release.yml.
+#
+# `cooldown` is a MINIMUM RELEASE AGE, and it is the one thing here that green
+# CI cannot substitute for. A compromised-publish attack (the chalk/debug
+# pattern) ships a malicious version that behaves normally — our tests pass,
+# the scan is clean, and the payload runs at install time on a developer
+# machine and in CI. What defeats it is time: those releases are typically
+# yanked within 24-72 hours, so refusing to propose anything younger than a
+# week means the ecosystem does the detecting. The prompt for this: `eslint`
+# and `typescript-eslint` were both FIVE DAYS old when #202 pinned them.
+#
+# `interval: weekly` is NOT this, and reading it as such is the easy mistake.
+# It bounds how often Dependabot CHECKS, not how old a version may be — a
+# package published Monday, with the weekly check landing Tuesday, is proposed
+# one day old. The two are independent.
+#
+# Security updates are exempt by design: GitHub's docs are explicit that the
+# cooldown "does not apply to security updates", so a known-vulnerable
+# dependency is still bumped immediately. This delays routine bumps only.
+#
+# 7 rather than the built-in default of 3. There IS already a default cooldown
+# — `default-days` defaults to 3 when unset — so this is 3 -> 7, not 0 -> 7;
+# stating it here because an unwritten default is one nobody can audit.
+#
+# `default-days` is the only cooldown key EVERY ecosystem accepts. The
+# `semver-*-days` variants are rejected for github-actions, so a uniform
+# `default-days` is both the simplest form and the only valid one across all
+# three lanes below.
 version: 2
 updates:
   # beets gets its OWN PR lane (never grouped): a beets update is the
@@ -9,6 +36,13 @@ updates:
     directory: "/backend"
     schedule:
       interval: "weekly"
+    # Covers the beets lane too. That lane exists because a beets update is the
+    # signal this config is for, so a week's delay on that signal is a real
+    # cost — accepted, because beets is also the dependency with the widest
+    # blast radius here: it runs against the real library. `cooldown.exclude:
+    # ["beets"]` would keep it prompt if that trade is ever judged wrong.
+    cooldown:
+      default-days: 7
     groups:
       backend-deps:
         patterns: ["*"]
@@ -18,6 +52,8 @@ updates:
     directory: "/frontend"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     groups:
       frontend-deps:
         patterns: ["*"]
@@ -27,3 +63,6 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # `default-days` only: github-actions rejects the `semver-*-days` keys.
+    cooldown:
+      default-days: 7
